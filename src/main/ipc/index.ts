@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { app, ipcMain, dialog, shell, BrowserWindow } from 'electron'
+import { app, ipcMain, dialog, shell, BrowserWindow, Notification } from 'electron'
 import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, type Dirent } from 'fs'
 import { join, dirname, basename, resolve, relative, sep } from 'path'
 import { networkInterfaces, tmpdir } from 'os'
@@ -114,6 +114,8 @@ async function testProviderCredentialsForDashboard(
 import chokidar from 'chokidar'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { MAIN_LOOP } from '../adf/derive-loop-config'
+import { stripLoopNameMarker } from '../runtime/loop-pool'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { applyDefaultProviderToOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
@@ -127,7 +129,9 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { deriveHandle } from '../utils/handle'
-import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState } from '../../shared/types/ipc.types'
+import { approvalHub } from '../runtime/approval-hub'
+import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
+import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -265,6 +269,7 @@ let currentUmbilicalAgentId: string | null = null
 let currentSession: AgentSession | null = null
 let toolRegistry: ToolRegistry
 let settings: SettingsService
+let nativeNotifier: NativeNotifier | null = null
 let meshManager: MeshManager | null = null
 let backgroundAgentManager: BackgroundAgentManager | null = null
 let backgroundEventBatcher: BackgroundEventBatcher | null = null
@@ -319,6 +324,34 @@ function attachWorkspaceDataForwarder(workspace: AdfWorkspace): void {
     timer.unref?.()
     pending.set(scope, timer)
   })
+}
+
+/**
+ * Push a RUNTIME-originated config change to the renderer.
+ *
+ * The renderer's agent store is the single source for everything derived from
+ * config — the Loops section, the loop tab strip, the tool lists. Before this,
+ * only `sys_update_config` refreshed it, and only because useAgent watched for
+ * that one tool NAME in the tool_result stream. Every other runtime write —
+ * `loop_manage` create/update/delete, which reaches the same choke point
+ * through LoopPool.saveConfig — landed on disk and in the executor but left
+ * the open window showing the pre-change config until the user switched agents
+ * and back.
+ *
+ * Called from the foreground host's `onConfigChanged`, i.e. the host fan-out of
+ * `AssembledAgent.applyConfigChange`. That IS the origin dedup: Studio's own
+ * save (DOC_SET_AGENT_CONFIG) passes `notifyHost: false`, so the window that
+ * made an edit never gets its own echo back on top of an edit still in flight.
+ *
+ * Background agents need nothing here: their writes persist through the
+ * workspace, and opening one reads the fresh config off disk (FILE_OPEN →
+ * DOC_GET_BATCH). Only the live window can hold a stale copy.
+ */
+function notifyRendererConfigChanged(filePath: string, config: AgentConfig): void {
+  // Guard on the OPEN file, not on which agent emitted: a change from an agent
+  // the user has already navigated away from must not overwrite the store.
+  if (currentFilePath !== filePath) return
+  getMainWindow()?.webContents.send(IPC.DOC_AGENT_CONFIG_CHANGED, { filePath, config })
 }
 
 /**
@@ -694,6 +727,61 @@ function issueAttestationsForCurrentOwner(workspace: AdfWorkspace): void {
 function getMainWindow(): BrowserWindow | null {
   const windows = BrowserWindow.getAllWindows()
   return windows.length > 0 ? windows[0] : null
+}
+
+/**
+ * Bring Studio to the front from a background click (OS notification).
+ * A minimised window must be restored FIRST — focus() on a minimised window is
+ * a no-op on Windows and merely flashes the taskbar button.
+ */
+function focusMainWindow(): BrowserWindow | null {
+  const win = getMainWindow()
+  if (!win || win.isDestroyed()) return null
+  if (win.isMinimized()) win.restore()
+  if (!win.isVisible()) win.show()
+  win.focus()
+  // macOS: the window can be raised while the app itself stays behind.
+  app.focus?.({ steal: true })
+  return win
+}
+
+/**
+ * The Electron half of the OS-notification policy. Everything here is side
+ * effects the policy must not own: creating toasts, asking who has focus,
+ * reading the user's toggle, and pushing the deep link at the renderer.
+ */
+function createNativeNotifierPlatform(): NativeNotifierPlatform {
+  const sendReveal = (payload: { filePath?: string; notificationId?: string }): void => {
+    const win = focusMainWindow()
+    if (!win || win.webContents.isDestroyed()) return
+    try { win.webContents.send(IPC.APPROVALS_REVEAL, payload) } catch { /* window going away */ }
+  }
+
+  return {
+    isSupported: () => {
+      try { return Notification.isSupported() } catch { return false }
+    },
+    // Read per notification, not cached: flipping the toggle off silences the
+    // very next request without a restart.
+    isEnabled: () => settings?.get('nativeNotificationsEnabled') !== false,
+    isWindowFocused: () => BrowserWindow.getFocusedWindow() !== null,
+    now: () => Date.now(),
+    show: (request): NativeToastHandle | null => {
+      try {
+        const toast = new Notification({ title: request.title, body: request.body })
+        toast.on('click', () => request.onClick())
+        toast.show()
+        return { close: () => toast.close() }
+      } catch (err) {
+        console.warn('[Notifications] Failed to show OS notification:', err)
+        return null
+      }
+    },
+    reveal: (entry) => sendReveal({ filePath: entry.filePath, notificationId: entry.id }),
+    // A summary stands for several agents — the bell panel is the only honest
+    // destination.
+    openPanel: () => sendReveal({}),
+  }
 }
 
 /**
@@ -1479,6 +1567,27 @@ export function registerAllIpcHandlers(): void {
     }
   }, 2_000).unref?.()
 
+  // Global approvals menu: every pending HIL approval, from every agent and
+  // loop, plus the recently-resolved tail, pushed as a full snapshot to EVERY
+  // window on every change. Full snapshots (not deltas) mean a window that
+  // reloads or opens late is correct after the next change without any resync
+  // protocol, and a window that missed a push can never show an approval that
+  // is already resolved for long.
+  approvalHub.subscribe((snapshot) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue
+      try { win.webContents.send(IPC.APPROVALS_CHANGED, snapshot) } catch { /* window going away */ }
+    }
+  })
+
+  // The same snapshots, one layer out: an OS toast for anything that arrives
+  // while Studio is NOT the focused app (see native-notifier.ts for the
+  // policy). Attached after the renderer push so a click can never race ahead
+  // of the snapshot that explains it.
+  nativeNotifier = new NativeNotifier(createNativeNotifierPlatform())
+  nativeNotifier.seed(approvalHub.snapshot())
+  approvalHub.subscribe((snapshot) => nativeNotifier?.apply(snapshot))
+
   toolRegistry = new ToolRegistry()
   registerBuiltInTools(toolRegistry)
 
@@ -1542,6 +1651,10 @@ export function registerAllIpcHandlers(): void {
     return true
   })
   backgroundAgentManager.onAgentOff = handleAgentOff
+  // A2: the foreground agent lives outside the manager's agents map, so its
+  // side-loop sessions were never idle-swept. Hand the manager's sweep a live
+  // view of the current foreground loop pool (null when no file is open).
+  backgroundAgentManager.getForegroundLoopPool = () => currentAssembledAgent?.loopPool ?? null
   // Agent renamed itself (sys_update_config) while running in background —
   // schedule the .adf file rename for when it stops.
   backgroundAgentManager.onAgentRenamed = (fp, name) => syncAgentFileToName(fp, name)
@@ -2287,11 +2400,30 @@ export function registerAllIpcHandlers(): void {
     if (config?.id && previousConfig.id && config.id !== previousConfig.id) {
       return { success: false, error: 'Save refused: config belongs to a different agent file' }
     }
+    // `metadata.loop_name` is a derived-config-only marker; strip BEFORE the
+    // save so an imported/hand-edited .adf cannot persist one that would bind
+    // main's executor to a side loop's stream on the next open.
+    stripLoopNameMarker(config)
     currentWorkspace.setAgentConfig(config)
 
-    if (agentExecutor) {
+    // The assembled agent's single config-change choke point: re-derives every
+    // side loop, reconciles the pool (revoked grants actually leave the loops),
+    // refreshes the pool's raw-config snapshot (so the next loop_manage write
+    // does not revert this save), and re-syncs main's loop tool registration
+    // (adding the first loop here is what makes loop_send/loop_list real).
+    // Hand-rolling executor.updateConfig here skipped all four (review C2).
+    // `notifyHost: false` — the mesh update, MCP
+    // reconcile and file rename below are this handler's own versions of the
+    // host fan-out and must not run twice.
+    if (currentAssembledAgent) {
+      currentAssembledAgent.applyConfigChange(config, { notifyHost: false })
+    } else if (agentExecutor) {
+      // No assembled handle (config edited while no agent runs): the executor
+      // is all there is to update.
       agentExecutor.updateConfig(config)
+    }
 
+    if (agentExecutor) {
       const modelChanged =
         previousConfig.model.provider !== config.model.provider ||
         previousConfig.model.model_id !== config.model.model_id
@@ -2307,10 +2439,13 @@ export function registerAllIpcHandlers(): void {
         }
       }
     }
-    if (triggerEvaluator) {
-      triggerEvaluator.updateConfig(config)
+    // Only when applyConfigChange did not already do both — it fans out to the
+    // evaluator and the call handler itself, and a raw updateConfig here would
+    // race that fan-out rather than add to it.
+    if (!currentAssembledAgent) {
+      triggerEvaluator?.updateConfig(config)
+      currentAdfCallHandler?.updateConfig(config)
     }
-    currentAdfCallHandler?.updateConfig(config)
     if (meshManager && currentFilePath) {
       meshManager.updateAgentConfig(currentFilePath, config)
     }
@@ -2337,14 +2472,17 @@ export function registerAllIpcHandlers(): void {
 
   // --- Chat/Loop history ---
 
-  ipcMain.handle(IPC.DOC_GET_CHAT, async () => {
+  ipcMain.handle(IPC.DOC_GET_CHAT, async (_event, args?: { loop?: string }) => {
     try {
       if (!currentWorkspace) return { chatHistory: null }
-      const totalCount = currentWorkspace.getLoopCount()
+      // One handler, N streams: `loop` picks the view and absent means main, so
+      // every pre-loops caller reads exactly what it always did.
+      const loopWorkspace = currentWorkspace.forLoop(args?.loop ?? MAIN_LOOP)
+      const totalCount = loopWorkspace.getLoopCount()
       const offset = Math.max(0, totalCount - LOOP_DISPLAY_LIMIT)
       const loopEntries = offset > 0
-        ? currentWorkspace.getLoopPaginated(LOOP_DISPLAY_LIMIT, offset)
-        : currentWorkspace.getLoop()
+        ? loopWorkspace.getLoopPaginated(LOOP_DISPLAY_LIMIT, offset)
+        : loopWorkspace.getLoop()
       const displayEntries = parseLoopToDisplay(loopEntries)
       return {
         chatHistory: {
@@ -2362,13 +2500,16 @@ export function registerAllIpcHandlers(): void {
 
   // Keyset page of loop entries older than `beforeSeq` (for scroll-back).
   // OFFSET-based paging is unstable while the agent appends; seq is not.
-  ipcMain.handle(IPC.DOC_GET_CHAT_OLDER, async (_event, args: { beforeSeq: number; limit?: number }) => {
+  ipcMain.handle(IPC.DOC_GET_CHAT_OLDER, async (_event, args: { beforeSeq: number; limit?: number; loop?: string }) => {
     try {
       if (!currentWorkspace) return { uiLog: [], earlierCount: 0 }
       const limit = Math.min(Math.max(args?.limit ?? LOOP_DISPLAY_LIMIT, 1), 500)
-      const loopEntries = currentWorkspace.getLoopBefore(args.beforeSeq, limit)
+      // Page within this loop's stream — seq is global, so an unscoped page
+      // would interleave sibling loops into the tab being scrolled.
+      const loopWorkspace = currentWorkspace.forLoop(args?.loop ?? MAIN_LOOP)
+      const loopEntries = loopWorkspace.getLoopBefore(args.beforeSeq, limit)
       const earlierCount = loopEntries.length > 0
-        ? currentWorkspace.getLoopCountBefore(loopEntries[0].seq)
+        ? loopWorkspace.getLoopCountBefore(loopEntries[0].seq)
         : 0
       return { uiLog: parseLoopToDisplay(loopEntries), earlierCount }
     } catch (error) {
@@ -2383,23 +2524,38 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle(IPC.DOC_CLEAR_CHAT, async () => {
+  ipcMain.handle(IPC.DOC_CLEAR_CHAT, async (_event, args?: { loop?: string }) => {
     if (!currentWorkspace) return { success: false }
+
+    // Absent `loop` means MAIN, never "all streams": Studio's Clear button
+    // clears the tab you are looking at. A whole-table wipe is a different
+    // operation (db.clearAllLoops, which bumps the cross-loop epoch).
+    const loop = args?.loop ?? MAIN_LOOP
+    const runtime = loop === MAIN_LOOP ? null : currentAssembledAgent?.loopPool.getRuntime(loop)
+    if (loop !== MAIN_LOOP && !runtime && !currentAssembledAgent?.loopPool.hasLoop(loop)) {
+      return { success: false, error: `No loop named "${loop}"` }
+    }
 
     // onCommitted runs synchronously in the loop-table COMMIT's tick, so a turn
     // dispatched while clearLoop awaited its backup/compression cannot slip
     // between the wipe and the session reset.
-    await currentWorkspace.clearLoop({
+    await currentWorkspace.forLoop(loop).clearLoop({
       onCommitted: () => {
-        currentSession?.reset()
-        // Reset executor context state so the system prompt / dynamic
-        // instructions are re-injected into the wiped loop and injected files
-        // re-snapshotted (same reset the loop_clear tool does internally).
-        agentExecutor?.resetContextState()
+        if (loop === MAIN_LOOP) {
+          currentSession?.reset()
+          // Reset executor context state so the system prompt / dynamic
+          // instructions are re-injected into the wiped loop and injected files
+          // re-snapshotted (same reset the loop_clear tool does internally).
+          agentExecutor?.resetContextState()
+        } else if (runtime) {
+          runtime.session.reset()
+          runtime.executor.resetContextState()
+        }
       }
     })
 
-    if (meshManager?.isEnabled() && currentFilePath) {
+    // The mesh session reset is main's: a side loop has no mesh presence.
+    if (loop === MAIN_LOOP && meshManager?.isEnabled() && currentFilePath) {
       await meshManager.resetAgentSession(currentFilePath)
     }
 
@@ -2471,8 +2627,26 @@ export function registerAllIpcHandlers(): void {
     warm?: boolean
     payload?: string
     locked?: boolean
+    /**
+     * Cognition stream the wake dispatches to; absent = main. The operator is
+     * not a loop, so any declared loop may be named here — the main-only rule
+     * on `sys_set_timer` exists to stop a SIDE LOOP from addressing a sibling
+     * (SEC-2), and this handler always holds the main-bound workspace.
+     */
+    loop?: string
   }) => {
     if (!currentWorkspace) return { success: false, error: 'No workspace open' }
+    // A10: validate args.loop against the declared loop set, same as the tool
+    // path (sys_set_timer → loopPool.hasLoop). Absent = main. An unknown loop
+    // would otherwise persist a timer that fires into a stream that does not
+    // exist; reject it and name the valid targets.
+    if (args.loop && args.loop !== MAIN_LOOP) {
+      const pool = currentAssembledAgent?.loopPool
+      if (!pool || !pool.hasLoop(args.loop)) {
+        const available = pool ? pool.listLoops().map(l => l.name).join(', ') : MAIN_LOOP
+        return { success: false, error: `Unknown loop "${args.loop}". Available: ${available}` }
+      }
+    }
     try {
       const { CronExpressionParser } = await import('cron-parser')
       const now = Date.now()
@@ -2521,7 +2695,11 @@ export function registerAllIpcHandlers(): void {
           return { success: false, error: 'Invalid mode' }
       }
 
-      const id = currentWorkspace.addTimer(schedule, nextWakeAt, args.payload, args.scope, args.lambda, args.warm, args.locked)
+      // A system-scope timer runs its lambda under the agent's authority and
+      // wakes no cognition stream, so it never carries a loop stamp — drop any
+      // the caller sent. Loop only means anything for the agent-scope wake.
+      const effectiveLoop = args.scope?.includes('agent') ? args.loop : undefined
+      const id = currentWorkspace.addTimer(schedule, nextWakeAt, args.payload, args.scope, args.lambda, args.warm, args.locked, effectiveLoop)
       return { success: true, id }
     } catch (err) {
       return { success: false, error: String(err) }
@@ -2923,7 +3101,12 @@ export function registerAllIpcHandlers(): void {
         currentHostAttachment = handle.attachHost({
           onEvent: (event) => {
             if (currentFilePath === capturedFilePath) getMainWindow()?.webContents.send(IPC.AGENT_EVENT, event)
-            if (event.type === 'state_changed' && (event.payload as { state?: string }).state === 'off') {
+            // AgentState is MAIN's (§6.3): a side loop going 'off' ends that
+            // loop's turn, it does not shut the agent down.
+            if (
+              (event.loop ?? MAIN_LOOP) === MAIN_LOOP &&
+              event.type === 'state_changed' && (event.payload as { state?: string }).state === 'off'
+            ) {
               void handleAgentOff(capturedFilePath)
             }
             if (event.type === 'adf_file_created') {
@@ -2945,6 +3128,7 @@ export function registerAllIpcHandlers(): void {
             })
           },
           onConfigChanged: async (updatedConfig) => {
+            notifyRendererConfigChanged(capturedFilePath, updatedConfig)
             meshManager?.updateAgentConfig(capturedFilePath, updatedConfig)
             if (capturedFilePath && updatedConfig.name !== lastAgentName) {
               lastAgentName = updatedConfig.name
@@ -3637,8 +3821,17 @@ export function registerAllIpcHandlers(): void {
             manager: mcpManager,
             persist: (fresh) => capturedWorkspace.setAgentConfig(fresh),
             fanOut: (fresh) => {
-              agentExecutor?.updateConfig(fresh)
-              adfCallHandler?.updateConfig(fresh)
+              // A6: route through the assembled choke point so loopPool.reconcile
+              // runs and rawConfig stays fresh. A hand-rolled executor/callHandler
+              // updateConfig left every side loop on stale derived config (its
+              // MCP tool declarations never re-derived). notifyHost:false — this
+              // is a reconnect resync, not a user/agent edit, so it must not
+              // re-enter the host config fan-out.
+              if (currentAssembledAgent) currentAssembledAgent.applyConfigChange(fresh, { notifyHost: false })
+              else {
+                agentExecutor?.updateConfig(fresh)
+                adfCallHandler?.updateConfig(fresh)
+              }
             },
           })
         } catch (err) {
@@ -4026,7 +4219,12 @@ export function registerAllIpcHandlers(): void {
         if (currentFilePath === capturedFilePath) {
           getMainWindow()?.webContents.send(IPC.AGENT_EVENT, event)
         }
-        if (event.type === 'state_changed' && (event.payload as { state?: string }).state === 'off') {
+        // AgentState is MAIN's (§6.3): a side loop going 'off' ends that
+        // loop's turn, it does not shut the agent down.
+        if (
+          (event.loop ?? MAIN_LOOP) === MAIN_LOOP &&
+          event.type === 'state_changed' && (event.payload as { state?: string }).state === 'off'
+        ) {
           void handleAgentOff(capturedFilePath)
         }
         if (event.type === 'adf_file_created') {
@@ -4048,6 +4246,7 @@ export function registerAllIpcHandlers(): void {
         })
       },
       onConfigChanged: async (updatedConfig) => {
+        notifyRendererConfigChanged(capturedFilePath, updatedConfig)
         if (meshManager) meshManager.updateAgentConfig(capturedFilePath, updatedConfig)
         if (updatedConfig.name !== lastAgentName) {
           lastAgentName = updatedConfig.name
@@ -4237,6 +4436,10 @@ export function registerAllIpcHandlers(): void {
 
     if (meshManager && stoppedFilePath) meshManager.removeAdapterManager(stoppedFilePath)
     if (assembled) await assembled.disposeAsync({ mode: 'graceful' })
+    // Teardown drains the executor's pending HIL (which unregisters each row);
+    // this is the safety net so a dispose that failed part-way can never leave
+    // an approval in the menu that nobody is waiting on.
+    if (stoppedFilePath) approvalHub.unregisterAgent(stoppedFilePath)
 
     if (stoppedFilePath) applyPendingRename(stoppedFilePath)
 
@@ -4306,6 +4509,34 @@ export function registerAllIpcHandlers(): void {
     return { success: true, approved, skippedProtection }
   })
 
+  // --- Global approvals hub ------------------------------------------------
+  // The title-bar approvals menu. Snapshot pull for first paint, push on every
+  // change, and one resolve entry point that routes into the SAME
+  // executor.resolveApproval the in-chat card uses (the hub entry carries a
+  // callback bound to its own executor, so a background agent's approval — which
+  // has no in-chat card rendered anywhere — resolves identically).
+  ipcMain.handle(IPC.APPROVALS_LIST, async (): Promise<NotificationsSnapshot> => approvalHub.fullSnapshot())
+
+  // B8: the broadcast snapshot omits the raw tool input; the modal fetches it on
+  // demand. Returns undefined for a resolved/gone entry or a mismatched agent.
+  ipcMain.handle(
+    IPC.APPROVALS_GET_INPUT,
+    async (_event, args: { filePath: string; approvalId: string }): Promise<unknown> => {
+      if (!args?.filePath || !args?.approvalId) return undefined
+      return approvalHub.getApprovalInput(args.filePath, args.approvalId)
+    }
+  )
+
+  ipcMain.handle(
+    IPC.APPROVALS_RESOLVE,
+    async (_event, args: { filePath: string; approvalId: string; approved: boolean; feedback?: string }) => {
+      if (!args?.filePath || !args?.approvalId) {
+        return { success: false, error: 'filePath and approvalId are required' }
+      }
+      return approvalHub.resolve(args.filePath, args.approvalId, args.approved === true, args.feedback)
+    }
+  )
+
   ipcMain.handle(IPC.AGENT_ASK_RESPOND, async (_event, args: { requestId: string; answer: string }) => {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
@@ -4354,12 +4585,17 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle(IPC.AGENT_INVOKE, async (_event, args: { userMessage?: string; filePath?: string; content?: ContentBlock[] }) => {
+  ipcMain.handle(IPC.AGENT_INVOKE, async (_event, args: { userMessage?: string; filePath?: string; content?: ContentBlock[]; loop?: string }) => {
     const targetFile = args.filePath
     const isForeground = !targetFile || targetFile === currentFilePath
     const contentJson: ContentBlock[] = Array.isArray(args.content) && args.content.length > 0
       ? args.content
       : [{ type: 'text', text: args?.userMessage ?? '' }]
+    // Each loop tab has its own composer; absent = main, so the fleet bar and
+    // every other pre-loops caller land where they always did. An unknown or
+    // disabled loop is an ERROR here (someone is waiting for an answer), unlike
+    // the trigger path where it is dropped and logged.
+    const targetLoop = args.loop ?? MAIN_LOOP
 
     // If targeting the foreground agent
     if (isForeground) {
@@ -4367,7 +4603,7 @@ export function registerAllIpcHandlers(): void {
         return { success: false, error: 'Agent not running' }
       }
       try {
-        await currentAssembledAgent.dispatch(createDispatch(createEvent({
+        await currentAssembledAgent.dispatchTo(targetLoop, createDispatch(createEvent({
           type: 'chat' as const, source: 'system',
           data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() }, echoed: true },
         }), { scope: 'agent' }))
@@ -4385,7 +4621,7 @@ export function registerAllIpcHandlers(): void {
           // Direct executor invoke bypasses the trigger evaluator's rehydrate —
           // restore the session first if the idle sweep released it.
           backgroundAgentManager.ensureSessionHydrated(targetFile)
-          await agentRefs.assembledAgent.dispatch(createDispatch(createEvent({
+          await agentRefs.assembledAgent.dispatchTo(targetLoop, createDispatch(createEvent({
             type: 'chat' as const, source: 'system',
             data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() }, echoed: true },
           }), { scope: 'agent' }))
@@ -5100,9 +5336,12 @@ export function registerAllIpcHandlers(): void {
   })
 
   // Aggregate pending HIL asks/approvals across every live executor (foreground +
-  // background). Pending requests only exist in executor memory — without this
-  // snapshot the fleet alert layer misses anything that fired while the graph
-  // view wasn't listening.
+  // background), read straight from executor memory.
+  //
+  // Studio no longer consumes this: the fleet map's pending badge and the
+  // title-bar menu both read the push-based ApprovalHub (APPROVALS_* above),
+  // which cannot go stale between polls. Kept as the pull-shaped view of the
+  // same state for out-of-band callers and debugging.
   ipcMain.handle(IPC.MESH_PENDING_INTERACTIONS, async (): Promise<FleetPendingInteraction[]> => {
     const pending: FleetPendingInteraction[] = []
 
@@ -5975,9 +6214,20 @@ export function registerAllIpcHandlers(): void {
   // schemas / messages) for whichever executor owns the file — foreground or
   // background, mirroring MESH_FLEET_STATUS's liveContext resolution. Null when
   // no executor is running for that path.
-  ipcMain.handle(IPC.CONTEXT_BREAKDOWN_GET, async (_event, { filePath }: { filePath: string }): Promise<import('../../shared/types/ipc.types').ContextBreakdown | null> => {
-    if (filePath === currentFilePath && agentExecutor) return agentExecutor.getContextBreakdown()
-    return backgroundAgentManager?.getExecutor(filePath)?.getContextBreakdown() ?? null
+  //
+  // `loop` picks WHICH executor of that agent: every loop assembles its own
+  // system prompt, its own attenuated tool set and its own message history, so
+  // the breakdown is per-loop, not per-agent. Absent = `main` (the host
+  // executor), which is exactly the pre-loops behaviour. A declared side loop
+  // with no live runtime (never woken, or idle-swept) returns null — the caller
+  // renders that as "this loop has not run", not as a failure.
+  ipcMain.handle(IPC.CONTEXT_BREAKDOWN_GET, async (_event, { filePath, loop }: { filePath: string; loop?: string }): Promise<import('../../shared/types/ipc.types').ContextBreakdown | null> => {
+    const isMain = !loop || loop === MAIN_LOOP
+    if (filePath === currentFilePath && agentExecutor) {
+      if (isMain) return agentExecutor.getContextBreakdown()
+      return currentAssembledAgent?.loopPool.getRuntime(loop!)?.executor.getContextBreakdown() ?? null
+    }
+    return backgroundAgentManager?.getLoopExecutor(filePath, loop)?.getContextBreakdown() ?? null
   })
 
   // --- MCP IPC Argument Schemas ---
@@ -8169,6 +8419,9 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
   // resume() or ensureRunning() must not restart work mid-quit.
   RuntimeGate.beginTeardown()
   podmanService.beginShutdown()
+  // Retract any OS toast still on screen: clicking one after the app is gone
+  // points at an agent that no longer exists.
+  try { nativeNotifier?.dispose() } catch { /* best effort */ }
   // Flush debounced token usage data before anything can go wrong.
   try { getTokenUsageService().flush() }
   catch (e) { console.error('[Cleanup] token usage flush error:', e) }

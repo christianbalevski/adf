@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Dialog } from '../common/Dialog'
+import { useAgentStore } from '../../stores/agent.store'
+import { loopColor } from '../../utils/loop-color'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { TimerSchedule } from '../../../shared/types/adf-v02.types'
@@ -17,6 +19,26 @@ interface Timer {
   last_fired_at?: number
   locked?: boolean
   expired?: boolean
+  /** Which loop this timer wakes (`adf_timers.loop`). Absent = the host loop. */
+  loop?: string
+}
+
+/**
+ * Target-loop chip on an existing timer row. Carries the target loop's identity
+ * colour, so a timer list reads as "these two wake the same loop" instead of
+ * one undifferentiated teal.
+ */
+function LoopBadge({ loop }: { loop?: string }) {
+  const name = loop || 'main'
+  const isMain = name === 'main'
+  return (
+    <span
+      title={isMain ? 'Wakes the host loop' : `Wakes the "${name}" inner loop`}
+      className={`inline-block px-1.5 py-0.5 text-[10px] rounded ${loopColor(name).badge}`}
+    >
+      loop: {name}
+    </span>
+  )
 }
 
 function formatRelative(ms: number): string {
@@ -150,6 +172,10 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
   const [warm, setWarm] = useState(false)
   const [payload, setPayload] = useState('')
 
+  // target loop — create-only (the update path does not rewrite the stamp)
+  const [loop, setLoop] = useState('main')
+  const sideLoops = useAgentStore((s) => s.config?.loops) ?? []
+
   // submission state
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -170,6 +196,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
     setLambda('')
     setWarm(false)
     setPayload('')
+    setLoop('main')
     setError('')
   }, [])
 
@@ -206,6 +233,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
     setLambda(editTimer.lambda ?? '')
     setWarm(editTimer.warm ?? false)
     setPayload(editTimer.payload ?? '')
+    setLoop(editTimer.loop ?? 'main')
     setError('')
   }, [open, editTimer, resetForm])
 
@@ -223,7 +251,11 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
         scope: [scope],
         lambda: lambda.trim() || undefined,
         warm: (scope === 'system' && lambda.trim() && warm) ? true : undefined,
-        payload: payload.trim() || undefined
+        payload: payload.trim() || undefined,
+        // Create-only, and agent-scope only: a system-scope timer runs its
+        // lambda under the agent's authority and wakes no cognition stream, so
+        // it carries no loop stamp. The update path leaves the stamp untouched.
+        ...(isEdit || scope === 'system' || loop === 'main' ? {} : { loop })
       }
 
       let modeArgs: Record<string, unknown>
@@ -448,7 +480,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
             {(['system', 'agent'] as const).map((value) => (
               <button
                 key={value}
-                onClick={() => setScope(value)}
+                onClick={() => { setScope(value); if (value === 'system') setLoop('main') }}
                 className={`px-2 py-1.5 text-xs rounded-lg border transition-colors capitalize ${
                   scope === value
                     ? 'bg-blue-500 text-white border-blue-500'
@@ -463,6 +495,35 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
             System executes a lambda. Agent wakes the LLM loop.
           </p>
         </div>
+
+        {/* Target loop — agent scope only (system runs a lambda, wakes no loop)
+            and only once the agent declares inner loops. */}
+        {scope === 'agent' && sideLoops.length > 0 && (
+          <div>
+            <label className={labelClass}>Loop</label>
+            <select
+              value={loop}
+              onChange={(e) => setLoop(e.target.value)}
+              className={inputClass}
+              disabled={isEdit}
+            >
+              <option value="main">main</option>
+              {sideLoops.map((l) => (
+                <option key={l.name} value={l.name}>
+                  {l.name}{l.enabled === false ? ' (disabled)' : ''}
+                </option>
+              ))}
+              {isEdit && loop !== 'main' && !sideLoops.some((l) => l.name === loop) && (
+                <option value={loop}>{loop} (not declared)</option>
+              )}
+            </select>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+              {isEdit
+                ? 'A timer’s target loop is fixed at creation.'
+                : 'Which cognition stream this timer wakes.'}
+            </p>
+          </div>
+        )}
 
         {/* Lambda (only relevant if system scope is selected) */}
         {scope === 'system' && (
@@ -638,6 +699,7 @@ export function AgentTimers() {
                     <span className="inline-block px-1.5 py-0.5 text-[10px] bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded">
                       {timer.scope.join(', ')}
                     </span>
+                    {timer.scope.includes('agent') && <LoopBadge loop={timer.loop} />}
                     {timer.locked && (
                       <span className="inline-block px-1.5 py-0.5 text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded">
                         locked
@@ -751,6 +813,7 @@ export function AgentTimers() {
                             <span className="inline-block px-1.5 py-0.5 text-[10px] bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded">
                               expired
                             </span>
+                            {timer.scope.includes('agent') && <LoopBadge loop={timer.loop} />}
                             {timer.locked && (
                               <span className="inline-block px-1.5 py-0.5 text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded">
                                 locked

@@ -9,6 +9,7 @@ import type { TriggerEvaluator } from './trigger-evaluator'
 import { assembleAgent, type AssembledAgent, type HostAttachment, type LifecycleResource } from './assemble-agent'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { MAIN_LOOP } from '../adf/derive-loop-config'
 import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { isConfigReviewed } from '../services/agent-review'
@@ -21,6 +22,7 @@ import { AdfCallHandler } from './adf-call-handler'
 import type { TapManager } from './tap-manager'
 import { createUmbilicalResources } from './umbilical-lifecycle'
 import { RuntimeGate } from './runtime-gate'
+import { approvalHub } from './approval-hub'
 import { SystemScopeHandler } from './system-scope-handler'
 import type { CodeSandboxService } from './code-sandbox'
 import { createProvider } from '../providers/provider-factory'
@@ -265,6 +267,15 @@ export class BackgroundAgentManager extends EventEmitter {
    */
   onAgentOff?: (filePath: string) => Promise<void> | void
 
+  /**
+   * A2: provider for the FOREGROUND agent's loop pool. The foreground agent
+   * (Studio's open file) lives in the IPC layer, not in `this.agents`, so the
+   * idle sweep never reached its side-loop sessions. IPC wires this to return
+   * the current foreground AssembledAgent's loopPool (or null when none is
+   * open); the sweep calls sweepIdle on it every tick.
+   */
+  getForegroundLoopPool?: () => { sweepIdle: (idleMs: number) => void } | null
+
   /** Re-entrancy guard — prevents recursive teardown when stopAgent fires events. */
   private offInProgress: Set<string> = new Set()
 
@@ -328,6 +339,19 @@ export class BackgroundAgentManager extends EventEmitter {
    */
   getExecutor(filePath: string): AgentExecutor | null {
     return this.agents.get(this.canonicalPath(filePath))?.executor ?? null
+  }
+
+  /**
+   * Executor for ONE loop of a background agent. `main` (or absent) is the host
+   * executor — identical to `getExecutor`. A declared side loop that has not
+   * been spun up yet has no runtime and returns null; callers treat that as
+   * "no data for this loop", not as an error.
+   */
+  getLoopExecutor(filePath: string, loop?: string): AgentExecutor | null {
+    const managed = this.agents.get(this.canonicalPath(filePath))
+    if (!managed) return null
+    if (!loop || loop === MAIN_LOOP) return managed.executor
+    return managed.assembledAgent.loopPool.getRuntime(loop)?.executor ?? null
   }
 
   /**
@@ -710,6 +734,10 @@ export class BackgroundAgentManager extends EventEmitter {
     try { managed.hostAttachment?.detach() } catch { /* ignore */ }
     managed.hostAttachment = null
     await managed.assembledAgent.disposeAsync({ mode: 'owner-off' })
+    // Teardown drains the executor's pending HIL rows (each unregisters itself);
+    // this sweeps anything a partial dispose left behind, so the title-bar
+    // approvals menu can never list a stopped agent's unanswerable request.
+    approvalHub.unregisterAgent(filePath)
 
     this.emitEvent({
       type: 'agent_stopped',
@@ -956,6 +984,10 @@ export class BackgroundAgentManager extends EventEmitter {
       onAdapterInbound: (type) => this.emit('adapter_inbound', { filePath, type }),
       onEvent: (event) => {
         if (!this.agents.has(filePath)) return
+        // Side-loop events never move the agent's display state or its
+        // accumulated text: `AgentState` is MAIN's (§6.3), and a backgrounded
+        // agent has no loop tabs to route them to.
+        if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
         if (event.type === 'state_changed') {
           managed.state = toDisplayState((event.payload as { state: string }).state)
           this.emitEvent({
@@ -1803,6 +1835,8 @@ export class BackgroundAgentManager extends EventEmitter {
       },
       onEvent: (event) => {
         if (!this.agents.has(filePath)) return
+        // See the adopt path above: side-loop events are MAIN-state-inert.
+        if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
         if (event.type === 'state_changed') {
           const payload = event.payload as { state: string }
           managed.state = toDisplayState(payload.state)
@@ -1901,10 +1935,31 @@ export class BackgroundAgentManager extends EventEmitter {
    * (the old compact(30)) silently cut the LLM context to 30 messages.
    */
   private sweepIdleAgents(): void {
-    if (this.agents.size < 5) return // Not worth sweeping with few agents
+    // A2: sweep the FOREGROUND agent's loop pool every tick, before the
+    // background-count guard. The foreground agent is not in this.agents, so it
+    // was never swept — a user parked on one tab would let its other side-loop
+    // sessions grow unbounded. sweepIdle self-gates each runtime on its own
+    // turn/pending state, so this is always safe.
+    try {
+      this.getForegroundLoopPool?.()?.sweepIdle(IDLE_MEMORY_THRESHOLD_MS)
+    } catch (error) {
+      console.error('[BackgroundAgent] Foreground loop idle sweep failed:', error)
+    }
+    if (this.agents.size < 5) return // Not worth sweeping background with few agents
     const now = Date.now()
     for (const [filePath, managed] of this.agents) {
       const lastActive = this.lastActivityTime.get(filePath) ?? 0
+      // A2: sweep the loop pool for EVERY agent, ABOVE main's idle gate. Each
+      // side loop is swept on ITS OWN state (RT-F9): sweepIdle re-checks
+      // turn/pending-write/injection state per runtime, so it self-gates and
+      // never resets a mid-turn loop. Keeping it behind main's lastActivity gate
+      // let a busy main indefinitely pin all N loop sessions — the regression
+      // this hoist fixes.
+      try {
+        managed.assembledAgent.loopPool.sweepIdle(IDLE_MEMORY_THRESHOLD_MS)
+      } catch (error) {
+        console.error(`[BackgroundAgent] Loop idle sweep failed for ${filePath}:`, error)
+      }
       if (now - lastActive < IDLE_MEMORY_THRESHOLD_MS) continue
       // Gate on the EXECUTOR's internal state, not managed.state: managed.state
       // holds display states (toDisplayState maps thinking/tool_use → 'active'),
@@ -1930,8 +1985,14 @@ export class BackgroundAgentManager extends EventEmitter {
       if (managed.assembledAgent.hasInFlightDispatch()) continue
       // Undelivered code-authored context (loop_inject) lives only in memory —
       // unkeyed entries are never replayed from the loop, so a release here
-      // drops them outright. Wait for the next turn to deliver them.
-      if (managed.session.hasPendingContextInjections()) continue
+      // drops them outright. A loop_send injection carrying a seq IS replayable
+      // (its row is durable and the rehydrate brings it back) — UNLESS it is a
+      // wake:true delivery whose boundary kick is still owed: releasing would
+      // silently downgrade that wake to read-on-next-run. Mirrors
+      // LoopPool.pendingInjectionsAreReplayable (review P6).
+      const pendingInjections = managed.session.peekPendingContextInjections()
+      if (pendingInjections.length > 0 && !pendingInjections.every(i =>
+        i.category === 'loop' && typeof i.seq === 'number' && i.wake !== true)) continue
 
       // Release large session histories to free memory
       const messageCount = managed.session.getMessages().length

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
-import type { FleetSettableState } from '../shared/types/ipc.types'
+import type { FleetSettableState, NotificationsSnapshot } from '../shared/types/ipc.types'
+import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { AdfApi } from './api'
 
 const api: AdfApi = {
@@ -37,12 +38,23 @@ const api: AdfApi = {
   getAgentConfig: () => ipcRenderer.invoke(IPC.DOC_GET_AGENT_CONFIG),
   setAgentConfig: (config: unknown) =>
     ipcRenderer.invoke(IPC.DOC_SET_AGENT_CONFIG, config),
-  getChat: () => ipcRenderer.invoke(IPC.DOC_GET_CHAT),
-  getChatOlder: (beforeSeq: number, limit?: number) =>
-    ipcRenderer.invoke(IPC.DOC_GET_CHAT_OLDER, { beforeSeq, limit }),
+  // Runtime-originated config change push. Never fires for this window's own
+  // save (that path suppresses the host fan-out), so a subscriber can apply the
+  // payload without racing an edit in flight.
+  onAgentConfigChanged: (callback: (data: { filePath: string; config: AgentConfig }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { filePath: string; config: AgentConfig }) =>
+      callback(data)
+    ipcRenderer.on(IPC.DOC_AGENT_CONFIG_CHANGED, handler)
+    return () => { ipcRenderer.removeListener(IPC.DOC_AGENT_CONFIG_CHANGED, handler) }
+  },
+  // `loop` selects the stream; omitted/'main' = the host loop, so every
+  // pre-loops call site keeps its exact behaviour.
+  getChat: (loop?: string) => ipcRenderer.invoke(IPC.DOC_GET_CHAT, { loop }),
+  getChatOlder: (beforeSeq: number, limit?: number, loop?: string) =>
+    ipcRenderer.invoke(IPC.DOC_GET_CHAT_OLDER, { beforeSeq, limit, loop }),
   setChat: (chatHistory: unknown) =>
     ipcRenderer.invoke(IPC.DOC_SET_CHAT, { chatHistory }),
-  clearChat: () => ipcRenderer.invoke(IPC.DOC_CLEAR_CHAT),
+  clearChat: (loop?: string) => ipcRenderer.invoke(IPC.DOC_CLEAR_CHAT, { loop }),
   getInbox: () => ipcRenderer.invoke(IPC.DOC_GET_INBOX),
   clearInbox: () => ipcRenderer.invoke(IPC.DOC_CLEAR_INBOX),
   getOutbox: () => ipcRenderer.invoke(IPC.DOC_GET_OUTBOX),
@@ -51,8 +63,8 @@ const api: AdfApi = {
   // Agent
   startAgent: (filePath?: string, hasUserMessage?: boolean) => ipcRenderer.invoke(IPC.AGENT_START, { filePath, hasUserMessage }),
   stopAgent: () => ipcRenderer.invoke(IPC.AGENT_STOP),
-  invokeAgent: (userMessage?: string, filePath?: string, content?: unknown) =>
-    ipcRenderer.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content }),
+  invokeAgent: (userMessage?: string, filePath?: string, content?: unknown, loop?: string) =>
+    ipcRenderer.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content, loop }),
   compactLoop: () => ipcRenderer.invoke(IPC.AGENT_COMPACT),
   getAgentStatus: () => ipcRenderer.invoke(IPC.AGENT_STATUS),
   respondToolApproval: (requestId: string, approved: boolean, feedback?: string) =>
@@ -63,6 +75,28 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVE_ALL_GATED),
   respondAsk: (requestId: string, answer: string) =>
     ipcRenderer.invoke(IPC.AGENT_ASK_RESPOND, { requestId, answer }),
+
+  // Global approvals menu (all agents + loops, foreground and background)
+  listPendingNotifications: () => ipcRenderer.invoke(IPC.APPROVALS_LIST),
+  resolvePendingApproval: (filePath: string, approvalId: string, approved: boolean, feedback?: string) =>
+    ipcRenderer.invoke(IPC.APPROVALS_RESOLVE, { filePath, approvalId, approved, feedback }),
+  // B8: fetch one pending approval's raw tool input on demand (broadcast omits it).
+  getApprovalInput: (filePath: string, approvalId: string) =>
+    ipcRenderer.invoke(IPC.APPROVALS_GET_INPUT, { filePath, approvalId }),
+  onPendingNotificationsChanged: (callback: (snapshot: NotificationsSnapshot) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: NotificationsSnapshot) => callback(data)
+    ipcRenderer.on(IPC.APPROVALS_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.APPROVALS_CHANGED, handler)
+  },
+  // A clicked OS notification: open that agent, or (summary) the bell panel.
+  onApprovalReveal: (callback: (payload: { filePath?: string; notificationId?: string }) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      data: { filePath?: string; notificationId?: string }
+    ) => callback(data)
+    ipcRenderer.on(IPC.APPROVALS_REVEAL, handler)
+    return () => ipcRenderer.removeListener(IPC.APPROVALS_REVEAL, handler)
+  },
   respondSuspend: (resume: boolean) =>
     ipcRenderer.invoke(IPC.AGENT_SUSPEND_RESPOND, { resume }),
 
@@ -180,8 +214,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.TOKEN_COUNT, { text, provider, model }),
   countTokensBatch: (texts: string[], provider?: string, model?: string) =>
     ipcRenderer.invoke(IPC.TOKEN_COUNT_BATCH, { texts, provider, model }),
-  getContextBreakdown: (filePath: string) =>
-    ipcRenderer.invoke(IPC.CONTEXT_BREAKDOWN_GET, { filePath }),
+  getContextBreakdown: (filePath: string, loop?: string) =>
+    ipcRenderer.invoke(IPC.CONTEXT_BREAKDOWN_GET, { filePath, loop }),
 
   // Home dashboard — independent slices loaded in parallel
   getDashboardQuickStats: () => ipcRenderer.invoke(IPC.DASHBOARD_QUICK_STATS),
@@ -197,6 +231,8 @@ const api: AdfApi = {
     at?: number; delay_ms?: number; every_ms?: number
     start_at?: number; end_at?: number; max_runs?: number
     cron?: string; scope: string[]; lambda?: string; warm?: boolean; payload?: string
+    /** Cognition stream the wake dispatches to. Absent = main. */
+    loop?: string
   }) => ipcRenderer.invoke(IPC.DOC_ADD_TIMER, args),
   updateTimer: (args: {
     id: number

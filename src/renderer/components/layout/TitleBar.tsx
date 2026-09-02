@@ -4,6 +4,7 @@ import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { toDisplayState } from '../../hooks/useAgent'
+import { ApprovalsMenu } from './ApprovalsMenu'
 import { Button } from '../ui'
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
@@ -319,6 +320,9 @@ export function TitleBar() {
               <circle cx="12" cy="12" r="3" />
             </svg>
           </NavButton>
+          {/* Global notifications — app-level surface, so it lives with the
+              app-global nav cluster, not the per-agent controls. */}
+          <ApprovalsMenu align="left" />
         </nav>
       </div>
 

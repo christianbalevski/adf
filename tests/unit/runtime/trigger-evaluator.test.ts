@@ -4,6 +4,7 @@ import type { AgentConfig, TimerSchedule, TriggerConfig, TriggerTarget } from '.
 import type { AdfEventDispatch, AdfBatchDispatch } from '../../../src/shared/types/adf-event.types'
 import { clearAllUmbilicalBuses, ensureUmbilicalBus } from '../../../src/main/runtime/umbilical-bus'
 import { withSource } from '../../../src/main/runtime/execution-context'
+import { runDispatchDropCompensation } from '../../../src/main/runtime/system-dispatch-limits'
 
 // ===========================================================================
 // Helpers
@@ -942,6 +943,77 @@ describe('TriggerEvaluator', () => {
       evaluator.dispose()
     })
 
+    // A5 (correctness F1): a `once` agent-scope timer targeting a side loop is
+    // settled (expired) BEFORE its dispatch is emitted. The real drop site for
+    // agent-scope dispatches is assembleAgent's onEvaluatorTrigger, which — when
+    // the target loop is gone/disabled — now runs the drop-compensation the
+    // evaluator registered. This test drives that compensation directly and
+    // asserts the timer is rewound (un-expired), so it fires when the loop is
+    // re-enabled instead of being silently consumed. The pre-existing tests only
+    // drove the system-scope path (compensated by SystemDispatchQueue).
+    it('rewinds a dropped once agent-scope timer targeting a side loop', () => {
+      const config = makeConfig({
+        on_timer: makeTriggerConfig([makeTarget('agent')])
+      })
+      const evaluator = new TriggerEvaluator(config)
+      evaluator.setDisplayState('active')
+      const events = collectEvents(evaluator)
+
+      const wakeAt = Date.now() - 1000
+      const timer = {
+        id: 7,
+        schedule: { mode: 'once' as const, at: wakeAt },
+        payload: 'wake reflector',
+        scope: ['agent'] as ('system' | 'agent')[],
+        lambda: null,
+        warm: false,
+        run_count: 0,
+        created_at: Date.now() - 5000,
+        next_wake_at: wakeAt,
+        last_fired_at: null,
+        locked: false,
+        loop: 'reflector',
+      }
+      const ws = {
+        getDueTimers: vi.fn(() => [timer]),
+        expireTimers: vi.fn(),
+        advanceTimer: vi.fn(),
+        updateTimer: vi.fn(),
+        insertLog: vi.fn(),
+        getInbox: vi.fn(() => []),
+        getUnreadCount: vi.fn(() => 0),
+      } as any
+
+      evaluator.startTimerPolling(ws)
+      vi.advanceTimersByTime(5000)
+
+      // The once timer was settled (expired) and a loop-targeted dispatch emitted.
+      expect(ws.expireTimers).toHaveBeenCalledWith([7], expect.any(Number))
+      expect(events.length).toBe(1)
+      const dispatch = events[0] as AdfEventDispatch
+      expect(dispatch.scope).toBe('agent')
+      expect(dispatch.loop).toBe('reflector')
+      // Nothing rewound yet — the dispatch has not been dropped.
+      expect(ws.updateTimer).not.toHaveBeenCalled()
+
+      // Simulate onEvaluatorTrigger's drop branch (target loop gone/disabled).
+      runDispatchDropCompensation(dispatch)
+
+      // The compensation un-expired the timer: updateTimer restores its schedule
+      // + wake time, advanceTimer restores run_count. It will fire again.
+      expect(ws.updateTimer).toHaveBeenCalledWith(
+        7, timer.schedule, wakeAt, 'wake reflector', ['agent'], null, false, false
+      )
+      expect(ws.advanceTimer).toHaveBeenCalledWith(7, wakeAt, 0, expect.any(Number))
+
+      // The compensation is one-shot: a second drop of the same dispatch is a no-op.
+      ws.updateTimer.mockClear()
+      runDispatchDropCompensation(dispatch)
+      expect(ws.updateTimer).not.toHaveBeenCalled()
+
+      evaluator.dispose()
+    })
+
     it('fires system timer with lambda', () => {
       const config = makeConfig({
         on_timer: makeTriggerConfig([makeTarget('system')])
@@ -1680,5 +1752,131 @@ describe('TriggerEvaluator', () => {
       expect((events[0] as AdfEventDispatch).scope).toBe('system')
       expect((events[1] as AdfEventDispatch).scope).toBe('agent')
     })
+  })
+})
+
+// ===========================================================================
+// Loop routing (§6.2 — `loop` is the routing key, and it must survive EVERY
+// emit path). A dispatch that loses its loop runs on MAIN, with main's
+// unattenuated authority: the escalation §2.3 exists to prevent.
+// ===========================================================================
+
+describe('TriggerEvaluator — loop routing', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    clearAllUmbilicalBuses()
+  })
+
+  it('stamps the target loop on a plain agent-scope dispatch', () => {
+    const config = makeConfig({
+      on_file_change: makeTriggerConfig([
+        makeTarget('agent', { loop: 'reflector', filter: { watch: '*' } })
+      ])
+    })
+    const evaluator = new TriggerEvaluator(config)
+    evaluator.setDisplayState('active')
+    const events = collectEvents(evaluator)
+
+    evaluator.onFileChange('a.txt', 'create')
+
+    expect(events.length).toBe(1)
+    expect((events[0] as AdfEventDispatch).loop).toBe('reflector')
+  })
+
+  it('stamps the target loop on a BATCHED dispatch, whatever the batch size', () => {
+    // Regression (review C1): the multi-item branch built its AdfBatchDispatch
+    // as an object literal and omitted `loop`, so the SAME target routed to the
+    // loop on a one-item batch and to main on a two-item batch. Privilege
+    // escalation that only appears under load.
+    for (const count of [1, 2, 3]) {
+      const config = makeConfig({
+        on_file_change: makeTriggerConfig([
+          makeTarget('agent', { loop: 'reflector', batch_ms: 500, filter: { watch: '*' } })
+        ])
+      })
+      const evaluator = new TriggerEvaluator(config)
+      evaluator.setDisplayState('active')
+      const events = collectEvents(evaluator)
+
+      for (let i = 0; i < count; i++) evaluator.onFileChange(`f${i}.txt`, 'create')
+      vi.advanceTimersByTime(500)
+
+      expect(events.length).toBe(1)
+      const dispatch = events[0] as AdfEventDispatch | AdfBatchDispatch
+      expect(dispatch.scope).toBe('agent')
+      expect(dispatch.loop).toBe('reflector')
+      // The single-item batch collapses to an event dispatch; both shapes carry
+      // the loop, which is the whole point.
+      if (count === 1) expect('event' in dispatch).toBe(true)
+      else expect((dispatch as AdfBatchDispatch).events.length).toBe(count)
+    }
+  })
+
+  it('leaves `loop` absent for a main-targeted batch, so it routes to main', () => {
+    const config = makeConfig({
+      on_file_change: makeTriggerConfig([
+        makeTarget('agent', { batch_ms: 500, filter: { watch: '*' } })
+      ])
+    })
+    const evaluator = new TriggerEvaluator(config)
+    evaluator.setDisplayState('active')
+    const events = collectEvents(evaluator)
+
+    evaluator.onFileChange('a.txt', 'create')
+    evaluator.onFileChange('b.txt', 'create')
+    vi.advanceTimersByTime(500)
+
+    expect(events.length).toBe(1)
+    expect((events[0] as AdfBatchDispatch).loop).toBeUndefined()
+  })
+
+  it('carries the loop through a debounced dispatch too', () => {
+    const config = makeConfig({
+      on_file_change: makeTriggerConfig([
+        makeTarget('agent', { loop: 'reflector', debounce_ms: 100, filter: { watch: '*' } })
+      ])
+    })
+    const evaluator = new TriggerEvaluator(config)
+    evaluator.setDisplayState('active')
+    const events = collectEvents(evaluator)
+
+    evaluator.onFileChange('a.txt', 'create')
+    vi.advanceTimersByTime(100)
+
+    expect(events.length).toBe(1)
+    expect((events[0] as AdfEventDispatch).loop).toBe('reflector')
+  })
+
+  it('carries the pre-appended stream name on an owner inbox event', () => {
+    // M5: one inbox event fans out to N dispatches, so "already appended" has
+    // to name WHICH stream got the row — a bare boolean makes every other loop
+    // skip its own write.
+    const config = makeConfig({
+      on_inbox: makeTriggerConfig([
+        makeTarget('agent', { loop: 'reflector' }),
+        makeTarget('agent')
+      ])
+    })
+    const evaluator = new TriggerEvaluator(config)
+    evaluator.setDisplayState('idle')
+    evaluator.setWorkspace({ getUnreadCount: () => 1, getInboxMessageById: () => null } as never)
+    const events = collectEvents(evaluator)
+
+    evaluator.onInbox('did:owner', 'look at this', {
+      source: 'user', messageId: 'm1', loopSeq: 7, preAppendedLoop: 'main',
+    })
+
+    expect(events.length).toBe(2)
+    for (const dispatch of events) {
+      const data = (dispatch as AdfEventDispatch).event.data as { loop_seq?: number; pre_appended_loop?: string }
+      expect(data.loop_seq).toBe(7)
+      expect(data.pre_appended_loop).toBe('main')
+    }
+    expect((events[0] as AdfEventDispatch).loop).toBe('reflector')
+    expect((events[1] as AdfEventDispatch).loop).toBeUndefined()
   })
 })

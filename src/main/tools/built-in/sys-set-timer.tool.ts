@@ -5,6 +5,7 @@ import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { TimerSchedule } from '../../../shared/types/adf-v02.types'
+import { MAIN_LOOP } from '../../adf/derive-loop-config'
 
 const ScheduleOnceSchema = z.object({
   type: z.literal('once'),
@@ -46,7 +47,9 @@ const InputSchema = z.object({
   warm: z.boolean().optional()
     .describe('Keep the lambda sandbox worker alive between invocations for faster re-execution.'),
   locked: z.boolean().optional()
-    .describe('Lock this timer so it cannot be deleted or modified by agents. Only a human can unlock it.')
+    .describe('Lock this timer so it cannot be deleted or modified by agents. Only a human can unlock it.'),
+  loop: z.string().optional()
+    .describe('Which cognition loop this timer wakes. Main only — an inner loop\'s timers always wake that loop, so passing this from one is refused. Omit (or "main") to wake the main loop. Applies to agent scope only — a system-scope timer wakes no loop and carries no loop stamp.')
 })
 
 /**
@@ -55,7 +58,9 @@ const InputSchema = z.object({
 export class SetTimerTool implements Tool {
   readonly name = 'sys_set_timer'
   readonly description =
-    'Schedule a timer. Set schedule.type to "once" (absolute time), "delay" (relative), "interval" (recurring), or "cron". Returns timer ID and schedule details.'
+    'Schedule a timer. Set schedule.type to "once" (absolute time), "delay" (relative), "interval" (recurring), or "cron". ' +
+    'From the main loop, set "loop" to wake one of your inner loops instead of yourself; from inside an inner loop the timer always wakes that loop and "loop" is refused. ' +
+    'Returns timer ID and schedule details.'
   readonly inputSchema = InputSchema
   readonly category = 'timer' as const
 
@@ -63,6 +68,12 @@ export class SetTimerTool implements Tool {
     const parsed = input as z.infer<typeof InputSchema>
     const now = Date.now()
     const sched = parsed.schedule
+
+    const denied = SetTimerTool.checkSideLoopScope(workspace, parsed)
+    if (denied) return denied
+
+    const target = SetTimerTool.resolveTargetLoop(workspace, parsed)
+    if ('error' in target) return target.error
 
     try {
       let schedule: TimerSchedule
@@ -123,10 +134,10 @@ export class SetTimerTool implements Tool {
         }
       }
 
-      const id = workspace.addTimer(schedule, nextWakeAt, parsed.payload, parsed.scope, parsed.lambda, parsed.warm, parsed.locked)
+      const id = workspace.addTimer(schedule, nextWakeAt, parsed.payload, parsed.scope, parsed.lambda, parsed.warm, parsed.locked, target.loop)
 
       return {
-        content: `Timer set successfully.\nID: ${id}\nScope: ${JSON.stringify(parsed.scope)}\n${description}${parsed.locked ? '\nLocked: true' : ''}${parsed.lambda ? `\nLambda: ${parsed.lambda}` : ''}${parsed.payload ? `\nPayload: ${parsed.payload}` : ''}`,
+        content: `Timer set successfully.\nID: ${id}\nScope: ${JSON.stringify(parsed.scope)}\n${description}${target.loop ? `\nWakes loop: ${target.loop}` : ''}${parsed.locked ? '\nLocked: true' : ''}${parsed.lambda ? `\nLambda: ${parsed.lambda}` : ''}${parsed.payload ? `\nPayload: ${parsed.payload}` : ''}`,
         isError: false
       }
     } catch (error) {
@@ -135,6 +146,126 @@ export class SetTimerTool implements Tool {
         isError: true
       }
     }
+  }
+
+  /**
+   * The one hard loop boundary: a side loop may not create a system-scope
+   * lambda timer (docs/design/agent-loops-mvp.md §2.3, SEC-2/5), nor a `locked`
+   * timer of any kind.
+   *
+   * System-scope timers fire through the single agent-wide
+   * `SystemScopeHandler`, which is keyed by file authorization and not by loop
+   * — so a lambda a side loop scheduled would later execute under *main's*
+   * unattenuated authority, out from under the loop's derived config. Per-loop
+   * `SystemScopeHandler` routing (capability-follows-provenance) is F2.
+   *
+   * Scoped as narrowly as the risk: it is the LAMBDA that is refused, not the
+   * timer. `scope: ['system']` with no lambda is already a documented no-op
+   * ("no lambda — skipped", `trigger-evaluator.ts`), and it is this tool's
+   * default value, so refusing it would break plain wake timers for every side
+   * loop. Plain `agent`-scope wake/message timers are untouched: a loop
+   * schedules a wake and runs its code inline during the resulting turn,
+   * through its own attenuated `AdfCallHandler`. The workspace facade already
+   * forces the `loop` stamp on whatever is written.
+   *
+   * `locked: true` is refused for the same shape of reason. A locked timer is
+   * an OWNER assertion — `sys_delete_timer` refuses to remove one on every
+   * agent path, main's included — so a side loop that set one would have
+   * created a recurring, un-revocable injection into the agent that not even
+   * main can clear. Locking is operator-only from a side loop.
+   */
+  private static checkSideLoopScope(
+    workspace: AdfWorkspace,
+    parsed: z.infer<typeof InputSchema>
+  ): ToolResult | null {
+    const loop = workspace.getLoopName()
+    if (loop === MAIN_LOOP) return null
+
+    if (parsed.locked === true) {
+      return {
+        content:
+          `Loop "${loop}" cannot set a locked timer — locked timers are operator-only from inner loops. ` +
+          'A lock makes the timer undeletable by any agent path, including main, so an inner loop cannot be ' +
+          'the one to create it. Set the timer without "locked", or ask the owner (through main, with ' +
+          'loop_send) if it genuinely has to be permanent.',
+        isError: true
+      }
+    }
+
+    if (!parsed.lambda) return null
+
+    return {
+      content:
+        `Loop "${loop}" cannot schedule a lambda timer. A lambda runs in the system scope, through the agent-wide ` +
+        "system handler, under the main loop's authority rather than this loop's — so it is reserved for main. " +
+        'Schedule the timer with scope ["agent"] and a payload instead, and run the same code inline during the ' +
+        'turn it gives you. Note that any agent timer fires only while the agent\'s on_timer trigger is enabled ' +
+        'with an agent-scope target; the wake then reaches THIS loop, because the timer row carries your loop ' +
+        'name. If it truly needs main\'s authority, ask main with loop_send.',
+      isError: true
+    }
+  }
+
+  /**
+   * Resolve the `loop` argument into the stamp the timer row carries.
+   *
+   * Main may address a wake at any loop it declares: it is the membrane-facing
+   * loop and already owns every stream, so naming one grants no new authority —
+   * and it is the only way the canonical reflector pattern (main schedules,
+   * the side loop wakes) can be built from the tool layer at all.
+   *
+   * A side loop may not pass the parameter. Its timers self-target through the
+   * forced stamp in `AdfWorkspace.addTimer` (SEC-2), and the workspace would
+   * drop the value regardless — refusing here says so out loud rather than
+   * letting the model believe it scheduled a cross-loop wake.
+   *
+   * `'main'` normalises to `undefined`: main-bound is already the default
+   * stamp, and keeping the argument out of the row keeps timer rows readable.
+   *
+   * The loop stamp is AGENT-SCOPE ONLY. A `system`-scope timer runs its lambda
+   * through the agent-wide `SystemScopeHandler` under main's authority and wakes
+   * no cognition stream, so it carries no loop; a `['system','agent']` timer
+   * keeps its loop for the agent half. That strip is enforced once, at the
+   * `AdfWorkspace.addTimer` chokepoint, so it holds for every caller (Studio,
+   * this tool, any path) rather than only here.
+   */
+  private static resolveTargetLoop(
+    workspace: AdfWorkspace,
+    parsed: z.infer<typeof InputSchema>
+  ): { loop?: string } | { error: ToolResult } {
+    const caller = workspace.getLoopName()
+    const requested = parsed.loop?.trim()
+
+    if (caller !== MAIN_LOOP) {
+      if (!requested) return {}
+      return {
+        error: {
+          content:
+            `Loop "${caller}" cannot choose which loop a timer wakes — the "loop" parameter is main-only. ` +
+            `Timers you set always wake THIS loop ("${caller}"), because the timer row is stamped with it. ` +
+            'Drop the parameter to schedule your own wake, or ask main with loop_send if another loop has to be woken.',
+          isError: true
+        }
+      }
+    }
+
+    if (!requested || requested === MAIN_LOOP) return {}
+
+    // Fails closed: an unreadable config yields an empty list, so an unverified
+    // name is refused rather than stamped.
+    let declared: string[] = []
+    try { declared = (workspace.getAgentConfig().loops ?? []).map(l => l.name) } catch { declared = [] }
+    if (!declared.includes(requested)) {
+      const available = [MAIN_LOOP, ...declared].join(', ')
+      return {
+        error: {
+          content: `Unknown loop "${requested}". Available loops: ${available}.`,
+          isError: true
+        }
+      }
+    }
+
+    return { loop: requested }
   }
 
   private formatDelay(ms: number): string {

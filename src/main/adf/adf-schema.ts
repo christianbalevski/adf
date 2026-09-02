@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS } from '../../shared/types/adf-v02.types'
+import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS, LOOP_PROHIBITED_TOOLS } from '../../shared/types/adf-v02.types'
 import { isKnownUmbilicalEventType, isUmbilicalEventWildcard } from '../../shared/types/umbilical-events'
 
 /**
@@ -68,7 +68,11 @@ const TriggerTargetSchema = z.object({
   debounce_ms: z.number().int().positive().optional(),
   interval_ms: z.number().int().positive().optional(),
   batch_ms: z.number().int().positive().optional(),
-  batch_count: z.number().int().positive().optional()
+  batch_count: z.number().int().positive().optional(),
+  // Cognition stream this target wakes. Absent → 'main'. Existence of the
+  // named loop is a runtime concern (the router falls back to main), not a
+  // schema one — a config may legitimately be validated before its loops load.
+  loop: z.string().min(1).optional()
 }).refine(
   (t) => [t.debounce_ms, t.interval_ms, t.batch_ms].filter(v => v !== undefined).length <= 1,
   { message: 'Only one timing modifier allowed per target' }
@@ -330,6 +334,136 @@ export const AdapterInstanceConfigSchema = z.object({
   }).optional()
 })
 
+export const ModelConfigSchema = z.object({
+  provider: z.string().min(1),
+  model_id: z.string().default(''),
+  temperature: z.number().min(0).max(2).nullable().default(0.7),
+  max_tokens: z.number().int().positive().nullable().default(4096),
+  top_p: z.number().min(0).max(1).nullable().optional(),
+  /** @deprecated folded into `reasoning.max_tokens` on config load. */
+  thinking_budget: z.number().int().positive().nullable().optional(),
+  reasoning: z.object({
+    enabled: z.boolean().optional(),
+    effort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
+    max_tokens: z.number().int().positive().optional(),
+    exclude: z.boolean().optional(),
+    preserve: z.boolean().optional(),
+    summary: z.enum(['auto', 'concise', 'detailed']).optional()
+  }).optional(),
+  compact_threshold: z.number().int().positive().nullable().optional(),
+  /** @deprecated Use multimodal.image instead. Kept for backward compatibility. */
+  vision: z.boolean().default(false),
+  multimodal: z.object({
+    image: z.boolean().optional(),
+    audio: z.boolean().optional(),
+    video: z.boolean().optional()
+  }).optional(),
+  params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
+  provider_params: z.record(z.unknown()).optional()
+})
+
+/**
+ * Tool names a side loop may never name in `LoopConfig.tools`.
+ *
+ * Mirrors LOOP_PROHIBITED_TOOLS in the shared types — kept as a hard,
+ * schema-level rejection so a hand-edited `.adf` surfaces the drift at load.
+ * The wider rule ("no tool the host marked `restricted`", because HIL approval
+ * cannot be routed to a side-loop executor) depends on the host's tool
+ * declarations, so it is enforced at runtime by `deriveLoopConfig` and
+ * `loop_manage` rather than here.
+ */
+const PROHIBITED_LOOP_TOOL_NAMES: readonly string[] = LOOP_PROHIBITED_TOOLS
+
+/**
+ * A loop name is an identifier, not free text.
+ *
+ * The name is not decoration: it is the audit source (`loop:<name>`), the
+ * `[from loop:<name>]` provenance stamp on every inter-loop message, the UI
+ * label, and the routing key on triggers and timers. As a bare
+ * `z.string().min(1)` it accepted `'main '`, `'MAIN'`, `'loop:main'` and
+ * embedded newlines/control characters — each of which reads as *main*
+ * somewhere downstream while being a distinct side loop here.
+ */
+export const LOOP_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/
+export const LOOP_NAME_RULE =
+  'loop name must be 1-32 characters of lowercase letters, digits, "_" or "-", starting with a letter or digit'
+
+/** The goal becomes the loop's ENTIRE system instruction — bound it. */
+export const LOOP_GOAL_MAX_CHARS = 4000
+
+/** Allow-list length cap; a side loop is meant to be minimal. */
+export const LOOP_TOOLS_MAX = 64
+
+/**
+ * How many side loops one agent may declare.
+ *
+ * Not a resource calculation — a structural brake. Loop concurrency is
+ * unbounded in the MVP (§3: concurrent-by-default, no semaphore) and HIL is
+ * per-call, so nothing else stops main from talking itself into hundreds of
+ * minds. Enforced by `loop_manage` at create; a hand-edited config over the
+ * limit still loads (this is not a schema-level `.max()`), so an existing agent
+ * is never bricked by the cap.
+ */
+export const MAX_SIDE_LOOPS = 16
+
+export const LoopConfigSchema = z.object({
+  name: z.string()
+    .regex(LOOP_NAME_PATTERN, { message: LOOP_NAME_RULE })
+    .refine(n => n !== 'main', {
+      message: "'main' is the implicit host loop and cannot be declared as an inner loop"
+    }),
+  goal: z.string().min(1).max(LOOP_GOAL_MAX_CHARS),
+  enabled: z.boolean(),
+  // The pool (not this schema) enforces the same-provider constraint: it needs
+  // the host config to compare against, which a per-loop schema never sees.
+  model: ModelConfigSchema.optional()
+    .describe(
+      "Overrides the parent's model for this loop only. Absent = inherit. The `provider` must equal the " +
+      "parent's: the per-model provider is built from the HOST's provider config and credentials, so a " +
+      "different provider would cross-wire one vendor's model id onto another's client. createLoop/" +
+      'updateLoop reject a mismatch; cross-provider loop models are F3.'
+    ),
+  // Same bounds as the host's `context.compact_threshold` (positive integer,
+  // nullable, optional) — it lands in exactly that field of the derived config,
+  // so a rule the host rejects must not be reachable through a loop.
+  compact_threshold: z.number().int().positive().nullable().optional()
+    .describe(
+      "Token count at which this loop auto-compacts its own history. Absent = inherit the parent's " +
+      '`context.compact_threshold`. Exists for the `model` override: a different model has a different ' +
+      'context window, so the host trigger point may not suit this loop.'
+    ),
+  tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional()
+    .describe('Absolute allow-list, intersected with host-enabled tools at derive time. Nothing is implicit — loop_send/loop_list must be listed to be granted.')
+}).superRefine((loop, ctx) => {
+  for (const tool of loop.tools ?? []) {
+    if (PROHIBITED_LOOP_TOOL_NAMES.includes(tool)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `loop "${loop.name}" requests prohibited tool "${tool}" (never grantable to an inner loop)`,
+        path: ['tools']
+      })
+    }
+  }
+})
+
+export const LoopsConfigSchema = z.array(LoopConfigSchema).superRefine((loops, ctx) => {
+  // Case-insensitive: the pattern already forces lowercase, but comparing
+  // case-folded keeps the uniqueness rule true of anything that reaches here
+  // through a looser path, and matches how a human reads two loop names.
+  const seen = new Set<string>()
+  loops.forEach((loop, index) => {
+    const key = loop.name.toLowerCase()
+    if (seen.has(key)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `duplicate loop name "${loop.name}"`,
+        path: [index, 'name']
+      })
+    }
+    seen.add(key)
+  })
+})
+
 export const AgentConfigSchema = z.object({
   adf_version: z.literal('0.2'),
   id: z.string().min(1),
@@ -343,33 +477,7 @@ export const AgentConfigSchema = z.object({
   start_in_state: z.enum(START_IN_STATES).optional(),
   autonomous: z.boolean().default(false),
   autostart: z.boolean().optional(),
-  model: z.object({
-    provider: z.string().min(1),
-    model_id: z.string().default(''),
-    temperature: z.number().min(0).max(2).nullable().default(0.7),
-    max_tokens: z.number().int().positive().nullable().default(4096),
-    top_p: z.number().min(0).max(1).nullable().optional(),
-    /** @deprecated folded into `reasoning.max_tokens` on config load. */
-    thinking_budget: z.number().int().positive().nullable().optional(),
-    reasoning: z.object({
-      enabled: z.boolean().optional(),
-      effort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
-      max_tokens: z.number().int().positive().optional(),
-      exclude: z.boolean().optional(),
-      preserve: z.boolean().optional(),
-      summary: z.enum(['auto', 'concise', 'detailed']).optional()
-    }).optional(),
-    compact_threshold: z.number().int().positive().nullable().optional(),
-    /** @deprecated Use multimodal.image instead. Kept for backward compatibility. */
-    vision: z.boolean().default(false),
-    multimodal: z.object({
-      image: z.boolean().optional(),
-      audio: z.boolean().optional(),
-      video: z.boolean().optional()
-    }).optional(),
-    params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-    provider_params: z.record(z.unknown()).optional()
-  }),
+  model: ModelConfigSchema,
   instructions: z.string().min(1),
   include_base_prompt: z.boolean().optional(),
   bare_prompt: z.boolean().optional(),
@@ -533,6 +641,9 @@ export const AgentConfigSchema = z.object({
     params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
     requestDelayMs: z.number().optional()
   })).optional(),
+  // Side loops only; 'main' is implicit. Absent = none — pre-loops files stay
+  // byte-identical because nothing writes the empty array back.
+  loops: LoopsConfigSchema.optional(),
   mcp: z.object({
     servers: z.array(z.object({
       name: z.string(),

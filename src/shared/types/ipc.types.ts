@@ -30,6 +30,15 @@ export interface AgentExecutionEvent {
     | 'response_metadata'
   payload: unknown
   timestamp: number
+  /**
+   * Which loop produced this event. Absent means the implicit host loop
+   * (`'main'`) — every pre-loops emitter keeps working unchanged.
+   *
+   * The renderer routes every event by `loop ?? 'main'` into that loop's store
+   * slice, so a side loop's `chat_updated` (post-compaction replacement) can
+   * never truncate main's view (IMPL-5 / RT-F17).
+   */
+  loop?: string
 }
 
 export interface FileOperationResult {
@@ -380,6 +389,87 @@ export interface ToolApprovalRequestPayload extends ApprovalMeta {
   taskId?: string
   name: string
   input: unknown
+}
+
+/**
+ * What a global-notification row is asking the human for. Both kinds block
+ * their executor until answered; they differ only in how they are answered —
+ * an approval is a yes/no (resolvable inline), an ask needs typed prose (so
+ * the UI jumps you to the agent's chat instead).
+ */
+export type PendingNotificationKind = 'approval' | 'ask'
+
+/**
+ * One row of the global HIL notifications menu (title bar), and the single
+ * source of truth for the fleet map's per-agent pending badge. Registered by
+ * the executor that raised the request and pushed to every window as a full
+ * snapshot — see src/main/runtime/approval-hub.ts.
+ */
+export interface PendingNotification {
+  /**
+   * Hub key: `${filePath}|${loop}|${requestId}`. NOT the executor's request id
+   * — ask ids are a per-executor counter (`ask_1`), so they collide across
+   * agents and across an agent's own inner loops.
+   */
+  id: string
+  kind: PendingNotificationKind
+  /** The executor-side id to resolve with (HIL task id, or `ask_N`). */
+  requestId: string
+  /** The .adf this request belongs to — the jump-to target. */
+  filePath: string
+  agentName: string
+  /** 'main' for the host loop, otherwise the inner loop's name. */
+  loop: string
+  /** Approvals only. */
+  toolName?: string
+  /** One line: the tool's args summary, or the question. Truncated, redacted. */
+  preview: string
+  /** Asks only — the full question text. */
+  question?: string
+  /** Approvals only — raw tool input, for the fleet map's full-context modal. */
+  input?: unknown
+  /** Approvals only: 'restricted' tool gate vs 'protection' override. */
+  reason?: ApprovalReason
+  protection?: ProtectionDenial
+  /** False when the tool declaration or the target is locked. */
+  canAlwaysApprove?: boolean
+  alwaysApproveBlockedReason?: string
+  requestedAt: number
+}
+
+/**
+ * How a notification stopped being pending.
+ *
+ * 'approved' / 'rejected' are human verdicts on a tool approval, 'answered' is
+ * an ask that got its prose. 'expired' covers everything that ended WITHOUT a
+ * decision — the auto-deny timeout, a chat interrupt drain, agent teardown —
+ * because "you never answered this" and "you said no" are different facts and
+ * the history greys them differently.
+ */
+export type NotificationOutcome = 'approved' | 'rejected' | 'answered' | 'expired'
+
+/**
+ * A notification that has left the pending list, kept for the menu's recent
+ * history. The raw tool `input` is dropped: it exists for the fleet map's
+ * full-context modal on a LIVE request, and holding every past payload in
+ * memory (and shipping it over IPC on every change) buys nothing.
+ */
+export interface ResolvedNotification extends Omit<PendingNotification, 'input'> {
+  outcome: NotificationOutcome
+  resolvedAt: number
+}
+
+/**
+ * The whole notifications payload: what is still blocking an agent, plus a
+ * bounded, newest-first tail of what recently stopped blocking. Pushed as one
+ * object so a window that reloads or opens late is correct after a single
+ * message, with no resync protocol.
+ */
+export interface NotificationsSnapshot {
+  /** Oldest first — the thing blocking longest reads first. */
+  pending: PendingNotification[]
+  /** Newest first, capped, per-app-session (never persisted). */
+  history: ResolvedNotification[]
 }
 
 /** A pending HIL ask/approval, aggregated across all live executors for the fleet alert layer. */

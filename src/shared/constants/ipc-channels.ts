@@ -16,6 +16,14 @@ export const IPC = {
   DOC_SET_DOCUMENT: 'adf:doc:set-document',
   DOC_GET_AGENT_CONFIG: 'adf:doc:get-agent-config',
   DOC_SET_AGENT_CONFIG: 'adf:doc:set-agent-config',
+  // Runtime-originated config change (main -> renderer). Emitted for every
+  // origin the RUNTIME owns — sys_update_config, loop_manage/the loop pool's
+  // writes, anything else that goes through AssembledAgent.applyConfigChange
+  // with the host fan-out enabled. Studio's own save passes
+  // `notifyHost: false`, so the window that made the edit never receives its
+  // own echo (origin dedup). Payload carries the file it belongs to so a
+  // change landing during a file switch cannot be applied to the wrong agent.
+  DOC_AGENT_CONFIG_CHANGED: 'adf:doc:agent-config-changed',
   DOC_GET_CHAT: 'adf:doc:get-chat',
   DOC_GET_CHAT_OLDER: 'adf:doc:get-chat-older',
   DOC_SET_CHAT: 'adf:doc:set-chat',
@@ -39,6 +47,22 @@ export const IPC = {
   AGENT_TOOL_APPROVAL_RESPOND: 'adf:agent:tool-approval-respond',
   AGENT_TOOL_ALWAYS_APPROVE: 'adf:agent:tool-always-approve',
   AGENT_TOOL_APPROVE_ALL_GATED: 'adf:agent:tool-approve-all-gated',
+
+  // Global approvals hub — pending HIL approvals across ALL agents and loops,
+  // foreground and background (src/main/runtime/approval-hub.ts).
+  // CHANGED carries a full snapshot; there is no incremental protocol.
+  APPROVALS_LIST: 'adf:approvals:list',
+  APPROVALS_RESOLVE: 'adf:approvals:resolve',
+  APPROVALS_CHANGED: 'adf:approvals:changed',
+  // On-demand fetch of one pending approval's raw tool input (B8): the broadcast
+  // snapshot no longer carries `input`, so the fleet map's full-context modal
+  // pulls it by (filePath, approvalId) only when it opens.
+  APPROVALS_GET_INPUT: 'adf:approvals:get-input',
+  // Deep link from a clicked OS notification (main -> renderer). `filePath`
+  // present = open that agent, the same jump the bell's row click performs;
+  // absent = open the notifications panel, which is all a coalesced summary
+  // ("5 approvals waiting") can meaningfully point at.
+  APPROVALS_REVEAL: 'adf:approvals:reveal',
 
   // Agent ask tool (renderer -> main)
   AGENT_ASK_RESPOND: 'adf:agent:ask-respond',

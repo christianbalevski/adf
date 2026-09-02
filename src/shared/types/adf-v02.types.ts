@@ -78,6 +78,12 @@ export interface TriggerTarget {
   batch_ms?: number
   batch_count?: number     // fire batch early when N events accumulate (requires batch_ms)
   locked?: boolean         // owner lock — prevents agent from modifying or removing this target
+  /**
+   * Cognition stream this target wakes. Absent → 'main' (the membrane-facing
+   * loop), which keeps every pre-loops config routing exactly as before. No
+   * `'*'` broadcast — a target names one loop or none.
+   */
+  loop?: string
 }
 
 export interface TriggerConfig {
@@ -538,6 +544,12 @@ export interface MetadataConfig {
   author?: string
   tags?: string[]
   version?: string
+  /**
+   * Runtime-only marker set by `deriveLoopConfig` to bind a loop executor to
+   * its stream. Present exclusively on DERIVED side-loop configs, which are
+   * built in memory and never written back — a stored `.adf` never carries it.
+   */
+  loop_name?: string
 }
 
 export interface DynamicInstructionsConfig {
@@ -799,6 +811,78 @@ export interface CardOverrides {
   publish_attestations?: boolean
 }
 
+// =============================================================================
+// Loops (facets)
+// =============================================================================
+
+/**
+ * A named cognition stream inside this agent, sharing its file, identity,
+ * credentials and substrate. `main` is implicit and never appears here — this
+ * array holds SIDE loops only (reflector, consolidator, critic).
+ *
+ * A loop inherits the whole agent and overrides a small delta; it never gets
+ * its own identity, credentials or channels. See docs/design/agent-loops-mvp.md.
+ */
+export interface LoopConfig {
+  /** Unique within the array; `main` is reserved for the implicit host loop. */
+  name: string
+  /** Becomes the derived config's `instructions`. */
+  goal: string
+  enabled: boolean
+  /** Inherits the parent's model when absent. */
+  model?: ModelConfig
+  /**
+   * Token count at which this loop's executor auto-compacts its own history.
+   * Absent (or null) inherits the host's `context.compact_threshold`.
+   *
+   * Exists for the `model` override above: a loop thinking with a different
+   * model has a different context window, so the host's trigger point can be
+   * far too late (or pointlessly early) for it. Same bounds as the host field.
+   */
+  compact_threshold?: number | null
+  /**
+   * Absolute allow-list, intersected with the host's enabled tools at derive
+   * time. There is no per-loop visibility concept, and nothing is implicit:
+   * `loop_send`/`loop_list` are granted only when they appear here (and the
+   * host has them enabled), exactly like every other tool. Empty/absent = a
+   * mute loop that only thinks. New loops are seeded with
+   * `DEFAULT_NEW_LOOP_TOOLS`.
+   */
+  tools?: string[]
+}
+
+/**
+ * What a newly created loop gets when nobody said otherwise — the Loops card
+ * pre-ticks these, and `loop_manage create` uses them when `tools` is omitted.
+ *
+ * A suggestion, not a floor: an explicit list wins, including an empty one, so
+ * a deliberately mute loop is expressible.
+ */
+export const DEFAULT_NEW_LOOP_TOOLS = ['loop_send', 'loop_list'] as const
+
+/**
+ * Never grantable to a side loop, at any layer.
+ *
+ * `sys_update_config` would let a loop rewrite the very config that attenuates
+ * it; `loop_manage` is main-only (no nested loops); `sys_create_adf` mints a
+ * whole new agent. Enforced twice: rejected by the Zod schema when it appears
+ * in `LoopConfig.tools`, and subtracted again by `deriveLoopConfig` — which
+ * additionally drops every tool the host marked `restricted`, because a HIL
+ * approval can never be routed to a side-loop executor (MVP).
+ */
+export const LOOP_PROHIBITED_TOOLS = ['sys_update_config', 'loop_manage', 'sys_create_adf'] as const
+
+/**
+ * Read-time backfill for `AgentConfig.loops`.
+ *
+ * Deliberately non-persisting: unlike the tool backfill in
+ * `AdfDatabase.getConfig()`, an absent `loops` is simply read as `[]` rather
+ * than written back, so every pre-loops `.adf` round-trips byte-identical.
+ */
+export function resolveAgentLoops(config: Pick<AgentConfig, 'loops'>): LoopConfig[] {
+  return config.loops ?? []
+}
+
 export interface AgentConfig {
   adf_version: '0.2'
   locked_fields?: string[]
@@ -850,6 +934,8 @@ export interface AgentConfig {
   stream_bind?: StreamBindConfig
   stream_bindings?: StreamBindingDeclaration[]
   providers?: AdfProviderConfig[]
+  /** Side loops only; `main` is implicit. Absent = none (see resolveAgentLoops). */
+  loops?: LoopConfig[]
   metadata: MetadataConfig
 }
 
@@ -1158,6 +1244,13 @@ export interface Timer {
   created_at: number
   last_fired_at?: number
   locked?: boolean
+  /**
+   * Cognition stream this timer's agent-scope wake dispatches to. Absent →
+   * 'main', so every pre-loops timer keeps firing exactly where it did. A
+   * timer whose loop no longer exists is dropped and logged, never re-pointed
+   * at main — an orphan running with main's authority is an escalation.
+   */
+  loop?: string
   /** Completed (one-shot fired, or recurring hit its end condition). Kept as
    *  history instead of deleted; never fires again. */
   expired?: boolean
@@ -1295,6 +1388,28 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'db_execute', enabled: false, visible: false },
   { name: 'loop_compact', enabled: false, visible: false },
   { name: 'loop_clear', enabled: false, visible: false },
+  // Inter-loop signalling. Ordinary, visible, owner-toggled tools like any
+  // other (no-secrets): the config declares them, the Tools UI shows them, and
+  // an owner may turn them off. On by default and registered into main's
+  // registry whenever enabled — like ws_connections/stream_bindings, they are
+  // simply present and return sensibly when there is nothing to act on
+  // (loop_list shows just `main`; loop_send errors on any target). No
+  // gate on loop count: that special-cased two tools for a byte-identical
+  // prompt that default-on loop_manage already voids.
+  { name: 'loop_send', enabled: true, visible: true },
+  { name: 'loop_list', enabled: true, visible: true },
+  // Main-only: creates/updates/tears down this agent's own inner loops.
+  // On and ungated by default, because a loop is a strict ATTENUATION of
+  // authority main already holds: deriveLoopConfig intersects the loop's
+  // allow-list with the host's enabled tools, drops every `restricted` name,
+  // and clamps code_execution — so loop_manage cannot expand the agent's
+  // capability surface, only subdivide it. Creating a loop is therefore not an
+  // escalation, and an approval gate would buy no authority the agent did not
+  // already have. Still main-only (LOOP_PROHIBITED_TOOLS keeps it off every
+  // loop) and still the owner's to re-gate with `restricted: true`. It honours
+  // `locked_fields` (a locked `loops` path refuses) and delete archives the
+  // stream and preserves locked timers, so it is recoverable.
+  { name: 'loop_manage', enabled: true, visible: true },
   { name: 'msg_delete', enabled: false, visible: false },
   { name: 'say', enabled: true, visible: true },
   { name: 'ask', enabled: true, visible: true },
@@ -1436,6 +1551,8 @@ export const AGENT_DEFAULTS = {
     api: []
   } as ServingConfig,
   ws_connections: [] as WsConnectionConfig[],
+  // A new agent starts with only its main loop; inner loops are added deliberately.
+  loops: [] as LoopConfig[],
   stream_bind: {} as StreamBindConfig,
   stream_bindings: [] as StreamBindingDeclaration[],
   providers: [] as AdfProviderConfig[],

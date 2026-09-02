@@ -1,0 +1,261 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+
+// localStorage stub (no jsdom in the node test environment). Installed before
+// the store module is imported so the lazy initial read sees it.
+const storage = new Map<string, string>()
+vi.stubGlobal('localStorage', {
+  getItem: (k: string) => storage.get(k) ?? null,
+  setItem: (k: string, v: string) => { storage.set(k, v) },
+  removeItem: (k: string) => { storage.delete(k) },
+})
+
+const { useAppStore, selectChatInCenter, selectChatColumnCapped, selectActiveDockPanel, selectCanPromoteChat } = await import('../../../src/renderer/stores/app.store')
+
+const CHAT_PLACEMENT_KEY = 'adf-chat-placement'
+const CHAT_WIDTH_KEY = 'adf-chat-width'
+
+/**
+ * Chat placement — the one persisted preference deciding whether the Loops
+ * panel is mounted in the right dock or as a pinned tab on the center stage.
+ * The layout itself isn't testable in this (DOM-less) harness; what IS testable
+ * is the state machine every consumer reads: the persisted round-trip, the
+ * dock's fallback when its Loops tab disappears, and the "take me to the chat"
+ * routing that both slots share.
+ */
+beforeEach(() => {
+  storage.clear()
+  useAppStore.setState({
+    chatPlacement: 'side',
+    chatWidth: 'comfortable',
+    centerChatTabActive: false,
+    rightPanel: 'loop',
+    rightPanelCollapsed: false,
+    showMeshGraph: false,
+  })
+})
+
+describe('chat placement preference', () => {
+  it('defaults to side — the dock keeps its Loops tab', () => {
+    const s = useAppStore.getState()
+    expect(s.chatPlacement).toBe('side')
+    expect(selectChatInCenter(s)).toBe(false)
+  })
+
+  it('persists the choice to localStorage in both directions', () => {
+    useAppStore.getState().setChatPlacement('center')
+    expect(storage.get(CHAT_PLACEMENT_KEY)).toBe('center')
+
+    useAppStore.getState().setChatPlacement('side')
+    expect(storage.get(CHAT_PLACEMENT_KEY)).toBe('side')
+  })
+
+  it('moves the dock off Loops when the chat leaves for the center', () => {
+    useAppStore.setState({ rightPanel: 'loop' })
+    useAppStore.getState().setChatPlacement('center')
+
+    const s = useAppStore.getState()
+    // The dock keeps its OTHER tabs — it just can't stay on the one that left.
+    expect(s.rightPanel).not.toBe('loop')
+    expect(s.centerChatTabActive).toBe(true)
+  })
+
+  it('leaves a non-Loops dock tab alone when moving to center', () => {
+    useAppStore.setState({ rightPanel: 'files' })
+    useAppStore.getState().setChatPlacement('center')
+    expect(useAppStore.getState().rightPanel).toBe('files')
+  })
+
+  it('reveals the dock on Loops when the chat comes back', () => {
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.setState({ rightPanelCollapsed: true })
+
+    useAppStore.getState().setChatPlacement('side')
+    const s = useAppStore.getState()
+    expect(s.rightPanel).toBe('loop')
+    // Collapsed + "put the chat back here" would leave the chat nowhere.
+    expect(s.rightPanelCollapsed).toBe(false)
+    expect(s.centerChatTabActive).toBe(false)
+  })
+
+  // Closing the stage tab (its X, or Ctrl+W while it is showing) is not a
+  // destroy — the chat has exactly two homes, so "close" means "go back to the
+  // dock", and it must land there revealed rather than behind a collapsed panel.
+  it('closing the center chat tab is exactly the move back to the dock', () => {
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.setState({ rightPanelCollapsed: true, rightPanel: 'files' })
+
+    useAppStore.getState().setChatPlacement('side')
+    const s = useAppStore.getState()
+    expect(selectChatInCenter(s)).toBe(false)
+    expect(s.centerChatTabActive).toBe(false)
+    expect(s.rightPanel).toBe('loop')
+    expect(s.rightPanelCollapsed).toBe(false)
+    expect(storage.get(CHAT_PLACEMENT_KEY)).toBe('side')
+  })
+
+  it('yields to the fleet map, which replaces the center stage entirely', () => {
+    useAppStore.getState().setChatPlacement('center')
+    expect(selectChatInCenter(useAppStore.getState())).toBe(true)
+
+    useAppStore.setState({ showMeshGraph: true })
+    // Otherwise the chat would be unreachable on the map.
+    expect(selectChatInCenter(useAppStore.getState())).toBe(false)
+  })
+})
+
+/**
+ * Chat width — the second persisted chat preference. It only *means* anything
+ * on the center stage (the dock is narrow by construction), so the contract
+ * worth pinning is the pair: the round-trip persists unconditionally, but the
+ * derived "cap the column" answer is gated on the chat actually being centred.
+ */
+describe('chat width preference', () => {
+  it('defaults to comfortable', () => {
+    expect(useAppStore.getState().chatWidth).toBe('comfortable')
+  })
+
+  it('persists the choice to localStorage in both directions', () => {
+    useAppStore.getState().setChatWidth('full')
+    expect(useAppStore.getState().chatWidth).toBe('full')
+    expect(storage.get(CHAT_WIDTH_KEY)).toBe('full')
+
+    useAppStore.getState().setChatWidth('comfortable')
+    expect(useAppStore.getState().chatWidth).toBe('comfortable')
+    expect(storage.get(CHAT_WIDTH_KEY)).toBe('comfortable')
+  })
+
+  it('is inert in side placement — the dock is always full width', () => {
+    expect(selectChatColumnCapped(useAppStore.getState())).toBe(false)
+    useAppStore.getState().setChatWidth('full')
+    expect(selectChatColumnCapped(useAppStore.getState())).toBe(false)
+  })
+
+  it('caps the column in center placement, and only while comfortable', () => {
+    useAppStore.getState().setChatPlacement('center')
+    expect(selectChatColumnCapped(useAppStore.getState())).toBe(true)
+
+    useAppStore.getState().setChatWidth('full')
+    expect(selectChatColumnCapped(useAppStore.getState())).toBe(false)
+  })
+
+  it('survives the move back to the dock and out again', () => {
+    useAppStore.getState().setChatWidth('full')
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.getState().setChatPlacement('side')
+    // Placement must not silently rewrite the width the user chose.
+    expect(useAppStore.getState().chatWidth).toBe('full')
+    expect(storage.get(CHAT_WIDTH_KEY)).toBe('full')
+  })
+
+  it('yields with the chat when the fleet map takes the stage', () => {
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.setState({ showMeshGraph: true })
+    // The chat is back in the dock for the duration — nothing to cap.
+    expect(selectChatColumnCapped(useAppStore.getState())).toBe(false)
+  })
+})
+
+describe('expandRightPanelToTab follows the chat', () => {
+  it('routes to the center tab instead of the dock in center placement', () => {
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.setState({ centerChatTabActive: false, rightPanel: 'inbox' })
+
+    useAppStore.getState().expandRightPanelToTab('loop')
+    const s = useAppStore.getState()
+    expect(s.centerChatTabActive).toBe(true)
+    // The dock is not hijacked onto a tab it no longer has.
+    expect(s.rightPanel).toBe('inbox')
+  })
+
+  it('still opens the dock tab in side placement', () => {
+    useAppStore.setState({ rightPanel: 'files', rightPanelCollapsed: true })
+    useAppStore.getState().expandRightPanelToTab('loop')
+
+    const s = useAppStore.getState()
+    expect(s.rightPanel).toBe('loop')
+    expect(s.rightPanelCollapsed).toBe(false)
+  })
+
+  it('is unaffected for non-chat destinations in center placement', () => {
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.getState().expandRightPanelToTab('agent', 'config')
+
+    const s = useAppStore.getState()
+    expect(s.rightPanel).toBe('agent')
+    expect(s.agentSubTab).toBe('config')
+  })
+
+  // B3: while the fleet map holds the center stage a center-mode chat has
+  // yielded to the dock, so "take me to the chat" must reveal the DOCK's Loops
+  // tab, not the (covered) center tab — otherwise the founding briefing / bell
+  // "Respond" lands nowhere on the map.
+  it('reveals the dock Loops tab when center placement has yielded to the map', () => {
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.setState({ showMeshGraph: true, rightPanelCollapsed: true, rightPanel: 'inbox', centerChatTabActive: false })
+
+    useAppStore.getState().expandRightPanelToTab('loop')
+    const s = useAppStore.getState()
+    expect(s.rightPanel).toBe('loop')
+    expect(s.rightPanelCollapsed).toBe(false)
+    // The covered center tab is NOT what got revealed.
+    expect(s.centerChatTabActive).toBe(false)
+  })
+
+  it('routes back to the center tab once the map closes', () => {
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.setState({ showMeshGraph: false, centerChatTabActive: false, rightPanel: 'inbox' })
+
+    useAppStore.getState().expandRightPanelToTab('loop')
+    expect(useAppStore.getState().centerChatTabActive).toBe(true)
+  })
+})
+
+/**
+ * B6 — the dock tab actually shown. Adds the map-open combination the raw
+ * `rightPanel` misses: a center-mode chat that has yielded to the map lends its
+ * Loops tab back to the dock, so the dock shows the chat that yielded rather
+ * than the non-loop tab parked under it (boot-vs-toggle consistency).
+ */
+describe('selectActiveDockPanel', () => {
+  it('side placement shows the raw panel', () => {
+    useAppStore.setState({ chatPlacement: 'side', rightPanel: 'files', showMeshGraph: false })
+    expect(selectActiveDockPanel(useAppStore.getState())).toBe('files')
+  })
+
+  it('center placement (no map) falls a dock still on Loops through to Inbox', () => {
+    useAppStore.setState({ chatPlacement: 'center', rightPanel: 'loop', showMeshGraph: false })
+    expect(selectActiveDockPanel(useAppStore.getState())).toBe('inbox')
+  })
+
+  it('center placement yielded to the map shows Loops, whatever was parked under it', () => {
+    useAppStore.setState({ chatPlacement: 'center', rightPanel: 'inbox', showMeshGraph: true })
+    expect(selectActiveDockPanel(useAppStore.getState())).toBe('loop')
+  })
+
+  it('side placement on the map is untouched — the dock keeps its real tab', () => {
+    useAppStore.setState({ chatPlacement: 'side', rightPanel: 'files', showMeshGraph: true })
+    expect(selectActiveDockPanel(useAppStore.getState())).toBe('files')
+  })
+})
+
+/**
+ * B2 — the promote-to-center affordance. Offered only from the dock, and never
+ * while the map holds the stage (promoting there would send the chat to a
+ * covered stage and it would vanish).
+ */
+describe('selectCanPromoteChat', () => {
+  it('is offered in side placement off the map', () => {
+    useAppStore.setState({ chatPlacement: 'side', showMeshGraph: false })
+    expect(selectCanPromoteChat(useAppStore.getState())).toBe(true)
+  })
+
+  it('is not offered when already in center placement', () => {
+    useAppStore.setState({ chatPlacement: 'center', showMeshGraph: false })
+    expect(selectCanPromoteChat(useAppStore.getState())).toBe(false)
+  })
+
+  it('is not offered on the fleet map, even in side placement', () => {
+    useAppStore.setState({ chatPlacement: 'side', showMeshGraph: true })
+    expect(selectCanPromoteChat(useAppStore.getState())).toBe(false)
+  })
+})

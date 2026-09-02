@@ -121,6 +121,21 @@ function generateProviderId(): string {
 }
 
 /**
+ * Persist a settings patch through the preload bridge.
+ *
+ * Reached through `globalThis` rather than `window.adfApi` because the web
+ * tsconfig does not include the preload's Window augmentation — every direct
+ * `window.adfApi` call in this file is unchecked there. Same accessor pattern
+ * as approvals.store.ts.
+ */
+function writeSetting(patch: Record<string, unknown>): Promise<unknown> | undefined {
+  const api = (globalThis as {
+    adfApi?: { setSettings?: (patch: Record<string, unknown>) => Promise<unknown> }
+  }).adfApi
+  return api?.setSettings?.(patch)
+}
+
+/**
  * Collapsible editable prompt rows, shared by the Tool Instructions and
  * Dynamic Instructions groups. Both groups read and write the same
  * `toolPrompts` settings record — they differ only in which default/label/
@@ -1441,6 +1456,7 @@ export function SettingsPage() {
   const [computeMachineMemoryMb, setComputeMachineMemoryMb] = useState(2048)
   const [computeContainerImage, setComputeContainerImage] = useState('docker.io/library/node:20-alpine')
   const [computeExecutionTargets, setComputeExecutionTargets] = useState<ExecutionTarget[]>([])
+  const [nativeNotifications, setNativeNotifications] = useState(true)
   const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string }>({ running: false, port: 7295, host: '127.0.0.1' })
   const [meshAutoStart, setMeshAutoStart] = useState(true)
   const [meshLan, setMeshLan] = useState(false)
@@ -1526,6 +1542,7 @@ export function SettingsPage() {
       setToolPrompts(
         (settings.toolPrompts as Record<string, string>) ?? { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS }
       )
+      setNativeNotifications(settings.nativeNotificationsEnabled !== false)
       setMeshAutoStart(settings.meshEnabled !== false)
       setMeshLan(!!settings.meshLan)
       setMeshPort((settings.meshPort as number) ?? 7295)
@@ -1933,6 +1950,30 @@ export function SettingsPage() {
                 onChange={handleThemeChange}
                 ariaLabel="Theme"
               />
+            </SettingsRow>
+          </SettingsGroup>
+
+          <SettingsGroup title="Notifications">
+            <SettingsRow
+              label="System notifications"
+              description="Show an operating-system notification when an agent needs an approval or asks a question while Studio is not the focused app. Clicking one opens that agent."
+              help="Studio never notifies twice: while a window is focused, the in-app notice and the bell badge cover it."
+            >
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={nativeNotifications}
+                  onChange={async (e) => {
+                    const enabled = e.target.checked
+                    setNativeNotifications(enabled)
+                    await writeSetting({ nativeNotificationsEnabled: enabled })
+                  }}
+                  className="rounded text-blue-500"
+                />
+                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
+                  {nativeNotifications ? 'On' : 'Off'}
+                </span>
+              </label>
             </SettingsRow>
           </SettingsGroup>
 

@@ -34,10 +34,28 @@ export interface AgentLogEntry {
   metadata?: Record<string, unknown>
 }
 
-interface AgentStoreState {
+/** The implicit host loop. Every stream field without an explicit loop is this one. */
+export const MAIN_LOOP = 'main'
+
+export interface QueuedMessage {
+  id: string
+  text: string
+  content?: ContentBlock[]
+  imagePreviewUrls?: string[]
+}
+
+/**
+ * Everything that belongs to ONE loop's stream.
+ *
+ * `main`'s slice IS the store root — every pre-existing consumer reads
+ * `s.log` / `s.pendingApprovals` / … and keeps seeing main and only main.
+ * Side loops live in `sideLoops[name]`, so a side loop's `chat_updated`
+ * (compaction) or delta merge can never splice into or truncate main's view
+ * (IMPL-5 / RT-F17).
+ */
+export interface LoopSlice {
+  /** Display state. For `main` this is the agent-level state (§6.3). */
   state: AgentState
-  starting: boolean
-  sessionId: string | null
   log: AgentLogEntry[]
   /** Monotonically increasing counter bumped on every log mutation. Subscribe to
    *  this instead of `log` when you only need to know *something* changed (e.g.
@@ -46,13 +64,6 @@ interface AgentStoreState {
   logVersion: number
   /** Loop rows in the DB older than the loaded window (0 = fully loaded). */
   earlierCount: number
-  config: AgentConfig | null
-  statusText: string
-  tokenUsage: TokenUsage
-  /** Live pre-flight estimate of the next request's size (null when the last
-   *  real call is current). Already includes overhead + messages, so it stands
-   *  alone — never add it on top of `tokenUsage`. */
-  tokenEstimate: number | null
   /** Maps logEntryId -> pending approval info for tool calls awaiting HIL approval */
   pendingApprovals: Map<string, PendingApprovalInfo>
   /** Maps logEntryId -> { requestId, question } for ask tool calls */
@@ -60,158 +71,257 @@ interface AgentStoreState {
   /** Pending suspend request (logEntryId if shown in loop) */
   pendingSuspend: string | null
   /** Client-side message queue for autonomous mode */
-  messageQueue: { id: string; text: string; content?: ContentBlock[]; imagePreviewUrls?: string[] }[]
+  messageQueue: QueuedMessage[]
+  /**
+   * Last REAL (post-call) usage for THIS loop. Every loop runs its own executor
+   * against its own context window, so "how full am I" is a per-loop number —
+   * `response_metadata` is already stamped with `loop`, so routing it here is
+   * free (RT-F12). What is NOT here is any cross-loop cumulative spend: there
+   * is no data source for that yet, so nothing sums these.
+   */
+  tokenUsage: TokenUsage
+  /** Live pre-flight estimate of THIS loop's next request (null when the last
+   *  real call is current). Already includes overhead + messages, so it stands
+   *  alone — never add it on top of `tokenUsage`. */
+  tokenEstimate: number | null
+}
 
-  setState: (state: AgentState) => void
+function emptySlice(): LoopSlice {
+  return {
+    state: 'idle',
+    log: [],
+    logVersion: 0,
+    earlierCount: 0,
+    pendingApprovals: new Map(),
+    pendingAsks: new Map(),
+    pendingSuspend: null,
+    messageQueue: [],
+    tokenUsage: { input: 0, output: 0 },
+    tokenEstimate: null
+  }
+}
+
+/** Stable reference for "a side loop that has never emitted anything" so
+ *  selectors don't churn referentially on every render. */
+const EMPTY_SLICE: LoopSlice = emptySlice()
+
+/** `undefined`/`'main'` both mean the host loop. */
+function isMainLoop(loop?: string): boolean {
+  return !loop || loop === MAIN_LOOP
+}
+
+interface AgentStoreState extends LoopSlice {
+  starting: boolean
+  sessionId: string | null
+  /** Streams for non-main loops, keyed by loop name. Never contains `main`. */
+  sideLoops: Record<string, LoopSlice>
+  config: AgentConfig | null
+  statusText: string
+  /**
+   * Which loop's stream the user is currently LOOKING AT (the selected tab in
+   * the loops panel). Purely a view concern — nothing about execution reads it.
+   * It exists so surfaces OUTSIDE the loops panel (the status-bar context
+   * gauge, the breakdown modal) can follow the tab instead of being pinned to
+   * main. `main` until the panel says otherwise.
+   */
+  viewedLoop: string
+
+  setState: (state: AgentState, loop?: string) => void
   setStarting: (starting: boolean) => void
   setSessionId: (id: string | null) => void
-  addLogEntry: (entry: AgentLogEntry) => void
+  addLogEntry: (entry: AgentLogEntry, loop?: string) => void
   /** Mutate the last log entry in place and bump logVersion. No array copy. */
-  updateLastEntry: (mutator: (entry: AgentLogEntry) => void) => void
+  updateLastEntry: (mutator: (entry: AgentLogEntry) => void, loop?: string) => void
   /** Mutate a log entry at a specific index and bump logVersion. */
-  updateEntryAt: (index: number, mutator: (entry: AgentLogEntry) => void) => void
-  setLog: (log: AgentLogEntry[], earlierCount?: number) => void
+  updateEntryAt: (index: number, mutator: (entry: AgentLogEntry) => void, loop?: string) => void
+  setLog: (log: AgentLogEntry[], earlierCount?: number, loop?: string) => void
   /** Prepend older loop entries loaded via keyset pagination. */
-  prependLog: (entries: AgentLogEntry[], earlierCount: number) => void
-  clearLog: () => void
+  prependLog: (entries: AgentLogEntry[], earlierCount: number, loop?: string) => void
+  setEarlierCount: (earlierCount: number, loop?: string) => void
+  clearLog: (loop?: string) => void
+  /** Drop a side loop's slice entirely (loop disabled/deleted). No-op for main. */
+  dropLoop: (loop: string) => void
   setConfig: (config: AgentConfig | null) => void
   setStatusText: (text: string) => void
-  setTokenUsage: (usage: TokenUsage) => void
-  setTokenEstimate: (estimate: number | null) => void
-  addPendingApproval: (logEntryId: string, requestId: string, meta?: Partial<ApprovalMeta>) => void
-  removePendingApproval: (logEntryId: string) => void
+  setTokenUsage: (usage: TokenUsage, loop?: string) => void
+  setTokenEstimate: (estimate: number | null, loop?: string) => void
+  /** Record which loop tab the user switched to. No-op guard elsewhere: a name
+   *  that later stops existing falls back to main via `dropLoop`. */
+  setViewedLoop: (loop: string) => void
+  addPendingApproval: (logEntryId: string, requestId: string, meta?: Partial<ApprovalMeta>, loop?: string) => void
+  removePendingApproval: (logEntryId: string, loop?: string) => void
   /** Stamp the human's decision on a renderer-synthesized (outOfBand) approval
    *  entry. Those entries never receive a tool_result — the gated call runs
    *  inside the shell/code that raised it and reports its output there — so
    *  without a stamp they render as "running…" forever. No-op for entries that
    *  belong to a real tool call (their paired result is the terminal state). */
-  markApprovalOutcome: (logEntryId: string, approved: boolean) => void
-  addPendingAsk: (logEntryId: string, requestId: string, question: string) => void
-  removePendingAsk: (logEntryId: string) => void
-  setPendingSuspend: (logEntryId: string | null) => void
-  addToQueue: (text: string, content?: ContentBlock[], imagePreviewUrls?: string[]) => void
-  removeFromQueue: (id: string) => void
-  clearQueue: () => void
+  markApprovalOutcome: (logEntryId: string, approved: boolean, loop?: string) => void
+  addPendingAsk: (logEntryId: string, requestId: string, question: string, loop?: string) => void
+  removePendingAsk: (logEntryId: string, loop?: string) => void
+  setPendingSuspend: (logEntryId: string | null, loop?: string) => void
+  addToQueue: (text: string, content?: ContentBlock[], imagePreviewUrls?: string[], loop?: string) => void
+  removeFromQueue: (id: string, loop?: string) => void
+  clearQueue: (loop?: string) => void
   reset: () => void
 }
 
-export const useAgentStore = create<AgentStoreState>((set, get) => ({
-  state: 'off',
-  starting: false,
-  sessionId: null,
-  log: [],
-  logVersion: 0,
-  earlierCount: 0,
-  config: null,
-  statusText: '',
-  tokenUsage: { input: 0, output: 0 },
-  tokenEstimate: null,
-  pendingApprovals: new Map(),
-  pendingAsks: new Map(),
-  pendingSuspend: null,
-  messageQueue: [],
+/**
+ * Read one loop's stream out of the store. `main` resolves to the store root,
+ * so `selectLoopSlice(s)` is exactly today's behaviour.
+ */
+export function selectLoopSlice(s: AgentStoreState, loop?: string): LoopSlice {
+  if (isMainLoop(loop)) return s
+  return s.sideLoops[loop!] ?? EMPTY_SLICE
+}
 
-  setState: (state) => set({ state }),
-  setStarting: (starting) => set({ starting }),
-  setSessionId: (sessionId) => set({ sessionId }),
-  addLogEntry: (entry) => {
+/**
+ * Coarse "did anything happen in ANY loop" signal — the sum of every slice's
+ * `logVersion` (main + side). Read imperatively (via store.subscribe or
+ * getState), never as a render selector, so a caller can notice a change
+ * without re-rendering on every streaming delta. Backs the center chat tab's
+ * unread dot (B1): a monotonic sum whose only meaningful event is "it moved".
+ */
+export function selectAggregateLogVersion(s: AgentStoreState): number {
+  let total = s.logVersion
+  for (const name in s.sideLoops) total += s.sideLoops[name].logVersion
+  return total
+}
+
+export const useAgentStore = create<AgentStoreState>((set, get) => {
+  /**
+   * Apply a patch to one loop's slice. `main` patches the store root (identical
+   * to the pre-loops behaviour); anything else patches `sideLoops[loop]` and
+   * leaves main's fields untouched.
+   */
+  const patchSlice = (loop: string | undefined, patch: (slice: LoopSlice) => Partial<LoopSlice>): void => {
     const s = get()
-    const newLog = [...s.log, entry]
-    set({ log: newLog, logVersion: s.logVersion + 1 })
-  },
-  updateLastEntry: (mutator) => {
-    const s = get()
-    const last = s.log[s.log.length - 1]
-    if (last) {
+    if (isMainLoop(loop)) {
+      set(patch(s) as Partial<AgentStoreState>)
+      return
+    }
+    const name = loop!
+    const current = s.sideLoops[name] ?? emptySlice()
+    set({ sideLoops: { ...s.sideLoops, [name]: { ...current, ...patch(current) } } })
+  }
+
+  return {
+    state: 'off',
+    starting: false,
+    sessionId: null,
+    log: [],
+    logVersion: 0,
+    earlierCount: 0,
+    sideLoops: {},
+    config: null,
+    statusText: '',
+    viewedLoop: MAIN_LOOP,
+    tokenUsage: { input: 0, output: 0 },
+    tokenEstimate: null,
+    pendingApprovals: new Map(),
+    pendingAsks: new Map(),
+    pendingSuspend: null,
+    messageQueue: [],
+
+    setState: (state, loop) => patchSlice(loop, () => ({ state })),
+    setStarting: (starting) => set({ starting }),
+    setSessionId: (sessionId) => set({ sessionId }),
+    addLogEntry: (entry, loop) => patchSlice(loop, (s) => ({
+      log: [...s.log, entry],
+      logVersion: s.logVersion + 1
+    })),
+    updateLastEntry: (mutator, loop) => patchSlice(loop, (s) => {
+      const last = s.log[s.log.length - 1]
+      if (!last) return {}
       // Create a shallow copy so memo'd LogEntryRow sees a new reference
       const updated = { ...last }
       mutator(updated)
       s.log[s.log.length - 1] = updated
-      set({ logVersion: s.logVersion + 1 })
-    }
-  },
-  updateEntryAt: (index, mutator) => {
-    const s = get()
-    const entry = s.log[index]
-    if (entry) {
+      return { logVersion: s.logVersion + 1 }
+    }),
+    updateEntryAt: (index, mutator, loop) => patchSlice(loop, (s) => {
+      const entry = s.log[index]
+      if (!entry) return {}
       const updated = { ...entry }
       mutator(updated)
       s.log[index] = updated
-      set({ logVersion: s.logVersion + 1 })
-    }
-  },
-  setLog: (log, earlierCount) => set((s) => ({
-    log,
-    logVersion: s.logVersion + 1,
-    ...(earlierCount !== undefined ? { earlierCount } : {})
-  })),
-  prependLog: (entries, earlierCount) => set((s) => ({
-    log: [...entries, ...s.log],
-    logVersion: s.logVersion + 1,
-    earlierCount
-  })),
-  clearLog: () => set((s) => ({ log: [], logVersion: s.logVersion + 1, earlierCount: 0 })),
-  setConfig: (config) => set({ config }),
-  setStatusText: (text) => set({ statusText: text }),
-  setTokenUsage: (usage) => set({ tokenUsage: usage }),
-  setTokenEstimate: (estimate) => set({ tokenEstimate: estimate }),
-  addPendingApproval: (logEntryId, requestId, meta) => {
-    const s = get()
-    const next = new Map(s.pendingApprovals)
-    next.set(logEntryId, { ...meta, requestId })
-    set({ pendingApprovals: next })
-  },
-  removePendingApproval: (logEntryId) => {
-    const s = get()
-    const next = new Map(s.pendingApprovals)
-    next.delete(logEntryId)
-    set({ pendingApprovals: next })
-  },
-  markApprovalOutcome: (logEntryId, approved) => {
-    const s = get()
-    const index = s.log.findIndex((e) => e.id === logEntryId)
-    const entry = s.log[index]
-    if (!entry || entry.metadata?.outOfBand !== true) return
-    s.log[index] = {
-      ...entry,
-      metadata: { ...entry.metadata, overrideOutcome: approved ? 'approved' : 'denied' }
-    }
-    set({ logVersion: s.logVersion + 1 })
-  },
-  addPendingAsk: (logEntryId, requestId, question) => {
-    const s = get()
-    const next = new Map(s.pendingAsks)
-    next.set(logEntryId, { requestId, question })
-    set({ pendingAsks: next })
-  },
-  removePendingAsk: (logEntryId) => {
-    const s = get()
-    const next = new Map(s.pendingAsks)
-    next.delete(logEntryId)
-    set({ pendingAsks: next })
-  },
-  setPendingSuspend: (logEntryId) => set({ pendingSuspend: logEntryId }),
-  addToQueue: (text, content, imagePreviewUrls) => set((s) => ({ messageQueue: [...s.messageQueue, { id: nanoid(), text, content, imagePreviewUrls }] })),
-  removeFromQueue: (id) => set((s) => ({ messageQueue: s.messageQueue.filter(m => m.id !== id) })),
-  clearQueue: () => set({ messageQueue: [] }),
-  reset: () =>
-    set({
-      state: 'off',
-      starting: false,
-      sessionId: null,
-      log: [],
-      logVersion: 0,
-      earlierCount: 0,
-      config: null,
-      statusText: '',
-      tokenUsage: { input: 0, output: 0 },
-      tokenEstimate: null,
-      pendingApprovals: new Map(),
-      pendingAsks: new Map(),
-      pendingSuspend: null,
-      messageQueue: []
-    })
-}))
+      return { logVersion: s.logVersion + 1 }
+    }),
+    setLog: (log, earlierCount, loop) => patchSlice(loop, (s) => ({
+      log,
+      logVersion: s.logVersion + 1,
+      ...(earlierCount !== undefined ? { earlierCount } : {})
+    })),
+    prependLog: (entries, earlierCount, loop) => patchSlice(loop, (s) => ({
+      log: [...entries, ...s.log],
+      logVersion: s.logVersion + 1,
+      earlierCount
+    })),
+    setEarlierCount: (earlierCount, loop) => patchSlice(loop, () => ({ earlierCount })),
+    clearLog: (loop) => patchSlice(loop, (s) => ({ log: [], logVersion: s.logVersion + 1, earlierCount: 0 })),
+    dropLoop: (loop) => {
+      if (isMainLoop(loop)) return
+      const s = get()
+      if (!(loop in s.sideLoops)) return
+      const next = { ...s.sideLoops }
+      delete next[loop]
+      set({ sideLoops: next, ...(s.viewedLoop === loop ? { viewedLoop: MAIN_LOOP } : {}) })
+    },
+    setConfig: (config) => set({ config }),
+    setStatusText: (text) => set({ statusText: text }),
+    setTokenUsage: (usage, loop) => patchSlice(loop, () => ({ tokenUsage: usage })),
+    setTokenEstimate: (estimate, loop) => patchSlice(loop, () => ({ tokenEstimate: estimate })),
+    setViewedLoop: (loop) => set({ viewedLoop: loop || MAIN_LOOP }),
+    addPendingApproval: (logEntryId, requestId, meta, loop) => patchSlice(loop, (s) => {
+      const next = new Map(s.pendingApprovals)
+      next.set(logEntryId, { ...meta, requestId })
+      return { pendingApprovals: next }
+    }),
+    removePendingApproval: (logEntryId, loop) => patchSlice(loop, (s) => {
+      const next = new Map(s.pendingApprovals)
+      next.delete(logEntryId)
+      return { pendingApprovals: next }
+    }),
+    markApprovalOutcome: (logEntryId, approved, loop) => patchSlice(loop, (s) => {
+      const index = s.log.findIndex((e) => e.id === logEntryId)
+      const entry = s.log[index]
+      if (!entry || entry.metadata?.outOfBand !== true) return {}
+      s.log[index] = {
+        ...entry,
+        metadata: { ...entry.metadata, overrideOutcome: approved ? 'approved' : 'denied' }
+      }
+      return { logVersion: s.logVersion + 1 }
+    }),
+    addPendingAsk: (logEntryId, requestId, question, loop) => patchSlice(loop, (s) => {
+      const next = new Map(s.pendingAsks)
+      next.set(logEntryId, { requestId, question })
+      return { pendingAsks: next }
+    }),
+    removePendingAsk: (logEntryId, loop) => patchSlice(loop, (s) => {
+      const next = new Map(s.pendingAsks)
+      next.delete(logEntryId)
+      return { pendingAsks: next }
+    }),
+    setPendingSuspend: (logEntryId, loop) => patchSlice(loop, () => ({ pendingSuspend: logEntryId })),
+    addToQueue: (text, content, imagePreviewUrls, loop) => patchSlice(loop, (s) => ({
+      messageQueue: [...s.messageQueue, { id: nanoid(), text, content, imagePreviewUrls }]
+    })),
+    removeFromQueue: (id, loop) => patchSlice(loop, (s) => ({
+      messageQueue: s.messageQueue.filter((m) => m.id !== id)
+    })),
+    clearQueue: (loop) => patchSlice(loop, () => ({ messageQueue: [] })),
+    reset: () =>
+      set({
+        ...emptySlice(),
+        state: 'off',
+        starting: false,
+        sessionId: null,
+        sideLoops: {},
+        config: null,
+        statusText: '',
+        viewedLoop: MAIN_LOOP
+      })
+  }
+})
 
 // Dev-only handle for verification — inject synthetic log entries / pending
 // approvals to exercise the loop UI (e.g. HIL approve/reject controls) without

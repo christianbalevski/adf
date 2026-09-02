@@ -26,6 +26,7 @@ ADF provides tools organized into these categories:
 - [MCP Management Tools](#mcp-management-tools) — Installing and managing MCP servers
 - [Timer Tools](#timer-tools) — Scheduling events
 - [Loop Management Tools](#loop-management-tools) — Managing conversation history
+- [Inner Loop Tools](#inner-loop-tools) — Signalling and managing the agent's inner cognition loops
 - [Message Deletion Tools](#message-deletion-tools) — Cleaning up inbox and outbox
 - [State and Config Tools](#state-and-config-tools) — Self-management
 
@@ -574,6 +575,59 @@ If archiving is enabled, entries are compressed and archived before deletion.
 
 To read past loop entries or compute loop statistics (row count, estimated tokens, oldest entry), query the `adf_loop` table directly with `db_query` / `db_execute`.
 
+## Inner Loop Tools
+
+Tools for the agent's **inner loops** — additional named cognition streams running inside the same agent, sharing its file, identity, credentials, and memory. See [Inner Loops](inner-loops.md) for the model.
+
+All three ship **enabled and visible**, and the runtime registers each into `main` whenever its declaration is enabled — like any other capability tool. There is no loop-count gate: an agent with no loops still holds `loop_send` and `loop_list`, and they answer sensibly (`loop_list` returns just `main`; `loop_send` errors on any target it names). `loop_send` and `loop_list` reach an *inner* loop only when that loop's own tool allow-list names them; `loop_manage` never does.
+
+### loop_send
+
+**Parameters:** `to_loop`, `content`, `wake?`
+
+Send a message, insight, or request from one cognition loop of this agent to another (`"main"` is the outward-facing loop). The content is appended to the target loop's stream as a real entry stamped `[from loop:<sender>]`. Peer-to-peer — any loop may address any other; `main` is not a bus. Interior signalling only: it never leaves the agent (use `msg_send` to reach another agent or a person).
+
+`content` is capped at 48,000 characters, the same bound `loop_inject` uses.
+
+`wake` decides *when* the target reads the message, not whether it arrives — the row is durable either way:
+
+| Target state | `wake` | Behavior |
+|---|---|---|
+| Idle | `true` | Runs a turn immediately; the session rehydrates from the durable row. |
+| Busy (`main` or an inner loop) | `true` | The message is injected and read at the target's **next model boundary** — roughly its next tool step, mid-turn. If the turn ends first, the pool runs **one** extra content-free "kick" turn to drain it. |
+| Any | `false` (default) | The message waits in the stream and is read whenever the target next runs. Never causes an extra turn. |
+
+Delivery is exactly-once: the kick never re-inlines the content, so the model reads the message once and the UI renders one card. A kick is owed **per target, not per message** — several sends inside one turn are drained by that one turn — and mid-turn compaction preserves anything still undelivered.
+
+**Cost note:** `wake: true` into a busy target can cost one extra model turn. Leave `wake` off for anything that does not have to be acted on promptly.
+
+A message to a **disabled** loop is delivered (the row lands) but never read, because a disabled loop does not run; the tool says so in its result.
+
+### loop_list
+
+**Parameters:** *(none)*
+
+Read-only roster of this agent's cognition loops — each loop's name, a summary of its goal, whether it is enabled, and whether it is running right now. Marks which loop you are. This is the discovery step for `loop_send`. `main`'s entry summarizes its goal rather than reproducing its full instructions.
+
+### loop_manage
+
+**Parameters:** `action` (`create` | `get` | `update` | `delete`), `name?`, `config?`
+
+**Main-only.** Create, inspect, update, and tear down this agent's own inner loops at runtime. Inner loops do not nest, so a loop that calls this is refused; the tool is also subtracted from every derived loop config (`LOOP_PROHIBITED_TOOLS`).
+
+| Action | Effect |
+|---|---|
+| `create` | Define a new inner loop and start it. Omit `config.tools` and the loop is seeded with `loop_send + loop_list`; pass `[]` for a mute loop that only thinks. |
+| `get` | One loop's full definition plus its live status. (Use `loop_list` to enumerate.) |
+| `update` | Patch `goal`, `enabled`, `model`, `compact_threshold`, or `tools`; the loop is re-derived and restarted. Loops cannot be renamed. |
+| `delete` | Archive the loop's stream to the audit log under `loop:<name>`, then remove it. |
+
+An agent may declare up to **16** inner loops.
+
+**Ungated by default.** Unlike `sys_update_config` and `sys_create_adf`, `loop_manage` ships with no `restricted` flag. A loop is a *strict attenuation* of authority `main` already holds — its tool list is intersected with the agent's own enabled tools, every approval-gated tool is subtracted, and its code profile is clamped — so `loop_manage` cannot expand the agent's capability surface, only subdivide it. Creating a loop is therefore not an escalation. Set `restricted: true` on the tool to re-add human approval.
+
+**Locks still bind.** `create`, `update`, and `delete` honour [`locked_fields`](#sys_update_config): with the `loops` path locked, all three refuse with the same `'loops' is locked.` sentence `sys_update_config` uses. And `delete` (like removing a loop by config edit) **preserves `locked` timers** stamped to that loop — they are kept and logged rather than deleted, matching the human-only semantics of a lock everywhere else.
+
 ## Message Deletion Tools
 
 ### msg_delete
@@ -931,6 +985,7 @@ The canonical default is `DEFAULT_TOOLS` in `src/shared/types/adf-v02.types.ts`.
 - HTTP: `sys_fetch`
 - State & meta: `sys_set_state`, `sys_get_meta`, `sys_set_meta`, `sys_delete_meta`
 - Config: `sys_get_config`
+- Inner loop tools: `loop_send`, `loop_list`, `loop_manage` — `loop_manage` is **main-only** (never grantable to an inner loop) and ships ungated
 - `sys_update_config` — **enabled and `restricted: true`** (advertised; every LLM-loop call needs approval)
 - `chat_info` — **enabled but not visible** (callable from sandbox code as `adf.chat_info`; flip `visible` to expose it to the model)
 - `db_query` — **enabled but not visible** (callable from sandbox code as `adf.db_query`; flip `visible` to expose it to the model)

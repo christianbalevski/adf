@@ -12,6 +12,12 @@ export interface QueuedContextInjection {
   /** Loop seq of the row the injector already persisted — stamped onto the
    *  session message at drain time so [S<seq>] markers can cite it. */
   seq?: number
+  /** Set by a `loop_send` with `wake: true` that arrived mid-turn: the message
+   *  is read at the next model boundary if the turn continues, but if the turn
+   *  ends first the pool runs one more turn to drain it. Distinguishes a wake
+   *  send from a `wake: false` send or a `loop_inject`, which are content the
+   *  target reads whenever it next runs and never trigger an extra turn. */
+  wake?: boolean
 }
 
 export class AgentSession {
@@ -142,6 +148,22 @@ export class AgentSession {
    *  is never replayed), so releasing the session would silently drop them. */
   hasPendingContextInjections(): boolean {
     return this.pendingContextInjections.length > 0
+  }
+
+  /** True while a `wake: true` inter-loop delivery is queued but not yet drained
+   *  into the model. The pool checks this at the target's turn boundary: still
+   *  pending ⇒ the turn ended before reading it ⇒ run one more turn to drain it;
+   *  already drained ⇒ it was read mid-turn ⇒ no extra turn. */
+  hasPendingWakeInjection(): boolean {
+    return this.pendingContextInjections.some(i => i.wake === true)
+  }
+
+  /** Read-only view of what is queued, for callers that must decide whether a
+   *  release would actually lose anything (the loop pool's idle sweep: an
+   *  inter-loop injection whose row is already durable in the stream is
+   *  replayed by the rehydrate, so it is safe to drop). */
+  peekPendingContextInjections(): readonly QueuedContextInjection[] {
+    return this.pendingContextInjections
   }
 
   /** Append a context entry to the loop ONLY — not to the LLM message history.

@@ -4,6 +4,7 @@ import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { Timer } from '../../../shared/types/adf-v02.types'
+import { MAIN_LOOP } from '../../adf/derive-loop-config'
 
 const InputSchema = z.object({
   include_expired: z.boolean().optional().describe(
@@ -23,7 +24,14 @@ export class GetTimersTool implements Tool {
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
     const { include_expired } = (input ?? {}) as z.infer<typeof InputSchema>
     try {
-      const all = workspace.getTimers()
+      // A side loop sees its OWN timers only. The table is agent-wide, so an
+      // unscoped list would show a loop main's charter timers — along with the
+      // ids it needs to delete them (see sys_delete_timer). Main sees all:
+      // the agent's whole schedule is main's business.
+      const self = workspace.getLoopName()
+      const all = self === MAIN_LOOP
+        ? workspace.getTimers()
+        : workspace.getTimers().filter((t) => (t.loop ?? MAIN_LOOP) === self)
       const active = all.filter((t) => !t.expired)
       const expired = all.filter((t) => t.expired)
 

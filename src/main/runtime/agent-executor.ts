@@ -21,6 +21,16 @@ import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prom
 import { DEFAULT_COMPACTION_PROMPT, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_TOOL_PROMPTS } from '../../shared/constants/adf-defaults'
 import { nanoid } from 'nanoid'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
+// Shared with deriveLoopConfig — both enforcement points must read a duplicated
+// declaration the same way, or a side loop inherits an un-gated copy of a tool
+// the executor treats as restricted.
+import { dedupeToolDeclarations } from '../../shared/utils/tool-declarations'
+// Config derivation + the host-loop name + main's loops prompt section; the
+// module imports only shared types, so no runtime cycle.
+import { MAIN_LOOP, buildMainLoopsSection } from '../adf/derive-loop-config'
+// Global pending-approval registry (title-bar approvals menu). Registration is
+// unconditional: hosts with no UI never subscribe, so it costs one map write.
+import { approvalHub, notificationKey, summarizeApprovalArgs, summarizeQuestion } from './approval-hub'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { assembleContextBreakdown, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
@@ -46,6 +56,40 @@ function isOwnerInboxDispatch(dispatch: AdfEventDispatch | AdfBatchDispatch): bo
   if (!event || event.type !== 'inbox') return false
   return (event.data as InboxEventData)?.message?.source === 'user'
 }
+/**
+ * True when the dispatch's content is ALREADY a row in THIS loop's stream, so
+ * the turn must inline it into the session without writing a second row.
+ *
+ * Two producers: `deliverOwnerMessage` (mesh-manager) appends the owner's
+ * message at delivery time so it is visible immediately, and the loop pool's
+ * `sendToLoop` appends the inter-loop message at send time (RT-F6) so
+ * "it will read this on its next run" is literally true. Both ride the row's
+ * `loop_seq` on the dispatch so the inlined message keeps its [S<seq>] marker.
+ *
+ * "THIS loop's" is load-bearing. `skip_loop_append` is set by a producer that
+ * addressed one runtime, so it is per-dispatch and needs no further check. An
+ * owner inbox event, by contrast, fans out to every matching `on_inbox` target:
+ * the row landed in exactly one stream, named by `pre_appended_loop`, and every
+ * OTHER loop's dispatch must write its own copy or that loop answers from a
+ * stream that never held the message (review M5).
+ */
+function isPreAppendedDispatch(dispatch: AdfEventDispatch | AdfBatchDispatch): boolean {
+  const event = 'event' in dispatch ? dispatch.event : dispatch.events[0]
+  const data = event?.data as { skip_loop_append?: boolean; pre_appended_loop?: string } | undefined
+  if (data?.skip_loop_append === true) return true
+  if (!isOwnerInboxDispatch(dispatch)) return false
+  // Absent marker: pre-loops deliverers appended to main, which is also where
+  // an untagged dispatch routes.
+  const appendedTo = typeof data?.pre_appended_loop === 'string' ? data.pre_appended_loop : MAIN_LOOP
+  return appendedTo === (dispatch.loop ?? MAIN_LOOP)
+}
+/** Companion to isPreAppendedDispatch: the pre-appended row's seq, if any. */
+function preAppendedLoopSeq(dispatch: AdfEventDispatch | AdfBatchDispatch): number | undefined {
+  if (!isPreAppendedDispatch(dispatch)) return undefined
+  const event = 'event' in dispatch ? dispatch.event : dispatch.events[0]
+  const data = event?.data as { loop_seq?: number } | undefined
+  return typeof data?.loop_seq === 'number' ? data.loop_seq : undefined
+}
 /** True when a chat dispatch was already echoed into the sender's UI log
  *  (chat panel optimistic append) — those skip the trigger_message event.
  *  Chat from anywhere else (fleet command bar) must emit it, or an open
@@ -57,6 +101,13 @@ function isEchoedChat(dispatch: AdfEventDispatch | AdfBatchDispatch | null): boo
   return (event.data as ChatEventData)?.echoed === true
 }
 const MSG_TOOLS = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read', 'msg_update'])
+/**
+ * Crash-recovery record for the turn in flight. Agent-global for MAIN (the key
+ * predates loops and `recoverStaleTurnCheckpoint` reads only this one), suffixed
+ * per side loop — a reflector's turn must not overwrite main's record, which is
+ * the one recovery actually consults. Side-loop checkpoints are therefore
+ * write-isolated bookkeeping; per-loop recovery is a later wave.
+ */
 const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
 // Memory-flush grace turn: after the compaction threshold is crossed the agent
 // gets one turn to persist durable learnings to its mind pages before the loop
@@ -94,40 +145,6 @@ interface ToolSnapshot {
 }
 
 type ToolDeclarationEntry = NonNullable<AgentConfig['tools']>[number]
-
-/**
- * Collapse duplicate `tools[]` entries to exactly one declaration per name.
- *
- * Semantics: the FIRST declaration wins for every field, and `restricted` /
- * `locked` are sticky-true — a later duplicate may RAISE a guard but can never
- * lower one. The previous `new Map(decls.map(d => [d.name, d]))` was last-wins,
- * so a config that appended `{ name: 'sys_update_config', restricted: false }`
- * shadowed the restricted original: an agent editing its own config could
- * de-restrict itself. Configs with one declaration per name are unaffected.
- */
-function dedupeToolDeclarations(declarations: ToolDeclarationEntry[]): {
-  deduped: ToolDeclarationEntry[]
-  duplicateNames: string[]
-} {
-  const byName = new Map<string, ToolDeclarationEntry>()
-  const duplicateNames = new Set<string>()
-  for (const decl of declarations) {
-    const existing = byName.get(decl.name)
-    if (!existing) {
-      byName.set(decl.name, decl)
-      continue
-    }
-    duplicateNames.add(decl.name)
-    if (decl.restricted === true || decl.locked === true) {
-      byName.set(decl.name, {
-        ...existing,
-        ...(decl.restricted === true ? { restricted: true } : {}),
-        ...(decl.locked === true ? { locked: true } : {}),
-      })
-    }
-  }
-  return { deduped: [...byName.values()], duplicateNames: [...duplicateNames] }
-}
 
 /** Coarse human-readable span used in crash-recovery notices, e.g. `3h 12m`. */
 function formatElapsed(ms: number): string {
@@ -424,6 +441,11 @@ export class AgentExecutor extends EventEmitter {
   onTaskCompleted?: (taskId: string, tool: string, status: string, result?: string, error?: string, sideEffects?: { endTurn?: boolean }) => void
   onLlmCall?: (data: LlmCallEventData) => void
 
+  /** Fires at a real turn boundary — no turn running and none already claimed
+   *  by a re-entrant successor. Set by the loop pool to consume a pending wake
+   *  (see runClaimedTurn). Must never throw; the executor logs and continues. */
+  onTurnSettled?: () => void
+
   // Delta batching for performance.
   // A single ordered queue preserves arrival order across text/thinking deltas
   // so the renderer never sees out-of-order batches that would split a single
@@ -564,10 +586,8 @@ export class AgentExecutor extends EventEmitter {
     // minus pendingInterrupt/_interruptRestart — there is nothing to restart.
     if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
     this.deltaQueue.length = 0
-    for (const pending of this.pendingHilTasks.values()) pending.resolve({ approved: false })
-    this.pendingHilTasks.clear()
-    for (const pending of this.pendingAsks.values()) pending.resolve('')
-    this.pendingAsks.clear()
+    this.drainPendingHilTasks()
+    this.drainPendingAsks()
     if (this.pendingSuspend) {
       this.pendingSuspend.resolve(false)
       this.pendingSuspend = null
@@ -646,6 +666,111 @@ export class AgentExecutor extends EventEmitter {
     return this.pendingHilTasks.get(requestId)?.meta
   }
 
+  /** The .adf this executor is bound to — the ApprovalHub's jump-to target.
+   *  A loop-scoped workspace view delegates to the root, so side loops report
+   *  the agent's file, which is what "open this agent" needs. */
+  private approvalFilePath(): string {
+    try { return this.session.getWorkspace().getFilePath() } catch { return '' }
+  }
+
+  /** This executor's cognition stream — 'main' for the host loop. */
+  private approvalLoopName(): string {
+    const name = this.config.metadata?.loop_name
+    return typeof name === 'string' && name.length > 0 ? name : MAIN_LOOP
+  }
+
+  /**
+   * THE single insert point for `pendingHilTasks`.
+   *
+   * Every registration site (blocking HIL, async-restricted, and the
+   * protection-override conversion inside executeAsyncTool) goes through here
+   * so the executor's pending row and the global ApprovalHub row are always
+   * created together. A row in one and not the other is the orphan-approval
+   * bug the hub exists to prevent.
+   */
+  private trackPendingHilTask(
+    taskId: string,
+    entry: {
+      resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }) => void
+      name: string
+      input: unknown
+      meta: ApprovalMeta
+    }
+  ): void {
+    this.pendingHilTasks.set(taskId, entry)
+    approvalHub.register({
+      id: this.notificationKeyFor(taskId),
+      kind: 'approval',
+      requestId: taskId,
+      filePath: this.approvalFilePath(),
+      agentName: this.config.name,
+      loop: this.approvalLoopName(),
+      toolName: entry.name,
+      preview: summarizeApprovalArgs(entry.input),
+      input: entry.input,
+      reason: entry.meta.reason,
+      protection: entry.meta.protection,
+      canAlwaysApprove: entry.meta.canAlwaysApprove,
+      alwaysApproveBlockedReason: entry.meta.alwaysApproveBlockedReason,
+      requestedAt: Date.now(),
+      // The hub's resolve path IS the in-chat card's path: same method, same
+      // tool_approval_resolved event, so resolving on either surface clears both.
+      resolve: (approved, feedback) => this.resolveApproval(taskId, approved, feedback),
+    })
+  }
+
+  /**
+   * Drop every pending HIL request as denied (teardown, chat interrupt, owner
+   * state transition). These paths deliberately do NOT emit
+   * `tool_approval_resolved`, so the hub must be cleared here explicitly or it
+   * keeps rows nobody can ever answer.
+   */
+  private drainPendingHilTasks(): void {
+    const entries = [...this.pendingHilTasks.entries()]
+    // Clear first: a resolve callback that re-enters resolveHilTask must no-op.
+    this.pendingHilTasks.clear()
+    for (const [taskId, pending] of entries) {
+      approvalHub.unregister(this.notificationKeyFor(taskId))
+      pending.resolve({ approved: false })
+    }
+  }
+
+  /** The hub is keyed per agent+loop+request — `ask_1` is not globally unique. */
+  private notificationKeyFor(requestId: string): string {
+    return notificationKey(this.approvalFilePath(), this.approvalLoopName(), requestId)
+  }
+
+  /**
+   * The ask counterpart of trackPendingHilTask. Asks block the executor exactly
+   * like approvals do, so they belong in the same menu — but they are answered
+   * with prose, so the hub row carries no resolve callback and the UI offers
+   * "jump to the agent" rather than a verdict.
+   */
+  private trackPendingAsk(requestId: string, question: string, resolve: (answer: string) => void): void {
+    this.pendingAsks.set(requestId, { resolve, question })
+    approvalHub.register({
+      id: this.notificationKeyFor(requestId),
+      kind: 'ask',
+      requestId,
+      filePath: this.approvalFilePath(),
+      agentName: this.config.name,
+      loop: this.approvalLoopName(),
+      preview: summarizeQuestion(question),
+      question,
+      requestedAt: Date.now(),
+    })
+  }
+
+  /** Ask equivalent of drainPendingHilTasks — same silent-teardown problem. */
+  private drainPendingAsks(): void {
+    const entries = [...this.pendingAsks.entries()]
+    this.pendingAsks.clear()
+    for (const [requestId, pending] of entries) {
+      approvalHub.unregister(this.notificationKeyFor(requestId))
+      pending.resolve('')
+    }
+  }
+
   /**
    * Why an approval prompt is shown and whether "Always approve" is allowed.
    * Always-approve persists {enabled, restricted:false} on the declaration, so
@@ -700,6 +825,13 @@ export class AgentExecutor extends EventEmitter {
     return this.config
   }
 
+  /** True when this executor runs a side loop (derived-config marker set by
+   *  deriveLoopConfig; a stored .adf never carries it). */
+  private isSideLoop(): boolean {
+    const name = this.config.metadata?.loop_name
+    return typeof name === 'string' && name.length > 0 && name !== 'main'
+  }
+
   updateConfig(config: AgentConfig): void {
     this.config = config
     // Invalidate system prompt cache when config changes
@@ -716,6 +848,14 @@ export class AgentExecutor extends EventEmitter {
     this.provider = provider
     // New provider instance — must re-validate on the next turn.
     this.providerValidated = false
+  }
+
+  /** Live provider accessor. The loop pool shares MAIN's provider with every
+   *  loop that has no model override, and a reference captured at assembly
+   *  would keep those loops on the old model after the owner changed the
+   *  agent's (review M4d). */
+  getProvider(): LLMProvider | null {
+    return this.provider
   }
 
   private buildToolSnapshot(): ToolSnapshot {
@@ -851,7 +991,7 @@ export class AgentExecutor extends EventEmitter {
     })
 
     return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }>((resolve) => {
-      this.pendingHilTasks.set(taskId, {
+      this.trackPendingHilTask(taskId, {
         resolve: (r) => resolve({ ...r, taskId }),
         name, input, meta: approvalMeta
       })
@@ -957,6 +1097,15 @@ export class AgentExecutor extends EventEmitter {
     const pending = this.pendingHilTasks.get(taskId)
     if (pending) {
       this.pendingHilTasks.delete(taskId)
+      // Clear the global approvals menu too, recording how it ended for the
+      // menu's history. No-op when the hub initiated this resolve (it removes
+      // its own row first), which is what makes a double-resolve and a
+      // resolve-after-timeout idempotent on both sides. An auto-deny is NOT a
+      // rejection: nobody decided, so it reads as 'expired'.
+      approvalHub.unregister(
+        this.notificationKeyFor(taskId),
+        opts?.timedOut ? 'expired' : approved ? 'approved' : 'rejected'
+      )
       // Dismiss the UI approval dialog (requestId === taskId)
       this.emitEvent({
         type: 'tool_approval_resolved',
@@ -1031,7 +1180,7 @@ export class AgentExecutor extends EventEmitter {
     })
     this.emitRuntimeEvent('ask.requested', { request_id: requestId, question })
     return new Promise<string>((resolve) => {
-      this.pendingAsks.set(requestId, { resolve, question })
+      this.trackPendingAsk(requestId, question, resolve)
     })
   }
 
@@ -1043,6 +1192,8 @@ export class AgentExecutor extends EventEmitter {
     const pending = this.pendingAsks.get(requestId)
     if (pending) {
       this.pendingAsks.delete(requestId)
+      // Clear the global menu row too — the ask is answered.
+      approvalHub.unregister(this.notificationKeyFor(requestId), 'answered')
       // The human's answer is not leaked wholesale onto the umbilical — taps
       // get shape (length, a bounded preview), not the full text.
       const text = typeof answer === 'string' ? answer : ''
@@ -1138,6 +1289,16 @@ export class AgentExecutor extends EventEmitter {
       return await withSource(`agent:${turnId}`, this.config.id, () => this.executeTurnImpl(dispatch, opts, turnId))
     } finally {
       this.activeTurnCount--
+      // True turn boundary: a successor scheduled by scheduleReentrantTurn has
+      // already claimed its slot, so a zero here means nothing is queued behind
+      // this turn. The loop pool consumes its pending wake here — a naive
+      // "is it running?" check races the self-scheduling successor and makes
+      // inter-loop delivery nondeterministic (LoopPoolApi.sendToLoop contract).
+      if (this.activeTurnCount === 0 && this.onTurnSettled) {
+        try { this.onTurnSettled() } catch (error) {
+          console.error('[AgentExecutor] onTurnSettled hook threw:', error)
+        }
+      }
     }
   }
 
@@ -1222,6 +1383,34 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
+   * True when this dispatch's pre-appended row is ALREADY in the session, so
+   * inlining its content again would show the model the same message twice.
+   *
+   * The normal case after an idle sweep: `loop_send` (and `deliverOwnerMessage`)
+   * write the row at send time, the session is cold, the dispatch rehydrates it
+   * from the stream — and then the turn inlines the identical content on top.
+   * `injectWithoutWake` already guards the no-wake half of this (empty session ⇒
+   * rehydrate covers it ⇒ skip the injection); this is the wake half, and it
+   * covers main's ingest path as well as a side loop's (review M6).
+   *
+   * Keyed on the row's seq rather than on the text: restored messages carry
+   * their seq, the seq space is per-stream, and a session only ever holds its
+   * own loop's rows. A live session that never saw the row has no message with
+   * that seq, so the warm path still inlines exactly once.
+   */
+  private preAppendedRowAlreadyInSession(dispatch: AdfEventDispatch | AdfBatchDispatch): boolean {
+    const seq = preAppendedLoopSeq(dispatch)
+    if (seq === undefined) return false
+    if (this.session.getMessages().some(message => message.seq === seq)) return true
+    // A row that is QUEUED as a context injection (a wake:true loop_send that
+    // arrived mid-turn) is already on its way into context: the drain at the
+    // next model boundary delivers it. Inlining it here as the trigger message
+    // too would put the same row into the session twice (review C1). The
+    // boundary "kick" wake is exactly this case — it must add nothing.
+    return this.session.peekPendingContextInjections().some(injection => injection.seq === seq)
+  }
+
+  /**
    * A dropped dispatch never reached the handler, so nothing downstream emitted
    * a terminal umbilical event for it: `timer.fired` (or the trigger's own
    * event) would sit there with no lambda.started/lambda.completed pair. Close
@@ -1287,6 +1476,24 @@ export class AgentExecutor extends EventEmitter {
         }
       } else {
         console.warn(`[AgentExecutor] No SystemScopeHandler — system scope trigger ignored`)
+        // A side loop has no SystemScopeHandler by construction (§2.3: system
+        // scope runs under main's unattenuated authority), so this branch is
+        // the security outcome working as designed — but a console.warn is
+        // invisible to the operator. Record the drop where drops are looked
+        // for. Main hitting this is a different, rarer condition (no handler
+        // wired at all), so it gets its own event name.
+        const boundLoop = this.session.getWorkspace().getLoopName()
+        try {
+          this.session.getWorkspace().insertLog(
+            'warn',
+            'executor',
+            boundLoop === MAIN_LOOP ? 'system_dispatch_unhandled' : 'loop_dispatch_dropped',
+            ('lambda' in dispatch ? dispatch.lambda : null) ?? null,
+            boundLoop === MAIN_LOOP
+              ? `Dropped a system-scope ${eventType ?? 'trigger'} dispatch — this agent has no system-scope handler`
+              : `Dropped a system-scope ${eventType ?? 'trigger'} dispatch that reached loop "${boundLoop}" — inner loops never run system scope, and it is never re-pointed at main`,
+          )
+        } catch { /* observability is never fatal */ }
       }
       return
     }
@@ -1304,10 +1511,8 @@ export class AgentExecutor extends EventEmitter {
         this.abortController?.abort()
         if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
         this.deltaQueue.length = 0
-        for (const pending of this.pendingHilTasks.values()) pending.resolve({ approved: false })
-        this.pendingHilTasks.clear()
-        for (const pending of this.pendingAsks.values()) pending.resolve('')
-        this.pendingAsks.clear()
+        this.drainPendingHilTasks()
+        this.drainPendingAsks()
         if (this.pendingSuspend) {
           this.pendingSuspend.resolve(false)
           this.pendingSuspend = null
@@ -1338,20 +1543,21 @@ export class AgentExecutor extends EventEmitter {
       const triggerContent = this.buildTriggerContent(dispatch)
       const triggerMessage = this.contentBlocksToText(triggerContent)
       // Error-recovery retries re-run the same dispatch against a history that
-      // already contains the trigger message — don't add it twice.
-      if (!opts?.skipTriggerMessage) {
+      // already contains the trigger message — don't add it twice. Neither does
+      // a wake whose pre-appended row the session ALREADY holds (review M6).
+      const skipTriggerMessage = opts?.skipTriggerMessage === true
+        || this.preAppendedRowAlreadyInSession(dispatch)
+      if (!skipTriggerMessage) {
         // Owner messages were already appended to the loop at delivery time
         // (deliverOwnerMessage) so they're visible immediately — inline them
         // into the session for the LLM without writing a duplicate loop row.
         // The delivery-time row's seq rides the dispatch (loop_seq) so the
         // inlined message still gets its [S<seq>] marker.
-        const ownerInbox = isOwnerInboxDispatch(dispatch)
-        const ownerEvent = 'event' in dispatch ? dispatch.event : dispatch.events[0]
-        const ownerLoopSeq = ownerInbox ? (ownerEvent?.data as { loop_seq?: number } | undefined)?.loop_seq : undefined
+        const preAppended = isPreAppendedDispatch(dispatch)
         this.session.addMessage(
           { role: 'user', content: triggerContent },
           undefined,
-          { skipLoop: ownerInbox, seq: ownerLoopSeq }
+          { skipLoop: preAppended, seq: preAppendedLoopSeq(dispatch) }
         )
         // addMessage wrote the trigger through to the loop synchronously, so
         // it is on disk the moment the turn starts. This retry-flush only
@@ -1378,7 +1584,7 @@ export class AgentExecutor extends EventEmitter {
       // Skip trigger_message event on interrupt restart — the renderer already has the message.
       // Chat triggers skip it ONLY when the sending UI echoed the message
       // itself (chat panel); fleet-bar chat has no echo and must emit.
-      if (this._skipNextTriggerEvent || opts?.skipTriggerMessage) {
+      if (this._skipNextTriggerEvent || skipTriggerMessage) {
         this._skipNextTriggerEvent = false
       } else if (eventType !== 'chat' || !isEchoedChat(dispatch)) {
         this.emitEvent({
@@ -1832,6 +2038,34 @@ export class AgentExecutor extends EventEmitter {
               }
             }
 
+            // Side loops have no approval channel (HIL routing is filePath/
+            // singleton keyed, MVP), so a restricted call here would park an
+            // approval nobody can answer and block the loop until the auto-deny
+            // timeout. deriveLoopConfig already keeps every statically
+            // restricted tool out of a loop's toolset; this closes the DYNAMIC
+            // escape above (sys_lambda targeting an authorized file) and any
+            // MCP server restricted after the derive. Fail closed, and say why.
+            if (isRestricted && this.isSideLoop()) {
+              const refusal =
+                `"${toolBlock.name}" needs human approval, and an inner loop has no channel to ask for one. ` +
+                'Ask main to run this (loop_send), or do it a way that needs no approval.'
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolBlock.id,
+                content: refusal,
+                is_error: true
+              })
+              this.emitEvent({
+                type: 'tool_call_result',
+                payload: { name: toolBlock.name, id: toolBlock.id, result: { content: refusal, isError: true } },
+                timestamp: Date.now()
+              })
+              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
+                content: refusal, isError: true
+              })
+              continue
+            }
+
             // _async check BEFORE HIL — async restricted tools create a pending_approval task
             // and return immediately instead of blocking the loop
             const toolInput = toolBlock.input as Record<string, unknown> | undefined
@@ -1857,7 +2091,7 @@ export class AgentExecutor extends EventEmitter {
               // When approved, execute the tool asynchronously
               const asyncMeta = this.buildApprovalMeta(toolBlock.name!)
               const asyncToolUseId = toolBlock.id
-              this.pendingHilTasks.set(taskId, {
+              this.trackPendingHilTask(taskId, {
                 resolve: (r) => {
                   if (r.approved) {
                     const finalInput = r.modifiedArgs ?? cleanInput
@@ -2028,6 +2262,20 @@ export class AgentExecutor extends EventEmitter {
             // on deny the denial is final for this turn (dedupe by tool+target).
             if (rawResult.isError && rawResult.protection) {
               const p = rawResult.protection
+              // A4 (security F2): a side loop has no HIL approval channel (routing
+              // is filePath/singleton-keyed, MVP), so parking an override request
+              // here would hang the call until the auto-deny timeout with nothing
+              // on screen to answer it — AND turn a protection denial in an inner
+              // loop into a working override channel via the hub. Fail closed,
+              // mirroring adf-call-handler.ts:401. Dedupe-mark it so a retry this
+              // turn is short-circuited too.
+              if (this.isSideLoop()) {
+                this.deniedProtectionKeys.add(`${toolBlock.name}|${p.kind}|${p.target}`)
+                rawResult = {
+                  content: `"${toolBlock.name}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`,
+                  isError: true
+                }
+              } else {
               const dedupeKey = `${toolBlock.name}|${p.kind}|${p.target}`
               if (this.deniedProtectionKeys.has(dedupeKey)) {
                 rawResult = {
@@ -2072,6 +2320,7 @@ export class AgentExecutor extends EventEmitter {
                   }
                   if (this.getState() !== 'stopped') this.setState('tool_use')
                 }
+              }
               }
             }
 
@@ -2782,9 +3031,17 @@ export class AgentExecutor extends EventEmitter {
    * without idempotency metadata. It records the boundary in the loop so the next
    * provider context is structurally valid and explainable.
    */
+  /** This executor's checkpoint meta key — see TURN_CHECKPOINT_META_KEY. */
+  private turnCheckpointKey(): string {
+    const loop = this.session.getWorkspace().getLoopName()
+    return !loop || loop === MAIN_LOOP
+      ? TURN_CHECKPOINT_META_KEY
+      : `${TURN_CHECKPOINT_META_KEY}:${loop}`
+  }
+
   recoverStaleTurnCheckpoint(): TurnCheckpointRecord | null {
     const workspace = this.session.getWorkspace()
-    const raw = workspace.getMeta(TURN_CHECKPOINT_META_KEY)
+    const raw = workspace.getMeta(this.turnCheckpointKey())
     if (!raw) return null
 
     const now = Date.now()
@@ -2793,7 +3050,7 @@ export class AgentExecutor extends EventEmitter {
     try {
       checkpoint = JSON.parse(raw) as TurnCheckpointRecord
     } catch {
-      workspace.setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify({
+      workspace.setMeta(this.turnCheckpointKey(), JSON.stringify({
         id: nanoid(10),
         status: 'interrupted',
         started_at: now,
@@ -2844,7 +3101,7 @@ export class AgentExecutor extends EventEmitter {
     const offlineMs = typeof checkpoint.started_at === 'number' ? now - checkpoint.started_at : NaN
     const elapsed = formatElapsed(offlineMs)
 
-    workspace.setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify(recovered), 'readonly')
+    workspace.setMeta(this.turnCheckpointKey(), JSON.stringify(recovered), 'readonly')
     workspace.insertLog(
       'warn',
       'executor',
@@ -2951,7 +3208,7 @@ export class AgentExecutor extends EventEmitter {
       scope: scope ?? ('scope' in dispatch ? dispatch.scope : 'unknown'),
       replay: 'not_attempted',
     }
-    this.session.getWorkspace().setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify(checkpoint), 'readonly')
+    this.session.getWorkspace().setMeta(this.turnCheckpointKey(), JSON.stringify(checkpoint), 'readonly')
   }
 
   private completeTurnCheckpoint(id: string): void {
@@ -2968,7 +3225,7 @@ export class AgentExecutor extends EventEmitter {
 
   private finishTurnCheckpoint(id: string, status: 'completed' | 'interrupted' | 'failed', reason?: string): void {
     const workspace = this.session.getWorkspace()
-    const raw = workspace.getMeta(TURN_CHECKPOINT_META_KEY)
+    const raw = workspace.getMeta(this.turnCheckpointKey())
     if (!raw) return
 
     let existing: Partial<TurnCheckpointRecord> = {}
@@ -2987,7 +3244,7 @@ export class AgentExecutor extends EventEmitter {
       replay: status === 'completed' ? 'not_attempted' : 'not_replayed',
       ...(reason ? { reason } : {}),
     }
-    workspace.setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify(checkpoint), 'readonly')
+    workspace.setMeta(this.turnCheckpointKey(), JSON.stringify(checkpoint), 'readonly')
   }
 
   /**
@@ -3216,10 +3473,22 @@ export class AgentExecutor extends EventEmitter {
         // instead of failing. Non-blocking: the loop already returned the task
         // reference; approval re-runs the call with a one-time bypass.
         if (rawResult.isError && rawResult.protection) {
+          const p = rawResult.protection
+          // A4 (security F2): a side loop has no HIL approval channel, so parking
+          // a pending_approval task here would leave an override request no one
+          // can see or answer — and would make protection denials in inner loops
+          // a working override channel via the hub. Fail closed (auto-deny),
+          // mirroring the sync path and adf-call-handler.ts:401.
+          if (this.isSideLoop()) {
+            const msg = `"${toolName}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`
+            workspace.updateTaskStatus(taskId, 'denied', undefined, msg)
+            this.onTaskCompleted?.(taskId, toolName, 'denied', undefined, msg)
+            return
+          }
           const meta = this.buildApprovalMeta(toolName, rawResult.protection)
           workspace.updateTaskStatus(taskId, 'pending_approval')
           workspace.setTaskExecutorManaged(taskId, true)
-          this.pendingHilTasks.set(taskId, {
+          this.trackPendingHilTask(taskId, {
             resolve: (r) => {
               if (r.approved) {
                 const finalInput = {
@@ -3285,15 +3554,9 @@ export class AgentExecutor extends EventEmitter {
     // Queued system dispatches never survive teardown — waking them here would
     // resurrect work the agent was stopped in the middle of.
     this.systemDispatchQueue.clear()
-    for (const pending of this.pendingHilTasks.values()) {
-      pending.resolve({ approved: false })
-    }
-    this.pendingHilTasks.clear()
+    this.drainPendingHilTasks()
     this.deniedProtectionKeys.clear()
-    for (const pending of this.pendingAsks.values()) {
-      pending.resolve('')
-    }
-    this.pendingAsks.clear()
+    this.drainPendingAsks()
     if (this.pendingSuspend) {
       this.pendingSuspend.resolve(false)
       this.pendingSuspend = null
@@ -4066,11 +4329,16 @@ export class AgentExecutor extends EventEmitter {
       } })
     }
 
-    // Reset session and reload from DB
+    // Reset session and reload from DB. Undelivered context injections (a
+    // wake:true loop_send that arrived mid-turn) exist only in memory — they
+    // are in neither the preserved messages nor the rebuilt stream — so carry
+    // them across the reset or the delivery is silently destroyed (review C2).
+    const undelivered = this.session.peekPendingContextInjections().slice()
     this.session.reset()
     const loopEntries = workspace.getLoop()
     const llmMessages = loopEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at, seq: e.seq }))
     this.session.restoreMessages(llmMessages)
+    for (const injection of undelivered) this.session.queueContextInjection(injection)
 
     const displayEntries = parseLoopToDisplay(loopEntries)
     this.emitEvent({
@@ -4320,6 +4588,12 @@ export class AgentExecutor extends EventEmitter {
         tools: enabledToolNames,
         autonomous: this.config.autonomous,
         compute_browser: this.config.compute?.enabled && this.config.compute.browser !== false,
+        // Loop roster + loop_manage drive the '## Your Loops' section below.
+        // `undefined` for the loop-less majority, so JSON.stringify drops the
+        // key entirely and their hash is unchanged from before loops existed.
+        loops: this.config.loops?.length
+          ? this.config.loops.map(l => `${l.name}:${l.enabled === false ? 0 : 1}:${l.goal}`)
+          : undefined,
       })
     )
 
@@ -4354,6 +4628,18 @@ export class AgentExecutor extends EventEmitter {
         if (this.config.model?.model_id) identityLines.push(`Model: ${this.config.model.model_id}.`)
         if (this.config.id) identityLines.push(`DID: ${this.config.id}.`)
         parts.push(`## Your Identity\n\n${identityLines.join(' ')}`)
+
+        // Inner loops — main only. A side loop's derived config carries
+        // `loops: []` (loops do not nest) and gets its own preamble through
+        // `instructions` instead, so this never doubles up. Null (nothing
+        // added) only for an agent with no loops AND loop_manage off — the
+        // opt-out that keeps its prompt byte-identical to the pre-loops one.
+        const loopsSection = buildMainLoopsSection(this.config.loops, {
+          loopManageEnabled: enabledTools.has('loop_manage'),
+          loopSendEnabled: enabledTools.has('loop_send'),
+          loopListEnabled: enabledTools.has('loop_list')
+        })
+        if (loopsSection) parts.push(loopsSection)
 
         // Multimodal perception guidance (only when at least one modality is enabled)
         const enabledModalities: string[] = []

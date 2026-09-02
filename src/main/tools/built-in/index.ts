@@ -21,6 +21,41 @@ export { DbExecuteTool } from './db-execute.tool'
 export { LoopCompactTool } from './loop-compact.tool'
 export { LoopClearTool } from './loop-clear.tool'
 export { MsgDeleteTool } from './msg-delete.tool'
+
+// Loop (facet) tools — pool-injected, deliberately NOT in registerBuiltInTools.
+//
+// loop_send/loop_list/loop_manage are ordinary config-declared tools
+// (enabled+visible in DEFAULT_TOOLS). The runtime registers each into MAIN's
+// registry whenever its own declaration is enabled — like every other
+// capability tool — and into a SIDE loop's registry only when that loop's
+// allow-list names it (loop_manage is never grantable to a loop:
+// LOOP_PROHIBITED_TOOLS). loop_send/loop_list are present regardless of loop
+// count and return sensibly when there is nothing to act on (loop_list shows
+// just `main`; loop_send errors on any target).
+//
+// Gate registration on `<its declaration is enabled>`, NOT the sys_code idiom
+// of gating on declaration PRESENCE (`config.tools.some(t => t.name === ...)`):
+// the DEFAULT_TOOLS backfill writes a declaration for all three into every
+// config, so a presence test is always true. For loop_manage in particular a
+// presence test would register it into every side loop's registry, which must
+// never build it.
+//
+// Registration is NOT itself the first fence for loop_manage: main's registry
+// (which holds it) is copied into each side loop's registry, so the instance
+// can be present there before anything trims it. The three fences that actually
+// keep it off a loop are:
+//   1. LOOP_PROHIBITED_TOOLS at derive time — deriveLoopConfig subtracts it from
+//      every derived toolset, and LoopConfigSchema rejects it in `loop.tools`;
+//   2. `rebindBoundTools`' unconditional unregister in the loop registry — the
+//      copied instance is removed regardless of what the derived config says;
+//   3. the tool's own main-only runtime refusal — it errors for any caller whose
+//      workspace loop name is not `main`.
+//
+// See docs/design/agent-loops-mvp.md §7 and src/main/adf/loop-pool.types.ts for
+// the injected contract.
+export { LoopSendTool } from './loop-send.tool'
+export { LoopListTool } from './loop-list.tool'
+export { LoopManageTool } from './loop-manage.tool'
 export { SysFetchTool } from './sys-fetch.tool'
 export { SysSetStateTool } from './sys-set-state.tool'
 export { SayTool } from './say.tool'

@@ -31,7 +31,7 @@ export async function auditRead({ seq }) {
   // Candidate blobs — successive compactions can archive overlapping ranges,
   // so several blobs may cover this seq. Scan each for the exact entry.
   const candidates = await adf.db_query({
-    sql: "SELECT id, data FROM adf_audit WHERE source = 'loop' AND start_seq <= ? AND end_seq >= ? ORDER BY start_seq DESC",
+    sql: "SELECT id, data FROM adf_audit WHERE (source = 'loop' OR source LIKE 'loop:%') AND start_seq <= ? AND end_seq >= ? ORDER BY start_seq DESC",
     params: [seq, seq], _full: true
   })
   for (const row of candidates) {

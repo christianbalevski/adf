@@ -1,0 +1,771 @@
+/**
+ * LoopPool against a real .adf: create → derive → send → delete.
+ *
+ * The pool is where the loop contract stops being types and starts being rows,
+ * so these tests drive it through an actual workspace rather than a mock —
+ * every assertion here is about what ends up in (or leaves) the file.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import { mkdtempSync, rmSync } from 'fs'
+import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
+import { LoopPool, stripLoopNameMarker } from '../../../src/main/runtime/loop-pool'
+import { ToolRegistry } from '../../../src/main/tools/tool-registry'
+import { registerBuiltInTools } from '../../../src/main/tools/built-in/register-built-in-tools'
+import { AgentSession } from '../../../src/main/runtime/agent-session'
+import type { AgentConfig, LoopConfig } from '../../../src/shared/types/adf-v02.types'
+import type { AdfBatchDispatch, AdfEventDispatch } from '../../../src/shared/types/adf-event.types'
+import type { LLMProvider } from '../../../src/main/providers/provider.interface'
+import type { LLMResponse } from '../../../src/shared/types/provider.types'
+import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
+import { clearAllUmbilicalBuses } from '../../../src/main/runtime/umbilical-bus'
+import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
+import { approvalHub } from '../../../src/main/runtime/approval-hub'
+
+let rootDir: string
+let filePath: string
+let ws: AdfWorkspace
+let pool: LoopPool
+let events: AgentExecutionEvent[]
+let mainSession: AgentSession
+let mainBusy: boolean
+let mainState: string
+let mainDispatches: Array<AdfEventDispatch | AdfBatchDispatch>
+
+/**
+ * Most tests never run a turn — the executor only needs a shape. The ones that
+ * DO (the delivery-duplication and turn-boundary tests, which are about what
+ * the model actually ends up seeing) set `respond` first.
+ */
+let respond: (() => Promise<LLMResponse>) | null = null
+const provider: LLMProvider = {
+  name: 'stub',
+  providerId: 'stub',
+  modelId: 'stub-model',
+  createMessage: async () => {
+    if (!respond) throw new Error('no turns in this test')
+    return respond()
+  },
+  validateConfig: async () => ({ valid: true }),
+}
+
+/** A turn that says one thing and stops. */
+function replyOnce(text = 'noted'): () => Promise<LLMResponse> {
+  return async () => ({
+    id: 'reply',
+    content: [{ type: 'text', text }],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  })
+}
+
+/** Occurrences of `needle` in the session the model would be shown. */
+function occurrencesInSession(session: AgentSession, needle: string): number {
+  let count = 0
+  for (const message of session.getMessages()) {
+    const text = typeof message.content === 'string'
+      ? message.content
+      : (message.content as { type: string; text?: string }[])
+        .map(block => (block.type === 'text' ? block.text ?? '' : '')).join('')
+    if (text.includes(needle)) count++
+  }
+  return count
+}
+
+function buildPool(mutate?: (config: AgentConfig) => void): LoopPool {
+  const config = ws.getAgentConfig()
+  // fs_read: an ordinary enabled host tool a loop may ask for.
+  const fsRead = config.tools.find(t => t.name === 'fs_read')
+  if (fsRead) fsRead.enabled = true
+  // db_execute stands in for a host tool the owner marked restricted.
+  const dbExecute = config.tools.find(t => t.name === 'db_execute')
+  if (dbExecute) { dbExecute.enabled = true; dbExecute.restricted = true }
+  mutate?.(config)
+  ws.setAgentConfig(config)
+
+  const registry = new ToolRegistry()
+  registerBuiltInTools(registry)
+
+  let live = ws.getAgentConfig()
+  events = []
+  return new LoopPool({
+    workspace: ws,
+    registry,
+    getProvider: () => provider,
+    basePrompt: '',
+    toolPrompts: {},
+    adfCallHandler: null,
+    codeSandboxService: null,
+    mcpManager: null,
+    getHostConfig: () => live,
+    saveConfig: (next) => {
+      ws.setAgentConfig(next)
+      live = next
+      pool.reconcile(next)
+    },
+    onLoopEvent: (event) => { events.push(event) },
+    main: {
+      session: mainSession,
+      isBusy: () => mainBusy,
+      dispatch: async (value) => { mainDispatches.push(value) },
+      getState: () => mainState,
+    },
+  })
+}
+
+const loop = (over: Partial<LoopConfig> = {}): LoopConfig => ({
+  name: 'reflector',
+  goal: 'Notice what main missed.',
+  enabled: true,
+  tools: [],
+  ...over,
+})
+
+beforeEach(() => {
+  rootDir = mkdtempSync(join(tmpdir(), 'adf-loop-pool-'))
+  filePath = join(rootDir, 'agent.adf')
+  ws = AdfWorkspace.create(filePath, { name: 'pooled' })
+  mainSession = new AgentSession(ws)
+  mainBusy = false
+  mainState = 'idle'
+  mainDispatches = []
+  respond = null
+  pool = buildPool()
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  try { pool.dispose() } catch { /* already disposed */ }
+  try { ws.close() } catch { /* already closed by a test */ }
+  clearAllUmbilicalBuses()
+  rmSync(rootDir, { recursive: true, force: true })
+})
+
+describe('LoopPool — roster', () => {
+  it('always lists main first, as the host loop, with the agent instructions as its goal', () => {
+    const loops = pool.listLoops()
+    expect(loops).toHaveLength(1)
+    expect(loops[0]).toMatchObject({ name: 'main', isMain: true, enabled: true, status: 'idle' })
+    expect(pool.hasLoop('main')).toBe(true)
+    // main is implicit: it has no LoopConfig to return.
+    expect(pool.getLoop('main')).toBeUndefined()
+  })
+})
+
+describe('LoopPool — createLoop', () => {
+  it('persists the loop, spins up a runtime, and reports the EFFECTIVE tools', async () => {
+    const result = await pool.createLoop(loop({ tools: ['fs_read', 'loop_send', 'loop_list'] }))
+
+    // The effective set is what the executor actually got: the request,
+    // intersected with the host. loop_send/loop_list are in it because they
+    // were ASKED for — there is no union any more.
+    expect(result.effectiveTools).toContain('fs_read')
+    expect(result.effectiveTools).toContain('loop_send')
+    expect(result.effectiveTools).toContain('loop_list')
+    expect(result.effectiveTools).not.toContain('sys_update_config')
+
+    // Config write landed in the file, not just in memory.
+    expect(ws.getAgentConfig().loops?.map(l => l.name)).toEqual(['reflector'])
+    // ...and the runtime followed it.
+    const runtime = pool.getRuntime('reflector')
+    expect(runtime).toBeDefined()
+    expect(runtime!.workspace.getLoopName()).toBe('reflector')
+    expect(runtime!.derived.metadata?.loop_name).toBe('reflector')
+    expect(pool.listLoops().map(l => l.name)).toEqual(['main', 'reflector'])
+  })
+
+  it('registers loop_send/loop_list into the loop registry only when granted', async () => {
+    await pool.createLoop(loop({ tools: ['fs_read', 'loop_send', 'loop_list'] }))
+    const talker = pool.getRuntime('reflector')!
+    expect(talker.registry.get('loop_send')).toBeDefined()
+    expect(talker.registry.get('loop_list')).toBeDefined()
+
+    // A mute loop must not find MAIN's instances sitting in its copied registry.
+    await pool.createLoop(loop({ name: 'hermit', tools: [] }))
+    const hermit = pool.getRuntime('hermit')!
+    expect(hermit.registry.get('loop_send')).toBeUndefined()
+    expect(hermit.registry.get('loop_list')).toBeUndefined()
+    expect(hermit.derived.tools.find(t => t.name === 'loop_send')?.enabled ?? false).toBe(false)
+  })
+
+  it('creates the loop anyway when a requested tool is merely host-DISABLED', async () => {
+    pool.dispose()
+    pool = buildPool(config => {
+      const decl = config.tools.find(t => t.name === 'fs_read')
+      if (decl) decl.enabled = false
+    })
+    await expect(pool.createLoop(loop({ tools: ['fs_read'] }))).resolves.toBeDefined()
+    const runtime = pool.getRuntime('reflector')!
+    // Carried in the config, ungranted today.
+    expect(ws.getAgentConfig().loops?.[0]?.tools).toEqual(['fs_read'])
+    expect(runtime.derived.tools.find(t => t.name === 'fs_read')?.enabled).toBe(false)
+  })
+
+  it('rejects an unknown tool name instead of silently subtracting it', async () => {
+    await expect(pool.createLoop(loop({ tools: ['fs_read', 'not_a_tool'] })))
+      .rejects.toThrow(/not_a_tool/)
+    // Nothing was written: a rejected create leaves no half-loop behind.
+    expect(ws.getAgentConfig().loops ?? []).toHaveLength(0)
+    expect(pool.getRuntime('reflector')).toBeUndefined()
+  })
+
+  it('rejects a restricted host tool — a loop has no channel to answer HIL', async () => {
+    await expect(pool.createLoop(loop({ tools: ['db_execute'] })))
+      .rejects.toThrow(/never grantable/)
+  })
+
+  it('rejects a duplicate itself, whatever the caller checked first', async () => {
+    await pool.createLoop(loop())
+    await expect(pool.createLoop(loop({ goal: 'different goal' })))
+      .rejects.toThrow(/already exists/)
+    expect(ws.getAgentConfig().loops).toHaveLength(1)
+  })
+
+  it('refuses to create "main"', async () => {
+    await expect(pool.createLoop(loop({ name: 'main' }))).rejects.toThrow(/main/)
+  })
+
+  it('gives a disabled loop a config entry and no runtime', async () => {
+    await pool.createLoop(loop({ enabled: false }))
+    expect(pool.hasLoop('reflector')).toBe(true)
+    expect(pool.listLoops().find(l => l.name === 'reflector')).toMatchObject({ enabled: false })
+    expect(pool.getRuntime('reflector')).toBeUndefined()
+  })
+})
+
+describe('LoopPool — sendToLoop (RT-F6 delivery)', () => {
+  beforeEach(async () => {
+    await pool.createLoop(loop({ tools: ['fs_read'] }))
+  })
+
+  it('appends a stamped row to the TARGET stream and leaves main untouched', async () => {
+    const result = await pool.sendToLoop('main', 'reflector', 'look at the last hour', false)
+
+    expect(result).toMatchObject({ delivered: true, woke: false })
+    const target = ws.forLoop('reflector').getLoop()
+    expect(target).toHaveLength(1)
+    expect(target[0].role).toBe('user')
+    expect(target[0].content_json[0].text).toBe('[from loop:main] look at the last hour')
+    // The sender's own stream never sees the message.
+    expect(ws.getLoop()).toHaveLength(0)
+  })
+
+  it('wakes with the appended row\'s seq and does NOT re-send the content as a new row', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    // Intercept the turn: what matters here is the dispatch the executor is
+    // handed, not what a model would do with it.
+    const executeTurn = vi.spyOn(runtime.executor, 'executeTurn').mockResolvedValue(undefined)
+
+    const result = await pool.sendToLoop('main', 'reflector', 'wake up', true)
+    expect(result).toMatchObject({ delivered: true, woke: true })
+
+    const rows = ws.forLoop('reflector').getLoop()
+    // Exactly ONE row: appended at send time, never again at dispatch.
+    expect(rows).toHaveLength(1)
+
+    expect(executeTurn).toHaveBeenCalledTimes(1)
+    const dispatch = executeTurn.mock.calls[0][0] as {
+      loop?: string
+      event: { type: string; data: { loop_seq?: number; skip_loop_append?: boolean } }
+    }
+    expect(dispatch.loop).toBe('reflector')
+    expect(dispatch.event.type).toBe('chat')
+    // The RT-F6 contract: skip the loop write, carry the row's seq so the
+    // inlined session message keeps its [S<seq>] marker.
+    expect(dispatch.event.data.skip_loop_append).toBe(true)
+    expect(dispatch.event.data.loop_seq).toBe(rows[0].seq)
+  })
+
+  it('holds a pending wake while the target is mid-turn and fires it at the turn boundary', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    let release: () => void = () => {}
+    const firstTurn = new Promise<void>(resolve => { release = resolve })
+    const executeTurn = vi.spyOn(runtime.executor, 'executeTurn')
+      .mockImplementationOnce(() => firstTurn)
+      .mockResolvedValue(undefined)
+
+    // Occupy the loop.
+    void runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+    expect(runtime.isBusy()).toBe(true)
+
+    const result = await pool.sendToLoop('main', 'reflector', 'while you are busy', true)
+    // Delivered but not woken — and the reason is honest about what happens next.
+    expect(result).toMatchObject({ delivered: true, woke: false })
+    expect(result.reason).toMatch(/mid-turn/)
+    // The row is already durable, which is what makes "it will read this" true.
+    expect(ws.forLoop('reflector').getLoop()).toHaveLength(1)
+    expect(executeTurn).toHaveBeenCalledTimes(1)
+
+    // The turn-boundary hook drains the pending wake. With executeTurn stubbed
+    // the executor's own onTurnSettled never fires, so what runs here is the
+    // runtime's dispatch-settled hook — the second of the two deliberately
+    // redundant paths (see LoopRuntime.onTurnBoundary). Draining is idempotent,
+    // so either one alone delivers exactly one wake.
+    release()
+    await firstTurn
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(executeTurn).toHaveBeenCalledTimes(2)
+    // Still one row: the pending wake replays the SAME row, it does not add one.
+    expect(ws.forLoop('reflector').getLoop()).toHaveLength(1)
+  })
+
+  it('does not wake a loop while the agent is suspended — suspend cascades', async () => {
+    mainState = 'suspended'
+    const runtime = pool.getRuntime('reflector')!
+    const executeTurn = vi.spyOn(runtime.executor, 'executeTurn').mockResolvedValue(undefined)
+
+    const result = await pool.sendToLoop('main', 'reflector', 'not now', true)
+
+    expect(result).toMatchObject({ delivered: true, woke: false })
+    expect(result.reason).toMatch(/suspended/)
+    expect(executeTurn).not.toHaveBeenCalled()
+    // The message still landed — a suspended agent loses no mail.
+    expect(ws.forLoop('reflector').getLoop()).toHaveLength(1)
+  })
+
+  it('appends for a disabled loop but never wakes it, and says which it was', async () => {
+    await pool.updateLoop('reflector', { enabled: false })
+    const result = await pool.sendToLoop('main', 'reflector', 'still listening?', true)
+    expect(result).toEqual({ delivered: true, woke: false, reason: 'loop disabled' })
+    expect(ws.forLoop('reflector').getLoop()).toHaveLength(1)
+  })
+
+  it('reaches main as a peer: appends to main\'s stream and wakes it through the host', async () => {
+    const result = await pool.sendToLoop('reflector', 'main', 'you missed something', true)
+
+    expect(result).toMatchObject({ delivered: true, woke: true })
+    const mainStream = ws.getLoop()
+    expect(mainStream).toHaveLength(1)
+    expect(mainStream[0].content_json[0].text).toBe('[from loop:reflector] you missed something')
+    expect(mainDispatches).toHaveLength(1)
+    const dispatch = mainDispatches[0] as AdfEventDispatch & {
+      event: { data: { loop_seq?: number; skip_loop_append?: boolean } }
+    }
+    expect(dispatch.loop).toBe('main')
+    expect(dispatch.event.data.skip_loop_append).toBe(true)
+    expect(dispatch.event.data.loop_seq).toBe(mainStream[0].seq)
+  })
+
+  it('injects a busy main mid-turn and kicks a turn at the boundary if still unread', async () => {
+    mainSession.addMessage({ role: 'user', content: [{ type: 'text', text: 'earlier' }] })
+    mainBusy = true
+
+    const result = await pool.sendToLoop('reflector', 'main', 'while you work', true)
+
+    // Delivered, not woken yet: injected for mid-turn pickup (read at main's next
+    // model boundary), and the row is already durable.
+    expect(result).toMatchObject({ delivered: true, woke: false })
+    expect(mainDispatches).toHaveLength(0)
+    expect(mainSession.hasPendingContextInjections()).toBe(true)
+    expect(mainSession.hasPendingWakeInjection()).toBe(true)
+    expect(ws.getLoop().filter(e => e.content_json[0].text?.startsWith('[from loop:'))).toHaveLength(1)
+
+    // The turn ends WITHOUT reading it (injection still pending) → the boundary
+    // kicks a turn to drain it. The kick is a skip_loop_append wake (adds no row).
+    mainBusy = false
+    pool.consumeMainWake()
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(mainDispatches).toHaveLength(1)
+    const dispatch = mainDispatches[0] as AdfEventDispatch & {
+      event: { source: string; data: { loop_seq?: number; skip_loop_append?: boolean } }
+    }
+    const fromLoopRows = ws.getLoop().filter(e => e.content_json[0].text?.startsWith('[from loop:'))
+    expect(dispatch.loop).toBe('main')
+    expect(dispatch.event.source).toBe('loop:reflector')
+    expect(dispatch.event.data.skip_loop_append).toBe(true)
+    // Still one row — the kick drains the injection, it does not add a duplicate.
+    expect(fromLoopRows).toHaveLength(1)
+  })
+
+  it('drops the boundary kick when the busy main read the message mid-turn', async () => {
+    mainSession.addMessage({ role: 'user', content: [{ type: 'text', text: 'earlier' }] })
+    mainBusy = true
+    await pool.sendToLoop('reflector', 'main', 'while you work', true)
+    expect(mainSession.hasPendingWakeInjection()).toBe(true)
+
+    // Simulate the running turn reaching a model boundary and draining the
+    // injection — main read it mid-turn, so there is nothing left to deliver.
+    mainSession.drainContextInjections()
+    expect(mainSession.hasPendingWakeInjection()).toBe(false)
+
+    mainBusy = false
+    pool.consumeMainWake()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(mainDispatches).toHaveLength(0)
+  })
+
+  it('does not drain a queued main wake while the agent is suspended', async () => {
+    mainBusy = true
+    await pool.sendToLoop('reflector', 'main', 'later', true)
+
+    // Turn ends but the organism is suspended — the wake stays queued (the row
+    // is durable, so main reads it on resume regardless).
+    mainBusy = false
+    mainState = 'suspended'
+    pool.consumeMainWake()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(mainDispatches).toHaveLength(0)
+
+    // Resumes → the next boundary drains it.
+    mainState = 'idle'
+    pool.consumeMainWake()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(mainDispatches).toHaveLength(1)
+  })
+
+  it('reads a wake mid-turn on a busy inner loop and drops the boundary kick', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    // A live session, so the mid-turn injection actually lands (injected=true).
+    runtime.session.addMessage({ role: 'user', content: [{ type: 'text', text: 'earlier' }] })
+    let release: () => void = () => {}
+    const firstTurn = new Promise<void>(resolve => { release = resolve })
+    const executeTurn = vi.spyOn(runtime.executor, 'executeTurn')
+      .mockImplementationOnce(() => firstTurn)
+      .mockResolvedValue(undefined)
+    void runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+    expect(runtime.isBusy()).toBe(true)
+
+    await pool.sendToLoop('main', 'reflector', 'while you are busy', true)
+    expect(runtime.session.hasPendingWakeInjection()).toBe(true)
+    expect(runtime.hasPendingWake()).toBe(true)
+
+    // The running turn reaches a model boundary and drains it — read mid-turn.
+    runtime.session.drainContextInjections()
+    expect(runtime.session.hasPendingWakeInjection()).toBe(false)
+
+    release()
+    await firstTurn
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+
+    // No redundant kick, and the queue is cleared so the idle sweep is not pinned.
+    expect(executeTurn).toHaveBeenCalledTimes(1)
+    expect(runtime.hasPendingWake()).toBe(false)
+  })
+
+  it('clears the whole kick queue at one boundary — a kick is owed per target, not per message', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    runtime.session.addMessage({ role: 'user', content: [{ type: 'text', text: 'earlier' }] })
+    let release: () => void = () => {}
+    const firstTurn = new Promise<void>(resolve => { release = resolve })
+    const executeTurn = vi.spyOn(runtime.executor, 'executeTurn')
+      .mockImplementationOnce(() => firstTurn)
+      .mockResolvedValue(undefined)
+    void runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+
+    await pool.sendToLoop('main', 'reflector', 'first', true)
+    await pool.sendToLoop('main', 'reflector', 'second', true)
+    // Both injected; one model boundary drains both.
+    expect(runtime.session.peekPendingContextInjections()).toHaveLength(2)
+    runtime.session.drainContextInjections()
+
+    release()
+    await firstTurn
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(executeTurn).toHaveBeenCalledTimes(1)
+    // Nothing stale left behind to pin the session (review C3/P1).
+    expect(runtime.hasPendingWake()).toBe(false)
+  })
+
+  it('kicks exactly once at the boundary when the turn ended before draining, then the queue is empty', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    runtime.session.addMessage({ role: 'user', content: [{ type: 'text', text: 'earlier' }] })
+    let release: () => void = () => {}
+    const firstTurn = new Promise<void>(resolve => { release = resolve })
+    const executeTurn = vi.spyOn(runtime.executor, 'executeTurn')
+      .mockImplementationOnce(() => firstTurn)
+      .mockResolvedValue(undefined)
+    void runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+
+    await pool.sendToLoop('main', 'reflector', 'first', true)
+    await pool.sendToLoop('main', 'reflector', 'second', true)
+    // NOT drained: the turn ends first.
+    release()
+    await firstTurn
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+
+    // One kick serves both messages, and the queue is cleared behind it.
+    expect(executeTurn).toHaveBeenCalledTimes(2)
+    expect(runtime.hasPendingWake()).toBe(false)
+    // Still one row per message — the kick adds nothing (review C1). (The seeded
+    // 'earlier' message wrote through to the stream too, so filter to deliveries.)
+    expect(
+      ws.forLoop('reflector').getLoop().filter(e => e.content_json[0].text?.startsWith('[from loop:'))
+    ).toHaveLength(2)
+  })
+
+  it('validates fromLoop rather than trusting it — the stamp is not free text', async () => {
+    await expect(pool.sendToLoop('ghost', 'reflector', 'hi', false)).rejects.toThrow(/ghost/)
+    await expect(pool.sendToLoop('main', 'ghost', 'hi', false)).rejects.toThrow(/ghost/)
+    expect(ws.forLoop('reflector').getLoop()).toHaveLength(0)
+  })
+})
+
+describe('LoopPool — updateLoop', () => {
+  beforeEach(async () => {
+    await pool.createLoop(loop({ tools: [] }))
+  })
+
+  it('re-derives in place: the executor gets the DERIVED config, never the host config', async () => {
+    await pool.updateLoop('reflector', { goal: 'a new charter', tools: ['fs_read'] })
+
+    const runtime = pool.getRuntime('reflector')!
+    // Instructions = the standing loop preamble + the new goal (derive-loop-config).
+    expect(runtime.derived.instructions).toContain('a new charter')
+    expect(runtime.derived.instructions).toContain('You are the "reflector" loop')
+    expect(runtime.executor.getConfig().instructions).toBe(runtime.derived.instructions)
+    expect(runtime.executor.getConfig().metadata?.loop_name).toBe('reflector')
+    // Attenuation survives the update.
+    expect(runtime.executor.getConfig().loops).toEqual([])
+    const enabled = runtime.derived.tools.filter(t => t.enabled).map(t => t.name)
+    expect(enabled).toContain('fs_read')
+    expect(enabled).not.toContain('sys_update_config')
+    expect(ws.getAgentConfig().loops?.[0].goal).toBe('a new charter')
+  })
+
+  it('rejects an ungrantable tool without touching the stored loop', async () => {
+    await expect(pool.updateLoop('reflector', { tools: ['db_execute'] })).rejects.toThrow(/never grantable/)
+    expect(ws.getAgentConfig().loops?.[0].tools).toEqual([])
+  })
+})
+
+describe('LoopPool — deleteLoop', () => {
+  beforeEach(async () => {
+    await pool.createLoop(loop())
+  })
+
+  it('refuses while the loop is running, and the stream survives the refusal', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    ws.forLoop('reflector').appendToLoop('user', [{ type: 'text', text: 'mid-turn work' }])
+    let release: () => void = () => {}
+    const turn = new Promise<void>(resolve => { release = resolve })
+    vi.spyOn(runtime.executor, 'executeTurn').mockImplementationOnce(() => turn)
+    void runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+
+    await expect(pool.deleteLoop('reflector')).rejects.toThrow(/running a turn/)
+    expect(ws.getAgentConfig().loops).toHaveLength(1)
+    expect(ws.forLoop('reflector').getLoop()).toHaveLength(1)
+
+    release()
+    await turn
+  })
+
+  it('archives the stream to adf_audit under loop:<name>, then clears it', async () => {
+    const view = ws.forLoop('reflector')
+    view.appendToLoop('user', [{ type: 'text', text: 'first thought' }])
+    view.appendToLoop('assistant', [{ type: 'text', text: 'second thought' }])
+
+    const result = await pool.deleteLoop('reflector')
+
+    expect(result.archivedEntries).toBe(2)
+    // Archived even though loop auditing is OFF by default: deletion is
+    // unrecoverable, so the archive is not optional.
+    const audits = ws.listAudits().filter(a => a.source === 'loop:reflector')
+    expect(audits).toHaveLength(1)
+    expect(audits[0].entry_count).toBe(2)
+    // Stream gone, config entry gone, runtime gone.
+    expect(view.getLoop()).toHaveLength(0)
+    expect(ws.getAgentConfig().loops ?? []).toHaveLength(0)
+    expect(pool.getRuntime('reflector')).toBeUndefined()
+    expect(pool.hasLoop('reflector')).toBe(false)
+  })
+
+  it('drops the deleted loop\'s timers and leaves main\'s alone', async () => {
+    const mainTimer = ws.addTimer({ mode: 'interval', every_ms: 60_000 }, Date.now() + 60_000, undefined, ['agent'])
+    const loopTimer = ws.forLoop('reflector').addTimer(
+      { mode: 'interval', every_ms: 60_000 }, Date.now() + 60_000, undefined, ['agent']
+    )
+
+    await pool.deleteLoop('reflector')
+
+    const remaining = ws.getTimers().map(t => t.id)
+    expect(remaining).toContain(mainTimer)
+    // Never re-pointed at main — an orphan running with main's authority is
+    // exactly the escalation the drop exists to prevent.
+    expect(remaining).not.toContain(loopTimer)
+  })
+
+  it('preserves LOCKED timers of a deleted loop — a lock is human-only (review S2)', async () => {
+    const sched = { mode: 'interval' as const, every_ms: 60_000 }
+    const at = Date.now() + 60_000
+    const unlocked = ws.forLoop('reflector').addTimer(sched, at, undefined, ['agent'])
+    const locked = ws.forLoop('reflector').addTimer(sched, at, undefined, ['agent'], undefined, undefined, true)
+
+    await pool.deleteLoop('reflector')
+
+    const remaining = ws.getTimers().map(t => t.id)
+    expect(remaining).not.toContain(unlocked)
+    // Kept, never deleted by an agent path — deleting the loop is not a loophole.
+    expect(remaining).toContain(locked)
+  })
+
+  it('stamps a loop only on agent-scope timers — system scope wakes no loop (review S7)', () => {
+    const sched = { mode: 'interval' as const, every_ms: 60_000 }
+    const at = Date.now() + 60_000
+    const systemFromMain = ws.addTimer(sched, at, undefined, ['system'], undefined, undefined, undefined, 'reflector')
+    const agentFromMain = ws.addTimer(sched, at, undefined, ['agent'], undefined, undefined, undefined, 'reflector')
+    const bothFromMain = ws.addTimer(sched, at, undefined, ['system', 'agent'], undefined, undefined, undefined, 'reflector')
+    const systemFromLoop = ws.forLoop('reflector').addTimer(sched, at, undefined, ['system'])
+    const agentFromLoop = ws.forLoop('reflector').addTimer(sched, at, undefined, ['agent'])
+
+    const byId = new Map(ws.getTimers().map(t => [t.id, t]))
+    expect(byId.get(systemFromMain)?.loop ?? undefined).toBeUndefined()
+    expect(byId.get(agentFromMain)?.loop).toBe('reflector')
+    expect(byId.get(bothFromMain)?.loop).toBe('reflector')
+    // A side loop's stamp is forced to its own name — but only where a stamp means anything.
+    expect(byId.get(systemFromLoop)?.loop ?? undefined).toBeUndefined()
+    expect(byId.get(agentFromLoop)?.loop).toBe('reflector')
+  })
+
+  it("honours locked_fields: 'loops' locked ⇒ create, update and delete all refuse (review I1)", async () => {
+    pool = buildPool(config => {
+      config.locked_fields = ['loops']
+      config.loops = [loop()]
+    })
+    await expect(pool.createLoop(loop({ name: 'critic', goal: 'disagree' }))).rejects.toThrow(/'loops' is locked/)
+    await expect(pool.updateLoop('reflector', { goal: 'changed' })).rejects.toThrow(/'loops' is locked/)
+    await expect(pool.deleteLoop('reflector')).rejects.toThrow(/'loops' is locked/)
+    // The same lock sys_update_config enforces, at every door: the roster is untouched.
+    expect(ws.getAgentConfig().loops?.map(l => l.name)).toEqual(['reflector'])
+  })
+
+  it('refuses to delete main', async () => {
+    await expect(pool.deleteLoop('main')).rejects.toThrow(/cannot be deleted/)
+  })
+
+  it('reports an unknown loop as unknown, not as an internal failure', async () => {
+    await expect(pool.deleteLoop('ghost')).rejects.toThrow(/No inner loop named "ghost"/)
+  })
+})
+
+describe('main-side wiring helpers', () => {
+  it('strips a hand-edited metadata.loop_name so it can never bind main to a side stream', () => {
+    const config = ws.getAgentConfig()
+    config.metadata = { ...config.metadata, loop_name: 'reflector' }
+    stripLoopNameMarker(config)
+    expect(config.metadata?.loop_name).toBeUndefined()
+  })
+})
+
+/** A chat dispatch aimed at a loop, carrying one user text message. */
+function chatToLoop(text: string, loopName: string) {
+  return createDispatch(
+    createEvent({
+      type: 'chat',
+      source: 'test',
+      data: {
+        message: { seq: 0, role: 'user', content_json: [{ type: 'text' as const, text }], created_at: Date.now() },
+      },
+    }),
+    { scope: 'agent', loop: loopName },
+  )
+}
+
+// A4 (security F2): a protection denial inside a SIDE loop must fail closed —
+// an auto-deny with a clear error — never park a hub approval nobody can answer.
+describe('LoopPool — A4 side-loop protection auto-deny', () => {
+  beforeEach(() => {
+    // fs_delete must be NON-restricted so it reaches the PROTECTION path (a
+    // restricted tool is refused earlier by its own side-loop guard); enabling
+    // it on the host lets deriveLoopConfig include it in the loop's toolset.
+    pool.dispose()
+    pool = buildPool((config) => {
+      const del = config.tools.find(t => t.name === 'fs_delete')
+      if (del) { del.enabled = true; del.restricted = false }
+    })
+    approvalHub.clear()
+  })
+
+  it('auto-denies a protection-blocked tool in a side loop and never parks a hub approval', async () => {
+    await pool.createLoop(loop({ tools: ['fs_delete'] }))
+    const runtime = pool.getRuntime('reflector')!
+    // Precondition: this executor really is a side loop.
+    expect(runtime.executor.getConfig().metadata?.loop_name).toBe('reflector')
+    // mind.md is seeded no_delete on create — a genuine protection target.
+    expect(ws.getFileProtection('mind.md')).toBe('no_delete')
+
+    let calls = 0
+    respond = async () => {
+      calls++
+      if (calls === 1) {
+        return {
+          id: 'r1',
+          content: [{ type: 'tool_use', id: 'del-1', name: 'fs_delete', input: { path: 'mind.md' } }],
+          stop_reason: 'tool_use',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }
+      }
+      return { id: 'r2', content: [{ type: 'text', text: 'understood' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }
+    }
+
+    await runtime.executor.executeTurn(chatToLoop('delete the mind', 'reflector'))
+
+    // Never parked: no hub entry anywhere, so nothing hung on a phantom approval.
+    expect(approvalHub.snapshot()).toHaveLength(0)
+    // The model got the auto-deny as the tool result and ended the turn (call 2).
+    expect(calls).toBe(2)
+    const streamText = JSON.stringify(ws.forLoop('reflector').getLoop().map(r => r.content_json))
+    expect(streamText).toMatch(/inner loop cannot ask a human for an override/i)
+    // The file was NOT deleted — fail closed.
+    expect(ws.fileExists('mind.md')).toBe(true)
+  })
+})
+
+// A8 (security F3): a send into a DISABLED loop is an invisible dead-drop with no
+// live session to consume it. Cap the accumulation instead of letting sys_code
+// pile thousands of rows into an unwatched stream.
+describe('LoopPool — A8 disabled-loop dead-drop cap', () => {
+  beforeEach(async () => {
+    await pool.createLoop(loop({ tools: ['fs_read'] }))
+    await pool.updateLoop('reflector', { enabled: false })
+  })
+
+  it('buffers under the cap but refuses (without appending) once the stream is full', async () => {
+    const target = ws.forLoop('reflector')
+    // Fill to one below the cap (100) directly — these stand in for prior rows.
+    for (let i = 0; i < 99; i++) target.appendToLoop('user', [{ type: 'text', text: `x${i}` }])
+
+    // Under the cap: accepted and appended (surfaces if the loop is re-enabled).
+    const ok = await pool.sendToLoop('main', 'reflector', 'one more', false)
+    expect(ok).toMatchObject({ delivered: true, woke: false, reason: 'loop disabled' })
+    expect(target.getLoop()).toHaveLength(100)
+
+    // At the cap: refused, and crucially the row is NOT appended.
+    await expect(pool.sendToLoop('main', 'reflector', 'over the line', false))
+      .rejects.toThrow(/disabled and its buffer is full/i)
+    expect(target.getLoop()).toHaveLength(100)
+  })
+})
+
+// A9 (correctness F6): injectWithoutWake must stamp the SENDER loop as the
+// provenance origin, not the target it lands in.
+describe('LoopPool — A9 inject origin', () => {
+  beforeEach(async () => {
+    await pool.createLoop(loop({ tools: ['fs_read'] }))
+  })
+
+  it('stamps the sender (fromLoop) as origin on the no-wake context injection', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    // A live target session is required — injectWithoutWake skips empty (released)
+    // sessions, which rehydrate the row on their own.
+    runtime.session.addMessage({ role: 'user', content: [{ type: 'text', text: 'prior' }] })
+    events.length = 0
+
+    const result = await pool.sendToLoop('main', 'reflector', 'peek at this', false)
+    expect(result).toMatchObject({ delivered: true, woke: false })
+
+    const injected = events.find(e => e.type === 'context_injected')
+    expect(injected).toBeDefined()
+    // Origin is the SENDER (main); the event's loop is the TARGET stream (reflector).
+    expect((injected!.payload as { origin: string }).origin).toBe('loop:main')
+    expect(injected!.loop).toBe('reflector')
+  })
+})

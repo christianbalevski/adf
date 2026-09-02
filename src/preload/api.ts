@@ -1,4 +1,4 @@
-import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
+import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
@@ -29,10 +29,19 @@ export interface AdfApi {
   setDocument: (content: string) => Promise<{ success: boolean }>
   getAgentConfig: () => Promise<AgentConfig | null>
   setAgentConfig: (config: unknown) => Promise<{ success: boolean }>
-  getChat: () => Promise<{ chatHistory: ChatHistory | null }>
-  getChatOlder: (beforeSeq: number, limit?: number) => Promise<{ uiLog: ChatHistoryEntry[]; earlierCount: number }>
+  /**
+   * The runtime changed the open agent's config on its own — `sys_update_config`,
+   * `loop_manage` (inner loops added/removed), or any other write that goes
+   * through the assembled agent's config choke point. Never fires for this
+   * window's own `setAgentConfig` save, so subscribers can apply the payload
+   * directly. `filePath` identifies the agent the config belongs to.
+   */
+  onAgentConfigChanged: (callback: (data: { filePath: string; config: AgentConfig }) => void) => () => void
+  /** `loop` selects which loop's stream to read; omitted/'main' = the host loop. */
+  getChat: (loop?: string) => Promise<{ chatHistory: ChatHistory | null }>
+  getChatOlder: (beforeSeq: number, limit?: number, loop?: string) => Promise<{ uiLog: ChatHistoryEntry[]; earlierCount: number }>
   setChat: (chatHistory: ChatHistory) => Promise<{ success: boolean }>
-  clearChat: () => Promise<{ success: boolean }>
+  clearChat: (loop?: string) => Promise<{ success: boolean }>
   getInbox: () => Promise<{ inbox: Inbox | null }>
   clearInbox: () => Promise<{ success: boolean }>
   getBatch: () => Promise<{
@@ -45,7 +54,8 @@ export interface AdfApi {
   // Agent runtime
   startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string }>
   stopAgent: () => Promise<{ success: boolean }>
-  invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[]) => Promise<{ success: boolean; error?: string }>
+  /** `loop` routes the turn to that loop's executor; omitted/'main' = the host loop. */
+  invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string }>
   /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
   compactLoop: () => Promise<{ success: boolean; error?: string }>
   getAgentStatus: () => Promise<AgentStatusResult>
@@ -55,6 +65,19 @@ export interface AdfApi {
   approveAllGatedTools: () => Promise<{ success: boolean; approved?: number; skippedProtection?: number; error?: string }>
   respondAsk: (requestId: string, answer: string) => Promise<{ success: boolean }>
   respondSuspend: (resume: boolean) => Promise<{ success: boolean }>
+
+  // Global HIL notifications menu — pending approvals AND asks across every
+  // agent and inner loop, foreground and background, plus the recently
+  // resolved tail the menu greys out under them.
+  listPendingNotifications: () => Promise<NotificationsSnapshot>
+  /** Approvals only; routes into the emitting executor's own resolveApproval (the in-chat card's path). Asks are refused — they need a typed answer. */
+  resolvePendingApproval: (filePath: string, approvalId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>
+  /** Full snapshot on every change — replace local state, do not merge. */
+  onPendingNotificationsChanged: (callback: (snapshot: NotificationsSnapshot) => void) => () => void
+  /** B8: fetch one pending approval's raw tool input on demand (the broadcast snapshot omits it to stay lean). Returns undefined once the entry has resolved/timed out. */
+  getApprovalInput: (filePath: string, approvalId: string) => Promise<unknown>
+  /** B19: a clicked OS notification — open that agent (filePath present) or the bell panel (absent). Returns an unsubscribe. */
+  onApprovalReveal: (callback: (payload: { filePath?: string; notificationId?: string }) => void) => () => void
 
   // Models
   listModels: (provider: string, filePath?: string) => Promise<{ models: string[]; error?: string }>
@@ -164,8 +187,8 @@ export interface AdfApi {
   clearTokenUsage: () => Promise<{ success: boolean }>
   countTokens: (text: string, provider?: string, model?: string) => Promise<{ count: number }>
   countTokensBatch: (texts: string[], provider?: string, model?: string) => Promise<{ counts: number[] }>
-  /** Per-request context token breakdown for the running executor (foreground or background); null when the agent isn't running. */
-  getContextBreakdown: (filePath: string) => Promise<ContextBreakdown | null>
+  /** Per-request context token breakdown for one loop's running executor (foreground or background). `loop` defaults to `main`; null when that loop isn't running. */
+  getContextBreakdown: (filePath: string, loop?: string) => Promise<ContextBreakdown | null>
 
   // Home dashboard — independent slices loaded in parallel
   getDashboardQuickStats: () => Promise<DashboardQuickStats>
@@ -201,6 +224,8 @@ export interface AdfApi {
     lambda?: string
     warm?: boolean
     payload?: string
+    /** Cognition stream the wake dispatches to. Absent = main. Create-only. */
+    loop?: string
   }) => Promise<{ success: boolean; id?: number; error?: string }>
   updateTimer: (args: {
     id: number

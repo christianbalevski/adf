@@ -75,7 +75,7 @@ For **turn calls only**, the same usage is also persisted as JSON on the `adf_lo
 
 ### Behavioral history: `adf_audit`
 
-`adf_audit` is a separate table from `adf_logs` — compressed JSON snapshots of cleared history, not runtime log lines. Its `source` column is one of `loop` (a cleared loop segment; `start_seq`/`end_seq` record its seq range), `inbox_message`/`outbox_message` (a single message; `ref` = message id), or `file` (a deleted file; `ref` = path). Batch `inbox`/`outbox` sources and NULL seq/ref columns appear only on legacy rows.
+`adf_audit` is a separate table from `adf_logs` — compressed JSON snapshots of cleared history, not runtime log lines. Its `source` column is one of `loop:<name>` (a cleared segment of that cognition stream — the host stream is `loop:main`; `start_seq`/`end_seq` record its seq range), `inbox_message`/`outbox_message` (a single message; `ref` = message id), or `file` (a deleted file; `ref` = path). A bare `loop` source is legacy (pre-v29, single unnamed stream), so match the family with `source = 'loop' OR source LIKE 'loop:%'`. Batch `inbox`/`outbox` sources and NULL seq/ref columns appear only on legacy rows.
 
 ## Logging Configuration
 

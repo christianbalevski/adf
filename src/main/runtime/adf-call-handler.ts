@@ -138,6 +138,48 @@ export class AdfCallHandler {
     this.config = config
   }
 
+  /**
+   * A sibling handler bound to a side loop's scoped workspace and DERIVED
+   * config (docs/design/agent-loops-mvp.md §6.1).
+   *
+   * Handing a loop the host's handler would defeat every attenuation the
+   * derived config carries: the `code_execution` profile, the tool allow-list,
+   * and every `workspace.getLoopName()` guard downstream (a root-workspace
+   * handler writes a side loop's rows into main's streams). Provider, identity
+   * and signing ride along, because a loop is a facet of the agent rather than
+   * a separate one: same file, same credentials, different mind.
+   */
+  forLoop(workspace: AdfWorkspace, config: AgentConfig, toolRegistry?: ToolRegistry): AdfCallHandler {
+    return new AdfCallHandler({
+      toolRegistry: toolRegistry ?? this.toolRegistry,
+      workspace,
+      config,
+      provider: this.provider,
+      createProviderForModel: this.createProviderForModel,
+      resolveIdentity: this.resolveIdentity,
+      getSigningKey: this.getSigningKey,
+    })
+  }
+
+  /**
+   * A provider for a different model id, or null when the host wired no
+   * factory. The loop pool uses this to honour a loop's `model` override
+   * without every host having to thread a provider factory of its own.
+   */
+  providerForModel(modelId: string): LLMProvider | null {
+    try {
+      return this.createProviderForModel?.(modelId) ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /** True when this handler serves a side loop (derived-config marker). */
+  private isSideLoop(): boolean {
+    const name = this.config.metadata?.loop_name
+    return typeof name === 'string' && name.length > 0 && name !== 'main'
+  }
+
   /** Bind the live conversation session used for boundary-safe loop injection. */
   attachSession(session: AgentSession): void {
     this.session = session
@@ -352,6 +394,19 @@ export class AdfCallHandler {
       // Protection denial from unauthorized code → blocking HIL override
       // approval (auto-denied on timeout by the executor). Approve re-executes
       // the exact (possibly human-modified) call with a one-time bypass.
+      // A side loop has no approval channel (HIL routing is filePath/singleton
+      // keyed, MVP), so parking an override request there would hang the call
+      // until the auto-deny timeout with nothing on screen to answer it. Fail
+      // closed instead, and say why.
+      if (result.isError && result.protection && !authorized && this.isSideLoop()) {
+        const p = result.protection
+        this.logCall('warn', 'call_rejected', method, `Protection denial in inner loop "${this.config.metadata?.loop_name}" — no approval channel`)
+        return {
+          error: `"${method}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`,
+          errorCode: 'PROTECTION_DENIED'
+        }
+      }
+
       if (result.isError && result.protection && !authorized && this.requestProtectionApproval) {
         const p = result.protection
         const decision = await this.requestProtectionApproval(method, args, p)

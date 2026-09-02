@@ -4,14 +4,13 @@ import {
   CLEANUP_INTERVAL_MS,
   applyActivity,
   applyResolveActivity,
-  applyPendingInteraction,
   applyEdgeAnimation,
   applyPeerAgentPing,
-  type MeshGraphState,
-  type PendingInteraction
+  type MeshGraphState
 } from '../stores/mesh-graph.store'
 import { useMeshStore } from '../stores/mesh.store'
 import { useDocumentStore } from '../stores/document.store'
+import { MAIN_LOOP } from '../stores/agent.store'
 import type { MeshEvent, AgentExecutionEvent, RendererBackgroundAgentEvent, AgentState, ResponseMetadataPayload } from '../../shared/types/ipc.types'
 
 let activityIdCounter = 0
@@ -243,29 +242,12 @@ export function useMeshGraph() {
             apply(applyResolveActivity(draft, foregroundFilePath, (payload.name as string) ?? 'unknown', !!result?.isError))
             break
           }
-          case 'ask_request':
-            apply(applyPendingInteraction(draft, foregroundFilePath, {
-              type: 'ask',
-              requestId: payload.requestId as string,
-              question: payload.question as string
-            }))
-            break
-          case 'tool_approval_request':
-            apply(applyPendingInteraction(draft, foregroundFilePath, {
-              type: 'approval',
-              requestId: payload.requestId as string,
-              toolName: payload.name as string,
-              input: payload.input,
-              reason: payload.reason as PendingInteraction['reason'],
-              protection: payload.protection as PendingInteraction['protection'],
-              canAlwaysApprove: payload.canAlwaysApprove as boolean | undefined,
-              alwaysApproveBlockedReason: payload.alwaysApproveBlockedReason as string | undefined
-            }))
-            break
-          case 'ask_response':
-          case 'tool_approval_resolved':
-            apply(applyPendingInteraction(draft, foregroundFilePath, null))
-            break
+          // ask_request / tool_approval_request / ask_response /
+          // tool_approval_resolved are deliberately NOT handled here any more.
+          // pendingInteractions is fed exclusively by the global ApprovalHub
+          // snapshot (useApprovals). The old per-event feed could not see a
+          // background agent's resolution (the manager never forwarded one), so
+          // its badge stuck until the next 5s poll.
           case 'inter_agent_message':
             apply(applyActivity(draft, foregroundFilePath, {
               id: nextId(),
@@ -354,25 +336,8 @@ export function useMeshGraph() {
             apply(applyResolveActivity(draft, filePath, (payload.name as string) ?? 'unknown', !!result?.isError))
             break
           }
-          case 'ask_request':
-            apply(applyPendingInteraction(draft, filePath, {
-              type: 'ask',
-              requestId: payload.requestId as string,
-              question: payload.question as string
-            }))
-            break
-          case 'tool_approval_request':
-            apply(applyPendingInteraction(draft, filePath, {
-              type: 'approval',
-              requestId: payload.requestId as string,
-              toolName: payload.name as string,
-              input: payload.input,
-              reason: payload.reason as PendingInteraction['reason'],
-              protection: payload.protection as PendingInteraction['protection'],
-              canAlwaysApprove: payload.canAlwaysApprove as boolean | undefined,
-              alwaysApproveBlockedReason: payload.alwaysApproveBlockedReason as string | undefined
-            }))
-            break
+          // See the foreground path: pending ask/approval state comes from the
+          // ApprovalHub snapshot, not from these events.
           case 'response_metadata':
             // Pre-flight estimates fire before every call — only surface real usage
             if (!(payload as ResponseMetadataPayload).estimated) {
@@ -445,6 +410,11 @@ export function useMeshGraph() {
     if (window.adfApi?.onAgentEvent) {
       unsubscribers.push(
         window.adfApi.onAgentEvent((event: AgentExecutionEvent) => {
+          // The map tile is the AGENT's state (= main's, §6.3). A side loop's
+          // state_changed / tool churn must never flip the tile or multiply the
+          // activity feed (~6x), so drop non-main events at the door — mirroring
+          // background-agent-manager's own MAIN_LOOP filter (B7).
+          if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
           const foregroundFilePath = useDocumentStore.getState().filePath
           if (!foregroundFilePath) return
           enqueue({ kind: 'agent', event, filePath: foregroundFilePath })

@@ -90,7 +90,7 @@ Staging first, always. Prod deploys need an explicit owner ack ([S412])...
 Loop messages are shown to you with `[S<seq>]` markers — the `seq` column of `adf_loop`, stable for the lifetime of the agent (compaction preserves surviving seqs). A citation works like this:
 
 - `[S137]` inline — "this claim came from loop message 137".
-- `adf-audit://seq/137` in `sources` — the resolvable form: message 137 is either still live in `adf_loop`, or inside a compressed `loop` blob in `adf_audit` whose `start_seq <= 137 <= end_seq`.
+- `adf-audit://seq/137` in `sources` — the resolvable form: message 137 is either still live in `adf_loop`, or inside a compressed `loop:<name>` blob in `adf_audit` (legacy rows: bare `loop`) whose `start_seq <= 137 <= end_seq`.
 - `adf-file://imported/<path>` — the page was distilled from an imported file (the runtime imports attachments to `imported/<source>/`).
 - Plain URLs — external sources.
 
@@ -121,7 +121,7 @@ export async function auditRead({ seq }) {
 
   // Candidate blobs — compaction overlap means several may cover the seq.
   const candidates = await adf.db_query({
-    sql: "SELECT id, data FROM adf_audit WHERE source = 'loop' AND start_seq <= ? AND end_seq >= ? ORDER BY start_seq DESC",
+    sql: "SELECT id, data FROM adf_audit WHERE (source = 'loop' OR source LIKE 'loop:%') AND start_seq <= ? AND end_seq >= ? ORDER BY start_seq DESC",
     params: [seq, seq], _full: true
   })
   for (const row of candidates) {

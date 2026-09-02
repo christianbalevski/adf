@@ -35,7 +35,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
   // =========================================================================
 
   describe('loop clear', () => {
-    it('creates an audit entry with source "loop" and the archived seq range when clearing loop', async () => {
+    it('creates an audit entry with source "loop:main" and the archived seq range when clearing loop', async () => {
       const t1 = Date.now() - 2000
       const t2 = Date.now() - 1000
       const seq1 = ws!.appendToLoop('user', [{ type: 'text', text: 'hello' }], 'test-model', undefined, t1)
@@ -44,9 +44,10 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       await ws!.clearLoop()
 
       const audits = ws!.listAudits()
-      const loopAudit = audits.find(a => a.source === 'loop')
+      // Audit provenance is `loop:<stream>` — the host/membrane stream is 'main'.
+      const loopAudit = audits.find(a => a.source === 'loop:main')
       expect(loopAudit).toBeDefined()
-      expect(loopAudit!.source).toBe('loop')
+      expect(loopAudit!.source).toBe('loop:main')
       expect(loopAudit!.entry_count).toBe(2)
       expect(loopAudit!.start_seq).toBe(seq1)
       expect(loopAudit!.end_seq).toBe(seq2)
@@ -81,7 +82,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       expect(result.audited).toBe(true)
 
       const audits = ws!.listAudits()
-      const loopAudits = audits.filter(a => a.source === 'loop')
+      const loopAudits = audits.filter(a => a.source === 'loop:main')
       expect(loopAudits.length).toBeGreaterThanOrEqual(1)
 
       const latest = loopAudits[0] // ordered by created_at DESC

@@ -5,7 +5,7 @@
  * Backed by AdfDatabase (SQLite) - no temp directory extraction needed.
  */
 
-import { brotliCompress, brotliCompressSync, brotliDecompressSync } from 'zlib'
+import { brotliCompress, brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'zlib'
 import { promisify } from 'util'
 import type { ContentBlock } from '@shared/types/provider.types'
 import type {
@@ -61,9 +61,35 @@ import { currentSourceOrUnknown } from '../runtime/execution-context'
 // the async-local execution context, and a type-only daemon bus reference —
 // none of which reach back into the workspace.
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
+// Cycle-free: derive-loop-config imports only shared types.
+import { MAIN_LOOP } from './derive-loop-config'
 
 /** Off-event-loop brotli — see AdfWorkspace.runLoopMutation. */
 const brotliCompressAsync = promisify(brotliCompress)
+
+// Brotli quality 5 (not zlib's default 11): q11 is ~85x slower for ~26% smaller
+// output on transcript-sized blobs, saturating the libuv pool (async) or freezing
+// main (sync) at fleet scale. Decompression is quality-independent, so blobs
+// written at q11 stay readable — only the compress cost changes.
+const BROTLI_ARCHIVE_OPTS = { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } }
+
+// Process-wide cap on concurrent off-transaction brotli compressions (A3). Even
+// at q5, 50 agents compacting at once would enqueue 50 compress jobs onto the
+// libuv pool and starve every other fsp.* — including backup's own rename/unlink
+// and the foreground turn's file I/O. 2 permits keeps most of the pool free for
+// I/O while still overlapping one compress with a commit. A direct hand-off to
+// the next waiter (rather than permit++/re-acquire) avoids a wake-up gap.
+let brotliCompressPermits = 2
+const brotliCompressWaiters: Array<() => void> = []
+async function acquireCompressSlot(): Promise<void> {
+  if (brotliCompressPermits > 0) { brotliCompressPermits--; return }
+  await new Promise<void>(resolve => { brotliCompressWaiters.push(resolve) })
+}
+function releaseCompressSlot(): void {
+  const next = brotliCompressWaiters.shift()
+  if (next) next()
+  else brotliCompressPermits++
+}
 
 /** Compressed archive of the loop rows a destructive op is about to remove. */
 type LoopArchive = { json: string; data: Buffer } | null
@@ -74,6 +100,16 @@ type LoopArchive = { json: string; data: Buffer } | null
  * can never be confused with a genuine failure from the commit body.
  */
 const LOOP_REVISION_CHANGED = Symbol('adf:loop-revision-changed')
+
+/**
+ * The membrane-facing cognition stream. Every workspace is bound to a loop;
+ * unbound instances (the singleton every existing call site holds) are bound
+ * here, so pre-loops agents behave byte-identically.
+ *
+ * Defined once in derive-loop-config; re-exported here for the call sites that
+ * reach for it alongside AdfWorkspace.
+ */
+export { MAIN_LOOP }
 
 /**
  * Envelope lifecycle state (ADF_IDENTITY_SPEC D10):
@@ -183,6 +219,11 @@ export class AdfWorkspace {
   private skillIndexer: SkillIndexer
   private onSkillRegistryChangedCallback: ((json: string, result: SkillIndexResult) => void) | null = null
 
+  /** The cognition stream this instance is bound to — see forLoop(). */
+  private boundLoop: string = MAIN_LOOP
+  /** On a forLoop() view, the root workspace it delegates to; unset on the root. */
+  private loopHost: AdfWorkspace | null = null
+
   /** Card builder function, registered by mesh-manager when the agent is served. */
   _cardBuilder?: () => AlfAgentCard | null
 
@@ -231,6 +272,50 @@ export class AdfWorkspace {
 
   getFilePath(): string {
     return this.filePath
+  }
+
+  /**
+   * A view of this workspace bound to `loopName`: loop reads/writes filter to
+   * that stream, and logs/tasks/timers/audit rows are stamped with it. Nothing
+   * else changes — the .adf file, identity, credentials, and Studio wiring are
+   * the agent's, not the loop's.
+   *
+   * Implemented as a prototype-delegating view (`Object.create(root)`), NOT a
+   * fresh instance: `envelopeDeks`, `onFileChangeCallback`, `_cardBuilder` and
+   * the config/logging caches are per-instance private state, so a constructed
+   * sibling would start with an empty dek map (sealed-credential reads silently
+   * return null) and a null file-change sink (side-loop writes never reach
+   * Studio). Delegation also means callbacks registered on the root LATER are
+   * still seen here, and it deliberately skips the constructor so a view never
+   * starts a second auto-checkpoint timer on the same database.
+   *
+   * Views are cheap and stateless; callers may make one per turn.
+   */
+  forLoop(loopName: string): AdfWorkspace {
+    const root = this.getRoot()
+    if (loopName === root.boundLoop) return root
+    const scoped = Object.create(root) as AdfWorkspace
+    // Own properties shadow the root's; every other field reads through.
+    scoped.boundLoop = loopName
+    scoped.loopHost = root
+    return scoped
+  }
+
+  /** The loop stream this workspace instance is bound to. */
+  getLoopName(): string {
+    return this.boundLoop
+  }
+
+  /**
+   * The root workspace behind this instance — itself on a root, the host on a
+   * forLoop() view. Every per-agent (not per-loop) mutable field MUST be written
+   * through this: a plain `this.field = x` on a view creates an own property that
+   * shadows the root's forever, so the root's value never changes and sibling
+   * views never see the write. Reads may go through the prototype as usual.
+   * Also the correct identity for external per-agent keying (see file-lock).
+   */
+  getRoot(): AdfWorkspace {
+    return this.loopHost ?? this
   }
 
   // ===========================================================================
@@ -922,8 +1007,10 @@ export class AdfWorkspace {
     let previous: AgentConfig | null = null
     try { previous = this.db.getConfig() } catch { previous = null }
     this.db.setConfig(config)
-    this._loggingConfigCache = null
-    this._agentIdCache = config.id || null
+    // Caches live on the root — invalidating them on a view would only shadow.
+    const root = this.getRoot()
+    root._loggingConfigCache = null
+    root._agentIdCache = config.id || null
     // Only the NAMES of the changed top-level keys go on the wire — config
     // values can hold secrets (provider keys, adapter tokens) and must never
     // leak to taps or external /events subscribers.
@@ -959,7 +1046,7 @@ export class AdfWorkspace {
     if (this._agentIdCache) return this._agentIdCache
     try {
       const id = this.db.getConfig().id
-      if (id) this._agentIdCache = id
+      if (id) this.getRoot()._agentIdCache = id
       return id || undefined
     } catch {
       return undefined
@@ -978,24 +1065,24 @@ export class AdfWorkspace {
   // ===========================================================================
 
   getLoop(): LoopEntryRow[] {
-    return this.db.getLoopEntries()
+    return this.db.getLoopEntries(this.boundLoop)
   }
 
   getLoopPaginated(limit: number, offset?: number): LoopEntryRow[] {
-    return this.db.getLoopEntries(limit, offset)
+    return this.db.getLoopEntries(this.boundLoop, limit, offset)
   }
 
   /** Keyset pagination: entries immediately preceding `beforeSeq`, ascending. */
   getLoopBefore(beforeSeq: number, limit: number): LoopEntryRow[] {
-    return this.db.getLoopEntriesBefore(beforeSeq, limit)
+    return this.db.getLoopEntriesBefore(this.boundLoop, beforeSeq, limit)
   }
 
   getLoopCountBefore(beforeSeq: number): number {
-    return this.db.getLoopCountBefore(beforeSeq)
+    return this.db.getLoopCountBefore(this.boundLoop, beforeSeq)
   }
 
   appendToLoop(role: 'user' | 'assistant', content: ContentBlock[], model?: string, tokens?: LoopTokenUsage, createdAt?: number): number {
-    return this.db.appendLoopEntry(role, content, model, tokens, createdAt)
+    return this.db.appendLoopEntry(this.boundLoop, role, content, model, tokens, createdAt)
   }
 
   /** Min/max seq over loop entries WITHOUT assuming array order: once an
@@ -1071,6 +1158,11 @@ export class AdfWorkspace {
    * replaceLoop's delete + reinsert of identical seqs with different content
    * visible.
    *
+   * The check is (per-loop revision, global epoch) as a PAIR. The per-loop half
+   * lets concurrent loops compact without aborting each other; the epoch half
+   * catches a cross-loop wipe, which leaves this loop's own counter untouched
+   * and would otherwise let the summary commit into an emptied table.
+   *
    * A mismatch re-reads and recompresses, capped at MAX_ARCHIVE_ATTEMPTS: an
    * agent appending every 1–3s could otherwise starve the loop forever and hang
    * the renderer's Clear button. After the cap the op falls back to compressing
@@ -1097,7 +1189,8 @@ export class AdfWorkspace {
     }
 
     for (let attempt = 1; attempt <= AdfWorkspace.MAX_ARCHIVE_ATTEMPTS; attempt++) {
-      const revision = this.db.getLoopRevision()
+      const revision = this.db.getLoopRevision(this.boundLoop)
+      const epoch = this.db.getLoopEpoch()
       const { entries, ctx } = read()
       if (entries.length === 0) {
         // Nothing to compress ⇒ no await happened ⇒ still the read's tick.
@@ -1106,10 +1199,18 @@ export class AdfWorkspace {
         return result
       }
       const json = JSON.stringify(entries)
-      const data = await brotliCompressAsync(Buffer.from(json, 'utf-8'))
+      // Cap concurrent pool jobs (A3) — release in finally so a compress throw
+      // can't leak a permit and deadlock the fleet.
+      await acquireCompressSlot()
+      let data: Buffer
+      try {
+        data = await brotliCompressAsync(Buffer.from(json, 'utf-8'), BROTLI_ARCHIVE_OPTS)
+      } finally {
+        releaseCompressSlot()
+      }
       try {
         const result = this.db.transaction(() => {
-          if (this.db.getLoopRevision() !== revision) throw LOOP_REVISION_CHANGED
+          if (this.db.getLoopRevision(this.boundLoop) !== revision || this.db.getLoopEpoch() !== epoch) throw LOOP_REVISION_CHANGED
           return commit({ entries, ctx, archive: { json, data } })
         })
         this.runAfterCommit(afterCommit)
@@ -1128,7 +1229,7 @@ export class AdfWorkspace {
       let archive: LoopArchive = null
       if (entries.length > 0) {
         const json = JSON.stringify(entries)
-        archive = { json, data: brotliCompressSync(Buffer.from(json, 'utf-8')) }
+        archive = { json, data: brotliCompressSync(Buffer.from(json, 'utf-8'), BROTLI_ARCHIVE_OPTS) }
       }
       return commit({ entries, ctx, archive })
     })
@@ -1139,7 +1240,8 @@ export class AdfWorkspace {
   /** Insert the audit row for a set of archived loop entries. */
   private insertLoopAudit(entries: LoopEntryRow[], archive: { json: string; data: Buffer }): void {
     const range = AdfWorkspace.seqRange(entries)
-    this.db.insertAudit('loop', {
+    // Provenance: `loop:<name>` (adf_audit.source is free text — no schema change).
+    this.db.insertAudit(`loop:${this.boundLoop}`, {
       startSeq: range.min,
       endSeq: range.max,
       entryCount: entries.length,
@@ -1155,18 +1257,28 @@ export class AdfWorkspace {
    * also reset in-memory session state (Studio clear, runtime API, mesh) pass
    * it there instead of awaiting this call, so a dispatched turn cannot land
    * between the table wipe and the session reset.
+   *
+   * `forceAudit` archives the stream to `adf_audit` under `loop:<name>` even
+   * when loop auditing is off. Used by loop deletion, where the wipe is
+   * permanent and unrecoverable: an ordinary clear can be reconstructed from
+   * the stream's future, a deleted loop has none. Returns how many entries
+   * were archived (0 when nothing was, including audit-off clears).
    */
-  async clearLoop(opts?: { onCommitted?: () => void }): Promise<void> {
+  async clearLoop(opts?: { onCommitted?: () => void; forceAudit?: boolean }): Promise<{ archivedEntries: number }> {
+    let archivedEntries = 0
     await this.runExclusiveLoopOp(async () => {
       try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
       try {
-        const auditLoop = this.getAuditConfig().loop
+        const auditLoop = this.getAuditConfig().loop || opts?.forceAudit === true
         await this.runLoopMutation<null, void>(
-          () => ({ entries: auditLoop ? this.db.getLoopEntries() : [], ctx: null }),
+          () => ({ entries: auditLoop ? this.db.getLoopEntries(this.boundLoop) : [], ctx: null }),
           auditLoop,
           ({ entries, archive }) => {
-            if (archive) this.insertLoopAudit(entries, archive)
-            this.db.clearLoop()
+            if (archive) {
+              this.insertLoopAudit(entries, archive)
+              archivedEntries = entries.length
+            }
+            this.db.clearLoop(this.boundLoop)
           },
           opts?.onCommitted
         )
@@ -1177,6 +1289,7 @@ export class AdfWorkspace {
       }
     })
     this.emitUmbilical('loop.cleared', { method: 'clear' })
+    return { archivedEntries }
   }
 
   /**
@@ -1185,6 +1298,10 @@ export class AdfWorkspace {
    * prior state when loop audit is enabled — same policy as clearLoop.
    * Entries carrying an explicit `seq` keep it (seq stability across rebuilds);
    * dropped entries leave gaps — their content lives in the audit blob.
+   *
+   * Scoped to THIS loop's stream, not the whole table: the only caller rebuilds
+   * exactly the rows it just read from getLoop(). Sibling streams are untouched,
+   * so this bumps one revision rather than the cross-loop epoch.
    */
   async replaceLoop(entries: Array<{ role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; created_at?: number; seq?: number; ord?: number }>): Promise<void> {
     await this.runExclusiveLoopOp(async () => {
@@ -1192,13 +1309,13 @@ export class AdfWorkspace {
       try {
         const auditLoop = this.getAuditConfig().loop
         await this.runLoopMutation<null, void>(
-          () => ({ entries: auditLoop ? this.db.getLoopEntries() : [], ctx: null }),
+          () => ({ entries: auditLoop ? this.db.getLoopEntries(this.boundLoop) : [], ctx: null }),
           auditLoop,
           ({ entries: prior, archive }) => {
             if (archive) this.insertLoopAudit(prior, archive)
-            this.db.clearLoop()
+            this.db.clearLoop(this.boundLoop)
             for (const e of entries) {
-              this.db.appendLoopEntry(e.role, e.content, e.model, e.tokens, e.created_at, { seq: e.seq, ord: e.ord })
+              this.db.appendLoopEntry(this.boundLoop, e.role, e.content, e.model, e.tokens, e.created_at, { seq: e.seq, ord: e.ord })
             }
           }
         )
@@ -1230,13 +1347,22 @@ export class AdfWorkspace {
     summary: { content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt?: number }
   ): Promise<void> {
     await this.runExclusiveLoopOp(async () => {
-      try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
+      // A3: skip the whole-file backup for a SIDE-loop compaction. A compaction
+      // deletes ≤1 of N streams and is itself recoverable from the audit blob
+      // (insertLoopAudit below); a ~25MB whole-file snapshot per side-loop
+      // compaction is the dominant cost at fleet scale (amplified by C2's q5,
+      // which makes the backup, not the compress, the bottleneck). Main-stream
+      // compaction, clearLoop, replaceLoop, and loop deletion keep the backup.
+      const skipBackup = this.boundLoop !== MAIN_LOOP
+      if (!skipBackup) {
+        try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
+      }
       try {
         const auditLoop = this.getAuditConfig().loop
         const preserved = new Set(preservedSeqs)
         await this.runLoopMutation<LoopEntryRow[], void>(
           () => {
-            const entries = this.db.getLoopEntries()
+            const entries = this.db.getLoopEntries(this.boundLoop)
             const rows = entries.filter(e => preserved.has(e.seq))
             if (rows.length !== preserved.size) {
               throw new Error(
@@ -1248,15 +1374,17 @@ export class AdfWorkspace {
           auditLoop,
           ({ entries: archived, ctx: preservedRows, archive }) => {
             if (archive) this.insertLoopAudit(archived, archive)
-            this.db.deleteLoopBySeqs(archived.map(e => e.seq))
+            this.db.deleteLoopBySeqs(this.boundLoop, archived.map(e => e.seq))
             let ord: number | undefined
             if (preservedRows.length > 0) {
               ord = preservedRows.reduce((min, e) => Math.min(min, e.ord ?? e.seq), Number.POSITIVE_INFINITY) - 1
             }
-            this.db.appendLoopEntry('user', summary.content, summary.model, summary.tokens, summary.createdAt, { ord })
+            this.db.appendLoopEntry(this.boundLoop, 'user', summary.content, summary.model, summary.tokens, summary.createdAt, { ord })
           }
         )
-        await AdfDatabase.removeBackup(this.filePath)
+        // Only touch the shared .bak if we created one — never delete residue a
+        // prior (crashed) op in this file's exclusive chain left for recovery.
+        if (!skipBackup) await AdfDatabase.removeBackup(this.filePath)
       } catch (error) {
         console.error(`[AdfWorkspace] compactLoop failed. Backup preserved at: ${this.filePath}.bak`)
         throw error
@@ -1266,11 +1394,11 @@ export class AdfWorkspace {
   }
 
   getLoopCount(): number {
-    return this.db.getLoopCount()
+    return this.db.getLoopCount(this.boundLoop)
   }
 
   getLastAssistantTokens(): LoopTokenUsage | undefined {
-    return this.db.getLastAssistantTokens()
+    return this.db.getLastAssistantTokens(this.boundLoop)
   }
 
   /**
@@ -1284,7 +1412,7 @@ export class AdfWorkspace {
    * the backup/compression awaits would delete a window that has since shifted.
    */
   private resolveLoopSliceRange(start?: number, end?: number): { minKey: number; maxKey: number } | null {
-    const rows = this.db.getLoopSeqs()
+    const rows = this.db.getLoopSeqs(this.boundLoop)
     const len = rows.length
     if (len === 0) return null
 
@@ -1302,7 +1430,7 @@ export class AdfWorkspace {
 
   async clearLoopSlice(start?: number, end?: number): Promise<{ deleted: number; audited: boolean }> {
     return this.runExclusiveLoopOp(async () => {
-      if (this.db.getLoopCount() === 0) return { deleted: 0, audited: false }
+      if (this.db.getLoopCount(this.boundLoop) === 0) return { deleted: 0, audited: false }
 
       try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
       try {
@@ -1312,7 +1440,7 @@ export class AdfWorkspace {
             const range = this.resolveLoopSliceRange(start, end)
             if (!range) return { entries: [], ctx: null }
             return {
-              entries: auditLoop ? this.db.getLoopEntriesBySeqRange(range.minKey, range.maxKey) : [],
+              entries: auditLoop ? this.db.getLoopEntriesBySeqRange(this.boundLoop, range.minKey, range.maxKey) : [],
               ctx: range
             }
           },
@@ -1322,7 +1450,7 @@ export class AdfWorkspace {
             // Count the rows actually removed rather than the resolved slice
             // width — the two agree now that the range is resolved inside the
             // commit, but the DELETE's own count stays the source of truth.
-            const deleted = range ? this.db.deleteLoopBySeqRange(range.minKey, range.maxKey) : 0
+            const deleted = range ? this.db.deleteLoopBySeqRange(this.boundLoop, range.minKey, range.maxKey) : 0
             return { deleted, audited: archive !== null }
           }
         )
@@ -1407,7 +1535,7 @@ export class AdfWorkspace {
     if (source === 'inbox' && !audit.inbox) return
     if (source === 'outbox' && !audit.outbox) return
 
-    const compressed = brotliCompressSync(Buffer.from(messageJson, 'utf-8'))
+    const compressed = brotliCompressSync(Buffer.from(messageJson, 'utf-8'), BROTLI_ARCHIVE_OPTS)
     this.db.insertAudit(`${source}_message`, {
       ref: ref ?? null,
       entryCount: 1,
@@ -1550,8 +1678,34 @@ export class AdfWorkspace {
     return this.db.getTimers()
   }
 
-  addTimer(schedule: TimerSchedule, nextWakeAt: number, payload?: string, scope?: string[], lambda?: string, warm?: boolean, locked?: boolean): number {
-    return this.db.addTimer(schedule, nextWakeAt, payload, scope, lambda, warm, locked)
+  /**
+   * The loop stamp is FORCED from the binding for every SIDE-loop-bound
+   * workspace, never taken from the caller — a timer created inside a side loop
+   * must wake that loop, and no argument path may let it claim another one
+   * (docs/design/agent-loops-mvp.md §2.3, SEC-2: a loop may not manufacture
+   * authority for, or an injection into, a stream that is not its own).
+   *
+   * `loopOverride` is honoured ONLY on a main-bound workspace — main is the
+   * membrane-facing loop that already owns every stream, so letting it address
+   * a wake at one of its own side loops grants nothing new. That is what makes
+   * the reflector pattern configurable at all (main schedules the wake; the
+   * loop receives it). An override from a side-loop-bound view is silently
+   * ignored, not trusted: the caller-side refusal in `sys_set_timer` is the UX,
+   * this is the invariant.
+   */
+  addTimer(schedule: TimerSchedule, nextWakeAt: number, payload?: string, scope?: string[], lambda?: string, warm?: boolean, locked?: boolean, loopOverride?: string): number {
+    // The loop stamp is the AGENT-scope wake target. A system-scope timer runs
+    // its lambda under the agent's authority through the single agent-wide
+    // handler and wakes no cognition stream, so it carries no stamp — enforced
+    // here, the one chokepoint every caller (Studio, sys_set_timer) crosses
+    // (review S7). A ['system','agent'] timer keeps its loop for the agent half.
+    // For a side loop the stamp is still FORCED to its own name (never the
+    // caller-supplied override), so it cannot forge which loop a timer wakes.
+    const agentScoped = (scope ?? ['system']).includes('agent')
+    const loop = !agentScoped
+      ? undefined
+      : this.boundLoop === MAIN_LOOP ? (loopOverride ?? MAIN_LOOP) : this.boundLoop
+    return this.db.addTimer(schedule, nextWakeAt, payload, scope, lambda, warm, locked, loop)
   }
 
   advanceTimer(id: number, nextWakeAt: number, runCount: number, lastFiredAt: number): boolean {
@@ -1646,7 +1800,7 @@ export class AdfWorkspace {
             size: entry.size
           }
           const json = JSON.stringify(snapshot)
-          const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
+          const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'), BROTLI_ARCHIVE_OPTS)
           this.db.insertAudit('file', { ref: relativePath, entryCount: 1, sizeBytes: json.length, data: compressed })
         }
         if (opts?.force && entry) this.db.setFileProtection(relativePath, 'none')
@@ -1726,14 +1880,17 @@ export class AdfWorkspace {
     return count
   }
 
+  // The sinks are per-agent, not per-loop: registering through a forLoop() view
+  // must land on the root, or the assignment would only create a shadowing own
+  // property on the view and the agent's real sink would stay null.
   /** Register the assembled runtime's single file-change sink. */
   setOnFileChangeCallback(callback: ((change: WorkspaceFileChange) => void) | null): void {
-    this.onFileChangeCallback = callback
+    this.getRoot().onFileChangeCallback = callback
   }
 
   /** Register the single data-change sink (Studio IPC forwarder). */
   setOnDataChangeCallback(callback: ((scope: WorkspaceDataScope) => void) | null): void {
-    this.onDataChangeCallback = callback
+    this.getRoot().onDataChangeCallback = callback
   }
 
   /**
@@ -1865,7 +2022,7 @@ export class AdfWorkspace {
   // ===========================================================================
 
   insertTask(id: string, tool: string, args: string, origin?: string, requiresAuthorization?: boolean, executorManaged?: boolean, approvalMeta?: string): void {
-    this.db.insertTask(id, tool, args, origin, requiresAuthorization, executorManaged, approvalMeta)
+    this.db.insertTask(id, tool, args, origin, requiresAuthorization, executorManaged, approvalMeta, this.boundLoop)
   }
 
   getTask(id: string): TaskEntry | null {
@@ -1915,7 +2072,7 @@ export class AdfWorkspace {
     }
     try {
       const cfg = this.db.getConfig()
-      this._loggingConfigCache = { config: cfg.logging, timestamp: now }
+      this.getRoot()._loggingConfigCache = { config: cfg.logging, timestamp: now }
       return cfg.logging
     } catch {
       return undefined
@@ -1944,22 +2101,30 @@ export class AdfWorkspace {
     return regex.test(value)
   }
 
+  /** Per-agent sink — registered on the root, not on a forLoop() view. */
   setOnLogCallback(cb: (level: string, origin: string | null, event: string | null, target: string | null, message: string) => void): void {
-    this._onLogCallback = cb
+    this.getRoot()._onLogCallback = cb
   }
 
-  private static readonly DEFAULT_MAX_LOG_ROWS = 10_000
+  // A11: 50k, not 10k. adf_logs is now shared by up to 7 cognition streams
+  // (main + 6 loops); a single 10k cap divided ~7 ways aged loop diagnostics out
+  // within minutes of activity. The table is one brotli-free row per line, so
+  // 50k is a modest on-disk cost for keeping per-loop diagnostics readable.
+  private static readonly DEFAULT_MAX_LOG_ROWS = 50_000
   private static readonly TRIM_INTERVAL = 100
 
   insertLog(level: string, origin: string | null, event: string | null, target: string | null, message: string, data?: unknown): void {
     if (!this.shouldLog(level, origin)) return
 
-    this.db.insertLog(level, origin, event, target, message, data)
+    this.db.insertLog(level, origin, event, target, message, data, this.boundLoop)
 
-    // Amortized ring-buffer trim: check every TRIM_INTERVAL inserts
-    this._logInsertCount++
-    if (this._logInsertCount >= AdfWorkspace.TRIM_INTERVAL) {
-      this._logInsertCount = 0
+    // Amortized ring-buffer trim: check every TRIM_INTERVAL inserts. The counter
+    // and the recursion guard are per-AGENT (one log table, one sink), so both
+    // must be read AND written on the root — a view's own write would shadow.
+    const root = this.getRoot()
+    root._logInsertCount++
+    if (root._logInsertCount >= AdfWorkspace.TRIM_INTERVAL) {
+      root._logInsertCount = 0
       const config = this.getLoggingConfig()
       const maxRows = config?.max_rows
       // undefined → use default; null → unlimited
@@ -1969,10 +2134,10 @@ export class AdfWorkspace {
     }
 
     // Fire on_logs trigger — with anti-recursion guard
-    if (this._onLogCallback && !this._firingLogTrigger) {
-      this._firingLogTrigger = true
-      try { this._onLogCallback(level, origin, event, target, message) } catch { /* never block logging */ }
-      finally { this._firingLogTrigger = false }
+    if (root._onLogCallback && !root._firingLogTrigger) {
+      root._firingLogTrigger = true
+      try { root._onLogCallback(level, origin, event, target, message) } catch { /* never block logging */ }
+      finally { root._firingLogTrigger = false }
     }
   }
 
@@ -2041,6 +2206,10 @@ export class AdfWorkspace {
   }
 
   close(): void {
+    // A forLoop() view borrows the root's connection, checkpoint timers and
+    // skill indexer; it must never close the file (or dispose the indexer) out
+    // from under the agent or the other loops. The root owns the lifecycle.
+    if (this.loopHost) return
     this.skillIndexer.dispose()
     if (this.autoCheckpointStartTimer) {
       clearTimeout(this.autoCheckpointStartTimer)

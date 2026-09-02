@@ -7,6 +7,7 @@ import { useAgentEvents } from './hooks/useAgent'
 import { useMeshEvents } from './hooks/useMesh'
 import { useBrowserSessionEvents } from './hooks/useBrowserSession'
 import { useBackgroundAgentEvents } from './hooks/useBackgroundAgents'
+import { useApprovalEvents, useApprovalDeepLink } from './hooks/useApprovals'
 import { useAdfFile } from './hooks/useAdfFile'
 import { useTrackedDirs } from './hooks/useTrackedDirs'
 
@@ -58,6 +59,10 @@ export default function App() {
   useMeshEvents()
   useBackgroundAgentEvents()
   useBrowserSessionEvents()
+  // Global HIL approvals (every agent + loop, foreground and background)
+  useApprovalEvents()
+  // Clicks on the OS-level notifications those approvals raise
+  useApprovalDeepLink()
 
   const { openFile, createFile, closeFile } = useAdfFile()
   const { addDirectory } = useTrackedDirs()
@@ -213,6 +218,15 @@ export default function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
         e.preventDefault()
+        // On the center stage's chat tab, Ctrl+W does exactly what its X does:
+        // send the chat back to the side dock. Closing whichever file tab
+        // happens to be behind it would be the shortcut acting on something the
+        // user cannot even see.
+        const app = useAppStore.getState()
+        if (app.chatPlacement === 'center' && app.centerChatTabActive) {
+          app.setChatPlacement('side')
+          return
+        }
         const tabStore = useEditorTabsStore.getState()
         if (tabStore.activeTabPath) {
           tabStore.closeTab(tabStore.activeTabPath)

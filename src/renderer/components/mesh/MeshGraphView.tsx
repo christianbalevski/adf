@@ -48,12 +48,13 @@ import { FleetApprovalModal } from './FleetApprovalModal'
 import { FleetStationReadout } from './FleetStationReadout'
 import { useDocumentStore } from '../../stores/document.store'
 import { AgentTitleCluster } from '../layout/TitleBar'
+import { ApprovalsMenu } from '../layout/ApprovalsMenu'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
-import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
+import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { useMesh } from '../../hooks/useMesh'
-import { useAppStore } from '../../stores/app.store'
+import { useAppStore, type AppState } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import type { FleetAgentStatus, MeshDebugInfo, RemotePeerAgent } from '../../../shared/types/ipc.types'
 
@@ -408,6 +409,11 @@ function FleetTopBar({
               <circle cx="12" cy="12" r="3" />
             </svg>
           </MapNavButton>
+          {/* Notifications bell — the TitleBar is hidden on the map, so without
+              this the only reachable copy of the approvals panel is gone and a
+              toast's "Review" opens nothing (B9). Same app-global surface,
+              left-aligned dropdown to match the map's top-left nav cluster. */}
+          <ApprovalsMenu align="left" />
         </nav>
         {agentCluster ?? (
           <div className="flex items-center gap-2 min-w-0">
@@ -433,7 +439,7 @@ function FleetTopBar({
 export function MeshGraphView() {
   const meshEnabled = useMeshStore((s) => s.enabled)
   const { enableMesh } = useMesh()
-  const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
+  const setShowMeshGraph = useAppStore((s: AppState) => s.setShowMeshGraph)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const resetStore = useMeshGraphStore((s) => s.reset)
   const resetFleetStore = useFleetStore((s) => s.reset)
@@ -768,13 +774,13 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   const setAgents = useMeshStore((s) => s.setAgents)
   const showLogDrawer = useMeshGraphStore((s) => s.showLogDrawer)
   const setShowLogDrawer = useMeshGraphStore((s) => s.setShowLogDrawer)
-  const setAllPendingInteractions = useMeshGraphStore((s) => s.setAllPendingInteractions)
   const setFocusedFilePath = useMeshGraphStore((s) => s.setFocusedFilePath)
   const setBurn = useFleetStore((s) => s.setBurn)
   const setSelection = useFleetStore((s) => s.setSelection)
   const setFamily = useFleetStore((s) => s.setFamily)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
   const revealRightPanel = useAppStore((s) => s.revealRightPanel)
+  const setShowMeshGraph = useAppStore((s: AppState) => s.setShowMeshGraph)
   const { openFile, closeFile } = useAdfFile()
   const reactFlow = useReactFlow()
   const rfStoreApi = useStoreApi()
@@ -933,10 +939,9 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
   const refreshDebug = useCallback(async () => {
     try {
-      const [info, fleet, pendingList, burn, adapterStatus, peers] = await Promise.all([
+      const [info, fleet, burn, adapterStatus, peers] = await Promise.all([
         window.adfApi.getMeshDebug(),
         window.adfApi.getMeshFleetStatus(),
-        window.adfApi.getMeshPendingInteractions(),
         window.adfApi.getMeshTokenBurn(),
         window.adfApi.getAdapterStatus().catch(() => ({ adapters: [] })),
         window.adfApi.getDiscoveredRuntimes().catch(() => [])
@@ -966,24 +971,11 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         const done = startingPaths.filter((p) => online.has(p) || now - starting[p] > 30_000)
         if (done.length > 0) clearStarting(done)
       }
-      const pendingMap: Record<string, PendingInteraction> = {}
-      for (const p of pendingList) {
-        if (pendingMap[p.filePath]) continue // one alert per agent — executors pause per request anyway
-        pendingMap[p.filePath] = {
-          type: p.type,
-          requestId: p.requestId,
-          question: p.question,
-          toolName: p.toolName,
-          input: p.input,
-          reason: p.reason,
-          protection: p.protection,
-          canAlwaysApprove: p.canAlwaysApprove,
-          alwaysApproveBlockedReason: p.alwaysApproveBlockedReason
-        }
-      }
-      setAllPendingInteractions(pendingMap)
+      // Pending ask/approval state is NOT polled here any more: the global
+      // ApprovalHub pushes it (useApprovals feeds pendingInteractions), so the
+      // map, the title-bar menu and the in-chat cards all read one source.
     } catch { /* ignore */ }
-  }, [setAgents, setAllPendingInteractions, setBurn])
+  }, [setAgents, setBurn])
 
   useEffect(() => {
     // Veil stays up through the first poll + one layout frame, so the world
@@ -1571,10 +1563,15 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     }
     setFounding(null)
     refreshDebug()
-    // Straight into the briefing: open the newborn's doc + loop panel
+    // Straight into the briefing: open the newborn's doc + loop panel. Leave the
+    // map FIRST (B3) — expandRightPanelToTab routes to the effective chat slot,
+    // and while the map is up a center-mode chat has no visible stage tab, so
+    // the briefing would land nowhere. Closing the map makes the center tab
+    // reachable again (or, in side placement, this is a no-op for routing).
+    setShowMeshGraph(false)
     await openFile(filePath)
     expandRightPanelToTab('loop')
-  }, [founding, refreshDebug, openFile, expandRightPanelToTab])
+  }, [founding, refreshDebug, openFile, expandRightPanelToTab, setShowMeshGraph])
 
   const onCanvasMouseMove = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement

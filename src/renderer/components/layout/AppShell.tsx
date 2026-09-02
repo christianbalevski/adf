@@ -15,6 +15,7 @@ import { AgentReviewBanner } from '../common/AgentReviewBanner'
 import { ShutdownOverlay } from '../common/ShutdownOverlay'
 import { BottomPanel } from './BottomPanel'
 import { MeshGraphView } from '../mesh/MeshGraphView'
+import { ApprovalToasts } from './ApprovalsMenu'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
@@ -196,6 +197,9 @@ export function AppShell() {
 
       {meshEnabled && !showSettings && <div className="mesh-pulse-bar" />}
       {!showSettings && <StatusBar />}
+      {/* Outside the view switch: an off-screen agent's approval must announce
+          itself on the fleet map and in Settings too, not only in the editor. */}
+      <ApprovalToasts />
       <PasswordDialog />
       <OwnerMismatchDialog />
       <AgentReviewDialog />

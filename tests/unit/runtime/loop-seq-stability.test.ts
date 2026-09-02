@@ -68,7 +68,7 @@ describe('seq stability (seq = identity, ord = position)', () => {
     expect(after[2]).toMatchObject({ seq: s4, created_at: 400 })
 
     // Audit blob is disjoint from the surviving rows and carries the seq range.
-    const audits = ws.listAudits().filter(a => a.source === 'loop')
+    const audits = ws.listAudits().filter(a => a.source === 'loop:main')
     expect(audits).toHaveLength(1)
     expect(audits[0].start_seq).toBe(s1)
     expect(audits[0].end_seq).toBe(s2)
@@ -110,7 +110,7 @@ describe('seq stability (seq = identity, ord = position)', () => {
     expect(ws.getLoop().map(e => e.seq)).toEqual([s2, s3])
 
     // The slice audit carries the summary's actual seq.
-    const audits = ws.listAudits().filter(a => a.source === 'loop')
+    const audits = ws.listAudits().filter(a => a.source === 'loop:main')
     const sliceAudit = audits[0]
     expect(sliceAudit.entry_count).toBe(1)
     expect(sliceAudit.start_seq).toBe(sliceAudit.end_seq)
@@ -147,7 +147,7 @@ describe('seq stability (seq = identity, ord = position)', () => {
     const s6 = ws.appendToLoop('user', text('keep-4'))
     await ws.compactLoop([s5, s6], { content: text('summary-2') })
 
-    const audits = ws.listAudits().filter(a => a.source === 'loop')
+    const audits = ws.listAudits().filter(a => a.source === 'loop:main')
     expect(audits).toHaveLength(2)
     for (const a of audits) {
       expect(a.start_seq).not.toBeNull()
@@ -160,7 +160,7 @@ describe('seq stability (seq = identity, ord = position)', () => {
 
     // clearLoop after a compaction gets the same treatment.
     await ws.clearLoop()
-    const all = ws.listAudits().filter(a => a.source === 'loop')
+    const all = ws.listAudits().filter(a => a.source === 'loop:main')
     for (const a of all) expect(a.start_seq!).toBeLessThanOrEqual(a.end_seq!)
   })
 

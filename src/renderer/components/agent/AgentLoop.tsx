@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useAgentStore, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
+import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useAppStore } from '../../stores/app.store'
+import { useAppStore, selectChatInCenter, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
+import { loopColor } from '../../utils/loop-color'
 import { SKILLS_REGISTRY_PATH, parseSkillsRegistry } from '../../utils/skills-panel'
 import {
   buildSlashCommands,
@@ -266,7 +267,20 @@ const TRIGGER_LABELS: Record<string, string> = {
 
 const CONTEXT_LABELS: Record<string, string> = {
   system_prompt: 'System Prompt',
-  dynamic_instructions: 'Dynamic Instructions'
+  dynamic_instructions: 'Dynamic Instructions',
+  loop: 'Loop Message'
+}
+
+/**
+ * A message delivered by another loop's `loop_send`. It arrives as a plain user
+ * row (adf_loop has no metadata column) and is classified by its durable
+ * `[from loop:<name>]` stamp — in `parseLoopToDisplay` on rehydrate and in
+ * `useAgent`'s event router live, both producing this shape.
+ */
+function isLoopMessageEntry(entry: AgentLogEntry): boolean {
+  return entry.type === 'context'
+    && entry.metadata?.category === 'loop'
+    && typeof entry.metadata?.fromLoop === 'string'
 }
 
 type ToolPair = { call: AgentLogEntry | null; result: AgentLogEntry | null }
@@ -325,6 +339,9 @@ function isSuccessfulStatusChange(entry: AgentLogEntry, toolPairs: ToolPairIndex
 }
 
 function isCollapsibleActivity(entry: AgentLogEntry, toolPairs: ToolPairIndex): boolean {
+  // A delivered inter-loop message is content, not workflow noise — folding it
+  // into an activity group under a tool-call label would hide it entirely.
+  if (isLoopMessageEntry(entry)) return false
   if (entry.type === 'thinking' || entry.type === 'context' || entry.type === 'trigger') return true
   if (entry.type !== 'tool_call') return false
   const name = entry.metadata?.name as string | undefined
@@ -402,16 +419,6 @@ function getActivitySummary(entries: AgentLogEntry[]): { label: string; family: 
 
 function isTurnCompleteMarker(entry: AgentLogEntry): boolean {
   return entry.type === 'system' && entry.content.trim().toLowerCase() === 'turn complete'
-}
-
-function isWorkflowDisplayItem(item: DisplayItem): boolean {
-  if (item.kind === 'activity') return true
-  return item.entry.type === 'tool_call'
-    || item.entry.type === 'thinking'
-    || item.entry.type === 'trigger'
-    || item.entry.type === 'context'
-    || item.entry.type === 'error'
-    || item.entry.type === 'compaction'
 }
 
 function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairIndex): number | null {
@@ -494,8 +501,8 @@ const LogEntryRow = memo(({
     : pendingApprovalRequestId
       ? ATTENTION_TOOL_STYLE
       : toolFamilyStyle
-  // Neutral steps stay transparent — the group's single outer rail is the only
-  // vertical line; a per-step rail only appears when it carries signal.
+  // Neutral steps stay transparent — a per-step left rail only appears when it
+  // carries signal (an error, or a pending approval).
   const toolRail = toolResultIsError === true || pendingApprovalRequestId
     ? toolAccent.rail
     : 'border-transparent'
@@ -568,6 +575,23 @@ const LogEntryRow = memo(({
         )
       })()}
       {entry.type === 'text' && (() => {
+        // An assistant turn that ended with no content at all — the "end
+        // quietly" pattern loop prompting encourages, and what a model that
+        // spends its turn on reasoning alone produces. Rendered as a muted
+        // one-liner rather than nothing: an invisible row makes a correct quiet
+        // ending indistinguishable from a crash or a dropped stream.
+        // Cheap emptiness test — trim() allocates a full copy of the (growing)
+        // streamed string on every render, so this ran O(n²) over a turn (B15).
+        if (entry.content.length === 0 || !/\S/.test(entry.content)) {
+          return (
+            <div className="px-1 py-1 text-[11px] italic leading-5 text-neutral-400 dark:text-neutral-500">
+              ended quietly (no output)
+              {entry.timestamp > 0 && (
+                <span className="ml-1.5 not-italic">{formatLoopTime(entry.timestamp)}</span>
+              )}
+            </div>
+          )
+        }
         return (
           <div>
             <MarkdownEntry content={entry.content} />
@@ -734,7 +758,35 @@ const LogEntryRow = memo(({
           </div>
         )
       })()}
-      {entry.type === 'context' && (() => {
+      {isLoopMessageEntry(entry) && (() => {
+        // Inter-loop delivery. Same card as an inter-agent message — an inbound
+        // message from another cognition stream, explicitly not owner input.
+        // The rail + label carry the SENDER's identity colour, so main's thread
+        // (where deliveries from every inner loop land) is readable at a glance.
+        const fromLoop = entry.metadata?.fromLoop as string
+        const sender = loopColor(fromLoop)
+        return (
+        // Sides are coloured individually on purpose: a blanket `border-neutral-*`
+        // also sets border-left-color, and which of the two wins would then
+        // depend on Tailwind's emit order rather than on intent.
+        <div className={`rounded-md border-y border-r border-l-[3px] border-y-neutral-200 border-r-neutral-200 bg-neutral-50/60 p-1.5 dark:border-y-neutral-700 dark:border-r-neutral-700 dark:bg-neutral-800/35 ${sender.rail}`}>
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <span className={`text-[10px] font-semibold ${sender.label}`}>
+              {`from loop:${fromLoop}`}
+            </span>
+            {entry.timestamp > 0 && (
+              <span className="ml-auto text-[10px] text-neutral-400 dark:text-neutral-500">
+                {formatLoopTime(entry.timestamp)}
+              </span>
+            )}
+          </div>
+          <div className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-snug text-neutral-700 dark:text-neutral-300">
+            {entry.content}
+          </div>
+        </div>
+        )
+      })()}
+      {entry.type === 'context' && !isLoopMessageEntry(entry) && (() => {
         const category = (entry.metadata?.category as string) ?? 'unknown'
         const label = CONTEXT_LABELS[category] ?? 'Context Injected'
         const isExpanded = expandedContexts.has(entry.id)
@@ -861,30 +913,42 @@ const LogEntryRow = memo(({
   )
 })
 
-export function AgentLoop() {
+/**
+ * One loop's stream + composer. `loop` selects the store slice AND the target
+ * of every send, so main's tab is byte-for-byte the pre-loops behaviour and a
+ * side loop's tab is fully isolated from it.
+ */
+function LoopStream({ loop }: { loop: string }) {
+  const isMainLoop = loop === MAIN_LOOP
   const filePath = useDocumentStore((s) => s.filePath)
   const draftInputs = useDocumentStore((s) => s.draftInputs)
   const setDraftInput = useDocumentStore((s) => s.setDraftInput)
-  const input = filePath ? (draftInputs[filePath] ?? '') : ''
+  // Each loop tab keeps its own composer draft.
+  const draftKey = filePath ? (isMainLoop ? filePath : `${filePath}#loop:${loop}`) : null
+  const input = draftKey ? (draftInputs[draftKey] ?? '') : ''
   const setInput = useCallback((value: string) => {
-    if (filePath) setDraftInput(filePath, value)
-  }, [filePath, setDraftInput])
-  const log = useAgentStore((s) => s.log)
-  const logVersion = useAgentStore((s) => s.logVersion)
-  const earlierCount = useAgentStore((s) => s.earlierCount)
+    if (draftKey) setDraftInput(draftKey, value)
+  }, [draftKey, setDraftInput])
+  const log = useAgentStore((s) => selectLoopSlice(s, loop).log)
+  const logVersion = useAgentStore((s) => selectLoopSlice(s, loop).logVersion)
+  const earlierCount = useAgentStore((s) => selectLoopSlice(s, loop).earlierCount)
   const prependLog = useAgentStore((s) => s.prependLog)
-  const state = useAgentStore((s) => s.state)
-  const pendingApprovals = useAgentStore((s) => s.pendingApprovals)
+  const setEarlierCount = useAgentStore((s) => s.setEarlierCount)
+  const state = useAgentStore((s) => selectLoopSlice(s, loop).state)
+  /** Agent-level state (= main's, §6.3) — governs the off/start gate for every tab. */
+  const agentState = useAgentStore((s) => s.state)
+  const pendingApprovals = useAgentStore((s) => selectLoopSlice(s, loop).pendingApprovals)
   const removePendingApproval = useAgentStore((s) => s.removePendingApproval)
   const markApprovalOutcome = useAgentStore((s) => s.markApprovalOutcome)
-  const pendingAsks = useAgentStore((s) => s.pendingAsks)
+  const pendingAsks = useAgentStore((s) => selectLoopSlice(s, loop).pendingAsks)
   const removePendingAsk = useAgentStore((s) => s.removePendingAsk)
   const updateEntryAt = useAgentStore((s) => s.updateEntryAt)
-  const pendingSuspend = useAgentStore((s) => s.pendingSuspend)
+  const pendingSuspend = useAgentStore((s) => selectLoopSlice(s, loop).pendingSuspend)
   const setPendingSuspend = useAgentStore((s) => s.setPendingSuspend)
-  const messageQueue = useAgentStore((s) => s.messageQueue)
+  const messageQueue = useAgentStore((s) => selectLoopSlice(s, loop).messageQueue)
   const addToQueue = useAgentStore((s) => s.addToQueue)
   const removeFromQueue = useAgentStore((s) => s.removeFromQueue)
+  const setLog = useAgentStore((s) => s.setLog)
   const config = useAgentStore((s) => s.config)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -897,6 +961,15 @@ export function AgentLoop() {
   const [draggingOverInput, setDraggingOverInput] = useState(false)
   const [uploadingFiles, setUploadingFiles] = useState(false)
   const starting = useAppStore((s) => filePath ? s.startingFilePaths.has(filePath) : false)
+  // Center stage with both side panels collapsed spans the whole window; the
+  // `comfortable` default caps the stream + composer to a reading column. The
+  // cap is a width on an inner wrapper, not on the scroller, so the scrollbar
+  // stays at the panel edge and code blocks keep their own overflow scroll.
+  const capColumn = useAppStore(selectChatColumnCapped)
+  const columnClass = capColumn ? 'mx-auto w-full max-w-4xl' : 'w-full'
+  // This loop's identity colour — used for the composer focus ring so the
+  // thread you are typing into is identifiable without reading the tab strip.
+  const loopStyle = loopColor(loop)
 
   const handleApprovalRespond = useCallback((requestId: string, approved: boolean, feedback?: string) => {
     window.adfApi?.respondToolApproval(requestId, approved, feedback)
@@ -905,12 +978,12 @@ export function AgentLoop() {
     // outcome stamp must happen here too — the event handler will find nothing.
     for (const [logEntryId, info] of pendingApprovals.entries()) {
       if (info.requestId === requestId) {
-        markApprovalOutcome(logEntryId, approved)
-        removePendingApproval(logEntryId)
+        markApprovalOutcome(logEntryId, approved, loop)
+        removePendingApproval(logEntryId, loop)
         break
       }
     }
-  }, [pendingApprovals, removePendingApproval, markApprovalOutcome])
+  }, [pendingApprovals, removePendingApproval, markApprovalOutcome, loop])
 
   // "Always approve" — server-side: the main process drops the HIL gate on the
   // tool (enabled, un-restricted), persists + propagates the config, then
@@ -923,15 +996,15 @@ export function AgentLoop() {
         console.warn(`[AgentLoop] Always approve refused for ${toolName}: ${result.error}`)
         return
       }
-      for (const [logEntryId, info] of useAgentStore.getState().pendingApprovals.entries()) {
+      for (const [logEntryId, info] of selectLoopSlice(useAgentStore.getState(), loop).pendingApprovals.entries()) {
         if (info.requestId === requestId) {
-          useAgentStore.getState().markApprovalOutcome(logEntryId, true)
-          removePendingApproval(logEntryId)
+          useAgentStore.getState().markApprovalOutcome(logEntryId, true, loop)
+          removePendingApproval(logEntryId, loop)
           break
         }
       }
     })
-  }, [removePendingApproval])
+  }, [removePendingApproval, loop])
 
   const handleAskRespond = useCallback((logEntryId: string, requestId: string, answer: string) => {
     window.adfApi?.respondAsk(requestId, answer)
@@ -942,15 +1015,15 @@ export function AgentLoop() {
           ...entry.metadata,
           askAnswer: answer
         }
-      })
+      }, loop)
     }
-    removePendingAsk(logEntryId)
-  }, [log, removePendingAsk, updateEntryAt])
+    removePendingAsk(logEntryId, loop)
+  }, [log, removePendingAsk, updateEntryAt, loop])
 
   const handleSuspendRespond = useCallback((resume: boolean) => {
     window.adfApi?.respondSuspend(resume)
-    setPendingSuspend(null)
-  }, [setPendingSuspend])
+    setPendingSuspend(null, loop)
+  }, [setPendingSuspend, loop])
 
   // Track whether user is at the bottom of the scroll container
   const isAtBottom = useRef(true)
@@ -999,6 +1072,15 @@ export function AgentLoop() {
     // between the ResizeObserver snapshot and the measurement, so sizes get
     // written under the wrong item key — rows then overlap permanently.
   })
+
+  // Width toggle (comfortable ↔ full) reflows the column, so every row's height
+  // changes. The stream no longer remounts on a width change (B5), so nudge the
+  // virtualiser to re-measure — otherwise rows keep their old estimated sizes
+  // and overlap. The per-row measureElement ResizeObserver catches visible rows;
+  // measure() also refreshes the ones scrolled out of view.
+  useEffect(() => {
+    virtualizer.measure()
+  }, [capColumn, virtualizer])
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
@@ -1053,12 +1135,12 @@ export function AgentLoop() {
     // Snapshot the gated request rows so we can clear them optimistically; main
     // enforces the never-protection filter and also emits resolved events.
     const gatedLogIds: string[] = []
-    for (const [logEntryId, info] of useAgentStore.getState().pendingApprovals.entries()) {
+    for (const [logEntryId, info] of selectLoopSlice(useAgentStore.getState(), loop).pendingApprovals.entries()) {
       if (info.reason === 'restricted') gatedLogIds.push(logEntryId)
     }
     void window.adfApi?.approveAllGatedTools().then((result) => {
       if (!result?.success) return
-      for (const logEntryId of gatedLogIds) removePendingApproval(logEntryId)
+      for (const logEntryId of gatedLogIds) removePendingApproval(logEntryId, loop)
       const remaining = result.skippedProtection ?? 0
       const approved = result.approved ?? gatedLogIds.length
       setApproveAllNote(
@@ -1067,12 +1149,32 @@ export function AgentLoop() {
           : null
       )
     })
-  }, [removePendingApproval])
+  }, [removePendingApproval, loop])
 
   // Clear the post-batch note once every remaining approval is resolved.
   useEffect(() => {
     if (pendingApprovals.size === 0 && approveAllNote) setApproveAllNote(null)
   }, [pendingApprovals, approveAllNote])
+
+  // Side-loop streams are not part of the initial `getBatch()` payload (that
+  // one carries main's loop only), so hydrate this tab's history the first time
+  // it is opened. Main is already loaded by useAdfFile — never re-fetch it.
+  const [sideLoopLoaded, setSideLoopLoaded] = useState(isMainLoop)
+  useEffect(() => {
+    if (isMainLoop || sideLoopLoaded) return
+    let cancelled = false
+    void Promise.resolve(window.adfApi?.getChat(loop))
+      .then((result) => {
+        if (cancelled) return
+        const history = result?.chatHistory
+        if (history?.uiLog?.length) {
+          setLog(history.uiLog as AgentLogEntry[], history.earlierCount ?? 0, loop)
+        }
+      })
+      .catch(() => { /* stream unavailable — the tab just starts empty */ })
+      .finally(() => { if (!cancelled) setSideLoopLoaded(true) })
+    return () => { cancelled = true }
+  }, [isMainLoop, sideLoopLoaded, loop, setLog])
 
   // Scroll to bottom on mount (component remounts per-agent via key prop)
   useEffect(() => {
@@ -1135,7 +1237,9 @@ export function AgentLoop() {
     video: config?.limits?.max_video_size_bytes ?? DEFAULT_MEDIA_LIMITS.video,
   }), [config])
 
-  const agentName = config?.name?.trim() || 'the agent'
+  const agentName = isMainLoop
+    ? (config?.name?.trim() || 'the agent')
+    : `the ${loop} loop`
 
   // --- `/` command palette (design doc §5) --------------------------------
   //
@@ -1253,16 +1357,16 @@ export function AgentLoop() {
   const handleInterruptSend = useCallback((id: string) => {
     const msg = messageQueue.find(m => m.id === id)
     if (!msg) return
-    removeFromQueue(id)
+    removeFromQueue(id, loop)
     addLogEntry({
       id: nanoid(),
       type: 'user',
       content: msg.text,
       timestamp: Date.now(),
       metadata: msg.imagePreviewUrls && msg.imagePreviewUrls.length > 0 ? { imagePreviewUrls: msg.imagePreviewUrls } : undefined
-    })
-    window.adfApi?.invokeAgent(msg.text, filePath ?? undefined, msg.content)
-  }, [messageQueue, removeFromQueue, addLogEntry, filePath])
+    }, loop)
+    window.adfApi?.invokeAgent(msg.text, filePath ?? undefined, msg.content, loop)
+  }, [messageQueue, removeFromQueue, addLogEntry, filePath, loop])
 
   const buildSubmitContent = useCallback((message: string): ContentBlock[] => {
     const nativeAttachments = attachments.filter((item) => item.native && item.contentBlock)
@@ -1296,7 +1400,9 @@ export function AgentLoop() {
 
     // Autonomous + active: queue message instead of sending directly
     if (state === 'active') {
-      addToQueue(message || ATTACHMENT_ONLY_TEXT, content, previews)
+      // Callers already cleared the composer; the queue is keyed by loop so a
+      // message typed into an inner loop's tab is sent to that loop.
+      addToQueue(message || ATTACHMENT_ONLY_TEXT, content, previews, loop)
       return
     }
 
@@ -1307,10 +1413,11 @@ export function AgentLoop() {
       content: message || ATTACHMENT_ONLY_TEXT,
       timestamp: Date.now(),
       metadata: previews.length > 0 ? { imagePreviewUrls: previews } : undefined
-    })
+    }, loop)
 
-    // If agent is off, start it first then invoke with the message
-    if (state === 'off') {
+    // If the AGENT (not just this loop) is off, start it first then invoke.
+    // Side loops run inside the same process as main, so the gate is agent-level.
+    if (agentState === 'off') {
       // Review gate: check if agent needs review before starting
       try {
         const review = await window.adfApi?.checkAgentReview()
@@ -1337,10 +1444,10 @@ export function AgentLoop() {
     // Update activity state if still viewing, then always send the invoke
     const stillViewing = useDocumentStore.getState().filePath === targetFilePath
     if (stillViewing) {
-      setState('active')
+      setState('active', loop)
     }
 
-    window.adfApi?.invokeAgent(message, targetFilePath ?? undefined, content)
+    window.adfApi?.invokeAgent(message, targetFilePath ?? undefined, content, loop)
   }
 
   /**
@@ -1519,7 +1626,7 @@ export function AgentLoop() {
     if (loadingOlder) return
     // Oldest loaded loop row — display entries carry their source seq in metadata.
     // Live-streamed entries have no seq, so scan forward for the first that does.
-    const s = useAgentStore.getState()
+    const s = selectLoopSlice(useAgentStore.getState(), loop)
     let oldestSeq: number | undefined
     for (const entry of s.log) {
       const seq = entry.metadata?.seq
@@ -1528,27 +1635,27 @@ export function AgentLoop() {
     if (oldestSeq === undefined) return
     setLoadingOlder(true)
     try {
-      const result = await window.adfApi.getChatOlder(oldestSeq)
+      const result = await window.adfApi.getChatOlder(oldestSeq, undefined, loop)
       if (result.uiLog.length > 0) {
         // Count grouped display items so the previous top item can be
         // re-anchored after the prepend without activity groups causing drift.
         const olderLog = result.uiLog as AgentLogEntry[]
         const olderDisplayLog = olderLog.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry))
         const prependedDisplayCount = buildDisplayItems(olderDisplayLog, buildToolPairIndex(olderLog)).length
-        prependLog(olderLog, result.earlierCount)
+        prependLog(olderLog, result.earlierCount, loop)
         requestAnimationFrame(() => {
           virtualizer.scrollToIndex(prependedDisplayCount, { align: 'start' })
         })
       } else {
         // No rows before the cursor — the boundary count was stale
-        useAgentStore.setState({ earlierCount: 0 })
+        setEarlierCount(0, loop)
       }
     } catch (error) {
       console.error('[AgentLoop] Failed to load older loop entries:', error)
     } finally {
       setLoadingOlder(false)
     }
-  }, [loadingOlder, prependLog, virtualizer])
+  }, [loadingOlder, prependLog, setEarlierCount, virtualizer, loop])
 
   const findToolPair = useCallback((entry: AgentLogEntry) => {
     return toolPairIndex.get(entry.id) ?? { call: null, result: null }
@@ -1677,6 +1784,7 @@ export function AgentLoop() {
       {/* Log */}
       <div className="relative flex-1 min-h-0">
       <div ref={scrollRef} onScroll={handleScroll} className="absolute inset-0 overflow-y-auto">
+      <div className={columnClass}>
         {displayLog.length === 0 && !isActive && !starting && (
           <p className="text-sm text-neutral-400 dark:text-neutral-500 text-center mt-8">
             Agent output will appear here.
@@ -1716,10 +1824,6 @@ export function AgentLoop() {
                     data-index={virtualItem.index}
                     ref={virtualizer.measureElement}
                   >
-                    <span
-                      className="pointer-events-none absolute inset-y-0 left-1.5 border-l border-neutral-200/70 dark:border-neutral-700/70"
-                      aria-hidden
-                    />
                     <div className="flex items-center gap-2 text-sm text-neutral-400 px-3 py-1">
                       <div className="flex gap-1">
                         <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full animate-bounce" />
@@ -1734,7 +1838,6 @@ export function AgentLoop() {
 
               const displayItem = displayItems[virtualItem.index]
               if (!displayItem) return null
-              const showsWorkflowRail = isWorkflowDisplayItem(displayItem)
               const attentionRequired = displayItem.kind === 'activity' && activityNeedsAttention(displayItem.entries)
               const isTailGroup = displayItem.kind === 'activity' && virtualItem.index === lastActivityIndex
               const isLiveTail = isTailGroup && isActive && virtualItem.index === displayItems.length - 1
@@ -1776,12 +1879,6 @@ export function AgentLoop() {
                   data-index={virtualItem.index}
                   ref={virtualizer.measureElement}
                 >
-                  {showsWorkflowRail && (
-                    <span
-                      className="pointer-events-none absolute inset-y-0 left-1.5 border-l border-neutral-200/70 dark:border-neutral-700/70"
-                      aria-hidden
-                    />
-                  )}
                   {displayItem.kind === 'entry' ? (
                     <div className="py-1">{renderLogEntry(displayItem.entry)}</div>
                   ) : (
@@ -1824,6 +1921,7 @@ export function AgentLoop() {
           </div>
         )}
       </div>
+      </div>
 
       {/* Approve all (gated tools only) — shown when a batch of ≥2 gated
           approvals is queued. Protection/lock overrides are never included. */}
@@ -1853,18 +1951,23 @@ export function AgentLoop() {
         </div>
       )}
 
-      {/* Scroll to bottom button */}
-      {showScrollBtn && (
-        <button
-          onClick={scrollToBottom}
-          className="absolute bottom-3 right-3 w-7 h-7 flex items-center justify-center rounded-full bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300 shadow-md hover:bg-neutral-300 dark:hover:bg-neutral-600 transition-colors z-10"
-          title="Scroll to bottom"
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M7 2.5v9m0 0l-3.5-3.5M7 11.5l3.5-3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-      )}
+      {/* Bottom-right corner controls, stacked so the transient scroll button
+          can never cover the persistent width toggle (and neither ever reaches
+          the composer's own buttons, which live below this container). */}
+      <div className="pointer-events-none absolute bottom-3 right-3 z-10 flex flex-col items-end gap-1.5">
+        {showScrollBtn && (
+          <button
+            onClick={scrollToBottom}
+            className="pointer-events-auto w-7 h-7 flex items-center justify-center rounded-full bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300 shadow-md hover:bg-neutral-300 dark:hover:bg-neutral-600 transition-colors"
+            title="Scroll to bottom"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M7 2.5v9m0 0l-3.5-3.5M7 11.5l3.5-3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
+        <ChatWidthToggle />
+      </div>
       </div>
 
       {/* Input */}
@@ -1898,12 +2001,16 @@ export function AgentLoop() {
           : (input.trim().length > 0 || attachments.some((item) => item.native && item.contentBlock)) && !starting && !uploadingFiles
 
         return (
+          // The divider stays full-bleed (like the tab strip above) while the
+          // composer itself narrows with the stream — a hairline that stopped
+          // at the column edge would read as an unfinished panel.
+          <div className={`border-t ${activeAsk ? 'border-blue-400 dark:border-blue-600' : 'border-neutral-200 dark:border-neutral-700'}`}>
           <form
             onSubmit={handleInputSubmit}
             onDrop={activeAsk ? undefined : handleInputDrop}
             onDragOver={activeAsk ? undefined : handleInputDragOver}
             onDragLeave={activeAsk ? undefined : handleInputDragLeave}
-            className={`border-t px-3 pb-3 ${messageQueue.length > 0 ? 'pt-1' : 'pt-2'} ${activeAsk ? 'border-blue-400 dark:border-blue-600' : 'border-neutral-200 dark:border-neutral-700'}`}
+            className={`px-3 pb-3 ${messageQueue.length > 0 ? 'pt-1' : 'pt-2'} ${columnClass}`}
           >
             {activeAsk && (
               <div className="mb-1.5 px-1 space-y-1">
@@ -1971,7 +2078,7 @@ export function AgentLoop() {
                 ? 'border-[var(--adf-ui-accent)] ring-2 ring-[var(--adf-ui-focus)]'
                 : activeAsk
                   ? 'border-blue-400 dark:border-blue-600'
-                  : 'border-neutral-200 focus-within:border-[var(--adf-ui-accent)] focus-within:ring-2 focus-within:ring-[var(--adf-ui-focus)] dark:border-neutral-700'
+                  : `border-neutral-200 dark:border-neutral-700 ${loopStyle.focus}`
             }`}>
               {draggingOverInput && (
                 <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-blue-50/90 text-sm font-medium text-blue-600 dark:bg-blue-950/70 dark:text-blue-300">
@@ -2055,8 +2162,8 @@ export function AgentLoop() {
                   size="default"
                   variant={state === 'active' && !activeAsk ? 'secondary' : 'primary'}
                   className="w-[var(--adf-ui-control-height)] px-0 [&_svg]:shrink-0"
-                  title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : state === 'off' ? 'Start agent' : 'Send'}
-                  aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : state === 'off' ? 'Start agent' : 'Send'}
+                  title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
+                  aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
                 >
                   <svg width="19" height="19" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                     {state === 'active' && !activeAsk ? (
@@ -2070,6 +2177,7 @@ export function AgentLoop() {
             </div>
             </div>
           </form>
+          </div>
         )
       })()}
 
@@ -2136,6 +2244,300 @@ export function AgentLoop() {
           />
         )
       })()}
+    </div>
+  )
+}
+
+/**
+ * The app's canonical state→dot palette (Sidebar's `StatusDot`, TitleBar's
+ * `stateColors`). Duplicated rather than approximated: a second, private
+ * colour scheme for the same six states is how "the agent is running" ends up
+ * meaning two different things in two places on one screen.
+ */
+const LOOP_DOT_APPEARANCE: Record<string, { color: string; label: string; pulse?: boolean; ring?: boolean }> = {
+  active: { color: 'bg-yellow-400', label: 'Active', pulse: true },
+  idle: { color: 'bg-green-400', label: 'Idle' },
+  hibernate: { color: 'bg-purple-500', label: 'Hibernate' },
+  suspended: { color: 'border-red-400', label: 'Suspended', ring: true },
+  off: { color: 'bg-neutral-400', label: 'Off' },
+  error: { color: 'bg-red-400', label: 'Error' },
+}
+
+/**
+ * One tab in the loop strip. Dot mirrors THAT loop's own live state; the
+ * underline + label accent carry the loop's IDENTITY colour. The two are never
+ * the same channel — see `loop-color.ts`.
+ */
+function LoopTab({ name, label, active, onSelect, scrollIntoViewOnActive = false }: {
+  name: string
+  label: string
+  active: boolean
+  onSelect: (name: string) => void
+  /** Set for tabs inside the horizontal scroller, so selection can't leave one hidden. */
+  scrollIntoViewOnActive?: boolean
+}) {
+  // Per-loop, never the agent-level state: `main` resolves to the store root
+  // (which IS the agent state, §6.3) and a side loop to its own slice, which
+  // `useAgent` fills the moment that loop's executor emits `state_changed`.
+  const loopState = useAgentStore((s) => selectLoopSlice(s, name).state)
+  // A side loop that has never emitted reads the default slice ('idle'), and a
+  // stopped agent holds no runtime for it — painting that green would claim a
+  // mind is alive behind the tab when the pool has none. Read main's state for
+  // this gate only; nothing here ever writes it (side-loop state must never
+  // move the agent-level state).
+  const agentState = useAgentStore((s) => s.state)
+  const state = name === MAIN_LOOP || agentState !== 'off' ? loopState : 'off'
+  const dot = LOOP_DOT_APPEARANCE[state] ?? LOOP_DOT_APPEARANCE.off
+  const identity = loopColor(name)
+  // Calm states (idle/off/hibernate/suspended) on an UNFOCUSED tab compete with
+  // both the active-tab affordance and the muted identity underline, so dim
+  // their dot. Attention states — running (yellow-ping) and error (red) — stay
+  // full brightness even on an unfocused tab so they still pop; the active tab
+  // is always full. Rule: full when (tab active) OR (running/error).
+  const dotAttention = state === 'active' || state === 'error'
+  const dotMuted = !active && !dotAttention
+  const ref = useRef<HTMLButtonElement>(null)
+
+  // Whichever way the tab became active — a click, or a programmatic switch —
+  // bring it into the scroller. `nearest` is a no-op when it is already visible.
+  useEffect(() => {
+    if (!active || !scrollIntoViewOnActive) return
+    ref.current?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+  }, [active, scrollIntoViewOnActive])
+
+  return (
+    <button
+      ref={ref}
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={() => onSelect(name)}
+      title={`${name === MAIN_LOOP ? 'The host loop' : `Inner loop "${name}"`} — ${dot.label}`}
+      // Identity is ALWAYS on the underline for an inner loop — muted when
+      // inactive, full when active — so the strip stays a legend the eye can
+      // match a sender-coloured `loop_send` card against without clicking. The
+      // label text stays neutral until selected, so selection still reads.
+      // `main` is not in the legend and keeps its bare inactive strip.
+      className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium transition-colors ${
+        active
+          ? `${identity.underline} ${identity.accent}`
+          : `${identity.underlineMuted} text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300`
+      }`}
+    >
+      <span className={`relative h-2 w-2 shrink-0 transition-opacity ${dotMuted ? 'opacity-60' : ''}`} title={dot.label} aria-hidden>
+        {dot.pulse && (
+          <span className={`absolute inset-0 rounded-full ${dot.color} animate-ping opacity-75`} />
+        )}
+        {dot.ring ? (
+          <span className={`absolute inset-0 rounded-full border-[1.5px] ${dot.color}`} />
+        ) : (
+          <span className={`absolute inset-0 rounded-full ${dot.color}`} />
+        )}
+      </span>
+      <span className="max-w-[9rem] truncate">{label}</span>
+    </button>
+  )
+}
+
+/**
+ * Promotes the Loops panel from the right dock onto the center stage.
+ *
+ * One-way by design. The previous control was a panel-left/panel-right glyph
+ * that read as "collapse this dock" — the dock's own collapse chevron is right
+ * next to it — so the one thing it did (move the chat to the stage) was the one
+ * thing it did not say. This is an unambiguous maximize: four corners opening
+ * outward, an icon the app uses nowhere else, so it cannot be confused with
+ * collapse or with the dock's expand.
+ *
+ * The return trip lives on the stage tab's X (and Ctrl+W), where "close this
+ * tab" already means "put it back" — a second control in this header would be
+ * a duplicate of a gesture the user can see.
+ */
+function PromoteChatToCenter() {
+  const setChatPlacement = useAppStore((s: AppState) => s.setChatPlacement)
+  const label = 'Open chat in center stage'
+
+  return (
+    <button
+      type="button"
+      onClick={() => setChatPlacement('center')}
+      title={label}
+      aria-label={label}
+      className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+    >
+      {/* maximize / arrows-out-corners */}
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+        <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+        <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+        <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+      </svg>
+    </button>
+  )
+}
+
+/**
+ * Toggles the chat's reading-column cap. Center placement only: in the dock the
+ * panel is already narrow, so the control would be a switch with no visible
+ * effect. Lives in the stream's bottom-right corner rather than the tab strip —
+ * it is a property of the text you are reading, and the strip is absent
+ * entirely for single-loop agents.
+ */
+function ChatWidthToggle() {
+  const inCenter = useAppStore(selectChatInCenter)
+  const chatWidth = useAppStore((s: AppState) => s.chatWidth)
+  const setChatWidth = useAppStore((s: AppState) => s.setChatWidth)
+  if (!inCenter) return null
+
+  const goFull = chatWidth === 'comfortable'
+  const label = goFull ? 'Full width' : 'Comfortable width'
+
+  return (
+    <button
+      type="button"
+      onClick={() => setChatWidth(goFull ? 'full' : 'comfortable')}
+      title={label}
+      aria-label={label}
+      className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+    >
+      {goFull ? (
+        /* arrows-out-horizontal */
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M6 8l-4 4 4 4" />
+          <path d="M18 8l4 4-4 4" />
+          <path d="M2 12h20" />
+        </svg>
+      ) : (
+        /* arrows-in-horizontal */
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M6 8l4 4-4 4" />
+          <path d="M18 8l-4 4 4 4" />
+          <path d="M2 12h8" />
+          <path d="M14 12h8" />
+        </svg>
+      )}
+    </button>
+  )
+}
+
+/**
+ * The agent's loop panel. With no enabled side loops this renders exactly what
+ * it always did — a single `main` stream, no tab strip, zero visual change.
+ * Otherwise it adds a tab strip: `main` first, then one tab per enabled
+ * `AgentConfig.loops` entry, each showing that loop's own store slice and
+ * sending through its own composer (§8).
+ */
+export function AgentLoop() {
+  const configLoops = useAgentStore((s) => s.config?.loops)
+  const sideLoops = useMemo(
+    () => (configLoops ?? []).filter((l) => l.enabled && l.name && l.name !== MAIN_LOOP),
+    [configLoops]
+  )
+  const [activeLoop, setActiveLoop] = useState<string>(MAIN_LOOP)
+  // Only the dock offers the promotion; on the stage the tab's X is the way out.
+  // Also suppressed while the fleet map holds the center stage (B2): promoting
+  // there would send the chat to a stage the map is covering, and it would
+  // vanish. selectCanPromoteChat = dock placement AND not on the map.
+  const canPromote = useAppStore(selectCanPromoteChat)
+
+  // A loop the user was viewing can be disabled or deleted (config edit or
+  // `loop_manage`) — fall back to main rather than rendering a dead tab.
+  useEffect(() => {
+    if (activeLoop === MAIN_LOOP) return
+    if (!sideLoops.some((l) => l.name === activeLoop)) setActiveLoop(MAIN_LOOP)
+  }, [sideLoops, activeLoop])
+
+  // Mirror the viewed tab into the store so the status-bar gauge (and anything
+  // else outside this file) can follow it.
+  const setViewedLoop = useAgentStore((s) => s.setViewedLoop)
+  useEffect(() => {
+    setViewedLoop(activeLoop)
+    return () => setViewedLoop(MAIN_LOOP)
+  }, [activeLoop, setViewedLoop])
+
+  // Right-edge fade: shown only while there is strip left to scroll to, so it
+  // never appears on the (common) two-or-three-loop case that already fits.
+  const stripRef = useRef<HTMLDivElement>(null)
+  const [canScrollRight, setCanScrollRight] = useState(false)
+  const syncStripOverflow = useCallback(() => {
+    const el = stripRef.current
+    if (!el) return
+    setCanScrollRight(el.scrollWidth - el.clientWidth - el.scrollLeft > 1)
+  }, [])
+  useEffect(() => {
+    const el = stripRef.current
+    if (!el) return
+    syncStripOverflow()
+    // The dock is user-resizable and loops come and go — re-measure on both.
+    const observer = new ResizeObserver(syncStripOverflow)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [syncStripOverflow, sideLoops.length])
+
+  // Single-loop agents get no strip, but the promote affordance still has to be
+  // reachable — a bare right-aligned row, no divider, so the stream keeps its
+  // full height and the panel doesn't grow a second border under the dock's.
+  // On the stage there is nothing to promote and no strip to host, so the row
+  // disappears entirely and the stream takes the whole panel.
+  if (sideLoops.length === 0) {
+    return (
+      <div className="flex h-full flex-col">
+        {canPromote && (
+          <div className="flex shrink-0 items-center justify-end px-1 py-0.5">
+            <PromoteChatToCenter />
+          </div>
+        )}
+        <div className="min-h-0 flex-1">
+          <LoopStream loop={MAIN_LOOP} />
+        </div>
+      </div>
+    )
+  }
+
+  const current = sideLoops.some((l) => l.name === activeLoop) ? activeLoop : MAIN_LOOP
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Frozen-column strip: `main` is pinned OUTSIDE the scroller so the host
+          loop is always one click away, then a hairline divider, then the inner
+          loops in a horizontally scrollable row. The promote button sits
+          outside the tablist — it is a panel control, not a loop. */}
+      <div className="flex shrink-0 items-center border-b border-neutral-200 px-2 dark:border-neutral-700">
+        <div role="tablist" aria-label="Agent loops" className="flex min-w-0 flex-1 items-center">
+          <LoopTab name={MAIN_LOOP} label="main" active={current === MAIN_LOOP} onSelect={setActiveLoop} />
+          <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-neutral-200 dark:bg-neutral-700" />
+          <div role="presentation" className="relative min-w-0 flex-1">
+            <div
+              ref={stripRef}
+              role="presentation"
+              onScroll={syncStripOverflow}
+              className="scrollbar-none flex items-center gap-0.5 overflow-x-auto"
+            >
+              {sideLoops.map((l) => (
+                <LoopTab
+                  key={l.name}
+                  name={l.name}
+                  label={l.name}
+                  active={current === l.name}
+                  onSelect={setActiveLoop}
+                  scrollIntoViewOnActive
+                />
+              ))}
+            </div>
+            {canScrollRight && (
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white to-transparent dark:from-neutral-900"
+              />
+            )}
+          </div>
+        </div>
+        {canPromote && <PromoteChatToCenter />}
+      </div>
+      {/* Remount per tab so the virtualiser measures the stream it is showing. */}
+      <div className="min-h-0 flex-1">
+        <LoopStream key={current} loop={current} />
+      </div>
     </div>
   )
 }

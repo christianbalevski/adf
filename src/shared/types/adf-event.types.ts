@@ -47,6 +47,19 @@ export const TRIGGER_TO_EVENT_TYPE: Record<TriggerTypeV3, AdfEventType> = {
 // inbox: same shape as msg_read returns
 export interface InboxEventData {
   message: InboxMessage
+  /**
+   * Seq of the row a deliverer already wrote into a cognition stream
+   * (`deliverOwnerMessage`), so the turn can inline it without writing a second
+   * row and still stamp its `[S<seq>]` marker.
+   */
+  loop_seq?: number
+  /**
+   * WHICH stream that row landed in. One inbox event fans out to every matching
+   * target, so this is per-event and the dispatches are per-loop: a dispatch
+   * whose `loop` differs from this name did NOT get the row and must write its
+   * own. Absent ⇒ nothing was pre-appended anywhere.
+   */
+  pre_appended_loop?: string
 }
 
 // outbox: same shape as outbox row
@@ -193,6 +206,14 @@ export interface AdfEventDispatch<T extends AdfEventType = AdfEventType> {
   command?: string
   /** System scope: keep sandbox worker alive between invocations. */
   warm?: boolean
+  /**
+   * Cognition loop this dispatch wakes (agent scope). Absent → 'main', so
+   * every pre-loops dispatch routes exactly as before. The router in front of
+   * `AssembledAgent.dispatch` reads it; a name with no live runtime is dropped
+   * and logged rather than falling back to main (an orphan running under
+   * main's authority is a privilege escalation).
+   */
+  loop?: string
 }
 
 /** Full discriminated union of all dispatch types. */
@@ -220,6 +241,8 @@ export interface AdfBatchDispatch<T extends AdfEventType = AdfEventType> {
   lambda?: string
   command?: string
   warm?: boolean
+  /** See `AdfEventDispatch.loop`. */
+  loop?: string
 }
 
 // =============================================================================
@@ -316,6 +339,8 @@ export function createDispatch<T extends AdfEventType>(
     lambda?: string
     command?: string
     warm?: boolean
+    /** Cognition loop to wake. Carried straight from `TriggerTarget.loop`. */
+    loop?: string
   },
 ): AdfEventDispatch<T> {
   return {
@@ -324,5 +349,6 @@ export function createDispatch<T extends AdfEventType>(
     lambda: target.lambda,
     command: target.command,
     warm: target.warm,
+    loop: target.loop,
   }
 }

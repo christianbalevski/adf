@@ -283,6 +283,8 @@ interface AutostartBody {
 
 interface ChatBody {
   text?: string
+  /** Cognition loop to talk to. Absent = main (docs/design/agent-loops-mvp.md §6.2). */
+  loop?: string
 }
 
 interface AgentStateBody {
@@ -1974,7 +1976,7 @@ export function createDaemonHttpApi(
     if (!text) return badRequest(reply, 'text is required')
 
     const turnId = `turn_${nanoid(12)}`
-    queueTurn(turnId, () => runtime.sendChat(request.params.id, text))
+    queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop))
     return reply.code(202).send({ accepted: true, turnId })
   })
 
@@ -2035,6 +2037,7 @@ function normalizeSingleDispatch(input: Record<string, unknown>): {
       ...(typeof target.lambda === 'string' ? { lambda: target.lambda } : {}),
       ...(typeof target.command === 'string' ? { command: target.command } : {}),
       ...(typeof target.warm === 'boolean' ? { warm: target.warm } : {}),
+      ...(typeof target.loop === 'string' ? { loop: target.loop } : {}),
     },
   }
 }
@@ -2071,6 +2074,7 @@ function normalizeBatchDispatch(input: Record<string, unknown>): {
       ...(typeof target.lambda === 'string' ? { lambda: target.lambda } : {}),
       ...(typeof target.command === 'string' ? { command: target.command } : {}),
       ...(typeof target.warm === 'boolean' ? { warm: target.warm } : {}),
+      ...(typeof target.loop === 'string' ? { loop: target.loop } : {}),
     },
   }
 }
@@ -2110,6 +2114,22 @@ function normalizeEvent(rawEvent: Record<string, unknown>): {
       return {
         ok: false,
         error: `event.data.message.source "${messageSource}" is reserved for the owner and cannot be set over the API. Use "api" or "mesh".`,
+      }
+    }
+  }
+  // `skip_loop_append` tells the executor its content is ALREADY a row in the
+  // target stream (the RT-F6 inter-loop delivery contract). An API caller
+  // cannot have written that row, so honouring the flag would let an injected
+  // trigger enter the model's context leaving nothing in the loop — the same
+  // class of forgery as claiming `source: "user"`.
+  // `pre_appended_loop` is the owner-inbox half of the same contract: it names
+  // the stream a deliverer already wrote the row into, and forging it makes the
+  // named loop skip its own write.
+  for (const flag of ['skip_loop_append', 'pre_appended_loop'] as const) {
+    if (isRecord(data) && data[flag] !== undefined) {
+      return {
+        ok: false,
+        error: `event.data.${flag} is an internal delivery flag and cannot be set over the API.`,
       }
     }
   }

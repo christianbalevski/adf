@@ -10,16 +10,33 @@
  * files never share a lock and locks are GC'd with the workspace. NOT
  * re-entrant — never call withFileLock for the same (scope, path) inside its
  * own callback.
+ *
+ * A scope that exposes `getRoot()` is canonicalized through it first. Loops hand
+ * tools a per-turn `AdfWorkspace.forLoop()` view — a distinct object over the
+ * same .adf file — so keying by the raw instance would give every loop (and
+ * every turn) its own lock and stop serializing writes to a shared file. The
+ * root is one object per agent, which is exactly the intended scope.
  */
 const locksByScope = new WeakMap<object, Map<string, Promise<unknown>>>()
+
+/** Duck-typed so this module stays free of an adf/ import. */
+function lockScopeKey(scope: object): object {
+  const getRoot = (scope as { getRoot?: unknown }).getRoot
+  if (typeof getRoot === 'function') {
+    const root = (getRoot as () => unknown).call(scope)
+    if (root && typeof root === 'object') return root as object
+  }
+  return scope
+}
 
 export async function withFileLock<T>(
   scope: object,
   path: string,
   fn: () => Promise<T> | T
 ): Promise<T> {
-  let locks = locksByScope.get(scope)
-  if (!locks) { locks = new Map(); locksByScope.set(scope, locks) }
+  const key = lockScopeKey(scope)
+  let locks = locksByScope.get(key)
+  if (!locks) { locks = new Map(); locksByScope.set(key, locks) }
 
   const prior = locks.get(path) ?? Promise.resolve()
   // Run fn after the prior holder settles (regardless of its outcome).

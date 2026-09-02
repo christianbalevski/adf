@@ -10,6 +10,7 @@ const REPO_ROOT = join(__dirname, '..', '..')
 const PRODUCTION_ROOT = join(REPO_ROOT, 'src', 'main')
 const ASSEMBLER_PATH = 'src/main/runtime/assemble-agent.ts'
 const EXECUTOR_INTERNAL_PATH = 'src/main/runtime/agent-executor.ts'
+const LOOP_POOL_PATH = 'src/main/runtime/loop-pool.ts'
 
 const TERMINAL_STATUSES = new Set<string>(LIFECYCLE_CHARACTERIZATION_TERMINAL_STATUSES)
 
@@ -128,13 +129,17 @@ describe('lifecycle characterization ledger', () => {
 describe('assembled-agent architecture fence', () => {
   const sources = productionSources()
 
-  it('has exactly one production AgentExecutor construction call site', () => {
+  it('has exactly the sanctioned production AgentExecutor construction call sites', () => {
+    // loop-pool.ts is part of the assembly layer: it constructs the per-inner-loop
+    // executors from derived (attenuated) configs, and only assembleAgent creates it.
+    const allowedConstructorPaths = new Set([ASSEMBLER_PATH, LOOP_POOL_PATH])
     const sites = findSites(sources, /\bnew\s+AgentExecutor\s*\(/)
+    const rogue = sites.filter((site) => !allowedConstructorPaths.has(site.path))
     expect(
-      sites,
-      `AgentExecutor construction must live only in ${ASSEMBLER_PATH}.\nCall sites:\n${formatSites(sites)}`,
-    ).toHaveLength(1)
-    expect(sites[0]?.path).toBe(ASSEMBLER_PATH)
+      rogue,
+      `AgentExecutor construction must live only in ${ASSEMBLER_PATH} or ${LOOP_POOL_PATH}.\nCall sites:\n${formatSites(rogue)}`,
+    ).toEqual([])
+    expect(new Set(sites.map((site) => site.path))).toEqual(allowedConstructorPaths)
   })
 
   it('has exactly one production TriggerEvaluator trigger-to-dispatch wiring', () => {
@@ -150,7 +155,10 @@ describe('assembled-agent architecture fence', () => {
   })
 
   it('prevents hosts from bypassing the assembled dispatch boundary', () => {
-    const allowedPaths = new Set([ASSEMBLER_PATH, EXECUTOR_INTERNAL_PATH])
+    // loop-pool's dispatchToLoop IS the sanctioned dispatch boundary for inner
+    // loops (the router in front of it enforces loop selection/refusals), so its
+    // internal executeTurn call is not a host bypass.
+    const allowedPaths = new Set([ASSEMBLER_PATH, EXECUTOR_INTERNAL_PATH, LOOP_POOL_PATH])
     const bypasses = findSites(
       sources.filter((source) => !allowedPaths.has(source.path)),
       /\.\s*executeTurn\s*\(/,
