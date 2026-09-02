@@ -227,9 +227,16 @@ const MarkdownEntry = memo(({ content }: { content: string }) => {
     const anchor = (e.target as HTMLElement).closest('a[href]')
     if (!anchor) return
     const href = anchor.getAttribute('href')
-    if (href && isAdfFileUrl(href)) {
+    if (!href) return
+    if (isAdfFileUrl(href)) {
       e.preventDefault()
       openAdfFileLink(href)
+    } else if (href.startsWith('http://') || href.startsWith('https://')) {
+      // Plain anchors would navigate the renderer in place, which main's
+      // will-navigate guard blocks. Route through window.open so the
+      // setWindowOpenHandler hands the URL to the OS browser instead.
+      e.preventDefault()
+      window.open(href, '_blank', 'noopener,noreferrer')
     }
   }, [])
   return (
