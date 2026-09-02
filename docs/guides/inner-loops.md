@@ -10,7 +10,7 @@ see_also:
 
 # Inner Loops
 
-An agent is not required to be a single mind. An **inner loop** is one of several named cognition streams running inside one ADF agent. Every agent has a `main` loop — the mind that faces the outside world (inbox, messaging, channels, your principal) — and can also run zero or more **inner loops**: interior processes such as a reflector, a consolidator, or a critic.
+An ADF agent is one mind — and a mind is not a single-threaded process. An **inner loop** is one of several named cognition streams that together make up that one mind. Every agent has a `main` loop — the stream that faces the outside world (inbox, messaging, channels, your principal) — and can also run zero or more **inner loops**: interior processes of the same mind, such as a reflector, a consolidator, or a critic. Loops make a mind more expressive; they do not make it more than one.
 
 All loops share the **same** `.adf` file: one identity, one set of credentials, one memory, one filesystem. What each loop has of its own is a conversation stream, a system prompt (a short standing preamble plus its `goal`), a subset of the agent's tools, an optional model override, an optional compaction threshold, and its own pacing. Loops run concurrently. Loops do **not** nest.
 

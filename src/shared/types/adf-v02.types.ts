@@ -1540,7 +1540,7 @@ export const AGENT_DEFAULTS = {
     api: []
   } as ServingConfig,
   ws_connections: [] as WsConnectionConfig[],
-  // A new agent starts as a single mind; side loops are added deliberately.
+  // A new agent starts with only its main loop; inner loops are added deliberately.
   loops: [] as LoopConfig[],
   stream_bind: {} as StreamBindConfig,
   stream_bindings: [] as StreamBindingDeclaration[],
