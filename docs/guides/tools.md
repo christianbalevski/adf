@@ -611,15 +611,15 @@ Read-only roster of this agent's cognition loops — each loop's name, a summary
 
 ### loop_manage
 
-**Parameters:** `action` (`create` | `get` | `update` | `delete`), `name?`, `config?`, `autostart?` (create only, default `true`)
+**Parameters:** `action` (`create` | `get` | `update` | `delete`), `name?`, `config?`
 
 **Main-only.** Create, inspect, update, and tear down this agent's own inner loops at runtime. Inner loops do not nest, so a loop that calls this is refused; the tool is also subtracted from every derived loop config (`LOOP_PROHIBITED_TOOLS`).
 
 | Action | Effect |
 |---|---|
-| `create` | Define a new inner loop and start it. By default `main` immediately sends it a kickoff message (`wake: true`), so it runs its first turn on its goal at once; `autostart: false` leaves it waiting for a trigger, timer, or `loop_send`. Omit `config.tools` and the loop is seeded with `loop_send + loop_list`; pass `[]` for a mute loop that only thinks. |
+| `create` | Define a new inner loop and start it. `config.autostart` defaults to `true`: `main` immediately sends it a kickoff message (`wake: true`), so it runs its first turn on its goal at once, and the pool repeats that every time the agent starts. `autostart: false` leaves it waiting for a trigger, timer, or `loop_send`. Omit `config.tools` and the loop is seeded with `loop_send + loop_list`; pass `[]` for a mute loop that only thinks. |
 | `get` | One loop's full definition plus its live status. (Use `loop_list` to enumerate.) |
-| `update` | Patch `goal`, `enabled`, `model`, `compact_threshold`, or `tools`; the loop is re-derived and restarted. Loops cannot be renamed. `enabled: false` stops a running loop immediately (its turn is aborted and flushed). |
+| `update` | Patch `goal`, `enabled`, `autostart`, `model`, `compact_threshold`, or `tools`; the loop is re-derived and restarted. Loops cannot be renamed. `enabled: false` stops a running loop immediately (its turn is aborted and flushed). |
 | `delete` | Stop the loop (mid-turn included — never refused for being busy), archive its stream to the audit log under `loop:<name>`, then remove it. A config-edit removal takes the same stop → archive path. |
 
 An agent may declare up to **16** inner loops.

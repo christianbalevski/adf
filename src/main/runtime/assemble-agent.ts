@@ -335,6 +335,7 @@ export function assembleAgent<P extends AgentProfileName>(
   const inFlight = new Set<Promise<void>>()
   let startupEvaluated = false
   let startupTurnDispatched = false
+  let loopAutostartFired = false
   const resources = options.resources ?? []
   let ownsWorkspace = options.ownsWorkspace ?? true
   let resourcesStopped = false
@@ -421,6 +422,18 @@ export function assembleAgent<P extends AgentProfileName>(
 
   const dispatchStartup = async (startupOptions: { hasUserMessage?: boolean } = {}): Promise<boolean> => {
     if (state !== 'running') throw new Error(`Cannot dispatch startup while agent lifecycle is ${state}`)
+    // Loop-level autostart rides the agent's start, once, and only for an
+    // agent that starts active — a hibernating or idle-started agent keeps its
+    // loops quiet too. Independent of whether main's own startup turn runs
+    // (a user message replacing it is main's business, not the loops').
+    if (!loopAutostartFired) {
+      loopAutostartFired = true
+      if ((config.start_in_state ?? 'active') === 'active') {
+        void loopPool.autostartLoops().catch((error) => {
+          console.error('[AssembleAgent] Loop autostart failed:', error)
+        })
+      }
+    }
     if (startupOptions.hasUserMessage) {
       startupEvaluated = true
       startupTurnDispatched = true

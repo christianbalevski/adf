@@ -17,6 +17,17 @@
 
 import type { LoopConfig } from '../../shared/types/adf-v02.types'
 
+/**
+ * What an `autostart` loop is woken with — by `loop_manage create` the moment
+ * it exists, and by the pool every time the agent starts. Always sent from
+ * `main` through the ordinary `loop_send` path (stamped, appended, then a
+ * wake), so the kickoff is an auditable stream row like any other interior
+ * message and the loop starts from its own durable row.
+ */
+export const LOOP_AUTOSTART_MESSAGE =
+  'Autostart: your agent has started. Begin working on your goal now. ' +
+  'When you have something worth reporting, tell main with loop_send.'
+
 /** In-memory per-loop status. There is no `adf_loops` state table in the MVP. */
 export type LoopStatus = 'idle' | 'running'
 

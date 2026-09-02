@@ -53,6 +53,7 @@ import type {
   LoopSendResult,
   LoopStatus,
 } from '../adf/loop-pool.types'
+import { LOOP_AUTOSTART_MESSAGE } from '../adf/loop-pool.types'
 import { LoopSendTool, LoopListTool, ShellTool, SysCodeTool, SysLambdaTool } from '../tools/built-in'
 
 export { MAIN_LOOP }
@@ -754,6 +755,33 @@ export class LoopPool implements LoopPoolApi {
         this.mainPendingWakes.unshift(rep)
       })
     })
+  }
+
+  /**
+   * The loop-level counterpart of the agent's `autostart`: every enabled loop
+   * with `autostart: true` gets the kickoff message with a wake, so it runs a
+   * first turn on its goal without waiting to be addressed. Called once per
+   * agent start from `dispatchStartup` (so a hibernating or idle-started agent
+   * does not spin its loops up); `loop_manage create` kicks a new loop the
+   * same way at create time. One loop's failure does not stop the others.
+   *
+   * Returns the names actually woken.
+   */
+  async autostartLoops(): Promise<string[]> {
+    if (this.disposed) return []
+    const woken: string[] = []
+    for (const loop of this.declaredLoops()) {
+      if (!loop.autostart || loop.enabled === false) continue
+      if (!this.runtimes.has(loop.name)) continue
+      try {
+        const result = await this.sendToLoop(MAIN_LOOP, loop.name, LOOP_AUTOSTART_MESSAGE, true)
+        if (result.woke) woken.push(loop.name)
+        else console.warn(`[LoopPool] Autostart of loop "${loop.name}" delivered but did not wake: ${result.reason ?? 'unknown'}`)
+      } catch (error) {
+        console.error(`[LoopPool] Autostart of loop "${loop.name}" failed:`, error)
+      }
+    }
+    return woken
   }
 
   // ===========================================================================

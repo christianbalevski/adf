@@ -414,6 +414,8 @@ export const LoopConfigSchema = z.object({
     }),
   goal: z.string().min(1).max(LOOP_GOAL_MAX_CHARS),
   enabled: z.boolean(),
+  autostart: z.boolean().optional()
+    .describe('Run a first turn on the goal at create and whenever the agent starts, instead of waiting to be addressed.'),
   // The pool (not this schema) enforces the same-provider constraint: it needs
   // the host config to compare against, which a per-loop schema never sees.
   model: ModelConfigSchema.optional()

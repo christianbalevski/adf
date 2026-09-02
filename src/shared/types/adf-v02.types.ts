@@ -829,6 +829,15 @@ export interface LoopConfig {
   /** Becomes the derived config's `instructions`. */
   goal: string
   enabled: boolean
+  /**
+   * Run a first turn on the goal without waiting to be addressed — at create
+   * (via `loop_manage`) and again every time the agent starts, mirroring the
+   * agent-level `autostart`. Main sends the kickoff through the ordinary
+   * `loop_send` path with `wake: true`, so it is an audited stream row like
+   * any other interior message. Absent = false: the loop only runs when a
+   * trigger, timer or `loop_send` targets it. Ignored while `enabled: false`.
+   */
+  autostart?: boolean
   /** Inherits the parent's model when absent. */
   model?: ModelConfig
   /**

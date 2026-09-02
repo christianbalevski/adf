@@ -11,6 +11,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { mkdtempSync, rmSync } from 'fs'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
+import { LOOP_AUTOSTART_MESSAGE } from '../../../src/main/adf/loop-pool.types'
 import { LoopPool, stripLoopNameMarker } from '../../../src/main/runtime/loop-pool'
 import { ToolRegistry } from '../../../src/main/tools/tool-registry'
 import { registerBuiltInTools } from '../../../src/main/tools/built-in/register-built-in-tools'
@@ -506,6 +507,41 @@ describe('LoopPool — sendToLoop (RT-F6 delivery)', () => {
     await expect(pool.sendToLoop('ghost', 'reflector', 'hi', false)).rejects.toThrow(/ghost/)
     await expect(pool.sendToLoop('main', 'ghost', 'hi', false)).rejects.toThrow(/ghost/)
     expect(ws.forLoop('reflector').getLoop()).toHaveLength(0)
+  })
+})
+
+describe('LoopPool — autostartLoops', () => {
+  it('wakes every enabled autostart loop with the kickoff message, once per call', async () => {
+    pool.dispose()
+    pool = buildPool(c => { c.loops = [
+      loop({ name: 'eager', autostart: true }),
+      loop({ name: 'lazy' }),
+      loop({ name: 'off', autostart: true, enabled: false }),
+    ] })
+    const eager = pool.getRuntime('eager')!
+    const eagerTurn = vi.spyOn(eager.executor, 'executeTurn').mockResolvedValue(undefined)
+    const lazyTurn = vi.spyOn(pool.getRuntime('lazy')!.executor, 'executeTurn').mockResolvedValue(undefined)
+
+    const woken = await pool.autostartLoops()
+
+    expect(woken).toEqual(['eager'])
+    expect(eagerTurn).toHaveBeenCalledTimes(1)
+    expect(lazyTurn).not.toHaveBeenCalled()
+    // The kickoff is an ordinary stamped row in the loop's own stream.
+    const rows = ws.forLoop('eager').getLoop()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].role).toBe('user')
+    expect(rows[0].content_json[0].text).toBe(`[from loop:main] ${LOOP_AUTOSTART_MESSAGE}`)
+    // A disabled autostart loop is never kicked, not even into its dead-drop.
+    expect(ws.forLoop('off').getLoop()).toHaveLength(0)
+    expect(ws.forLoop('lazy').getLoop()).toHaveLength(0)
+  })
+
+  it('does nothing on a disposed pool', async () => {
+    pool.dispose()
+    pool = buildPool(c => { c.loops = [loop({ name: 'eager', autostart: true })] })
+    pool.dispose()
+    expect(await pool.autostartLoops()).toEqual([])
   })
 })
 

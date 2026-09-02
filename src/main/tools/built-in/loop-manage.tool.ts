@@ -18,6 +18,7 @@ import {
   validateLoopToolList
 } from '../../adf/derive-loop-config'
 import {
+  LOOP_AUTOSTART_MESSAGE,
   LOOP_POOL_UNAVAILABLE,
   resolveLoopPool,
   type LoopPoolAccessor,
@@ -41,6 +42,10 @@ const LoopConfigInputSchema = z.object({
     "The loop's charter — it becomes the loop's instructions."
   ),
   enabled: z.boolean().optional().describe('Whether the loop runs. Default true on create.'),
+  autostart: z.boolean().optional().describe(
+    'Run a first turn on the goal without waiting to be addressed: now on create, and again whenever the agent starts. ' +
+    'Default true on create. false: it only runs when a trigger, timer or loop_send targets it.'
+  ),
   model: z.record(z.unknown()).optional().describe(
     'Model override for this loop only, same provider as yours. Omit to inherit the agent model.'
   ),
@@ -56,28 +61,14 @@ const InputSchema = z.object({
   // No `list`: that is `loop_list`, an ordinary tool you hold like every other
   // loop does. Two ways to enumerate the same roster was one too many.
   action: z.enum(['create', 'get', 'update', 'delete']).describe(
-    'create — define a new inner loop, start it and (unless autostart is false) run its first turn right away. ' +
+    'create — define a new inner loop and start it (with config.autostart, the default, it runs its first turn right away). ' +
     'get — one loop\'s full definition (use loop_list to enumerate them). ' +
     'update — patch an inner loop (re-derives and restarts it; enabled:false stops it immediately). ' +
     'delete — stop it (mid-turn included), archive its stream to the audit log, then remove it.'
   ),
   name: z.string().min(1).optional().describe('Loop name. Required for get, update and delete.'),
-  config: LoopConfigInputSchema.optional().describe('Required for create and update.'),
-  autostart: z.boolean().optional().describe(
-    'create only. Default true: the new loop runs its first turn immediately, told to begin on its goal. ' +
-    'false: it only runs when a trigger, timer or loop_send targets it.'
-  )
+  config: LoopConfigInputSchema.optional().describe('Required for create and update.')
 })
-
-/**
- * The message a freshly created loop is woken with when `autostart` is on.
- * Sent through the ordinary `loop_send` path (stamped `[from loop:main]`,
- * appended to the loop's stream, then a wake), so it is auditable like any
- * other interior message and the loop starts from its own durable row.
- */
-export const LOOP_AUTOSTART_MESSAGE =
-  'You were just created. Begin working on your goal now. ' +
-  'When you have something worth reporting, tell main with loop_send.'
 
 type LoopConfigInput = z.infer<typeof LoopConfigInputSchema>
 
@@ -156,7 +147,7 @@ export class LoopManageTool implements Tool {
         case 'get':
           return this.handleGet(pool, parsed.name)
         case 'create':
-          return await this.handleCreate(pool, workspace, parsed.name, parsed.config, parsed.autostart ?? true)
+          return await this.handleCreate(pool, workspace, parsed.name, parsed.config)
         case 'update':
           return await this.handleUpdate(pool, workspace, parsed.name, parsed.config)
         case 'delete':
@@ -204,8 +195,7 @@ export class LoopManageTool implements Tool {
     pool: LoopPoolApi,
     workspace: AdfWorkspace,
     nameArg: string | undefined,
-    configArg: LoopConfigInput | undefined,
-    autostart: boolean
+    configArg: LoopConfigInput | undefined
   ): Promise<ToolResult> {
     if (!configArg) return errorResult('create requires "config" (at least name and goal).')
 
@@ -237,6 +227,10 @@ export class LoopManageTool implements Tool {
       name,
       goal: configArg.goal,
       enabled: configArg.enabled ?? true,
+      // Persisted, like the agent's own `autostart`: the pool re-kicks the loop
+      // on every agent start. Default on — a loop nobody addresses is idle,
+      // and creators expect the thing they just made to get going.
+      autostart: configArg.autostart ?? true,
       ...(configArg.model !== undefined && { model: configArg.model }),
       ...(configArg.compact_threshold !== undefined && { compact_threshold: configArg.compact_threshold }),
       // Omitted `tools` means "you decide" — and a loop that cannot reach the
@@ -269,20 +263,20 @@ export class LoopManageTool implements Tool {
 
     // A loop is event-driven: enabled means it CAN take a turn, not that it
     // does. Without a first message it sits idle until a trigger, timer or
-    // loop_send names it — which every creator expected to happen on its own.
-    // So by default main kicks it off through the normal loop_send path (the
-    // wake row is appended and audited like any other interior message).
+    // loop_send names it. With autostart main kicks it off now through the
+    // normal loop_send path (the wake row is appended and audited like any
+    // other interior message); the pool repeats that on every agent start.
     let startLine: string
     if (!validated.config.enabled) {
       startLine = 'It is disabled; enable it with update to let it run.'
-    } else if (!autostart) {
+    } else if (!validated.config.autostart) {
       startLine = 'It is waiting: give it work by targeting it from a trigger or timer, or with loop_send.'
     } else {
       const sent = await pool.sendToLoop(MAIN_LOOP, name, LOOP_AUTOSTART_MESSAGE, true)
-      startLine = sent.woke
-        ? 'It is running its first turn on its goal now.'
-        : `Its kickoff message was delivered but it has not started${sent.reason ? ` (${sent.reason})` : ''}; ` +
-          'give it work from a trigger or timer, or with loop_send.'
+      startLine = (sent.woke
+        ? 'It is running its first turn on its goal now'
+        : `Its kickoff message was delivered but it has not started${sent.reason ? ` (${sent.reason})` : ''}`) +
+        ', and it will run a first turn again whenever this agent starts.'
     }
 
     return {
@@ -330,6 +324,7 @@ export class LoopManageTool implements Tool {
       ...existing,
       ...(patch.goal !== undefined && { goal: patch.goal }),
       ...(patch.enabled !== undefined && { enabled: patch.enabled }),
+      ...(patch.autostart !== undefined && { autostart: patch.autostart }),
       ...(patch.model !== undefined && { model: patch.model }),
       ...(patch.compact_threshold !== undefined && { compact_threshold: patch.compact_threshold }),
       ...(patch.tools !== undefined && { tools: patch.tools }),
@@ -344,6 +339,7 @@ export class LoopManageTool implements Tool {
     const outgoing: Partial<LoopConfig> = {
       ...(patch.goal !== undefined && { goal: validated.config.goal }),
       ...(patch.enabled !== undefined && { enabled: validated.config.enabled }),
+      ...(patch.autostart !== undefined && { autostart: validated.config.autostart }),
       ...(patch.model !== undefined && { model: validated.config.model }),
       ...(patch.compact_threshold !== undefined && { compact_threshold: validated.config.compact_threshold }),
       ...(patch.tools !== undefined && { tools: validated.config.tools })
@@ -351,7 +347,7 @@ export class LoopManageTool implements Tool {
 
     if (Object.keys(outgoing).length === 0) {
       return errorResult(
-        'Nothing to update — "config" named no changeable field (goal, enabled, model, compact_threshold, tools).'
+        'Nothing to update — "config" named no changeable field (goal, enabled, autostart, model, compact_threshold, tools).'
       )
     }
 

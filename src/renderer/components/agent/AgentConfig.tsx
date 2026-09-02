@@ -613,6 +613,19 @@ function LoopCard({
             className="rounded text-blue-500"
           />
         </label>
+        <label
+          className="flex items-center gap-1 cursor-pointer shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500"
+          title="Autostart: run a first turn on its goal whenever the agent starts, instead of waiting for a trigger, timer or loop_send"
+        >
+          <input
+            type="checkbox"
+            checked={entry.autostart ?? false}
+            disabled={!entry.enabled}
+            onChange={(e) => patchLoop({ autostart: e.target.checked })}
+            className="rounded text-blue-500"
+          />
+          auto
+        </label>
         <input
           type="text"
           value={entry.name}
@@ -2365,7 +2378,7 @@ export function AgentConfig() {
                       // The appended loop takes the next index — mark it so its
                       // card opens expanded for immediate editing.
                       setNewLoopIndex(loops.length)
-                      saveLoops([...loops, { name, goal: '', enabled: true, ...(seeded.length > 0 && { tools: seeded }) }])
+                      saveLoops([...loops, { name, goal: '', enabled: true, autostart: true, ...(seeded.length > 0 && { tools: seeded }) }])
                     }}
                     className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
                   >

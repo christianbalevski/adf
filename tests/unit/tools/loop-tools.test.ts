@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { SetTimerTool } from '../../../src/main/tools/built-in/sys-set-timer.tool'
 import { LoopSendTool, LOOP_SEND_MAX_CHARS } from '../../../src/main/tools/built-in/loop-send.tool'
-import { LoopManageTool, LOOP_AUTOSTART_MESSAGE } from '../../../src/main/tools/built-in/loop-manage.tool'
+import { LoopManageTool } from '../../../src/main/tools/built-in/loop-manage.tool'
 import {
   LoopConfigSchema,
   LoopsConfigSchema,
@@ -19,6 +19,7 @@ import type {
   LoopPoolApi,
   LoopSendResult,
 } from '../../../src/main/adf/loop-pool.types'
+import { LOOP_AUTOSTART_MESSAGE } from '../../../src/main/adf/loop-pool.types'
 
 // ---------------------------------------------------------------------------
 // Fakes — the LoopPoolApi seam exists so the tools are testable before the
@@ -591,7 +592,7 @@ describe('loop_manage', () => {
         { action: 'create', config: { name: 'reflector', goal: 'reflect' } },
         fakeWorkspace(),
       )
-      expect(pool.calls.create[0]).toMatchObject({ name: 'reflector', goal: 'reflect', enabled: true })
+      expect(pool.calls.create[0]).toMatchObject({ name: 'reflector', goal: 'reflect', enabled: true, autostart: true })
     })
 
     it('autostarts by default: main wakes the new loop with a kickoff message', async () => {
@@ -603,17 +604,29 @@ describe('loop_manage', () => {
       expect(result.isError).toBe(false)
       expect(pool.calls.send).toEqual([['main', 'reflector', LOOP_AUTOSTART_MESSAGE, true]])
       expect(result.content).toMatch(/running its first turn/)
+      expect(result.content).toMatch(/whenever this agent starts/)
     })
 
     it('autostart: false leaves the loop waiting for a trigger, timer or loop_send', async () => {
       const pool = fakePool()
       const result = await make(pool).execute(
-        { action: 'create', autostart: false, config: { name: 'reflector', goal: 'reflect' } },
+        { action: 'create', config: { name: 'reflector', goal: 'reflect', autostart: false } },
         fakeWorkspace(),
       )
       expect(result.isError).toBe(false)
       expect(pool.calls.send).toHaveLength(0)
       expect(result.content).toMatch(/waiting/)
+      expect(pool.calls.create[0]).toMatchObject({ autostart: false })
+    })
+
+    it('update can flip autostart and passes it through as a patch', async () => {
+      const pool = fakePool({ loops: [sideLoop('reflector')] })
+      const result = await make(pool).execute(
+        { action: 'update', name: 'reflector', config: { autostart: true } },
+        fakeWorkspace(),
+      )
+      expect(result.isError).toBe(false)
+      expect(pool.calls.update).toEqual([['reflector', { autostart: true }]])
     })
 
     it('does not kick off a loop created disabled', async () => {
