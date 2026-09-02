@@ -1,6 +1,6 @@
 # ADF Identity & Key Protection — Spec v0.1 (draft)
 
-Status: **implemented** (D1–D17, schema v24) — extends `ADF_SPEC_v0.2.md` §5.2 and
+Status: **implemented** (D1–D17, schema v24) — extends `../../ADF_SPEC_v0.2.md` §5.2 and
 §8; builds on the key-backed identity work in `660b17c` (mnemonic-rooted owner DID,
 runtime delegation, attestations). The §9 amendments have been applied to the main
 spec; this document remains the design rationale and normative detail for the

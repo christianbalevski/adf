@@ -179,7 +179,7 @@ only way this can go.
 |---|---|
 | [Getting Started](docs/getting-started.md) | [ADF spec v0.2](ADF_SPEC_v0.2.md) — the file format |
 | [ADF Studio tour](docs/ADF_STUDIO_DOCS.md) | [ALF spec v0.1](ALF_SPEC_v0.1.md) — the agent communication protocol |
-| [Core Concepts](docs/core-concepts.md) | [Identity spec v0.1](ADF_IDENTITY_SPEC_v0.1.md) — DIDs, envelopes, attestations |
+| [Core Concepts](docs/core-concepts.md) | [Identity spec v0.1](docs/design/ADF_IDENTITY_SPEC_v0.1.md) — DIDs, envelopes, attestations |
 | [Fleet map guide](docs/guides/fleet-map.md) | [Daemon CLI](docs/daemon/cli.md) and [HTTP API](docs/daemon/http-api.md) |
 | [Creating agents](docs/guides/creating-agents.md) | [Tools catalog](docs/guides/tools.md) |
 | [Daemon quick start](docs/daemon/getting-started.md) | [Security architecture](docs/guides/security-architecture.md) |

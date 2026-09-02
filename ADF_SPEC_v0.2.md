@@ -1404,7 +1404,7 @@ Public keys are stored as ordinary identity rows, not as a special column. This 
 ### 8.3 Encryption at Rest — Envelopes
 
 The normative at-rest scheme is **dual-envelope keyslot encryption** (full
-design: `ADF_IDENTITY_SPEC_v0.1.md`). A random 32-byte DEK encrypts each
+design: `docs/design/ADF_IDENTITY_SPEC_v0.1.md`). A random 32-byte DEK encrypts each
 envelope's rows; the DEK is wrapped once per keyslot, and any slot opens the
 envelope:
 
