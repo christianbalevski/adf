@@ -38,6 +38,9 @@ function downgradeToV27(adfPath: string, seed: (raw: InstanceType<typeof Databas
       created_at INTEGER NOT NULL
     );
     CREATE INDEX idx_adf_audit_source ON adf_audit(source);
+    -- v29's stream index is an expression over ord; SQLite refuses to drop a
+    -- column an index references, and a v27 file never had the index anyway.
+    DROP INDEX IF EXISTS idx_adf_loop_stream;
     ALTER TABLE adf_loop DROP COLUMN ord;
   `)
   seed(raw)
