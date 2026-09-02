@@ -119,10 +119,14 @@ export class FsTransferTool implements Tool {
       return
     }
 
-    // Container (isolated or shared)
+    // Container (isolated or shared).
+    // `staging` must NOT exist yet: `podman cp` copies a source *into* an
+    // existing directory (yielding payload/<basename>), but onto a
+    // non-existent path exactly — a file becomes the file, a directory's
+    // contents become the directory. Pre-creating it doubled the name
+    // (e.g. screenshots/foo.png/foo.png) on every container → vfs transfer.
     const containerName = this.containerName(ep)
     const containerPath = posix.join(this.containerWorkspaceRoot(ep), path)
-    mkdirSync(staging, { recursive: true })
     await this.podmanService!.copyFromContainer(
       containerPath, staging, containerName
     )
@@ -147,11 +151,15 @@ export class FsTransferTool implements Tool {
       return
     }
 
-    // Container (isolated or shared)
+    // Container (isolated or shared).
+    // For directories copy `payload/.` (contents) so the tree lands at
+    // containerDest whether or not it already exists; a bare `payload` would
+    // nest as containerDest/payload/... when the destination directory exists.
     const containerName = this.containerName(ep)
     const containerDest = posix.join(this.containerWorkspaceRoot(ep), destPath)
+    const source = statSync(staging).isDirectory() ? `${staging}${sep}.` : staging
     await this.podmanService!.copyToContainer(
-      staging, containerDest, containerName
+      source, containerDest, containerName
     )
   }
 
