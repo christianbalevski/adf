@@ -138,6 +138,9 @@ CREATE TABLE IF NOT EXISTS adf_loop (
   loop TEXT NOT NULL DEFAULT 'main'
 );
 CREATE INDEX IF NOT EXISTS idx_adf_loop_loop_seq ON adf_loop(loop, seq);
+-- Expression index on the display ordering key COALESCE(ord, seq), seq so
+-- streamed reads seek and sort from the index instead of a TEMP B-TREE.
+CREATE INDEX IF NOT EXISTS idx_adf_loop_stream ON adf_loop(loop, COALESCE(ord, seq), seq);
 
 CREATE TABLE IF NOT EXISTS adf_inbox (
   id TEXT PRIMARY KEY,

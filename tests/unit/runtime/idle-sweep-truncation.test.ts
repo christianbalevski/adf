@@ -100,7 +100,11 @@ interface FakeOpts {
   /** Executor-internal turn in flight or already committed via nextTick. */
   turnActive?: boolean
   /** Code-authored context queued but not yet delivered to the model. */
-  pendingInjections?: boolean
+  /** Undelivered context injections held in memory. `true` = an unkeyed
+   *  loop_inject entry (never replayable); 'replayable' = a persisted
+   *  loop_send row (seq, no wake) the rehydrate brings back; 'wake' = a
+   *  loop_send with a boundary kick still owed (release would downgrade it). */
+  pendingInjections?: boolean | 'replayable' | 'wake'
   /** flushToLoop's transaction failed and kept its retry buffer. */
   pendingWrites?: boolean
 }
@@ -125,7 +129,12 @@ function fakeManaged(executorState: string, messageCount: number, opts?: FakeOpt
       flushToLoop,
       reset,
       hasPendingWrites: () => opts?.pendingWrites ?? false,
-      hasPendingContextInjections: () => opts?.pendingInjections ?? false,
+      peekPendingContextInjections: () => {
+        const kind = opts?.pendingInjections
+        if (!kind) return []
+        if (kind === true) return [{ role: 'user', text: 'x', category: 'code', origin: 'loop_inject' }]
+        return [{ role: 'user', text: 'x', category: 'loop', origin: 'loop_send', seq: 7, wake: kind === 'wake' }]
+      },
     } as unknown as SweepEntry['session'],
     workspace: { insertLog } as unknown as SweepEntry['workspace'],
     assembledAgent: { hasInFlightDispatch: () => opts?.inFlight ?? false } as unknown as SweepEntry['assembledAgent'],
@@ -193,6 +202,10 @@ describe('idle sweep vs live turns', () => {
     const idleTurnActive = fakeManaged('idle', 60, { turnActive: true })
     // Undelivered loop_inject entries exist only in memory.
     const idlePendingInjection = fakeManaged('idle', 60, { pendingInjections: true })
+    // A loop_send whose wake:true kick is still owed must not be released either.
+    const idlePendingWake = fakeManaged('idle', 60, { pendingInjections: 'wake' })
+    // A persisted, non-wake loop_send IS replayable: rehydrate brings it back.
+    const idleReplayable = fakeManaged('idle', 60, { pendingInjections: 'replayable' })
     // flushToLoop kept its buffer (transaction failed) — reset would drop rows.
     const idlePendingWrites = fakeManaged('idle', 60, { pendingWrites: true })
     // Between-turns states are releasable; 51/50 pins the >50 threshold.
@@ -202,8 +215,8 @@ describe('idle sweep vs live turns', () => {
     const errored = fakeManaged('error', 60)
     const all = {
       midTurn, toolUse, awaitingApproval, awaitingAsk, suspended, idleInFlight,
-      idleTurnActive, idlePendingInjection, idlePendingWrites,
-      idleLarge, idleSmall, stopped, errored,
+      idleTurnActive, idlePendingInjection, idlePendingWake, idlePendingWrites,
+      idleReplayable, idleLarge, idleSmall, stopped, errored,
     }
     for (const [name, fake] of Object.entries(all)) {
       agentsMap.set(`C:\\fake\\${name}.adf`, fake.entry)
@@ -213,7 +226,7 @@ describe('idle sweep vs live turns', () => {
     // clock that let the incident happen). The executor gate must still hold.
     runSweep(manager)
 
-    for (const fake of [midTurn, toolUse, awaitingApproval, awaitingAsk, suspended, idleInFlight, idleTurnActive, idlePendingInjection, idleSmall]) {
+    for (const fake of [midTurn, toolUse, awaitingApproval, awaitingAsk, suspended, idleInFlight, idleTurnActive, idlePendingInjection, idlePendingWake, idleSmall]) {
       expect(fake.reset).not.toHaveBeenCalled()
       expect(fake.flushToLoop).not.toHaveBeenCalled()
       expect(fake.insertLog).not.toHaveBeenCalled()
@@ -230,7 +243,7 @@ describe('idle sweep vs live turns', () => {
     expect(idlePendingWrites.insertLog).not.toHaveBeenCalled()
     expect(idlePendingWrites.messages).toHaveLength(60)
 
-    for (const fake of [idleLarge, stopped, errored]) {
+    for (const fake of [idleLarge, idleReplayable, stopped, errored]) {
       expect(fake.flushToLoop).toHaveBeenCalled()
       expect(fake.reset).toHaveBeenCalled()
       // Buffered writes die in reset() — the flush must come first.
