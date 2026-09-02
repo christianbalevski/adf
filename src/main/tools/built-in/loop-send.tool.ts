@@ -79,7 +79,7 @@ export class LoopSendTool implements Tool {
     'Send a message to another cognition loop of this same agent. Use loop_list to see the loops and their goals. ' +
     'The message is appended to that loop\'s stream stamped with your loop name; without wake it is read the next time that loop runs. ' +
     'With wake, an idle target runs a turn immediately and a busy one reads it at its next step, mid-turn. ' +
-    'This is interior signalling only — it never leaves the agent ' +
+    'The message stays inside the agent ' +
     '(use msg_send to reach another agent or a person).'
   readonly inputSchema = InputSchema
   readonly category = 'self' as const

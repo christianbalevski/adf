@@ -157,7 +157,7 @@ function summarizeGoal(goal: string): string {
  * cost is real even though it does not multiply by loop count the way the
  * per-loop preamble does.
  */
-const LOOP_ARCHETYPES = `Use an inner loop when a piece of thinking should run on its own stream: memory upkeep on a timer, a sub-task that needs your full context, a critic that reviews a draft before you act, a background mind that keeps thinking while nothing external is happening. Keep each loop's toolset small; anything that must touch the outside world comes back to you as a request. Guide: ${DOCS_GUIDES_URL}/inner-loops.md`
+const LOOP_ARCHETYPES = `Use an inner loop when a piece of thinking should run on its own stream: memory upkeep on a timer, a sub-task that needs your full context, a critic that reviews a draft before you act, a background mind that keeps thinking while nothing external is happening. Guide: ${DOCS_GUIDES_URL}/inner-loops.md`
 
 /**
  * The section main's system prompt gains once the agent has a side loop, OR can
