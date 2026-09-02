@@ -47,7 +47,7 @@ There are two ways to create a loop.
 
 | Action | Effect |
 |--------|--------|
-| `create` | Define a new inner loop and start it. |
+| `create` | Define a new inner loop and start it. By default (`autostart: true`) `main` immediately sends it a kickoff message with `wake: true`, so it runs its first turn on its goal right away. Pass `autostart: false` for a loop that should only run when a trigger, timer, or `loop_send` targets it. |
 | `get` | Return one loop's full definition. (Use `loop_list` to enumerate them.) |
 | `update` | Patch a loop's fields; the loop is re-derived and restarted. Loops cannot be renamed — the name binds the executor to its stream. `enabled: false` stops the loop **now**: an in-flight turn is aborted, not finished first. |
 | `delete` | **Stop** the loop (mid-turn included), **archive** its stream to the audit log (under `loop:<name>`), then remove it. The history is retained in the audit log rather than dropped, so a deletion is auditable after the fact. Timers stamped to the deleted loop go with it — **except `locked` ones**, which are preserved and logged (see below). |

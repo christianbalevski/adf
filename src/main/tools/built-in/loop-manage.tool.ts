@@ -56,13 +56,28 @@ const InputSchema = z.object({
   // No `list`: that is `loop_list`, an ordinary tool you hold like every other
   // loop does. Two ways to enumerate the same roster was one too many.
   action: z.enum(['create', 'get', 'update', 'delete']).describe(
-    'create — define a new inner loop and start it. get — one loop\'s full definition (use loop_list to enumerate them). ' +
+    'create — define a new inner loop, start it and (unless autostart is false) run its first turn right away. ' +
+    'get — one loop\'s full definition (use loop_list to enumerate them). ' +
     'update — patch an inner loop (re-derives and restarts it; enabled:false stops it immediately). ' +
     'delete — stop it (mid-turn included), archive its stream to the audit log, then remove it.'
   ),
   name: z.string().min(1).optional().describe('Loop name. Required for get, update and delete.'),
-  config: LoopConfigInputSchema.optional().describe('Required for create and update.')
+  config: LoopConfigInputSchema.optional().describe('Required for create and update.'),
+  autostart: z.boolean().optional().describe(
+    'create only. Default true: the new loop runs its first turn immediately, told to begin on its goal. ' +
+    'false: it only runs when a trigger, timer or loop_send targets it.'
+  )
 })
+
+/**
+ * The message a freshly created loop is woken with when `autostart` is on.
+ * Sent through the ordinary `loop_send` path (stamped `[from loop:main]`,
+ * appended to the loop's stream, then a wake), so it is auditable like any
+ * other interior message and the loop starts from its own durable row.
+ */
+export const LOOP_AUTOSTART_MESSAGE =
+  'You were just created. Begin working on your goal now. ' +
+  'When you have something worth reporting, tell main with loop_send.'
 
 type LoopConfigInput = z.infer<typeof LoopConfigInputSchema>
 
@@ -141,7 +156,7 @@ export class LoopManageTool implements Tool {
         case 'get':
           return this.handleGet(pool, parsed.name)
         case 'create':
-          return await this.handleCreate(pool, workspace, parsed.name, parsed.config)
+          return await this.handleCreate(pool, workspace, parsed.name, parsed.config, parsed.autostart ?? true)
         case 'update':
           return await this.handleUpdate(pool, workspace, parsed.name, parsed.config)
         case 'delete':
@@ -189,7 +204,8 @@ export class LoopManageTool implements Tool {
     pool: LoopPoolApi,
     workspace: AdfWorkspace,
     nameArg: string | undefined,
-    configArg: LoopConfigInput | undefined
+    configArg: LoopConfigInput | undefined,
+    autostart: boolean
   ): Promise<ToolResult> {
     if (!configArg) return errorResult('create requires "config" (at least name and goal).')
 
@@ -251,12 +267,30 @@ export class LoopManageTool implements Tool {
       ? (effective.length ? effective.join(', ') : '(none)')
       : (requested.length ? requested.join(', ') : '(none)')
 
+    // A loop is event-driven: enabled means it CAN take a turn, not that it
+    // does. Without a first message it sits idle until a trigger, timer or
+    // loop_send names it — which every creator expected to happen on its own.
+    // So by default main kicks it off through the normal loop_send path (the
+    // wake row is appended and audited like any other interior message).
+    let startLine: string
+    if (!validated.config.enabled) {
+      startLine = 'It is disabled; enable it with update to let it run.'
+    } else if (!autostart) {
+      startLine = 'It is waiting: give it work by targeting it from a trigger or timer, or with loop_send.'
+    } else {
+      const sent = await pool.sendToLoop(MAIN_LOOP, name, LOOP_AUTOSTART_MESSAGE, true)
+      startLine = sent.woke
+        ? 'It is running its first turn on its goal now.'
+        : `Its kickoff message was delivered but it has not started${sent.reason ? ` (${sent.reason})` : ''}; ` +
+          'give it work from a trigger or timer, or with loop_send.'
+    }
+
     return {
       content:
         `Created loop "${name}"${validated.config.enabled ? ' (running)' : ' (disabled)'}.\n` +
         `Goal: ${validated.config.goal}\n` +
         `Tools: ${toolLine}.${this.disabledNote(validated.disabled)}\n` +
-        'Give it work by targeting it from a trigger or timer, or with loop_send.',
+        startLine,
       isError: false
     }
   }

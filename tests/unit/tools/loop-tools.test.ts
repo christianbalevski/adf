@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { SetTimerTool } from '../../../src/main/tools/built-in/sys-set-timer.tool'
 import { LoopSendTool, LOOP_SEND_MAX_CHARS } from '../../../src/main/tools/built-in/loop-send.tool'
-import { LoopManageTool } from '../../../src/main/tools/built-in/loop-manage.tool'
+import { LoopManageTool, LOOP_AUTOSTART_MESSAGE } from '../../../src/main/tools/built-in/loop-manage.tool'
 import {
   LoopConfigSchema,
   LoopsConfigSchema,
@@ -592,6 +592,49 @@ describe('loop_manage', () => {
         fakeWorkspace(),
       )
       expect(pool.calls.create[0]).toMatchObject({ name: 'reflector', goal: 'reflect', enabled: true })
+    })
+
+    it('autostarts by default: main wakes the new loop with a kickoff message', async () => {
+      const pool = fakePool()
+      const result = await make(pool).execute(
+        { action: 'create', config: { name: 'reflector', goal: 'reflect' } },
+        fakeWorkspace(),
+      )
+      expect(result.isError).toBe(false)
+      expect(pool.calls.send).toEqual([['main', 'reflector', LOOP_AUTOSTART_MESSAGE, true]])
+      expect(result.content).toMatch(/running its first turn/)
+    })
+
+    it('autostart: false leaves the loop waiting for a trigger, timer or loop_send', async () => {
+      const pool = fakePool()
+      const result = await make(pool).execute(
+        { action: 'create', autostart: false, config: { name: 'reflector', goal: 'reflect' } },
+        fakeWorkspace(),
+      )
+      expect(result.isError).toBe(false)
+      expect(pool.calls.send).toHaveLength(0)
+      expect(result.content).toMatch(/waiting/)
+    })
+
+    it('does not kick off a loop created disabled', async () => {
+      const pool = fakePool()
+      const result = await make(pool).execute(
+        { action: 'create', config: { name: 'reflector', goal: 'reflect', enabled: false } },
+        fakeWorkspace(),
+      )
+      expect(result.isError).toBe(false)
+      expect(pool.calls.send).toHaveLength(0)
+      expect(result.content).toMatch(/disabled/)
+    })
+
+    it('reports when the kickoff was delivered but did not wake', async () => {
+      const pool = fakePool({ sendResult: { delivered: true, woke: false, reason: 'loop disabled' } })
+      const result = await make(pool).execute(
+        { action: 'create', config: { name: 'reflector', goal: 'reflect' } },
+        fakeWorkspace(),
+      )
+      expect(result.isError).toBe(false)
+      expect(result.content).toMatch(/has not started \(loop disabled\)/)
     })
 
     it('carries compact_threshold through to the pool', async () => {
