@@ -812,3 +812,19 @@ export interface DashboardAgentStats {
   /** Agents with `compute.host_access === true`. */
   hostAccessAgents: number
 }
+
+// --- In-app updates ---
+
+/**
+ * What the status-bar update badge renders. Main owns the state machine
+ * (electron-updater events) and pushes every transition over
+ * IPC.APP_UPDATE_STATE; the renderer never infers state on its own.
+ * `idle` covers "no update", "not checked yet", and "not a packaged build".
+ */
+export type AppUpdateState =
+  | { status: 'idle' }
+  | { status: 'available'; version: string }
+  | { status: 'downloading'; version: string; percent: number }
+  | { status: 'ready'; version: string }
+  | { status: 'installing'; version: string }
+  | { status: 'error'; message: string; version?: string }

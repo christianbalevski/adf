@@ -111,6 +111,8 @@ parts.push(
     '`sudo apt install ./adf-studio_*_amd64.deb`',
     'For the `.AppImage`: `chmod +x ADF-Studio-*.AppImage && ./ADF-Studio-*.AppImage`',
     '(needs `libfuse2`: `sudo apt install libfuse2`).',
+    '',
+    'Already installed? Newer releases show an **Update** badge next to the version number in the status bar.',
   ].join('\n')
 )
 

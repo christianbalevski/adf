@@ -5,6 +5,7 @@ import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, get
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
 import { IPC } from '../shared/constants/ipc-channels'
+import { initAppUpdater } from './services/app-updater.service'
 
 // A console.log after the parent's stdout pipe is gone (app quitting, or the
 // dev harness restarting the main process underneath us) emits EIO/EPIPE on
@@ -90,6 +91,9 @@ let shutdownBudgetMs = SHUTDOWN_BUDGET_MS
 // promise; every later caller (repeat before-quit, second signal, fatal
 // error handler) awaits the same promise instead of re-running teardown.
 let shutdownCleanup: Promise<void> | null = null
+// Set by the in-app updater once cleanup has run: the quit that follows is
+// electron-updater's and must not be intercepted (see before-quit below).
+let quittingForUpdate = false
 
 function runShutdownCleanup(): Promise<void> {
   if (shutdownCleanup) return shutdownCleanup
@@ -468,6 +472,21 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  initAppUpdater({
+    send: (state) => {
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send(IPC.APP_UPDATE_STATE, state)
+      }
+    },
+    prepareQuitForUpdate: async () => {
+      // Same teardown as a normal quit (also raises the renderer's shutdown
+      // overlay), then let the updater's own app.quit() run to completion —
+      // on macOS Squirrel's ShipIt must see the process exit on its terms.
+      await runShutdownCleanup()
+      quittingForUpdate = true
+    }
+  })
+
   // Clean up scratch dirs left by previous instances that exited uncleanly.
   // Deferred so the synchronous temp-dir scan never delays first paint.
   setImmediate(() => purgeStaleProcessDirs())
@@ -489,6 +508,7 @@ app.on('window-all-closed', () => {
 // Re-entrant: the first before-quit starts cleanup and exits when done (or when
 // the budget expires); later before-quit events just preventDefault and return.
 app.on('before-quit', (event) => {
+  if (quittingForUpdate) return
   event.preventDefault()
   if (shutdownCleanup) return
   void runShutdownCleanup().finally(() => app.exit(0))
