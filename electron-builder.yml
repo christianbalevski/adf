@@ -28,8 +28,11 @@ mac:
   # packing the app once per arch — rebuilding better-sqlite3 for each —
   # and lipo-merging the two. CI force-installs the Intel binary packages
   # first (scripts/install-mac-x64-deps.mjs) so both arch variants ship.
+  # dmg is what people download; zip is what electron-updater/Squirrel.Mac
+  # installs from (latest-mac.yml only lists zips as update sources).
   target:
     - dmg
+    - zip
   # These deps ship prebuilt single-arch binaries and pick the right one at
   # runtime via process.arch (CI installs the missing Intel variants — see
   # scripts/install-mac-x64-deps.mjs). They're *intentionally* single-arch,

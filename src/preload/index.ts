@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
-import type { FleetSettableState, NotificationsSnapshot } from '../shared/types/ipc.types'
+import type { AppUpdateState, FleetSettableState, NotificationsSnapshot } from '../shared/types/ipc.types'
 import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { AdfApi } from './api'
 
@@ -594,6 +594,14 @@ const api: AdfApi = {
     const handler = () => callback()
     ipcRenderer.on(IPC.APP_SHUTTING_DOWN, handler)
     return () => ipcRenderer.removeListener(IPC.APP_SHUTTING_DOWN, handler)
+  },
+  getUpdateState: () => ipcRenderer.invoke(IPC.APP_UPDATE_GET_STATE),
+  downloadUpdate: () => ipcRenderer.invoke(IPC.APP_UPDATE_DOWNLOAD),
+  installUpdate: () => ipcRenderer.invoke(IPC.APP_UPDATE_INSTALL),
+  onUpdateState: (callback: (state: AppUpdateState) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: AppUpdateState) => callback(state)
+    ipcRenderer.on(IPC.APP_UPDATE_STATE, handler)
+    return () => ipcRenderer.removeListener(IPC.APP_UPDATE_STATE, handler)
   },
   getFullscreenState: () => ipcRenderer.invoke(IPC.APP_GET_FULLSCREEN),
   setFullscreen: (fullscreen: boolean) => ipcRenderer.invoke(IPC.APP_SET_FULLSCREEN, fullscreen),

@@ -328,6 +328,13 @@ export const IPC = {
   APP_SET_FULLSCREEN: 'adf:app:set-fullscreen',
   APP_FULLSCREEN_CHANGED: 'adf:app:fullscreen-changed',
 
+  // In-app updates (electron-updater). State is pushed main -> renderer;
+  // download/install are user-initiated from the status bar badge.
+  APP_UPDATE_STATE: 'adf:app:update-state',
+  APP_UPDATE_GET_STATE: 'adf:app:update:get-state',
+  APP_UPDATE_DOWNLOAD: 'adf:app:update:download',
+  APP_UPDATE_INSTALL: 'adf:app:update:install',
+
   // Emergency stop
   EMERGENCY_STOP: 'adf:emergency-stop'
 } as const

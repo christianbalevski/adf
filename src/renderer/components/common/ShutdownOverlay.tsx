@@ -1,13 +1,19 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 
 export function ShutdownOverlay() {
   const shuttingDown = useAppStore((s) => s.shuttingDown)
   const setShuttingDown = useAppStore((s) => s.setShuttingDown)
+  // An update restart runs the same teardown as a quit; the only difference
+  // the user should see is the wording.
+  const [updating, setUpdating] = useState(false)
 
   useEffect(() => {
     return window.adfApi.onShuttingDown(() => setShuttingDown(true))
   }, [setShuttingDown])
+  useEffect(() => {
+    return window.adfApi?.onUpdateState((s) => setUpdating(s.status === 'installing'))
+  }, [])
 
   if (!shuttingDown) return null
 
@@ -35,7 +41,7 @@ export function ShutdownOverlay() {
           />
         </svg>
         <span className="text-sm font-medium text-neutral-500 dark:text-neutral-400">
-          Shutting down...
+          {updating ? 'Restarting to update...' : 'Shutting down...'}
         </span>
       </div>
     </div>

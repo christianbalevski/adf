@@ -113,3 +113,37 @@ the slow one.
 
 **Windows** builds are still unsigned — SmartScreen shows "Windows protected
 your PC" until a Windows signing cert is wired in the same way.
+
+## In-app updates
+
+Installed copies check GitHub Releases (`latest*.yml`, published by the same
+`npm run release`) shortly after launch and every 6 hours. Nothing downloads
+by itself: when a newer *published* release exists, an **Update** badge
+appears next to the version number in the status bar; clicking it downloads
+the update (percent shown in the badge), runs the normal shutdown teardown,
+and restarts into the new version. Drafts are ignored, so the review-then-
+publish flow above is unchanged.
+
+Per platform: macOS installs from the `zip` target (Squirrel.Mac needs the
+app to be signed, which it is); Windows runs the NSIS installer silently;
+AppImage swaps itself in place; the `.deb` path runs `dpkg -i` behind a
+`pkexec` prompt. Code: `src/main/services/app-updater.service.ts`.
+
+To test the whole path without publishing anything, build two throwaway
+packages and serve the newer one as a local feed:
+
+```bash
+# 1. "installed" app at a lower version
+sed -i '' 's/"version": ".*"/"version": "0.0.1"/' package.json && npm run package && mv dist /tmp/app-old
+# 2. the "update" (zip + latest-mac.yml are the feed)
+sed -i '' 's/"version": ".*"/"version": "0.0.2"/' package.json && npm run package
+mkdir /tmp/feed && cp dist/*.zip dist/*.blockmap dist/latest-mac.yml /tmp/feed   # win: *.exe + latest.yml
+git checkout package.json
+python3 -m http.server 8765 --directory /tmp/feed &
+# 3. run the old app as an isolated instance pointed at the feed
+ADF_INSTANCE=9 ADF_UPDATE_FEED_URL=http://127.0.0.1:8765/ "/tmp/app-old/mac-arm64/ADF Studio.app/Contents/MacOS/ADF Studio"
+```
+
+The badge appears within ~15 s; click it and the app should restart as
+0.0.2. `ADF_UPDATE_FEED_URL` is only honoured together with `ADF_INSTANCE`,
+so the real single-instance app always talks to GitHub.

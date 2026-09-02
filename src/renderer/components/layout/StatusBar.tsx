@@ -8,6 +8,7 @@ import { AgentStatus } from '../agent/AgentStatus'
 import { Tooltip } from '../common/Tooltip'
 import { loopColor } from '../../utils/loop-color'
 import { ContextBreakdownModal, formatTokens, resolveLoopThreshold } from './ContextBreakdownModal'
+import type { AppUpdateState } from '../../../shared/types/ipc.types'
 
 function contextGaugeTooltip(u: TokenUsage, estimate: number | null, threshold: number): string {
   // The full breakdown lives in the click-through modal — keep the hover terse.
@@ -158,8 +159,10 @@ export function StatusBar() {
         </svg>
         Tasks
       </button>
+      <span className="ml-auto" />
+      <UpdateBadge />
       <span
-        className="ml-auto tabular-nums text-neutral-400 dark:text-neutral-500"
+        className="tabular-nums text-neutral-400 dark:text-neutral-500"
         title="ADF Studio version"
       >
         {appVersion ? `v${appVersion}` : ''}
@@ -192,6 +195,59 @@ export function StatusBar() {
         Kill
       </button>
     </div>
+  )
+}
+
+function UpdateIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 4v12" />
+      <path d="M6 10l6 6 6-6" />
+      <path d="M4 20h16" />
+    </svg>
+  )
+}
+
+/**
+ * Sits just left of the version number (so the version never shifts).
+ * Invisible until main reports an update; one click downloads it (with a
+ * percent readout) and the app restarts on its own once the download lands.
+ */
+function UpdateBadge() {
+  const [update, setUpdate] = useState<AppUpdateState>({ status: 'idle' })
+  useEffect(() => {
+    window.adfApi?.getUpdateState().then(setUpdate).catch(() => {})
+    return window.adfApi?.onUpdateState(setUpdate)
+  }, [])
+
+  if (update.status === 'idle') return null
+
+  const clickable = update.status === 'available' || update.status === 'error'
+  const tip =
+    update.status === 'available' ? `v${update.version} is available — click to download and restart`
+    : update.status === 'downloading' ? `Downloading v${update.version}…`
+    : update.status === 'ready' || update.status === 'installing' ? `Restarting into v${update.version}…`
+    : `Update failed: ${update.message}${update.version ? ' — click to retry' : ''}`
+  const label =
+    update.status === 'downloading' ? `${update.percent}%`
+    : update.status === 'ready' || update.status === 'installing' ? 'Restarting…'
+    : update.status === 'error' ? 'Update failed'
+    : 'Update'
+  const tone =
+    update.status === 'error' ? 'text-red-600 hover:bg-red-100 dark:text-red-400 dark:hover:bg-red-900/40'
+    : 'text-blue-600 hover:bg-blue-100 dark:text-blue-400 dark:hover:bg-blue-900/40'
+
+  return (
+    <Tooltip tip={tip}>
+      <button
+        onClick={clickable ? () => void window.adfApi.downloadUpdate() : undefined}
+        disabled={!clickable}
+        className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums transition-colors ${tone} ${clickable ? '' : 'cursor-default'}`}
+      >
+        <UpdateIcon />
+        {label}
+      </button>
+    </Tooltip>
   )
 }
 
