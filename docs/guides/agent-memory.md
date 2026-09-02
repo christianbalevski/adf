@@ -120,25 +120,33 @@ Seq numbers are for your bookkeeping, not for people. When mentioning a cited me
 ```js
 import { brotliDecompressSync } from 'zlib'
 
-export async function auditRead({ seq }) {
+// `loop` is optional. seq is one global counter across every cognition stream,
+// so a bare seq is already unambiguous; naming the loop only narrows the
+// candidate set to that stream's blobs (source = 'loop:<name>'). Omit it when
+// resolving a citation from a sibling loop or one whose origin you do not know.
+export async function auditRead({ seq, loop }) {
   // Ground truth may still be live — check adf_loop first.
   const live = await adf.db_query({
-    sql: 'SELECT seq, role, content_json, created_at FROM adf_loop WHERE seq = ?',
+    sql: 'SELECT seq, loop, role, content_json, created_at FROM adf_loop WHERE seq = ?',
     params: [seq], _full: true
   })
-  if (live.length > 0) return { source: 'live', entry: live[0] }
+  if (live.length > 0) return { source: 'live', loop: live[0].loop, entry: live[0] }
 
-  // Candidate blobs — compaction overlap means several may cover the seq.
+  // Candidate blobs — compaction overlap means several may cover the seq, and
+  // sibling loops interleave on the same counter, so a range hit is a
+  // candidate, not a match. Scan each for the exact entry.
   const candidates = await adf.db_query({
-    sql: "SELECT id, data FROM adf_audit WHERE (source = 'loop' OR source LIKE 'loop:%') AND start_seq <= ? AND end_seq >= ? ORDER BY start_seq DESC",
-    params: [seq, seq], _full: true
+    sql: loop
+      ? 'SELECT id, source, data FROM adf_audit WHERE source = ? AND start_seq <= ? AND end_seq >= ? ORDER BY start_seq DESC'
+      : "SELECT id, source, data FROM adf_audit WHERE (source = 'loop' OR source LIKE 'loop:%') AND start_seq <= ? AND end_seq >= ? ORDER BY start_seq DESC",
+    params: loop ? [`loop:${loop}`, seq, seq] : [seq, seq], _full: true
   })
   for (const row of candidates) {
     const blob = String(row.data)
     const buf = Buffer.from(blob.startsWith('base64:') ? blob.slice(7) : blob, 'base64')
     const entries = JSON.parse(brotliDecompressSync(buf).toString())
     const hit = entries.find((e) => e.seq === seq)
-    if (hit) return { source: 'audit', audit_id: row.id, entry: hit }
+    if (hit) return { source: 'audit', audit_id: row.id, loop: row.source.replace(/^loop:?/, '') || 'main', entry: hit }
   }
   return { source: 'missing' }
 }
@@ -146,7 +154,8 @@ export async function auditRead({ seq }) {
 
 Caveats:
 
-- **Multiple blobs can match** one seq (successive compactions archive overlapping ranges) — always scan candidates for the exact seq rather than trusting the first blob.
+- **Multiple blobs can match** one seq (successive compactions archive overlapping ranges, and sibling loops interleave on one global counter, so a `main` block's `start_seq..end_seq` can span seqs that belong to an inner loop) — always scan candidates for the exact seq rather than trusting the first blob.
+- **Seq is global, loop is provenance.** Every cognition stream draws from the same `adf_loop.seq` counter, so `[S137]` names exactly one message no matter which loop wrote it. The loop is recorded per audit row in `source` (`loop:<name>`; bare `loop` on pre-loops rows means `main`). A loop knows its own name from its system prompt, so pass `loop` to narrow the scan to your own stream; a citation format that carries the loop (`[S137@planner]`, `adf-audit://seq/137?loop=planner`) is your convention to choose — the runtime never parses citations, it only stamps `[S<seq>]`.
 - **Check live `adf_loop` first** — recent seqs have not been archived yet.
 - **Gaps are possible.** If loop audit was disabled when a compaction ran, that range is gone; `missing` is an honest answer. The setting is `audit.loop` (on by default; agent-writable via `sys_update_config`, HIL-gated — see [Memory Management → Audit](memory-management.md#audit)). Likewise, messages that arrived while audit was disabled (or before per-message capture existed) have no audit row — enabling audit later does not retroactively archive them.
 - Decompress inside the sandbox, never into your LLM context — a single blob can be megabytes. Return only the entry (or the measurement) you need.

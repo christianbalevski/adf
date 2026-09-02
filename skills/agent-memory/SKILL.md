@@ -20,31 +20,40 @@ Loop messages carry `[S<seq>]` markers. To follow a citation back to the origina
 import { brotliDecompressSync } from 'zlib'
 
 // Resolve a loop seq (an [S<seq>] citation) to its original entry.
-export async function auditRead({ seq }) {
+// `loop` is optional: seq is one global counter across every cognition stream,
+// so a bare seq is already unambiguous. Naming the loop narrows the candidate
+// blobs to that stream (source = 'loop:<name>'). Omit it for a citation from a
+// sibling loop or one whose origin you do not know.
+export async function auditRead({ seq, loop }) {
   // Recent seqs are not archived yet — check the live loop first.
   const live = await adf.db_query({
-    sql: 'SELECT seq, role, content_json, created_at FROM adf_loop WHERE seq = ?',
+    sql: 'SELECT seq, loop, role, content_json, created_at FROM adf_loop WHERE seq = ?',
     params: [seq], _full: true
   })
-  if (live.length > 0) return { source: 'live', entry: live[0] }
+  if (live.length > 0) return { source: 'live', loop: live[0].loop, entry: live[0] }
 
-  // Candidate blobs — successive compactions can archive overlapping ranges,
-  // so several blobs may cover this seq. Scan each for the exact entry.
+  // Candidate blobs — successive compactions archive overlapping ranges, and
+  // sibling loops interleave on the same counter, so a range hit is only a
+  // candidate. Scan each for the exact entry.
   const candidates = await adf.db_query({
-    sql: "SELECT id, data FROM adf_audit WHERE (source = 'loop' OR source LIKE 'loop:%') AND start_seq <= ? AND end_seq >= ? ORDER BY start_seq DESC",
-    params: [seq, seq], _full: true
+    sql: loop
+      ? 'SELECT id, source, data FROM adf_audit WHERE source = ? AND start_seq <= ? AND end_seq >= ? ORDER BY start_seq DESC'
+      : "SELECT id, source, data FROM adf_audit WHERE (source = 'loop' OR source LIKE 'loop:%') AND start_seq <= ? AND end_seq >= ? ORDER BY start_seq DESC",
+    params: loop ? [`loop:${loop}`, seq, seq] : [seq, seq], _full: true
   })
   for (const row of candidates) {
     const blob = String(row.data)
     const buf = Buffer.from(blob.startsWith('base64:') ? blob.slice(7) : blob, 'base64')
     const entries = JSON.parse(brotliDecompressSync(buf).toString())
     const hit = entries.find((e) => e.seq === seq)
-    if (hit) return { source: 'audit', audit_id: row.id, entry: hit }
+    if (hit) return { source: 'audit', audit_id: row.id, loop: row.source.replace(/^loop:?/, '') || 'main', entry: hit }
   }
   // Honest miss: audit may have been disabled during a compaction, or the seq never existed.
   return { source: 'missing' }
 }
 ```
+
+Seq is global and loop is provenance: every cognition stream draws from the same `adf_loop.seq` counter, so `[S137]` names exactly one message whichever loop wrote it. Each audit row records its loop in `source` (`loop:<name>`; bare `loop` on old rows means `main`). You know your own loop name from your system prompt, so pass `loop` to scan only your stream. If you want citations to carry the loop (`[S137@planner]`), that is your convention — the runtime only stamps `[S<seq>]` and never parses citations.
 
 Four conventions this depends on, none of them guessable:
 
