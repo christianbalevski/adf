@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
+import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { toDisplayState } from '../../hooks/useAgent'
 import { ApprovalsMenu } from './ApprovalsMenu'
@@ -93,6 +94,29 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
 
   const servingActive = isServing && meshServerStatus.running && foregroundActive
 
+  // Visible container browser — one click opens the live noVNC viewer tab
+  // (same path as AgentConfig's "Open browser view", minus the scrolling).
+  const hasBrowser = !!config?.compute?.enabled && config.compute.browser !== false
+  const browserActive = hasBrowser && foregroundActive
+  const [browserOpening, setBrowserOpening] = useState(false)
+  const openBrowserView = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!browserActive || browserOpening || !config || !filePath) return
+    setBrowserOpening(true)
+    try {
+      const info = await window.adfApi?.getBrowserSessionInfo({ agentName: config.name, agentId: config.id })
+      if (info?.hostPort != null) {
+        useEditorTabsStore.getState().openBrowserTab({
+          agentFilePath: filePath,
+          containerName: info.containerName,
+          hostPort: info.hostPort
+        })
+      }
+    } catch { /* viewer is best-effort */ } finally {
+      setBrowserOpening(false)
+    }
+  }, [browserActive, browserOpening, config, filePath])
+
   const stateColors: Record<string, { color: string; ring?: boolean; pulse?: boolean }> = {
     active: { color: 'bg-yellow-400', pulse: true },
     idle: { color: 'bg-green-400' },
@@ -164,6 +188,27 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
             </svg>
           </span>
         )
+      )}
+      {hasBrowser && (
+        <button
+          type="button"
+          onClick={openBrowserView}
+          disabled={!browserActive || browserOpening}
+          title={browserActive
+            ? (browserOpening ? 'Opening browser view…' : "Open this agent's browser")
+            : 'Browser view (agent off)'}
+          className={`pointer-events-auto shrink-0 flex items-center ${browserActive
+            ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer'
+            : 'text-neutral-400 dark:text-neutral-500 cursor-default'} ${browserOpening ? 'animate-pulse' : ''}`}
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="4" width="20" height="16" rx="2" />
+            <line x1="2" y1="9" x2="22" y2="9" />
+            <circle cx="5.5" cy="6.5" r="0.5" fill="currentColor" />
+            <circle cx="8.5" cy="6.5" r="0.5" fill="currentColor" />
+          </svg>
+        </button>
       )}
     </div>
   )
