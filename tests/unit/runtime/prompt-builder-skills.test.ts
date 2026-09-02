@@ -32,12 +32,12 @@ describe('skills prompt section', () => {
     expect(TOOL_PROMPT_CONDITIONS._skills).toContain('Always injected')
   })
 
-  it('states the file-based install and mute affordances, and the authority limit', () => {
+  it('states the file-based install path, points at the guide for mute/uninstall, and sets the authority limit', () => {
     const section = DEFAULT_TOOL_PROMPTS._skills
-    expect(section).toContain('skills-state.json')
-    expect(section).toContain('sys_fetch')
-    expect(section).toContain('rejected')
-    expect(section).toContain('instructions, not authority')
+    expect(section).toContain('skills/<name>/')
+    expect(section).toContain('resources first')
+    expect(section).toContain('/skills.md')
+    expect(section).toContain('no authority of its own')
     // Lean by instruction: the section is a short brief, not a manual.
     expect(section.split('\n').filter((line) => line.trim()).length).toBeLessThanOrEqual(12)
   })
