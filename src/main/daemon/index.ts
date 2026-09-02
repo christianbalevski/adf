@@ -21,6 +21,8 @@ import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
+import { setChildTrustRegistrar } from '../runtime/child-trust'
+import { markConfigReviewed } from '../services/agent-review'
 import { withSource } from '../runtime/execution-context'
 import { registerDaemonEventBus, emitUmbilicalEvent } from '../runtime/emit-umbilical'
 import { getLanAddresses } from '../utils/network'
@@ -108,6 +110,11 @@ if (daemonEncKey) {
     unlockEnvelopes: (ws) => { ws.unlockEnvelopes({ runtimeEncPrivateKey: key.privateKeyPkcs8 }) },
   })
 }
+// Children spawned via sys_create_adf are trusted (parity with Studio; see
+// child-trust.ts). RuntimeService also wires the per-agent hook.
+setChildTrustRegistrar((childConfig) => {
+  settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), childConfig))
+})
 // Seed + persist the set of OpenRouter models that mandate reasoning (they 400
 // on an explicit disable). Persisting means a model fails at most once, ever.
 // (Parity with Studio registerAllIpcHandlers.)

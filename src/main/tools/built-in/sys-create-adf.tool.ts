@@ -4,6 +4,7 @@ import { dirname, join, resolve, isAbsolute } from 'path'
 import type { Tool } from '../tool.interface'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import { ensureWorkspaceIdentity } from '../../runtime/identity-provisioner'
+import { markChildTrusted } from '../../runtime/child-trust'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { CreateAgentOptions } from '../../../shared/types/adf-v02.types'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
@@ -490,7 +491,10 @@ export class CreateAdfTool implements Tool {
         const did = newWorkspace.getDid()
         newWorkspace.close()
 
-        // Auto-register child as reviewed (parent creation = implicit review)
+        // A spawned child is trusted by construction (the HIL gate was on this
+        // tool call). Host-independent registrar first; the optional per-host
+        // hook remains for hosts that keep their own review store.
+        markChildTrusted(newConfig)
         if (this.onChildCreated) {
           try {
             this.onChildCreated(newPath, newConfig)

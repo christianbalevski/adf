@@ -117,6 +117,7 @@ import { AdfWorkspace } from '../adf/adf-workspace'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
 import { stripLoopNameMarker } from '../runtime/loop-pool'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
+import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { AdfDatabase } from '../adf/adf-database'
 import { applyDefaultProviderToOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
 import { AgentExecutor } from '../runtime/agent-executor'
@@ -1550,6 +1551,12 @@ export function registerAllIpcHandlers(): void {
   setWorkspaceIdentityHooks({
     ensureIdentity: (ws) => settings.getOwnerIdentity().ensureWorkspaceIdentity(ws),
     unlockEnvelopes: (ws) => settings.getOwnerIdentity().unlockWorkspaceEnvelopes(ws)
+  })
+
+  // Children spawned via sys_create_adf are trusted regardless of which host
+  // (foreground / background) assembled the parent — see child-trust.ts.
+  setChildTrustRegistrar((childConfig) => {
+    settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), childConfig))
   })
 
   // Envelope migration sweep (spec §8): idempotent, cheap once migrated.
@@ -3081,13 +3088,11 @@ export function registerAllIpcHandlers(): void {
 
     const config = currentWorkspace.getAgentConfig()
 
-    // Review gate: refuse to start an unreviewed agent
-    if (!isConfigReviewed(settings.get('reviewedAgents'), config)) {
-      return { success: false, error: 'Agent must be reviewed before starting. Please accept the agent review first.' }
-    }
-
     // Reuse extracted executor if running (but not if it's in error state —
-    // error state requires a fresh executor, same as stopped)
+    // error state requires a fresh executor, same as stopped). No review gate
+    // here: the executor was already admitted when it started, and refusing
+    // now would leave it running with no host attached (invisible to the UI,
+    // unregistered from the mesh). The gate applies to fresh construction only.
     if (agentExecutor && agentExecutor.getState() !== 'stopped' && agentExecutor.getState() !== 'error') {
       if (currentAssembledAgent) {
         const handle = currentAssembledAgent
@@ -4360,12 +4365,10 @@ export function registerAllIpcHandlers(): void {
     // Taps register inside the umbilical lifecycle resource's start().
     currentTapManager = assembled.tapManager
 
-    // Wire sys_create_adf autostart + child review + default-provider callbacks
+    // Wire sys_create_adf autostart + default-provider callbacks. Child trust
+    // (review marking) is host-independent — see setChildTrustRegistrar.
     const createAdfTool = agentToolRegistry.get('sys_create_adf') as CreateAdfTool | undefined
     if (createAdfTool) {
-      createAdfTool.onChildCreated = (_childPath, childConfig) => {
-        settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), childConfig))
-      }
       createAdfTool.onAutostartChild = async (childPath) => {
         if (!backgroundAgentManager) return false
         return backgroundAgentManager.tryAutostart(childPath)

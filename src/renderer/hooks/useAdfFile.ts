@@ -324,6 +324,11 @@ export function useAdfFile() {
                 }
               }
             }
+          } else {
+            // The executor is still running in main with no host attached.
+            // Never fail silently: the default reset state reads as "off".
+            console.error('[useAdfFile] Foreground re-attach of running agent failed:', startResult.error)
+            setStatusText(`Agent is running but could not attach: ${startResult.error ?? 'unknown error'}`)
           }
         }
 
