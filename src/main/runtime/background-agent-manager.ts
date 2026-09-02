@@ -40,6 +40,7 @@ import { materializeCredentialFiles, writeBackCredentialFiles, containerCredenti
 import { AgentKeystoreOAuthStore, resolveOAuthStoreForConnect } from '../services/mcp-oauth-store'
 import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn } from '../services/mcp-oauth-connect'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
+import { containerLinkedFileReader } from '../services/mcp-linked-files'
 import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
 import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
 import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
@@ -1347,7 +1348,8 @@ export class BackgroundAgentManager extends EventEmitter {
               // Agent-scoped HOME first — an explicit serverCfg.env.HOME still wins.
               env: { HOME: containerAgentHome(isolated, freshConfig.id), ...connCfg.env, ...browserEnv },
               cwd: containerWorkspacePath(isolated, freshConfig.id),
-            })
+            }),
+            linkedFileReader: containerLinkedFileReader(this.podmanService, containerName, containerWorkspacePath(isolated, freshConfig.id)),
           }
         }
       }

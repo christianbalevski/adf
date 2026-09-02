@@ -39,6 +39,7 @@ import { captureEnvSchema, resolveMcpEnvVars, resolveMcpSpawnConfig } from '../s
 import type { UvxPackageResolver } from '../services/uvx-package-resolver'
 import type { UvManager } from '../services/uv-manager'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
+import { containerLinkedFileReader } from '../services/mcp-linked-files'
 import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
 import { resolveContainerCommand } from '../services/container-command-resolver'
 import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
@@ -598,6 +599,7 @@ export class AgentRuntimeBuilder {
               env: { HOME: containerAgentHome(isolated, freshConfig.id), ...connCfg.env, ...browserEnv },
               cwd: containerWorkspacePath(isolated, freshConfig.id),
             }),
+            linkedFileReader: containerLinkedFileReader(this.podmanService, containerName, containerWorkspacePath(isolated, freshConfig.id)),
           }
         }
       }

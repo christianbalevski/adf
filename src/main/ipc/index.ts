@@ -173,6 +173,7 @@ import { SandboxStdlibService } from '../services/sandbox-stdlib.service'
 import { SandboxPackagesService } from '../services/sandbox-packages.service'
 import { PodmanService, isolatedContainerName, containerWorkspacePath, containerAgentHome } from '../services/podman.service'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
+import { containerLinkedFileReader } from '../services/mcp-linked-files'
 import { shouldContainerize, shouldIsolate, isServerForceShared, hostDenialReason, type ComputeSettings } from '../services/container-routing'
 import { resolveContainerCommand } from '../services/container-command-resolver'
 import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
@@ -3509,7 +3510,8 @@ export function registerAllIpcHandlers(): void {
                 // Agent-scoped HOME first — an explicit serverCfg.env.HOME still wins.
                 env: { HOME: containerAgentHome(isolated, freshConfig.id), ...connCfg.env, ...browserEnv },
                 cwd: containerWorkspacePath(isolated, freshConfig.id),
-              })
+              }),
+              linkedFileReader: containerLinkedFileReader(podmanService, containerName, containerWorkspacePath(isolated, freshConfig.id)),
             }
           }
         } else {
@@ -3948,7 +3950,8 @@ export function registerAllIpcHandlers(): void {
                   args: containerCmd.args,
                   env: transportEnv,
                   cwd: containerWorkspacePath(isolated, config.id),
-                })
+                }),
+                linkedFileReader: containerLinkedFileReader(podmanService, containerName, containerWorkspacePath(isolated, config.id)),
               }
             } else {
               // Routing chose host: materialize keystore-held credential files to the host home.

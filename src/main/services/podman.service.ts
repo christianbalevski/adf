@@ -944,6 +944,27 @@ export class PodmanService extends EventEmitter {
     return result.code === 0
   }
 
+  /** Byte size of a regular file inside a container, or null when absent / not a file. */
+  async containerFileSize(containerName: string, containerPath: string): Promise<number | null> {
+    const bin = await this.requirePodman()
+    const result = await this.exec0(bin, ['exec', containerName, 'sh', '-c', 'test -f "$1" && wc -c < "$1"', 'sh', containerPath])
+    if (result.code !== 0) return null
+    const size = Number.parseInt(result.stdout, 10)
+    return Number.isFinite(size) ? size : null
+  }
+
+  /** Read a file's bytes out of a container by absolute container path (via `podman cp`). */
+  async readContainerFile(containerName: string, containerPath: string): Promise<Buffer> {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'adf-linked-'))
+    const tmpPath = join(tmpDir, 'data')
+    try {
+      await this.copyFromContainer(containerPath, tmpPath, containerName)
+      return readFileSync(tmpPath)
+    } finally {
+      try { rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
+    }
+  }
+
   /**
    * Copy a file from a container to the host.
    */
