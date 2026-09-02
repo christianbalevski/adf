@@ -18,6 +18,7 @@ import { getTokenUsageService } from '../services/token-usage.service'
 import { getFleetBurnService } from '../services/fleet-burn.service'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prompt'
+import { sliceWellFormed, toWellFormed } from '../../shared/utils/well-formed'
 import { DEFAULT_COMPACTION_PROMPT, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_TOOL_PROMPTS } from '../../shared/constants/adf-defaults'
 import { nanoid } from 'nanoid'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
@@ -501,6 +502,16 @@ export class AgentExecutor extends EventEmitter {
    *  citations) while the full context is still in the loop. Compaction itself
    *  never writes files. Reset alongside the other context state. */
   private memoryFlushNudgeIssued = false
+
+  /** Detail of the last failed compaction, cleared on the next success. The
+   *  failure note is appended to the loop only when the detail CHANGES —
+   *  a summarizer that fails the same way on every attempt otherwise writes
+   *  one note per tool-loop iteration. adf_logs still records every attempt. */
+  private lastCompactionFailureDetail: string | undefined
+  /** Set when a compaction attempt fails inside the current turn; the top-of-
+   *  loop auto-compact then stands down for the rest of the turn (the
+   *  preflight guard still fires as the hard over-window protection). */
+  private compactionFailedThisTurn = false
 
 
   /** Whether the currently executing turn was triggered by an incoming message. */
@@ -1612,6 +1623,7 @@ export class AgentExecutor extends EventEmitter {
 
       let continueLoop = true
       let activeTurns = 0
+      this.compactionFailedThisTurn = false
       const maxActiveTurns = this.config.limits?.max_active_turns ?? null
       // Track target state from sys_set_state tool
       let targetState: string | null = null
@@ -1662,7 +1674,7 @@ export class AgentExecutor extends EventEmitter {
         // toolset — summarization only needs the provider, so an agent without
         // that tool still gets protected instead of hard-failing on an
         // over-window request.
-        if (chatTokens >= compactThreshold && this.provider) {
+        if (chatTokens >= compactThreshold && this.provider && !this.compactionFailedThisTurn) {
           if (!this.memoryFlushNudgeIssued) {
             // Grace turn: let the agent flush durable learnings to its mind
             // pages while the full context is still available. The next
@@ -4179,6 +4191,7 @@ export class AgentExecutor extends EventEmitter {
     // marker row (loop rows are the durable per-call usage record).
     let compactionModel: string | undefined
     let compactionTokens: LoopTokenUsage | undefined
+    let compactionTranscriptChars = 0
     try {
       // Serialize conversation history as a text transcript. Role tags carry
       // the loop seq when known ([USER S137]) so the summary can cite [S<seq>]
@@ -4193,13 +4206,16 @@ export class AgentExecutor extends EventEmitter {
             if (block.type === 'text' && block.text) {
               transcriptLines.push(`[${role}] ${block.text}`)
             } else if (block.type === 'tool_use') {
-              const inputStr = block.input ? JSON.stringify(block.input).slice(0, 200) : ''
+              // Every fixed-offset cut below is surrogate-safe: a preview
+              // chopped mid-emoji leaves a lone surrogate, and the codex
+              // backend rejects the whole request with an opaque 400.
+              const inputStr = block.input ? sliceWellFormed(JSON.stringify(block.input), 0, 200) : ''
               transcriptLines.push(`[${role}] [Called ${block.name}(${inputStr})]`)
             } else if (block.type === 'tool_result') {
-              const preview = (block.content ?? '').slice(0, 300)
+              const preview = sliceWellFormed(block.content ?? '', 0, 300)
               transcriptLines.push(`[${role}] [Result: ${preview}]`)
             } else if (block.type === 'thinking' && block.thinking) {
-              transcriptLines.push(`[${role}] [Thinking: ${block.thinking.slice(0, 200)}...]`)
+              transcriptLines.push(`[${role}] [Thinking: ${sliceWellFormed(block.thinking, 0, 200)}...]`)
             }
           }
         }
@@ -4208,8 +4224,12 @@ export class AgentExecutor extends EventEmitter {
       // Trim to reasonable size if very large (~100k chars ≈ 25k tokens)
       let transcript = transcriptLines.join('\n')
       if (transcript.length > 100000) {
-        transcript = transcript.slice(transcript.length - 100000)
+        transcript = sliceWellFormed(transcript, transcript.length - 100000)
       }
+      // Tool output can itself carry lone surrogates (a tool truncated its own
+      // result mid-character); repair them so the summarizer request is valid.
+      transcript = toWellFormed(transcript)
+      compactionTranscriptChars = transcript.length
 
       const entryCount = workspace.getLoopCount()
       const { response: compactionResponse, metadata: compactionMetadata } = await this.createMessageWithLlmCall('compaction', {
@@ -4265,22 +4285,49 @@ export class AgentExecutor extends EventEmitter {
       // next threshold check.
       const detail = (error instanceof Error ? error.message : String(error)).slice(0, 300)
       console.error(`[AgentExecutor] Compaction aborted (${reason}):`, error)
+      // The log row is what the agent (and the owner) reads to act on the
+      // failure, so it carries the request shape, not just the provider's
+      // one-line rejection: which model/provider summarized, how big the
+      // transcript was, the HTTP status, and whether a retry can succeed.
+      const err = (error ?? {}) as { statusCode?: unknown; status?: unknown; responseBody?: unknown; isRetryable?: unknown }
+      const statusCode = typeof err.statusCode === 'number' ? err.statusCode
+        : typeof err.status === 'number' ? err.status : undefined
+      const responseBody = typeof err.responseBody === 'string' ? err.responseBody.slice(0, 500) : undefined
       try {
-        workspace.insertLog('error', 'runtime', 'compaction_failed', compactionModel ?? null, detail, { trigger: reason })
+        workspace.insertLog('error', 'runtime', 'compaction_failed', compactionModel ?? this.provider?.modelId ?? null, detail, {
+          trigger: reason,
+          model: compactionModel ?? this.provider?.modelId,
+          provider: this.provider?.providerId ?? this.provider?.name,
+          status_code: statusCode,
+          response_body: responseBody,
+          retryable: typeof err.isRetryable === 'boolean' ? err.isRetryable : undefined,
+          source_messages: sourceMessages.length,
+          preserved_messages: preservedMessages.length,
+          transcript_chars: compactionTranscriptChars,
+          max_tokens: COMPACTION_TEXT_BUDGET + COMPACTION_REASONING_HEADROOM,
+        })
       } catch { /* non-fatal */ }
-      this.session.addMessage({
-        role: 'user',
-        content: [{ type: 'text', text: `[System] Compaction failed: ${detail}. Your history is preserved; compaction will be retried.` }]
-      })
-      this.session.flushToLoop()
-      this.emitEvent({
-        type: 'context_injected',
-        payload: { category: 'System', content: `Compaction failed — history preserved, will retry. (${detail})` },
-        timestamp: Date.now()
-      })
+      this.compactionFailedThisTurn = true
+      // One note per distinct failure, written with the [Context: …] prefix
+      // so the loop renders it as an injected-context block (the model still
+      // receives it as a user-role message).
+      if (this.lastCompactionFailureDetail !== detail) {
+        this.lastCompactionFailureDetail = detail
+        this.session.addMessage({
+          role: 'user',
+          content: [{ type: 'text', text: `[Context: System] Compaction failed: ${detail}. Your history is preserved; compaction will be retried.` }]
+        })
+        this.session.flushToLoop()
+        this.emitEvent({
+          type: 'context_injected',
+          payload: { category: 'System', content: `Compaction failed — history preserved, will retry. (${detail})` },
+          timestamp: Date.now()
+        })
+      }
       this.emitRuntimeEvent('loop.compaction_failed', { reason: detail, trigger: reason })
       return tokenCounter.estimateMessagesTokens(this.session.getMessages())
     }
+    this.lastCompactionFailureDetail = undefined
 
     const summaryWithFooter = summaryText + COMPACTION_FOOTER
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { patchCodexRequestBody } from '../../../src/main/providers/chatgpt-subscription'
+import { describeCodexRequest, patchCodexRequestBody } from '../../../src/main/providers/chatgpt-subscription'
 
 const SYSTEM = 'You are an ADF agent — a learning system that gets better over time.'
 
@@ -98,5 +98,35 @@ describe('patchCodexRequestBody', () => {
     patchCodexRequestBody(body, SYSTEM, { reasoning: { effort: 'low' }, stream: null })
     expect(body.reasoning).toEqual({ effort: 'low' })
     expect('stream' in body).toBe(false)
+  })
+
+  it('repairs lone UTF-16 surrogates anywhere in the body (codex 400s on them)', () => {
+    const half = '🚀'.slice(0, 1)
+    const body = sdkBody({ input: [
+      { role: 'user', content: [{ type: 'input_text', text: 'transcript cut mid-emoji ' + half }] },
+    ] })
+    const { repairedStrings } = patchCodexRequestBody(body, 'sys ' + half)
+    expect(repairedStrings).toBe(2)
+    expect(body.instructions).toBe('sys �')
+    const text = (body.input as Array<{ content: Array<{ text: string }> }>)[0].content[0].text
+    expect(text.endsWith('�')).toBe(true)
+    // JSON.stringify would otherwise emit a bare \ud83d escape
+    expect(JSON.stringify(body)).not.toMatch(/\\ud83d(?!\\ud)/i)
+  })
+
+  it('leaves well-formed bodies untouched', () => {
+    const body = sdkBody({ input: [{ role: 'user', content: [{ type: 'input_text', text: 'hi 🚀' }] }] })
+    expect(patchCodexRequestBody(body, SYSTEM).repairedStrings).toBe(0)
+  })
+
+  it('describeCodexRequest summarizes the request shape', () => {
+    const body = sdkBody()
+    patchCodexRequestBody(body, SYSTEM)
+    const summary = describeCodexRequest(body, 1234)
+    expect(summary).toContain('model=gpt-5.4')
+    expect(summary).toContain('input_items=1')
+    expect(summary).toContain(`instructions_chars=${SYSTEM.length}`)
+    expect(summary).toContain('tools=0')
+    expect(summary).toContain('body_chars=1234')
   })
 })

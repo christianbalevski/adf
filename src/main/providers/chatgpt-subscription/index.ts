@@ -1,4 +1,5 @@
 import { createOpenAI } from '@ai-sdk/openai'
+import { repairStringsDeep } from '../../../shared/utils/well-formed'
 
 // ChatGPT subscription users hit this backend, NOT api.openai.com
 const BASE_URL = 'https://chatgpt.com/backend-api/codex'
@@ -61,7 +62,7 @@ export function patchCodexRequestBody(
   body: Record<string, unknown>,
   pendingInstructions: string | undefined,
   extraParams?: Record<string, unknown>
-): void {
+): { repairedStrings: number } {
   // ChatGPT subscription backend requires both of these
   body.store = false
   body.stream = true
@@ -128,6 +129,25 @@ export function patchCodexRequestBody(
   if (!body.instructions) {
     body.instructions = 'You are a helpful assistant.'
   }
+
+  // The backend's JSON parser rejects lone UTF-16 surrogates (an emoji cut in
+  // half by a fixed-offset truncation, serialized as a bare `\ud83d` escape)
+  // with an opaque 400 {"detail":"Bad Request"}. Repair every string in the
+  // body — instructions, input text, tool results — before it goes out.
+  const repairedStrings = repairStringsDeep(body)
+  return { repairedStrings }
+}
+
+/**
+ * One-line shape summary of an outgoing request, appended to opaque 400s so
+ * the error that lands in adf_logs says what was sent, not just "Bad Request".
+ */
+export function describeCodexRequest(body: Record<string, unknown>, bodyChars: number): string {
+  const input = Array.isArray(body.input) ? body.input : []
+  const instructions = typeof body.instructions === 'string' ? body.instructions.length : 0
+  const tools = Array.isArray(body.tools) ? body.tools.length : 0
+  const keys = Object.keys(body).filter(k => body[k] !== undefined).join(',')
+  return `model=${String(body.model)} input_items=${input.length} instructions_chars=${instructions} tools=${tools} body_chars=${bodyChars} keys=[${keys}]`
 }
 
 export function createChatGPTSubscriptionProvider(authManager: {
@@ -166,11 +186,17 @@ export function createChatGPTSubscriptionProvider(authManager: {
     // Patch the request body (see patchCodexRequestBody for the rules,
     // including system-prompt dedupe between `instructions` and `input`).
     let patchedInit = init
+    let requestSummary: string | undefined
     if (init?.body && typeof init.body === 'string') {
       try {
         const body = JSON.parse(init.body)
-        patchCodexRequestBody(body, pendingInstructions, extraParams)
-        patchedInit = { ...init, body: JSON.stringify(body) }
+        const { repairedStrings } = patchCodexRequestBody(body, pendingInstructions, extraParams)
+        if (repairedStrings > 0) {
+          console.warn(`[ChatGPT Subscription] Repaired ${repairedStrings} string(s) with lone UTF-16 surrogates before send (would have been a 400 Bad Request)`)
+        }
+        const serialized = JSON.stringify(body)
+        requestSummary = describeCodexRequest(body, serialized.length)
+        patchedInit = { ...init, body: serialized }
       } catch { /* not JSON, pass through */ }
     }
 
@@ -205,7 +231,19 @@ export function createChatGPTSubscriptionProvider(authManager: {
       const clone = response.clone()
       try {
         const errBody = await clone.text()
-        console.error(`[ChatGPT Subscription] ${response.status}: ${errBody.slice(0, 500)}`)
+        console.error(`[ChatGPT Subscription] ${response.status}: ${errBody.slice(0, 500)}${requestSummary ? ` (request: ${requestSummary})` : ''}`)
+        // The codex backend's 400 is a bare {"detail":"Bad Request"} — no
+        // field, no reason. Fold the request shape into the body so the
+        // message the executor logs and shows the agent is actionable.
+        if (response.status === 400 && requestSummary) {
+          const headers = new Headers(response.headers)
+          headers.delete('content-length')
+          return new Response(`${errBody.trim()} (request: ${requestSummary})`, {
+            status: response.status,
+            statusText: response.statusText,
+            headers
+          })
+        }
       } catch { /* ignore */ }
     }
 
