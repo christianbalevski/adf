@@ -100,6 +100,7 @@ export const UMBILICAL_EVENT_TYPES = [
   'context.injected',
   'loop.compacted',
   'loop.compaction_failed',
+  'loop.compaction_superseded',
   'loop.cleared',
   'loop.recovered',
   'message.queued',

@@ -396,6 +396,7 @@ in an agent's history.
 |---|---|
 | `loop.compacted` | `{ reason, new_token_count }` |
 | `loop.compaction_failed` | `{ reason, trigger }` |
+| `loop.compaction_superseded` | `{ reason, detail, new_token_count }` |
 | `loop.cleared` | `{ method: 'clear' \| 'replace' }` |
 | `loop.recovered` | `{ reason: 'stale_checkpoint' \| 'malformed_checkpoint' }`, or `{ reason: 'orphaned_tasks', running, awaiting_approval }` |
 
@@ -408,6 +409,12 @@ text. The loop is NOT compacted — history is preserved, an error note is
 appended to the loop, an `adf_logs` row (`event: compaction_failed`) records the
 detail, and compaction retries at the next threshold check. `reason` is the
 failure detail, `trigger` the compaction trigger (auto / preflight / voluntary).
+
+`loop.compaction_superseded` fires when a compaction finished summarizing but
+another turn had already compacted (or cleared) the same loop underneath it.
+The late summary is discarded rather than applied twice; the session reloads
+from the loop as it now stands and `new_token_count` reports the result.
+`reason` is the compaction trigger, `detail` says what changed underneath.
 
 `loop.cleared` distinguishes a wipe (`clear`) from an atomic rewrite
 (`replace`, e.g. stripping provider-incompatible blocks from history).
