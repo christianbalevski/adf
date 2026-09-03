@@ -63,6 +63,8 @@ mac:
       role: Editor
       icon: resources/icons/mac/icon.icns
 win:
+  # Signing is NOT configured here on purpose — see electron-builder.win-sign.yml,
+  # the CI-only overlay the Windows release job passes via --config.
   target:
     - target: nsis
       arch: [x64]

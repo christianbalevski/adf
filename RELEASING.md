@@ -111,8 +111,41 @@ spctl -a -vv -t install "dist/mac-arm64/ADF Studio.app"    # "accepted" once not
 Notarization adds a few minutes per dmg (CI builds two), so the mac job is
 the slow one.
 
-**Windows** builds are still unsigned — SmartScreen shows "Windows protected
-your PC" until a Windows signing cert is wired in the same way.
+**Windows** builds are signed with [Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/)
+(formerly Trusted Signing): a Microsoft-managed, short-lived certificate
+issued against a validated identity, so SmartScreen trusts it without a
+reputation ramp and Defender false positives attach to the publisher rather
+than one file hash. Config is the CI-only overlay
+`electron-builder.win-sign.yml` (`extends` the base config and adds
+`win.azureSignOptions` + `forceCodeSigning`); the Windows job passes it via
+`--config`. It is deliberately not in `electron-builder.yml` because
+electron-builder fails hard without the Azure env once `azureSignOptions`
+exists, which would break local `npm run package`. Local Windows builds are
+therefore unsigned; only tagged releases are signed.
+
+Azure resources (resource group `rg-appsigning`): account `adfstudio-signing`
+(East US, `https://eus.codesigning.azure.net`), certificate profile
+`adfstudio-signing`, subject `CN=Christian Balevski`. CI authenticates as
+the Entra app `adfstudio-release-signer`, which holds the *Artifact Signing
+Certificate Profile Signer* role on the account. Secrets:
+
+| Secret | What it is |
+|---|---|
+| `AZURE_TENANT_ID` | Entra directory (tenant) ID |
+| `AZURE_CLIENT_ID` | the app registration's Application (client) ID |
+| `AZURE_CLIENT_SECRET` | a client secret on that app — rotate before it expires (Entra → App registrations → Certificates & secrets) |
+
+The workflow then runs `Get-AuthenticodeSignature` over `dist/*.exe` and
+fails unless every installer is `Valid` and signed by our CN. To verify a
+downloaded installer by hand:
+
+```powershell
+Get-AuthenticodeSignature '.\ADF Studio Setup 0.6.1.exe' | Format-List Status, SignerCertificate
+```
+
+If a Defender behavioural false positive recurs on a signed build, submit
+the installer at <https://www.microsoft.com/wdsi/filesubmission> as a
+software developer; the verdict then clears for the certificate.
 
 ## In-app updates
 

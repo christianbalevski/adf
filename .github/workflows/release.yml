@@ -72,18 +72,45 @@ jobs:
       # universal dmgs described above. releaseType: draft means all runners
       # upload into the same *draft* GitHub Release for the tag — nothing is
       # public until the publish job flips it.
+      # Windows layers electron-builder.win-sign.yml on top of the base config
+      # so the installer is signed via Azure Artifact Signing (see RELEASING.md).
       - name: Build and publish installers
-        run: npm run release ${{ runner.os == 'macOS' && '-- --arm64 --universal' || '' }}
+        run: >-
+          npm run release
+          ${{ runner.os == 'macOS' && '-- --arm64 --universal'
+           || runner.os == 'Windows' && '-- --config electron-builder.win-sign.yml'
+           || '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing + notarization (ignored by the Windows/Linux runners).
-          # CSC_LINK is the base64 Developer ID Application .p12; the APPLE_*
-          # trio feeds electron-builder's notarize step. See RELEASING.md.
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # macOS signing + notarization, scoped to the mac runner: CSC_LINK is
+          # the Developer ID Application .p12 and electron-builder would try to
+          # use it as a Windows cert if it leaked into that job.
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+          # Windows signing: service principal for Azure Artifact Signing,
+          # consumed by electron-builder's azureSignOptions (EnvironmentCredential).
+          AZURE_TENANT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_SECRET || '' }}
+
+      # Belt and braces: forceCodeSigning already fails an unsigned build, but
+      # verify the shipped installer carries a valid Authenticode signature from
+      # our certificate before the publish job can flip the release live.
+      - name: Verify Windows installer signature
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exes = Get-ChildItem dist -Filter '*.exe' -File
+          if (-not $exes) { throw 'No installer found in dist/' }
+          foreach ($exe in $exes) {
+            $sig = Get-AuthenticodeSignature $exe.FullName
+            "$($exe.Name): $($sig.Status) - $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') { throw "Unsigned or invalid signature: $($exe.Name) ($($sig.Status))" }
+            if ($sig.SignerCertificate.Subject -notmatch 'CN=Christian Balevski') { throw "Unexpected signer: $($sig.SignerCertificate.Subject)" }
+          }
 
   publish:
     # Publishes as soon as the CRITICAL platforms (build matrix: universal

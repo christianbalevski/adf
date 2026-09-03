@@ -1,0 +1,29 @@
+# Windows code signing via Azure Artifact Signing (formerly Trusted Signing).
+#
+# CI-only overlay: the Windows release job runs
+#   electron-builder --config electron-builder.win-sign.yml
+# which layers this onto electron-builder.yml. It is NOT the default config
+# because electron-builder initialises the Azure signer unconditionally once
+# `azureSignOptions` is present and fails hard without the AZURE_* env — that
+# would break every local `npm run package` on Windows. Local builds stay
+# unsigned; only tagged releases are signed.
+#
+# Auth is a service principal (Entra app "adfstudio-release-signer") with the
+# "Artifact Signing Certificate Profile Signer" role on the account, supplied
+# to electron-builder as AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
+# (GitHub Actions secrets — see RELEASING.md). electron-builder installs the
+# TrustedSigning PowerShell module on the runner and signs the app exe, the
+# NSIS installer and its uninstaller with a short-lived Microsoft-issued cert.
+extends: ./electron-builder.yml
+win:
+  # A release must never ship unsigned by accident: fail the build instead.
+  forceCodeSigning: true
+  azureSignOptions:
+    # Subject CN of the certificate profile, verbatim.
+    publisherName: Christian Balevski
+    endpoint: https://eus.codesigning.azure.net
+    codeSigningAccountName: adfstudio-signing
+    certificateProfileName: adfstudio-signing
+    timestampRfc3161: http://timestamp.acs.microsoft.com
+    timestampDigest: SHA256
+    fileDigest: SHA256
