@@ -201,6 +201,12 @@ This is an early public release. The format and APIs may change. The
 runtime, daemon, CLI, and Studio are all in active development under one
 roof; expect ongoing structural changes as the codebase matures.
 
+### Planned
+
+- **Container egress controls** — per-container network policy (`open` / `guarded` /
+  `allowlist` / `airgap`) so an owner can constrain what compute containers can reach.
+  Design + investigation in [container egress controls](docs/design/container-egress-controls.md).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). All contributions require DCO
