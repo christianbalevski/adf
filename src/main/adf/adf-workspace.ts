@@ -95,6 +95,20 @@ function releaseCompressSlot(): void {
 type LoopArchive = { json: string; data: Buffer } | null
 
 /**
+ * Thrown by compactLoop when the rows the caller summarized are already gone
+ * from the loop — another compaction (or a clear) archived them while the
+ * caller's summarizer call was in flight. The caller's summary is stale and
+ * must NOT be committed: doing so would archive the other compaction's result
+ * plus every row written after it, behind a briefing that never saw them.
+ */
+export class LoopCompactionSupersededError extends Error {
+  constructor(seq: number) {
+    super(`compactLoop: source seq ${seq} no longer exists — another compaction or clear landed first`)
+    this.name = 'LoopCompactionSupersededError'
+  }
+}
+
+/**
  * Thrown (and caught) inside runLoopMutation's transaction when the loop table
  * changed while the archive was being compressed. A symbol, not an Error, so it
  * can never be confused with a genuine failure from the commit body.
@@ -1340,11 +1354,22 @@ export class AdfWorkspace {
    * external clear raced this call) — the caller must fall back to a path
    * that can re-create the tail from memory, otherwise those rows would be
    * silently dropped.
+   *
+   * `opts.requireSeq` is the newest row the caller's summary was built from.
+   * When it is no longer in the loop, another compaction (or a clear) already
+   * archived the range this summary describes; the call throws
+   * LoopCompactionSupersededError and touches nothing. The check runs inside
+   * the exclusive chain and the mutation's revision-guarded read, so there is
+   * no window between "verified present" and "archived" for a concurrent
+   * compaction to slip into. Without it two forceCompact calls racing on one
+   * loop let the loser archive the winner's summary plus every row written
+   * after it (aom 2026-09-03: audit 841 = summary + 7 rows of fresh work).
    * One transaction; same backup/audit policy and umbilical event as clearLoop.
    */
   async compactLoop(
     preservedSeqs: number[],
-    summary: { content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt?: number }
+    summary: { content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt?: number },
+    opts?: { requireSeq?: number }
   ): Promise<void> {
     await this.runExclusiveLoopOp(async () => {
       // A3: skip the whole-file backup for a SIDE-loop compaction. A compaction
@@ -1363,6 +1388,10 @@ export class AdfWorkspace {
         await this.runLoopMutation<LoopEntryRow[], void>(
           () => {
             const entries = this.db.getLoopEntries(this.boundLoop)
+            const requireSeq = opts?.requireSeq
+            if (requireSeq !== undefined && !entries.some(e => e.seq === requireSeq)) {
+              throw new LoopCompactionSupersededError(requireSeq)
+            }
             const rows = entries.filter(e => preserved.has(e.seq))
             if (rows.length !== preserved.size) {
               throw new Error(
@@ -1386,7 +1415,13 @@ export class AdfWorkspace {
         // prior (crashed) op in this file's exclusive chain left for recovery.
         if (!skipBackup) await AdfDatabase.removeBackup(this.filePath)
       } catch (error) {
-        console.error(`[AdfWorkspace] compactLoop failed. Backup preserved at: ${this.filePath}.bak`)
+        // A superseded compaction is a clean refusal, not a failure — nothing
+        // was touched and there is no backup to point at.
+        if (error instanceof LoopCompactionSupersededError) {
+          if (!skipBackup) await AdfDatabase.removeBackup(this.filePath)
+        } else {
+          console.error(`[AdfWorkspace] compactLoop failed. Backup preserved at: ${this.filePath}.bak`)
+        }
         throw error
       }
     })
@@ -1395,6 +1430,11 @@ export class AdfWorkspace {
 
   getLoopCount(): number {
     return this.db.getLoopCount(this.boundLoop)
+  }
+
+  /** True when the row with this seq is still in the loop. */
+  hasLoopSeq(seq: number): boolean {
+    return this.db.hasLoopSeq(this.boundLoop, seq)
   }
 
   getLastAssistantTokens(): LoopTokenUsage | undefined {

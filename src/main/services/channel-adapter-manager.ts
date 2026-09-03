@@ -59,7 +59,17 @@ interface ManagedAdapter {
 
 export interface ChannelAdapterManagerEvents {
   /** Emitted when an inbound message is received from a platform */
-  'inbound': (type: string, msg: InboundMessage, meta: { inboxId: string; parentId?: string }) => void
+  'inbound': (type: string, msg: InboundMessage, meta: {
+    inboxId: string
+    parentId?: string
+    /**
+     * `false` on every message of a catch-up drain except the last: the agent's
+     * own on_inbox wake fires once for the whole backlog (the trigger text is an
+     * unread summary anyway, and N wakes in one tick means N interleaved turns).
+     * System-scope lambdas still see every message. Absent ⇒ wake as usual.
+     */
+    agentWake?: boolean
+  }) => void
   /** Emitted when adapter status changes */
   'status-changed': (type: string, status: AdapterStatus, error?: string) => void
   /** Emitted on adapter log entries */
@@ -687,9 +697,14 @@ export class ChannelAdapterManager extends EventEmitter {
         state.depth--
         if (state.depth > 0) return { ingested: state.ingested, deduped: state.deduped }
         this.catchUps.delete(type)
-        for (const args of state.buffered) {
-          this.emitInbound(...args)
-        }
+        // One agent wake per drain, carried by the LAST message. Emitting a
+        // wake per buffered message put N agent-scope dispatches into one
+        // tick; the executor ran them interleaved and compacted twice
+        // (aom 2026-09-03). System-scope targets still fire per message.
+        const last = state.buffered.length - 1
+        state.buffered.forEach(([adapterType, msg, meta], i) => {
+          this.emitInbound(adapterType, msg, i === last ? meta : { ...meta, agentWake: false })
+        })
         if (state.ingested > 0 || state.deduped > 0) {
           const managed = this.adapters.get(type)
           if (managed) {

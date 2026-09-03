@@ -1604,6 +1604,62 @@ describe('TriggerEvaluator', () => {
   })
 
   // ===========================================================================
+  // skipAgentScope — onInbox (catch-up drain: one agent wake per backlog)
+  // ===========================================================================
+
+  describe('skipAgentScope — onInbox', () => {
+    function inboxEvaluator() {
+      const config = makeConfig({
+        on_inbox: makeTriggerConfig([
+          makeTarget('system'),
+          makeTarget('agent')
+        ])
+      })
+      const evaluator = new TriggerEvaluator(config)
+      evaluator.setDisplayState('active')
+      evaluator.setWorkspace({
+        getInboxMessageById: vi.fn().mockReturnValue(null),
+        getUnreadCount: vi.fn(() => 2),
+      } as any)
+      return evaluator
+    }
+
+    it('skips agent-scope targets but still fires system-scope ones when skipAgentScope is true', () => {
+      const evaluator = inboxEvaluator()
+      const events = collectEvents(evaluator)
+
+      evaluator.onInbox('telegram:1', 'missed-1', { source: 'telegram', skipAgentScope: true })
+
+      expect(events.length).toBe(1)
+      expect((events[0] as AdfEventDispatch).scope).toBe('system')
+    })
+
+    it('fires both scopes when skipAgentScope is absent', () => {
+      const evaluator = inboxEvaluator()
+      const events = collectEvents(evaluator)
+
+      evaluator.onInbox('telegram:1', 'missed-2', { source: 'telegram' })
+
+      expect(events.length).toBe(2)
+      expect((events[0] as AdfEventDispatch).scope).toBe('system')
+      expect((events[1] as AdfEventDispatch).scope).toBe('agent')
+    })
+
+    it('a drain of N messages yields N system dispatches and exactly one agent wake', () => {
+      const evaluator = inboxEvaluator()
+      const events = collectEvents(evaluator)
+
+      evaluator.onInbox('telegram:1', 'a', { source: 'telegram', skipAgentScope: true })
+      evaluator.onInbox('telegram:1', 'b', { source: 'telegram', skipAgentScope: true })
+      evaluator.onInbox('telegram:1', 'c', { source: 'telegram' })
+
+      const scopes = events.map(e => (e as AdfEventDispatch).scope)
+      expect(scopes.filter(s => s === 'system').length).toBe(3)
+      expect(scopes.filter(s => s === 'agent').length).toBe(1)
+    })
+  })
+
+  // ===========================================================================
   // skipSystemScope propagation — onToolCall
   // ===========================================================================
 

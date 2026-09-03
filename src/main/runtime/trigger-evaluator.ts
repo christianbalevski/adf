@@ -434,7 +434,8 @@ export class TriggerEvaluator extends EventEmitter {
     triggerType: TriggerTypeV3,
     event: AdfEvent<T>,
     filterData: Record<string, unknown> = {},
-    skipSystemScope?: boolean
+    skipSystemScope?: boolean,
+    skipAgentScope?: boolean
   ): void {
     const cfg = this.getTriggerConfig(triggerType)
     if (!cfg?.enabled) return
@@ -445,6 +446,7 @@ export class TriggerEvaluator extends EventEmitter {
       const isInbox = triggerType === 'on_inbox'
       const isFileChange = triggerType === 'on_file_change'
       if (skipSystemScope && target.scope === 'system') continue
+      if (skipAgentScope && target.scope === 'agent') continue
       if (!this.shouldFire(target.scope, triggerType)) continue
       if (!this.matchesFilter(triggerType, target, filterData)) continue
 
@@ -645,6 +647,9 @@ export class TriggerEvaluator extends EventEmitter {
      *  a system-scope lambda may already have processed the row before a
      *  restart without marking it read, so system targets must not re-fire. */
     skipSystemScope?: boolean
+    /** Catch-up drain: this message is not the backlog's last, so the agent's
+     *  own wake is carried by a later one. System-scope targets still fire. */
+    skipAgentScope?: boolean
   }): void {
     // Look up full InboxMessage row when messageId available
     const inboxRow = opts?.messageId ? this.workspace?.getInboxMessageById(opts.messageId) : null
@@ -670,7 +675,7 @@ export class TriggerEvaluator extends EventEmitter {
         },
       },
     })
-    this.evaluateTargets('on_inbox', event, { sender, source }, opts?.skipSystemScope)
+    this.evaluateTargets('on_inbox', event, { sender, source }, opts?.skipSystemScope, opts?.skipAgentScope)
   }
 
   onOutbox(recipient: string, message: string): void {

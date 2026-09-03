@@ -29,6 +29,7 @@ import { dedupeToolDeclarations } from '../../shared/utils/tool-declarations'
 // Config derivation + the host-loop name + main's loops prompt section; the
 // module imports only shared types, so no runtime cycle.
 import { MAIN_LOOP, buildMainLoopsSection } from '../adf/derive-loop-config'
+import { LoopCompactionSupersededError } from '../adf/adf-workspace'
 // Global pending-approval registry (title-bar approvals menu). Registration is
 // unconditional: hosts with no UI never subscribe, so it costs one map write.
 import { approvalHub, notificationKey, summarizeApprovalArgs, summarizeQuestion } from './approval-hub'
@@ -369,6 +370,10 @@ interface TurnOptions {
   /** System notice injected into history before the turn runs, telling the
    *  model what failed and how much time has elapsed (provider recovery). */
   recoveryNotice?: string
+  /** Called from INSIDE an active turn (the inline error-recovery retries).
+   *  The caller's own slot is still claimed, so the concurrent-turn guard
+   *  must not queue this turn behind the very turn that is awaiting it. */
+  nested?: boolean
 }
 
 export class AgentExecutor extends EventEmitter {
@@ -1518,7 +1523,19 @@ export class AgentExecutor extends EventEmitter {
       if (eventType !== 'chat') return
     }
 
-    if (this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended') {
+    // Another turn is in flight when EITHER the state machine says so OR a
+    // second slot is claimed. The state alone is not enough: it reads 'idle'
+    // during a turn's pre-thinking awaits (provider validateConfig right after
+    // startup, the top-of-loop auto-compact), so two dispatches landing in the
+    // same tick — a Telegram catch-up, the startup unread sweep — both walked
+    // past a state-only check and ran interleaved on one shared session. Both
+    // then crossed the compaction threshold together and compacted twice, the
+    // second wiping the first's summary and every row written after it
+    // (aom 2026-09-03). activeTurnCount is claimed synchronously in
+    // executeTurn, so it is already 2 here for the second arrival. Nested
+    // recovery retries run inside their caller's slot and are exempt.
+    const anotherTurnActive = !opts?.nested && this.activeTurnCount > 1
+    if (anotherTurnActive || this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended') {
       // User messages: abort current turn and restart with user's message
       if (eventType === 'chat') {
         this.pendingInterrupt = dispatch
@@ -2843,7 +2860,7 @@ export class AgentExecutor extends EventEmitter {
           // while state === 'error', which silently no-ops the retry for
           // background triggers (inbox/cron/file_change) and bricks the agent.
           this.setState('idle')
-          await this.executeTurn(dispatch, { skipTriggerMessage: true })
+          await this.executeTurn(dispatch, { skipTriggerMessage: true, nested: true })
           return
         } catch (retryError) {
           // If retry also fails, show both errors
@@ -2887,7 +2904,7 @@ export class AgentExecutor extends EventEmitter {
           })
 
           // History already contains the original trigger message — don't re-add it.
-          await this.executeTurn(dispatch, { skipTriggerMessage: true })
+          await this.executeTurn(dispatch, { skipTriggerMessage: true, nested: true })
           return
         } finally {
           this._inImageRecovery = false
@@ -4344,17 +4361,39 @@ export class AgentExecutor extends EventEmitter {
     const preservedSeqs = preservedMessages.map(pm => pm.seq)
     const allSeqsKnown = preservedSeqs.every((s): s is number => typeof s === 'number')
 
+    // The newest row this summary was built from. If it is gone by the time
+    // the exclusive loop op runs, another compaction (or a clear) landed while
+    // the summarizer call was in flight — this summary describes rows that are
+    // already archived, and committing it would archive the winner's summary
+    // plus every row written since. compactLoop checks inside its guarded
+    // read and throws LoopCompactionSupersededError; the legacy path below
+    // has no such hook, so it gets a best-effort pre-check.
+    let sourceMaxSeq: number | undefined
+    for (const m of sourceMessages) {
+      if (typeof m.seq === 'number' && (sourceMaxSeq === undefined || m.seq > sourceMaxSeq)) sourceMaxSeq = m.seq
+    }
+
     let compacted = false
     if (allSeqsKnown) {
       try {
-        await workspace.compactLoop(preservedSeqs, { content: summaryContent, model: compactionModel, tokens: compactionTokens })
+        await workspace.compactLoop(
+          preservedSeqs,
+          { content: summaryContent, model: compactionModel, tokens: compactionTokens },
+          { requireSeq: sourceMaxSeq }
+        )
         compacted = true
       } catch (error) {
+        if (error instanceof LoopCompactionSupersededError) {
+          return this.finishSupersededCompaction(reason, error.message)
+        }
         // Stale seqs (e.g. an external clear raced this compaction): the
         // preserved rows no longer exist in the DB, so fall back to the
         // legacy path which re-creates them from the in-memory session.
         console.warn('[AgentExecutor] compactLoop rejected preserved seqs, using legacy fallback:', error)
       }
+    }
+    if (!compacted && sourceMaxSeq !== undefined && !workspace.hasLoopSeq(sourceMaxSeq)) {
+      return this.finishSupersededCompaction(reason, `source seq ${sourceMaxSeq} no longer exists (legacy path)`)
     }
     if (!compacted) {
       // Re-append summary + preserved messages in the same tick as the clear
@@ -4380,10 +4419,23 @@ export class AgentExecutor extends EventEmitter {
       } })
     }
 
-    // Reset session and reload from DB. Undelivered context injections (a
-    // wake:true loop_send that arrived mid-turn) exist only in memory — they
-    // are in neither the preserved messages nor the rebuilt stream — so carry
-    // them across the reset or the delivery is silently destroyed (review C2).
+    const newChatTokens = this.reloadSessionFromLoop()
+    console.log(`[AgentExecutor] Compaction complete (${reason}), new token count: ${newChatTokens}`)
+    this.emitRuntimeEvent('loop.compacted', { reason, new_token_count: newChatTokens })
+    return newChatTokens
+  }
+
+  /**
+   * Reset the in-memory session and reload it from the loop table after a
+   * loop-shaped change (compaction commit, or discovering that another
+   * compaction already committed). Undelivered context injections (a
+   * wake:true loop_send that arrived mid-turn) exist only in memory — they are
+   * in neither the preserved messages nor the rebuilt stream — so carry them
+   * across the reset or the delivery is silently destroyed (review C2).
+   * Returns the char-estimated token count of the reloaded session.
+   */
+  private reloadSessionFromLoop(): number {
+    const workspace = this.session.getWorkspace()
     const undelivered = this.session.peekPendingContextInjections().slice()
     this.session.reset()
     const loopEntries = workspace.getLoop()
@@ -4398,11 +4450,25 @@ export class AgentExecutor extends EventEmitter {
       timestamp: Date.now()
     })
 
-    const newChatTokens = tokenCounter.estimateMessagesTokens(this.session.getMessages())
     // Reset context dedup so context blocks are re-injected after loop wipe
     this.resetContextState()
-    console.log(`[AgentExecutor] Compaction complete (${reason}), new token count: ${newChatTokens}`)
-    this.emitRuntimeEvent('loop.compacted', { reason, new_token_count: newChatTokens })
+    return getTokenCounterService().estimateMessagesTokens(this.session.getMessages())
+  }
+
+  /**
+   * Another compaction (or a clear) archived the rows this summary was built
+   * from while the summarizer call was in flight. Discard the summary — the
+   * loop already holds the winner's — and resync the session to the table so
+   * this turn continues from the same context the winner left behind, instead
+   * of from a stale in-memory copy of the pre-compaction history.
+   */
+  private finishSupersededCompaction(reason: string, detail: string): number {
+    console.warn(`[AgentExecutor] Compaction superseded (${reason}): ${detail}`)
+    try {
+      this.session.getWorkspace().insertLog('warn', 'runtime', 'compaction_superseded', null, detail, { trigger: reason })
+    } catch { /* non-fatal */ }
+    const newChatTokens = this.reloadSessionFromLoop()
+    this.emitRuntimeEvent('loop.compaction_superseded', { reason, detail, new_token_count: newChatTokens })
     return newChatTokens
   }
 

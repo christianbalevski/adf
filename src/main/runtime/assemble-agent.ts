@@ -821,11 +821,14 @@ export function assembleAgent<P extends AgentProfileName>(
 
   const onAdapterInbound = (adapterType: string, message: unknown, meta: unknown): void => {
     const adapterMessage = message as { sender?: string; payload?: unknown; sourceMeta?: unknown }
+    const inboundMeta = meta as { inboxId?: string; parentId?: string; agentWake?: boolean }
     triggerEvaluator.onInbox(`${adapterType}:${adapterMessage.sender ?? ''}`, adapterMessage.payload, {
       source: adapterType,
-      messageId: (meta as { inboxId?: string }).inboxId,
-      parentId: (meta as { parentId?: string }).parentId,
+      messageId: inboundMeta.inboxId,
+      parentId: inboundMeta.parentId,
       sourceMeta: adapterMessage.sourceMeta,
+      // Catch-up drain: only the last message of the backlog wakes the agent.
+      skipAgentScope: inboundMeta.agentWake === false,
     })
     for (const bindings of hostBindings()) bindings.onAdapterInbound?.(adapterType, message, meta)
   }

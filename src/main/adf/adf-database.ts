@@ -506,6 +506,7 @@ export class AdfDatabase {
     listAudits?: Database.Statement
     // Loop slice operations
     getLoopSeqs?: Database.Statement
+    hasLoopSeq?: Database.Statement
     getLoopEntriesBySeqRange?: Database.Statement
     deleteLoopBySeqRange?: Database.Statement
     // Tasks
@@ -2601,6 +2602,9 @@ export class AdfDatabase {
     this.stmts.getLoopSeqs = this.db.prepare(
       'SELECT seq, COALESCE(ord, seq) AS ord_key FROM adf_loop WHERE loop = ? ORDER BY COALESCE(ord, seq) ASC, seq ASC'
     )
+    this.stmts.hasLoopSeq = this.db.prepare(
+      'SELECT 1 FROM adf_loop WHERE loop = ? AND seq = ? LIMIT 1'
+    )
     this.stmts.getLoopEntriesBySeqRange = this.db.prepare(
       'SELECT seq, role, content_json, model, tokens, created_at, ord FROM adf_loop WHERE loop = ? AND COALESCE(ord, seq) >= ? AND COALESCE(ord, seq) <= ? ORDER BY COALESCE(ord, seq) ASC, seq ASC'
     )
@@ -3096,6 +3100,12 @@ export class AdfDatabase {
   getLoopSeqs(loop: string): Array<{ seq: number; ordKey: number }> {
     const rows = this.stmts.getLoopSeqs!.all(loop) as Array<{ seq: number; ord_key: number }>
     return rows.map(r => ({ seq: r.seq, ordKey: r.ord_key }))
+  }
+
+  /** True when the row with this seq still exists in the loop (a compaction or
+   *  clear that archived it makes this false). Indexed point lookup. */
+  hasLoopSeq(loop: string, seq: number): boolean {
+    return this.stmts.hasLoopSeq!.get(loop, seq) !== undefined
   }
 
   /** Entries whose ordering key falls in [minKey, maxKey], in display order. */

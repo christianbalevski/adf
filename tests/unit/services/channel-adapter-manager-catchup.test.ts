@@ -126,6 +126,38 @@ describe('ChannelAdapterManager catch-up phase', () => {
     expect(onInbound.mock.calls[1][1].payload).toBe('second')
   })
 
+  it('marks every drained message but the last as agentWake:false — one agent wake per backlog', async () => {
+    const workspace = makeWorkspace()
+    const { manager, ctx } = await startCaptured(workspace)
+    const onInbound = vi.fn()
+    manager.on('inbound', onInbound)
+
+    ctx.beginCatchUp!()
+    ctx.ingest(inbound({ payload: 'first' }))
+    ctx.ingest(inbound({ payload: 'second' }))
+    ctx.ingest(inbound({ payload: 'third' }))
+    ctx.endCatchUp!()
+
+    expect(onInbound).toHaveBeenCalledTimes(3)
+    // System-scope lambdas still see every message (the event fires per row);
+    // only the LAST one carries the agent's own on_inbox wake.
+    expect(onInbound.mock.calls[0][2]).toMatchObject({ inboxId: 'inbox-1', agentWake: false })
+    expect(onInbound.mock.calls[1][2]).toMatchObject({ inboxId: 'inbox-2', agentWake: false })
+    expect(onInbound.mock.calls[2][2]).toMatchObject({ inboxId: 'inbox-3' })
+    expect(onInbound.mock.calls[2][2].agentWake).toBeUndefined()
+  })
+
+  it('a live (non-drain) ingest never carries agentWake:false', async () => {
+    const workspace = makeWorkspace()
+    const { manager, ctx } = await startCaptured(workspace)
+    const onInbound = vi.fn()
+    manager.on('inbound', onInbound)
+
+    ctx.ingest(inbound())
+
+    expect(onInbound.mock.calls[0][2].agentWake).toBeUndefined()
+  })
+
   it('counts dedup skips during the drain', async () => {
     const workspace = makeWorkspace(['dup:1'])
     const { ctx } = await startCaptured(workspace)
