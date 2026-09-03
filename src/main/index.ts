@@ -4,6 +4,7 @@ import { join } from 'path'
 import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace } from './ipc'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
+import { installMainLogFile } from './utils/main-log-file'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 
@@ -74,6 +75,15 @@ if (instanceId) {
   app.setPath('userData', customUserDataPath)
   console.log(`[App] Running instance ${instanceId} with userData: ${customUserDataPath}`)
 }
+
+// Mirror every main-process console line to <userData>/logs/main.log. Must
+// follow the ADF_INSTANCE userData override so each instance gets its own
+// file, and precede everything else so startup and quit reasons are captured.
+const mainLogPath = installMainLogFile(join(app.getPath('userData'), 'logs'))
+console.log(
+  `[App] ADF Studio ${app.getVersion()} starting — pid=${process.pid} packaged=${app.isPackaged} ` +
+  `electron=${process.versions.electron} log=${mainLogPath ?? '(unavailable)'}`
+)
 
 let mainWindow: BrowserWindow | null = null
 let fileToOpen: string | null = null
@@ -310,6 +320,16 @@ async function createWindow(): Promise<void> {
   // is no app-level equivalent). Any future window must register this too.
   mainWindow.on('session-end', handleSessionEnd)
 
+  // Every orderly exit starts with the window closing. Log the request so the
+  // main log can distinguish a user/OS close (this line, then cleanup) from a
+  // hard kill (log simply stops).
+  mainWindow.on('close', () => {
+    console.log('[App] Main window close requested (user, OS, or WM_CLOSE from another process)')
+  })
+  mainWindow.on('closed', () => {
+    console.log('[App] Main window closed')
+  })
+
   // Webview guests may only load the local agent-browser (noVNC) pages, with
   // no preload and no node access.
   mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
@@ -499,6 +519,7 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  console.log('[App] All windows closed')
   if (process.platform !== 'darwin') {
     app.quit()
   }
@@ -511,5 +532,6 @@ app.on('before-quit', (event) => {
   if (quittingForUpdate) return
   event.preventDefault()
   if (shutdownCleanup) return
+  console.log('[App] before-quit — starting shutdown cleanup')
   void runShutdownCleanup().finally(() => app.exit(0))
 })
