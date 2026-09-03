@@ -33,6 +33,10 @@ mac:
   target:
     - dmg
     - zip
+  # No spaces in the file name: electron-builder uploads the zip's blockmap
+  # under its raw name (unlike every other asset), GitHub turns spaces into
+  # dots, and the updater's differential download then 404s (v0.6.0).
+  artifactName: ADF-Studio-${version}-${arch}.${ext}
   # These deps ship prebuilt single-arch binaries and pick the right one at
   # runtime via process.arch (CI installs the missing Intel variants — see
   # scripts/install-mac-x64-deps.mjs). They're *intentionally* single-arch,
