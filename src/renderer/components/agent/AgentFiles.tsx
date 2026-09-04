@@ -23,6 +23,9 @@ interface LocalTable {
 }
 
 const CORE_FILES = new Set(['README.md', 'mind.md'])
+/** Files every agent is seeded with. While these are all it has, the panel
+ *  shows a getting-started hint with the docs link. */
+const SEEDED_FILES = new Set(['README.md', 'mind.md', 'soul.md'])
 
 interface FileTreeNode {
   name: string
@@ -396,6 +399,7 @@ export function AgentFiles() {
   const visibleFiles = filtering
     ? files.filter((f) => f.path.toLowerCase().includes(filterQuery))
     : files
+  const onlySeededFiles = files.length > 0 && files.every((f) => SEEDED_FILES.has(f.path))
 
   return (
     <div
@@ -414,9 +418,8 @@ export function AgentFiles() {
 
       {/* Single header row: title · search · actions */}
       <div className="shrink-0 flex items-center gap-2 px-3 pt-2 pb-2">
-        <div className="flex items-center gap-1.5 shrink-0 text-[10px] uppercase tracking-wider text-neutral-400 dark:text-neutral-500 font-medium">
-          <span>Files ({filtering ? `${visibleFiles.length}/${files.length}` : files.length})</span>
-          <DocsLink href={DOCS.files} />
+        <div className="shrink-0 text-[10px] uppercase tracking-wider text-neutral-400 dark:text-neutral-500 font-medium">
+          Files ({filtering ? `${visibleFiles.length}/${files.length}` : files.length})
         </div>
         <div className="relative flex-1 min-w-0">
           <svg
@@ -617,7 +620,16 @@ export function AgentFiles() {
         })()}
         {files.length === 0 && (
           <div className="text-center py-2">
-            <p className="text-xs text-neutral-400 dark:text-neutral-500">No files yet.</p>
+            <p className="text-xs text-neutral-400 dark:text-neutral-500">
+              No files yet. <DocsLink href={DOCS.files} className="!text-xs" />
+            </p>
+          </div>
+        )}
+        {onlySeededFiles && !filtering && (
+          <div className="text-center pt-3 pb-1">
+            <p className="text-xs text-neutral-400 dark:text-neutral-500">
+              Drop files or folders here to give the agent more to work with. <DocsLink href={DOCS.files} className="!text-xs" />
+            </p>
           </div>
         )}
         {files.length > 0 && visibleFiles.length === 0 && (
