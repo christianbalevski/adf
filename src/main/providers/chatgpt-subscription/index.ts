@@ -176,12 +176,11 @@ export function createChatGPTSubscriptionProvider(authManager: {
     if (accountId) {
       headers.set('ChatGPT-Account-ID', accountId)
     }
-    // The gpt-5.6 family is gated server-side by client identity: /responses
-    // returns 404 "Model not found" (e.g. gpt-5.6-luna) unless originator is
-    // codex_cli_rs AND a client version >= the model's minimal_client_version
-    // (0.144.0) is sent via the `version` header.
+    // Subscription models require the Codex client identity and a compatible
+    // `version` header. Verified with gpt-6-astra on 2026-09-04: 0.144.0 returns
+    // 400 "requires a newer version of Codex"; 0.153.0 completes successfully.
     headers.set('originator', 'codex_cli_rs')
-    headers.set('version', '0.144.0')
+    headers.set('version', '0.153.0')
 
     // Patch the request body (see patchCodexRequestBody for the rules,
     // including system-prompt dedupe between `instructions` and `input`).
