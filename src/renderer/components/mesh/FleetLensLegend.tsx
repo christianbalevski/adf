@@ -142,7 +142,7 @@ export const FleetLensLegend = memo(function FleetLensLegend({
               <span>younger generations</span>
             </div>
             <LegendRow swatch={<HexSwatch fill={`hsla(220, 8%, ${dark ? 18 : 90}%, 0.4)`} stroke={`hsla(220, 8%, ${dark ? 34 : 65}%, 0.25)`} />} label="no family — solo agent" />
-            <LegendRow swatch={<HexSwatch fill={`hsla(${h}, 52%, ${L(1)}%, 0.5)`} stroke={`hsla(${h}, 58%, ${dark ? 55 : 40}%, 0.7)`} dashed />} label="broken chain / offline" />
+            <LegendRow swatch={<HexSwatch fill={`hsla(${h}, 52%, ${L(1)}%, 0.5)`} stroke={`hsla(${h}, 58%, ${dark ? 55 : 40}%, 0.7)`} dashed />} label="broken chain / shared DID / offline" />
             <span className="text-[9px] text-neutral-400 dark:text-neutral-500">one hue per dynasty · darkest = founder</span>
           </>
         )

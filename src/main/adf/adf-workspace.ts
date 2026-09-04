@@ -889,6 +889,21 @@ export class AdfWorkspace {
   }
 
   /**
+   * Replace the DID history wholesale. Only for flows that mint a NEW lineage
+   * node from a byte copy (clone): the copy inherits the source's history and
+   * generateIdentityKeys then appends the source's live DID — leaving the
+   * clone claiming the source's past. Rotation/claim/reset must keep using
+   * the append path.
+   */
+  resetDidHistory(history: string[] = []): void {
+    if (history.length === 0) {
+      this.db.deleteMeta('adf_did_history')
+      return
+    }
+    this.db.setMeta('adf_did_history', JSON.stringify(history), 'readonly')
+  }
+
+  /**
    * Generate Ed25519 key pair + DID for an ADF that doesn't have one.
    * If a password is active, the new keys are encrypted with the given derivedKey.
    */
