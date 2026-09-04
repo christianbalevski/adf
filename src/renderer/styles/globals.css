@@ -560,7 +560,7 @@ body.panel-resizing webview {
   pointer-events: none;
 }
 
-/* AgentLoop status strip — the phase verb shimmers instead of bouncing dots.
+/* AgentLoop activity — the latest step glimmers while the agent continues.
    Painted through the text: the base is the element's own (muted neutral)
    colour, the highlight is the theme's full text colour, so it reads in both
    light and dark. text-fill (not `color`) goes transparent so currentColor
