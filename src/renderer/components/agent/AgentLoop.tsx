@@ -1404,8 +1404,14 @@ function LoopStream({ loop }: { loop: string }) {
       const summary = getActivitySummary([inFlightEntry])
       return { label: summary.label, dotClass: TOOL_FAMILY_STYLES[summary.family].dot, entry: inFlightEntry }
     }
-    return { label: 'Working', dotClass: TOOL_FAMILY_STYLES.neutral.dot, entry: null }
-  }, [showStatusStrip, starting, waitingForUser, inFlightEntry])
+    // Assistant text streaming in: the reply itself is the status, so the
+    // strip hides rather than saying "Thinking" over a visibly growing answer.
+    // A streaming reply is always the raw tail `text` entry (deltas merge
+    // into it); quiet-turn markers are terminal, not streaming.
+    const tail = log.at(-1)
+    if (tail?.type === 'text' && !tail.metadata?.quietTurn) return null
+    return { label: 'Thinking', dotClass: TOOL_FAMILY_STYLES.neutral.dot, entry: null }
+  }, [showStatusStrip, starting, waitingForUser, inFlightEntry, log, logVersion])
 
   // When the current turn began: the first stamped entry after the last
   // "turn complete" marker. Null when there is no marker (fresh loop, or a
