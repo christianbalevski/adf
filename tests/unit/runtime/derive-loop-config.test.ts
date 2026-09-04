@@ -94,8 +94,8 @@ describe('deriveLoopConfig — tool allow-list', () => {
       expect(grantedNames(derived)).toEqual([])
     })
 
-    it('DEFAULT_NEW_LOOP_TOOLS is the pair, and only a suggestion', () => {
-      expect([...DEFAULT_NEW_LOOP_TOOLS]).toEqual(['loop_send', 'loop_list'])
+    it('DEFAULT_NEW_LOOP_TOOLS is the pair plus sys_set_state, and only a suggestion', () => {
+      expect([...DEFAULT_NEW_LOOP_TOOLS]).toEqual(['loop_send', 'loop_list', 'sys_set_state'])
     })
   })
 
@@ -249,6 +249,13 @@ describe('deriveLoopConfig — compaction threshold', () => {
   function effective(config: AgentConfig): number {
     return config.context?.compact_threshold ?? config.model.compact_threshold ?? 100_000
   }
+
+  it('autonomous is per-loop and never inherited from the host', () => {
+    const parent = host({ autonomous: true })
+    expect(deriveLoopConfig(parent, loop()).autonomous).toBe(false)
+    expect(deriveLoopConfig(parent, loop({ autonomous: true })).autonomous).toBe(true)
+    expect(deriveLoopConfig(host({ autonomous: false }), loop({ autonomous: true })).autonomous).toBe(true)
+  })
 
   it('inherits the host threshold when the loop names none', () => {
     const parent = host({ context: { compact_threshold: 120_000 } } as unknown as Partial<AgentConfig>)

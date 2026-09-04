@@ -37,7 +37,6 @@ import type {
 } from '../../shared/types/adf-v02.types'
 import {
   DEFAULT_TOOLS as defaultTools,
-  DEFAULT_NEW_LOOP_TOOLS,
   getDefaultDocumentContent,
   DEFAULT_MIND_CONTENT,
   DEFAULT_MIND_LOG_CONTENT,
@@ -57,6 +56,13 @@ import {
  * standing rule that would override the owner.
  */
 const LOOP_TOOLS_BACKFILL_META = 'adf_loop_tools_backfilled'
+/**
+ * The pre-allow-list ESSENTIALS every loop implicitly held. Pinned here rather
+ * than read from `DEFAULT_NEW_LOOP_TOOLS`: the grandfather restores what a
+ * legacy loop actually had, and later additions to the new-loop seed must not
+ * leak into old files through it.
+ */
+const LEGACY_ESSENTIAL_LOOP_TOOLS = ['loop_send', 'loop_list'] as const
 
 /**
  * LoopEntry plus the storage-level `ord` position override (set only on
@@ -3005,7 +3011,7 @@ export class AdfDatabase {
         // `tools` absent is the old "essentials only" reflective loop — it held
         // both names too, so it is grandfathered like the rest.
         const tools = Array.isArray(loop.tools) ? loop.tools : (loop.tools = [])
-        for (const name of DEFAULT_NEW_LOOP_TOOLS) {
+        for (const name of LEGACY_ESSENTIAL_LOOP_TOOLS) {
           if (tools.includes(name)) continue
           tools.push(name)
           added = true

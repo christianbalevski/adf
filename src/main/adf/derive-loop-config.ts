@@ -476,6 +476,9 @@ Your goal:
 
 ${loop.goal}`
   derived.model = cloneJson(loop.model ?? parent.model)
+  // Per-loop, never inherited: an autonomous host does not make every side
+  // loop burn turns until it remembers to yield. Off unless the loop says so.
+  derived.autonomous = loop.autonomous === true
   // Per-loop compaction point. Absent (or null) inherits the host's, which the
   // clone already carries — this only ever narrows to the loop's own number.
   //

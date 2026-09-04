@@ -46,6 +46,9 @@ const LoopConfigInputSchema = z.object({
     'Run a first turn on the goal without waiting to be addressed: now on create, and again whenever the agent starts. ' +
     'Default true on create. false: it only runs when a trigger, timer or loop_send targets it.'
   ),
+  autonomous: z.boolean().optional().describe(
+    'Keep turning after text-only responses until the loop calls sys_set_state. Not inherited from you; default false. Grant sys_set_state alongside.'
+  ),
   model: z.record(z.unknown()).optional().describe(
     'Model override for this loop only, same provider as yours. Omit to inherit the agent model.'
   ),
@@ -53,7 +56,7 @@ const LoopConfigInputSchema = z.object({
     'Token count at which this loop auto-compacts. Omit to inherit yours.'
   ),
   tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional().describe(
-    `Absolute allow-list, intersected with your enabled tools; nothing implicit. Omit for ${DEFAULT_NEW_LOOP_TOOLS.join(' + ')}; [] for a mute loop.`
+    `Absolute allow-list, intersected with your enabled tools; nothing implicit. Omit for ${DEFAULT_NEW_LOOP_TOOLS.join(' + ')}; [] for a mute loop. Include sys_set_state to yield.`
   )
 }).describe('Loop definition. Full definition for create; partial patch for update.')
 
@@ -231,6 +234,7 @@ export class LoopManageTool implements Tool {
       // on every agent start. Default on — a loop nobody addresses is idle,
       // and creators expect the thing they just made to get going.
       autostart: configArg.autostart ?? true,
+      ...(configArg.autonomous !== undefined && { autonomous: configArg.autonomous }),
       ...(configArg.model !== undefined && { model: configArg.model }),
       ...(configArg.compact_threshold !== undefined && { compact_threshold: configArg.compact_threshold }),
       // Omitted `tools` means "you decide" — and a loop that cannot reach the
@@ -325,6 +329,7 @@ export class LoopManageTool implements Tool {
       ...(patch.goal !== undefined && { goal: patch.goal }),
       ...(patch.enabled !== undefined && { enabled: patch.enabled }),
       ...(patch.autostart !== undefined && { autostart: patch.autostart }),
+      ...(patch.autonomous !== undefined && { autonomous: patch.autonomous }),
       ...(patch.model !== undefined && { model: patch.model }),
       ...(patch.compact_threshold !== undefined && { compact_threshold: patch.compact_threshold }),
       ...(patch.tools !== undefined && { tools: patch.tools }),
@@ -340,6 +345,7 @@ export class LoopManageTool implements Tool {
       ...(patch.goal !== undefined && { goal: validated.config.goal }),
       ...(patch.enabled !== undefined && { enabled: validated.config.enabled }),
       ...(patch.autostart !== undefined && { autostart: validated.config.autostart }),
+      ...(patch.autonomous !== undefined && { autonomous: validated.config.autonomous }),
       ...(patch.model !== undefined && { model: validated.config.model }),
       ...(patch.compact_threshold !== undefined && { compact_threshold: validated.config.compact_threshold }),
       ...(patch.tools !== undefined && { tools: validated.config.tools })
@@ -347,7 +353,7 @@ export class LoopManageTool implements Tool {
 
     if (Object.keys(outgoing).length === 0) {
       return errorResult(
-        'Nothing to update — "config" named no changeable field (goal, enabled, autostart, model, compact_threshold, tools).'
+        'Nothing to update — "config" named no changeable field (goal, enabled, autostart, autonomous, model, compact_threshold, tools).'
       )
     }
 

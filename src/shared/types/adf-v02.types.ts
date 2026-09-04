@@ -901,6 +901,14 @@ export interface LoopConfig {
    * trigger, timer or `loop_send` targets it. Ignored while `enabled: false`.
    */
   autostart?: boolean
+  /**
+   * Keep turning after a text-only response until the loop calls
+   * `sys_set_state` (or the narration breaker trips), exactly like the
+   * agent-level `autonomous`. Per-loop and NOT inherited from the host:
+   * absent = false, so a side loop ends its turn at the first text-only
+   * reply unless it is explicitly made autonomous.
+   */
+  autonomous?: boolean
   /** Inherits the parent's model when absent. */
   model?: ModelConfig
   /**
@@ -927,10 +935,15 @@ export interface LoopConfig {
  * What a newly created loop gets when nobody said otherwise — the Loops card
  * pre-ticks these, and `loop_manage create` uses them when `tools` is omitted.
  *
+ * `loop_send`/`loop_list` let it reach the rest of the agent; `sys_set_state`
+ * lets it end its own turn deliberately (the loop pool applies the target
+ * state to the loop's own executor) instead of being cut off by the
+ * text-only escalation ladder.
+ *
  * A suggestion, not a floor: an explicit list wins, including an empty one, so
  * a deliberately mute loop is expressible.
  */
-export const DEFAULT_NEW_LOOP_TOOLS = ['loop_send', 'loop_list'] as const
+export const DEFAULT_NEW_LOOP_TOOLS = ['loop_send', 'loop_list', 'sys_set_state'] as const
 
 /**
  * Never grantable to a side loop, at any layer.

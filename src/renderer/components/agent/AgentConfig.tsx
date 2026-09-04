@@ -613,19 +613,6 @@ function LoopCard({
             className="rounded text-blue-500"
           />
         </label>
-        <label
-          className="flex items-center gap-1 cursor-pointer shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500"
-          title="Autostart: run a first turn on its goal whenever the agent starts, instead of waiting for a trigger, timer or loop_send"
-        >
-          <input
-            type="checkbox"
-            checked={entry.autostart ?? false}
-            disabled={!entry.enabled}
-            onChange={(e) => patchLoop({ autostart: e.target.checked })}
-            className="rounded text-blue-500"
-          />
-          auto
-        </label>
         <input
           type="text"
           value={entry.name}
@@ -661,6 +648,40 @@ function LoopCard({
             placeholder="Goal — becomes this loop's instructions"
             className="w-full px-2 py-1 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400 resize-y"
           />
+
+          {/* behaviour — how the loop starts and when its turns end */}
+          <div>
+            <span className="text-[10px] text-neutral-400 dark:text-neutral-500">Behaviour</span>
+            <div className="mt-0.5 flex flex-wrap gap-x-4 gap-y-1">
+              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-neutral-600 dark:text-neutral-300">
+                <input
+                  type="checkbox"
+                  checked={entry.autostart ?? false}
+                  disabled={!entry.enabled}
+                  onChange={(e) => patchLoop({ autostart: e.target.checked || undefined })}
+                  className="rounded text-blue-500"
+                />
+                Autostart
+                <InfoHint tip="Run a first turn on its goal whenever the agent starts, instead of waiting for a trigger, timer or loop_send." />
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-neutral-600 dark:text-neutral-300">
+                <input
+                  type="checkbox"
+                  checked={entry.autonomous ?? false}
+                  disabled={!entry.enabled}
+                  onChange={(e) => patchLoop({ autonomous: e.target.checked || undefined })}
+                  className="rounded text-blue-500"
+                />
+                Autonomous
+                <InfoHint tip="Keep turning after text-only responses until the loop calls sys_set_state. Not inherited from the agent; off by default." />
+              </label>
+            </div>
+            {entry.autonomous && !selected.has('sys_set_state') && (
+              <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5">
+                Autonomous without sys_set_state: this loop cannot yield on its own and only stops when the narration breaker trips.
+              </p>
+            )}
+          </div>
 
           {/* model — absent inherits the agent's */}
           <div className="flex gap-1.5 items-center">
@@ -2351,7 +2372,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           locked={isSectionLocked('loops')}
           onToggleLock={() => toggleSectionLock('loops')}
           summary={`main + ${(local.loops ?? []).length} inner`}
-          defaultCollapsed
         >
           {(() => {
             const loops = local.loops ?? []

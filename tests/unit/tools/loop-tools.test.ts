@@ -522,16 +522,16 @@ describe('loop_manage', () => {
       expect(result.content).toMatch(/Tools: fs_read\./)
     })
 
-    it('seeds the inter-loop pair when `tools` is omitted entirely', async () => {
+    it('seeds the default loop tools when `tools` is omitted entirely', async () => {
       // Not an implicit grant — a DEFAULT. It lands in loop.tools, where the
       // owner (or a later update) can see it and take it away.
-      const config = hostConfig({ tools: [decl('fs_read'), decl('loop_send'), decl('loop_list')] })
+      const config = hostConfig({ tools: [decl('fs_read'), decl('loop_send'), decl('loop_list'), decl('sys_set_state')] })
       const pool = fakePool()
       await make(pool).execute(
         { action: 'create', config: { name: 'reflector', goal: 'g' } },
         fakeWorkspace({ config }),
       )
-      expect(pool.calls.create[0].tools).toEqual(['loop_send', 'loop_list'])
+      expect(pool.calls.create[0].tools).toEqual(['loop_send', 'loop_list', 'sys_set_state'])
     })
 
     it('takes an explicit list literally, including an empty one', async () => {
@@ -627,6 +627,26 @@ describe('loop_manage', () => {
       )
       expect(result.isError).toBe(false)
       expect(pool.calls.update).toEqual([['reflector', { autostart: true }]])
+    })
+
+    it('autonomous is off unless asked for, and passes through on create and update', async () => {
+      const pool = fakePool({ loops: [sideLoop('reflector')] })
+      await make(pool).execute(
+        { action: 'create', config: { name: 'critic', goal: 'g' } },
+        fakeWorkspace(),
+      )
+      expect(pool.calls.create[0]).not.toHaveProperty('autonomous')
+      await make(pool).execute(
+        { action: 'create', config: { name: 'critic2', goal: 'g', autonomous: true } },
+        fakeWorkspace(),
+      )
+      expect(pool.calls.create[1]).toMatchObject({ autonomous: true })
+      const result = await make(pool).execute(
+        { action: 'update', name: 'reflector', config: { autonomous: true } },
+        fakeWorkspace(),
+      )
+      expect(result.isError).toBe(false)
+      expect(pool.calls.update).toEqual([['reflector', { autonomous: true }]])
     })
 
     it('does not kick off a loop created disabled', async () => {
