@@ -26,15 +26,36 @@ export type ChatWidth = 'comfortable' | 'full'
  * family stacks that fall back to the system stack when the face is not
  * installed — nothing is bundled or fetched. `custom` reads `uiFontCustom`.
  */
-export type UiFont = 'system' | 'inter' | 'segoe' | 'sf' | 'roboto' | 'custom'
+export type UiFont = 'system' | 'segoe' | 'inter' | 'roboto' | 'sf' | 'calibri' | 'verdana' | 'georgia' | 'custom'
 export const UI_FONT_SYSTEM_STACK =
   "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif"
 export const UI_FONT_STACKS: Record<Exclude<UiFont, 'custom'>, string> = {
   system: UI_FONT_SYSTEM_STACK,
-  inter: `'Inter', ${UI_FONT_SYSTEM_STACK}`,
   segoe: `'Segoe UI Variable', 'Segoe UI', ${UI_FONT_SYSTEM_STACK}`,
-  sf: `-apple-system, 'SF Pro Text', 'SF Pro Display', ${UI_FONT_SYSTEM_STACK}`,
+  inter: `'Inter', ${UI_FONT_SYSTEM_STACK}`,
   roboto: `'Roboto', ${UI_FONT_SYSTEM_STACK}`,
+  sf: `-apple-system, 'SF Pro Text', 'SF Pro Display', ${UI_FONT_SYSTEM_STACK}`,
+  calibri: `'Calibri', ${UI_FONT_SYSTEM_STACK}`,
+  verdana: `'Verdana', ${UI_FONT_SYSTEM_STACK}`,
+  georgia: `'Georgia', serif`,
+}
+/**
+ * Picker rows. `family` is the face to probe for on this machine (null for
+ * the system stack, which always resolves) so the picker can flag presets
+ * that would silently fall back — on Windows, Inter/SF/Roboto usually would.
+ */
+export const UI_FONT_PRESETS: { value: Exclude<UiFont, 'custom'>; label: string; family: string | null }[] = [
+  { value: 'system', label: 'System default', family: null },
+  { value: 'segoe', label: 'Segoe UI', family: 'Segoe UI' },
+  { value: 'inter', label: 'Inter', family: 'Inter' },
+  { value: 'roboto', label: 'Roboto', family: 'Roboto' },
+  { value: 'sf', label: 'SF Pro', family: 'SF Pro Text' },
+  { value: 'calibri', label: 'Calibri', family: 'Calibri' },
+  { value: 'verdana', label: 'Verdana', family: 'Verdana' },
+  { value: 'georgia', label: 'Georgia (serif)', family: 'Georgia' },
+]
+export function isUiFont(value: unknown): value is UiFont {
+  return value === 'custom' || UI_FONT_PRESETS.some((preset) => preset.value === value)
 }
 /** Resolves the `--adf-font-ui` stack for a font choice; empty custom = system. */
 export function resolveUiFontStack(font: UiFont, custom: string): string {

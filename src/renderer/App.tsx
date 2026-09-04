@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, Component, type ReactNode } from 'react'
 import { AppShell } from './components/layout/AppShell'
-import { useAppStore, isUiScale, resolveUiFontStack } from './stores/app.store'
+import { useAppStore, isUiScale, resolveUiFontStack, isUiFont } from './stores/app.store'
 import { useDocumentStore } from './stores/document.store'
 import { useEditorTabsStore } from './stores/editor-tabs.store'
 import { useAgentEvents } from './hooks/useAgent'
@@ -183,10 +183,7 @@ export default function App() {
       if (saved === 'dark' || saved === 'light' || saved === 'system') {
         setTheme(saved)
       }
-      const font = settings.uiFont
-      if (font === 'system' || font === 'inter' || font === 'segoe' || font === 'sf' || font === 'roboto' || font === 'custom') {
-        setUiFont(font)
-      }
+      if (isUiFont(settings.uiFont)) setUiFont(settings.uiFont)
       if (typeof settings.uiFontCustom === 'string') setUiFontCustom(settings.uiFontCustom)
       if (isUiScale(settings.uiScale)) setUiScale(settings.uiScale)
       setAppearanceLoaded(true)

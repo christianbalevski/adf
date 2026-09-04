@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { useAppStore, UI_SCALE_OPTIONS, type SettingsSection, type UiFont, type UiScale } from '../../stores/app.store'
+import { useAppStore, UI_FONT_PRESETS, UI_SCALE_OPTIONS, type SettingsSection, type UiFont, type UiScale } from '../../stores/app.store'
+import { isFontInstalled } from '../../utils/fonts'
 import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
 import type { ProviderType } from '../../../shared/constants/adf-defaults'
 import { addCatalogSource, normalizeCatalogSources, MAX_CATALOG_SOURCES } from '../../utils/skills-panel'
@@ -1876,11 +1877,14 @@ export function SettingsPage() {
                   onChange={(event) => handleUiFontChange(event.target.value as UiFont)}
                   aria-label="Font family"
                 >
-                  <option value="system">System default</option>
-                  <option value="inter">Inter</option>
-                  <option value="segoe">Segoe UI</option>
-                  <option value="sf">SF Pro</option>
-                  <option value="roboto">Roboto</option>
+                  {UI_FONT_PRESETS.map((preset) => {
+                    const missing = preset.family !== null && !isFontInstalled(preset.family)
+                    return (
+                      <option key={preset.value} value={preset.value} disabled={missing}>
+                        {preset.label}{missing ? ' (not installed)' : ''}
+                      </option>
+                    )
+                  })}
                   <option value="custom">Custom…</option>
                 </Select>
                 {uiFont === 'custom' && (
@@ -1896,6 +1900,9 @@ export function SettingsPage() {
                     aria-label="Custom font family"
                     spellCheck={false}
                   />
+                )}
+                {uiFont === 'custom' && uiFontCustom.trim() && !isFontInstalled(uiFontCustom) && (
+                  <span className="text-[11px] text-[var(--adf-ui-warning)]">Not found on this system — using the default.</span>
                 )}
               </div>
             </SettingsRow>
