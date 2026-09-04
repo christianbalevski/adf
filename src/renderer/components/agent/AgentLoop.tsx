@@ -481,13 +481,17 @@ const STILL_WORKING_AFTER_MS = 60_000
  * the human, so mount time doubles as the turn start when the log carries no
  * "turn complete" marker to anchor on.
  */
-const AgentStatusStrip = memo(({ label, dotClass, entry, turnStartedAt, onOpen }: {
+const AgentStatusStrip = memo(({ label, dotClass, entry, waiting, turnStartedAt, onOpen, onReveal }: {
   label: string
   dotClass: string
   /** The withheld in-flight entry this row stands in for; null for a bare phase. */
   entry: AgentLogEntry | null
+  /** Blocked on the human: the timer keeps counting but no "still working". */
+  waiting: boolean
   turnStartedAt: number | null
   onOpen: (entry: AgentLogEntry) => void
+  /** Waiting-for-you click: bring the pending approval/ask into view. */
+  onReveal: () => void
 }) => {
   const [mountedAt] = useState(() => Date.now())
   const elapsedMs = useElapsed(turnStartedAt ?? mountedAt)
@@ -504,8 +508,11 @@ const AgentStatusStrip = memo(({ label, dotClass, entry, turnStartedAt, onOpen }
   // Only a tool call has a detail view (the inspector already handles a call
   // with no result). Thinking lands in the thread as an expandable row once it
   // finishes; the bare phases have nothing to open.
-  const clickable = entry?.type === 'tool_call'
-  const handleOpen = () => { if (entry && clickable) onOpen(entry) }
+  const clickable = entry?.type === 'tool_call' || waiting
+  const handleOpen = () => {
+    if (waiting) onReveal()
+    else if (entry && clickable) onOpen(entry)
+  }
   return (
     // Deliberately not a live region: the timer ticks every second and
     // would turn a screen reader into a metronome.
@@ -513,8 +520,8 @@ const AgentStatusStrip = memo(({ label, dotClass, entry, turnStartedAt, onOpen }
       type="button"
       disabled={!clickable}
       onClick={handleOpen}
-      aria-label={clickable ? `Open details for ${label}` : undefined}
-      title={clickable ? `Open details for ${label}` : label}
+      aria-label={waiting ? 'Show what needs your attention' : clickable ? `Open details for ${label}` : undefined}
+      title={waiting ? 'Show what needs your attention' : clickable ? `Open details for ${label}` : label}
       className={`flex h-7 w-full shrink-0 items-center gap-1.5 rounded px-3 text-left text-xs text-neutral-500 transition-colors dark:text-neutral-400 ${
         clickable ? 'hover:bg-neutral-100/70 dark:hover:bg-neutral-800/60' : 'cursor-default'
       }`}
@@ -523,7 +530,7 @@ const AgentStatusStrip = memo(({ label, dotClass, entry, turnStartedAt, onOpen }
       <span className="adf-shimmer-text min-w-0 truncate font-medium" style={shimmerStyle}>{label}</span>
       <span className="ml-auto shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
         {formatElapsed(elapsedMs)}
-        {elapsedMs >= STILL_WORKING_AFTER_MS && <span> &middot; still working</span>}
+        {!waiting && elapsedMs >= STILL_WORKING_AFTER_MS && <span> &middot; still working</span>}
       </span>
     </button>
   )
@@ -1231,6 +1238,23 @@ function LoopStream({ loop }: { loop: string }) {
         : item.entries.some((e) => e.id === activeApproval.logEntryId)
     )
     if (index >= 0) virtualizer.scrollToIndex(index, { align: 'center', behavior: 'smooth' })
+    else if (scrollRef.current) scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+  }, [activeApproval, displayItems, virtualizer])
+
+  // The strip's "Waiting for you" click: the approval card (or the ask, which
+  // lives in the composer at the bottom) is what needs the user, so bring it
+  // into view. Falls back to the bottom when nothing in the list matches.
+  const revealPending = useCallback(() => {
+    const index = activeApproval
+      ? displayItems.findIndex((item) =>
+          item.kind === 'entry'
+            ? item.entry.id === activeApproval.logEntryId
+            : item.entries.some((e) => e.id === activeApproval.logEntryId)
+        )
+      : -1
+    if (index >= 0) virtualizer.scrollToIndex(index, { align: 'center', behavior: 'smooth' })
+    else if (scrollRef.current) scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+    setShowScrollBtn(false)
   }, [activeApproval, displayItems, virtualizer])
 
   // Batched approvals fatigue the user one-by-one. "Approve all" resolves every
@@ -2139,8 +2163,10 @@ function LoopStream({ loop }: { loop: string }) {
             label={statusPhase.label}
             dotClass={statusPhase.dotClass}
             entry={statusPhase.entry}
+            waiting={waitingForUser}
             turnStartedAt={turnStartedAt}
             onOpen={setInspectedToolCall}
+            onReveal={revealPending}
           />
         </div>
       )}

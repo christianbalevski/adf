@@ -25,16 +25,18 @@ interface Props {
 }
 
 /**
- * Tab chrome. The bar is one recessed surface with a hairline under it; the
- * selected tab lifts to the content surface and carries a 2px accent line
- * drawn as an inset shadow (a border would shift the tab's height). Focus
- * rings are drawn inset: the file strip scrolls horizontally, and an outset
- * ring gets clipped to a stray vertical bar at the tab's edge.
+ * Tab chrome, VS Code style. The bar is one recessed surface; its bottom
+ * hairline is an absolutely positioned sibling under the tabs rather than a
+ * border, so the selected tab (opaque, content-coloured, z-above) covers it
+ * and opens straight into the content below. The accent sits on the TOP edge
+ * as an inset shadow (a border would shift the tab's height). Focus rings
+ * are drawn inset: the file strip scrolls horizontally, and an outset ring
+ * gets clipped to a stray vertical bar at the tab's edge.
  */
 const TAB_BASE =
-  'group relative flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:[outline-offset:-2px]'
+  'group relative z-10 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:[outline-offset:-2px]'
 const TAB_ACTIVE =
-  'bg-surface-1 text-neutral-800 dark:text-neutral-200 shadow-[inset_0_-2px_0_0_var(--color-blue-500)]'
+  'bg-surface-1 text-neutral-800 dark:text-neutral-200 shadow-[inset_0_2px_0_0_var(--color-blue-500)]'
 const TAB_IDLE =
   'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-500/10 hover:text-neutral-700 dark:hover:text-neutral-200'
 const TAB_ICON_BUTTON =
@@ -53,7 +55,8 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
   if (tabs.length === 0 && !chatTab) return null
 
   return (
-    <div className="flex items-stretch bg-surface-0 border-b border-hairline shrink-0">
+    <div className="relative flex items-stretch bg-surface-0 shrink-0">
+      <span aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-hairline" />
       {chatTab && (
         <>
           {/* Pinned outside the scroller: with many files open the file strip
@@ -65,7 +68,7 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
             title="Loops — the agent's chat"
             className={`${TAB_BASE} shrink-0 ${
               chatTab.active
-                ? 'bg-blue-500/10 text-blue-700 dark:text-blue-300 shadow-[inset_0_-2px_0_0_var(--color-blue-500)]'
+                ? 'bg-[color-mix(in_srgb,var(--color-blue-500)_10%,var(--adf-surface-1))] text-blue-700 dark:text-blue-300 shadow-[inset_0_2px_0_0_var(--color-blue-500)]'
                 : 'text-neutral-500 dark:text-neutral-400 hover:bg-blue-500/10 hover:text-blue-700 dark:hover:text-blue-300'
             }`}
           >
@@ -98,7 +101,7 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
               <CloseGlyph />
             </span>
           </button>
-          <span aria-hidden className="w-px shrink-0 self-stretch bg-hairline" />
+          <span aria-hidden className="relative z-10 w-px shrink-0 self-stretch bg-hairline" />
         </>
       )}
       <div className="scrollbar-autohide flex flex-1 min-w-0 items-stretch overflow-x-auto">
