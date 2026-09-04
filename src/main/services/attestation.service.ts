@@ -100,6 +100,21 @@ export function appendAdfAttestation(workspace: AdfWorkspace, attestation: AlfAt
 }
 
 /**
+ * Drop every attestation whose subject is not `subject`. Attestations live
+ * with their subject (addPeerAttestation enforces this), so after a byte copy
+ * is re-keyed, anything about the OLD DID is a foreign-subject leftover that
+ * would fail verifyAttestation({ expectedSubject }) forever. Order of the
+ * survivors is preserved. Returns the number removed.
+ */
+export function retainAttestationsForSubject(workspace: AdfWorkspace, subject: string): number {
+  const all = readAdfAttestations(workspace)
+  const kept = all.filter((a) => a.subject === subject)
+  if (kept.length === all.length) return 0
+  writeAdfAttestations(workspace, kept)
+  return all.length - kept.length
+}
+
+/**
  * Store a peer-issued attestation (agent-facing attestation_add).
  * Boundary rules: the signature must verify against the issuer DID, the
  * subject must be THIS agent (you collect certs about yourself, not a trust

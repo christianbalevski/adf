@@ -3,6 +3,7 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { resolveLineage } from '../../../shared/utils/lineage'
 import { formatTokens } from './FleetTerrainNode'
 import { ACTIVITY_TYPE_MARKS, BubbleText } from './MeshGraphNode'
 import type { AgentState } from '../../../shared/types/ipc.types'
@@ -90,20 +91,22 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [onClose])
 
-  // Lineage by declared parent reference (DID, or config.id for legacy files)
-  const { parent, children } = useMemo(() => {
-    if (!agent) return { parent: undefined, children: [] as typeof agents }
-    const parent = agent.parentDid
-      ? agents.find((a) => a.did === agent.parentDid) ??
-        agents.find((a) => a.agentId && a.agentId === agent.parentDid)
-      : undefined
-    const children = agents.filter(
-      (c) =>
-        c.filePath !== agent.filePath &&
-        c.parentDid &&
-        (c.parentDid === agent.did || (agent.agentId && c.parentDid === agent.agentId))
-    )
-    return { parent, children }
+  // Lineage through the same SPEC cascade the map draws (current DID → DID
+  // history → legacy config.id), so the readout never disagrees with the
+  // terrain. duplicateDid: another live file presents this agent's DID as
+  // its own (a kept-identity clone or file copy) — the tree still draws,
+  // but the identity is no longer unique.
+  const { parent, children, duplicateDid } = useMemo(() => {
+    if (!agent) return { parent: undefined, children: [] as typeof agents, duplicateDid: false }
+    const lineage = resolveLineage(agents)
+    const byPath = new Map(agents.map((a) => [a.filePath, a]))
+    const parentPath = lineage.parents.get(agent.filePath)
+    const parent = parentPath ? byPath.get(parentPath) : undefined
+    const children = (lineage.children.get(agent.filePath) ?? [])
+      .map((p) => byPath.get(p))
+      .filter((c): c is NonNullable<typeof c> => !!c)
+    const duplicateDid = !!agent.did && lineage.duplicateDids.has(agent.did)
+    return { parent, children, duplicateDid }
   }, [agent, agents])
 
   if (!agent) return null
@@ -268,6 +271,14 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
           )}
 
           {/* Identity */}
+          {duplicateDid && (
+            <div
+              className="px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-900/40 text-[11px] text-amber-700 dark:text-amber-300"
+              title="Another live agent file presents this same DID. Lineage resolves to whichever was seen first — regenerate one identity to make them distinct."
+            >
+              ⚠ Shares its identity with another agent
+            </div>
+          )}
           {agent.did && (
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 shrink-0">did</span>

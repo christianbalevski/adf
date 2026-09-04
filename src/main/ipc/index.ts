@@ -120,6 +120,7 @@ import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { AdfDatabase } from '../adf/adf-database'
 import { buildStudioCreateOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
+import { cloneAdfFile } from '../adf/clone-fixup'
 import { addAgentTemplateFiles, agentTemplateFilesDir, missingAgentTemplateFiles, removeAgentTemplateFile } from '../adf/agent-template-files'
 import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
@@ -2133,80 +2134,35 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.FILE_CLONE, async (_event, args: { filePath: string; selectedTables: string[] }) => {
     try {
-      const { filePath, selectedTables } = args
-
-      // Compute deduplicated clone path
-      const dir = dirname(filePath)
-      const originalName = basename(filePath, '.adf')
-      let newName = `${originalName}_clone`
-      let newPath = join(dir, `${newName}.adf`)
-      let counter = 2
-      while (existsSync(newPath)) {
-        newName = `${originalName}_clone_${counter}`
-        newPath = join(dir, `${newName}.adf`)
-        counter++
-      }
-
-      // Copy the full SQLite file, then clear unselected tables
-      copyFileSync(filePath, newPath)
-
-      const newWorkspace = AdfWorkspace.open(newPath)
-      try {
-        // Collect virtual table names so we can skip their shadow tables
-        const virtualRows = newWorkspace.querySQL(
-          "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'"
-        ) as Array<{ name: string }>
-        const shadowPrefixes = virtualRows.map((v) => `${v.name}_`)
-
-        // Get all tables in the clone
-        const allRows = newWorkspace.querySQL(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-        ) as Array<{ name: string }>
-
-        // Remove or clear unselected tables:
-        // - adf_ tables: DELETE data but keep schema (valid ADF structure)
-        // - Virtual tables: DROP (also removes their shadow tables automatically)
-        // - Other tables (local_, etc.): DROP entirely
-        // Skip virtual table shadow tables — managed by their parent
-        const selectedSet = new Set(selectedTables)
-        const virtualSet = new Set(virtualRows.map((v) => v.name))
-        for (const row of allRows) {
-          if (shadowPrefixes.some((prefix) => row.name.startsWith(prefix))) continue
-          if (selectedSet.has(row.name)) continue
-
-          if (virtualSet.has(row.name)) {
-            newWorkspace.executeSQL(`DROP TABLE "${row.name}"`)
-          } else if (row.name.startsWith('adf_')) {
-            newWorkspace.executeSQL(`DELETE FROM "${row.name}"`)
-          } else {
-            newWorkspace.executeSQL(`DROP TABLE "${row.name}"`)
-          }
-        }
-
-        // Update the agent name in config
-        const config = newWorkspace.getAgentConfig()
-        config.name = newName
-        newWorkspace.setAgentConfig(config)
-
-        // Identity handling: if identity table was not selected, provision fresh
-        // keys sealed in owner/runtime envelopes (D1). If it was selected,
-        // preserve it exactly (including password protection) — existing
-        // attestations stay valid since the agent DID is unchanged.
-        if (!selectedSet.has('adf_identity')) {
-          const cloneIdentity = settings.ensureRuntimeIdentity()
-          newWorkspace.getDatabase().setMeta('adf_owner_did', cloneIdentity.ownerDid, 'readonly')
-          newWorkspace.getDatabase().setMeta('adf_runtime_did', cloneIdentity.runtimeDid, 'readonly')
-          // Envelopes + fresh keys + attestations (new agent DID → old certs are subject-mismatched)
-          settings.getOwnerIdentity().ensureWorkspaceIdentity(newWorkspace)
-        }
-
-        // VACUUM to reclaim space from dropped tables
-        newWorkspace.getDatabase().checkpoint()
-      } finally {
-        newWorkspace.close()
-      }
-
-      return { success: true, filePath: newPath }
+      // Identity / provenance / lineage (see clone-fixup.ts):
+      //  - adf_identity NOT kept: fresh keys sealed in owner/runtime
+      //    envelopes (D1), new config.id, DID history reset (a clone is a
+      //    new lineage node, not the source's continuation), inherited
+      //    source-subject certs purged, and a signed `clone` cert with
+      //    scope = source DID (only when the source DID verifies).
+      //  - adf_identity kept: same DID (new config.id), so kept certs stay
+      //    valid; if adf_attestations was deselected the rows are gone and
+      //    owner/operator certs are reissued for the local owner — unless
+      //    the keys are sealed for another owner (left for Claim).
+      //  - always: adf_parent_did = source, so the clone is its child.
+      // Built on a `.partial` temp file and moved into place at the end;
+      // a failure leaves nothing behind.
+      settings.ensureRuntimeIdentity()
+      const ownerIdentity = settings.getOwnerIdentity()
+      const { filePath: newPath, config, fixup } = cloneAdfFile(args.filePath, args.selectedTables, {
+        keys: {
+          ownerDid: ownerIdentity.getOwnerDid(),
+          ownerPrivateKey: ownerIdentity.getOwnerSigningKey(),
+          runtimeDid: ownerIdentity.getRuntimeDid(),
+          runtimePrivateKey: ownerIdentity.getRuntimeSigningKey()
+        },
+        provisionFreshIdentity: (ws) => { ownerIdentity.ensureWorkspaceIdentity(ws) },
+        // Surface the clone in the fleet immediately (auto-tracks its directory)
+        onCreated: notifyAdfFileCreated
+      })
+      // Auto-register as reviewed (user created it), like FILE_CREATE
+      settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), config))
+      return { success: true, filePath: newPath, warnings: fixup.warnings }
     } catch (error) {
       return { success: false, error: String(error) }
     }
