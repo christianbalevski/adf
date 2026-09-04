@@ -283,9 +283,9 @@ body,
   will-change: background-position;
 }
 
-/* Mesh traffic: ripple packets cross repeatedly while their disturbance fades.
-   Static gradients supply soft troughs and fine reflected-light crests; only
-   transform and opacity animate, with no canvas, blur, or per-frame JS. */
+/* Mesh traffic: each disturbance samples its own pace, width and light once.
+   Independent crossing, shimmer and drift cycles gently change each passage.
+   Only transform and opacity animate, with no canvas, blur, or per-frame JS. */
 .mesh-traffic-bar {
   position: relative;
   height: 4px;
@@ -320,7 +320,7 @@ body,
     transparent 78%);
   /* Travel speed is independent of the 30-second lifetime. Packets reset
      outside the clipped bar, so repeated crossings have no visible jump. */
-  animation: meshTrafficRipple 6s linear infinite both;
+  animation: meshTrafficRipple var(--mesh-wave-travel) linear var(--mesh-wave-delay) infinite both;
 }
 
 .mesh-traffic-wave::after {
@@ -337,40 +337,30 @@ body,
     transparent 57%,
     rgba(187, 250, 214, 0.4) 59%,
     transparent 61%);
-  animation: meshTrafficShimmer 2.3s ease-in-out infinite alternate;
-}
-
-.mesh-traffic-wave:nth-child(2) {
-  animation-duration: 7.4s;
-  animation-delay: 650ms;
-}
-
-.mesh-traffic-wave:nth-child(2)::after {
-  animation-duration: 3.1s;
-  animation-delay: -900ms;
-}
-
-.mesh-traffic-wave:nth-child(3) {
-  animation-duration: 8.9s;
-  animation-delay: 1400ms;
-}
-
-.mesh-traffic-wave:nth-child(3)::after {
-  animation-duration: 3.7s;
-  animation-delay: -1700ms;
+  animation:
+    meshTrafficShimmer var(--mesh-wave-shimmer) ease-in-out var(--mesh-wave-phase) infinite alternate,
+    meshTrafficDrift var(--mesh-wave-drift) ease-in-out var(--mesh-wave-phase) infinite alternate;
 }
 
 @keyframes meshTrafficRipple {
-  0% { transform: translateX(-85%) scaleX(0.65); opacity: 0; }
-  15% { opacity: 0.85; }
-  50% { transform: translateX(0) scaleX(1); opacity: 0.75; }
-  85% { opacity: 0.55; }
-  100% { transform: translateX(85%) scaleX(1.35); opacity: 0; }
+  0% { transform: translateX(-100%) scaleX(var(--mesh-wave-width)); opacity: 0; }
+  14% { opacity: var(--mesh-wave-light); }
+  42% { transform: translateX(-12%) scaleX(var(--mesh-wave-swell)); }
+  73% { transform: translateX(46%) scaleX(var(--mesh-wave-width)); opacity: var(--mesh-wave-light); }
+  100% { transform: translateX(100%) scaleX(var(--mesh-wave-swell)); opacity: 0; }
 }
 
 @keyframes meshTrafficShimmer {
-  from { opacity: 0.15; }
-  to { opacity: 0.7; }
+  0%, 100% { opacity: 0.12; }
+  23% { opacity: 0.65; }
+  49% { opacity: 0.2; }
+  78% { opacity: 0.85; }
+}
+
+@keyframes meshTrafficDrift {
+  0% { transform: translateX(-5%) scaleX(0.8); }
+  38% { transform: translateX(3%) scaleX(1.1); }
+  100% { transform: translateX(-1%) scaleX(1.25); }
 }
 
 @keyframes meshTrafficDissolve {
@@ -383,6 +373,7 @@ body,
     animation-name: meshTrafficFade;
     animation-duration: var(--mesh-traffic-duration);
     animation-iteration-count: 1;
+    animation-delay: 0s;
   }
   .mesh-traffic-wave::after {
     animation: none;
@@ -703,6 +694,19 @@ body.panel-resizing webview {
     background-clip: text;
     -webkit-text-fill-color: transparent;
     animation: adfShimmerText 2s linear infinite;
+  }
+  /* Chat labels need an obvious moving highlight even on bright tool text.
+     Their inner span hugs the words so the sweep never spends most of its
+     cycle travelling through the empty flex space beside a short label. */
+  .adf-shimmer-text--activity {
+    background-image: linear-gradient(
+      90deg,
+      var(--adf-ui-text-subtle) 0%,
+      var(--adf-ui-text-subtle) 38%,
+      var(--adf-ui-text) 50%,
+      var(--adf-ui-text-subtle) 62%,
+      var(--adf-ui-text-subtle) 100%
+    );
   }
   /* Title-bar variant: slower sweep, narrower highlight, so it glimmers
      rather than flashes on chrome that is always in view. */

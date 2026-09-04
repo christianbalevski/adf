@@ -560,7 +560,7 @@ const LogEntryRow = memo(({
             onClick={() => onToggleThinking(entry.id)}
             className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
           >
-            <span className={continuing ? 'adf-shimmer-text' : undefined}>Thinking{encrypted ? ' (encrypted)' : ''}</span>
+            <span className={continuing ? 'adf-shimmer-text adf-shimmer-text--activity' : undefined}>Thinking{encrypted ? ' (encrypted)' : ''}</span>
             <span className="ml-auto flex items-center gap-2 text-neutral-400 dark:text-neutral-500">
               {hasText
                 ? (outTokens ? `${outTokens.toLocaleString()} tokens` : `${Math.ceil(entry.content.length / 4)} tokens`)
@@ -620,7 +620,7 @@ const LogEntryRow = memo(({
       )}
       {showStatusChange && (
         <div className="px-1.5 py-1 font-mono text-[11px] leading-5 text-neutral-500 dark:text-neutral-500">
-          <span className={continuing ? 'adf-shimmer-text' : undefined}>{statusValue}</span>
+          <span className={continuing ? 'adf-shimmer-text adf-shimmer-text--activity' : undefined}>{statusValue}</span>
         </div>
       )}
       {entry.type === 'tool_call' && toolName !== 'say' && !showStatusChange && (
@@ -637,14 +637,16 @@ const LogEntryRow = memo(({
           >
             <div className="flex min-w-0 items-center gap-2 px-1 py-1">
               <span
-                className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${continuing ? 'adf-shimmer-text' : ''} ${
+                className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${
                   toolReason
                     ? 'font-normal text-neutral-700 dark:text-neutral-300'
                     : 'font-mono text-xs text-neutral-700 dark:text-neutral-300'
                 }`}
                 title={toolSummary}
               >
-                {toolSummary}
+                <span className={continuing ? 'inline-block max-w-full truncate align-bottom adf-shimmer-text adf-shimmer-text--activity' : undefined}>
+                  {toolSummary}
+                </span>
               </span>
               {toolTarget && (
                 <span
@@ -1919,10 +1921,12 @@ function LoopStream({ loop }: { loop: string }) {
                         </span>
                         {!activityExpanded && <span
                           data-agent-continuing={isLiveTail || undefined}
-                          className={`min-w-0 flex-1 truncate text-left font-medium text-neutral-500 dark:text-neutral-400 ${isLiveTail ? 'adf-shimmer-text' : ''}`}
+                          className="min-w-0 flex-1 truncate text-left font-medium text-neutral-500 dark:text-neutral-400"
                           title={activitySummary.label}
                         >
-                          {activitySummary.label}
+                          <span className={isLiveTail ? 'inline-block max-w-full truncate align-bottom adf-shimmer-text adf-shimmer-text--activity' : undefined}>
+                            {activitySummary.label}
+                          </span>
                           {isLiveTail && <span className="sr-only"> — agent continuing</span>}
                         </span>}
                         {activityDurationMs != null && !isLiveTail && (
@@ -1947,7 +1951,7 @@ function LoopStream({ loop }: { loop: string }) {
         )}
         {activity.phase && (
           <div className="px-4 py-2 text-xs text-neutral-500 dark:text-neutral-400" role="status">
-            <span className="adf-shimmer-text">{activity.phase}</span>
+            <span className="adf-shimmer-text adf-shimmer-text--activity">{activity.phase}</span>
           </div>
         )}
       </div>
