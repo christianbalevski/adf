@@ -573,11 +573,38 @@ export const START_IN_STATES = ['active', 'idle', 'hibernate'] as const
 export type StartInState = (typeof START_IN_STATES)[number]
 
 /**
+ * Studio's "New agent template" (settings.agentTemplate): the subset of an
+ * agent's config a user may pre-set for agents they create from the app.
+ * Holds ONLY overrides; an empty object means the code defaults
+ * (DEFAULT_AGENT_CONFIG). Applied by AdfDatabase.create via
+ * mergeAgentTemplate (src/shared/utils/agent-template.ts).
+ */
+export interface AgentTemplate {
+  model?: Partial<Pick<ModelConfig, 'provider' | 'model_id' | 'temperature' | 'max_tokens'>>
+  autonomous?: boolean
+  instructions?: string
+  /** Full list; replaces the default tool list when present. */
+  tools?: ToolDeclaration[]
+  limits?: Partial<LimitsConfig>
+  security?: Partial<SecurityConfig>
+  messaging?: Partial<MessagingConfig>
+}
+
+/**
  * Options for creating a new agent. `name` is required; everything else
  * overrides the AGENT_DEFAULTS when provided.
  */
 export interface CreateAgentOptions {
   name: string
+  /**
+   * User's "New agent template" from Studio settings, merged over the code
+   * defaults BEFORE the explicit fields below are applied. Set only by
+   * user-initiated creation from Studio (FILE_CREATE and fleet-map founding).
+   * Agent-spawned children (sys_create_adf) and the headless harness never
+   * pass it: the template is the owner's preference for agents they make
+   * themselves, not an inherited trait of the whole fleet.
+   */
+  template?: AgentTemplate
   description?: string
   instructions?: string
   icon?: string

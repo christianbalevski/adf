@@ -119,7 +119,7 @@ import { stripLoopNameMarker } from '../runtime/loop-pool'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { AdfDatabase } from '../adf/adf-database'
-import { applyDefaultProviderToOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
+import { buildStudioCreateOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
 import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
@@ -2033,7 +2033,9 @@ export function registerAllIpcHandlers(): void {
       console.log('[IPC] FILE_CREATE: Creating workspace for agent:', agentName)
       const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
       const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
-      const createOptions = applyDefaultProviderToOptions({ name: agentName }, defaultProvider)
+      // User-created from Studio: the "New agent template" applies (never to agent-spawned children).
+      const agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
+      const createOptions = buildStudioCreateOptions(agentName, agentTemplate, defaultProvider)
       currentWorkspace = AdfWorkspace.create(result.filePath, createOptions)
       currentFilePath = result.filePath
       attachWorkspaceDataForwarder(currentWorkspace)
@@ -5523,7 +5525,9 @@ export function registerAllIpcHandlers(): void {
 
       const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
       const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
-      const createOptions = applyDefaultProviderToOptions({ name }, defaultProvider)
+      // User-created from Studio: the "New agent template" applies (never to agent-spawned children).
+      const agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
+      const createOptions = buildStudioCreateOptions(name, agentTemplate, defaultProvider)
       const workspace = AdfWorkspace.create(filePath, createOptions)
       try {
         try {

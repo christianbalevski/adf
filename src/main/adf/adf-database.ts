@@ -45,6 +45,8 @@ import {
   DEFAULT_SOUL_CONTENT
 } from '../../shared/types/adf-v02.types'
 import { pickAgentIcon } from '../../shared/constants/agent-icons'
+import { DEFAULT_AGENT_CONFIG } from '../../shared/constants/adf-defaults'
+import { mergeAgentTemplate } from '../../shared/utils/agent-template'
 import {
   decrypt
 } from '../crypto/identity-crypto'
@@ -1991,8 +1993,17 @@ export class AdfDatabase {
 
     const agentId = _nanoid(12)
 
-    // Merge tools: if caller provided overrides, apply them on top of defaults
-    let tools = [...defaultTools]
+    // Studio's "New agent template" (settings.agentTemplate) merged over the
+    // code defaults. Only user-initiated creation from Studio passes it (see
+    // CreateAgentOptions.template); every other caller — sys_create_adf
+    // children, the headless harness — gets the bare code defaults, where
+    // instructions stay empty unless the caller supplies them.
+    const base = options.template
+      ? mergeAgentTemplate(DEFAULT_AGENT_CONFIG, options.template)
+      : { ...DEFAULT_AGENT_CONFIG, instructions: '' }
+
+    // Merge tools: if caller provided overrides, apply them on top of the base list
+    let tools = [...base.tools]
     if (options.tools) {
       const overrideMap = new Map(options.tools.map(t => [t.name, t]))
       tools = tools.map(t => overrideMap.has(t.name) ? { ...t, ...overrideMap.get(t.name)! } : t)
@@ -2024,10 +2035,10 @@ export class AdfDatabase {
       ...(options.handle ? { handle: options.handle } : {}),
       state: options.start_in_state ?? defaults.state,
       start_in_state: options.start_in_state,
-      autonomous: options.autonomous ?? defaults.autonomous,
+      autonomous: options.autonomous ?? base.autonomous,
       autostart: options.autostart ?? false,
-      model: { ...defaults.model, ...options.model },
-      instructions: options.instructions || '',
+      model: { ...defaults.model, ...base.model, ...options.model },
+      instructions: options.instructions || base.instructions,
       context: {
         ...defaults.context,
         ...options.context,
@@ -2036,9 +2047,9 @@ export class AdfDatabase {
       },
       tools,
       triggers: mergedTriggers,
-      security: { ...defaults.security, ...options.security },
-      limits: { ...defaults.limits, ...options.limits },
-      messaging: { ...defaults.messaging, ...options.messaging },
+      security: { ...base.security, ...options.security },
+      limits: { ...base.limits, ...options.limits },
+      messaging: { ...base.messaging, ...options.messaging },
       audit: { ...defaults.audit, ...options.audit },
       code_execution: { ...defaults.code_execution, ...options.code_execution },
       compute: { ...defaults.compute },

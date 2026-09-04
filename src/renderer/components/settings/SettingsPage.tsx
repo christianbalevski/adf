@@ -10,6 +10,7 @@ import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { AdapterStatusDashboard } from '../adapters/AdapterStatusDashboard'
 import { ProviderCredentialPanel } from '../providers/ProviderCredentialPanel'
 import { AboutTab } from './AboutTab'
+import { NewAgentTemplateTab } from './NewAgentTemplateTab'
 import { TokenUsageSection } from './UsageSection'
 import { ContainerDestroyDialog, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
@@ -47,7 +48,8 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Agent runtime',
     items: [
-      { id: 'agents', label: 'Agent defaults', description: 'Prompts applied to every agent', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
+      { id: 'agents', label: 'Prompts', description: 'Applies to every agent now.', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
+      { id: 'template', label: 'New agent template', description: 'Applies to agents you create from now on.', keywords: 'defaults template model tools limits new agent', docs: DOCS.settingsSystemPrompt },
       { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt grok xai models api keys', docs: DOCS.settingsProviders },
       { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },
       { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools', docs: DOCS.settingsMcp },
@@ -77,6 +79,7 @@ function SettingsNavIcon({ section }: { section: SettingsSection }) {
     general: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-1.5-1H2.5V10h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 4.2l.06.06A1.7 1.7 0 0 0 8.5 4.6a1.7 1.7 0 0 0 1-1.5V3h4.05v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.6 9a1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.7 1Z" /></>,
     identity: <><circle cx="12" cy="8" r="4" /><path d="M4.5 21a7.5 7.5 0 0 1 15 0" /></>,
     agents: <><path d="M4 17V7l4 3 4-3v10" /><path d="M15 8h5M15 12h5M15 16h5" /></>,
+    template: <><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z" /><path d="M14 3v6h6" /><path d="M12 12v6M9 15h6" /></>,
     providers: <><path d="M8 12h8" /><path d="M12 8v8" /><rect x="4" y="4" width="16" height="16" rx="4" /></>,
     packages: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4.5 7.7 7.5 4.2 7.5-4.2M12 12v9" /></>,
     mcps: <><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M8 17v2a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2" /><rect x="4" y="7" width="16" height="10" rx="2" /></>,
@@ -1984,7 +1987,7 @@ export function SettingsPage() {
 
           {/* Agent defaults tab */}
           {activeTab === 'agents' && <>
-          <SettingsGroup title="Agent defaults" description="Defaults applied to every agent unless its file provides more specific instructions." docs={DOCS.settingsSystemPrompt}>
+          <SettingsGroup title="Prompts" description="Applied to every agent unless its file provides more specific instructions." docs={DOCS.settingsSystemPrompt}>
           <div className="flex justify-end px-4 pt-3">
             <Button onClick={handleResetAllPrompts} variant="ghost" size="compact">
               Reset All Prompts to Defaults
@@ -2085,6 +2088,15 @@ export function SettingsPage() {
           </SettingsGroup>
           </>}
 
+          {/* New agent template tab */}
+          {activeTab === 'template' && (
+            <NewAgentTemplateTab
+              providers={providers}
+              defaultProviderId={defaultProviderId}
+              onDefaultProviderChange={setDefaultProviderId}
+            />
+          )}
+
           {/* Identity tab */}
           {activeTab === 'identity' && <IdentityTab />}
 
@@ -2116,6 +2128,17 @@ export function SettingsPage() {
             </div>
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-3">
               ADF files with stored provider configurations will continue to work independently, even if the provider is not listed here.
+            </p>
+            <p className="text-[11px] text-[var(--adf-ui-text-muted)] mb-3">
+              Default provider for new agents moved to{' '}
+              <button
+                type="button"
+                onClick={() => setActiveTab('template')}
+                className="underline underline-offset-2 hover:text-[var(--adf-ui-text)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)] rounded"
+              >
+                New agent template
+              </button>
+              .
             </p>
             {providers.length === 0 ? (
               <p className="text-xs text-neutral-400 dark:text-neutral-500">
@@ -2186,27 +2209,8 @@ export function SettingsPage() {
                       {/* Expanded content */}
                       {isExpanded && (
                         <div className="px-3 pb-3 space-y-2 border-t border-neutral-100 dark:border-neutral-700">
-                          {/* Default-for-new-agents control */}
-                          <div className="mt-2 flex items-center justify-between">
-                            <span className="text-xs text-neutral-500 dark:text-neutral-400">
-                              Default for new agents
-                            </span>
-                            {isDefault ? (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
-                                Default
-                              </span>
-                            ) : (
-                              <Button
-                                onClick={() => setDefaultProviderId(p.id)}
-                                variant="ghost"
-                                size="compact"
-                              >
-                                Make default
-                              </Button>
-                            )}
-                          </div>
                           {/* Connection status + manual re-test */}
-                          <div className="flex items-center justify-between">
+                          <div className="mt-2 flex items-center justify-between">
                             <span className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
                               <span className={`w-2 h-2 rounded-full shrink-0 ${providerDotClass(providerStatus[p.id])}`} />
                               {providerStatusLabel(providerStatus[p.id])}
