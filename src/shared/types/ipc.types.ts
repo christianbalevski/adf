@@ -152,7 +152,7 @@ export interface AppSettings {
   /** Provider id (matches ProviderConfig.id) applied to new agents whose model.provider is unspecified. */
   defaultProviderId?: string
   /**
-   * "New agent template": overrides merged over the code defaults when the
+   * "Agent template": overrides merged over the code defaults when the
    * user creates an agent from Studio. Absent/empty = code defaults.
    */
   agentTemplate?: AgentTemplate

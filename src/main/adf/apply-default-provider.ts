@@ -15,11 +15,11 @@
  */
 
 import type { ProviderConfig } from '../../shared/types/ipc.types'
-import type { AdfProviderConfig, AgentTemplate, CreateAgentOptions } from '../../shared/types/adf-v02.types'
+import type { AdfProviderConfig, AgentTemplate, CreateAgentOptions, ModelConfig } from '../../shared/types/adf-v02.types'
 
 /**
  * Create options for a user-initiated creation from Studio (FILE_CREATE,
- * fleet-map founding). Applies the user's "New agent template" first, then the
+ * fleet-map founding). Applies the user's "Agent template" first, then the
  * app default provider — which, as before, wins only when the template leaves
  * `model.provider` empty. Agent-spawned children never go through here.
  */
@@ -31,7 +31,7 @@ export function buildStudioCreateOptions(
   const options: CreateAgentOptions = { name, template }
   // Surface the template's model so the provider fallback sees the chosen
   // provider; AdfDatabase.create merges the rest of the template itself.
-  if (template?.model) options.model = { ...template.model }
+  if (template?.model) options.model = { ...template.model } as Partial<ModelConfig>
   return applyDefaultProviderToOptions(options, defaultProvider)
 }
 

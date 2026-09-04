@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
@@ -126,7 +126,7 @@ function computeTriState<T>(items: T[], predicate: (item: T) => boolean): TriSta
  * Ensure the config's tools array contains all runtime-supported tools.
  * Missing tools are appended as disabled. Existing entries are preserved.
  */
-function ensureRuntimeTools(tools: ToolDeclaration[]): ToolDeclaration[] {
+export function ensureRuntimeTools(tools: ToolDeclaration[]): ToolDeclaration[] {
   // Deduplicate by name (keep first occurrence)
   const seen = new Set<string>()
   const deduped = tools.filter((t) => {
@@ -767,12 +767,33 @@ function LoopCard({
   )
 }
 
-export function AgentConfig() {
-  const config = useAgentStore((s) => s.config)
+/**
+ * Controlled ("template") mode: the panel edits a config object the caller
+ * owns instead of the open agent. Store, file and live-status work is skipped
+ * and instance-only UI (name, identity keys, meta, clear state) is hidden.
+ * Used by Settings > Agent template.
+ */
+export interface AgentConfigTemplateProps {
+  value: AgentConfigType
+  onChange: (next: AgentConfigType) => void
+}
+
+/** True while rendering in template mode — lock affordances hide themselves. */
+const TemplateModeContext = createContext(false)
+
+export function AgentConfig({ template }: { template?: AgentConfigTemplateProps } = {}) {
+  const storeConfig = useAgentStore((s) => s.config)
+  const config = template ? template.value : storeConfig
   const setConfig = useAgentStore((s) => s.setConfig)
-  const filePath = useDocumentStore((s) => s.filePath)
+  const docFilePath = useDocumentStore((s) => s.filePath)
+  // Template mode has no open workspace: everything keyed on the file path is off.
+  const filePath = template ? null : docFilePath
   const setFilePath = useDocumentStore((s) => s.setFilePath)
-  const [local, setLocal] = useState<AgentConfigType | null>(null)
+  const templateRef = useRef(template)
+  templateRef.current = template
+  const [local, setLocal] = useState<AgentConfigType | null>(() =>
+    template ? { ...structuredClone(template.value), tools: ensureRuntimeTools(template.value.tools) } : null
+  )
   const [modelOptions, setModelOptions] = useState<string[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelsError, setModelsError] = useState<string | null>(null)
@@ -873,7 +894,7 @@ export function AgentConfig() {
   // Check for missing sandbox packages on config load
   useEffect(() => {
     const packages = config?.code_execution?.packages
-    if (!packages?.length) return
+    if (template || !packages?.length) return
     window.adfApi?.checkMissingSandboxPackages(packages).then((result) => {
       if (result?.missing?.length) {
         setMissingPackages(result.missing)
@@ -884,11 +905,13 @@ export function AgentConfig() {
 
   // Fetch mesh server status for Serving section URL preview
   useEffect(() => {
+    if (template) return
     window.adfApi?.getMeshServerStatus().then(setMeshServerStatus)
   }, [])
 
   // Fetch adf_meta entries
   const refreshMeta = useCallback(() => {
+    if (templateRef.current) return
     window.adfApi?.getAllMeta().then((res) => {
       if (res?.entries) setMetaEntries(res.entries)
     })
@@ -896,6 +919,7 @@ export function AgentConfig() {
   useEffect(() => { refreshMeta() }, [refreshMeta])
 
   useEffect(() => {
+    if (template) return
     const fetchLocalTables = () => {
       window.adfApi?.listLocalTables().then((res) => {
         setLocalTables((res?.tables ?? []).filter((table) => table.name.startsWith('local_')))
@@ -911,6 +935,7 @@ export function AgentConfig() {
 
   // Fetch known agents from the mesh for the allow/block list DID picker
   useEffect(() => {
+    if (template) return
     const fetchKnown = async () => {
       const agents: { did: string; label: string }[] = []
       const seen = new Set<string>()
@@ -939,7 +964,7 @@ export function AgentConfig() {
 
   // Check which MCP servers have identity keys stored in this ADF
   useEffect(() => {
-    if (!local?.mcp?.servers?.length) {
+    if (template || !local?.mcp?.servers?.length) {
       setMcpServersWithKeys(new Set())
       return
     }
@@ -961,7 +986,7 @@ export function AgentConfig() {
 
   // Check which adapters have identity keys stored in this ADF
   useEffect(() => {
-    if (adapterRegistrations.length === 0) {
+    if (template || adapterRegistrations.length === 0) {
       setAdapterWithKeys(new Set())
       return
     }
@@ -995,6 +1020,7 @@ export function AgentConfig() {
 
   // Check if this ADF has signing keys (DID exists iff keys were generated)
   useEffect(() => {
+    if (template) return
     const check = () => {
       window.adfApi?.getDid().then((r) => setHasSigningKeys(!!r?.did))
     }
@@ -1006,7 +1032,7 @@ export function AgentConfig() {
 
   // Check if current provider is saved on this ADF (config.providers[] or identity)
   useEffect(() => {
-    if (!local?.model.provider) {
+    if (template || !local?.model.provider) {
       setProviderSavedOnAdf(false)
       return
     }
@@ -1080,6 +1106,10 @@ export function AgentConfig() {
     (updated: AgentConfigType) => {
       savingRef.current = true
       setLocal(updated)
+      if (templateRef.current) {
+        templateRef.current.onChange(updated)
+        return
+      }
       setConfig(updated)
       // Never fire-and-forget: a refused save (no workspace open, or the
       // backend switched to a different agent file) would otherwise leave the
@@ -1123,6 +1153,7 @@ export function AgentConfig() {
    */
   const isSectionLocked = useCallback(
     (key: string | string[]) => {
+      if (templateRef.current) return false
       const keys = Array.isArray(key) ? key : [key]
       const locked = local?.locked_fields ?? []
       return keys.every((k) => locked.includes(k))
@@ -1222,10 +1253,12 @@ export function AgentConfig() {
   const availableTablesForProtection = localTables.filter((table) => !protectedTableNames.has(table.name))
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="p-3 space-y-4">
+    <TemplateModeContext.Provider value={!!template}>
+    <div className={template ? '' : 'h-full overflow-y-auto'}>
+      <div className={template ? 'space-y-4' : 'p-3 space-y-4'}>
         {/* Identity */}
-        <Section docs={DOCS.identity} title="Identity">
+        <Section docs={DOCS.identity} title={template ? 'Startup' : 'Identity'}>
+          {!template && (<>
           <Field label="Name">
             <input
               ref={nameInputRef}
@@ -1263,6 +1296,7 @@ export function AgentConfig() {
               className="field-input"
             />
           </Field>
+          </>)}
           <Field label="Icon">
             <input
               type="text"
@@ -2843,7 +2877,7 @@ export function AgentConfig() {
                       onChange={(e) => save({ ...local, compute: { ...local.compute!, browser: e.target.checked } })}
                     />
                   </label>
-                  {local.compute?.browser !== false && (
+                  {!template && local.compute?.browser !== false && (
                     <button
                       className="mt-1 text-xs px-2 py-1 rounded bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-300 dark:hover:bg-neutral-600"
                       onClick={async () => {
@@ -2935,7 +2969,7 @@ export function AgentConfig() {
             const toolPrefix = `mcp_${serverName}_`
             const tools = local.tools.filter((t) => !t.name.startsWith(toolPrefix))
             // Clean up identity entries
-            window.adfApi?.deleteIdentityByPrefix(`mcp:${serverName}:`)
+            if (!template) window.adfApi?.deleteIdentityByPrefix(`mcp:${serverName}:`)
             save({ ...local, mcp: servers.length > 0 ? { servers } : undefined, tools })
           }
 
@@ -3238,6 +3272,9 @@ export function AgentConfig() {
         {adapterRegistrations.length > 0 && (
           <Section docs={DOCS.channels} hint="Configure channel adapters in Settings. Enable them here to bridge external messages into this agent." title="Channels">
             <div className="space-y-3">
+              {template && (
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Credentials are copied into an agent when the channel is enabled from its own Config tab.</p>
+              )}
               {adapterRegistrations.map((reg) => {
                 const adapterConfig = local.adapters?.[reg.type]
                 const enabled = adapterConfig?.enabled ?? false
@@ -3255,7 +3292,7 @@ export function AgentConfig() {
                 const handleEnable = async () => {
                   // Copy app-level credentials to identity keystore
                   const identityPrefix = `adapter:${reg.type}:`
-                  for (const e of reg.env ?? []) {
+                  for (const e of template ? [] : reg.env ?? []) {
                     if (e.key && e.value) {
                       await window.adfApi?.setIdentity(`${identityPrefix}${e.key}`, e.value)
                     }
@@ -3276,7 +3313,7 @@ export function AgentConfig() {
                   if (!window.confirm(msg)) return
 
                   // Clean up identity keys
-                  window.adfApi?.deleteIdentityByPrefix(`adapter:${reg.type}:`)
+                  if (!template) window.adfApi?.deleteIdentityByPrefix(`adapter:${reg.type}:`)
 
                   const adapters = { ...(local.adapters ?? {}) }
                   delete adapters[reg.type]
@@ -3591,7 +3628,7 @@ export function AgentConfig() {
               })}
             </div>
 
-          {(local.security?.level ?? 0) >= 1 && !hasSigningKeys && (
+          {!template && (local.security?.level ?? 0) >= 1 && !hasSigningKeys && (
             <div className="p-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 mt-2">
               <p className="text-[10px] text-amber-700 dark:text-amber-400">
                 <strong>Warning:</strong> Signing requires identity keys. Go to the{' '}
@@ -3702,6 +3739,9 @@ export function AgentConfig() {
               )}
             </div>
             <div className={isSectionLocked('security.table_protections') ? 'opacity-60 pointer-events-none' : ''}>
+              {template && (
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">Tables exist per agent; the picker lists them once an agent is open.</p>
+              )}
               <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto_auto] gap-1.5 mb-2">
                 <select
                   value={newProtectedTable}
@@ -4438,6 +4478,7 @@ export function AgentConfig() {
         {/* Serving (HTTP) */}
         <Section docs={DOCS.serving} title="Serving" locked={isSectionLocked('serving')} onToggleLock={() => toggleSectionLock('serving')} summary={`${(local.serving?.api ?? []).length} routes${local.serving?.public?.enabled ? ', public' : ''}`} defaultCollapsed>
           {/* Handle */}
+          {!template && (
           <Field label="Handle">
             <input
               type="text"
@@ -4453,6 +4494,7 @@ export function AgentConfig() {
               URL slug — defaults to filename if blank
             </p>
           </Field>
+          )}
 
           {/* Reply-To URL */}
           <Field label="Reply-To URL" hint="Override the default reply address for outbound messages.">
@@ -5367,6 +5409,7 @@ export function AgentConfig() {
         </Section>
 
         {/* Metadata (read-only) */}
+        {!template && (
         <Section docs={DOCS.metadata} title="Metadata" defaultCollapsed>
           <div className="text-xs text-neutral-400 dark:text-neutral-500 space-y-1">
             <div>Created: {new Date(local.metadata.created_at).toLocaleString()}</div>
@@ -5375,8 +5418,10 @@ export function AgentConfig() {
             <div>ADF Version: {local.adf_version}</div>
           </div>
         </Section>
+        )}
 
         {/* Meta Keys */}
+        {!template && (
         <Section docs={DOCS.metadata} title="Meta Keys" summary={`${metaEntries.length} keys`} defaultCollapsed>
           <div className="space-y-1">
             {metaEntries.length === 0 ? (
@@ -5410,8 +5455,10 @@ export function AgentConfig() {
             </button>
           </div>
         </Section>
+        )}
 
         {/* Clear Agent State */}
+        {!template && (
         <div className="border border-red-200 dark:border-red-900/50 rounded-lg p-3">
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
             Clears README.md (document), mind.md (memory), the loop (conversation history), and all inbox messages.
@@ -5453,6 +5500,7 @@ export function AgentConfig() {
             Clear Agent State
           </button>
         </div>
+        )}
       </div>
 
       {/* Tool definition modal */}
@@ -5698,6 +5746,7 @@ export function AgentConfig() {
         </div>
       </Dialog>
     </div>
+    </TemplateModeContext.Provider>
   )
 }
 
@@ -5896,6 +5945,8 @@ function Section({
 
 function LockButton({ locked, onClick, size = 'sm' }: { locked: boolean; onClick: () => void; size?: 'sm' | 'xs' }) {
   const px = size === 'xs' ? 12 : 14
+  // Locks belong to a running agent; the template has none to show.
+  if (useContext(TemplateModeContext)) return null
   return (
     <button
       onClick={(e) => { e.stopPropagation(); onClick() }}

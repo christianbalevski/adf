@@ -1,5 +1,5 @@
 /**
- * "New agent template" merge/diff.
+ * "Agent template" merge/diff.
  *
  * The template (settings.agentTemplate) stores ONLY the user's overrides of
  * the code defaults. `mergeAgentTemplate` produces the effective creatable
@@ -7,30 +7,30 @@
  * writes back, so a field left at its default never gets persisted and keeps
  * tracking the code default across releases.
  *
- * Merge rules: plain objects merge recursively, arrays REPLACE (the template
- * `tools` list is a whole list, not a patch), `undefined` in the template is
- * skipped, `null` is a value (limits.max_active_turns: null = unlimited).
+ * Both are generic deep operations over the whole config: plain objects merge
+ * recursively, arrays REPLACE (the template `tools` list is a whole list, not
+ * a patch), `undefined` in the template is skipped, `null` is a value
+ * (limits.max_active_turns: null = unlimited). The keys in
+ * `AGENT_TEMPLATE_EXCLUDED_KEYS` come from the file and its lifecycle and are
+ * never read from or written to a template; `files` is seed content, not
+ * config, and is passed through untouched.
  */
 
 import type { AgentConfig, AgentTemplate } from '../types/adf-v02.types'
 
-/** The slice of AgentConfig the template can shape. */
-export type AgentTemplateBase = Pick<
-  AgentConfig,
-  'model' | 'autonomous' | 'instructions' | 'tools' | 'limits' | 'security' | 'messaging'
->
+/** Config keys the template never carries: set per agent at create time. */
+export const AGENT_TEMPLATE_EXCLUDED_KEYS = ['id', 'metadata', 'adf_version', 'name', 'description', 'state'] as const satisfies readonly (keyof AgentConfig)[]
 
-export const AGENT_TEMPLATE_KEYS = [
-  'model',
-  'autonomous',
-  'instructions',
-  'tools',
-  'limits',
-  'security',
-  'messaging',
-] as const satisfies readonly (keyof AgentTemplate)[]
+/** Non-config template key holding seed file content. */
+export const AGENT_TEMPLATE_FILES_KEY = 'files' as const
 
-export type AgentTemplateKey = (typeof AGENT_TEMPLATE_KEYS)[number]
+const EXCLUDED = new Set<string>([...AGENT_TEMPLATE_EXCLUDED_KEYS, AGENT_TEMPLATE_FILES_KEY])
+
+/** Config keys the template may shape. */
+export type AgentTemplateKey = Exclude<keyof AgentTemplate, typeof AGENT_TEMPLATE_FILES_KEY>
+
+/** The config slice the template operates on (anything without the excluded keys). */
+export type AgentTemplateBase = Omit<AgentConfig, (typeof AGENT_TEMPLATE_EXCLUDED_KEYS)[number]>
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -63,17 +63,17 @@ export function deepMergeTemplateValue<T>(base: T, override: unknown): T {
 
 /**
  * Effective creatable config = `defaults` with `template` overrides applied.
- * Returns a fresh object; neither input is mutated.
+ * Excluded keys and `files` in the template are ignored. Returns a fresh
+ * object; neither input is mutated.
  */
-export function mergeAgentTemplate<T extends AgentTemplateBase>(
+export function mergeAgentTemplate<T extends Partial<AgentTemplateBase>>(
   defaults: T,
   template: AgentTemplate | null | undefined
 ): T {
   const out = clone(defaults) as Record<string, unknown>
   if (!template) return out as T
-  for (const key of AGENT_TEMPLATE_KEYS) {
-    const override = template[key]
-    if (override === undefined) continue
+  for (const [key, override] of Object.entries(template)) {
+    if (EXCLUDED.has(key) || override === undefined) continue
     out[key] = deepMergeTemplateValue(out[key], override)
   }
   return out as T
@@ -94,32 +94,46 @@ function deepEqual(a: unknown, b: unknown): boolean {
 }
 
 /**
- * Smallest template that turns `defaults` into `effective`. Object sections
- * keep only the differing keys; arrays and scalars are kept whole or dropped.
- * Returns `{}` when nothing differs.
+ * Smallest override that turns `base` into `next`, or `undefined` when they
+ * are equal. Objects keep only differing keys (recursively); arrays and
+ * scalars are kept whole. A key that `next` lacks but `base` has cannot be
+ * expressed (undefined is "skip") and is left to the default.
  */
-export function diffAgentTemplate(defaults: AgentTemplateBase, effective: AgentTemplateBase): AgentTemplate {
-  const out: Record<string, unknown> = {}
-  for (const key of AGENT_TEMPLATE_KEYS) {
-    const base = defaults[key] as unknown
-    const next = effective[key] as unknown
-    if (deepEqual(base, next)) continue
-    if (isPlainObject(base) && isPlainObject(next)) {
-      const section: Record<string, unknown> = {}
-      for (const k of new Set([...Object.keys(base), ...Object.keys(next)])) {
-        if (next[k] === undefined) continue
-        if (!deepEqual(base[k], next[k])) section[k] = clone(next[k])
-      }
-      if (Object.keys(section).length > 0) out[key] = section
-      continue
+function deepDiff(base: unknown, next: unknown): unknown {
+  if (deepEqual(base, next)) return undefined
+  if (next === undefined) return undefined
+  if (isPlainObject(base) && isPlainObject(next)) {
+    const section: Record<string, unknown> = {}
+    for (const k of Object.keys(next)) {
+      const d = deepDiff(base[k], next[k])
+      if (d !== undefined) section[k] = d
     }
-    out[key] = clone(next)
+    return Object.keys(section).length > 0 ? section : undefined
+  }
+  return clone(next)
+}
+
+/**
+ * Smallest template that turns `defaults` into `effective`. Excluded keys are
+ * never emitted. Returns `{}` when nothing differs. Seed `files` are not part
+ * of the config and are not produced here; callers carry them alongside.
+ */
+export function diffAgentTemplate(
+  defaults: Partial<AgentTemplateBase>,
+  effective: Partial<AgentTemplateBase>
+): AgentTemplate {
+  const out: Record<string, unknown> = {}
+  const keys = new Set([...Object.keys(defaults), ...Object.keys(effective)])
+  for (const key of keys) {
+    if (EXCLUDED.has(key)) continue
+    const d = deepDiff((defaults as Record<string, unknown>)[key], (effective as Record<string, unknown>)[key])
+    if (d !== undefined) out[key] = d
   }
   return out as AgentTemplate
 }
 
-/** True when the template overrides anything under `key`. */
-export function templateOverrides(template: AgentTemplate | null | undefined, keys: readonly AgentTemplateKey[]): boolean {
+/** True when the template overrides anything under one of `keys`. */
+export function templateOverrides(template: AgentTemplate | null | undefined, keys: readonly (keyof AgentTemplate)[]): boolean {
   if (!template) return false
   return keys.some((k) => template[k] !== undefined)
 }

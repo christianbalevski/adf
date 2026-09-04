@@ -2033,7 +2033,7 @@ export function registerAllIpcHandlers(): void {
       console.log('[IPC] FILE_CREATE: Creating workspace for agent:', agentName)
       const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
       const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
-      // User-created from Studio: the "New agent template" applies (never to agent-spawned children).
+      // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
       const agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
       const createOptions = buildStudioCreateOptions(agentName, agentTemplate, defaultProvider)
       currentWorkspace = AdfWorkspace.create(result.filePath, createOptions)
@@ -5525,7 +5525,7 @@ export function registerAllIpcHandlers(): void {
 
       const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
       const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
-      // User-created from Studio: the "New agent template" applies (never to agent-spawned children).
+      // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
       const agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
       const createOptions = buildStudioCreateOptions(name, agentTemplate, defaultProvider)
       const workspace = AdfWorkspace.create(filePath, createOptions)

@@ -29,26 +29,47 @@ export const PROVIDER_TYPES = [
 
 export type ProviderType = (typeof PROVIDER_TYPES)[number]['type']
 
-export const DEFAULT_AGENT_CONFIG: Omit<AgentConfig, 'metadata' | 'id'> = {
+/**
+ * Baseline for a new agent: what AdfDatabase.create writes before the user's
+ * agent template and explicit options are applied. The template UI diffs
+ * against this, so every section create() seeds must appear here.
+ * Instructions start blank: only the template or the caller fills them.
+ */
+export type NewAgentBaseline = Omit<AgentConfig, 'metadata' | 'id'> &
+  Required<Pick<AgentConfig, 'autostart' | 'audit' | 'code_execution' | 'compute' | 'logging' | 'mcp' | 'adapters' | 'serving' | 'ws_connections' | 'providers' | 'locked_fields' | 'card'>>
+
+export const DEFAULT_AGENT_CONFIG: NewAgentBaseline = {
   adf_version: ADF_VERSION,
   name: 'Untitled Agent',
   description: '',
   state: AGENT_DEFAULTS.state,
   autonomous: false,
+  autostart: false,
   model: {
     provider: '',
     model_id: '',
     temperature: 0.7,
-    max_tokens: 4096
+    max_tokens: 4096,
+    vision: false
   },
-  instructions:
-    'Help the user with their request. Read your README.md and mind.md to understand your current state. Use mind.md as your working memory across turns. Keep README.md up to date as your role and accomplishments evolve. Bias toward action.',
-  context: {},
+  instructions: '',
+  context: AGENT_DEFAULTS.context,
   tools: DEFAULT_TOOLS,
   triggers: AGENT_DEFAULTS.triggers,
   security: AGENT_DEFAULTS.security,
   limits: AGENT_DEFAULTS.limits,
-  messaging: AGENT_DEFAULTS.messaging
+  messaging: AGENT_DEFAULTS.messaging,
+  audit: AGENT_DEFAULTS.audit,
+  code_execution: AGENT_DEFAULTS.code_execution,
+  compute: AGENT_DEFAULTS.compute,
+  logging: AGENT_DEFAULTS.logging,
+  mcp: AGENT_DEFAULTS.mcp,
+  adapters: AGENT_DEFAULTS.adapters,
+  serving: AGENT_DEFAULTS.serving,
+  ws_connections: AGENT_DEFAULTS.ws_connections,
+  providers: AGENT_DEFAULTS.providers,
+  locked_fields: AGENT_DEFAULTS.locked_fields,
+  card: AGENT_DEFAULTS.card
 }
 
 export const DEFAULT_DOCUMENT_CONTENT = '# Untitled Agent\n\nStatus: New agent, self-configuring.\n'

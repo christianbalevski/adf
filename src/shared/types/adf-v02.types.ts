@@ -573,21 +573,34 @@ export const START_IN_STATES = ['active', 'idle', 'hibernate'] as const
 export type StartInState = (typeof START_IN_STATES)[number]
 
 /**
- * Studio's "New agent template" (settings.agentTemplate): the subset of an
- * agent's config a user may pre-set for agents they create from the app.
- * Holds ONLY overrides; an empty object means the code defaults
- * (DEFAULT_AGENT_CONFIG). Applied by AdfDatabase.create via
- * mergeAgentTemplate (src/shared/utils/agent-template.ts).
+ * Recursive partial for template overrides: plain objects recurse, arrays stay
+ * whole (they replace on merge), everything else is optional as-is.
  */
-export interface AgentTemplate {
-  model?: Partial<Pick<ModelConfig, 'provider' | 'model_id' | 'temperature' | 'max_tokens'>>
-  autonomous?: boolean
-  instructions?: string
-  /** Full list; replaces the default tool list when present. */
-  tools?: ToolDeclaration[]
-  limits?: Partial<LimitsConfig>
-  security?: Partial<SecurityConfig>
-  messaging?: Partial<MessagingConfig>
+export type DeepPartial<T> = T extends (infer U)[]
+  ? U[]
+  : T extends object
+    ? { [K in keyof T]?: DeepPartial<T[K]> }
+    : T
+
+/** Config keys a template never carries: they come from the file and its lifecycle. */
+export type AgentTemplateExcludedKey = 'id' | 'metadata' | 'adf_version' | 'name' | 'description' | 'state'
+
+/** Seed content for the files a new agent starts with. Empty/absent = code default. */
+export interface AgentTemplateFiles {
+  readme?: string
+  mind?: string
+}
+
+/**
+ * Studio's "Agent template" (settings.agentTemplate): what a user may pre-set
+ * for agents they create from the app. Any config section except the excluded
+ * keys, plus seed `files`. Holds ONLY overrides; an empty object means the
+ * code defaults (DEFAULT_AGENT_CONFIG). Applied by AdfDatabase.create via
+ * mergeAgentTemplate (src/shared/utils/agent-template.ts). Arrays (e.g.
+ * `tools`) are whole lists that replace the default, not patches.
+ */
+export type AgentTemplate = DeepPartial<Omit<AgentConfig, AgentTemplateExcludedKey>> & {
+  files?: AgentTemplateFiles
 }
 
 /**
@@ -597,8 +610,9 @@ export interface AgentTemplate {
 export interface CreateAgentOptions {
   name: string
   /**
-   * User's "New agent template" from Studio settings, merged over the code
-   * defaults BEFORE the explicit fields below are applied. Set only by
+   * User's "Agent template" from Studio settings, merged over the code
+   * defaults BEFORE the explicit fields below are applied. Its `files` seed
+   * README.md / mind.md in place of the code defaults when non-empty. Set only by
    * user-initiated creation from Studio (FILE_CREATE and fleet-map founding).
    * Agent-spawned children (sys_create_adf) and the headless harness never
    * pass it: the template is the owner's preference for agents they make

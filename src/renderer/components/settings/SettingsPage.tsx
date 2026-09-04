@@ -49,7 +49,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
     label: 'Agent runtime',
     items: [
       { id: 'agents', label: 'Prompts', description: 'Applies to every agent now.', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
-      { id: 'template', label: 'New agent template', description: 'Applies to agents you create from now on.', keywords: 'defaults template model tools limits new agent', docs: DOCS.settingsSystemPrompt },
+      { id: 'template', label: 'Agent template', description: 'Applies to agents you create from now on.', keywords: 'defaults template model tools limits new agent files readme mind', docs: DOCS.settingsSystemPrompt },
       { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt grok xai models api keys', docs: DOCS.settingsProviders },
       { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },
       { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools', docs: DOCS.settingsMcp },
@@ -2088,7 +2088,7 @@ export function SettingsPage() {
           </SettingsGroup>
           </>}
 
-          {/* New agent template tab */}
+          {/* Agent template tab */}
           {activeTab === 'template' && (
             <NewAgentTemplateTab
               providers={providers}
@@ -2130,13 +2130,13 @@ export function SettingsPage() {
               ADF files with stored provider configurations will continue to work independently, even if the provider is not listed here.
             </p>
             <p className="text-[11px] text-[var(--adf-ui-text-muted)] mb-3">
-              Default provider for new agents moved to{' '}
+              Default provider for new agents is set under{' '}
               <button
                 type="button"
                 onClick={() => setActiveTab('template')}
                 className="underline underline-offset-2 hover:text-[var(--adf-ui-text)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)] rounded"
               >
-                New agent template
+                Agent template
               </button>
               .
             </p>

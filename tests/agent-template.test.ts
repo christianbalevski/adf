@@ -9,10 +9,16 @@ describe('mergeAgentTemplate', () => {
     expect(mergeAgentTemplate(DEFAULT_AGENT_CONFIG, {})).toEqual(DEFAULT_AGENT_CONFIG)
   })
 
+  it('starts new agents with blank instructions', () => {
+    expect(DEFAULT_AGENT_CONFIG.instructions).toBe('')
+    expect(mergeAgentTemplate(DEFAULT_AGENT_CONFIG, {}).instructions).toBe('')
+  })
+
   it('does not share references with the defaults', () => {
     const merged = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, {})
     expect(merged.tools).not.toBe(DEFAULT_AGENT_CONFIG.tools)
     expect(merged.limits).not.toBe(DEFAULT_AGENT_CONFIG.limits)
+    expect(merged.triggers).not.toBe(DEFAULT_AGENT_CONFIG.triggers)
   })
 
   it('deep-merges object sections and skips undefined', () => {
@@ -35,6 +41,31 @@ describe('mergeAgentTemplate', () => {
     const merged = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, { limits: { max_active_turns: null } })
     expect(merged.limits.max_active_turns).toBeNull()
   })
+
+  it('merges nested sections (triggers) without touching sibling keys', () => {
+    const merged = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, { triggers: { on_timer: { enabled: false } } })
+    expect(merged.triggers.on_timer).toEqual({ ...DEFAULT_AGENT_CONFIG.triggers.on_timer, enabled: false })
+    expect(merged.triggers.on_inbox).toEqual(DEFAULT_AGENT_CONFIG.triggers.on_inbox)
+    expect(merged.triggers.on_chat).toEqual(DEFAULT_AGENT_CONFIG.triggers.on_chat)
+  })
+
+  it('merges nested sections (serving) and adds sections the defaults lack', () => {
+    const merged = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, {
+      serving: { public: { enabled: true } },
+      recovery: { max_attempts: 7 },
+    })
+    expect(merged.serving).toEqual({ ...DEFAULT_AGENT_CONFIG.serving, public: { enabled: true } })
+    expect(merged.recovery).toEqual({ max_attempts: 7 })
+  })
+
+  it('ignores seed files and per-agent keys', () => {
+    const merged = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, {
+      files: { readme: '# Hi', mind: '# Mind' },
+      ...({ name: 'nope', id: 'x', state: 'idle' } as object),
+    })
+    expect(merged).toEqual(DEFAULT_AGENT_CONFIG)
+    expect('files' in merged).toBe(false)
+  })
 })
 
 describe('diffAgentTemplate', () => {
@@ -53,8 +84,30 @@ describe('diffAgentTemplate', () => {
     expect(diff).toEqual({ tools })
   })
 
+  it('diffs nested sections down to the changed leaf', () => {
+    const effective = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, {
+      triggers: { on_timer: { enabled: false } },
+      serving: { public: { enabled: true } },
+    })
+    expect(diffAgentTemplate(DEFAULT_AGENT_CONFIG, effective)).toEqual({
+      triggers: { on_timer: { enabled: false } },
+      serving: { public: { enabled: true } },
+    })
+  })
+
+  it('never emits per-agent keys', () => {
+    const effective = { ...DEFAULT_AGENT_CONFIG, name: 'Other', description: 'd', state: 'idle' as const }
+    expect(diffAgentTemplate(DEFAULT_AGENT_CONFIG, effective)).toEqual({})
+  })
+
   it('round-trips through merge', () => {
-    const template = { instructions: 'Do the thing.', messaging: { receive: false }, model: { provider: 'p1' } }
+    const template = {
+      instructions: 'Do the thing.',
+      messaging: { receive: false },
+      model: { provider: 'p1' },
+      triggers: { on_startup: { enabled: true } },
+      logging: { default_level: 'debug' as const },
+    }
     const effective = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, template)
     expect(diffAgentTemplate(DEFAULT_AGENT_CONFIG, effective)).toEqual(template)
   })

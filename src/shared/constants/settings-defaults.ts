@@ -12,7 +12,7 @@ import { cloneComputeDefaults } from './compute-defaults'
 export function createSettingsDefaults(): Record<string, unknown> {
   return {
     providers: [],
-    // "New agent template": overrides only; empty = code defaults
+    // "Agent template": overrides only; empty = code defaults
     // (DEFAULT_AGENT_CONFIG). See src/shared/utils/agent-template.ts.
     agentTemplate: {},
     theme: 'light',

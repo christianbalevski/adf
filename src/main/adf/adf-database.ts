@@ -36,7 +36,6 @@ import type {
   TriggerTypeV3
 } from '../../shared/types/adf-v02.types'
 import {
-  AGENT_DEFAULTS as defaults,
   DEFAULT_TOOLS as defaultTools,
   DEFAULT_NEW_LOOP_TOOLS,
   getDefaultDocumentContent,
@@ -1993,14 +1992,13 @@ export class AdfDatabase {
 
     const agentId = _nanoid(12)
 
-    // Studio's "New agent template" (settings.agentTemplate) merged over the
-    // code defaults. Only user-initiated creation from Studio passes it (see
-    // CreateAgentOptions.template); every other caller — sys_create_adf
-    // children, the headless harness — gets the bare code defaults, where
-    // instructions stay empty unless the caller supplies them.
-    const base = options.template
-      ? mergeAgentTemplate(DEFAULT_AGENT_CONFIG, options.template)
-      : { ...DEFAULT_AGENT_CONFIG, instructions: '' }
+    // Order: code defaults -> Studio's "Agent template" (settings.agentTemplate)
+    // -> explicit options. Only user-initiated creation from Studio passes a
+    // template (see CreateAgentOptions.template); every other caller —
+    // sys_create_adf children, the headless harness — gets the bare code
+    // defaults, where instructions stay empty unless the caller supplies them.
+    // mergeAgentTemplate clones, so nothing below aliases the shared defaults.
+    const base = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, options.template)
 
     // Merge tools: if caller provided overrides, apply them on top of the base list
     let tools = [...base.tools]
@@ -2016,7 +2014,7 @@ export class AdfDatabase {
     }
 
     // Merge triggers: spread per trigger type from defaults, override with provided
-    const mergedTriggers: TriggersConfigV3 = { ...defaults.triggers }
+    const mergedTriggers: TriggersConfigV3 = { ...base.triggers }
     if (options.triggers) {
       for (const key of Object.keys(options.triggers) as TriggerTypeV3[]) {
         const override = options.triggers[key]
@@ -2027,46 +2025,49 @@ export class AdfDatabase {
     }
 
     const config: AgentConfig = {
+      // Template-only sections with no explicit option (recovery, loops,
+      // stream bindings, umbilical, prompt flags, ...) ride along here.
+      ...base,
       adf_version: '0.2',
       id: agentId,
       name: options.name,
       description: options.description || '',
-      icon: options.icon || pickAgentIcon(agentId),
+      icon: options.icon || base.icon || pickAgentIcon(agentId),
       ...(options.handle ? { handle: options.handle } : {}),
-      state: options.start_in_state ?? defaults.state,
-      start_in_state: options.start_in_state,
+      state: options.start_in_state ?? base.start_in_state ?? base.state,
+      start_in_state: options.start_in_state ?? base.start_in_state,
       autonomous: options.autonomous ?? base.autonomous,
-      autostart: options.autostart ?? false,
-      model: { ...defaults.model, ...base.model, ...options.model },
+      autostart: options.autostart ?? base.autostart ?? false,
+      model: { ...base.model, ...options.model },
       instructions: options.instructions || base.instructions,
       context: {
-        ...defaults.context,
+        ...base.context,
         ...options.context,
-        audit: { ...defaults.context.audit, ...options.context?.audit },
-        dynamic_instructions: { ...defaults.context.dynamic_instructions, ...options.context?.dynamic_instructions }
+        audit: { ...base.context.audit, ...options.context?.audit },
+        dynamic_instructions: { ...base.context.dynamic_instructions, ...options.context?.dynamic_instructions }
       },
       tools,
       triggers: mergedTriggers,
       security: { ...base.security, ...options.security },
       limits: { ...base.limits, ...options.limits },
       messaging: { ...base.messaging, ...options.messaging },
-      audit: { ...defaults.audit, ...options.audit },
-      code_execution: { ...defaults.code_execution, ...options.code_execution },
-      compute: { ...defaults.compute },
-      logging: { ...defaults.logging, ...options.logging },
-      mcp: options.mcp ?? { ...defaults.mcp },
-      adapters: { ...defaults.adapters, ...options.adapters },
-      serving: options.serving ?? { ...defaults.serving },
-      ws_connections: options.ws_connections ?? [...defaults.ws_connections],
-      providers: options.providers ?? [...defaults.providers],
+      audit: { ...base.audit, ...options.audit },
+      code_execution: { ...base.code_execution, ...options.code_execution },
+      compute: { ...base.compute },
+      logging: { ...base.logging, ...options.logging },
+      mcp: options.mcp ?? base.mcp,
+      adapters: { ...base.adapters, ...options.adapters },
+      serving: options.serving ?? base.serving,
+      ws_connections: options.ws_connections ?? base.ws_connections ?? [],
+      providers: options.providers ?? base.providers ?? [],
       // Union, not replace: defensive even though AGENT_DEFAULTS.locked_fields
       // is now [] — the dangerous capability locks (security.allow_local_fetch,
       // stream_bind) live in code (DEFAULT_LOCKED_PATHS in
       // sys-update-config.tool.ts), not in this default, so they're enforced
       // uniformly regardless of what this union produces. This still unions
       // any future/non-empty defaults with caller-supplied locks correctly.
-      locked_fields: Array.from(new Set([...defaults.locked_fields, ...(options.locked_fields ?? [])])),
-      card: options.card ?? { ...defaults.card },
+      locked_fields: Array.from(new Set([...(base.locked_fields ?? []), ...(options.locked_fields ?? [])])),
+      card: options.card ?? base.card,
       metadata: {
         created_at: now,
         updated_at: now,
@@ -2086,9 +2087,13 @@ export class AdfDatabase {
     // Default agent key
     adfDb.setMeta('status', '', 'none')
 
-    const documentContent = getDefaultDocumentContent(options.name)
+    // Seed files: the template's content when it has any, else the code defaults.
+    const seedReadme = options.template?.files?.readme
+    const seedMind = options.template?.files?.mind
+    const documentContent = seedReadme && seedReadme.trim() ? seedReadme : getDefaultDocumentContent(options.name)
+    const mindContent = seedMind && seedMind.trim() ? seedMind : DEFAULT_MIND_CONTENT
     adfDb.writeFile('README.md', Buffer.from(documentContent), 'text/markdown', 'no_delete')
-    adfDb.writeFile('mind.md', Buffer.from(DEFAULT_MIND_CONTENT), 'text/markdown', 'no_delete')
+    adfDb.writeFile('mind.md', Buffer.from(mindContent), 'text/markdown', 'no_delete')
     adfDb.writeFile('mind/log.md', Buffer.from(DEFAULT_MIND_LOG_CONTENT), 'text/markdown', 'no_delete')
     adfDb.writeFile('soul.md', Buffer.from(DEFAULT_SOUL_CONTENT), 'text/markdown', 'no_delete')
 
