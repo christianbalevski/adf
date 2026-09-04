@@ -30,6 +30,8 @@ const api: AdfApi = {
     return () => ipcRenderer.removeListener(IPC.FILE_RENAMED, handler)
   },
   getCurrentFile: () => ipcRenderer.invoke(IPC.FILE_GET_CURRENT),
+  revealInFolder: (filePath: string) =>
+    ipcRenderer.invoke(IPC.FILE_REVEAL, { filePath }),
 
   // Document
   getDocument: () => ipcRenderer.invoke(IPC.DOC_GET_DOCUMENT),

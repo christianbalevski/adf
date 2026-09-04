@@ -23,6 +23,8 @@ export interface AdfApi {
   onFileRenamed: (callback: (event: { oldPath: string; newPath: string }) => void) => () => void
   /** Main's current session — what file (if any) is open in the main process and whether its foreground agent is running. Used by a fresh renderer to resync after a reload. */
   getCurrentFile: () => Promise<{ filePath: string | null; agentRunning: boolean }>
+  /** Open the OS file manager with `filePath` selected (Explorer / Finder / xdg default). */
+  revealInFolder: (filePath: string) => Promise<void>
 
   // Document content
   getDocument: () => Promise<{ content: string }>

@@ -10,6 +10,7 @@ export const IPC = {
   FILE_RENAME: 'adf:file:rename',
   FILE_RENAMED: 'adf:file:renamed',
   FILE_GET_CURRENT: 'adf:file:get-current',
+  FILE_REVEAL: 'adf:file:reveal',
 
   // Document content
   DOC_GET_DOCUMENT: 'adf:doc:get-document',

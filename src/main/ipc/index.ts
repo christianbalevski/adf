@@ -2075,15 +2075,19 @@ export function registerAllIpcHandlers(): void {
     try {
       const { filePath } = args
 
+      // Foreground first: cleanupCurrentFile moves a RUNNING foreground agent
+      // into the background manager rather than stopping it, so the
+      // background check below must run after it or the agent survives with
+      // its database handle open (unlink then fails with EBUSY on Windows).
+      if (filePath === currentFilePath) {
+        await cleanupCurrentFile()
+      }
+
       if (backgroundAgentManager?.hasAgent(filePath)) {
         if (meshManager?.isEnabled()) {
           meshManager.unregisterAgent(filePath)
         }
         await backgroundAgentManager.stopAgent(filePath)
-      }
-
-      if (filePath === currentFilePath) {
-        await cleanupCurrentFile()
       }
 
       // Delete the ADF file and its WAL files
@@ -2092,6 +2096,10 @@ export function registerAllIpcHandlers(): void {
     } catch (error) {
       return { success: false, error: String(error) }
     }
+  })
+
+  ipcMain.handle(IPC.FILE_REVEAL, async (_event, args: { filePath: string }) => {
+    shell.showItemInFolder(args.filePath)
   })
 
   ipcMain.handle(IPC.FILE_LIST_TABLES, async (_event, args: { filePath: string }) => {
