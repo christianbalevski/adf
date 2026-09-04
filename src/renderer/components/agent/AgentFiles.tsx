@@ -121,6 +121,7 @@ export function AgentFiles() {
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set())
   const [creatingFile, setCreatingFile] = useState(false)
   const [newFilePath, setNewFilePath] = useState('')
+  const [fileFilter, setFileFilter] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const newFileInputRef = useRef<HTMLInputElement>(null)
   const folderRenameRef = useRef<HTMLInputElement>(null)
@@ -380,6 +381,12 @@ export function AgentFiles() {
     fetchTables()
   }
 
+  const filterQuery = fileFilter.trim().toLowerCase()
+  const filtering = filterQuery.length > 0
+  const visibleFiles = filtering
+    ? files.filter((f) => f.path.toLowerCase().includes(filterQuery))
+    : files
+
   return (
     <div className="absolute inset-0 flex flex-col min-w-0 overflow-hidden">
       {/* Fixed header: drop zone + buttons */}
@@ -398,7 +405,7 @@ export function AgentFiles() {
         </div>
         <div className="flex items-center justify-between px-3 pb-2">
           <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-neutral-400 dark:text-neutral-500 font-medium">
-            <span>Files ({files.length})</span>
+            <span>Files ({filtering ? `${visibleFiles.length}/${files.length}` : files.length})</span>
             <DocsLink href={DOCS.files} />
           </div>
           <div className="flex items-center gap-2">
@@ -420,6 +427,18 @@ export function AgentFiles() {
               </button>
             )}
           </div>
+        </div>
+        <div className="px-3 pb-2">
+          <input
+            value={fileFilter}
+            onChange={(e) => setFileFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setFileFilter('')
+            }}
+            placeholder="Search…"
+            aria-label="Search files"
+            className="w-full text-xs px-2 py-1 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 outline-none focus:border-blue-400 min-w-0"
+          />
         </div>
       </div>
 
@@ -446,7 +465,7 @@ export function AgentFiles() {
           </div>
         )}
         {(() => {
-          const tree = buildFileTree(files)
+          const tree = buildFileTree(visibleFiles)
 
           const renderFileRow = (file: FileEntry, displayName: string, depth: number) => {
             return (
@@ -501,7 +520,7 @@ export function AgentFiles() {
               return renderFileRow(node.file!, node.name, depth)
             }
 
-            const isCollapsed = collapsedDirs.has(node.path)
+            const isCollapsed = !filtering && collapsedDirs.has(node.path)
             const fileCount = countFiles(node)
 
             return (
@@ -564,6 +583,11 @@ export function AgentFiles() {
         {files.length === 0 && (
           <div className="text-center py-2">
             <p className="text-xs text-neutral-400 dark:text-neutral-500">No files yet.</p>
+          </div>
+        )}
+        {files.length > 0 && visibleFiles.length === 0 && (
+          <div className="text-center py-2">
+            <p className="text-xs text-neutral-400 dark:text-neutral-500">No files match "{fileFilter.trim()}".</p>
           </div>
         )}
       </div>
