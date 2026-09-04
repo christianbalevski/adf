@@ -283,8 +283,9 @@ body,
   will-change: background-position;
 }
 
-/* Mesh traffic: overlapping crests spread and diffuse into a quiet baseline.
-   The gradients are static; only transform and opacity animate. */
+/* Mesh traffic: ripple packets cross repeatedly while their disturbance fades.
+   Static gradients supply soft troughs and fine reflected-light crests; only
+   transform and opacity animate, with no canvas, blur, or per-frame JS. */
 .mesh-traffic-bar {
   position: relative;
   height: 4px;
@@ -308,41 +309,84 @@ body,
   position: absolute;
   inset: 0;
   background: linear-gradient(90deg,
-    transparent 12%,
+    transparent 20%,
     rgba(74, 222, 128, 0.04) 28%,
-    rgba(74, 222, 128, 0.18) 40%,
-    rgba(139, 238, 174, 0.55) 50%,
-    rgba(74, 222, 128, 0.18) 60%,
-    rgba(74, 222, 128, 0.04) 72%,
-    transparent 88%);
-  /* Leave room for the last crest's 900ms delay before the group expires. */
-  animation: meshTrafficRipple calc(var(--mesh-traffic-duration) - 1s) cubic-bezier(0.2, 0.45, 0.3, 1) both;
+    rgba(108, 232, 161, 0.32) 34%,
+    rgba(74, 222, 128, 0.03) 39%,
+    rgba(158, 240, 189, 0.58) 46%,
+    rgba(74, 222, 128, 0.06) 51%,
+    rgba(108, 232, 161, 0.38) 59%,
+    rgba(74, 222, 128, 0.04) 65%,
+    transparent 78%);
+  /* Travel speed is independent of the 30-second lifetime. Packets reset
+     outside the clipped bar, so repeated crossings have no visible jump. */
+  animation: meshTrafficRipple 6s linear infinite both;
+}
+
+.mesh-traffic-wave::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg,
+    transparent 31%,
+    rgba(187, 250, 214, 0.48) 34%,
+    transparent 36%,
+    transparent 44%,
+    rgba(205, 255, 226, 0.65) 46%,
+    transparent 48%,
+    transparent 57%,
+    rgba(187, 250, 214, 0.4) 59%,
+    transparent 61%);
+  animation: meshTrafficShimmer 2.3s ease-in-out infinite alternate;
 }
 
 .mesh-traffic-wave:nth-child(2) {
-  animation-delay: 450ms;
+  animation-duration: 7.4s;
+  animation-delay: 650ms;
+}
+
+.mesh-traffic-wave:nth-child(2)::after {
+  animation-duration: 3.1s;
+  animation-delay: -900ms;
 }
 
 .mesh-traffic-wave:nth-child(3) {
-  animation-delay: 900ms;
+  animation-duration: 8.9s;
+  animation-delay: 1400ms;
+}
+
+.mesh-traffic-wave:nth-child(3)::after {
+  animation-duration: 3.7s;
+  animation-delay: -1700ms;
 }
 
 @keyframes meshTrafficRipple {
-  0% { transform: translateX(-50%) scaleX(0.12); opacity: 0; }
-  10% { opacity: 0.85; }
-  35% { opacity: 0.65; }
-  70% { opacity: 0.3; }
-  100% { transform: translateX(60%) scaleX(1.8); opacity: 0; }
+  0% { transform: translateX(-85%) scaleX(0.65); opacity: 0; }
+  15% { opacity: 0.85; }
+  50% { transform: translateX(0) scaleX(1); opacity: 0.75; }
+  85% { opacity: 0.55; }
+  100% { transform: translateX(85%) scaleX(1.35); opacity: 0; }
+}
+
+@keyframes meshTrafficShimmer {
+  from { opacity: 0.15; }
+  to { opacity: 0.7; }
 }
 
 @keyframes meshTrafficDissolve {
-  0%, 60% { opacity: 1; }
+  0% { opacity: 1; }
   100% { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .mesh-traffic-wave {
     animation-name: meshTrafficFade;
+    animation-duration: var(--mesh-traffic-duration);
+    animation-iteration-count: 1;
+  }
+  .mesh-traffic-wave::after {
+    animation: none;
+    opacity: 0.25;
   }
   .mesh-traffic-wave:nth-child(n + 2) {
     display: none;

@@ -28,8 +28,8 @@ export function MeshTrafficBar() {
           data-direction={pulse.direction}
           style={{ '--mesh-traffic-duration': `${MESH_TRAFFIC_PULSE_MS}ms` } as CSSProperties}
           onAnimationEnd={(event) => {
-            // Child crests finish separately; retain the disturbance until its
-            // own slow fade ends, without timers or per-frame React updates.
+            // Crests cycle independently; retain the disturbance until its
+            // own 30-second fade ends, without timers or per-frame React updates.
             if (event.target === event.currentTarget) {
               setPulses((previous) => previous.filter((item) => item !== pulse))
             }
