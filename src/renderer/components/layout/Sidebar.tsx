@@ -12,6 +12,28 @@ import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../.
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
 
 /**
+ * Keep only entries whose name (file name, agent display name, or path
+ * relative to the tracked directory) contains `query`. Directories survive
+ * only if something below them matches. `query` must already be lowercased.
+ */
+function filterTree(entries: TrackedDirEntry[], query: string, rootPath: string): TrackedDirEntry[] {
+  const out: TrackedDirEntry[] = []
+  for (const entry of entries) {
+    if (entry.isDirectory) {
+      const children = filterTree(entry.children || [], query, rootPath)
+      if (children.length > 0) out.push({ ...entry, children })
+      continue
+    }
+    const relPath = entry.filePath.startsWith(rootPath)
+      ? entry.filePath.slice(rootPath.length + 1)
+      : entry.filePath
+    const haystack = `${entry.fileName}\n${entry.agentName ?? ''}\n${relPath}`.toLowerCase()
+    if (haystack.includes(query)) out.push(entry)
+  }
+  return out
+}
+
+/**
  * Start every non-running agent in `files`, one at a time. All queued paths are
  * marked as starting up front so the sidebar shows a spinner on each pending
  * agent immediately, not just the one currently being started.
@@ -113,6 +135,21 @@ export function Sidebar() {
   )
   const dirScrollRef = useRef<HTMLDivElement>(null)
 
+  const [agentSearch, setAgentSearch] = useState('')
+  const searchQuery = agentSearch.trim().toLowerCase()
+  const searching = searchQuery.length > 0
+  const visibleFilesByDir = useMemo(() => {
+    if (!searching) return filesByDir
+    const out: Record<string, TrackedDirEntry[]> = {}
+    for (const dirPath of directories) {
+      out[dirPath] = filterTree(filesByDir[dirPath] ?? [], searchQuery, dirPath)
+    }
+    return out
+  }, [searching, searchQuery, filesByDir, directories])
+  const visibleDirectories = searching
+    ? directories.filter((d) => (visibleFilesByDir[d]?.length ?? 0) > 0)
+    : directories
+
   const handleOpenFile = useCallback((fp: string) => {
     if (showSettings) setShowSettings(false)
     if (showMeshGraph) setShowMeshGraph(false)
@@ -192,25 +229,46 @@ export function Sidebar() {
         </button>
       </div>
 
+      {directories.length > 0 && (
+        <div className="px-2.5 pb-2 shrink-0">
+          <input
+            value={agentSearch}
+            onChange={(e) => setAgentSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setAgentSearch('')
+            }}
+            placeholder="Search…"
+            aria-label="Search agents"
+            className="w-full text-xs px-2 py-1 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 outline-none focus:border-blue-400 min-w-0"
+          />
+        </div>
+      )}
+
       {/* Only the agent tree scrolls; the title and actions remain visible. */}
       <div ref={dirScrollRef} className="scrollbar-autohide flex-1 min-h-0 overflow-y-auto">
         {directories.length > 0 ? (
           <div className="pb-1">
-            {directories.map((dirPath, index) => (
+            {visibleDirectories.map((dirPath, index) => (
               <div key={dirPath}>
                 {index > 0 && <div className="border-t border-neutral-200 dark:border-neutral-700 my-1" />}
                 <DirectorySection
                   dirPath={dirPath}
-                  files={filesByDir[dirPath] ?? []}
+                  files={visibleFilesByDir[dirPath] ?? []}
                   currentFilePath={filePath}
                   meshEnabled={meshEnabled}
                   agentStatusMap={agentStatusMap}
                   backgroundAgentMap={backgroundAgentMap}
                   foregroundAgentState={foregroundAgentState}
                   onOpenFile={handleOpenFile}
+                  forceExpanded={searching}
                 />
               </div>
             ))}
+            {searching && visibleDirectories.length === 0 && (
+              <p className="px-3 py-4 text-xs text-neutral-400 dark:text-neutral-600">
+                No agents match "{agentSearch.trim()}".
+              </p>
+            )}
           </div>
         ) : (
           <p className="px-3 py-4 text-xs text-neutral-400 dark:text-neutral-600">
@@ -230,7 +288,8 @@ const DirectorySection = memo(function DirectorySection({
   agentStatusMap,
   backgroundAgentMap,
   foregroundAgentState,
-  onOpenFile
+  onOpenFile,
+  forceExpanded = false
 }: {
   dirPath: string
   files: TrackedDirEntry[]
@@ -240,8 +299,11 @@ const DirectorySection = memo(function DirectorySection({
   backgroundAgentMap: Map<string, BackgroundAgentStatus>
   foregroundAgentState: string
   onOpenFile: (filePath: string) => void
+  /** Show children regardless of the user's collapse state (used while searching). */
+  forceExpanded?: boolean
 }) {
-  const [expanded, setExpanded] = useState(true)
+  const [userExpanded, setExpanded] = useState(true)
+  const expanded = forceExpanded || userExpanded
   const [toggling, setToggling] = useState(false)
   const dirName = dirPath.split('/').pop() ?? dirPath
 
@@ -352,7 +414,7 @@ const DirectorySection = memo(function DirectorySection({
               backgroundAgentMap={backgroundAgentMap}
               foregroundAgentState={foregroundAgentState}
               onOpenFile={onOpenFile}
-
+              forceExpanded={forceExpanded}
             />
           ))}
         </div>
@@ -369,7 +431,8 @@ const TreeNode = memo(function TreeNode({
   agentStatusMap,
   backgroundAgentMap,
   foregroundAgentState,
-  onOpenFile
+  onOpenFile,
+  forceExpanded = false
 }: {
   entry: TrackedDirEntry
   depth: number
@@ -379,8 +442,10 @@ const TreeNode = memo(function TreeNode({
   backgroundAgentMap: Map<string, BackgroundAgentStatus>
   foregroundAgentState: string
   onOpenFile: (filePath: string) => void
+  forceExpanded?: boolean
 }) {
-  const [expanded, setExpanded] = useState(true)
+  const [userExpanded, setExpanded] = useState(true)
+  const expanded = forceExpanded || userExpanded
   const [toggling, setToggling] = useState(false)
 
   if (entry.isDirectory) {
@@ -478,7 +543,7 @@ const TreeNode = memo(function TreeNode({
                 backgroundAgentMap={backgroundAgentMap}
                 foregroundAgentState={foregroundAgentState}
                 onOpenFile={onOpenFile}
-  
+                forceExpanded={forceExpanded}
               />
             ))}
           </div>
