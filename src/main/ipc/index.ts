@@ -2140,15 +2140,16 @@ export function registerAllIpcHandlers(): void {
       //    new lineage node, not the source's continuation), inherited
       //    source-subject certs purged, and a signed `clone` cert with
       //    scope = source DID (only when the source DID verifies).
-      //  - adf_identity kept: same DID and id, so kept certs stay valid; if
-      //    adf_attestations was deselected the rows are gone and
-      //    owner/operator certs are reissued for the local owner.
+      //  - adf_identity kept: same DID (new config.id), so kept certs stay
+      //    valid; if adf_attestations was deselected the rows are gone and
+      //    owner/operator certs are reissued for the local owner — unless
+      //    the keys are sealed for another owner (left for Claim).
       //  - always: adf_parent_did = source, so the clone is its child.
       // Built on a `.partial` temp file and moved into place at the end;
       // a failure leaves nothing behind.
       settings.ensureRuntimeIdentity()
       const ownerIdentity = settings.getOwnerIdentity()
-      const { filePath: newPath, fixup } = cloneAdfFile(args.filePath, args.selectedTables, {
+      const { filePath: newPath, config, fixup } = cloneAdfFile(args.filePath, args.selectedTables, {
         keys: {
           ownerDid: ownerIdentity.getOwnerDid(),
           ownerPrivateKey: ownerIdentity.getOwnerSigningKey(),
@@ -2159,6 +2160,8 @@ export function registerAllIpcHandlers(): void {
         // Surface the clone in the fleet immediately (auto-tracks its directory)
         onCreated: notifyAdfFileCreated
       })
+      // Auto-register as reviewed (user created it), like FILE_CREATE
+      settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), config))
       return { success: true, filePath: newPath, warnings: fixup.warnings }
     } catch (error) {
       return { success: false, error: String(error) }

@@ -22,6 +22,8 @@ export interface LineageAgentRef {
   agentId?: string
   /** Raw parent reference (adf_parent_did) */
   parentDid?: string
+  /** adf_created_at — tie-breaker among same-DID holders and for cycle breaking */
+  createdAt?: string
 }
 
 export interface ResolvedLineage {
@@ -51,6 +53,11 @@ export interface ResolvedLineage {
  * referencing file itself is skipped in favour of the next one (another file
  * with the same current DID — a kept-identity clone's source — then history,
  * then config.id); with no alternative the reference is unresolvable.
+ *
+ * Among several holders of a referenced DID, one that does not itself point
+ * at that DID wins (the source over its sibling clones), then the earliest
+ * `createdAt`, then first-seen. Cycles that survive the cascade (degenerate
+ * data) are broken by orphaning the youngest member.
  */
 export function resolveLineage(agents: LineageAgentRef[]): ResolvedLineage {
   const byCurrentDid = new Map<string, string[]>()
@@ -73,6 +80,31 @@ export function resolveLineage(agents: LineageAgentRef[]): ResolvedLineage {
     if (files.length > 1) duplicateDids.set(did, [...files])
   }
 
+  const byPath = new Map(agents.map((a) => [a.filePath, a]))
+  const createdAt = (filePath: string): string => byPath.get(filePath)?.createdAt ?? ''
+
+  // Best holder of `ref` for `agent`: not the file itself; not another clone
+  // pointing at the same DID when a non-clone holder exists; then earliest
+  // createdAt; then first-seen (index order, so the incumbent wins ties).
+  const pick = (holders: string[] | undefined, agent: LineageAgentRef): string | undefined => {
+    let best: string | undefined
+    for (const filePath of holders ?? []) {
+      if (filePath === agent.filePath) continue
+      if (best === undefined) {
+        best = filePath
+        continue
+      }
+      const bestIsClone = byPath.get(best)?.parentDid === agent.parentDid
+      const isClone = byPath.get(filePath)?.parentDid === agent.parentDid
+      if (bestIsClone !== isClone) {
+        if (!isClone) best = filePath
+      } else if (createdAt(filePath) < createdAt(best)) {
+        best = filePath
+      }
+    }
+    return best
+  }
+
   const parents = new Map<string, string>()
   const children = new Map<string, string[]>()
   const orphaned: string[] = []
@@ -84,10 +116,9 @@ export function resolveLineage(agents: LineageAgentRef[]): ResolvedLineage {
       roots.push(agent.filePath)
       continue
     }
-    // Cascade, first-seen within each tier, never the file itself.
     let resolved: string | undefined
     for (const tier of [byCurrentDid, byHistoryDid, byAgentId]) {
-      resolved = tier.get(ref)?.find((filePath) => filePath !== agent.filePath)
+      resolved = pick(tier.get(ref), agent)
       if (resolved !== undefined) break
     }
     if (resolved === undefined) {
@@ -99,6 +130,38 @@ export function resolveLineage(agents: LineageAgentRef[]): ResolvedLineage {
     const siblings = children.get(resolved) ?? []
     siblings.push(agent.filePath)
     children.set(resolved, siblings)
+  }
+
+  // Self-references fall through to history, which can close a loop in
+  // degenerate data. Break each cycle by orphaning its youngest member
+  // (latest createdAt, tie → last-seen); every node then reaches a root.
+  const index = new Map(agents.map((a, i) => [a.filePath, i]))
+  const orphan = (filePath: string) => {
+    const parent = parents.get(filePath)!
+    parents.delete(filePath)
+    const siblings = children.get(parent)!.filter((f) => f !== filePath)
+    if (siblings.length > 0) children.set(parent, siblings)
+    else children.delete(parent)
+    orphaned.push(filePath)
+    roots.push(filePath)
+  }
+  const settled = new Set<string>()
+  for (const agent of agents) {
+    const path: string[] = []
+    let cur: string | undefined = agent.filePath
+    while (cur !== undefined && !settled.has(cur) && !path.includes(cur)) {
+      path.push(cur)
+      cur = parents.get(cur)
+    }
+    if (cur !== undefined && path.includes(cur)) {
+      const victim = path.slice(path.indexOf(cur)).reduce((a, b) => {
+        const ca = createdAt(a)
+        const cb = createdAt(b)
+        return cb > ca || (cb === ca && index.get(b)! > index.get(a)!) ? b : a
+      })
+      orphan(victim)
+    }
+    for (const p of path) settled.add(p)
   }
 
   return { parents, children, orphaned, roots, duplicateDids }

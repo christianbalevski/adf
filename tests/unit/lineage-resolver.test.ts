@@ -90,6 +90,82 @@ describe('resolveLineage (ADF_IDENTITY_SPEC D4)', () => {
     expect(result.orphaned).toEqual([])
   })
 
+  it('resolves several kept-identity clones to their source whatever the scan order', () => {
+    // B and C kept A's keys: all three present did:key:zA; B and C point at it, A points at X
+    const x = agent({ filePath: '/x.adf', did: 'did:key:zX' })
+    const a = agent({ filePath: '/a.adf', did: 'did:key:zA', parentDid: 'did:key:zX' })
+    const b = agent({ filePath: '/b.adf', did: 'did:key:zA', parentDid: 'did:key:zA' })
+    const c = agent({ filePath: '/c.adf', did: 'did:key:zA', parentDid: 'did:key:zA' })
+    const result = resolveLineage([b, c, a, x])
+
+    expect(result.parents.get('/b.adf')).toBe('/a.adf')
+    expect(result.parents.get('/c.adf')).toBe('/a.adf')
+    expect(result.parents.get('/a.adf')).toBe('/x.adf')
+    expect(result.children.get('/a.adf')).toEqual(['/b.adf', '/c.adf'])
+    expect(result.roots).toEqual(['/x.adf'])
+    expect(result.orphaned).toEqual([])
+
+    // Three clones, source last
+    const d = agent({ filePath: '/d.adf', did: 'did:key:zA', parentDid: 'did:key:zA' })
+    const three = resolveLineage([b, c, d, a, x])
+    expect(three.children.get('/a.adf')).toEqual(['/b.adf', '/c.adf', '/d.adf'])
+    expect(three.parents.get('/a.adf')).toBe('/x.adf')
+    expect(three.roots).toEqual(['/x.adf'])
+  })
+
+  it('prefers the earliest-created holder when every holder is a clone', () => {
+    // Nobody is "the source": all three point at the shared DID. Oldest wins, then first-seen.
+    const a = agent({ filePath: '/a.adf', did: 'did:key:zS', parentDid: 'did:key:zS', createdAt: '2026-03-01' })
+    const b = agent({ filePath: '/b.adf', did: 'did:key:zS', parentDid: 'did:key:zS', createdAt: '2026-01-01' })
+    const c = agent({ filePath: '/c.adf', did: 'did:key:zS', parentDid: 'did:key:zS', createdAt: '2026-01-01' })
+    const result = resolveLineage([a, b, c])
+
+    expect(result.parents.get('/a.adf')).toBe('/b.adf')
+    // B → C → B is a loop; its youngest member (C, tie → last-seen) is cut loose
+    expect(result.parents.get('/b.adf')).toBe('/c.adf')
+    expect(result.parents.has('/c.adf')).toBe(false)
+    expect(result.orphaned).toEqual(['/c.adf'])
+    expect(result.roots).toEqual(['/c.adf'])
+  })
+
+  it('breaks the self-reference → rotated-history loop by orphaning exactly one member', () => {
+    // A points at its own DID; B rotated away from that DID and points at it too
+    const a = agent({ filePath: '/a.adf', did: 'did:key:zX', parentDid: 'did:key:zX' })
+    const b = agent({ filePath: '/b.adf', did: 'did:key:zY', didHistory: ['did:key:zX'], parentDid: 'did:key:zX' })
+    const result = resolveLineage([a, b])
+
+    // A → B (history) and B → A (current) close a loop; no timestamps, so the last-seen member is cut
+    expect(result.parents.get('/a.adf')).toBe('/b.adf')
+    expect(result.parents.has('/b.adf')).toBe(false)
+    expect(result.orphaned).toEqual(['/b.adf'])
+    expect(result.roots).toEqual(['/b.adf'])
+    expect(result.children.get('/b.adf')).toEqual(['/a.adf'])
+    expect(result.children.get('/a.adf')).toBeUndefined()
+  })
+
+  it('breaks a pre-existing A↔B cycle deterministically (latest createdAt, then last-seen)', () => {
+    const a = agent({ filePath: '/a.adf', did: 'did:key:zA', parentDid: 'did:key:zB', createdAt: '2026-02-01' })
+    const b = agent({ filePath: '/b.adf', did: 'did:key:zB', parentDid: 'did:key:zA', createdAt: '2026-01-01' })
+    const byAge = resolveLineage([a, b])
+    expect(byAge.parents.get('/b.adf')).toBe('/a.adf')
+    expect(byAge.parents.has('/a.adf')).toBe(false)
+    expect(byAge.orphaned).toEqual(['/a.adf'])
+    expect(byAge.roots).toEqual(['/a.adf'])
+    expect(byAge.children.get('/b.adf')).toBeUndefined()
+    expect(byAge.children.get('/a.adf')).toEqual(['/b.adf'])
+
+    // No timestamps: the last-seen member is cut, regardless of who is scanned first
+    const p = agent({ filePath: '/p.adf', did: 'did:key:zP', parentDid: 'did:key:zQ' })
+    const q = agent({ filePath: '/q.adf', did: 'did:key:zQ', parentDid: 'did:key:zP' })
+    expect(resolveLineage([p, q]).orphaned).toEqual(['/q.adf'])
+    expect(resolveLineage([q, p]).orphaned).toEqual(['/p.adf'])
+    // A third node hanging off the cycle stays attached
+    const r = agent({ filePath: '/r.adf', did: 'did:key:zR', parentDid: 'did:key:zQ' })
+    const withLeaf = resolveLineage([p, q, r])
+    expect(withLeaf.parents.get('/r.adf')).toBe('/q.adf')
+    expect(withLeaf.roots).toEqual(['/q.adf'])
+  })
+
   it('reports duplicate current DIDs (same-owner file copies)', () => {
     const original = agent({ filePath: '/original.adf', did: 'did:key:zDupe' })
     const copy = agent({ filePath: '/copy.adf', did: 'did:key:zDupe' })

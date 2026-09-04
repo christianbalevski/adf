@@ -1,9 +1,15 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync } from 'fs'
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { AdfWorkspace, type EnvelopeRecipients } from '../../../src/main/adf/adf-workspace'
-import { applyCloneFixup, clearUnselectedTables, cloneAdfFile, snapshotCloneSource } from '../../../src/main/adf/clone-fixup'
+import {
+  applyCloneFixup,
+  clearUnselectedTables,
+  cloneAdfFile,
+  isIdentityEnvelopeOurs,
+  snapshotCloneSource
+} from '../../../src/main/adf/clone-fixup'
 import {
   appendAdfAttestation,
   createAttestation,
@@ -69,13 +75,14 @@ describe('clone fixup (FILE_CLONE post-copy)', () => {
    * owner/operator certs from a DIFFERENT owner, a peer cert about itself,
    * and its own parent reference — everything a clone could wrongly inherit.
    */
-  function makeSource(opts: { sealed?: boolean } = {}): { path: string; did: string; oldDid: string; sourceOwner: ReturnType<typeof makeIdentity> } {
+  function makeSource(opts: { sealed?: boolean; sealedFor?: EnvelopeRecipients } = {}): { path: string; did: string; oldDid: string; sourceOwner: ReturnType<typeof makeIdentity> } {
     const dir = mkdtempSync(join(tmpdir(), 'adf-clone-fixup-'))
     dirs.push(dir)
     const path = join(dir, 'source.adf')
     const ws = AdfWorkspace.create(path, { name: 'source' })
     // sealed: production D6 layout — private key under the identity envelope, public key plain
-    if (opts.sealed) ws.provisionEnvelopes(makeRecipients(owner.did, runtime.did))
+    if (opts.sealedFor) ws.provisionEnvelopes(opts.sealedFor)
+    else if (opts.sealed) ws.provisionEnvelopes(makeRecipients(owner.did, runtime.did))
     const oldDid = ws.generateIdentityKeys(null).did
     // Rotate: previous DID lands in adf_did_history
     ws.getDatabase().deleteIdentity('crypto:signing:private_key')
@@ -335,6 +342,37 @@ describe('clone fixup (FILE_CLONE post-copy)', () => {
       expect(certs.every((a) => verifyAttestation(a, { expectedSubject: src.did }))).toBe(true)
     })
 
+    it('leaves another owner\'s sealed identity unstamped and points at Claim', () => {
+      const other = makeIdentity()
+      const otherRuntime = makeIdentity()
+      const src = makeSource({ sealedFor: makeRecipients(other.did, otherRuntime.did) })
+      const stamped = AdfWorkspace.open(src.path)
+      stamped.getDatabase().setMeta('adf_owner_did', other.did, 'readonly')
+      stamped.getDatabase().setMeta('adf_runtime_did', otherRuntime.did, 'readonly')
+      stamped.close()
+
+      const { ws, result } = cloneOf(src.path, ['adf_attestations'])
+      expect(ws.getEnvelopeState('identity')).toBe('foreign')
+      expect(isIdentityEnvelopeOurs(ws, keys)).toBe(false)
+      expect(result.identity).toBe('kept')
+      // Source stamps untouched, no certs issued in our name
+      expect(ws.getMeta('adf_owner_did')).toBe(other.did)
+      expect(ws.getMeta('adf_runtime_did')).toBe(otherRuntime.did)
+      expect(readAdfAttestations(ws)).toEqual([])
+      expect(result.warnings).toEqual([expect.stringContaining('use Claim')])
+      // Still a child of the source
+      expect(ws.getMeta('adf_parent_did')).toBe(src.did)
+
+      // Our own sealed file reads 'foreign' on a fresh open too — slot DIDs tell them apart
+      const ours = makeSource({ sealed: true })
+      const probe = AdfWorkspace.open(ours.path)
+      open.push(probe)
+      expect(probe.getEnvelopeState('identity')).toBe('foreign')
+      expect(isIdentityEnvelopeOurs(probe, keys)).toBe(true)
+      expect(isIdentityEnvelopeOurs(probe, { ...keys, runtimeDid: undefined })).toBe(true)
+      expect(isIdentityEnvelopeOurs(probe, { ownerDid: other.did, ownerPrivateKey: null })).toBe(false)
+    })
+
     it('overwrites the inherited owner stamps when it reissues certs', () => {
       const src = makeSource()
       const stamped = AdfWorkspace.open(src.path)
@@ -381,7 +419,7 @@ describe('clone fixup (FILE_CLONE post-copy)', () => {
       expect(listing).toEqual(['source.adf', 'source_clone.adf'])
     })
 
-    it('fresh identity gets a new config.id; kept identity keeps it', () => {
+    it('gives every clone a new config.id — kept identity included (review gate keys on id)', () => {
       const src = makeSource()
       const probe = AdfWorkspace.open(src.path)
       const srcId = probe.getAgentConfig().id
@@ -390,13 +428,17 @@ describe('clone fixup (FILE_CLONE post-copy)', () => {
       expect(fresh.result.fixup.identity).toBe('fresh')
       expect(fresh.ws.getAgentConfig().id).not.toBe(srcId)
       expect(fresh.ws.getAgentConfig().id).toHaveLength(srcId.length)
+      expect(fresh.result.config.id).toBe(fresh.ws.getAgentConfig().id)
       expect(fresh.ws.getMeta('adf_parent_did')).toBe(src.did)
       expect(readAdfAttestations(fresh.ws).find((a) => a.role === 'clone')?.scope).toBe(src.did)
 
       const kept = cloneVia(src.path, [])
       expect(kept.result.filePath).toMatch(/source_clone_2\.adf$/)
       expect(kept.result.fixup.identity).toBe('kept')
-      expect(kept.ws.getAgentConfig().id).toBe(srcId)
+      expect(kept.ws.getAgentConfig().id).not.toBe(srcId)
+      expect(kept.ws.getAgentConfig().id).not.toBe(fresh.ws.getAgentConfig().id)
+      expect(kept.ws.getAgentConfig().id).toHaveLength(srcId.length)
+      expect(kept.result.config).toMatchObject({ id: kept.ws.getAgentConfig().id, name: 'source_clone_2' })
       expect(kept.ws.getDid()).toBe(src.did)
     })
 
@@ -412,6 +454,37 @@ describe('clone fixup (FILE_CLONE post-copy)', () => {
       expect(() => cloneVia(src.path, ['adf_identity'], { provisionFreshIdentity: () => {} }))
         .toThrow(/did not mint a new DID/)
       expect(dirListing(src.path)).toEqual(['source.adf'])
+
+      // A migration backup written beside the partial goes with it
+      const partial = join(src.path, '..', 'source_clone.adf.partial')
+      expect(() => cloneVia(src.path, ['adf_identity'], {
+        provisionFreshIdentity: () => {
+          writeFileSync(`${partial}.bak`, 'backup')
+          throw new Error('boom')
+        }
+      })).toThrow('boom')
+      expect(dirListing(src.path)).toEqual(['source.adf'])
+    })
+
+    it('replaces a stale partial from a crashed run instead of copying over it', () => {
+      const src = makeSource()
+      const partial = join(src.path, '..', 'source_clone.adf.partial')
+      writeFileSync(partial, 'garbage')
+      writeFileSync(`${partial}-wal`, 'garbage')
+      writeFileSync(`${partial}.bak`, 'garbage')
+      const { ws, listing } = cloneVia(src.path, [])
+      expect(listing).toEqual(['source.adf', 'source_clone.adf'])
+      expect(ws.getDid()).toBe(src.did)
+    })
+
+    it('keeps a completed clone when the created-notifier throws', () => {
+      const src = makeSource()
+      const { ws, result, listing } = cloneVia(src.path, [], {
+        onCreated: () => { throw new Error('watcher down') }
+      })
+      expect(listing).toEqual(['source.adf', 'source_clone.adf'])
+      expect(ws.getMeta('adf_parent_did')).toBe(src.did)
+      expect(result.fixup.warnings).toEqual([expect.stringContaining('watcher down')])
     })
 
     it('recomputes the DID of a sealed-key kept-identity clone through the real path', () => {
