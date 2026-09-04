@@ -1857,7 +1857,7 @@ export function SettingsPage() {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)]">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-[var(--adf-ui-border)] bg-[var(--adf-ui-sidebar)]">
+      <aside className="flex w-60 shrink-0 flex-col bg-[var(--adf-ui-sidebar)]">
         <div className="px-4 pt-4 pb-3">
           <Button
             onClick={() => setShowSettings(false)}

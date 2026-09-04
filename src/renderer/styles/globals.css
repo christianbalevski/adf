@@ -27,6 +27,7 @@
   --color-surface-raised: var(--adf-surface-raised);
   --color-hairline: var(--adf-hairline);
   --shadow-card: var(--adf-shadow-card);
+  --shadow-subtle: var(--adf-shadow-subtle);
 }
 
 /* ADF Studio UI tokens
@@ -70,6 +71,7 @@
   --adf-surface-raised: #ffffff;
   --adf-hairline: rgb(0 0 0 / 0.06);
   --adf-shadow-card: 0 2px 8px rgb(0 0 0 / 0.08);
+  --adf-shadow-subtle: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.06);
 }
 
 .dark {
@@ -103,6 +105,7 @@
   --adf-surface-raised: #1f1f1f;
   --adf-hairline: rgb(255 255 255 / 0.06);
   --adf-shadow-card: 0 4px 16px rgb(0 0 0 / 0.45);
+  --adf-shadow-subtle: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 4px rgb(0 0 0 / 0.25);
 }
 
 html,
