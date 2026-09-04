@@ -6,7 +6,7 @@ import { AdfWorkspace } from '../../adf/adf-workspace'
 import { ensureWorkspaceIdentity } from '../../runtime/identity-provisioner'
 import { markChildTrusted } from '../../runtime/child-trust'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
-import type { CreateAgentOptions } from '../../../shared/types/adf-v02.types'
+import type { CreateAgentOptions, AgentTemplate, ModelConfig } from '../../../shared/types/adf-v02.types'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
 import { readTemplate, mergeTemplateWithOverrides } from '../../adf/adf-template'
 import { applyDefaultProviderToOptions } from '../../adf/apply-default-provider'
@@ -358,6 +358,12 @@ export class CreateAdfTool implements Tool {
   onChildCreated?: (filePath: string, config: import('../../../shared/types/adf-v02.types').AgentConfig) => void
   /** Injected by runtime — returns the currently configured app-level default provider, if any. */
   getDefaultProvider?: () => ProviderConfig | undefined
+  /**
+   * Injected by runtime — the Studio "Agent template" plus its uploaded-files
+   * dir, but only when the user has switched on "also apply to agents created
+   * by other agents". Undefined otherwise, so children get plain code defaults.
+   */
+  getStudioTemplate?: () => { template: AgentTemplate; filesDir: string } | undefined
   readonly requireApproval = true
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
@@ -394,6 +400,19 @@ export class CreateAdfTool implements Tool {
         options = mergeResult.options
       } else {
         options = { name, ...configOverrides }
+      }
+
+      // Studio's Agent template, when the user opted children in. Skipped when
+      // the parent named a template agent: that is an explicit choice. The
+      // parent's own overrides still win — AdfDatabase.create layers explicit
+      // options over the template, which sits over code defaults.
+      if (!template) {
+        const studio = this.getStudioTemplate?.()
+        if (studio) {
+          options.template = studio.template
+          options.templateFilesDir = studio.filesDir
+          if (!options.model && studio.template.model) options.model = { ...studio.template.model } as Partial<ModelConfig>
+        }
       }
 
       // If the caller did not specify a model provider, fall back to the

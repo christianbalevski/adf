@@ -194,6 +194,7 @@ import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispat
 import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, McpRegistrationTestResult, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
 import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
 import type { AgentConfig, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
+import type { AgentTemplate } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
@@ -4383,6 +4384,11 @@ export function registerAllIpcHandlers(): void {
       createAdfTool.getDefaultProvider = () => {
         const appProviders = (settings.get('providers') as ProviderConfig[] | undefined) ?? []
         return resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
+      }
+      createAdfTool.getStudioTemplate = () => {
+        if (settings.get('agentTemplateForChildren') !== true) return undefined
+        const template = (settings.get('agentTemplate') as AgentTemplate | undefined) ?? {}
+        return { template, filesDir: agentTemplateFilesDir() }
       }
     }
 

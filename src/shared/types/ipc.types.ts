@@ -156,6 +156,8 @@ export interface AppSettings {
    * user creates an agent from Studio. Absent/empty = code defaults.
    */
   agentTemplate?: AgentTemplate
+  /** Also apply agentTemplate to children spawned via sys_create_adf. Default off. */
+  agentTemplateForChildren?: boolean
   theme?: 'light' | 'dark' | 'system'
   /** Interface typeface preset (UiFont in the renderer's app.store); 'custom' reads uiFontCustom. */
   uiFont?: 'system' | 'segoe' | 'inter' | 'roboto' | 'sf' | 'calibri' | 'verdana' | 'georgia' | 'custom'

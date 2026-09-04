@@ -94,6 +94,12 @@ export function NewAgentTemplateTab({ providers, defaultProviderId, onDefaultPro
   const dirty = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const pendingSave = useRef<(() => void) | null>(null)
+  // settings.agentTemplateForChildren — written immediately, not debounced.
+  const [forChildren, setForChildren] = useState(false)
+  const toggleForChildren = (enabled: boolean) => {
+    setForChildren(enabled)
+    void settingsApi()?.setSettings?.({ agentTemplateForChildren: enabled })
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -101,6 +107,7 @@ export function NewAgentTemplateTab({ providers, defaultProviderId, onDefaultPro
       if (cancelled) return
       const stored = settings?.agentTemplate
       setTemplate(stored && typeof stored === 'object' ? (stored as AgentTemplate) : {})
+      setForChildren(settings?.agentTemplateForChildren === true)
       loaded.current = true
     })
     return () => { cancelled = true }
@@ -211,6 +218,27 @@ export function NewAgentTemplateTab({ providers, defaultProviderId, onDefaultPro
           Reset everything to defaults
         </Button>
       </div>
+
+      <SettingsGroup title="Applies to">
+        <SettingsRow label="Agents you create in Studio" description="Always on.">
+          <span className="text-[12px] text-[var(--adf-ui-text-subtle)]">On</span>
+        </SettingsRow>
+        <SettingsRow
+          separator
+          label="Agents created by other agents"
+          description="Children made with sys_create_adf start from this template. The parent's own settings still win. Off when the parent names a template agent."
+        >
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={forChildren}
+              onChange={(e) => toggleForChildren(e.target.checked)}
+              className="rounded text-blue-500"
+            />
+            <span className="text-[12px] text-[var(--adf-ui-text-muted)]">{forChildren ? 'On' : 'Off'}</span>
+          </label>
+        </SettingsRow>
+      </SettingsGroup>
 
       <SettingsGroup title="Default provider" description="Used when the template leaves Provider unset. Its default model fills Model ID.">
         <SettingsRow label="Default provider">
