@@ -39,13 +39,14 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Personal',
     items: [
-      { id: 'general', label: 'General', description: 'Appearance, usage, and agent defaults', keywords: 'theme tokens prompts instructions', docs: DOCS.settingsGeneral },
+      { id: 'general', label: 'General', description: 'Appearance, notifications, files, and usage', keywords: 'theme tokens', docs: DOCS.settingsGeneral },
       { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation', docs: DOCS.settingsIdentity },
     ],
   },
   {
     label: 'Agent runtime',
     items: [
+      { id: 'agents', label: 'Agent defaults', description: 'Prompts applied to every agent', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
       { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt grok xai models api keys', docs: DOCS.settingsProviders },
       { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },
       { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools', docs: DOCS.settingsMcp },
@@ -74,6 +75,7 @@ function SettingsNavIcon({ section }: { section: SettingsSection }) {
   const paths: Record<SettingsSection, React.ReactNode> = {
     general: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-1.5-1H2.5V10h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 4.2l.06.06A1.7 1.7 0 0 0 8.5 4.6a1.7 1.7 0 0 0 1-1.5V3h4.05v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.6 9a1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.7 1Z" /></>,
     identity: <><circle cx="12" cy="8" r="4" /><path d="M4.5 21a7.5 7.5 0 0 1 15 0" /></>,
+    agents: <><path d="M4 17V7l4 3 4-3v10" /><path d="M15 8h5M15 12h5M15 16h5" /></>,
     providers: <><path d="M8 12h8" /><path d="M12 8v8" /><rect x="4" y="4" width="16" height="16" rx="4" /></>,
     packages: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4.5 7.7 7.5 4.2 7.5-4.2M12 12v9" /></>,
     mcps: <><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M8 17v2a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2" /><rect x="4" y="7" width="16" height="10" rx="2" /></>,
@@ -1963,6 +1965,18 @@ export function SettingsPage() {
             <div className="px-4 pb-4"><TokenUsageSection /></div>
           </SettingsGroup>
 
+          <div className="flex justify-center pb-4">
+            <Button
+              onClick={() => setActiveTab('about')}
+              variant="ghost"
+            >
+              How it works
+            </Button>
+          </div>
+          </>}
+
+          {/* Agent defaults tab */}
+          {activeTab === 'agents' && <>
           <SettingsGroup title="Agent defaults" description="Defaults applied to every agent unless its file provides more specific instructions." docs={DOCS.settingsSystemPrompt}>
           <div className="flex justify-end px-4 pt-3">
             <Button onClick={handleResetAllPrompts} variant="ghost" size="compact">
@@ -2062,15 +2076,6 @@ export function SettingsPage() {
               />
             </div>
           </SettingsGroup>
-
-          <div className="flex justify-center pb-4">
-            <Button
-              onClick={() => setActiveTab('about')}
-              variant="ghost"
-            >
-              How it works
-            </Button>
-          </div>
           </>}
 
           {/* Identity tab */}
