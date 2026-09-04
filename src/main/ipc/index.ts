@@ -120,7 +120,7 @@ import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { AdfDatabase } from '../adf/adf-database'
 import { buildStudioCreateOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
-import { applyCloneFixup, clearUnselectedTables, snapshotCloneSource } from '../adf/clone-fixup'
+import { cloneAdfFile } from '../adf/clone-fixup'
 import { addAgentTemplateFiles, agentTemplateFilesDir, missingAgentTemplateFiles, removeAgentTemplateFile } from '../adf/agent-template-files'
 import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
@@ -2134,76 +2134,32 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.FILE_CLONE, async (_event, args: { filePath: string; selectedTables: string[] }) => {
     try {
-      const { filePath, selectedTables } = args
-
-      // Compute deduplicated clone path
-      const dir = dirname(filePath)
-      const originalName = basename(filePath, '.adf')
-      let newName = `${originalName}_clone`
-      let newPath = join(dir, `${newName}.adf`)
-      let counter = 2
-      while (existsSync(newPath)) {
-        newName = `${originalName}_clone_${counter}`
-        newPath = join(dir, `${newName}.adf`)
-        counter++
-      }
-
-      // Copy the full SQLite file, then clear unselected tables
-      copyFileSync(filePath, newPath)
-
-      const newWorkspace = AdfWorkspace.open(newPath)
-      try {
-        // The copy is still byte-identical: read the SOURCE's lineage
-        // reference (DID, else config.id) before any table is cleared.
-        const source = snapshotCloneSource(newWorkspace)
-
-        // Remove or clear unselected tables (adf_ → DELETE rows, virtual and
-        // local_ → DROP; shadow tables follow their parent).
-        const selectedSet = new Set(selectedTables)
-        clearUnselectedTables(newWorkspace, selectedSet)
-
-        // Update the agent name in config
-        const config = newWorkspace.getAgentConfig()
-        config.name = newName
-        newWorkspace.setAgentConfig(config)
-
-        // Identity / provenance / lineage (see clone-fixup.ts):
-        //  - adf_identity NOT kept: fresh keys sealed in owner/runtime
-        //    envelopes (D1), DID history reset (a clone is a new lineage node,
-        //    not the source's continuation), inherited source-subject certs
-        //    purged, and a signed `clone` cert with scope = source DID.
-        //  - adf_identity kept: same DID, so kept certs stay valid; if
-        //    adf_attestations was deselected the rows are gone and
-        //    owner/operator certs are reissued for the local owner.
-        //  - always: adf_parent_did = source, so the clone is its child.
-        const ownerIdentity = settings.getOwnerIdentity()
-        if (!selectedSet.has('adf_identity')) {
-          const cloneIdentity = settings.ensureRuntimeIdentity()
-          newWorkspace.getDatabase().setMeta('adf_owner_did', cloneIdentity.ownerDid, 'readonly')
-          newWorkspace.getDatabase().setMeta('adf_runtime_did', cloneIdentity.runtimeDid, 'readonly')
-        }
-        applyCloneFixup(newWorkspace, {
-          selectedTables: selectedSet,
-          source,
-          keys: {
-            ownerDid: ownerIdentity.getOwnerDid(),
-            ownerPrivateKey: ownerIdentity.getOwnerSigningKey(),
-            runtimeDid: ownerIdentity.getRuntimeDid(),
-            runtimePrivateKey: ownerIdentity.getRuntimeSigningKey()
-          },
-          provisionFreshIdentity: (ws) => { ownerIdentity.ensureWorkspaceIdentity(ws) }
-        })
-
-        // VACUUM to reclaim space from dropped tables
-        newWorkspace.getDatabase().checkpoint()
-      } finally {
-        newWorkspace.close()
-      }
-
-      // Surface the clone in the fleet immediately (auto-tracks its directory)
-      notifyAdfFileCreated(newPath)
-
-      return { success: true, filePath: newPath }
+      // Identity / provenance / lineage (see clone-fixup.ts):
+      //  - adf_identity NOT kept: fresh keys sealed in owner/runtime
+      //    envelopes (D1), new config.id, DID history reset (a clone is a
+      //    new lineage node, not the source's continuation), inherited
+      //    source-subject certs purged, and a signed `clone` cert with
+      //    scope = source DID (only when the source DID verifies).
+      //  - adf_identity kept: same DID and id, so kept certs stay valid; if
+      //    adf_attestations was deselected the rows are gone and
+      //    owner/operator certs are reissued for the local owner.
+      //  - always: adf_parent_did = source, so the clone is its child.
+      // Built on a `.partial` temp file and moved into place at the end;
+      // a failure leaves nothing behind.
+      settings.ensureRuntimeIdentity()
+      const ownerIdentity = settings.getOwnerIdentity()
+      const { filePath: newPath, fixup } = cloneAdfFile(args.filePath, args.selectedTables, {
+        keys: {
+          ownerDid: ownerIdentity.getOwnerDid(),
+          ownerPrivateKey: ownerIdentity.getOwnerSigningKey(),
+          runtimeDid: ownerIdentity.getRuntimeDid(),
+          runtimePrivateKey: ownerIdentity.getRuntimeSigningKey()
+        },
+        provisionFreshIdentity: (ws) => { ownerIdentity.ensureWorkspaceIdentity(ws) },
+        // Surface the clone in the fleet immediately (auto-tracks its directory)
+        onCreated: notifyAdfFileCreated
+      })
+      return { success: true, filePath: newPath, warnings: fixup.warnings }
     } catch (error) {
       return { success: false, error: String(error) }
     }

@@ -59,12 +59,35 @@ describe('resolveLineage (ADF_IDENTITY_SPEC D4)', () => {
     expect(result.parents.size).toBe(0)
   })
 
-  it('treats self-references as unresolvable', () => {
+  it('treats self-references with no alternative as unresolvable', () => {
     const weird = agent({ filePath: '/self.adf', did: 'did:key:zSelf', parentDid: 'did:key:zSelf' })
     const result = resolveLineage([weird])
 
     expect(result.orphaned).toEqual(['/self.adf'])
     expect(result.roots).toEqual(['/self.adf'])
+    expect(result.parents.size).toBe(0)
+  })
+
+  it('resolves a kept-identity clone listed first to its source, never to itself', () => {
+    // Clone kept the source's keys: same current DID, parent ref = that DID
+    const clone = agent({ filePath: '/clone.adf', did: 'did:key:zSame', parentDid: 'did:key:zSame' })
+    const source = agent({ filePath: '/source.adf', did: 'did:key:zSame' })
+    const result = resolveLineage([clone, source])
+
+    expect(result.parents.get('/clone.adf')).toBe('/source.adf')
+    expect(result.children.get('/source.adf')).toEqual(['/clone.adf'])
+    expect(result.roots).toEqual(['/source.adf'])
+    expect(result.orphaned).toEqual([])
+    expect(result.duplicateDids.get('did:key:zSame')).toEqual(['/clone.adf', '/source.adf'])
+  })
+
+  it('resolves a kept-identity clone through history after the source rotated', () => {
+    const clone = agent({ filePath: '/clone.adf', did: 'did:key:zOld', parentDid: 'did:key:zOld' })
+    const source = agent({ filePath: '/source.adf', did: 'did:key:zNew', didHistory: ['did:key:zOld'] })
+    const result = resolveLineage([clone, source])
+
+    expect(result.parents.get('/clone.adf')).toBe('/source.adf')
+    expect(result.orphaned).toEqual([])
   })
 
   it('reports duplicate current DIDs (same-owner file copies)', () => {

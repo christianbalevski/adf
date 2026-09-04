@@ -47,31 +47,30 @@ export interface ResolvedLineage {
  * Ambiguity (two files presenting the same current DID — a same-owner file
  * copy) is reported in `duplicateDids`; the reference resolves to the
  * first-seen file so the tree stays drawable, but callers should surface the
- * duplicate loudly. Self-references are treated as unresolvable.
+ * duplicate loudly. A file is never its own parent: a candidate that is the
+ * referencing file itself is skipped in favour of the next one (another file
+ * with the same current DID — a kept-identity clone's source — then history,
+ * then config.id); with no alternative the reference is unresolvable.
  */
 export function resolveLineage(agents: LineageAgentRef[]): ResolvedLineage {
-  const byCurrentDid = new Map<string, string>()
-  const byHistoryDid = new Map<string, string>()
-  const byAgentId = new Map<string, string>()
+  const byCurrentDid = new Map<string, string[]>()
+  const byHistoryDid = new Map<string, string[]>()
+  const byAgentId = new Map<string, string[]>()
   const duplicateDids = new Map<string, string[]>()
 
+  const add = (index: Map<string, string[]>, key: string, filePath: string) => {
+    const list = index.get(key)
+    if (list) list.push(filePath)
+    else index.set(key, [filePath])
+  }
+
   for (const agent of agents) {
-    if (agent.did) {
-      const existing = byCurrentDid.get(agent.did)
-      if (existing !== undefined) {
-        const dupes = duplicateDids.get(agent.did) ?? [existing]
-        dupes.push(agent.filePath)
-        duplicateDids.set(agent.did, dupes)
-      } else {
-        byCurrentDid.set(agent.did, agent.filePath)
-      }
-    }
-    for (const oldDid of agent.didHistory ?? []) {
-      if (!byHistoryDid.has(oldDid)) byHistoryDid.set(oldDid, agent.filePath)
-    }
-    if (agent.agentId && !byAgentId.has(agent.agentId)) {
-      byAgentId.set(agent.agentId, agent.filePath)
-    }
+    if (agent.did) add(byCurrentDid, agent.did, agent.filePath)
+    for (const oldDid of agent.didHistory ?? []) add(byHistoryDid, oldDid, agent.filePath)
+    if (agent.agentId) add(byAgentId, agent.agentId, agent.filePath)
+  }
+  for (const [did, files] of byCurrentDid) {
+    if (files.length > 1) duplicateDids.set(did, [...files])
   }
 
   const parents = new Map<string, string>()
@@ -85,8 +84,13 @@ export function resolveLineage(agents: LineageAgentRef[]): ResolvedLineage {
       roots.push(agent.filePath)
       continue
     }
-    const resolved = byCurrentDid.get(ref) ?? byHistoryDid.get(ref) ?? byAgentId.get(ref)
-    if (resolved === undefined || resolved === agent.filePath) {
+    // Cascade, first-seen within each tier, never the file itself.
+    let resolved: string | undefined
+    for (const tier of [byCurrentDid, byHistoryDid, byAgentId]) {
+      resolved = tier.get(ref)?.find((filePath) => filePath !== agent.filePath)
+      if (resolved !== undefined) break
+    }
+    if (resolved === undefined) {
       orphaned.push(agent.filePath)
       roots.push(agent.filePath)
       continue

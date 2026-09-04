@@ -23,21 +23,31 @@
  * or mid-rotation) and passes the owner keys it would use for any re-key.
  */
 
-import type { AdfWorkspace } from './adf-workspace'
+import { copyFileSync, existsSync, renameSync, unlinkSync } from 'fs'
+import { basename, dirname, join } from 'path'
+import { nanoid } from 'nanoid'
+import { AdfWorkspace } from './adf-workspace'
 import {
   appendAdfAttestation,
   createAttestation,
   issueOwnerAttestation,
   retainAttestationsForSubject
 } from '../services/attestation.service'
-import { extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
+import { didToPublicKey, extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
 
 /** Lineage reference of the source, read from the byte copy before clearing. */
 export interface CloneSourceRef {
-  /** Source's live DID (adf_did), or null for a pre-identity file */
+  /** Source's live DID (adf_did) when well-formed, or null for a pre-identity file */
   did: string | null
   /** Canonical parent reference: the DID, else config.id (legacy fallback) */
   id: string
+  /**
+   * adf_did matches the DID derived from the source's own (plain) public key.
+   * False when the key is password-protected or the meta row was tampered
+   * with. adf_did is an unsigned index, so a bogus value may still be used as
+   * the parent reference — but never as the scope of a cert WE sign.
+   */
+  didVerified: boolean
 }
 
 export interface CloneOwnerKeys {
@@ -68,15 +78,36 @@ export interface CloneFixupResult {
   cloneAttested: boolean
   /** Inherited attestations about another subject that were removed */
   purgedAttestations: number
+  /** Steps that were skipped (no owner key, locked keys, unverified source DID) */
+  warnings: string[]
+}
+
+/**
+ * DID derived from the signing public key row when it is readable without a
+ * derived key: `plain` for unprotected AND envelope-sealed (D6) files — only
+ * the private key is sealed. Null for password-protected rows (aes-256-gcm)
+ * or a malformed key.
+ */
+function didFromPublicKeyRow(workspace: AdfWorkspace): string | null {
+  const row = workspace.getDatabase().getIdentityRaw('crypto:signing:public_key')
+  if (!row || row.encryption_algo !== 'plain') return null
+  try {
+    return publicKeyToDid(extractRawPublicKey(row.value))
+  } catch {
+    return null
+  }
 }
 
 /**
  * Read the source's lineage reference off the untouched byte copy. Mirrors
- * sys_create_adf: `workspace.getDid() || config.id`.
+ * sys_create_adf: `workspace.getDid() || config.id`. A DID that is not a
+ * well-formed did:key is ignored entirely (config.id parent, no cert).
  */
 export function snapshotCloneSource(copy: AdfWorkspace): CloneSourceRef {
-  const did = copy.getDid()
-  return { did, id: did || copy.getAgentConfig().id }
+  const raw = copy.getDid()
+  const did = raw && didToPublicKey(raw) ? raw : null
+  const derived = did ? didFromPublicKeyRow(copy) : null
+  return { did, id: did || copy.getAgentConfig().id, didVerified: did !== null && derived === did }
 }
 
 /**
@@ -120,15 +151,28 @@ export function clearUnselectedTables(workspace: AdfWorkspace, selectedTables: I
 export function applyCloneFixup(workspace: AdfWorkspace, opts: CloneFixupOptions): CloneFixupResult {
   const selected = new Set(opts.selectedTables)
   const { source, keys } = opts
+  const warnings: string[] = []
   let cloneAttested = false
   let purgedAttestations = 0
   let identity: CloneFixupResult['identity']
+
+  const stampLocalIdentity = () => {
+    // Overwrite, not fill-in: the copy carries the SOURCE owner's stamps.
+    workspace.setMeta('adf_owner_did', keys.ownerDid, 'readonly')
+    if (keys.runtimeDid) workspace.setMeta('adf_runtime_did', keys.runtimeDid, 'readonly')
+  }
 
   if (!selected.has('adf_identity')) {
     identity = 'fresh'
     // Envelopes + fresh keys + owner/operator certs for the NEW DID.
     opts.provisionFreshIdentity(workspace)
     const newDid = workspace.getDid()
+    // No new DID (locked/foreign file) or the source's DID reappearing would
+    // leave a clone that IS the source — abort so the caller discards it.
+    if (!newDid || newDid === source.did) {
+      throw new Error('Clone identity provisioning did not mint a new DID')
+    }
+    stampLocalIdentity()
 
     // The copy inherited the source's rotated-away DIDs, and minting just
     // appended the source's LIVE DID on top. A clone is a new lineage node:
@@ -136,13 +180,21 @@ export function applyCloneFixup(workspace: AdfWorkspace, opts: CloneFixupOptions
     // (history would make resolveLineage treat it as the source itself).
     workspace.resetDidHistory()
 
-    if (newDid) {
-      // Inherited certs are about the source DID — subject-mismatched forever.
-      purgedAttestations = retainAttestationsForSubject(workspace, newDid)
-      // Provenance, exactly as claimWorkspace records it. Skipped when the
-      // source had no DID: there is nothing to scope the cert to, and the
-      // config-id parent reference already carries the lineage.
-      if (source.did && keys.ownerPrivateKey) {
+    // Inherited certs are about the source DID — subject-mismatched forever.
+    purgedAttestations = retainAttestationsForSubject(workspace, newDid)
+    // Provenance, exactly as claimWorkspace records it. Skipped when the
+    // source had no DID: there is nothing to scope the cert to, and the
+    // config-id parent reference already carries the lineage.
+    //
+    // Signed ONLY for a verified source DID. adf_meta is unsigned: a crafted
+    // file could carry a victim's DID there, and signing a `clone` cert
+    // scoped to it would lend our owner key to a forged provenance claim.
+    if (source.did) {
+      if (!source.didVerified) {
+        warnings.push('Source DID does not match its signing key — clone provenance was not signed.')
+      } else if (!keys.ownerPrivateKey) {
+        warnings.push('Owner key unavailable — clone provenance was not signed.')
+      } else {
         appendAdfAttestation(workspace, createAttestation(
           { issuer: keys.ownerDid, subject: newDid, role: 'clone', issued_at: new Date().toISOString(), scope: source.did },
           keys.ownerPrivateKey
@@ -153,20 +205,34 @@ export function applyCloneFixup(workspace: AdfWorkspace, opts: CloneFixupOptions
   } else {
     identity = 'kept'
     // Keys survive; the DID row may not (adf_meta deselected). Recompute it
-    // from the public key so the clone is not a keyed-but-DID-less file.
-    // Password-protected keys can't be read without the derived key — leave
-    // that case to the unlock path.
+    // from the public key row, which is plain for both unprotected and
+    // envelope-sealed files. Password-protected keys can't be read without
+    // the derived key — leave that case to the unlock path.
     if (!workspace.getDid()) {
-      const pub = workspace.getSigningKeys(null)?.publicKey
-      if (pub) workspace.setMeta('adf_did', publicKeyToDid(extractRawPublicKey(pub)), 'readonly')
+      const did = didFromPublicKeyRow(workspace)
+      if (did) workspace.setMeta('adf_did', did, 'readonly')
+      else warnings.push('Keys are password-protected — adf_did was not recomputed; unlock the clone to restore it.')
     }
-    if (!workspace.getMeta('adf_owner_did')) workspace.setMeta('adf_owner_did', keys.ownerDid, 'readonly')
-    if (keys.runtimeDid && !workspace.getMeta('adf_runtime_did')) {
-      workspace.setMeta('adf_runtime_did', keys.runtimeDid, 'readonly')
+    if (!selected.has('adf_attestations')) {
+      // Same DID, so kept attestations would stay valid — but these were
+      // deleted by the table clear. Reissue owner/operator for the LOCAL
+      // owner and stamp the meta to match: cloning into our tracked dir is
+      // a claim on the copy, whatever the source's owner stamps said.
+      stampLocalIdentity()
+      const issued = issueOwnerAttestation(workspace, keys)
+      if (issued.length === 0) {
+        warnings.push(
+          keys.ownerPrivateKey
+            ? 'No DID available — owner/operator certs were not issued.'
+            : 'Owner key unavailable — owner/operator certs were not issued.'
+        )
+      }
+    } else {
+      if (!workspace.getMeta('adf_owner_did')) workspace.setMeta('adf_owner_did', keys.ownerDid, 'readonly')
+      if (keys.runtimeDid && !workspace.getMeta('adf_runtime_did')) {
+        workspace.setMeta('adf_runtime_did', keys.runtimeDid, 'readonly')
+      }
     }
-    // Same DID, so kept attestations stay valid. Deselected ones were deleted
-    // by the table clear — reissue owner/operator so the clone is not certless.
-    if (!selected.has('adf_attestations')) issueOwnerAttestation(workspace, keys)
   }
 
   // Child of the source in every branch. Overwrites the inherited value (the
@@ -176,5 +242,97 @@ export function applyCloneFixup(workspace: AdfWorkspace, opts: CloneFixupOptions
   // gets it from the argument.
   workspace.setMeta('adf_parent_did', source.id, 'readonly')
 
-  return { did: workspace.getDid(), identity, cloneAttested, purgedAttestations }
+  return { did: workspace.getDid(), identity, cloneAttested, purgedAttestations, warnings }
+}
+
+export interface CloneAdfDeps {
+  keys: CloneOwnerKeys
+  provisionFreshIdentity: CloneFixupOptions['provisionFreshIdentity']
+  /** Runs once the final .adf is in place (fleet refresh / directory tracking). */
+  onCreated?: (filePath: string) => void
+}
+
+export interface CloneAdfResult {
+  filePath: string
+  name: string
+  fixup: CloneFixupResult
+}
+
+/** Remove a SQLite file's -wal/-shm siblings (and the file itself unless `keepMain`); missing files are fine. */
+function removeSqliteFiles(path: string, keepMain = false): void {
+  const targets = keepMain ? [`${path}-wal`, `${path}-shm`] : [path, `${path}-wal`, `${path}-shm`]
+  for (const p of targets) {
+    try { if (existsSync(p)) unlinkSync(p) } catch { /* best effort */ }
+  }
+}
+
+/**
+ * The whole FILE_CLONE operation: copy → snapshot → clear → rename+id →
+ * fixup → checkpoint → close → move into place.
+ *
+ * Work happens on `<name>.adf.partial` in the same directory: the tracked-dir
+ * watcher and autostart filter on the `.adf` suffix, so a half-built clone is
+ * never picked up as an agent, and the final rename is atomic on the same
+ * volume. Any failure removes the partial (plus -wal/-shm) and rethrows.
+ */
+export function cloneAdfFile(sourcePath: string, selectedTables: string[], deps: CloneAdfDeps): CloneAdfResult {
+  const dir = dirname(sourcePath)
+  const originalName = basename(sourcePath, '.adf')
+  let newName = `${originalName}_clone`
+  let finalPath = join(dir, `${newName}.adf`)
+  let counter = 2
+  while (existsSync(finalPath)) {
+    newName = `${originalName}_clone_${counter}`
+    finalPath = join(dir, `${newName}.adf`)
+    counter++
+  }
+  const tempPath = `${finalPath}.partial`
+
+  // A stale partial from a crashed run must not leak into this copy.
+  removeSqliteFiles(tempPath)
+  copyFileSync(sourcePath, tempPath)
+
+  let fixup: CloneFixupResult
+  let workspace: AdfWorkspace | null = null
+  try {
+    workspace = AdfWorkspace.open(tempPath)
+    // The copy is still byte-identical: read the SOURCE's lineage reference
+    // (DID, else config.id) before any table is cleared.
+    const source = snapshotCloneSource(workspace)
+    const selectedSet = new Set(selectedTables)
+    clearUnselectedTables(workspace, selectedSet)
+
+    // Rename. A fresh identity is a new agent, so it also gets a new
+    // config.id (same generator as AdfDatabase.create); nothing else in the
+    // file keys on the old id at this point. A kept identity stays the same
+    // agent by the user's choice and keeps its id.
+    const config = workspace.getAgentConfig()
+    config.name = newName
+    if (!selectedSet.has('adf_identity')) config.id = nanoid(12)
+    workspace.setAgentConfig(config)
+
+    fixup = applyCloneFixup(workspace, {
+      selectedTables: selectedSet,
+      source,
+      keys: deps.keys,
+      provisionFreshIdentity: deps.provisionFreshIdentity
+    })
+
+    // Fold the WAL back so the rename moves a single self-contained file.
+    workspace.getDatabase().checkpoint()
+    workspace.close()
+    workspace = null
+    removeSqliteFiles(tempPath, true)
+
+    // Re-check: something may have claimed the name while we worked.
+    if (existsSync(finalPath)) throw new Error(`A file named "${basename(finalPath)}" already exists.`)
+    renameSync(tempPath, finalPath)
+  } catch (error) {
+    try { workspace?.close() } catch { /* already closed */ }
+    removeSqliteFiles(tempPath)
+    throw error
+  }
+
+  deps.onCreated?.(finalPath)
+  return { filePath: finalPath, name: newName, fixup }
 }

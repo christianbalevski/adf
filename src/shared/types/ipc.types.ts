@@ -52,6 +52,8 @@ export interface FileOperationResult {
   /** Rename accepted but the file is in use by a running agent — the physical
    *  rename happens when the agent stops. */
   renameDeferred?: boolean
+  /** Clone succeeded but some fixup steps were skipped (no owner key, locked keys). */
+  warnings?: string[]
 }
 
 export interface AgentStatusResult {

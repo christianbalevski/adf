@@ -24,11 +24,14 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
   const [loading, setLoading] = useState(false)
   const [cloning, setCloning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Non-blocking fixup skips reported by a successful clone (no owner key, locked keys)
+  const [warnings, setWarnings] = useState<string[]>([])
 
   useEffect(() => {
     if (!open) return
     setLoading(true)
     setError(null)
+    setWarnings([])
     window.adfApi.listTables(filePath).then((result) => {
       if (result.error) {
         setError(result.error)
@@ -83,7 +86,9 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
     setCloning(false)
     if (result.success) {
       onCloned()
-      onClose()
+      // Keep the dialog up only to show what was skipped; the clone exists either way.
+      if (result.warnings?.length) setWarnings(result.warnings)
+      else onClose()
     } else {
       setError(result.error ?? 'Clone failed')
     }
@@ -164,21 +169,38 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
             <p className="mt-2 text-xs text-[var(--adf-ui-danger)]">{error}</p>
           )}
 
+          {warnings.length > 0 && (
+            <div className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+              <p>Clone created. Some steps were skipped:</p>
+              <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                {warnings.map((w) => <li key={w}>{w}</li>)}
+              </ul>
+            </div>
+          )}
+
           {/* Actions */}
           <div className="flex justify-end gap-2 mt-4">
-            <Button
-              onClick={onClose}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleClone}
-              disabled={cloning}
-              loading={cloning}
-              variant="primary"
-            >
-              {cloning ? 'Cloning...' : 'Clone'}
-            </Button>
+            {warnings.length > 0 ? (
+              <Button onClick={onClose} variant="primary">
+                Done
+              </Button>
+            ) : (
+              <>
+                <Button
+                  onClick={onClose}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleClone}
+                  disabled={cloning}
+                  loading={cloning}
+                  variant="primary"
+                >
+                  {cloning ? 'Cloning...' : 'Clone'}
+                </Button>
+              </>
+            )}
           </div>
         </>
       )}
