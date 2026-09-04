@@ -159,12 +159,14 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
       </span>
       {statusText && (
         <span
-          className={`min-w-0 flex-1 text-neutral-500 dark:text-neutral-400 truncate ${
-            agentState === 'active' ? 'adf-shimmer-text adf-shimmer-text--slow' : ''
-          }`}
+          className="min-w-0 flex-1 text-neutral-500 dark:text-neutral-400 truncate"
           title={statusText}
         >
-          {statusText}
+          <span className={agentState === 'active'
+            ? 'inline-block max-w-full truncate align-bottom adf-shimmer-text adf-shimmer-text--activity'
+            : undefined}>
+            {statusText}
+          </span>
         </span>
       )}
       {isServing && servingHandle && (
