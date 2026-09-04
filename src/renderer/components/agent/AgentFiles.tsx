@@ -111,6 +111,7 @@ export function AgentFiles() {
   const [files, setFiles] = useState<FileEntry[]>([])
   const [tables, setTables] = useState<LocalTable[]>([])
   const [dragOver, setDragOver] = useState(false)
+  const dragDepthRef = useRef(0)
   const [editingPath, setEditingPath] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null)
@@ -209,6 +210,7 @@ export function AgentFiles() {
 
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
+    dragDepthRef.current = 0
     setDragOver(false)
 
     // Collect all files with relative paths (handles directories)
@@ -260,12 +262,20 @@ export function AgentFiles() {
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
-    setDragOver(true)
+  }, [])
+
+  // dragenter/dragleave fire for every child element crossed, so track depth
+  // and only hide the overlay once the pointer has left the panel entirely.
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    dragDepthRef.current += 1
+    if (dragDepthRef.current === 1) setDragOver(true)
   }, [])
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault()
-    setDragOver(false)
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setDragOver(false)
   }, [])
 
   const handleOpenInEditor = useCallback(async (path: string) => {
@@ -388,47 +398,41 @@ export function AgentFiles() {
     : files
 
   return (
-    <div className="absolute inset-0 flex flex-col min-w-0 overflow-hidden">
-      {/* Fixed header: drop zone + buttons */}
-      <div className="shrink-0">
-        <div
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          className={`m-3 mb-2 p-4 border-2 border-dashed rounded-lg text-center text-xs transition-colors ${
-            dragOver
-              ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
-              : 'border-neutral-300 dark:border-neutral-600 text-neutral-400 dark:text-neutral-500'
-          }`}
-        >
-          Drop files or folders here to upload
+    <div
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      className="absolute inset-0 flex flex-col min-w-0 overflow-hidden"
+    >
+      {/* Drop overlay: whole panel is the target, shown only mid-drag */}
+      {dragOver && (
+        <div className="absolute inset-2 z-10 pointer-events-none flex items-center justify-center rounded-lg border-2 border-dashed border-blue-400 bg-blue-50/90 dark:bg-blue-900/40 text-xs text-blue-600 dark:text-blue-300">
+          Drop files or folders to upload
         </div>
-        <div className="flex items-center justify-between px-3 pb-2">
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-neutral-400 dark:text-neutral-500 font-medium">
-            <span>Files ({filtering ? `${visibleFiles.length}/${files.length}` : files.length})</span>
-            <DocsLink href={DOCS.files} />
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={async () => {
-                const result = await window.adfApi?.pickAndImport()
-                if (result?.count) fetchFiles()
-              }}
-              className="text-[10px] text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 cursor-pointer"
-            >
-              + Upload
-            </button>
-            {!creatingFile && (
-              <button
-                onClick={() => setCreatingFile(true)}
-                className="text-[10px] text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 cursor-pointer"
-              >
-                + New File
-              </button>
-            )}
-          </div>
+      )}
+
+      {/* Single header row: title · search · actions */}
+      <div className="shrink-0 flex items-center gap-2 px-3 pt-2 pb-2">
+        <div className="flex items-center gap-1.5 shrink-0 text-[10px] uppercase tracking-wider text-neutral-400 dark:text-neutral-500 font-medium">
+          <span>Files ({filtering ? `${visibleFiles.length}/${files.length}` : files.length})</span>
+          <DocsLink href={DOCS.files} />
         </div>
-        <div className="px-3 pb-2">
+        <div className="relative flex-1 min-w-0">
+          <svg
+            width="11"
+            height="11"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="absolute left-1.5 top-1/2 -translate-y-1/2 text-neutral-400 dark:text-neutral-500 pointer-events-none"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
           <input
             value={fileFilter}
             onChange={(e) => setFileFilter(e.target.value)}
@@ -437,8 +441,39 @@ export function AgentFiles() {
             }}
             placeholder="Search…"
             aria-label="Search files"
-            className="w-full text-xs px-2 py-1 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 outline-none focus:border-blue-400 min-w-0"
+            className="w-full h-6 text-xs pl-6 pr-2 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 outline-none focus:border-blue-400 min-w-0"
           />
+        </div>
+        <div className="flex items-center shrink-0">
+          <button
+            onClick={async () => {
+              const result = await window.adfApi?.pickAndImport()
+              if (result?.count) fetchFiles()
+            }}
+            title="Upload files or folders"
+            aria-label="Upload files or folders"
+            className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+          </button>
+          <button
+            onClick={() => setCreatingFile(true)}
+            disabled={creatingFile}
+            title="New file"
+            aria-label="New file"
+            className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="12" y1="18" x2="12" y2="12" />
+              <line x1="9" y1="15" x2="15" y2="15" />
+            </svg>
+          </button>
         </div>
       </div>
 
