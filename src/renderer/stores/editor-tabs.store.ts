@@ -37,7 +37,11 @@ interface EditorTabsState {
   lastExternalWrite: ExternalWriteMark | null
 
   openTab: (path: string, content: string, isBinary: boolean) => void
-  openBrowserTab: (meta: BrowserTabMeta) => void
+  /**
+   * `activate: false` adds/refreshes the tab without taking the stage — used
+   * by the auto-open on agent startup so it doesn't yank the user off the chat.
+   */
+  openBrowserTab: (meta: BrowserTabMeta, opts?: { activate?: boolean }) => void
   reloadBrowserTab: (path: string) => void
   closeTab: (path: string) => void
   setActiveTab: (path: string) => void
@@ -88,15 +92,16 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
     set({ tabs: [...tabs, tab], activeTabPath: path })
   },
 
-  openBrowserTab: (meta) => {
+  openBrowserTab: (meta, opts) => {
+    const activate = opts?.activate ?? true
     const path = `browser://${meta.agentFilePath}`
-    const { tabs } = get()
+    const { tabs, activeTabPath } = get()
     const existing = tabs.find((t) => t.path === path)
     if (existing) {
       // The port changes when the container is recreated — refresh in place.
       set({
         tabs: tabs.map((t) => (t.path === path ? { ...t, browserMeta: meta } : t)),
-        activeTabPath: path
+        activeTabPath: activate ? path : activeTabPath
       })
       return
     }
@@ -110,7 +115,7 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
       kind: 'browser',
       browserMeta: meta
     }
-    set({ tabs: [...tabs, tab], activeTabPath: path })
+    set({ tabs: [...tabs, tab], activeTabPath: activate ? path : activeTabPath })
   },
 
   reloadBrowserTab: (path) => {
