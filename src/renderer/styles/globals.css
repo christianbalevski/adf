@@ -695,18 +695,23 @@ body.panel-resizing webview {
     -webkit-text-fill-color: transparent;
     animation: adfShimmerText 2s linear infinite;
   }
-  /* Chat labels need an obvious moving highlight even on bright tool text.
-     Their inner span hugs the words so the sweep never spends most of its
-     cycle travelling through the empty flex space beside a short label. */
+  /* Move a distinct light band left to right over a steady muted base.
+     The band is 40% of the label width; these positions place it fully
+     outside either edge so each repeat begins without a visible jump. */
+  @keyframes adfActivityShimmer {
+    from { background-position: -66.667% 0, 0 0; }
+    to { background-position: 166.667% 0, 0 0; }
+  }
   .adf-shimmer-text--activity {
-    background-image: linear-gradient(
-      90deg,
-      var(--adf-ui-text-subtle) 0%,
-      var(--adf-ui-text-subtle) 38%,
-      var(--adf-ui-text) 50%,
-      var(--adf-ui-text-subtle) 62%,
-      var(--adf-ui-text-subtle) 100%
-    );
+    background-image:
+      linear-gradient(90deg,
+        transparent 0%,
+        var(--adf-ui-text) 42%,
+        var(--adf-ui-text) 58%,
+        transparent 100%),
+      linear-gradient(var(--adf-ui-text-subtle), var(--adf-ui-text-subtle));
+    background-size: 40% 100%, 100% 100%;
+    animation: adfActivityShimmer 1.8s linear infinite;
   }
   /* Title-bar variant: slower sweep, narrower highlight, so it glimmers
      rather than flashes on chrome that is always in view. */
