@@ -1,6 +1,7 @@
 import { TitleBar } from './TitleBar'
 import { Sidebar } from './Sidebar'
 import { StatusBar } from './StatusBar'
+import { MeshTrafficBar } from './MeshTrafficBar'
 import { EditorPanel } from '../editor/EditorPanel'
 import { RightDock, RightDockIconBar } from './RightDock'
 import { SettingsPage } from '../settings/SettingsPage'
@@ -195,7 +196,7 @@ export function AppShell() {
         )}
       </div>
 
-      {meshEnabled && !showSettings && <div className="mesh-pulse-bar" />}
+      {meshEnabled && !showSettings && <MeshTrafficBar />}
       {!showSettings && <StatusBar />}
       {/* Outside the view switch: an off-screen agent's approval must announce
           itself on the fleet map and in Settings too, not only in the editor. */}

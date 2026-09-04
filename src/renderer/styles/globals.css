@@ -263,7 +263,7 @@ body,
   animation: pulse-subtle 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
-/* Mesh pulse bar — GPU-composited left-to-right gradient sweep */
+/* Loading indicator used by the fleet map while it is being prepared. */
 @keyframes meshSweep {
   0% { background-position: -100% 0; }
   100% { background-position: 200% 0; }
@@ -278,6 +278,43 @@ body,
   background-size: 50% 100%;
   animation: meshSweep 5s ease-in-out infinite;
   will-change: background-position;
+}
+
+/* Mesh traffic: a quiet baseline with finite pulses for actual deliveries. */
+.mesh-traffic-bar {
+  position: relative;
+  height: 2px;
+  flex-shrink: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: rgba(74, 222, 128, 0.16);
+}
+
+.mesh-traffic-pulse {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, rgba(74, 222, 128, 0.9), transparent);
+  animation: meshTrafficTravel ease-out both;
+}
+
+@keyframes meshTrafficTravel {
+  0% { transform: translateX(-100%); opacity: 0; }
+  15% { opacity: 1; }
+  70% { opacity: 0.85; }
+  100% { transform: translateX(340%); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mesh-traffic-pulse {
+    width: 100%;
+    background: rgba(74, 222, 128, 0.6);
+    animation-name: meshTrafficFade;
+  }
+  @keyframes meshTrafficFade {
+    from { opacity: 1; }
+    to { opacity: 0; }
+  }
 }
 
 /* Mesh graph: left-to-right reveal for activity lines */
