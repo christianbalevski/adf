@@ -219,12 +219,8 @@ export function NewAgentTemplateTab({ providers, defaultProviderId, onDefaultPro
         </Button>
       </div>
 
-      <SettingsGroup title="Applies to">
-        <SettingsRow label="Agents you create in Studio" description="Always on.">
-          <span className="text-[12px] text-[var(--adf-ui-text-subtle)]">On</span>
-        </SettingsRow>
+      <SettingsGroup title="Applies to" description="Agents you create in Studio always start from this template.">
         <SettingsRow
-          separator
           label="Agents created by other agents"
           description="Children made with sys_create_adf start from this template. The parent's own settings still win. Off when the parent names a template agent."
         >
