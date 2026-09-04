@@ -473,29 +473,59 @@ const STILL_WORKING_AFTER_MS = 60_000
 
 /**
  * The pinned "what is the agent doing right now" row between the stream and
- * the composer. The timer ticks in here, so a second passing re-renders this
- * one row and never the virtualised log above it. Mounted only while the loop
- * is active/starting/blocked on the human, so mount time doubles as the turn
- * start when the log carries no "turn complete" marker to anchor on.
+ * the composer. It IS the live tail: the in-flight entry (a tool call still
+ * awaiting its result, or streaming reasoning) is withheld from the stream
+ * above and rendered only here, so the label never lags the thread. The timer
+ * ticks in here, so a second passing re-renders this one row and never the
+ * virtualised log. Mounted only while the loop is active/starting/blocked on
+ * the human, so mount time doubles as the turn start when the log carries no
+ * "turn complete" marker to anchor on.
  */
-const AgentStatusStrip = memo(({ label, dotClass, turnStartedAt }: {
+const AgentStatusStrip = memo(({ label, dotClass, entry, turnStartedAt, onOpen }: {
   label: string
   dotClass: string
+  /** The withheld in-flight entry this row stands in for; null for a bare phase. */
+  entry: AgentLogEntry | null
   turnStartedAt: number | null
+  onOpen: (entry: AgentLogEntry) => void
 }) => {
   const [mountedAt] = useState(() => Date.now())
   const elapsedMs = useElapsed(turnStartedAt ?? mountedAt)
+  // Each new item glimmers at its own pace and from its own phase — a fresh
+  // roll per entry (or per bare phase label) so consecutive steps don't read
+  // as one continuous loop. Negative delay starts mid-cycle. Inline props
+  // override the class's 2s default; reduced motion never animates at all.
+  const shimmerKey = entry?.id ?? label
+  const shimmerStyle = useMemo(() => {
+    const duration = 1.6 + Math.random()
+    const offset = Math.random() * duration
+    return { animationDuration: `${duration.toFixed(2)}s`, animationDelay: `-${offset.toFixed(2)}s` }
+  }, [shimmerKey])
+  // Only a tool call has a detail view (the inspector already handles a call
+  // with no result). Thinking lands in the thread as an expandable row once it
+  // finishes; the bare phases have nothing to open.
+  const clickable = entry?.type === 'tool_call'
+  const handleOpen = () => { if (entry && clickable) onOpen(entry) }
   return (
     // Deliberately not a live region: the timer ticks every second and
     // would turn a screen reader into a metronome.
-    <div className="flex h-7 shrink-0 items-center gap-1.5 px-3 text-xs text-neutral-500 dark:text-neutral-400">
+    <button
+      type="button"
+      disabled={!clickable}
+      onClick={handleOpen}
+      aria-label={clickable ? `Open details for ${label}` : undefined}
+      title={clickable ? `Open details for ${label}` : label}
+      className={`flex h-7 w-full shrink-0 items-center gap-1.5 rounded px-3 text-left text-xs text-neutral-500 transition-colors dark:text-neutral-400 ${
+        clickable ? 'hover:bg-neutral-100/70 dark:hover:bg-neutral-800/60' : 'cursor-default'
+      }`}
+    >
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full motion-safe:animate-pulse ${dotClass}`} aria-hidden />
-      <span className="adf-shimmer-text min-w-0 truncate font-medium" title={label}>{label}</span>
+      <span className="adf-shimmer-text min-w-0 truncate font-medium" style={shimmerStyle}>{label}</span>
       <span className="ml-auto shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
         {formatElapsed(elapsedMs)}
         {elapsedMs >= STILL_WORKING_AFTER_MS && <span> &middot; still working</span>}
       </span>
-    </div>
+    </button>
   )
 })
 
@@ -1097,9 +1127,39 @@ function LoopStream({ loop }: { loop: string }) {
     [log, logVersion]
   )
   const toolPairIndex = useMemo(() => buildToolPairIndex(log), [log.length, logVersion])
+  const isActive = state === 'active'
+
+  // The in-flight tail: a collapsible step (tool call / thinking) the agent is
+  // still on. While the loop is active it is withheld from the stream and
+  // shown only in the pinned status strip, so the strip IS the live tail
+  // rather than a verb lagging one row behind it. It slots back into the
+  // thread the moment the next entry lands (its result, the next call, text…)
+  // or the turn ends. Never withheld when it carries a pending approval/ask —
+  // the approval card must stay reachable in the thread (the strip then reads
+  // "Waiting for you"). `say`/`ask`/status-change calls are content rows, not
+  // workflow steps, so they are never withheld either.
+  const inFlightEntry = useMemo((): AgentLogEntry | null => {
+    if (!isActive) return null
+    const tail = displayLog.at(-1)
+    if (!tail || !isCollapsibleActivity(tail, toolPairIndex)) return null
+    if (pendingApprovals.has(tail.id) || pendingAsks.has(tail.id)) return null
+    if (tail.type === 'tool_call') return toolPairIndex.get(tail.id)?.result ? null : tail
+    // Streaming reasoning is always the raw log tail (useAgent merges deltas
+    // into a tail `thinking` entry only) — once anything follows it, it is done.
+    if (tail.type === 'thinking') return log.at(-1)?.id === tail.id ? tail : null
+    return null
+  }, [isActive, displayLog, log, logVersion, toolPairIndex, pendingApprovals, pendingAsks])
+  // Filtered BEFORE grouping so the withheld entry never joins an activity
+  // group early. Group ids key on the group's FIRST entry, so the tail joining
+  // its group later keeps the row key stable; a lone step that later gains a
+  // sibling changes key (entry id → activity:id) exactly as it always did.
+  const visibleLog = useMemo(
+    () => (inFlightEntry ? displayLog.slice(0, -1) : displayLog),
+    [displayLog, inFlightEntry]
+  )
   const displayItems = useMemo(
-    () => buildDisplayItems(displayLog, toolPairIndex),
-    [displayLog, toolPairIndex]
+    () => buildDisplayItems(visibleLog, toolPairIndex),
+    [visibleLog, toolPairIndex]
   )
   const [expandedActivityGroups, setExpandedActivityGroups] = useState<Set<string>>(new Set())
   const [collapsedActivityGroups, setCollapsedActivityGroups] = useState<Set<string>>(new Set())
@@ -1110,7 +1170,6 @@ function LoopStream({ loop }: { loop: string }) {
     return -1
   }, [displayItems])
 
-  const isActive = state === 'active'
   const getVirtualItemKey = useCallback(
     (index: number) => displayItems[index]?.id ?? index,
     [displayItems]
@@ -1332,31 +1391,21 @@ function LoopStream({ loop }: { loop: string }) {
   const waitingForUser = !!activeApproval || askPending
   const showStatusStrip = isActive || starting || waitingForUser
 
-  // Phase verb from the live tail. Precedence: starting → blocked on the human
-  // → streaming assistant text → the tail activity group's own summary (the
-  // same label its header shows) → "Working".
-  const statusPhase = useMemo((): { label: string; dotClass: string } | null => {
+  // Strip content. Precedence: starting → blocked on the human → the withheld
+  // in-flight entry, labelled exactly as an activity-group header would label
+  // it (reason / humanised tool name with the family dot; "Thinking") →
+  // "Working" (nothing withheld — e.g. assistant text streaming into the
+  // thread, which needs no verb of its own).
+  const statusPhase = useMemo((): { label: string; dotClass: string; entry: AgentLogEntry | null } | null => {
     if (!showStatusStrip) return null
-    if (starting) return { label: 'Starting agent', dotClass: TOOL_FAMILY_STYLES.neutral.dot }
-    if (waitingForUser) return { label: 'Waiting for you', dotClass: ATTENTION_TOOL_STYLE.dot }
-    // A streaming assistant reply is always the raw tail (useAgent merges
-    // deltas only into a tail `text` entry). Quiet-turn markers are terminal.
-    const last = log.at(-1)
-    if (last?.type === 'text' && !last.metadata?.quietTurn) {
-      return { label: 'Responding', dotClass: TOOL_FAMILY_STYLES.neutral.dot }
+    if (starting) return { label: 'Starting agent', dotClass: TOOL_FAMILY_STYLES.neutral.dot, entry: null }
+    if (waitingForUser) return { label: 'Waiting for you', dotClass: ATTENTION_TOOL_STYLE.dot, entry: null }
+    if (inFlightEntry) {
+      const summary = getActivitySummary([inFlightEntry])
+      return { label: summary.label, dotClass: TOOL_FAMILY_STYLES[summary.family].dot, entry: inFlightEntry }
     }
-    const tail = displayItems.at(-1)
-    const tailEntries = tail?.kind === 'activity'
-      ? tail.entries
-      : tail?.kind === 'entry' && isCollapsibleActivity(tail.entry, toolPairIndex)
-        ? [tail.entry]
-        : null
-    if (tailEntries) {
-      const summary = getActivitySummary(tailEntries)
-      return { label: summary.label, dotClass: TOOL_FAMILY_STYLES[summary.family].dot }
-    }
-    return { label: 'Working', dotClass: TOOL_FAMILY_STYLES.neutral.dot }
-  }, [showStatusStrip, starting, waitingForUser, log, logVersion, displayItems, toolPairIndex])
+    return { label: 'Working', dotClass: TOOL_FAMILY_STYLES.neutral.dot, entry: null }
+  }, [showStatusStrip, starting, waitingForUser, inFlightEntry])
 
   // When the current turn began: the first stamped entry after the last
   // "turn complete" marker. Null when there is no marker (fresh loop, or a
@@ -1906,12 +1955,12 @@ function LoopStream({ loop }: { loop: string }) {
       <div className="relative flex-1 min-h-0">
       <div ref={scrollRef} onScroll={handleScroll} className="absolute inset-0 overflow-y-auto">
       <div className={columnClass}>
-        {displayLog.length === 0 && !isActive && !starting && (
+        {displayItems.length === 0 && !isActive && !starting && (
           <p className="text-sm text-neutral-400 dark:text-neutral-500 text-center mt-8">
             Agent output will appear here.
           </p>
         )}
-        {displayLog.length === 0 && (isActive || starting) && (
+        {displayItems.length === 0 && (isActive || starting) && (
           <div className="flex items-center justify-center gap-2 text-sm text-neutral-400 mt-8">
             <div className="flex gap-1">
               <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full animate-bounce" />
@@ -1921,7 +1970,7 @@ function LoopStream({ loop }: { loop: string }) {
             <span>{starting ? 'Starting agent\u2026' : 'Processing'}</span>
           </div>
         )}
-        {displayLog.length > 0 && (
+        {displayItems.length > 0 && (
           <div
             style={{
               height: `${virtualTotalSize}px`,
@@ -2064,16 +2113,18 @@ function LoopStream({ loop }: { loop: string }) {
       </div>
       </div>
 
-      {/* Pinned status strip — lives OUTSIDE the scroller so it never scrolls
-          away and never enters the virtualiser's height maths. Sits above the
-          composer's full-bleed hairline, narrowing with the column like the
-          composer does: log → strip → hairline → composer. */}
+      {/* Pinned status strip — the live tail. Lives OUTSIDE the scroller so it
+          never scrolls away and never enters the virtualiser's height maths.
+          Sits above the composer's full-bleed hairline, narrowing with the
+          column like the composer does: log → strip → hairline → composer. */}
       {statusPhase && (
         <div className={columnClass}>
           <AgentStatusStrip
             label={statusPhase.label}
             dotClass={statusPhase.dotClass}
+            entry={statusPhase.entry}
             turnStartedAt={turnStartedAt}
+            onOpen={setInspectedToolCall}
           />
         </div>
       )}
