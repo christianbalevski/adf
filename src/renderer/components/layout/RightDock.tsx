@@ -54,13 +54,13 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
         />
       )}
       {/* Top-level tab switcher */}
-      <div className="flex items-center border-b border-hairline">
+      <div className="flex h-9 items-stretch border-b border-hairline">
         <div className="flex-1 flex justify-center gap-1">
           {(chatInCenter ? DOCK_TABS_CHAT_IN_CENTER : DOCK_TABS).map((tab) => (
             <button
               key={tab}
               onClick={() => setRightPanel(tab)}
-              className={`px-4 py-2 text-xs font-medium ${
+              className={`px-4 text-xs font-medium ${
                 rightPanel === tab
                   ? 'text-blue-600 border-b-2 border-blue-500'
                   : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
@@ -84,7 +84,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
         <button
           onClick={toggleRightPanel}
           title="Collapse Panel"
-          className="shrink-0 px-1.5 py-2 text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+          className="shrink-0 px-1.5 text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="9 18 15 12 9 6" />

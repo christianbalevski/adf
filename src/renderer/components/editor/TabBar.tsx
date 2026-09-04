@@ -34,7 +34,7 @@ interface Props {
  * gets clipped to a stray vertical bar at the tab's edge.
  */
 const TAB_BASE =
-  'group relative z-10 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:[outline-offset:-2px]'
+  'group relative z-10 flex items-center gap-1.5 px-3 text-xs font-medium whitespace-nowrap transition-colors focus-visible:[outline-offset:-2px]'
 const TAB_ACTIVE =
   'bg-surface-1 text-neutral-800 dark:text-neutral-200 shadow-[inset_0_2px_0_0_var(--color-blue-500)]'
 const TAB_IDLE =
@@ -55,7 +55,7 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
   if (tabs.length === 0 && !chatTab) return null
 
   return (
-    <div className="relative flex items-stretch bg-surface-0 shrink-0">
+    <div className="relative flex h-9 items-stretch bg-surface-0 shrink-0">
       <span aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-hairline" />
       {chatTab && (
         <>
