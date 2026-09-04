@@ -213,6 +213,7 @@ const api: AdfApi = {
   // Token usage tracking
   getTokenUsage: () => ipcRenderer.invoke(IPC.TOKEN_USAGE_GET),
   clearTokenUsage: () => ipcRenderer.invoke(IPC.TOKEN_USAGE_CLEAR),
+  saveTokenUsageExport: (json: string) => ipcRenderer.invoke(IPC.TOKEN_USAGE_EXPORT, json),
   countTokens: (text: string, provider?: string, model?: string) =>
     ipcRenderer.invoke(IPC.TOKEN_COUNT, { text, provider, model }),
   countTokensBatch: (texts: string[], provider?: string, model?: string) =>

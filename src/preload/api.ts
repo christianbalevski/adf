@@ -187,6 +187,8 @@ export interface AdfApi {
   // Token usage tracking
   getTokenUsage: () => Promise<TokenUsageData>
   clearTokenUsage: () => Promise<{ success: boolean }>
+  /** Save the raw token-usage JSON to a user-picked file via the OS save dialog. */
+  saveTokenUsageExport: (json: string) => Promise<{ success: boolean; path?: string }>
   countTokens: (text: string, provider?: string, model?: string) => Promise<{ count: number }>
   countTokensBatch: (texts: string[], provider?: string, model?: string) => Promise<{ counts: number[] }>
   /** Per-request context token breakdown for one loop's running executor (foreground or background). `loop` defaults to `main`; null when that loop isn't running. */

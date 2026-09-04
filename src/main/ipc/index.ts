@@ -6065,6 +6065,19 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
+  ipcMain.handle(IPC.TOKEN_USAGE_EXPORT, async (_event, json: string) => {
+    if (typeof json !== 'string') return { success: false }
+    const win = BrowserWindow.getFocusedWindow() ?? undefined
+    const result = await dialog.showSaveDialog({
+      ...(win ? { window: win } : {}),
+      defaultPath: `adf-token-usage-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    } as Electron.SaveDialogOptions)
+    if (result.canceled || !result.filePath) return { success: false }
+    writeFileSync(result.filePath, json, 'utf8')
+    return { success: true, path: result.filePath }
+  })
+
   // --- Home dashboard (split into 4 slices so each tile loads as its
   // data resolves rather than waiting on the slowest one). ---
 

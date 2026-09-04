@@ -119,6 +119,7 @@ export const IPC = {
   // Token usage tracking
   TOKEN_USAGE_GET: 'adf:token-usage:get',
   TOKEN_USAGE_CLEAR: 'adf:token-usage:clear',
+  TOKEN_USAGE_EXPORT: 'adf:token-usage:export',
   TOKEN_COUNT: 'adf:token:count',
   TOKEN_COUNT_BATCH: 'adf:token:count-batch',
   CONTEXT_BREAKDOWN_GET: 'adf:context:breakdown:get',
