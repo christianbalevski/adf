@@ -1,14 +1,17 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { useAppStore, type SettingsSection } from '../../stores/app.store'
+import { useAppStore, UI_FONT_PRESETS, UI_SCALE_OPTIONS, type SettingsSection, type UiFont, type UiScale } from '../../stores/app.store'
+import { isFontInstalled } from '../../utils/fonts'
 import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
 import type { ProviderType } from '../../../shared/constants/adf-defaults'
 import { addCatalogSource, normalizeCatalogSources, MAX_CATALOG_SOURCES } from '../../utils/skills-panel'
 import { invalidateConfigCaches } from '../agent/AgentConfig'
-import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAgentStatus, TokenUsageData } from '../../../shared/types/ipc.types'
+import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAgentStatus } from '../../../shared/types/ipc.types'
 import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { AdapterStatusDashboard } from '../adapters/AdapterStatusDashboard'
 import { ProviderCredentialPanel } from '../providers/ProviderCredentialPanel'
 import { AboutTab } from './AboutTab'
+import { NewAgentTemplateTab } from './NewAgentTemplateTab'
+import { TokenUsageSection } from './UsageSection'
 import { ContainerDestroyDialog, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
@@ -38,13 +41,15 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Personal',
     items: [
-      { id: 'general', label: 'General', description: 'Appearance, usage, and agent defaults', keywords: 'theme tokens prompts instructions', docs: DOCS.settingsGeneral },
+      { id: 'general', label: 'General', description: 'Appearance, notifications, files, and usage', keywords: 'theme tokens', docs: DOCS.settingsGeneral },
       { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation', docs: DOCS.settingsIdentity },
     ],
   },
   {
     label: 'Agent runtime',
     items: [
+      { id: 'agents', label: 'Prompts', description: 'Applies to every agent now.', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
+      { id: 'template', label: 'Agent template', description: 'Applies to agents you create from now on.', keywords: 'defaults template model tools limits new agent files readme mind', docs: DOCS.settingsSystemPrompt },
       { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt grok xai models api keys', docs: DOCS.settingsProviders },
       { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },
       { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools', docs: DOCS.settingsMcp },
@@ -73,6 +78,8 @@ function SettingsNavIcon({ section }: { section: SettingsSection }) {
   const paths: Record<SettingsSection, React.ReactNode> = {
     general: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-1.5-1H2.5V10h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 4.2l.06.06A1.7 1.7 0 0 0 8.5 4.6a1.7 1.7 0 0 0 1-1.5V3h4.05v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.6 9a1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.7 1Z" /></>,
     identity: <><circle cx="12" cy="8" r="4" /><path d="M4.5 21a7.5 7.5 0 0 1 15 0" /></>,
+    agents: <><path d="M4 17V7l4 3 4-3v10" /><path d="M15 8h5M15 12h5M15 16h5" /></>,
+    template: <><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z" /><path d="M14 3v6h6" /><path d="M12 12v6M9 15h6" /></>,
     providers: <><path d="M8 12h8" /><path d="M12 8v8" /><rect x="4" y="4" width="16" height="16" rx="4" /></>,
     packages: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4.5 7.7 7.5 4.2 7.5-4.2M12 12v9" /></>,
     mcps: <><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M8 17v2a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2" /><rect x="4" y="7" width="16" height="10" rx="2" /></>,
@@ -208,139 +215,6 @@ function PromptSectionRows({ defaults, labels, conditions, values, onChange, exp
           </div>
         )
       })}
-    </div>
-  )
-}
-
-/** Compact token count for inline cache annotations: 12345 → "12.3k". */
-function formatTokensCompact(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`
-  return String(n)
-}
-
-/** `$0.0042`-style: 4 decimals below $1, 2 above. */
-function formatUsdCompact(n: number): string {
-  return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`
-}
-
-type TokenUsageEntry = TokenUsageData[string][string][string]
-
-/** Sum cost across a set of usage entries; null when none of them carry cost. */
-function sumCost(entries: TokenUsageEntry[]): number | null {
-  let any = false
-  let total = 0
-  for (const e of entries) {
-    if (e.cost_usd != null) {
-      any = true
-      total += e.cost_usd
-    }
-  }
-  return any ? total : null
-}
-
-function TokenUsageSection() {
-  const [tokenUsage, setTokenUsage] = useState<TokenUsageData>({})
-  const [expanded, setExpanded] = useState(false)
-
-  useEffect(() => {
-    window.adfApi?.getTokenUsage().then((data) => {
-      setTokenUsage(data)
-    })
-  }, [])
-
-  const handleClear = async () => {
-    if (!window.confirm('Are you sure you want to clear all token usage data? This cannot be undone.')) {
-      return
-    }
-    await window.adfApi?.clearTokenUsage()
-    setTokenUsage({})
-  }
-
-  const dates = Object.keys(tokenUsage).sort().reverse()
-  const allEntries = dates.flatMap((date) =>
-    Object.values(tokenUsage[date]).flatMap((models) => Object.values(models))
-  )
-  const totalInput = allEntries.reduce((sum, usage) => sum + usage.input, 0)
-  const totalOutput = allEntries.reduce((sum, usage) => sum + usage.output, 0)
-  const totalCost = sumCost(allEntries)
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-          Token Usage
-        </label>
-        <div className="flex gap-2">
-          {dates.length > 0 && (
-            <Button
-              onClick={handleClear}
-              variant="danger"
-              size="compact"
-            >
-              Clear
-            </Button>
-          )}
-          {dates.length > 0 && (
-            <Button
-              onClick={() => setExpanded(!expanded)}
-              variant="ghost"
-              size="compact"
-            >
-              {expanded ? 'Collapse' : 'Expand'}
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {dates.length === 0 ? (
-        <p className="text-xs text-neutral-400 dark:text-neutral-500">
-          No token usage recorded yet.
-        </p>
-      ) : (
-        <div className="rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-canvas)] p-3 ring-1 ring-inset ring-[var(--adf-ui-separator)]">
-          <div className="mb-2 text-xs text-[var(--adf-ui-text-muted)]">
-            <strong>Total:</strong> {totalInput.toLocaleString()} input + {totalOutput.toLocaleString()} output = {(totalInput + totalOutput).toLocaleString()} tokens
-            {totalCost != null && <> · {formatUsdCompact(totalCost)}</>}
-          </div>
-
-          {expanded && (
-            <div className="space-y-3 mt-3">
-              {dates.map((date) => {
-                const dateCost = sumCost(Object.values(tokenUsage[date]).flatMap((models) => Object.values(models)))
-                return (
-                  <div key={date} className="border-t border-[var(--adf-ui-separator)] pt-2">
-                    <div className="mb-1 text-xs font-semibold text-[var(--adf-ui-text)]">
-                      {date}
-                      {dateCost != null && <span className="ml-2 font-normal text-[var(--adf-ui-text-muted)]">{formatUsdCompact(dateCost)}</span>}
-                    </div>
-                    {Object.entries(tokenUsage[date]).map(([provider, models]) => {
-                      const providerCost = sumCost(Object.values(models))
-                      return (
-                        <div key={provider} className="ml-3 space-y-1">
-                          <div className="text-xs font-medium text-[var(--adf-ui-text-muted)]">
-                            {provider}
-                            {providerCost != null && <span className="ml-2 font-normal text-[var(--adf-ui-text-subtle)]">{formatUsdCompact(providerCost)}</span>}
-                          </div>
-                          {Object.entries(models).map(([model, usage]) => (
-                            <div key={model} className="ml-3 font-mono text-xs text-[var(--adf-ui-text-subtle)]">
-                              {model}: {usage.input.toLocaleString()} in + {usage.output.toLocaleString()} out
-                              {/* Inline extras keep the table compact — no columns that sit empty for most providers */}
-                              {(usage.cache_read || usage.cache_write) ? (
-                                <> · cache {formatTokensCompact(usage.cache_read ?? 0)} r / {formatTokensCompact(usage.cache_write ?? 0)} w</>
-                              ) : null}
-                              {usage.cost_usd != null && <> · {formatUsdCompact(usage.cost_usd)}</>}
-                            </div>
-                          ))}
-                        </div>
-                      )
-                    })}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
@@ -1488,6 +1362,17 @@ export function SettingsPage() {
   const [grokDeviceInfo, setGrokDeviceInfo] = useState<{ userCode: string; verificationUri: string; verificationUriComplete?: string } | null>(null)
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
+  const chatWidth = useAppStore((s) => s.chatWidth)
+  const uiFont = useAppStore((s) => s.uiFont)
+  const setUiFont = useAppStore((s) => s.setUiFont)
+  const uiFontCustom = useAppStore((s) => s.uiFontCustom)
+  const setUiFontCustom = useAppStore((s) => s.setUiFontCustom)
+  const uiScale = useAppStore((s) => s.uiScale)
+  const setUiScale = useAppStore((s) => s.setUiScale)
+  // Free-text family is committed on blur / Enter, not per keystroke.
+  const [uiFontCustomDraft, setUiFontCustomDraft] = useState(uiFontCustom)
+  useEffect(() => setUiFontCustomDraft(uiFontCustom), [uiFontCustom])
+  const setChatWidth = useAppStore((s) => s.setChatWidth)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const consumePendingSettingsSection = useAppStore((s) => s.consumePendingSettingsSection)
   const hasLoaded = useRef(false)
@@ -1627,6 +1512,24 @@ export function SettingsPage() {
   const handleThemeChange = async (newTheme: 'light' | 'dark' | 'system') => {
     setTheme(newTheme)
     await window.adfApi?.setSettings({ theme: newTheme })
+  }
+
+  const handleUiFontChange = async (font: UiFont) => {
+    setUiFont(font)
+    await window.adfApi?.setSettings({ uiFont: font })
+  }
+
+  const commitUiFontCustom = async () => {
+    const family = uiFontCustomDraft.trim()
+    if (family === uiFontCustom) return
+    setUiFontCustom(family)
+    await window.adfApi?.setSettings({ uiFontCustom: family })
+  }
+
+  const handleUiScaleChange = async (value: string) => {
+    const scale = Number(value) as UiScale
+    setUiScale(scale)
+    await window.adfApi?.setSettings({ uiScale: scale })
   }
 
   const handleChooseAgentsFolder = async () => {
@@ -1855,7 +1758,7 @@ export function SettingsPage() {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)]">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-[var(--adf-ui-border)] bg-[var(--adf-ui-sidebar)]">
+      <aside className="flex w-60 shrink-0 flex-col bg-[var(--adf-ui-sidebar)]">
         <div className="px-4 pt-4 pb-3">
           <Button
             onClick={() => setShowSettings(false)}
@@ -1951,6 +1854,75 @@ export function SettingsPage() {
                 ariaLabel="Theme"
               />
             </SettingsRow>
+            <SettingsRow
+              label="Chat width"
+              description="How wide the loop thread runs when the chat is in the center stage. Comfortable caps it at a reading column; Full uses the whole stage."
+              help="Only applies when the chat is in the center. In the side dock the panel is already narrow."
+            >
+              <SegmentedControl
+                value={chatWidth}
+                options={[
+                  { value: 'comfortable', label: 'Comfortable' },
+                  { value: 'full', label: 'Full' },
+                ]}
+                onChange={setChatWidth}
+                ariaLabel="Chat width"
+              />
+            </SettingsRow>
+            <SettingsRow
+              label="Font family"
+              description="Typeface for the whole interface. Presets fall back to the system font if the face isn't installed."
+            >
+              <div className="flex items-center gap-2">
+                <Select
+                  className="!w-[150px]"
+                  value={uiFont}
+                  onChange={(event) => handleUiFontChange(event.target.value as UiFont)}
+                  aria-label="Font family"
+                >
+                  {UI_FONT_PRESETS.map((preset) => {
+                    const missing = preset.family !== null && !isFontInstalled(preset.family)
+                    return (
+                      <option key={preset.value} value={preset.value} disabled={missing}>
+                        {preset.label}{missing ? ' (not installed)' : ''}
+                      </option>
+                    )
+                  })}
+                  <option value="custom">Custom…</option>
+                </Select>
+                {uiFont === 'custom' && (
+                  <TextInput
+                    className="!w-[180px]"
+                    value={uiFontCustomDraft}
+                    onChange={(event) => setUiFontCustomDraft(event.target.value)}
+                    onBlur={commitUiFontCustom}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') event.currentTarget.blur()
+                    }}
+                    placeholder="Font family name"
+                    aria-label="Custom font family"
+                    spellCheck={false}
+                  />
+                )}
+                {uiFont === 'custom' && uiFontCustom.trim() && !isFontInstalled(uiFontCustom) && (
+                  <span className="text-[11px] text-[var(--adf-ui-warning)]">Not found on this system — using the default.</span>
+                )}
+              </div>
+            </SettingsRow>
+            <SettingsRow
+              label="UI scale"
+              description="Scale the entire interface. Ctrl+= / Ctrl+- still zoom on top of this."
+            >
+              <SegmentedControl
+                value={String(uiScale)}
+                options={UI_SCALE_OPTIONS.map((scale) => ({
+                  value: String(scale),
+                  label: `${Math.round(scale * 100)}%`,
+                }))}
+                onChange={handleUiScaleChange}
+                ariaLabel="UI scale"
+              />
+            </SettingsRow>
           </SettingsGroup>
 
           <SettingsGroup title="Notifications">
@@ -2003,7 +1975,19 @@ export function SettingsPage() {
             <div className="px-4 pb-4"><TokenUsageSection /></div>
           </SettingsGroup>
 
-          <SettingsGroup title="Agent defaults" description="Defaults applied to every agent unless its file provides more specific instructions." docs={DOCS.settingsSystemPrompt}>
+          <div className="flex justify-center pb-4">
+            <Button
+              onClick={() => setActiveTab('about')}
+              variant="ghost"
+            >
+              How it works
+            </Button>
+          </div>
+          </>}
+
+          {/* Agent defaults tab */}
+          {activeTab === 'agents' && <>
+          <SettingsGroup title="Prompts" description="Applied to every agent unless its file provides more specific instructions." docs={DOCS.settingsSystemPrompt}>
           <div className="flex justify-end px-4 pt-3">
             <Button onClick={handleResetAllPrompts} variant="ghost" size="compact">
               Reset All Prompts to Defaults
@@ -2102,16 +2086,16 @@ export function SettingsPage() {
               />
             </div>
           </SettingsGroup>
-
-          <div className="flex justify-center pb-4">
-            <Button
-              onClick={() => setActiveTab('about')}
-              variant="ghost"
-            >
-              How it works
-            </Button>
-          </div>
           </>}
+
+          {/* Agent template tab */}
+          {activeTab === 'template' && (
+            <NewAgentTemplateTab
+              providers={providers}
+              defaultProviderId={defaultProviderId}
+              onDefaultProviderChange={setDefaultProviderId}
+            />
+          )}
 
           {/* Identity tab */}
           {activeTab === 'identity' && <IdentityTab />}
@@ -2144,6 +2128,17 @@ export function SettingsPage() {
             </div>
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-3">
               ADF files with stored provider configurations will continue to work independently, even if the provider is not listed here.
+            </p>
+            <p className="text-[11px] text-[var(--adf-ui-text-muted)] mb-3">
+              Default provider for new agents is set under{' '}
+              <button
+                type="button"
+                onClick={() => setActiveTab('template')}
+                className="underline underline-offset-2 hover:text-[var(--adf-ui-text)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)] rounded"
+              >
+                Agent template
+              </button>
+              .
             </p>
             {providers.length === 0 ? (
               <p className="text-xs text-neutral-400 dark:text-neutral-500">
@@ -2214,27 +2209,8 @@ export function SettingsPage() {
                       {/* Expanded content */}
                       {isExpanded && (
                         <div className="px-3 pb-3 space-y-2 border-t border-neutral-100 dark:border-neutral-700">
-                          {/* Default-for-new-agents control */}
-                          <div className="mt-2 flex items-center justify-between">
-                            <span className="text-xs text-neutral-500 dark:text-neutral-400">
-                              Default for new agents
-                            </span>
-                            {isDefault ? (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
-                                Default
-                              </span>
-                            ) : (
-                              <Button
-                                onClick={() => setDefaultProviderId(p.id)}
-                                variant="ghost"
-                                size="compact"
-                              >
-                                Make default
-                              </Button>
-                            )}
-                          </div>
                           {/* Connection status + manual re-test */}
-                          <div className="flex items-center justify-between">
+                          <div className="mt-2 flex items-center justify-between">
                             <span className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
                               <span className={`w-2 h-2 rounded-full shrink-0 ${providerDotClass(providerStatus[p.id])}`} />
                               {providerStatusLabel(providerStatus[p.id])}

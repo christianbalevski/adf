@@ -11,7 +11,7 @@ import { nanoid as _nanoid } from 'nanoid'
 
 /** Short 10-char IDs — sufficient for per-agent uniqueness */
 const nanoid = () => _nanoid(10)
-import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, promises as fsp } from 'fs'
+import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, readFileSync, promises as fsp } from 'fs'
 import { brotliDecompressSync } from 'zlib'
 import { join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
@@ -36,15 +36,15 @@ import type {
   TriggerTypeV3
 } from '../../shared/types/adf-v02.types'
 import {
-  AGENT_DEFAULTS as defaults,
   DEFAULT_TOOLS as defaultTools,
-  DEFAULT_NEW_LOOP_TOOLS,
   getDefaultDocumentContent,
   DEFAULT_MIND_CONTENT,
   DEFAULT_MIND_LOG_CONTENT,
   DEFAULT_SOUL_CONTENT
 } from '../../shared/types/adf-v02.types'
 import { pickAgentIcon } from '../../shared/constants/agent-icons'
+import { DEFAULT_AGENT_CONFIG } from '../../shared/constants/adf-defaults'
+import { mergeAgentTemplate, validateTemplateFilePath } from '../../shared/utils/agent-template'
 import {
   decrypt
 } from '../crypto/identity-crypto'
@@ -56,6 +56,13 @@ import {
  * standing rule that would override the owner.
  */
 const LOOP_TOOLS_BACKFILL_META = 'adf_loop_tools_backfilled'
+/**
+ * The pre-allow-list ESSENTIALS every loop implicitly held. Pinned here rather
+ * than read from `DEFAULT_NEW_LOOP_TOOLS`: the grandfather restores what a
+ * legacy loop actually had, and later additions to the new-loop seed must not
+ * leak into old files through it.
+ */
+const LEGACY_ESSENTIAL_LOOP_TOOLS = ['loop_send', 'loop_list'] as const
 
 /**
  * LoopEntry plus the storage-level `ord` position override (set only on
@@ -1991,8 +1998,16 @@ export class AdfDatabase {
 
     const agentId = _nanoid(12)
 
-    // Merge tools: if caller provided overrides, apply them on top of defaults
-    let tools = [...defaultTools]
+    // Order: code defaults -> Studio's "Agent template" (settings.agentTemplate)
+    // -> explicit options. Only user-initiated creation from Studio passes a
+    // template (see CreateAgentOptions.template); every other caller —
+    // sys_create_adf children, the headless harness — gets the bare code
+    // defaults, where instructions stay empty unless the caller supplies them.
+    // mergeAgentTemplate clones, so nothing below aliases the shared defaults.
+    const base = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, options.template)
+
+    // Merge tools: if caller provided overrides, apply them on top of the base list
+    let tools = [...base.tools]
     if (options.tools) {
       const overrideMap = new Map(options.tools.map(t => [t.name, t]))
       tools = tools.map(t => overrideMap.has(t.name) ? { ...t, ...overrideMap.get(t.name)! } : t)
@@ -2005,7 +2020,7 @@ export class AdfDatabase {
     }
 
     // Merge triggers: spread per trigger type from defaults, override with provided
-    const mergedTriggers: TriggersConfigV3 = { ...defaults.triggers }
+    const mergedTriggers: TriggersConfigV3 = { ...base.triggers }
     if (options.triggers) {
       for (const key of Object.keys(options.triggers) as TriggerTypeV3[]) {
         const override = options.triggers[key]
@@ -2016,46 +2031,49 @@ export class AdfDatabase {
     }
 
     const config: AgentConfig = {
+      // Template-only sections with no explicit option (recovery, loops,
+      // stream bindings, umbilical, prompt flags, ...) ride along here.
+      ...base,
       adf_version: '0.2',
       id: agentId,
       name: options.name,
       description: options.description || '',
-      icon: options.icon || pickAgentIcon(agentId),
+      icon: options.icon || base.icon || pickAgentIcon(agentId),
       ...(options.handle ? { handle: options.handle } : {}),
-      state: options.start_in_state ?? defaults.state,
-      start_in_state: options.start_in_state,
-      autonomous: options.autonomous ?? defaults.autonomous,
-      autostart: options.autostart ?? false,
-      model: { ...defaults.model, ...options.model },
-      instructions: options.instructions || '',
+      state: options.start_in_state ?? base.start_in_state ?? base.state,
+      start_in_state: options.start_in_state ?? base.start_in_state,
+      autonomous: options.autonomous ?? base.autonomous,
+      autostart: options.autostart ?? base.autostart ?? false,
+      model: { ...base.model, ...options.model },
+      instructions: options.instructions || base.instructions,
       context: {
-        ...defaults.context,
+        ...base.context,
         ...options.context,
-        audit: { ...defaults.context.audit, ...options.context?.audit },
-        dynamic_instructions: { ...defaults.context.dynamic_instructions, ...options.context?.dynamic_instructions }
+        audit: { ...base.context.audit, ...options.context?.audit },
+        dynamic_instructions: { ...base.context.dynamic_instructions, ...options.context?.dynamic_instructions }
       },
       tools,
       triggers: mergedTriggers,
-      security: { ...defaults.security, ...options.security },
-      limits: { ...defaults.limits, ...options.limits },
-      messaging: { ...defaults.messaging, ...options.messaging },
-      audit: { ...defaults.audit, ...options.audit },
-      code_execution: { ...defaults.code_execution, ...options.code_execution },
-      compute: { ...defaults.compute },
-      logging: { ...defaults.logging, ...options.logging },
-      mcp: options.mcp ?? { ...defaults.mcp },
-      adapters: { ...defaults.adapters, ...options.adapters },
-      serving: options.serving ?? { ...defaults.serving },
-      ws_connections: options.ws_connections ?? [...defaults.ws_connections],
-      providers: options.providers ?? [...defaults.providers],
+      security: { ...base.security, ...options.security },
+      limits: { ...base.limits, ...options.limits },
+      messaging: { ...base.messaging, ...options.messaging },
+      audit: { ...base.audit, ...options.audit },
+      code_execution: { ...base.code_execution, ...options.code_execution },
+      compute: { ...base.compute },
+      logging: { ...base.logging, ...options.logging },
+      mcp: options.mcp ?? base.mcp,
+      adapters: { ...base.adapters, ...options.adapters },
+      serving: options.serving ?? base.serving,
+      ws_connections: options.ws_connections ?? base.ws_connections ?? [],
+      providers: options.providers ?? base.providers ?? [],
       // Union, not replace: defensive even though AGENT_DEFAULTS.locked_fields
       // is now [] — the dangerous capability locks (security.allow_local_fetch,
       // stream_bind) live in code (DEFAULT_LOCKED_PATHS in
       // sys-update-config.tool.ts), not in this default, so they're enforced
       // uniformly regardless of what this union produces. This still unions
       // any future/non-empty defaults with caller-supplied locks correctly.
-      locked_fields: Array.from(new Set([...defaults.locked_fields, ...(options.locked_fields ?? [])])),
-      card: options.card ?? { ...defaults.card },
+      locked_fields: Array.from(new Set([...(base.locked_fields ?? []), ...(options.locked_fields ?? [])])),
+      card: options.card ?? base.card,
       metadata: {
         created_at: now,
         updated_at: now,
@@ -2075,11 +2093,44 @@ export class AdfDatabase {
     // Default agent key
     adfDb.setMeta('status', '', 'none')
 
-    const documentContent = getDefaultDocumentContent(options.name)
+    // Seed files: the template's content when it has any, else the code defaults.
+    const seedReadme = options.template?.files?.readme
+    const seedMind = options.template?.files?.mind
+    const seedSoul = options.template?.files?.soul
+    const documentContent = seedReadme && seedReadme.trim() ? seedReadme : getDefaultDocumentContent(options.name)
+    const mindContent = seedMind && seedMind.trim() ? seedMind : DEFAULT_MIND_CONTENT
+    const soulContent = seedSoul && seedSoul.trim() ? seedSoul : DEFAULT_SOUL_CONTENT
     adfDb.writeFile('README.md', Buffer.from(documentContent), 'text/markdown', 'no_delete')
-    adfDb.writeFile('mind.md', Buffer.from(DEFAULT_MIND_CONTENT), 'text/markdown', 'no_delete')
+    adfDb.writeFile('mind.md', Buffer.from(mindContent), 'text/markdown', 'no_delete')
     adfDb.writeFile('mind/log.md', Buffer.from(DEFAULT_MIND_LOG_CONTENT), 'text/markdown', 'no_delete')
-    adfDb.writeFile('soul.md', Buffer.from(DEFAULT_SOUL_CONTENT), 'text/markdown', 'no_delete')
+    adfDb.writeFile('soul.md', Buffer.from(soulContent), 'text/markdown', 'no_delete')
+
+    // Template extra files: blobs live under options.templateFilesDir (host-
+    // provided; the settings JSON holds only metadata). A missing blob or a
+    // path the validator rejects is skipped with a warning, never fatal.
+    const extras = options.template?.files?.extra ?? []
+    if (extras.length > 0 && options.templateFilesDir) {
+      const written: string[] = []
+      for (const extra of extras) {
+        if (!/^[0-9a-f]+$/i.test(extra.id ?? '')) continue
+        const invalid = validateTemplateFilePath(extra.path ?? '', written)
+        if (invalid) {
+          console.warn(`[AdfDatabase] Template file ${extra.id} skipped (${extra.path}): ${invalid}`)
+          continue
+        }
+        const blobPath = join(options.templateFilesDir, extra.id)
+        if (!existsSync(blobPath)) {
+          console.warn(`[AdfDatabase] Template file ${extra.id} (${extra.path}) missing on disk; skipped`)
+          continue
+        }
+        try {
+          adfDb.writeFile(extra.path.trim(), readFileSync(blobPath), extra.mime || 'application/octet-stream')
+          written.push(extra.path.trim())
+        } catch (err) {
+          console.warn(`[AdfDatabase] Template file ${extra.id} (${extra.path}) could not be copied:`, err)
+        }
+      }
+    }
 
     // Identity keys are not generated by default for local ADFs.
     // Users can manually generate keys via the Identity Panel UI or IPC calls.
@@ -2960,7 +3011,7 @@ export class AdfDatabase {
         // `tools` absent is the old "essentials only" reflective loop — it held
         // both names too, so it is grandfathered like the rest.
         const tools = Array.isArray(loop.tools) ? loop.tools : (loop.tools = [])
-        for (const name of DEFAULT_NEW_LOOP_TOOLS) {
+        for (const name of LEGACY_ESSENTIAL_LOOP_TOOLS) {
           if (tools.includes(name)) continue
           tools.push(name)
           added = true

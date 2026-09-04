@@ -16,6 +16,34 @@
   --color-accent: var(--color-blue-500);
 }
 
+/* Layered surfaces + whisper hairline. `inline` so utilities emit the
+   var() itself and the .dark override resolves per element:
+   bg-surface-0/1/2, bg-surface-raised, border-hairline, shadow-card.
+   Panel edges read from the tone step between layers, not from lines. */
+@theme inline {
+  --color-surface-0: var(--adf-surface-0);
+  --color-surface-1: var(--adf-surface-1);
+  --color-surface-2: var(--adf-surface-2);
+  --color-surface-raised: var(--adf-surface-raised);
+  --color-hairline: var(--adf-hairline);
+  --shadow-card: var(--adf-shadow-card);
+  --shadow-subtle: var(--adf-shadow-subtle);
+  /* `font-mono` utilities follow the app's monospace token. */
+  --font-mono: var(--adf-font-mono);
+}
+
+/* Typeface tokens. `--adf-font-ui` is rewritten at runtime from the
+   Settings › Appearance font choice (App.tsx); the defaults below are the
+   stacks in effect when nothing is chosen. */
+:root {
+  --adf-font-ui:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
+    Cantarell, sans-serif;
+  --adf-font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+}
+
 /* ADF Studio UI tokens
    Additive, opt-in tokens for Settings and ordinary shared controls. Fleet
    surfaces intentionally continue to use their existing visual system. */
@@ -49,6 +77,15 @@
      consistently (a colored logo on a dark surface would clash/vanish). */
   --adf-ui-logo-tile: #ffffff;
   --adf-ui-logo-tile-border: #e4e4e7;
+  /* Surface ladder: 0 = shell chrome (titlebar/statusbar), 1 = main content,
+     2 = side panels (sidebar, dock, drawer), raised = floating cards. */
+  --adf-surface-0: #f4f4f5;
+  --adf-surface-1: #ffffff;
+  --adf-surface-2: #fafafa;
+  --adf-surface-raised: #ffffff;
+  --adf-hairline: rgb(0 0 0 / 0.06);
+  --adf-shadow-card: 0 2px 8px rgb(0 0 0 / 0.08);
+  --adf-shadow-subtle: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.06);
 }
 
 .dark {
@@ -76,6 +113,13 @@
   /* Kept light on purpose (see :root) — full-color brand marks read on it. */
   --adf-ui-logo-tile: #f4f4f5;
   --adf-ui-logo-tile-border: rgba(0, 0, 0, 0.28);
+  --adf-surface-0: #0a0a0a;
+  --adf-surface-1: #171717;
+  --adf-surface-2: #121212;
+  --adf-surface-raised: #1f1f1f;
+  --adf-hairline: rgb(255 255 255 / 0.06);
+  --adf-shadow-card: 0 4px 16px rgb(0 0 0 / 0.45);
+  --adf-shadow-subtle: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 4px rgb(0 0 0 / 0.25);
 }
 
 html,
@@ -84,9 +128,7 @@ body,
   height: 100%;
   margin: 0;
   overflow: hidden;
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
-    Cantarell, sans-serif;
+  font-family: var(--adf-font-ui);
 }
 
 /* Custom scrollbar */
@@ -99,13 +141,15 @@ body,
   background: transparent;
 }
 
+/* Translucent thumbs: faint at rest, a little firmer under the pointer, and
+   they take their tone from whatever surface they sit on. */
 ::-webkit-scrollbar-thumb {
-  background: #d1d5db;
+  background: rgb(0 0 0 / 0.12);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af;
+  background: rgb(0 0 0 / 0.24);
 }
 
 /* Reusable field input style for config editor */
@@ -126,17 +170,17 @@ body,
 /* Dark mode body */
 .dark body,
 .dark #root {
-  background: #171717;
+  background: var(--adf-surface-1);
   color: #f5f5f5;
 }
 
 /* Dark scrollbar */
 .dark ::-webkit-scrollbar-thumb {
-  background: #525252;
+  background: rgb(255 255 255 / 0.1);
 }
 
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: #737373;
+  background: rgb(255 255 255 / 0.2);
 }
 
 /* Horizontal strips (the loop tab strip) hide their scrollbar outright — a
@@ -161,11 +205,19 @@ body,
 }
 
 .scrollbar-autohide:hover {
-  scrollbar-color: #d1d5db transparent;
+  scrollbar-color: rgb(0 0 0 / 0.12) transparent;
 }
 
 .scrollbar-autohide:hover::-webkit-scrollbar-thumb {
-  background: #d1d5db;
+  background: rgb(0 0 0 / 0.12);
+}
+
+.dark .scrollbar-autohide:hover {
+  scrollbar-color: rgb(255 255 255 / 0.1) transparent;
+}
+
+.dark .scrollbar-autohide:hover::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.1);
 }
 
 .scrollbar-autohide:hover::-webkit-scrollbar-thumb:hover {
@@ -506,4 +558,45 @@ summary:focus-visible {
    crosses one. Dragging code stamps this class on <body> for the duration. */
 body.panel-resizing webview {
   pointer-events: none;
+}
+
+/* AgentLoop status strip — the phase verb shimmers instead of bouncing dots.
+   Painted through the text: the base is the element's own (muted neutral)
+   colour, the highlight is the theme's full text colour, so it reads in both
+   light and dark. text-fill (not `color`) goes transparent so currentColor
+   keeps feeding the gradient. Reduced motion gets plain static text. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes adfShimmerText {
+    from { background-position: 100% 0; }
+    to { background-position: 0 0; }
+  }
+  .adf-shimmer-text {
+    background-image: linear-gradient(
+      90deg,
+      currentColor 0%,
+      currentColor 38%,
+      color-mix(in srgb, currentColor 45%, white) 50%,
+      currentColor 62%,
+      currentColor 100%
+    );
+    background-size: 300% 100%;
+    background-repeat: no-repeat;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: adfShimmerText 2s linear infinite;
+  }
+  /* Title-bar variant: slower sweep, narrower highlight, so it glimmers
+     rather than flashes on chrome that is always in view. */
+  .adf-shimmer-text--slow {
+    background-image: linear-gradient(
+      90deg,
+      currentColor 0%,
+      currentColor 44%,
+      color-mix(in srgb, currentColor 45%, white) 50%,
+      currentColor 56%,
+      currentColor 100%
+    );
+    animation-duration: 3s;
+  }
 }

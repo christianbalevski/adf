@@ -105,36 +105,42 @@ export const TOOL_FALLBACK_LABELS: Record<string, string> = {
 
 export type ToolFamily = 'read' | 'write' | 'message' | 'code' | 'system' | 'neutral'
 
-export const TOOL_FAMILY_STYLES: Record<ToolFamily, { dot: string; rail: string; name: string }> = {
+export const TOOL_FAMILY_STYLES: Record<ToolFamily, { dot: string; rail: string; name: string; text: string }> = {
   read: {
     dot: 'bg-cyan-500/70 dark:bg-cyan-400/70',
     rail: 'border-cyan-500/40 dark:border-cyan-400/40',
     name: 'text-cyan-700/60 dark:text-cyan-300/60',
+    text: 'text-cyan-700 dark:text-cyan-300',
   },
   write: {
     dot: 'bg-violet-500/70 dark:bg-violet-400/70',
     rail: 'border-violet-500/40 dark:border-violet-400/40',
     name: 'text-violet-700/60 dark:text-violet-300/60',
+    text: 'text-violet-700 dark:text-violet-300',
   },
   message: {
     dot: 'bg-teal-500/70 dark:bg-teal-400/70',
     rail: 'border-teal-500/40 dark:border-teal-400/40',
     name: 'text-teal-700/60 dark:text-teal-300/60',
+    text: 'text-teal-700 dark:text-teal-300',
   },
   code: {
     dot: 'bg-fuchsia-500/70 dark:bg-fuchsia-400/70',
     rail: 'border-fuchsia-500/40 dark:border-fuchsia-400/40',
     name: 'text-fuchsia-700/60 dark:text-fuchsia-300/60',
+    text: 'text-fuchsia-700 dark:text-fuchsia-300',
   },
   system: {
     dot: 'bg-slate-500/70 dark:bg-slate-400/70',
     rail: 'border-slate-500/40 dark:border-slate-400/40',
     name: 'text-slate-600/65 dark:text-slate-300/60',
+    text: 'text-slate-700 dark:text-slate-300',
   },
   neutral: {
     dot: 'bg-neutral-400/70 dark:bg-neutral-500/80',
     rail: 'border-neutral-300/60 dark:border-neutral-600/60',
     name: 'text-neutral-400 dark:text-neutral-500',
+    text: 'text-neutral-600 dark:text-neutral-300',
   },
 }
 
@@ -142,6 +148,7 @@ export const ATTENTION_TOOL_STYLE = {
   dot: 'bg-[var(--adf-ui-warning)]',
   rail: 'border-[color:var(--adf-ui-warning)]/60',
   name: 'text-[var(--adf-ui-warning)]',
+  text: 'text-[var(--adf-ui-warning)]',
 }
 
 export const ERROR_TOOL_STYLE = {

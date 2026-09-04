@@ -13,7 +13,7 @@ interface SettingsGroupProps {
 
 export function SettingsGroup({ title, description, children, className = '', docs, hint }: SettingsGroupProps) {
   return (
-    <section className={`overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] ${className}`}>
+    <section className={`overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-hairline bg-[var(--adf-ui-surface)] shadow-subtle ${className}`}>
       {(title || description) && (
         <div className="px-4 pt-3.5 pb-2.5">
           {title && (

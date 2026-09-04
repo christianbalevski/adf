@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
 import type { AppUpdateState, FleetSettableState, NotificationsSnapshot } from '../shared/types/ipc.types'
 import type { AgentConfig } from '../shared/types/adf-v02.types'
@@ -30,6 +30,8 @@ const api: AdfApi = {
     return () => ipcRenderer.removeListener(IPC.FILE_RENAMED, handler)
   },
   getCurrentFile: () => ipcRenderer.invoke(IPC.FILE_GET_CURRENT),
+  revealInFolder: (filePath: string) =>
+    ipcRenderer.invoke(IPC.FILE_REVEAL, { filePath }),
 
   // Document
   getDocument: () => ipcRenderer.invoke(IPC.DOC_GET_DOCUMENT),
@@ -116,6 +118,15 @@ const api: AdfApi = {
   getSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET),
   setSettings: (settings: Record<string, unknown>) =>
     ipcRenderer.invoke(IPC.SETTINGS_SET, settings),
+  agentTemplateFilesAdd: () =>
+    ipcRenderer.invoke(IPC.AGENT_TEMPLATE_FILES_ADD),
+  agentTemplateFilesRemove: (id: string) =>
+    ipcRenderer.invoke(IPC.AGENT_TEMPLATE_FILES_REMOVE, id),
+  agentTemplateFilesStat: (ids: string[]) =>
+    ipcRenderer.invoke(IPC.AGENT_TEMPLATE_FILES_STAT, ids),
+  setZoomFactor: (factor: number) => {
+    if (Number.isFinite(factor) && factor > 0) webFrame.setZoomFactor(factor)
+  },
 
   // Tracked directories
   getTrackedDirectories: () => ipcRenderer.invoke(IPC.TRACKED_DIRS_GET),
@@ -210,6 +221,7 @@ const api: AdfApi = {
   // Token usage tracking
   getTokenUsage: () => ipcRenderer.invoke(IPC.TOKEN_USAGE_GET),
   clearTokenUsage: () => ipcRenderer.invoke(IPC.TOKEN_USAGE_CLEAR),
+  saveTokenUsageExport: (json: string) => ipcRenderer.invoke(IPC.TOKEN_USAGE_EXPORT, json),
   countTokens: (text: string, provider?: string, model?: string) =>
     ipcRenderer.invoke(IPC.TOKEN_COUNT, { text, provider, model }),
   countTokensBatch: (texts: string[], provider?: string, model?: string) =>

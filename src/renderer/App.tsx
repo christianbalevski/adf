@@ -1,6 +1,6 @@
-import { useCallback, useEffect, Component, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, Component, type ReactNode } from 'react'
 import { AppShell } from './components/layout/AppShell'
-import { useAppStore } from './stores/app.store'
+import { useAppStore, isUiScale, resolveUiFontStack, isUiFont } from './stores/app.store'
 import { useDocumentStore } from './stores/document.store'
 import { useEditorTabsStore } from './stores/editor-tabs.store'
 import { useAgentEvents } from './hooks/useAgent'
@@ -166,16 +166,40 @@ export default function App() {
   }, [openFile, createFile, closeFile, addDirectory, saveActiveDocument, setShowMeshGraph, setShowSettings])
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
+  const uiFont = useAppStore((s) => s.uiFont)
+  const uiFontCustom = useAppStore((s) => s.uiFontCustom)
+  const uiScale = useAppStore((s) => s.uiScale)
+  const setUiFont = useAppStore((s) => s.setUiFont)
+  const setUiFontCustom = useAppStore((s) => s.setUiFontCustom)
+  const setUiScale = useAppStore((s) => s.setUiScale)
+  // Zoom is only applied once the persisted value is known, so a saved 110%
+  // never gets reset to 100% by the initial store default.
+  const [appearanceLoaded, setAppearanceLoaded] = useState(false)
 
-  // Load theme from settings on mount
+  // Load theme / font / scale from settings on mount
   useEffect(() => {
     window.adfApi?.getSettings().then((settings) => {
       const saved = settings.theme as string | undefined
       if (saved === 'dark' || saved === 'light' || saved === 'system') {
         setTheme(saved)
       }
+      if (isUiFont(settings.uiFont)) setUiFont(settings.uiFont)
+      if (typeof settings.uiFontCustom === 'string') setUiFontCustom(settings.uiFontCustom)
+      if (isUiScale(settings.uiScale)) setUiScale(settings.uiScale)
+      setAppearanceLoaded(true)
     })
-  }, [setTheme])
+  }, [setTheme, setUiFont, setUiFontCustom, setUiScale])
+
+  // Interface typeface: rewrite the CSS token the html/body rule reads.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--adf-font-ui', resolveUiFontStack(uiFont, uiFontCustom))
+  }, [uiFont, uiFontCustom])
+
+  // UI scale via Electron zoom; Ctrl+= / Ctrl+- (menu roles) layer on top.
+  useEffect(() => {
+    if (!appearanceLoaded) return
+    window.adfApi?.setZoomFactor?.(uiScale)
+  }, [appearanceLoaded, uiScale])
 
   // Apply dark class to <html> and body classes whenever theme changes
   // For 'system', follow OS preference and listen for changes

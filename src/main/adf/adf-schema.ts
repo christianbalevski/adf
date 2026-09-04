@@ -416,6 +416,8 @@ export const LoopConfigSchema = z.object({
   enabled: z.boolean(),
   autostart: z.boolean().optional()
     .describe('Run a first turn on the goal at create and whenever the agent starts, instead of waiting to be addressed.'),
+  autonomous: z.boolean().optional()
+    .describe('Keep turning after text-only responses until the loop calls sys_set_state. Per-loop; not inherited from the host. Default false.'),
   // The pool (not this schema) enforces the same-provider constraint: it needs
   // the host config to compare against, which a per-loop schema never sees.
   model: ModelConfigSchema.optional()

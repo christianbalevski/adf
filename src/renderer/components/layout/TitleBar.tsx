@@ -158,7 +158,12 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
         )}
       </span>
       {statusText && (
-        <span className="min-w-0 flex-1 text-neutral-500 dark:text-neutral-400 truncate" title={statusText}>
+        <span
+          className={`min-w-0 flex-1 text-neutral-500 dark:text-neutral-400 truncate ${
+            agentState === 'active' ? 'adf-shimmer-text adf-shimmer-text--slow' : ''
+          }`}
+          title={statusText}
+        >
           {statusText}
         </span>
       )}
@@ -315,8 +320,8 @@ export function TitleBar() {
       <div
         className={`h-full flex items-center shrink-0 ${
           leftPaneWidth
-            ? 'bg-neutral-50 dark:bg-neutral-900 border-r border-neutral-200 dark:border-neutral-700'
-            : 'bg-neutral-100 dark:bg-neutral-800'
+            ? 'bg-surface-2'
+            : 'bg-surface-0'
         }`}
         style={leftPaneWidth ? { width: leftPaneWidth } : undefined}
       >
@@ -371,7 +376,7 @@ export function TitleBar() {
         </nav>
       </div>
 
-      <div className="h-full flex-1 min-w-0 bg-neutral-100 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700 flex items-center">
+      <div className="h-full flex-1 min-w-0 bg-surface-0 border-b border-hairline flex items-center">
 
       <div className="flex-1 min-w-0 px-3 flex items-center justify-center pointer-events-none">
         {filePath && config ? (

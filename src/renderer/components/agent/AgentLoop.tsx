@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useAppStore, selectChatInCenter, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
+import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml } from '../../utils/markdown'
@@ -41,7 +41,7 @@ import {
 } from './tool-presentation'
 import type { ContentBlock } from '../../../shared/types/provider.types'
 
-const MAX_INPUT_ROWS = 8
+const MAX_INPUT_ROWS = 10
 // Model-facing text for attachment-only messages; also shown in the UI so the
 // optimistic entry matches what the loop table persists and restores.
 const ATTACHMENT_ONLY_TEXT = 'Please review the attached media.'
@@ -428,6 +428,16 @@ function isTurnCompleteMarker(entry: AgentLogEntry): boolean {
   return entry.type === 'system' && entry.content.trim().toLowerCase() === 'turn complete'
 }
 
+/**
+ * Where one turn ends and the next begins, as seen from the log: the runtime's
+ * "turn complete" marker, or whatever started a turn (a user message, a
+ * trigger). The status strip must never look past one of these — a tool call
+ * from the previous turn is not what the agent is doing now.
+ */
+function isTurnBoundary(entry: AgentLogEntry): boolean {
+  return entry.type === 'user' || entry.type === 'trigger' || isTurnCompleteMarker(entry)
+}
+
 function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairIndex): number | null {
   let startedAt = Number.POSITIVE_INFINITY
   let completedAt = 0
@@ -447,6 +457,94 @@ function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairInde
   if (!Number.isFinite(startedAt) || completedAt <= 0) return null
   return Math.max(0, completedAt - startedAt)
 }
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  const seconds = totalSeconds % 60
+  const minutes = Math.floor(totalSeconds / 60) % 60
+  const hours = Math.floor(totalSeconds / 3600)
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`
+  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, '0')}s`
+  return `${seconds}s`
+}
+
+/** Milliseconds since `startedAt`, re-evaluated once a second while mounted. */
+function useElapsed(startedAt: number): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [startedAt])
+  return Math.max(0, now - startedAt)
+}
+
+const STILL_WORKING_AFTER_MS = 60_000
+
+/**
+ * The pinned "what is the agent doing right now" row between the stream and
+ * the composer. It IS the live tail: the in-flight entry (a tool call still
+ * awaiting its result, or streaming reasoning) is withheld from the stream
+ * above and rendered only here, so the label never lags the thread. The timer
+ * ticks in here, so a second passing re-renders this one row and never the
+ * virtualised log. Mounted only while the loop is active/starting/blocked on
+ * the human, so mount time doubles as the turn start when the log carries no
+ * "turn complete" marker to anchor on.
+ */
+const AgentStatusStrip = memo(({ label, accent, entry, waiting, turnStartedAt, onOpen, onReveal }: {
+  label: string
+  /** Family palette: `dot` for the marker, `text` for the label itself. */
+  accent: { dot: string; text: string }
+  /** The withheld in-flight entry this row stands in for; null for a bare phase. */
+  entry: AgentLogEntry | null
+  /** Blocked on the human: the timer keeps counting but no "still working". */
+  waiting: boolean
+  turnStartedAt: number | null
+  onOpen: (entry: AgentLogEntry) => void
+  /** Waiting-for-you click: bring the pending approval/ask into view. */
+  onReveal: () => void
+}) => {
+  const [mountedAt] = useState(() => Date.now())
+  const elapsedMs = useElapsed(turnStartedAt ?? mountedAt)
+  // Each new item glimmers at its own pace and from its own phase — a fresh
+  // roll per entry (or per bare phase label) so consecutive steps don't read
+  // as one continuous loop. Negative delay starts mid-cycle. Inline props
+  // override the class's 2s default; reduced motion never animates at all.
+  const shimmerKey = entry?.id ?? label
+  const shimmerStyle = useMemo(() => {
+    const duration = 1.6 + Math.random()
+    const offset = Math.random() * duration
+    return { animationDuration: `${duration.toFixed(2)}s`, animationDelay: `-${offset.toFixed(2)}s` }
+  }, [shimmerKey])
+  // Only a tool call has a detail view (the inspector already handles a call
+  // with no result). Thinking lands in the thread as an expandable row once it
+  // finishes; the bare phases have nothing to open.
+  const clickable = entry?.type === 'tool_call' || waiting
+  const handleOpen = () => {
+    if (waiting) onReveal()
+    else if (entry && clickable) onOpen(entry)
+  }
+  return (
+    // Deliberately not a live region: the timer ticks every second and
+    // would turn a screen reader into a metronome.
+    <button
+      type="button"
+      disabled={!clickable}
+      onClick={handleOpen}
+      aria-label={waiting ? 'Show what needs your attention' : clickable ? `Open details for ${label}` : undefined}
+      title={waiting ? 'Show what needs your attention' : clickable ? `Open details for ${label}` : label}
+      className={`flex h-7 w-full shrink-0 items-center gap-1.5 rounded px-3 text-left text-xs transition-colors ${accent.text} ${
+        clickable ? 'hover:bg-neutral-100/70 dark:hover:bg-neutral-800/60' : 'cursor-default'
+      }`}
+    >
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full motion-safe:animate-pulse ${accent.dot}`} aria-hidden />
+      <span className="adf-shimmer-text min-w-0 truncate font-medium" style={shimmerStyle}>{label}</span>
+      <span className="shrink-0 tabular-nums opacity-70">
+        ({formatElapsed(elapsedMs)}{!waiting && elapsedMs >= STILL_WORKING_AFTER_MS && ' · still working'})
+      </span>
+    </button>
+  )
+})
 
 const LogEntryRow = memo(({
   entry,
@@ -1046,9 +1144,39 @@ function LoopStream({ loop }: { loop: string }) {
     [log, logVersion]
   )
   const toolPairIndex = useMemo(() => buildToolPairIndex(log), [log.length, logVersion])
+  const isActive = state === 'active'
+
+  // The in-flight tail: a collapsible step (tool call / thinking) the agent is
+  // still on. While the loop is active it is withheld from the stream and
+  // shown only in the pinned status strip, so the strip IS the live tail
+  // rather than a verb lagging one row behind it. It slots back into the
+  // thread the moment the next entry lands (its result, the next call, text…)
+  // or the turn ends. Never withheld when it carries a pending approval/ask —
+  // the approval card must stay reachable in the thread (the strip then reads
+  // "Waiting for you"). `say`/`ask`/status-change calls are content rows, not
+  // workflow steps, so they are never withheld either.
+  const inFlightEntry = useMemo((): AgentLogEntry | null => {
+    if (!isActive) return null
+    const tail = displayLog.at(-1)
+    if (!tail || !isCollapsibleActivity(tail, toolPairIndex)) return null
+    if (pendingApprovals.has(tail.id) || pendingAsks.has(tail.id)) return null
+    if (tail.type === 'tool_call') return toolPairIndex.get(tail.id)?.result ? null : tail
+    // Streaming reasoning is always the raw log tail (useAgent merges deltas
+    // into a tail `thinking` entry only) — once anything follows it, it is done.
+    if (tail.type === 'thinking') return log.at(-1)?.id === tail.id ? tail : null
+    return null
+  }, [isActive, displayLog, log, logVersion, toolPairIndex, pendingApprovals, pendingAsks])
+  // Filtered BEFORE grouping so the withheld entry never joins an activity
+  // group early. Group ids key on the group's FIRST entry, so the tail joining
+  // its group later keeps the row key stable; a lone step that later gains a
+  // sibling changes key (entry id → activity:id) exactly as it always did.
+  const visibleLog = useMemo(
+    () => (inFlightEntry ? displayLog.slice(0, -1) : displayLog),
+    [displayLog, inFlightEntry]
+  )
   const displayItems = useMemo(
-    () => buildDisplayItems(displayLog, toolPairIndex),
-    [displayLog, toolPairIndex]
+    () => buildDisplayItems(visibleLog, toolPairIndex),
+    [visibleLog, toolPairIndex]
   )
   const [expandedActivityGroups, setExpandedActivityGroups] = useState<Set<string>>(new Set())
   const [collapsedActivityGroups, setCollapsedActivityGroups] = useState<Set<string>>(new Set())
@@ -1059,17 +1187,13 @@ function LoopStream({ loop }: { loop: string }) {
     return -1
   }, [displayItems])
 
-  const isActive = state === 'active'
-  // +1 for the activity indicator row when agent is active or starting
-  const showActivityRow = isActive || starting
-  const itemCount = displayItems.length + (showActivityRow ? 1 : 0)
   const getVirtualItemKey = useCallback(
-    (index: number) => displayItems[index]?.id ?? 'activity-indicator',
+    (index: number) => displayItems[index]?.id ?? index,
     [displayItems]
   )
 
   const virtualizer = useVirtualizer({
-    count: itemCount,
+    count: displayItems.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 60,
     getItemKey: getVirtualItemKey,
@@ -1124,6 +1248,23 @@ function LoopStream({ loop }: { loop: string }) {
         : item.entries.some((e) => e.id === activeApproval.logEntryId)
     )
     if (index >= 0) virtualizer.scrollToIndex(index, { align: 'center', behavior: 'smooth' })
+    else if (scrollRef.current) scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+  }, [activeApproval, displayItems, virtualizer])
+
+  // The strip's "Waiting for you" click: the approval card (or the ask, which
+  // lives in the composer at the bottom) is what needs the user, so bring it
+  // into view. Falls back to the bottom when nothing in the list matches.
+  const revealPending = useCallback(() => {
+    const index = activeApproval
+      ? displayItems.findIndex((item) =>
+          item.kind === 'entry'
+            ? item.entry.id === activeApproval.logEntryId
+            : item.entries.some((e) => e.id === activeApproval.logEntryId)
+        )
+      : -1
+    if (index >= 0) virtualizer.scrollToIndex(index, { align: 'center', behavior: 'smooth' })
+    else if (scrollRef.current) scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+    setShowScrollBtn(false)
   }, [activeApproval, displayItems, virtualizer])
 
   // Batched approvals fatigue the user one-by-one. "Approve all" resolves every
@@ -1206,6 +1347,20 @@ function LoopStream({ loop }: { loop: string }) {
     }
   }, [logVersion])
 
+  // Keep the tail visible while pinned.
+  // The logVersion effect above scrolls synchronously, but rows use
+  // estimateSize 60 and are only measured by ResizeObserver afterwards — when
+  // measured sizes exceed the estimate, getTotalSize() grows after the scroll
+  // and pushes the tail under the fold. Re-pin whenever the total changes, but
+  // only if the user was already at the bottom (never fight a scrolled-up user).
+  const virtualTotalSize = virtualizer.getTotalSize()
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el && isAtBottom.current) {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [virtualTotalSize])
+
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -1244,9 +1399,11 @@ function LoopStream({ loop }: { loop: string }) {
     video: config?.limits?.max_video_size_bytes ?? DEFAULT_MEDIA_LIMITS.video,
   }), [config])
 
+  // Side loops are addressed as `agent:loop` (e.g. "aom:reflection") so the
+  // composer placeholder names who actually receives the message.
   const agentName = isMainLoop
     ? (config?.name?.trim() || 'the agent')
-    : `the ${loop} loop`
+    : `${config?.name?.trim() || 'agent'}:${loop}`
 
   // --- `/` command palette (design doc §5) --------------------------------
   //
@@ -1259,6 +1416,67 @@ function LoopStream({ loop }: { loop: string }) {
 
   // Answering the agent's `ask` is prose, never a command.
   const askPending = pendingAsks.size > 0
+
+  // --- Pinned status strip -------------------------------------------------
+  //
+  // Awaiting approval/ask maps to the `suspended` display state, so the strip
+  // also stays up while the agent is blocked on the human — that is the one
+  // phase where the verb ("Waiting for you") matters most.
+  const waitingForUser = !!activeApproval || askPending
+  const showStatusStrip = isActive || starting || waitingForUser
+
+  // Strip content. Precedence: starting → blocked on the human → the withheld
+  // in-flight entry, labelled exactly as an activity-group header would label
+  // it (reason / humanised tool name with the family dot; "Thinking") →
+  // "Working" (nothing withheld — e.g. assistant text streaming into the
+  // thread, which needs no verb of its own).
+  const statusPhase = useMemo((): { label: string; accent: { dot: string; text: string }; entry: AgentLogEntry | null } | null => {
+    if (!showStatusStrip) return null
+    if (starting) return { label: 'Starting agent', accent: TOOL_FAMILY_STYLES.neutral, entry: null }
+    if (waitingForUser) return { label: 'Waiting for you', accent: ATTENTION_TOOL_STYLE, entry: null }
+    if (inFlightEntry?.type === 'tool_call') {
+      const summary = getActivitySummary([inFlightEntry])
+      return { label: summary.label, accent: TOOL_FAMILY_STYLES[summary.family], entry: inFlightEntry }
+    }
+    // Assistant text streaming in: the reply itself is the status, so the
+    // strip hides rather than saying "Thinking" over a visibly growing answer.
+    // A streaming reply is always the raw tail `text` entry (deltas merge
+    // into it); quiet-turn markers are terminal, not streaming.
+    const tail = log.at(-1)
+    if (tail?.type === 'text' && !tail.metadata?.quietTurn) return null
+    // Otherwise the strip names the last tool call of this turn: after its
+    // result lands the tail is a result or a reasoning summary, and the model
+    // is still working *on that call*, so its reason is the honest status.
+    // Only a fresh turn (no call yet) reads "Thinking".
+    for (let index = log.length - 1; index >= 0; index--) {
+      const entry = log[index]
+      if (isTurnBoundary(entry)) break
+      if (entry.type !== 'tool_call') continue
+      const summary = getActivitySummary([entry])
+      return { label: summary.label, accent: TOOL_FAMILY_STYLES[summary.family], entry }
+    }
+    return { label: 'Thinking', accent: TOOL_FAMILY_STYLES.neutral, entry: null }
+  }, [showStatusStrip, starting, waitingForUser, inFlightEntry, log, logVersion])
+
+  // When the current turn began: the first stamped entry after the last
+  // "turn complete" marker. Null when there is no marker (fresh loop, or a
+  // window that starts mid-turn) — the strip then counts from its own mount,
+  // which is the moment the agent went active.
+  const turnStartedAt = useMemo((): number | null => {
+    if (!showStatusStrip) return null
+    for (let index = log.length - 1; index >= 0; index--) {
+      const entry = log[index]
+      if (!isTurnBoundary(entry)) continue
+      // A user message or trigger IS the turn's first entry; the runtime's
+      // marker closes the previous turn, so the next stamped entry opens this one.
+      if (!isTurnCompleteMarker(entry) && entry.timestamp > 0) return entry.timestamp
+      for (let next = index + 1; next < log.length; next++) {
+        if (log[next].timestamp > 0) return log[next].timestamp
+      }
+      return null
+    }
+    return null
+  }, [showStatusStrip, log, logVersion])
   const slashOpen = !askPending && !slashDismissed && isSlashInput(input)
   const slashRows = useMemo(
     () => (slashOpen ? filterSlashCommands(slashCommands, slashQuery(input)) : []),
@@ -1792,12 +2010,12 @@ function LoopStream({ loop }: { loop: string }) {
       <div className="relative flex-1 min-h-0">
       <div ref={scrollRef} onScroll={handleScroll} className="absolute inset-0 overflow-y-auto">
       <div className={columnClass}>
-        {displayLog.length === 0 && !isActive && !starting && (
+        {displayItems.length === 0 && !isActive && !starting && (
           <p className="text-sm text-neutral-400 dark:text-neutral-500 text-center mt-8">
             Agent output will appear here.
           </p>
         )}
-        {displayLog.length === 0 && (isActive || starting) && (
+        {displayItems.length === 0 && (isActive || starting) && (
           <div className="flex items-center justify-center gap-2 text-sm text-neutral-400 mt-8">
             <div className="flex gap-1">
               <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full animate-bounce" />
@@ -1807,42 +2025,15 @@ function LoopStream({ loop }: { loop: string }) {
             <span>{starting ? 'Starting agent\u2026' : 'Processing'}</span>
           </div>
         )}
-        {displayLog.length > 0 && (
+        {displayItems.length > 0 && (
           <div
             style={{
-              height: `${virtualizer.getTotalSize()}px`,
+              height: `${virtualTotalSize}px`,
               width: '100%',
               position: 'relative',
             }}
           >
             {virtualItems.map((virtualItem) => {
-              const isProcessingRow = virtualItem.index >= displayItems.length
-              if (isProcessingRow) {
-                return (
-                  <div
-                    key="activity-indicator"
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '100%',
-                      transform: `translateY(${virtualItem.start}px)`,
-                    }}
-                    data-index={virtualItem.index}
-                    ref={virtualizer.measureElement}
-                  >
-                    <div className="flex items-center gap-2 text-sm text-neutral-400 px-3 py-1">
-                      <div className="flex gap-1">
-                        <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full animate-bounce" />
-                        <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full animate-bounce [animation-delay:0.1s]" />
-                        <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full animate-bounce [animation-delay:0.2s]" />
-                      </div>
-                      {starting && <span>Starting agent&hellip;</span>}
-                    </div>
-                  </div>
-                )
-              }
-
               const displayItem = displayItems[virtualItem.index]
               if (!displayItem) return null
               const attentionRequired = displayItem.kind === 'activity' && activityNeedsAttention(displayItem.entries)
@@ -1973,9 +2164,26 @@ function LoopStream({ loop }: { loop: string }) {
             </svg>
           </button>
         )}
-        <ChatWidthToggle />
       </div>
       </div>
+
+      {/* Pinned status strip — the live tail. Lives OUTSIDE the scroller so it
+          never scrolls away and never enters the virtualiser's height maths.
+          Sits above the composer's full-bleed hairline, narrowing with the
+          column like the composer does: log → strip → hairline → composer. */}
+      {statusPhase && (
+        <div className={columnClass}>
+          <AgentStatusStrip
+            label={statusPhase.label}
+            accent={statusPhase.accent}
+            entry={statusPhase.entry}
+            waiting={waitingForUser}
+            turnStartedAt={turnStartedAt}
+            onOpen={setInspectedToolCall}
+            onReveal={revealPending}
+          />
+        </div>
+      )}
 
       {/* Input */}
       {(() => {
@@ -2008,10 +2216,9 @@ function LoopStream({ loop }: { loop: string }) {
           : (input.trim().length > 0 || attachments.some((item) => item.native && item.contentBlock)) && !starting && !uploadingFiles
 
         return (
-          // The divider stays full-bleed (like the tab strip above) while the
-          // composer itself narrows with the stream — a hairline that stopped
-          // at the column edge would read as an unfinished panel.
-          <div className={`border-t ${activeAsk ? 'border-blue-400 dark:border-blue-600' : 'border-neutral-200 dark:border-neutral-700'}`}>
+          // No divider above the composer: it reads as a floating card
+          // (raised surface + shadow) rather than a panel with a hairline.
+          <div className="pt-1">
           <form
             onSubmit={handleInputSubmit}
             onDrop={activeAsk ? undefined : handleInputDrop}
@@ -2080,12 +2287,14 @@ function LoopStream({ loop }: { loop: string }) {
                 }}
               />
             )}
-            <div className={`relative overflow-hidden rounded-2xl border bg-white shadow-sm transition-[border-color,box-shadow] dark:bg-neutral-900 ${
+            <div className={`relative overflow-hidden rounded-2xl border bg-surface-raised shadow-card transition-[border-color,box-shadow] ${
               draggingOverInput
                 ? 'border-[var(--adf-ui-accent)] ring-2 ring-[var(--adf-ui-focus)]'
                 : activeAsk
                   ? 'border-blue-400 dark:border-blue-600'
-                  : `border-neutral-200 dark:border-neutral-700 ${loopStyle.focus}`
+                  // Focus is a quiet lift — a firmer hairline and deeper shadow —
+                  // not a coloured ring; the caret already says where you are.
+                  : 'border-hairline focus-within:border-black/15 focus-within:shadow-lg dark:focus-within:border-white/15'
             }`}>
               {draggingOverInput && (
                 <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-blue-50/90 text-sm font-medium text-blue-600 dark:bg-blue-950/70 dark:text-blue-300">
@@ -2118,57 +2327,54 @@ function LoopStream({ loop }: { loop: string }) {
                   ))}
                 </div>
               )}
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                role="combobox"
-                aria-expanded={slashOpen}
-                aria-controls={slashOpen ? 'loop-slash-palette' : undefined}
-                aria-activedescendant={slashOpen && slashRows.length > 0 ? `loop-slash-palette-${slashIndex}` : undefined}
-                placeholder={
-                  activeAsk ? 'Type your answer...'
-                  : state === 'active' ? `Queue something for ${agentName}...`
-                  : state === 'off' ? `What should ${agentName} do?`
-                  : `What should ${agentName} do?`
-                }
-                rows={3}
-                className="loop-composer-input block w-full min-h-[5.25rem] resize-none overflow-y-auto border-0 bg-transparent px-3 py-3 text-sm leading-5 text-neutral-900 placeholder:text-neutral-400 dark:text-neutral-100 dark:placeholder:text-neutral-500"
-              />
-              <div className="flex items-center justify-between gap-2 px-2 pb-2">
-                <div className="flex items-center gap-1.5">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={(e) => {
-                      handleFilesSelected(Array.from(e.target.files ?? []))
-                      e.currentTarget.value = ''
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={handlePickFiles}
-                    disabled={!!activeAsk || uploadingFiles}
-                    className="flex h-8 w-8 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-                    title="Attach files"
-                  >
-                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-                      <path d="M9 3.25v11.5M3.25 9h11.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-                    </svg>
-                  </button>
-                  {uploadingFiles && (
-                    <span className="text-[11px] text-neutral-400 dark:text-neutral-500">Uploading...</span>
-                  )}
-                </div>
+              {/* Single-row composer: "+" | textarea | send. items-end keeps the
+                  buttons pinned to the bottom corners as the textarea grows. */}
+              <div className="flex items-end gap-1.5 px-2 py-1.5">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    handleFilesSelected(Array.from(e.target.files ?? []))
+                    e.currentTarget.value = ''
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handlePickFiles}
+                  disabled={!!activeAsk || uploadingFiles}
+                  className="mb-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                  title="Attach files"
+                >
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                    <path d="M9 3.25v11.5M3.25 9h11.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                  </svg>
+                </button>
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  role="combobox"
+                  aria-expanded={slashOpen}
+                  aria-controls={slashOpen ? 'loop-slash-palette' : undefined}
+                  aria-activedescendant={slashOpen && slashRows.length > 0 ? `loop-slash-palette-${slashIndex}` : undefined}
+                  placeholder={
+                    activeAsk ? 'Type your answer...'
+                    : state === 'active' ? `Queue something for ${agentName}...`
+                    : state === 'off' ? `What should ${agentName} do?`
+                    : `What should ${agentName} do?`
+                  }
+                  rows={1}
+                  className="loop-composer-input block min-h-[2.5rem] min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent px-1.5 py-2.5 text-sm leading-5 text-neutral-900 placeholder:text-neutral-400 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+                />
                 <Button
                   type="submit"
                   disabled={!canSubmit}
                   size="default"
                   variant={state === 'active' && !activeAsk ? 'secondary' : 'primary'}
-                  className="w-[var(--adf-ui-control-height)] px-0 [&_svg]:shrink-0"
+                  className="mb-1 w-[var(--adf-ui-control-height)] shrink-0 !rounded-full px-0 [&_svg]:shrink-0"
                   title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
                   aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
                 >
@@ -2181,6 +2387,9 @@ function LoopStream({ loop }: { loop: string }) {
                   </svg>
                 </Button>
               </div>
+              {uploadingFiles && (
+                <div className="px-3 pb-1.5 text-[11px] text-neutral-400 dark:text-neutral-500">Uploading...</div>
+              )}
             </div>
             </div>
           </form>
@@ -2379,50 +2588,6 @@ function PromoteChatToCenter() {
         <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
         <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
       </svg>
-    </button>
-  )
-}
-
-/**
- * Toggles the chat's reading-column cap. Center placement only: in the dock the
- * panel is already narrow, so the control would be a switch with no visible
- * effect. Lives in the stream's bottom-right corner rather than the tab strip —
- * it is a property of the text you are reading, and the strip is absent
- * entirely for single-loop agents.
- */
-function ChatWidthToggle() {
-  const inCenter = useAppStore(selectChatInCenter)
-  const chatWidth = useAppStore((s: AppState) => s.chatWidth)
-  const setChatWidth = useAppStore((s: AppState) => s.setChatWidth)
-  if (!inCenter) return null
-
-  const goFull = chatWidth === 'comfortable'
-  const label = goFull ? 'Full width' : 'Comfortable width'
-
-  return (
-    <button
-      type="button"
-      onClick={() => setChatWidth(goFull ? 'full' : 'comfortable')}
-      title={label}
-      aria-label={label}
-      className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-    >
-      {goFull ? (
-        /* arrows-out-horizontal */
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M6 8l-4 4 4 4" />
-          <path d="M18 8l4 4-4 4" />
-          <path d="M2 12h20" />
-        </svg>
-      ) : (
-        /* arrows-in-horizontal */
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M6 8l4 4-4 4" />
-          <path d="M18 8l-4 4 4 4" />
-          <path d="M2 12h8" />
-          <path d="M14 12h8" />
-        </svg>
-      )}
     </button>
   )
 }

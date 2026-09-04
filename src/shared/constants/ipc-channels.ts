@@ -10,6 +10,7 @@ export const IPC = {
   FILE_RENAME: 'adf:file:rename',
   FILE_RENAMED: 'adf:file:renamed',
   FILE_GET_CURRENT: 'adf:file:get-current',
+  FILE_REVEAL: 'adf:file:reveal',
 
   // Document content
   DOC_GET_DOCUMENT: 'adf:doc:get-document',
@@ -76,6 +77,10 @@ export const IPC = {
   // Settings
   SETTINGS_GET: 'adf:settings:get',
   SETTINGS_SET: 'adf:settings:set',
+  // Agent template extra files (blob store under <userData>/agent-template-files)
+  AGENT_TEMPLATE_FILES_ADD: 'adf:agent-template:files:add',
+  AGENT_TEMPLATE_FILES_REMOVE: 'adf:agent-template:files:remove',
+  AGENT_TEMPLATE_FILES_STAT: 'adf:agent-template:files:stat',
 
   // Tracked directories
   TRACKED_DIRS_GET: 'adf:tracked-dirs:get',
@@ -119,6 +124,7 @@ export const IPC = {
   // Token usage tracking
   TOKEN_USAGE_GET: 'adf:token-usage:get',
   TOKEN_USAGE_CLEAR: 'adf:token-usage:clear',
+  TOKEN_USAGE_EXPORT: 'adf:token-usage:export',
   TOKEN_COUNT: 'adf:token:count',
   TOKEN_COUNT_BATCH: 'adf:token:count-batch',
   CONTEXT_BREAKDOWN_GET: 'adf:context:breakdown:get',

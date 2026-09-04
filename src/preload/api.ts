@@ -1,5 +1,5 @@
 import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
-import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
+import type { AgentConfig, AdfLogEntry, AgentTemplateExtraFile, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
@@ -23,6 +23,8 @@ export interface AdfApi {
   onFileRenamed: (callback: (event: { oldPath: string; newPath: string }) => void) => () => void
   /** Main's current session — what file (if any) is open in the main process and whether its foreground agent is running. Used by a fresh renderer to resync after a reload. */
   getCurrentFile: () => Promise<{ filePath: string | null; agentRunning: boolean }>
+  /** Open the OS file manager with `filePath` selected (Explorer / Finder / xdg default). */
+  revealInFolder: (filePath: string) => Promise<void>
 
   // Document content
   getDocument: () => Promise<{ content: string }>
@@ -88,6 +90,18 @@ export interface AdfApi {
   // Settings
   getSettings: () => Promise<AppSettings>
   setSettings: (settings: Record<string, unknown>) => Promise<{ success: boolean }>
+  /**
+   * Agent template extra files. `add` opens a multi-select picker and copies
+   * the chosen files into the blob store, returning their metadata; the
+   * renderer merges that into settings.agentTemplate.files.extra itself.
+   * `remove` deletes the stored blob (the renderer drops the settings entry).
+   */
+  agentTemplateFilesAdd: () => Promise<{ success: boolean; added?: AgentTemplateExtraFile[]; error?: string }>
+  agentTemplateFilesRemove: (id: string) => Promise<{ success: boolean }>
+  /** Which of these blob ids are absent from the store (shown as "missing" in the template UI). */
+  agentTemplateFilesStat: (ids: string[]) => Promise<{ missing: string[] }>
+  /** Whole-window zoom (1 = 100%). Menu zoomIn/zoomOut layer on top of it. */
+  setZoomFactor: (factor: number) => void
 
   // Compute environment
   computeStatus: () => Promise<{ status: string; activeAgents: string[]; error?: string }>
@@ -185,6 +199,8 @@ export interface AdfApi {
   // Token usage tracking
   getTokenUsage: () => Promise<TokenUsageData>
   clearTokenUsage: () => Promise<{ success: boolean }>
+  /** Save the raw token-usage JSON to a user-picked file via the OS save dialog. */
+  saveTokenUsageExport: (json: string) => Promise<{ success: boolean; path?: string }>
   countTokens: (text: string, provider?: string, model?: string) => Promise<{ count: number }>
   countTokensBatch: (texts: string[], provider?: string, model?: string) => Promise<{ counts: number[] }>
   /** Per-request context token breakdown for one loop's running executor (foreground or background). `loop` defaults to `main`; null when that loop isn't running. */

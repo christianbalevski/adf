@@ -8,8 +8,35 @@ import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { toDisplayState } from '../../hooks/useAgent'
+import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
+import { CloneDialog } from '../common/CloneDialog'
+import { Dialog } from '../common/Dialog'
+import { Button } from '../ui'
+import { REVEAL_IN_FOLDER_LABEL } from '../../utils/platform'
 import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../../shared/types/ipc.types'
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
+
+/**
+ * Keep only entries whose name (file name, agent display name, or path
+ * relative to the tracked directory) contains `query`. Directories survive
+ * only if something below them matches. `query` must already be lowercased.
+ */
+function filterTree(entries: TrackedDirEntry[], query: string, rootPath: string): TrackedDirEntry[] {
+  const out: TrackedDirEntry[] = []
+  for (const entry of entries) {
+    if (entry.isDirectory) {
+      const children = filterTree(entry.children || [], query, rootPath)
+      if (children.length > 0) out.push({ ...entry, children })
+      continue
+    }
+    const relPath = entry.filePath.startsWith(rootPath)
+      ? entry.filePath.slice(rootPath.length + 1)
+      : entry.filePath
+    const haystack = `${entry.fileName}\n${entry.agentName ?? ''}\n${relPath}`.toLowerCase()
+    if (haystack.includes(query)) out.push(entry)
+  }
+  return out
+}
 
 /**
  * Start every non-running agent in `files`, one at a time. All queued paths are
@@ -79,6 +106,60 @@ async function stopAgentsSequentially(
   }
 }
 
+/**
+ * Review gate for starting the FOREGROUND agent. Opens the review dialog and
+ * returns true when the agent must be reviewed before it may start; a failed
+ * check falls through to false so a flaky IPC never blocks the toggle.
+ */
+async function needsReviewBeforeStart(isActive: boolean): Promise<boolean> {
+  if (!isActive) return false
+  try {
+    const review = await window.adfApi.checkAgentReview()
+    if (review?.needsReview) {
+      useAppStore.getState().setAgentReviewDialog(true, review.configSummary)
+      return true
+    }
+  } catch { /* fall through */ }
+  return false
+}
+
+/**
+ * Start or stop one agent. The foreground file goes through the foreground
+ * start/stop API and mirrors the result into the agent store; every other
+ * file uses the background manager. The starting/stopping path sets drive the
+ * row spinner for the duration.
+ */
+async function toggleAgent(filePath: string, isActive: boolean, isRunning: boolean): Promise<void> {
+  const app = useAppStore.getState()
+  if (isRunning) app.addStoppingFilePath(filePath)
+  else app.addStartingFilePath(filePath)
+  try {
+    if (isActive) {
+      if (isRunning) {
+        await window.adfApi.stopAgent()
+        useAgentStore.getState().setState('off')
+      } else {
+        const result = await window.adfApi.startAgent()
+        if (result.success) {
+          useAgentStore.getState().setState(toDisplayState(result.agentState ?? 'idle'))
+        }
+      }
+    } else if (isRunning) {
+      await window.adfApi.stopBackgroundAgent(filePath)
+    } else {
+      await window.adfApi.startBackgroundAgent(filePath)
+    }
+  } finally {
+    if (isRunning) app.removeStoppingFilePath(filePath)
+    else app.removeStartingFilePath(filePath)
+  }
+}
+
+interface RowTarget {
+  file: TrackedDirEntry
+  dirPath: string
+}
+
 export function Sidebar() {
   const collapsed = useAppStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useAppStore((s) => s.toggleSidebar)
@@ -87,8 +168,8 @@ export function Sidebar() {
   const showMeshGraph = useAppStore((s) => s.showMeshGraph)
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
   const filePath = useDocumentStore((s) => s.filePath)
-  const { openFile, createFile } = useAdfFile()
-  const { loadDirectories } = useTrackedDirs()
+  const { openFile, createFile, closeFile } = useAdfFile()
+  const { loadDirectories, rescanDirectory } = useTrackedDirs()
   const directories = useTrackedDirsStore((s) => s.directories)
   const filesByDir = useTrackedDirsStore((s) => s.filesByDir)
 
@@ -113,6 +194,21 @@ export function Sidebar() {
   )
   const dirScrollRef = useRef<HTMLDivElement>(null)
 
+  const [agentSearch, setAgentSearch] = useState('')
+  const searchQuery = agentSearch.trim().toLowerCase()
+  const searching = searchQuery.length > 0
+  const visibleFilesByDir = useMemo(() => {
+    if (!searching) return filesByDir
+    const out: Record<string, TrackedDirEntry[]> = {}
+    for (const dirPath of directories) {
+      out[dirPath] = filterTree(filesByDir[dirPath] ?? [], searchQuery, dirPath)
+    }
+    return out
+  }, [searching, searchQuery, filesByDir, directories])
+  const visibleDirectories = searching
+    ? directories.filter((d) => (visibleFilesByDir[d]?.length ?? 0) > 0)
+    : directories
+
   const handleOpenFile = useCallback((fp: string) => {
     if (showSettings) setShowSettings(false)
     if (showMeshGraph) setShowMeshGraph(false)
@@ -136,15 +232,74 @@ export function Sidebar() {
     if (result?.success) setShowMeshGraph(false)
   }, [openFile, setShowMeshGraph])
 
+  // Row context menu + the dialogs it opens. One instance of each lives here,
+  // keyed by the target file, instead of one per row.
+  const [menu, setMenu] = useState<(RowTarget & { x: number; y: number }) | null>(null)
+  const [cloneTarget, setCloneTarget] = useState<RowTarget | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<RowTarget | null>(null)
+  const startingFilePaths = useAppStore((s) => s.startingFilePaths)
+  const stoppingFilePaths = useAppStore((s) => s.stoppingFilePaths)
+
+  const handleFileContextMenu = useCallback((e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setMenu({ file, dirPath, x: e.clientX, y: e.clientY })
+  }, [])
+  const closeMenu = useCallback(() => setMenu(null), [])
+
+  const menuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!menu) return []
+    const { file, dirPath } = menu
+    const fp = file.filePath
+    const isActive = fp === filePath
+    const isRunning = isActive ? foregroundAgentState !== 'off' : backgroundAgentMap.has(fp)
+    const busy = startingFilePaths.has(fp) || stoppingFilePaths.has(fp)
+    return [
+      {
+        label: isRunning ? 'Stop' : 'Start',
+        disabled: busy,
+        onSelect: async () => {
+          if (!isRunning && await needsReviewBeforeStart(isActive)) return
+          try {
+            await toggleAgent(fp, isActive, isRunning)
+          } catch (err) {
+            console.error('[Sidebar] Context menu toggle failed:', err)
+          }
+        }
+      },
+      { label: 'Clone…', onSelect: () => setCloneTarget({ file, dirPath }) },
+      {
+        label: REVEAL_IN_FOLDER_LABEL,
+        onSelect: () => { window.adfApi.revealInFolder(fp).catch(() => {}) }
+      },
+      {
+        label: 'Delete…',
+        danger: true,
+        separatorBefore: true,
+        onSelect: () => setDeleteTarget({ file, dirPath })
+      }
+    ]
+  }, [menu, filePath, foregroundAgentState, backgroundAgentMap, startingFilePaths, stoppingFilePaths])
+
+  const handleDeleted = useCallback(async (target: RowTarget) => {
+    setDeleteTarget(null)
+    // Main has already closed the file; drop the renderer's document/agent state.
+    if (target.file.filePath === filePath) await closeFile()
+    // The directory watcher also emits TRACKED_DIRS_CHANGED on unlink; this
+    // rescan just removes the row without waiting on it.
+    await rescanDirectory(target.dirPath)
+  }, [filePath, closeFile, rescanDirectory])
+
   if (collapsed) {
     return (
-      <div className="w-10 border-r border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 flex flex-col items-center py-2 gap-1">
+      <div className="w-10 bg-surface-2 flex flex-col items-center py-2 gap-1">
         <button
           onClick={toggleSidebar}
-          title="Expand Sidebar"
-          className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700"
+          title="Expand sidebar"
+          aria-label="Expand sidebar"
+          className="w-7 h-7 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="9 18 15 12 9 6" />
           </svg>
         </button>
@@ -154,11 +309,37 @@ export function Sidebar() {
   }
 
   return (
-    <div className="w-60 border-r border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 flex flex-col overflow-hidden">
-      <div className="h-10 px-2.5 flex items-center gap-1 shrink-0">
-        <span className="flex-1 min-w-0 text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-          Agents
-        </span>
+    <div className="w-60 bg-surface-2 flex flex-col overflow-hidden">
+      {/* Single header row: search · new · open · collapse. The search box
+          doubles as the panel's title, so there is no separate label. */}
+      <div className="h-9 px-2.5 flex items-center gap-1 shrink-0">
+        <div className="relative flex-1 min-w-0">
+          <svg
+            width="11"
+            height="11"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="absolute left-1.5 top-1/2 -translate-y-1/2 text-neutral-400 dark:text-neutral-500 pointer-events-none"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          <input
+            value={agentSearch}
+            onChange={(e) => setAgentSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setAgentSearch('')
+            }}
+            disabled={directories.length === 0}
+            placeholder="Search agents…"
+            aria-label="Search agents"
+            className="w-full h-6 text-xs pl-6 pr-2 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 outline-none focus:border-blue-400 min-w-0 disabled:opacity-50 disabled:bg-transparent"
+          />
+        </div>
         <button
           onClick={handleCreateFile}
           title="New agent"
@@ -173,20 +354,20 @@ export function Sidebar() {
         <button
           onClick={handleOpenFromPicker}
           title="Open agent"
-          className="h-6 px-1.5 flex items-center gap-1 rounded text-[10px] font-medium text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
+          aria-label="Open agent"
+          className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
           </svg>
-          Open
         </button>
         <button
           onClick={toggleSidebar}
           title="Collapse sidebar"
           aria-label="Collapse sidebar"
-          className="w-6 h-6 flex items-center justify-center rounded text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
+          className="w-7 h-7 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 18 9 12 15 6" />
           </svg>
         </button>
@@ -196,21 +377,28 @@ export function Sidebar() {
       <div ref={dirScrollRef} className="scrollbar-autohide flex-1 min-h-0 overflow-y-auto">
         {directories.length > 0 ? (
           <div className="pb-1">
-            {directories.map((dirPath, index) => (
+            {visibleDirectories.map((dirPath, index) => (
               <div key={dirPath}>
-                {index > 0 && <div className="border-t border-neutral-200 dark:border-neutral-700 my-1" />}
+                {index > 0 && <div className="border-t border-hairline my-1" />}
                 <DirectorySection
                   dirPath={dirPath}
-                  files={filesByDir[dirPath] ?? []}
+                  files={visibleFilesByDir[dirPath] ?? []}
                   currentFilePath={filePath}
                   meshEnabled={meshEnabled}
                   agentStatusMap={agentStatusMap}
                   backgroundAgentMap={backgroundAgentMap}
                   foregroundAgentState={foregroundAgentState}
                   onOpenFile={handleOpenFile}
+                  onFileContextMenu={handleFileContextMenu}
+                  forceExpanded={searching}
                 />
               </div>
             ))}
+            {searching && visibleDirectories.length === 0 && (
+              <p className="px-3 py-4 text-xs text-neutral-400 dark:text-neutral-600">
+                No agents match "{agentSearch.trim()}".
+              </p>
+            )}
           </div>
         ) : (
           <p className="px-3 py-4 text-xs text-neutral-400 dark:text-neutral-600">
@@ -218,6 +406,28 @@ export function Sidebar() {
           </p>
         )}
       </div>
+
+      <ContextMenu
+        position={menu ? { x: menu.x, y: menu.y } : null}
+        items={menuItems}
+        onClose={closeMenu}
+      />
+      {cloneTarget && (
+        <CloneDialog
+          open
+          onClose={() => setCloneTarget(null)}
+          filePath={cloneTarget.file.filePath}
+          dirPath={cloneTarget.dirPath}
+          onCloned={() => rescanDirectory(cloneTarget.dirPath)}
+        />
+      )}
+      {deleteTarget && (
+        <DeleteAgentDialog
+          target={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={handleDeleted}
+        />
+      )}
     </div>
   )
 }
@@ -230,7 +440,9 @@ const DirectorySection = memo(function DirectorySection({
   agentStatusMap,
   backgroundAgentMap,
   foregroundAgentState,
-  onOpenFile
+  onOpenFile,
+  onFileContextMenu,
+  forceExpanded = false
 }: {
   dirPath: string
   files: TrackedDirEntry[]
@@ -240,8 +452,12 @@ const DirectorySection = memo(function DirectorySection({
   backgroundAgentMap: Map<string, BackgroundAgentStatus>
   foregroundAgentState: string
   onOpenFile: (filePath: string) => void
+  onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
+  /** Show children regardless of the user's collapse state (used while searching). */
+  forceExpanded?: boolean
 }) {
-  const [expanded, setExpanded] = useState(true)
+  const [userExpanded, setExpanded] = useState(true)
+  const expanded = forceExpanded || userExpanded
   const [toggling, setToggling] = useState(false)
   const dirName = dirPath.split('/').pop() ?? dirPath
 
@@ -346,13 +562,15 @@ const DirectorySection = memo(function DirectorySection({
               key={entry.filePath}
               entry={entry}
               depth={0}
+              dirPath={dirPath}
               currentFilePath={currentFilePath}
               meshEnabled={meshEnabled}
               agentStatusMap={agentStatusMap}
               backgroundAgentMap={backgroundAgentMap}
               foregroundAgentState={foregroundAgentState}
               onOpenFile={onOpenFile}
-
+              onFileContextMenu={onFileContextMenu}
+              forceExpanded={forceExpanded}
             />
           ))}
         </div>
@@ -364,23 +582,31 @@ const DirectorySection = memo(function DirectorySection({
 const TreeNode = memo(function TreeNode({
   entry,
   depth,
+  dirPath,
   currentFilePath,
   meshEnabled,
   agentStatusMap,
   backgroundAgentMap,
   foregroundAgentState,
-  onOpenFile
+  onOpenFile,
+  onFileContextMenu,
+  forceExpanded = false
 }: {
   entry: TrackedDirEntry
   depth: number
+  /** Tracked root this node belongs to (what the clone/delete rescan targets). */
+  dirPath: string
   currentFilePath: string | null
   meshEnabled: boolean
   agentStatusMap: Map<string, MeshAgentStatus>
   backgroundAgentMap: Map<string, BackgroundAgentStatus>
   foregroundAgentState: string
   onOpenFile: (filePath: string) => void
+  onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
+  forceExpanded?: boolean
 }) {
-  const [expanded, setExpanded] = useState(true)
+  const [userExpanded, setExpanded] = useState(true)
+  const expanded = forceExpanded || userExpanded
   const [toggling, setToggling] = useState(false)
 
   if (entry.isDirectory) {
@@ -472,13 +698,15 @@ const TreeNode = memo(function TreeNode({
                 key={child.filePath}
                 entry={child}
                 depth={depth + 1}
+                dirPath={dirPath}
                 currentFilePath={currentFilePath}
                 meshEnabled={meshEnabled}
                 agentStatusMap={agentStatusMap}
                 backgroundAgentMap={backgroundAgentMap}
                 foregroundAgentState={foregroundAgentState}
                 onOpenFile={onOpenFile}
-  
+                onFileContextMenu={onFileContextMenu}
+                forceExpanded={forceExpanded}
               />
             ))}
           </div>
@@ -500,6 +728,7 @@ const TreeNode = memo(function TreeNode({
       status={status}
       backgroundStatus={backgroundStatus}
       onOpen={() => onOpenFile(entry.filePath)}
+      onContextMenu={(e) => onFileContextMenu(e, entry, dirPath)}
     />
   )
 })
@@ -511,7 +740,8 @@ const AgentFileRow = memo(function AgentFileRow({
   meshEnabled,
   status,
   backgroundStatus,
-  onOpen
+  onOpen,
+  onContextMenu
 }: {
   file: TrackedDirEntry
   depth: number
@@ -520,6 +750,7 @@ const AgentFileRow = memo(function AgentFileRow({
   status: MeshAgentStatus | undefined
   backgroundStatus: BackgroundAgentStatus | undefined
   onOpen: () => void
+  onContextMenu: (e: React.MouseEvent) => void
 }) {
   const [toggling, setToggling] = useState(false)
   const agentState = useAgentStore((s) => isActive ? s.state : 'off')
@@ -554,47 +785,15 @@ const AgentFileRow = memo(function AgentFileRow({
       if (toggling) return
 
       // Review gate: check before starting
-      if (!isRunning) {
-        try {
-          const review = isActive
-            ? await window.adfApi.checkAgentReview()
-            : null
-          if (review?.needsReview) {
-            useAppStore.getState().setAgentReviewDialog(true, review.configSummary)
-            return
-          }
-        } catch { /* fall through */ }
-      }
+      if (!isRunning && await needsReviewBeforeStart(isActive)) return
 
       setToggling(true)
-      const startingFp = !isRunning ? file.filePath : null
-      const stoppingFp = isRunning ? file.filePath : null
-      if (startingFp) useAppStore.getState().addStartingFilePath(startingFp)
-      if (stoppingFp) useAppStore.getState().addStoppingFilePath(stoppingFp)
       try {
-        if (isActive) {
-          if (isRunning) {
-            await window.adfApi.stopAgent()
-            useAgentStore.getState().setState('off')
-          } else {
-            const result = await window.adfApi.startAgent()
-            if (result.success) {
-              useAgentStore.getState().setState(toDisplayState(result.agentState ?? 'idle'))
-            }
-          }
-        } else {
-          if (isRunning) {
-            await window.adfApi.stopBackgroundAgent(file.filePath)
-          } else {
-            await window.adfApi.startBackgroundAgent(file.filePath)
-          }
-        }
+        await toggleAgent(file.filePath, isActive, isRunning)
       } catch (err) {
         console.error('[Sidebar] Toggle agent failed:', err)
       } finally {
         setToggling(false)
-        if (startingFp) useAppStore.getState().removeStartingFilePath(startingFp)
-        if (stoppingFp) useAppStore.getState().removeStoppingFilePath(stoppingFp)
       }
     },
     [file.filePath, isActive, isRunning, toggling]
@@ -602,6 +801,7 @@ const AgentFileRow = memo(function AgentFileRow({
 
   return (
     <div
+      onContextMenu={onContextMenu}
       className={`group flex items-center gap-1.5 py-1 text-xs cursor-pointer ${
         isActive
           ? 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300'
@@ -708,3 +908,60 @@ const StatusDot = memo(function StatusDot({ state, starting, stopping }: { state
     </span>
   )
 })
+
+/**
+ * Confirmation for the context menu's Delete. Main stops the agent (foreground
+ * or background) and unlinks the file plus its WAL; a failure is shown inline
+ * and the dialog stays open.
+ */
+function DeleteAgentDialog({
+  target,
+  onClose,
+  onDeleted
+}: {
+  target: RowTarget
+  onClose: () => void
+  onDeleted: (target: RowTarget) => void
+}) {
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const name = target.file.agentName ?? target.file.fileName
+
+  const handleConfirm = async () => {
+    setDeleting(true)
+    setError(null)
+    try {
+      const result = await window.adfApi.deleteFile(target.file.filePath)
+      if (result.success) {
+        onDeleted(target)
+        return
+      }
+      setError(result.error ?? 'Delete failed')
+    } catch (err) {
+      setError(String(err))
+    }
+    setDeleting(false)
+  }
+
+  return (
+    <Dialog open onClose={onClose} title="Delete agent?" preventClose={deleting}>
+      <p className="text-sm text-[var(--adf-ui-text-muted)]">
+        <span className="font-medium text-[var(--adf-ui-text)]">{name}</span> and everything in it — config,
+        files, memory, history — will be deleted. This cannot be undone.
+      </p>
+      {error && (
+        <p className="mt-3 text-xs text-[var(--adf-ui-danger)]" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="mt-5 flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose} disabled={deleting}>
+          Cancel
+        </Button>
+        <Button variant="danger" onClick={handleConfirm} loading={deleting} autoFocus>
+          Delete
+        </Button>
+      </div>
+    </Dialog>
+  )
+}

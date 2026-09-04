@@ -4,6 +4,7 @@ import { basename, join } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { resolveDefaultProvider } from '../adf/apply-default-provider'
+import { agentTemplateFilesDir } from '../adf/agent-template-files'
 import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { encrypt } from '../crypto/identity-crypto'
 import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
@@ -30,6 +31,7 @@ import type {
   TimerSchedule,
   TriggerConfig,
 } from '../../shared/types/adf-v02.types'
+import type { AgentTemplate } from '../../shared/types/adf-v02.types'
 import type { AdapterInstanceConfig, AdapterState } from '../../shared/types/channel-adapter.types'
 import type { AgentConfigSummary, AgentExecutionEvent, ProviderConfig } from '../../shared/types/ipc.types'
 import type { AgentState } from './agent-executor'
@@ -1524,6 +1526,7 @@ export class RuntimeService extends EventEmitter {
       onAutostartChild?: (filePath: string) => Promise<boolean>
       onChildCreated?: (filePath: string, config: AgentConfig) => void
       getDefaultProvider?: () => ProviderConfig | undefined
+      getStudioTemplate?: () => { template: AgentTemplate; filesDir: string } | undefined
     } | undefined
     if (!createAdfTool) return
 
@@ -1535,6 +1538,15 @@ export class RuntimeService extends EventEmitter {
     createAdfTool.getDefaultProvider = () => {
       const providers = (this.settings?.get('providers') as ProviderConfig[] | undefined) ?? []
       return resolveDefaultProvider(providers, this.settings?.get('defaultProviderId') as string | undefined)
+    }
+    createAdfTool.getStudioTemplate = () => {
+      if (this.settings?.get('agentTemplateForChildren') !== true) return undefined
+      const template = (this.settings.get('agentTemplate') as AgentTemplate | undefined) ?? {}
+      // Headless (Electron-as-Node) has no `app`; without a files dir the
+      // config template still applies, only uploaded files are skipped.
+      let filesDir = ''
+      try { filesDir = agentTemplateFilesDir() } catch { /* no electron app */ }
+      return { template, filesDir }
     }
   }
 

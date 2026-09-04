@@ -102,7 +102,7 @@ function ApprovalRow({
   }, [approval.filePath, approval.id])
 
   return (
-    <div className="px-3 py-2 border-b border-neutral-100 dark:border-neutral-700/60 last:border-b-0 hover:bg-neutral-50 dark:hover:bg-neutral-800/60">
+    <div className="px-3 py-2 border-b border-hairline last:border-b-0 hover:bg-neutral-50 dark:hover:bg-neutral-800/60">
       <div
         role="button"
         tabIndex={0}
@@ -206,7 +206,7 @@ function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number 
   const outcome = OUTCOME_APPEARANCE[entry.outcome] ?? OUTCOME_APPEARANCE.expired
 
   return (
-    <div className="px-3 py-1.5 border-b border-neutral-100 dark:border-neutral-700/60 last:border-b-0 opacity-55">
+    <div className="px-3 py-1.5 border-b border-hairline last:border-b-0 opacity-55">
       <div className="flex items-center gap-1.5 min-w-0">
         <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
           {isAsk ? <AskIcon /> : <ShieldIcon />}
@@ -311,7 +311,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
       </button>
 
       {panelOpen && (
-        <div className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} top-8 z-50 w-80 max-h-[60vh] overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg`}>
+        <div className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} top-8 z-50 w-80 max-h-[60vh] overflow-y-auto rounded-md border border-hairline bg-surface-raised shadow-card`}>
           {count === 0 && history.length === 0 ? (
             <div className="px-3 py-4 text-xs text-neutral-500 dark:text-neutral-400">
               No notifications
@@ -320,7 +320,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
             <>
               {count > 0 && (
                 <>
-                  <div className="px-3 py-1.5 border-b border-neutral-200 dark:border-neutral-700 text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
+                  <div className="px-3 py-1.5 border-b border-hairline text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
                     Waiting on you
                   </div>
                   {approvals.map((approval) => (
@@ -330,7 +330,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
               )}
               {history.length > 0 && (
                 <>
-                  <div className="px-3 py-1.5 border-y border-neutral-200 dark:border-neutral-700 text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
+                  <div className="px-3 py-1.5 border-y border-hairline text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
                     Recent
                   </div>
                   {history.map((entry) => (
@@ -375,7 +375,7 @@ export function ApprovalToasts() {
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className={`pointer-events-auto w-64 rounded-md border bg-white dark:bg-neutral-900 shadow-lg px-3 py-2 ${
+          className={`pointer-events-auto w-64 rounded-md border bg-surface-raised shadow-card px-3 py-2 ${
             toast.kind === 'ask'
               ? 'border-sky-300 dark:border-sky-700/60'
               : 'border-amber-300 dark:border-amber-700/60'

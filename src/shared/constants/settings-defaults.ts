@@ -12,7 +12,17 @@ import { cloneComputeDefaults } from './compute-defaults'
 export function createSettingsDefaults(): Record<string, unknown> {
   return {
     providers: [],
+    // "Agent template": overrides only; empty = code defaults
+    // (DEFAULT_AGENT_CONFIG). See src/shared/utils/agent-template.ts.
+    agentTemplate: {},
+  agentTemplateForChildren: false,
     theme: 'light',
+    // Interface typeface preset + free-text family for 'custom'; see
+    // UI_FONT_STACKS in the renderer's app.store.
+    uiFont: 'system',
+    uiFontCustom: '',
+    // Electron zoom factor for the whole window (1 = 100%).
+    uiScale: 1,
     globalSystemPrompt: DEFAULT_BASE_PROMPT,
     // Dynamic instruction templates share the toolPrompts record (dyn_ keys)
     // so they ride the existing settings→executor plumbing.

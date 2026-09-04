@@ -1,4 +1,4 @@
-import type { AgentConfig, LoopTokenUsage, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
+import type { AgentConfig, AgentTemplate, LoopTokenUsage, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
 import type { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo } from './channel-adapter.types'
 import type { ProviderType } from '../constants/adf-defaults'
 import type { ComputeAppSettings } from './compute.types'
@@ -151,7 +151,19 @@ export interface AppSettings {
   providers?: ProviderConfig[]
   /** Provider id (matches ProviderConfig.id) applied to new agents whose model.provider is unspecified. */
   defaultProviderId?: string
+  /**
+   * "Agent template": overrides merged over the code defaults when the
+   * user creates an agent from Studio. Absent/empty = code defaults.
+   */
+  agentTemplate?: AgentTemplate
+  /** Also apply agentTemplate to children spawned via sys_create_adf. Default off. */
+  agentTemplateForChildren?: boolean
   theme?: 'light' | 'dark' | 'system'
+  /** Interface typeface preset (UiFont in the renderer's app.store); 'custom' reads uiFontCustom. */
+  uiFont?: 'system' | 'segoe' | 'inter' | 'roboto' | 'sf' | 'calibri' | 'verdana' | 'georgia' | 'custom'
+  uiFontCustom?: string
+  /** Electron zoom factor for the whole window (1 = 100%). */
+  uiScale?: number
   globalSystemPrompt?: string
   trackedDirectories?: string[]
   /** Destination folder for accepted/claimed agents. Empty = built-in default (Documents/adf-agents). */

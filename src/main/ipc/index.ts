@@ -119,7 +119,8 @@ import { stripLoopNameMarker } from '../runtime/loop-pool'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { AdfDatabase } from '../adf/adf-database'
-import { applyDefaultProviderToOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
+import { buildStudioCreateOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
+import { addAgentTemplateFiles, agentTemplateFilesDir, missingAgentTemplateFiles, removeAgentTemplateFile } from '../adf/agent-template-files'
 import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
@@ -193,6 +194,7 @@ import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispat
 import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, McpRegistrationTestResult, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
 import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
 import type { AgentConfig, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
+import type { AgentTemplate } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
@@ -2033,7 +2035,10 @@ export function registerAllIpcHandlers(): void {
       console.log('[IPC] FILE_CREATE: Creating workspace for agent:', agentName)
       const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
       const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
-      const createOptions = applyDefaultProviderToOptions({ name: agentName }, defaultProvider)
+      // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
+      const agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
+      const createOptions = buildStudioCreateOptions(agentName, agentTemplate, defaultProvider)
+      createOptions.templateFilesDir = agentTemplateFilesDir()
       currentWorkspace = AdfWorkspace.create(result.filePath, createOptions)
       currentFilePath = result.filePath
       attachWorkspaceDataForwarder(currentWorkspace)
@@ -2070,15 +2075,19 @@ export function registerAllIpcHandlers(): void {
     try {
       const { filePath } = args
 
+      // Foreground first: cleanupCurrentFile moves a RUNNING foreground agent
+      // into the background manager rather than stopping it, so the
+      // background check below must run after it or the agent survives with
+      // its database handle open (unlink then fails with EBUSY on Windows).
+      if (filePath === currentFilePath) {
+        await cleanupCurrentFile()
+      }
+
       if (backgroundAgentManager?.hasAgent(filePath)) {
         if (meshManager?.isEnabled()) {
           meshManager.unregisterAgent(filePath)
         }
         await backgroundAgentManager.stopAgent(filePath)
-      }
-
-      if (filePath === currentFilePath) {
-        await cleanupCurrentFile()
       }
 
       // Delete the ADF file and its WAL files
@@ -2087,6 +2096,10 @@ export function registerAllIpcHandlers(): void {
     } catch (error) {
       return { success: false, error: String(error) }
     }
+  })
+
+  ipcMain.handle(IPC.FILE_REVEAL, async (_event, args: { filePath: string }) => {
+    shell.showItemInFolder(args.filePath)
   })
 
   ipcMain.handle(IPC.FILE_LIST_TABLES, async (_event, args: { filePath: string }) => {
@@ -4380,6 +4393,11 @@ export function registerAllIpcHandlers(): void {
         const appProviders = (settings.get('providers') as ProviderConfig[] | undefined) ?? []
         return resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
       }
+      createAdfTool.getStudioTemplate = () => {
+        if (settings.get('agentTemplateForChildren') !== true) return undefined
+        const template = (settings.get('agentTemplate') as AgentTemplate | undefined) ?? {}
+        return { template, filesDir: agentTemplateFilesDir() }
+      }
     }
 
     if (meshManager?.isEnabled() && capturedFilePath) {
@@ -4757,6 +4775,36 @@ export function registerAllIpcHandlers(): void {
       codeSandboxService.setMaxWorkers(newSettings.sandboxMaxWorkers as number | undefined)
     }
     return { success: true }
+  })
+
+  // --- Agent template extra files ---
+  // Blobs only: the renderer merges the returned metadata into
+  // settings.agentTemplate.files.extra and writes it via SETTINGS_SET, so the
+  // settings store stays the single source of truth for the list.
+
+  ipcMain.handle(IPC.AGENT_TEMPLATE_FILES_ADD, async () => {
+    const win = BrowserWindow.getFocusedWindow() ?? undefined
+    const result = win
+      ? await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] })
+      : await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'] })
+    if (result.canceled || result.filePaths.length === 0) return { success: false, error: 'Cancelled' }
+    const template = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
+    const taken = (template?.files?.extra ?? []).map((f) => f.path)
+    try {
+      return addAgentTemplateFiles(result.filePaths, taken)
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.AGENT_TEMPLATE_FILES_REMOVE, async (_event, id: string) => {
+    if (typeof id !== 'string') return { success: false }
+    return removeAgentTemplateFile(id)
+  })
+
+  ipcMain.handle(IPC.AGENT_TEMPLATE_FILES_STAT, async (_event, ids: string[]) => {
+    if (!Array.isArray(ids)) return { missing: [] }
+    return { missing: missingAgentTemplateFiles(ids.filter((id): id is string => typeof id === 'string')) }
   })
 
   // --- Tracked directories ---
@@ -5523,7 +5571,10 @@ export function registerAllIpcHandlers(): void {
 
       const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
       const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
-      const createOptions = applyDefaultProviderToOptions({ name }, defaultProvider)
+      // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
+      const agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
+      const createOptions = buildStudioCreateOptions(name, agentTemplate, defaultProvider)
+      createOptions.templateFilesDir = agentTemplateFilesDir()
       const workspace = AdfWorkspace.create(filePath, createOptions)
       try {
         try {
@@ -6063,6 +6114,19 @@ export function registerAllIpcHandlers(): void {
     const tokenUsageService = getTokenUsageService()
     tokenUsageService.clearAll()
     return { success: true }
+  })
+
+  ipcMain.handle(IPC.TOKEN_USAGE_EXPORT, async (_event, json: string) => {
+    if (typeof json !== 'string') return { success: false }
+    const win = BrowserWindow.getFocusedWindow() ?? undefined
+    const result = await dialog.showSaveDialog({
+      ...(win ? { window: win } : {}),
+      defaultPath: `adf-token-usage-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    } as Electron.SaveDialogOptions)
+    if (result.canceled || !result.filePath) return { success: false }
+    writeFileSync(result.filePath, json, 'utf8')
+    return { success: true, path: result.filePath }
   })
 
   // --- Home dashboard (split into 4 slices so each tile loads as its

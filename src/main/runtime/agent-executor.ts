@@ -392,6 +392,15 @@ export class AgentExecutor extends EventEmitter {
   // machine — a counter, because error-recovery retries nest executeTurn calls
   // and a re-entrant successor claims its slot before its predecessor releases.
   private activeTurnCount = 0
+  // Agent-scope subset of activeTurnCount. The concurrent-turn guard reads THIS
+  // one: a system-scope dispatch (lambda handler) never touches the session, so
+  // it cannot cause the double compaction the guard exists for — but it does
+  // claim an activeTurnCount slot for isTurnActive(). Counting it in the guard
+  // queued every agent wake that shared a tick with a lambda target listed
+  // before it (aom on_inbox / on_startup, 2026-09-04) and nothing ever drained
+  // the queue, because the system-scope path returns before the turn's
+  // finally-block drain.
+  private activeAgentTurnCount = 0
   private _interruptRestart = false
   // Owner-initiated end of the in-flight turn. Routes the resulting AbortError
   // to the requested lifecycle state instead of 'error' — this interruption
@@ -1295,6 +1304,7 @@ export class AgentExecutor extends EventEmitter {
     // that only awaits the returned promise can never observe isTurnActive()
     // as false for a turn it has already started.
     this.activeTurnCount++
+    if (dispatch.scope !== 'system') this.activeAgentTurnCount++
     return this.runClaimedTurn(dispatch, opts)
   }
 
@@ -1309,6 +1319,15 @@ export class AgentExecutor extends EventEmitter {
       return await withSource(`agent:${turnId}`, this.config.id, () => this.executeTurnImpl(dispatch, opts, turnId))
     } finally {
       this.activeTurnCount--
+      if (dispatch.scope !== 'system') {
+        this.activeAgentTurnCount--
+      } else if (this.activeAgentTurnCount === 0 && this.state === 'idle') {
+        // A system-scope turn returns before the agent-turn finally block that
+        // normally drains the queue. Anything an agent dispatch queued behind
+        // this lambda (same-tick sibling target) would otherwise wait for an
+        // unrelated agent turn to run — drain it here instead.
+        this.drainPendingTriggers()
+      }
       // True turn boundary: a successor scheduled by scheduleReentrantTurn has
       // already claimed its slot, so a zero here means nothing is queued behind
       // this turn. The loop pool consumes its pending wake here — a naive
@@ -1340,6 +1359,7 @@ export class AgentExecutor extends EventEmitter {
     opts?: TurnOptions,
   ): void {
     this.activeTurnCount++
+    if (dispatch.scope !== 'system') this.activeAgentTurnCount++
     process.nextTick(() => {
       // Re-entrant turns bypass the lifecycle dispatch() choke point and so
       // miss its rehydrate. Cheap no-op unless the session really is empty.
@@ -1531,10 +1551,12 @@ export class AgentExecutor extends EventEmitter {
     // past a state-only check and ran interleaved on one shared session. Both
     // then crossed the compaction threshold together and compacted twice, the
     // second wiping the first's summary and every row written after it
-    // (aom 2026-09-03). activeTurnCount is claimed synchronously in
+    // (aom 2026-09-03). activeAgentTurnCount is claimed synchronously in
     // executeTurn, so it is already 2 here for the second arrival. Nested
-    // recovery retries run inside their caller's slot and are exempt.
-    const anotherTurnActive = !opts?.nested && this.activeTurnCount > 1
+    // recovery retries run inside their caller's slot and are exempt. System-
+    // scope turns are not counted (see activeAgentTurnCount): a lambda target
+    // listed before the agent target must not queue the agent's own wake.
+    const anotherTurnActive = !opts?.nested && this.activeAgentTurnCount > 1
     if (anotherTurnActive || this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended') {
       // User messages: abort current turn and restart with user's message
       if (eventType === 'chat') {

@@ -573,11 +573,74 @@ export const START_IN_STATES = ['active', 'idle', 'hibernate'] as const
 export type StartInState = (typeof START_IN_STATES)[number]
 
 /**
+ * Recursive partial for template overrides: plain objects recurse, arrays stay
+ * whole (they replace on merge), everything else is optional as-is.
+ */
+export type DeepPartial<T> = T extends (infer U)[]
+  ? U[]
+  : T extends object
+    ? { [K in keyof T]?: DeepPartial<T[K]> }
+    : T
+
+/** Config keys a template never carries: they come from the file and its lifecycle. */
+export type AgentTemplateExcludedKey = 'id' | 'metadata' | 'adf_version' | 'name' | 'description' | 'state'
+
+/**
+ * An arbitrary file copied into every new agent. The bytes live on disk under
+ * `<userData>/agent-template-files/<id>` (never in the settings JSON); this is
+ * only the metadata. `path` is the destination inside the agent (relative,
+ * forward slashes; see validateTemplateFilePath).
+ */
+export interface AgentTemplateExtraFile {
+  id: string
+  path: string
+  mime: string
+  size: number
+}
+
+/** Seed content for the files a new agent starts with. Empty/absent = code default. */
+export interface AgentTemplateFiles {
+  readme?: string
+  mind?: string
+  soul?: string
+  /** Extra files copied into every new agent. Whole list; replaces, never merges. */
+  extra?: AgentTemplateExtraFile[]
+}
+
+/**
+ * Studio's "Agent template" (settings.agentTemplate): what a user may pre-set
+ * for agents they create from the app. Any config section except the excluded
+ * keys, plus seed `files`. Holds ONLY overrides; an empty object means the
+ * code defaults (DEFAULT_AGENT_CONFIG). Applied by AdfDatabase.create via
+ * mergeAgentTemplate (src/shared/utils/agent-template.ts). Arrays (e.g.
+ * `tools`) are whole lists that replace the default, not patches.
+ */
+export type AgentTemplate = DeepPartial<Omit<AgentConfig, AgentTemplateExcludedKey>> & {
+  files?: AgentTemplateFiles
+}
+
+/**
  * Options for creating a new agent. `name` is required; everything else
  * overrides the AGENT_DEFAULTS when provided.
  */
 export interface CreateAgentOptions {
   name: string
+  /**
+   * User's "Agent template" from Studio settings, merged over the code
+   * defaults BEFORE the explicit fields below are applied. Its `files` seed
+   * README.md / mind.md / soul.md in place of the code defaults when non-empty
+   * and copy `files.extra` into the agent. Set only by
+   * user-initiated creation from Studio (FILE_CREATE and fleet-map founding).
+   * Agent-spawned children (sys_create_adf) and the headless harness never
+   * pass it: the template is the owner's preference for agents they make
+   * themselves, not an inherited trait of the whole fleet.
+   */
+  template?: AgentTemplate
+  /**
+   * Directory holding the template's extra-file blobs (`<userData>/agent-template-files`).
+   * Set by the Studio host alongside `template`; without it `files.extra` is skipped.
+   */
+  templateFilesDir?: string
   description?: string
   instructions?: string
   icon?: string
@@ -838,6 +901,14 @@ export interface LoopConfig {
    * trigger, timer or `loop_send` targets it. Ignored while `enabled: false`.
    */
   autostart?: boolean
+  /**
+   * Keep turning after a text-only response until the loop calls
+   * `sys_set_state` (or the narration breaker trips), exactly like the
+   * agent-level `autonomous`. Per-loop and NOT inherited from the host:
+   * absent = false, so a side loop ends its turn at the first text-only
+   * reply unless it is explicitly made autonomous.
+   */
+  autonomous?: boolean
   /** Inherits the parent's model when absent. */
   model?: ModelConfig
   /**
@@ -864,10 +935,15 @@ export interface LoopConfig {
  * What a newly created loop gets when nobody said otherwise — the Loops card
  * pre-ticks these, and `loop_manage create` uses them when `tools` is omitted.
  *
+ * `loop_send`/`loop_list` let it reach the rest of the agent; `sys_set_state`
+ * lets it end its own turn deliberately (the loop pool applies the target
+ * state to the loop's own executor) instead of being cut off by the
+ * text-only escalation ladder.
+ *
  * A suggestion, not a floor: an explicit list wins, including an empty one, so
  * a deliberately mute loop is expressible.
  */
-export const DEFAULT_NEW_LOOP_TOOLS = ['loop_send', 'loop_list'] as const
+export const DEFAULT_NEW_LOOP_TOOLS = ['loop_send', 'loop_list', 'sys_set_state'] as const
 
 /**
  * Never grantable to a side loop, at any layer.
