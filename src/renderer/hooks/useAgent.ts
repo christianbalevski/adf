@@ -320,20 +320,23 @@ export function useAgentEvents() {
         case 'turn_complete': {
           const turnPayload = event.payload as { targetState?: string }
 
-          // A turn that produced NOTHING visible — no text, no tool call, not
-          // even a reasoning block (the provider returned reasoning tokens it
-          // does not hand back, or the model deliberately ended quietly, which
-          // is what loop prompting encourages). Without a marker that turn is
-          // an empty gap in the tab, indistinguishable from a crash or a
+          // A turn that produced NOTHING visible — no text, no tool call.
+          // Reasoning alone does not count: a model that thinks and then
+          // returns an empty message (gpt-5.6 does this in side loops) has
+          // still ended the turn with nothing said, and the tab would trail
+          // off after the thinking block, indistinguishable from a crash or a
           // dropped stream. The marker is an EMPTY assistant entry, which the
           // loop renders as a muted "ended quietly (no output)" one-liner.
           //
           // The boundary is this loop's last inbound row (owner message,
           // trigger, injected context): anything after it belongs to the turn
-          // that just ended. Ambiguous cases resolve as "it produced
-          // something", so this under-reports rather than inventing endings.
+          // that just ended. Trailing thinking entries are skipped before the
+          // check. Ambiguous cases resolve as "it produced something", so this
+          // under-reports rather than inventing endings.
           const currentLog = selectLoopSlice(useAgentStore.getState(), loop).log
-          const lastEntry = currentLog[currentLog.length - 1]
+          let tailIdx = currentLog.length - 1
+          while (tailIdx >= 0 && currentLog[tailIdx].type === 'thinking') tailIdx--
+          const lastEntry = tailIdx >= 0 ? currentLog[tailIdx] : undefined
           const producedOutput = !lastEntry
             || (lastEntry.type !== 'user' && lastEntry.type !== 'trigger' && lastEntry.type !== 'context')
           if (!producedOutput) {
