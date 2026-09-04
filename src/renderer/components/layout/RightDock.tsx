@@ -54,8 +54,20 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
         />
       )}
       {/* Top-level tab switcher */}
-      <div className="flex h-9 items-stretch border-b border-hairline">
-        <div className="flex-1 flex justify-center gap-1">
+      {/* Collapse sits on the INNER edge, like the sidebar's: the chevron
+          points the way the panel slides away, at the seam it slides from. */}
+      <div className="flex h-9 items-center border-b border-hairline pl-1">
+        <button
+          onClick={toggleRightPanel}
+          title="Collapse panel"
+          aria-label="Collapse panel"
+          className="w-7 h-7 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors shrink-0"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </button>
+        <div className="flex-1 flex justify-center gap-1 self-stretch">
           {(chatInCenter ? DOCK_TABS_CHAT_IN_CENTER : DOCK_TABS).map((tab) => (
             <button
               key={tab}
@@ -81,15 +93,6 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
             </button>
           ))}
         </div>
-        <button
-          onClick={toggleRightPanel}
-          title="Collapse Panel"
-          className="shrink-0 px-1.5 text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
-        </button>
       </div>
       {/* Agent sub-tabs */}
       {rightPanel === 'agent' && (
@@ -158,7 +161,6 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
   const rightPanel = useAppStore(selectActiveDockPanel)
   const agentSubTab = useAppStore((s) => s.agentSubTab)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
-  const toggleRightPanel = useAppStore((s) => s.toggleRightPanel)
   const unreadInboxCount = useInboxStore((s) => s.unreadCount)
 
   const isActive = (panel: string, subTab?: string) => {
@@ -249,15 +251,6 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
         </svg>
       </RightDockIconButton>
 
-      {/* Spacer */}
-      <div className="flex-1" />
-
-      {/* Expand */}
-      <RightDockIconButton title="Expand Panel" onClick={toggleRightPanel}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="15 18 9 12 15 6" />
-        </svg>
-      </RightDockIconButton>
     </div>
   )
 }
