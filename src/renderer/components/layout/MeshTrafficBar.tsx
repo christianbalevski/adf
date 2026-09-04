@@ -2,31 +2,43 @@ import { useEffect, useState } from 'react'
 import type { MeshEvent } from '../../../shared/types/ipc.types'
 import {
   addMeshTrafficPulse,
-  isInterAgentTraffic,
+  getMeshTrafficDirection,
   MESH_TRAFFIC_PULSE_MS,
   type MeshTrafficPulse,
 } from '../../utils/mesh-traffic'
 
-/** Mounted while mesh is enabled. Idle is a quiet line; deliveries create pulses. */
+/** A bounded set of overlapping ripples. CSS animates only transform and opacity. */
 export function MeshTrafficBar() {
   const [pulses, setPulses] = useState<MeshTrafficPulse[]>([])
 
   useEffect(() => window.adfApi?.onMeshEvent((event: MeshEvent) => {
-    if (isInterAgentTraffic(event)) {
-      const now = Date.now()
-      setPulses((previous) => addMeshTrafficPulse(previous, now))
+    const direction = getMeshTrafficDirection(event)
+    if (direction) {
+      const now = performance.now()
+      setPulses((previous) => addMeshTrafficPulse(previous, now, direction))
     }
   }), [])
 
   return (
     <div className="mesh-traffic-bar" aria-hidden="true">
-      {pulses.map(({ startedAt }) => (
+      {pulses.map((pulse) => (
         <span
-          key={startedAt}
+          key={`${pulse.direction}:${pulse.startedAt}`}
           className="mesh-traffic-pulse"
+          data-direction={pulse.direction}
           style={{ animationDuration: `${MESH_TRAFFIC_PULSE_MS}ms` }}
-          onAnimationEnd={() => setPulses((previous) => previous.filter((pulse) => pulse.startedAt !== startedAt))}
-        />
+          onAnimationEnd={(event) => {
+            // Child crests finish separately; retain the disturbance until its
+            // own slow fade ends, without timers or per-frame React updates.
+            if (event.target === event.currentTarget) {
+              setPulses((previous) => previous.filter((item) => item !== pulse))
+            }
+          }}
+        >
+          <span className="mesh-traffic-wave" />
+          <span className="mesh-traffic-wave" />
+          <span className="mesh-traffic-wave" />
+        </span>
       ))}
     </div>
   )

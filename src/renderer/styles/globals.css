@@ -89,16 +89,19 @@
 }
 
 .dark {
-  --adf-ui-canvas: #151516;
-  --adf-ui-sidebar: #1b1b1d;
-  --adf-ui-surface: #232326;
-  --adf-ui-surface-raised: #29292c;
-  --adf-ui-surface-hover: #303034;
-  --adf-ui-text: #f4f4f5;
-  --adf-ui-text-muted: #b3b3bb;
-  --adf-ui-text-subtle: #83838c;
-  --adf-ui-border: #3b3b40;
-  --adf-ui-separator: #323236;
+  /* Dark Settings sits on the shell's neutral surface ladder (defined
+     below): nav = side-panel tone, content = main-content tone, cards one
+     step up. Pure neutral greys — no blue tint — so it matches the app. */
+  --adf-ui-canvas: var(--adf-surface-1);
+  --adf-ui-sidebar: var(--adf-surface-2);
+  --adf-ui-surface: var(--adf-surface-raised);
+  --adf-ui-surface-raised: #262626;
+  --adf-ui-surface-hover: #2e2e2e;
+  --adf-ui-text: #f4f4f4;
+  --adf-ui-text-muted: #b3b3b3;
+  --adf-ui-text-subtle: #838383;
+  --adf-ui-border: #383838;
+  --adf-ui-separator: #2f2f2f;
   --adf-ui-accent: #60a5fa;
   --adf-ui-accent-hover: #93c5fd;
   --adf-ui-accent-subtle: #1d3150;
@@ -280,39 +283,72 @@ body,
   will-change: background-position;
 }
 
-/* Mesh traffic: a quiet baseline with finite pulses for actual deliveries. */
+/* Mesh traffic: overlapping crests spread and diffuse into a quiet baseline.
+   The gradients are static; only transform and opacity animate. */
 .mesh-traffic-bar {
   position: relative;
-  height: 2px;
+  height: 4px;
   flex-shrink: 0;
   overflow: hidden;
   pointer-events: none;
-  background: rgba(74, 222, 128, 0.16);
+  background: rgba(74, 222, 128, 0.10);
 }
 
 .mesh-traffic-pulse {
   position: absolute;
-  inset: 0 auto 0 0;
-  width: 30%;
-  background: linear-gradient(90deg, transparent, rgba(74, 222, 128, 0.9), transparent);
-  animation: meshTrafficTravel ease-out both;
+  inset: 0;
+  animation: meshTrafficDissolve linear both;
 }
 
-@keyframes meshTrafficTravel {
-  0% { transform: translateX(-100%); opacity: 0; }
-  15% { opacity: 1; }
-  70% { opacity: 0.85; }
-  100% { transform: translateX(340%); opacity: 0; }
+.mesh-traffic-pulse[data-direction='receive'] {
+  transform: scaleX(-1);
+}
+
+.mesh-traffic-wave {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg,
+    transparent 12%,
+    rgba(74, 222, 128, 0.04) 28%,
+    rgba(74, 222, 128, 0.18) 40%,
+    rgba(139, 238, 174, 0.55) 50%,
+    rgba(74, 222, 128, 0.18) 60%,
+    rgba(74, 222, 128, 0.04) 72%,
+    transparent 88%);
+  animation: meshTrafficRipple 7s cubic-bezier(0.2, 0.45, 0.3, 1) both;
+}
+
+.mesh-traffic-wave:nth-child(2) {
+  animation-delay: 450ms;
+}
+
+.mesh-traffic-wave:nth-child(3) {
+  animation-delay: 900ms;
+}
+
+@keyframes meshTrafficRipple {
+  0% { transform: translateX(-50%) scaleX(0.12); opacity: 0; }
+  10% { opacity: 0.85; }
+  35% { opacity: 0.65; }
+  70% { opacity: 0.3; }
+  100% { transform: translateX(60%) scaleX(1.8); opacity: 0; }
+}
+
+@keyframes meshTrafficDissolve {
+  0%, 60% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mesh-traffic-pulse {
-    width: 100%;
-    background: rgba(74, 222, 128, 0.6);
+  .mesh-traffic-wave {
     animation-name: meshTrafficFade;
   }
+  .mesh-traffic-wave:nth-child(n + 2) {
+    display: none;
+  }
   @keyframes meshTrafficFade {
-    from { opacity: 1; }
+    0% { opacity: 0; }
+    10% { opacity: 0.5; }
     to { opacity: 0; }
   }
 }
