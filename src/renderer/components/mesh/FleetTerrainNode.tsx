@@ -84,6 +84,8 @@ export interface LineageInfo {
   depth: number
   familySize: number
   broken: boolean
+  /** Another live file presents this agent's DID as its own (kept-identity clone) */
+  duplicate: boolean
 }
 
 function lensFill(
@@ -122,9 +124,9 @@ function lensFill(
     // Dynasties: each founding root gets a family hue; the root is darkest
     // and every generation steps lighter. Solo agents stay neutral so the
     // families pop; a dashed ring means the parent chain broke (deleted
-    // parent) or the agent is offline.
+    // parent), the DID is shared with another file, or the agent is offline.
     if (!lineage || lineage.familySize < 2) {
-      return { ...quiet, dashed: agent.online === false }
+      return { ...quiet, dashed: agent.online === false || lineage?.duplicate === true }
     }
     const step = Math.min(lineage.depth, 4)
     const L = dark ? 26 + step * 9 : 46 + step * 10
@@ -133,7 +135,7 @@ function lensFill(
       stroke: `hsla(${lineage.hue}, 58%, ${dark ? Math.min(72, L + 16) : Math.max(28, L - 18)}%, 0.8)`,
       strokeWidth: lineage.depth === 0 ? 2.4 : 1.4,
       pulse: false,
-      dashed: lineage.broken || agent.online === false
+      dashed: lineage.broken || lineage.duplicate || agent.online === false
     }
   }
 
@@ -299,7 +301,10 @@ function FleetTerrainNodeFull({ data }: NodeProps) {
     if (lens !== 'lineage' || !lineageAgents) return null
     const resolved = resolveLineage(lineageAgents)
     const orphanSet = new Set(resolved.orphaned)
-    const info = new Map<string, { rootPath: string; depth: number; broken: boolean }>()
+    // Every file involved in a shared DID — the first-seen one the tree
+    // resolves to as much as the copies that lost the tie.
+    const duplicateSet = new Set([...resolved.duplicateDids.values()].flat())
+    const info = new Map<string, { rootPath: string; depth: number; broken: boolean; duplicate: boolean }>()
     const rootCounts = new Map<string, number>()
     for (const a of lineageAgents) {
       let cur = a.filePath
@@ -314,7 +319,12 @@ function FleetTerrainNodeFull({ data }: NodeProps) {
       }
       // broken marks the break POINT: a parent reference nobody matched.
       // Its descendants still form a family rooted at the orphan.
-      info.set(a.filePath, { rootPath: cur, depth, broken: orphanSet.has(a.filePath) })
+      info.set(a.filePath, {
+        rootPath: cur,
+        depth,
+        broken: orphanSet.has(a.filePath),
+        duplicate: duplicateSet.has(a.filePath)
+      })
       rootCounts.set(cur, (rootCounts.get(cur) ?? 0) + 1)
     }
     return { info, rootCounts }
@@ -328,7 +338,8 @@ function FleetTerrainNodeFull({ data }: NodeProps) {
       hue: hueFromPath(li.rootPath),
       depth: li.depth,
       familySize: lineageIndex.rootCounts.get(li.rootPath) ?? 1,
-      broken: li.broken
+      broken: li.broken,
+      duplicate: li.duplicate
     }
   }
 
