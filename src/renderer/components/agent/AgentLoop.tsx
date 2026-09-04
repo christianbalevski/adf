@@ -41,7 +41,7 @@ import {
 } from './tool-presentation'
 import type { ContentBlock } from '../../../shared/types/provider.types'
 
-const MAX_INPUT_ROWS = 8
+const MAX_INPUT_ROWS = 10
 // Model-facing text for attachment-only messages; also shown in the UI so the
 // optimistic entry matches what the loop table persists and restores.
 const ATTACHMENT_ONLY_TEXT = 'Please review the attached media.'
@@ -1206,6 +1206,20 @@ function LoopStream({ loop }: { loop: string }) {
     }
   }, [logVersion])
 
+  // Keep the tail (incl. the activity-indicator row) visible while pinned.
+  // The logVersion effect above scrolls synchronously, but rows use
+  // estimateSize 60 and are only measured by ResizeObserver afterwards — when
+  // measured sizes exceed the estimate, getTotalSize() grows after the scroll
+  // and pushes the tail under the fold. Re-pin whenever the total changes, but
+  // only if the user was already at the bottom (never fight a scrolled-up user).
+  const virtualTotalSize = virtualizer.getTotalSize()
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el && isAtBottom.current) {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [virtualTotalSize])
+
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -1810,7 +1824,7 @@ function LoopStream({ loop }: { loop: string }) {
         {displayLog.length > 0 && (
           <div
             style={{
-              height: `${virtualizer.getTotalSize()}px`,
+              height: `${virtualTotalSize}px`,
               width: '100%',
               position: 'relative',
             }}
@@ -2118,57 +2132,54 @@ function LoopStream({ loop }: { loop: string }) {
                   ))}
                 </div>
               )}
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                role="combobox"
-                aria-expanded={slashOpen}
-                aria-controls={slashOpen ? 'loop-slash-palette' : undefined}
-                aria-activedescendant={slashOpen && slashRows.length > 0 ? `loop-slash-palette-${slashIndex}` : undefined}
-                placeholder={
-                  activeAsk ? 'Type your answer...'
-                  : state === 'active' ? `Queue something for ${agentName}...`
-                  : state === 'off' ? `What should ${agentName} do?`
-                  : `What should ${agentName} do?`
-                }
-                rows={3}
-                className="loop-composer-input block w-full min-h-[5.25rem] resize-none overflow-y-auto border-0 bg-transparent px-3 py-3 text-sm leading-5 text-neutral-900 placeholder:text-neutral-400 dark:text-neutral-100 dark:placeholder:text-neutral-500"
-              />
-              <div className="flex items-center justify-between gap-2 px-2 pb-2">
-                <div className="flex items-center gap-1.5">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={(e) => {
-                      handleFilesSelected(Array.from(e.target.files ?? []))
-                      e.currentTarget.value = ''
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={handlePickFiles}
-                    disabled={!!activeAsk || uploadingFiles}
-                    className="flex h-8 w-8 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-                    title="Attach files"
-                  >
-                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-                      <path d="M9 3.25v11.5M3.25 9h11.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-                    </svg>
-                  </button>
-                  {uploadingFiles && (
-                    <span className="text-[11px] text-neutral-400 dark:text-neutral-500">Uploading...</span>
-                  )}
-                </div>
+              {/* Single-row composer: "+" | textarea | send. items-end keeps the
+                  buttons pinned to the bottom corners as the textarea grows. */}
+              <div className="flex items-end gap-1.5 px-2 py-1.5">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    handleFilesSelected(Array.from(e.target.files ?? []))
+                    e.currentTarget.value = ''
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handlePickFiles}
+                  disabled={!!activeAsk || uploadingFiles}
+                  className="mb-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                  title="Attach files"
+                >
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                    <path d="M9 3.25v11.5M3.25 9h11.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                  </svg>
+                </button>
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  role="combobox"
+                  aria-expanded={slashOpen}
+                  aria-controls={slashOpen ? 'loop-slash-palette' : undefined}
+                  aria-activedescendant={slashOpen && slashRows.length > 0 ? `loop-slash-palette-${slashIndex}` : undefined}
+                  placeholder={
+                    activeAsk ? 'Type your answer...'
+                    : state === 'active' ? `Queue something for ${agentName}...`
+                    : state === 'off' ? `What should ${agentName} do?`
+                    : `What should ${agentName} do?`
+                  }
+                  rows={1}
+                  className="loop-composer-input block min-h-[2.5rem] min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent px-1.5 py-2.5 text-sm leading-5 text-neutral-900 placeholder:text-neutral-400 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+                />
                 <Button
                   type="submit"
                   disabled={!canSubmit}
                   size="default"
                   variant={state === 'active' && !activeAsk ? 'secondary' : 'primary'}
-                  className="w-[var(--adf-ui-control-height)] px-0 [&_svg]:shrink-0"
+                  className="mb-1 w-[var(--adf-ui-control-height)] shrink-0 px-0 [&_svg]:shrink-0"
                   title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
                   aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
                 >
@@ -2181,6 +2192,9 @@ function LoopStream({ loop }: { loop: string }) {
                   </svg>
                 </Button>
               </div>
+              {uploadingFiles && (
+                <div className="px-3 pb-1.5 text-[11px] text-neutral-400 dark:text-neutral-500">Uploading...</div>
+              )}
             </div>
             </div>
           </form>
