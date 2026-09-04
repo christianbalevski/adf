@@ -2292,7 +2292,9 @@ function LoopStream({ loop }: { loop: string }) {
                 ? 'border-[var(--adf-ui-accent)] ring-2 ring-[var(--adf-ui-focus)]'
                 : activeAsk
                   ? 'border-blue-400 dark:border-blue-600'
-                  : `border-hairline ${loopStyle.focus}`
+                  // Focus is a quiet lift — a firmer hairline and deeper shadow —
+                  // not a coloured ring; the caret already says where you are.
+                  : 'border-hairline focus-within:border-black/15 focus-within:shadow-lg dark:focus-within:border-white/15'
             }`}>
               {draggingOverInput && (
                 <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-blue-50/90 text-sm font-medium text-blue-600 dark:bg-blue-950/70 dark:text-blue-300">
@@ -2372,7 +2374,7 @@ function LoopStream({ loop }: { loop: string }) {
                   disabled={!canSubmit}
                   size="default"
                   variant={state === 'active' && !activeAsk ? 'secondary' : 'primary'}
-                  className="mb-1 w-[var(--adf-ui-control-height)] shrink-0 px-0 [&_svg]:shrink-0"
+                  className="mb-1 w-[var(--adf-ui-control-height)] shrink-0 !rounded-full px-0 [&_svg]:shrink-0"
                   title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
                   aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
                 >
