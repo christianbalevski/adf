@@ -88,6 +88,8 @@ export interface AdfApi {
   // Settings
   getSettings: () => Promise<AppSettings>
   setSettings: (settings: Record<string, unknown>) => Promise<{ success: boolean }>
+  /** Whole-window zoom (1 = 100%). Menu zoomIn/zoomOut layer on top of it. */
+  setZoomFactor: (factor: number) => void
 
   // Compute environment
   computeStatus: () => Promise<{ status: string; activeAgents: string[]; error?: string }>

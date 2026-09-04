@@ -28,6 +28,20 @@
   --color-hairline: var(--adf-hairline);
   --shadow-card: var(--adf-shadow-card);
   --shadow-subtle: var(--adf-shadow-subtle);
+  /* `font-mono` utilities follow the app's monospace token. */
+  --font-mono: var(--adf-font-mono);
+}
+
+/* Typeface tokens. `--adf-font-ui` is rewritten at runtime from the
+   Settings › Appearance font choice (App.tsx); the defaults below are the
+   stacks in effect when nothing is chosen. */
+:root {
+  --adf-font-ui:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
+    Cantarell, sans-serif;
+  --adf-font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
 }
 
 /* ADF Studio UI tokens
@@ -114,9 +128,7 @@ body,
   height: 100%;
   margin: 0;
   overflow: hidden;
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
-    Cantarell, sans-serif;
+  font-family: var(--adf-font-ui);
 }
 
 /* Custom scrollbar */

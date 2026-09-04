@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { useAppStore, type SettingsSection } from '../../stores/app.store'
+import { useAppStore, UI_SCALE_OPTIONS, type SettingsSection, type UiFont, type UiScale } from '../../stores/app.store'
 import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
 import type { ProviderType } from '../../../shared/constants/adf-defaults'
 import { addCatalogSource, normalizeCatalogSources, MAX_CATALOG_SOURCES } from '../../utils/skills-panel'
@@ -1489,6 +1489,15 @@ export function SettingsPage() {
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
   const chatWidth = useAppStore((s) => s.chatWidth)
+  const uiFont = useAppStore((s) => s.uiFont)
+  const setUiFont = useAppStore((s) => s.setUiFont)
+  const uiFontCustom = useAppStore((s) => s.uiFontCustom)
+  const setUiFontCustom = useAppStore((s) => s.setUiFontCustom)
+  const uiScale = useAppStore((s) => s.uiScale)
+  const setUiScale = useAppStore((s) => s.setUiScale)
+  // Free-text family is committed on blur / Enter, not per keystroke.
+  const [uiFontCustomDraft, setUiFontCustomDraft] = useState(uiFontCustom)
+  useEffect(() => setUiFontCustomDraft(uiFontCustom), [uiFontCustom])
   const setChatWidth = useAppStore((s) => s.setChatWidth)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const consumePendingSettingsSection = useAppStore((s) => s.consumePendingSettingsSection)
@@ -1629,6 +1638,24 @@ export function SettingsPage() {
   const handleThemeChange = async (newTheme: 'light' | 'dark' | 'system') => {
     setTheme(newTheme)
     await window.adfApi?.setSettings({ theme: newTheme })
+  }
+
+  const handleUiFontChange = async (font: UiFont) => {
+    setUiFont(font)
+    await window.adfApi?.setSettings({ uiFont: font })
+  }
+
+  const commitUiFontCustom = async () => {
+    const family = uiFontCustomDraft.trim()
+    if (family === uiFontCustom) return
+    setUiFontCustom(family)
+    await window.adfApi?.setSettings({ uiFontCustom: family })
+  }
+
+  const handleUiScaleChange = async (value: string) => {
+    const scale = Number(value) as UiScale
+    setUiScale(scale)
+    await window.adfApi?.setSettings({ uiScale: scale })
   }
 
   const handleChooseAgentsFolder = async () => {
@@ -1966,6 +1993,54 @@ export function SettingsPage() {
                 ]}
                 onChange={setChatWidth}
                 ariaLabel="Chat width"
+              />
+            </SettingsRow>
+            <SettingsRow
+              label="Font family"
+              description="Typeface for the whole interface. Presets fall back to the system font if the face isn't installed."
+            >
+              <div className="flex items-center gap-2">
+                <Select
+                  className="!w-[150px]"
+                  value={uiFont}
+                  onChange={(event) => handleUiFontChange(event.target.value as UiFont)}
+                  aria-label="Font family"
+                >
+                  <option value="system">System default</option>
+                  <option value="inter">Inter</option>
+                  <option value="segoe">Segoe UI</option>
+                  <option value="sf">SF Pro</option>
+                  <option value="roboto">Roboto</option>
+                  <option value="custom">Custom…</option>
+                </Select>
+                {uiFont === 'custom' && (
+                  <TextInput
+                    className="!w-[180px]"
+                    value={uiFontCustomDraft}
+                    onChange={(event) => setUiFontCustomDraft(event.target.value)}
+                    onBlur={commitUiFontCustom}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') event.currentTarget.blur()
+                    }}
+                    placeholder="Font family name"
+                    aria-label="Custom font family"
+                    spellCheck={false}
+                  />
+                )}
+              </div>
+            </SettingsRow>
+            <SettingsRow
+              label="UI scale"
+              description="Scale the entire interface. Ctrl+= / Ctrl+- still zoom on top of this."
+            >
+              <SegmentedControl
+                value={String(uiScale)}
+                options={UI_SCALE_OPTIONS.map((scale) => ({
+                  value: String(scale),
+                  label: `${Math.round(scale * 100)}%`,
+                }))}
+                onChange={handleUiScaleChange}
+                ariaLabel="UI scale"
               />
             </SettingsRow>
           </SettingsGroup>

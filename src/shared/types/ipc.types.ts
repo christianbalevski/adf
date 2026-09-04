@@ -152,6 +152,11 @@ export interface AppSettings {
   /** Provider id (matches ProviderConfig.id) applied to new agents whose model.provider is unspecified. */
   defaultProviderId?: string
   theme?: 'light' | 'dark' | 'system'
+  /** Interface typeface preset; 'custom' reads uiFontCustom. */
+  uiFont?: 'system' | 'inter' | 'segoe' | 'sf' | 'roboto' | 'custom'
+  uiFontCustom?: string
+  /** Electron zoom factor for the whole window (1 = 100%). */
+  uiScale?: number
   globalSystemPrompt?: string
   trackedDirectories?: string[]
   /** Destination folder for accepted/claimed agents. Empty = built-in default (Documents/adf-agents). */

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
 import type { AppUpdateState, FleetSettableState, NotificationsSnapshot } from '../shared/types/ipc.types'
 import type { AgentConfig } from '../shared/types/adf-v02.types'
@@ -116,6 +116,9 @@ const api: AdfApi = {
   getSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET),
   setSettings: (settings: Record<string, unknown>) =>
     ipcRenderer.invoke(IPC.SETTINGS_SET, settings),
+  setZoomFactor: (factor: number) => {
+    if (Number.isFinite(factor) && factor > 0) webFrame.setZoomFactor(factor)
+  },
 
   // Tracked directories
   getTrackedDirectories: () => ipcRenderer.invoke(IPC.TRACKED_DIRS_GET),

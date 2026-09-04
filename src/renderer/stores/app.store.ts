@@ -21,6 +21,35 @@ export type ChatPlacement = 'side' | 'center'
  */
 export type ChatWidth = 'comfortable' | 'full'
 
+/**
+ * Global, persisted (settings store): interface typeface. Presets are just
+ * family stacks that fall back to the system stack when the face is not
+ * installed — nothing is bundled or fetched. `custom` reads `uiFontCustom`.
+ */
+export type UiFont = 'system' | 'inter' | 'segoe' | 'sf' | 'roboto' | 'custom'
+export const UI_FONT_SYSTEM_STACK =
+  "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif"
+export const UI_FONT_STACKS: Record<Exclude<UiFont, 'custom'>, string> = {
+  system: UI_FONT_SYSTEM_STACK,
+  inter: `'Inter', ${UI_FONT_SYSTEM_STACK}`,
+  segoe: `'Segoe UI Variable', 'Segoe UI', ${UI_FONT_SYSTEM_STACK}`,
+  sf: `-apple-system, 'SF Pro Text', 'SF Pro Display', ${UI_FONT_SYSTEM_STACK}`,
+  roboto: `'Roboto', ${UI_FONT_SYSTEM_STACK}`,
+}
+/** Resolves the `--adf-font-ui` stack for a font choice; empty custom = system. */
+export function resolveUiFontStack(font: UiFont, custom: string): string {
+  if (font !== 'custom') return UI_FONT_STACKS[font]
+  const family = custom.trim().replace(/["']/g, '')
+  return family ? `'${family}', ${UI_FONT_SYSTEM_STACK}` : UI_FONT_SYSTEM_STACK
+}
+
+/** Global, persisted (settings store): Electron zoom factor for the whole UI. */
+export const UI_SCALE_OPTIONS = [0.9, 1, 1.1, 1.25] as const
+export type UiScale = (typeof UI_SCALE_OPTIONS)[number]
+export function isUiScale(value: unknown): value is UiScale {
+  return typeof value === 'number' && (UI_SCALE_OPTIONS as readonly number[]).includes(value)
+}
+
 /** Same localStorage idiom the editor's line-wrap / open-tabs prefs use. */
 const CHAT_PLACEMENT_KEY = 'adf-chat-placement'
 const CHAT_WIDTH_KEY = 'adf-chat-width'
@@ -78,6 +107,9 @@ export interface AppState {
   sidebarCollapsed: boolean
   rightPanelCollapsed: boolean
   theme: 'light' | 'dark' | 'system'
+  uiFont: UiFont
+  uiFontCustom: string
+  uiScale: UiScale
   passwordDialogOpen: boolean
   passwordDialogFilePath: string | null
   ownerMismatchDialogOpen: boolean
@@ -131,6 +163,9 @@ export interface AppState {
   toggleSidebar: () => void
   toggleRightPanel: () => void
   setTheme: (theme: 'light' | 'dark' | 'system') => void
+  setUiFont: (font: UiFont) => void
+  setUiFontCustom: (family: string) => void
+  setUiScale: (scale: UiScale) => void
   setPasswordDialogOpen: (open: boolean, filePath?: string | null) => void
   setOwnerMismatchDialogOpen: (open: boolean, fileOwnerDid?: string | null) => void
   addStartingFilePath: (filePath: string) => void
@@ -205,6 +240,9 @@ export const useAppStore = create<AppState>((set) => ({
   sidebarCollapsed: false,
   rightPanelCollapsed: false,
   theme: 'system',
+  uiFont: 'system',
+  uiFontCustom: '',
+  uiScale: 1,
   passwordDialogOpen: false,
   passwordDialogFilePath: null,
   ownerMismatchDialogOpen: false,
@@ -265,6 +303,9 @@ export const useAppStore = create<AppState>((set) => ({
   toggleRightPanel: () =>
     set((s) => ({ rightPanelCollapsed: !s.rightPanelCollapsed })),
   setTheme: (theme) => set({ theme }),
+  setUiFont: (uiFont) => set({ uiFont }),
+  setUiFontCustom: (uiFontCustom) => set({ uiFontCustom }),
+  setUiScale: (uiScale) => set({ uiScale }),
   setPasswordDialogOpen: (open, filePath) =>
     set({ passwordDialogOpen: open, passwordDialogFilePath: filePath ?? null }),
   setOwnerMismatchDialogOpen: (open, fileOwnerDid) =>
