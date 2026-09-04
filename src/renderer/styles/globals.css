@@ -565,7 +565,7 @@ body.panel-resizing webview {
       90deg,
       currentColor 0%,
       currentColor 38%,
-      var(--adf-ui-text) 50%,
+      color-mix(in srgb, currentColor 45%, white) 50%,
       currentColor 62%,
       currentColor 100%
     );
@@ -583,7 +583,7 @@ body.panel-resizing webview {
       90deg,
       currentColor 0%,
       currentColor 44%,
-      var(--adf-ui-text) 50%,
+      color-mix(in srgb, currentColor 45%, white) 50%,
       currentColor 56%,
       currentColor 100%
     );

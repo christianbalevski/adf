@@ -481,9 +481,10 @@ const STILL_WORKING_AFTER_MS = 60_000
  * the human, so mount time doubles as the turn start when the log carries no
  * "turn complete" marker to anchor on.
  */
-const AgentStatusStrip = memo(({ label, dotClass, entry, waiting, turnStartedAt, onOpen, onReveal }: {
+const AgentStatusStrip = memo(({ label, accent, entry, waiting, turnStartedAt, onOpen, onReveal }: {
   label: string
-  dotClass: string
+  /** Family palette: `dot` for the marker, `text` for the label itself. */
+  accent: { dot: string; text: string }
   /** The withheld in-flight entry this row stands in for; null for a bare phase. */
   entry: AgentLogEntry | null
   /** Blocked on the human: the timer keeps counting but no "still working". */
@@ -522,15 +523,14 @@ const AgentStatusStrip = memo(({ label, dotClass, entry, waiting, turnStartedAt,
       onClick={handleOpen}
       aria-label={waiting ? 'Show what needs your attention' : clickable ? `Open details for ${label}` : undefined}
       title={waiting ? 'Show what needs your attention' : clickable ? `Open details for ${label}` : label}
-      className={`flex h-7 w-full shrink-0 items-center gap-1.5 rounded px-3 text-left text-xs text-neutral-500 transition-colors dark:text-neutral-400 ${
+      className={`flex h-7 w-full shrink-0 items-center gap-1.5 rounded px-3 text-left text-xs transition-colors ${accent.text} ${
         clickable ? 'hover:bg-neutral-100/70 dark:hover:bg-neutral-800/60' : 'cursor-default'
       }`}
     >
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full motion-safe:animate-pulse ${dotClass}`} aria-hidden />
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full motion-safe:animate-pulse ${accent.dot}`} aria-hidden />
       <span className="adf-shimmer-text min-w-0 truncate font-medium" style={shimmerStyle}>{label}</span>
-      <span className="ml-auto shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
-        {formatElapsed(elapsedMs)}
-        {!waiting && elapsedMs >= STILL_WORKING_AFTER_MS && <span> &middot; still working</span>}
+      <span className="shrink-0 tabular-nums opacity-70">
+        ({formatElapsed(elapsedMs)}{!waiting && elapsedMs >= STILL_WORKING_AFTER_MS && ' · still working'})
       </span>
     </button>
   )
@@ -1420,13 +1420,13 @@ function LoopStream({ loop }: { loop: string }) {
   // it (reason / humanised tool name with the family dot; "Thinking") →
   // "Working" (nothing withheld — e.g. assistant text streaming into the
   // thread, which needs no verb of its own).
-  const statusPhase = useMemo((): { label: string; dotClass: string; entry: AgentLogEntry | null } | null => {
+  const statusPhase = useMemo((): { label: string; accent: { dot: string; text: string }; entry: AgentLogEntry | null } | null => {
     if (!showStatusStrip) return null
-    if (starting) return { label: 'Starting agent', dotClass: TOOL_FAMILY_STYLES.neutral.dot, entry: null }
-    if (waitingForUser) return { label: 'Waiting for you', dotClass: ATTENTION_TOOL_STYLE.dot, entry: null }
+    if (starting) return { label: 'Starting agent', accent: TOOL_FAMILY_STYLES.neutral, entry: null }
+    if (waitingForUser) return { label: 'Waiting for you', accent: ATTENTION_TOOL_STYLE, entry: null }
     if (inFlightEntry?.type === 'tool_call') {
       const summary = getActivitySummary([inFlightEntry])
-      return { label: summary.label, dotClass: TOOL_FAMILY_STYLES[summary.family].dot, entry: inFlightEntry }
+      return { label: summary.label, accent: TOOL_FAMILY_STYLES[summary.family], entry: inFlightEntry }
     }
     // Assistant text streaming in: the reply itself is the status, so the
     // strip hides rather than saying "Thinking" over a visibly growing answer.
@@ -1443,9 +1443,9 @@ function LoopStream({ loop }: { loop: string }) {
       if (isTurnCompleteMarker(entry)) break
       if (entry.type !== 'tool_call') continue
       const summary = getActivitySummary([entry])
-      return { label: summary.label, dotClass: TOOL_FAMILY_STYLES[summary.family].dot, entry }
+      return { label: summary.label, accent: TOOL_FAMILY_STYLES[summary.family], entry }
     }
-    return { label: 'Thinking', dotClass: TOOL_FAMILY_STYLES.neutral.dot, entry: null }
+    return { label: 'Thinking', accent: TOOL_FAMILY_STYLES.neutral, entry: null }
   }, [showStatusStrip, starting, waitingForUser, inFlightEntry, log, logVersion])
 
   // When the current turn began: the first stamped entry after the last
@@ -2161,7 +2161,7 @@ function LoopStream({ loop }: { loop: string }) {
         <div className={columnClass}>
           <AgentStatusStrip
             label={statusPhase.label}
-            dotClass={statusPhase.dotClass}
+            accent={statusPhase.accent}
             entry={statusPhase.entry}
             waiting={waitingForUser}
             turnStartedAt={turnStartedAt}
