@@ -193,10 +193,36 @@ export function Sidebar() {
 
   return (
     <div className="w-60 bg-surface-2 flex flex-col overflow-hidden">
+      {/* Single header row: search · new · open · collapse. The search box
+          doubles as the panel's title, so there is no separate label. */}
       <div className="h-9 px-2.5 flex items-center gap-1 shrink-0">
-        <span className="flex-1 min-w-0 text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-          Agents
-        </span>
+        <div className="relative flex-1 min-w-0">
+          <svg
+            width="11"
+            height="11"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="absolute left-1.5 top-1/2 -translate-y-1/2 text-neutral-400 dark:text-neutral-500 pointer-events-none"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          <input
+            value={agentSearch}
+            onChange={(e) => setAgentSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setAgentSearch('')
+            }}
+            disabled={directories.length === 0}
+            placeholder="Search agents…"
+            aria-label="Search agents"
+            className="w-full h-6 text-xs pl-6 pr-2 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 outline-none focus:border-blue-400 min-w-0 disabled:opacity-50 disabled:bg-transparent"
+          />
+        </div>
         <button
           onClick={handleCreateFile}
           title="New agent"
@@ -211,12 +237,12 @@ export function Sidebar() {
         <button
           onClick={handleOpenFromPicker}
           title="Open agent"
-          className="h-6 px-1.5 flex items-center gap-1 rounded text-[10px] font-medium text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
+          aria-label="Open agent"
+          className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
           </svg>
-          Open
         </button>
         <button
           onClick={toggleSidebar}
@@ -229,21 +255,6 @@ export function Sidebar() {
           </svg>
         </button>
       </div>
-
-      {directories.length > 0 && (
-        <div className="px-2.5 pb-2 shrink-0">
-          <input
-            value={agentSearch}
-            onChange={(e) => setAgentSearch(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') setAgentSearch('')
-            }}
-            placeholder="Search…"
-            aria-label="Search agents"
-            className="w-full text-xs px-2 py-1 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 outline-none focus:border-blue-400 min-w-0"
-          />
-        </div>
-      )}
 
       {/* Only the agent tree scrolls; the title and actions remain visible. */}
       <div ref={dirScrollRef} className="scrollbar-autohide flex-1 min-h-0 overflow-y-auto">
