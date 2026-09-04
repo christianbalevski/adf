@@ -507,3 +507,31 @@ summary:focus-visible {
 body.panel-resizing webview {
   pointer-events: none;
 }
+
+/* AgentLoop status strip — the phase verb shimmers instead of bouncing dots.
+   Painted through the text: the base is the element's own (muted neutral)
+   colour, the highlight is the theme's full text colour, so it reads in both
+   light and dark. text-fill (not `color`) goes transparent so currentColor
+   keeps feeding the gradient. Reduced motion gets plain static text. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes adfShimmerText {
+    from { background-position: 100% 0; }
+    to { background-position: 0 0; }
+  }
+  .adf-shimmer-text {
+    background-image: linear-gradient(
+      90deg,
+      currentColor 0%,
+      currentColor 38%,
+      var(--adf-ui-text) 50%,
+      currentColor 62%,
+      currentColor 100%
+    );
+    background-size: 300% 100%;
+    background-repeat: no-repeat;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: adfShimmerText 2s linear infinite;
+  }
+}

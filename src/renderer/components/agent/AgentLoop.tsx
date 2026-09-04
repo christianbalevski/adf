@@ -448,6 +448,57 @@ function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairInde
   return Math.max(0, completedAt - startedAt)
 }
 
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  const seconds = totalSeconds % 60
+  const minutes = Math.floor(totalSeconds / 60) % 60
+  const hours = Math.floor(totalSeconds / 3600)
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`
+  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, '0')}s`
+  return `${seconds}s`
+}
+
+/** Milliseconds since `startedAt`, re-evaluated once a second while mounted. */
+function useElapsed(startedAt: number): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [startedAt])
+  return Math.max(0, now - startedAt)
+}
+
+const STILL_WORKING_AFTER_MS = 60_000
+
+/**
+ * The pinned "what is the agent doing right now" row between the stream and
+ * the composer. The timer ticks in here, so a second passing re-renders this
+ * one row and never the virtualised log above it. Mounted only while the loop
+ * is active/starting/blocked on the human, so mount time doubles as the turn
+ * start when the log carries no "turn complete" marker to anchor on.
+ */
+const AgentStatusStrip = memo(({ label, dotClass, turnStartedAt }: {
+  label: string
+  dotClass: string
+  turnStartedAt: number | null
+}) => {
+  const [mountedAt] = useState(() => Date.now())
+  const elapsedMs = useElapsed(turnStartedAt ?? mountedAt)
+  return (
+    // Deliberately not a live region: the timer ticks every second and
+    // would turn a screen reader into a metronome.
+    <div className="flex h-7 shrink-0 items-center gap-1.5 px-3 text-xs text-neutral-500 dark:text-neutral-400">
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full motion-safe:animate-pulse ${dotClass}`} aria-hidden />
+      <span className="adf-shimmer-text min-w-0 truncate font-medium" title={label}>{label}</span>
+      <span className="ml-auto shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
+        {formatElapsed(elapsedMs)}
+        {elapsedMs >= STILL_WORKING_AFTER_MS && <span> &middot; still working</span>}
+      </span>
+    </div>
+  )
+})
+
 const LogEntryRow = memo(({
   entry,
   expandedThinking,
@@ -1060,16 +1111,13 @@ function LoopStream({ loop }: { loop: string }) {
   }, [displayItems])
 
   const isActive = state === 'active'
-  // +1 for the activity indicator row when agent is active or starting
-  const showActivityRow = isActive || starting
-  const itemCount = displayItems.length + (showActivityRow ? 1 : 0)
   const getVirtualItemKey = useCallback(
-    (index: number) => displayItems[index]?.id ?? 'activity-indicator',
+    (index: number) => displayItems[index]?.id ?? index,
     [displayItems]
   )
 
   const virtualizer = useVirtualizer({
-    count: itemCount,
+    count: displayItems.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 60,
     getItemKey: getVirtualItemKey,
@@ -1206,7 +1254,7 @@ function LoopStream({ loop }: { loop: string }) {
     }
   }, [logVersion])
 
-  // Keep the tail (incl. the activity-indicator row) visible while pinned.
+  // Keep the tail visible while pinned.
   // The logVersion effect above scrolls synchronously, but rows use
   // estimateSize 60 and are only measured by ResizeObserver afterwards — when
   // measured sizes exceed the estimate, getTotalSize() grows after the scroll
@@ -1258,9 +1306,11 @@ function LoopStream({ loop }: { loop: string }) {
     video: config?.limits?.max_video_size_bytes ?? DEFAULT_MEDIA_LIMITS.video,
   }), [config])
 
+  // Side loops are addressed as `agent:loop` (e.g. "aom:reflection") so the
+  // composer placeholder names who actually receives the message.
   const agentName = isMainLoop
     ? (config?.name?.trim() || 'the agent')
-    : `the ${loop} loop`
+    : `${config?.name?.trim() || 'agent'}:${loop}`
 
   // --- `/` command palette (design doc §5) --------------------------------
   //
@@ -1273,6 +1323,56 @@ function LoopStream({ loop }: { loop: string }) {
 
   // Answering the agent's `ask` is prose, never a command.
   const askPending = pendingAsks.size > 0
+
+  // --- Pinned status strip -------------------------------------------------
+  //
+  // Awaiting approval/ask maps to the `suspended` display state, so the strip
+  // also stays up while the agent is blocked on the human — that is the one
+  // phase where the verb ("Waiting for you") matters most.
+  const waitingForUser = !!activeApproval || askPending
+  const showStatusStrip = isActive || starting || waitingForUser
+
+  // Phase verb from the live tail. Precedence: starting → blocked on the human
+  // → streaming assistant text → the tail activity group's own summary (the
+  // same label its header shows) → "Working".
+  const statusPhase = useMemo((): { label: string; dotClass: string } | null => {
+    if (!showStatusStrip) return null
+    if (starting) return { label: 'Starting agent', dotClass: TOOL_FAMILY_STYLES.neutral.dot }
+    if (waitingForUser) return { label: 'Waiting for you', dotClass: ATTENTION_TOOL_STYLE.dot }
+    // A streaming assistant reply is always the raw tail (useAgent merges
+    // deltas only into a tail `text` entry). Quiet-turn markers are terminal.
+    const last = log.at(-1)
+    if (last?.type === 'text' && !last.metadata?.quietTurn) {
+      return { label: 'Responding', dotClass: TOOL_FAMILY_STYLES.neutral.dot }
+    }
+    const tail = displayItems.at(-1)
+    const tailEntries = tail?.kind === 'activity'
+      ? tail.entries
+      : tail?.kind === 'entry' && isCollapsibleActivity(tail.entry, toolPairIndex)
+        ? [tail.entry]
+        : null
+    if (tailEntries) {
+      const summary = getActivitySummary(tailEntries)
+      return { label: summary.label, dotClass: TOOL_FAMILY_STYLES[summary.family].dot }
+    }
+    return { label: 'Working', dotClass: TOOL_FAMILY_STYLES.neutral.dot }
+  }, [showStatusStrip, starting, waitingForUser, log, logVersion, displayItems, toolPairIndex])
+
+  // When the current turn began: the first stamped entry after the last
+  // "turn complete" marker. Null when there is no marker (fresh loop, or a
+  // window that starts mid-turn) — the strip then counts from its own mount,
+  // which is the moment the agent went active.
+  const turnStartedAt = useMemo((): number | null => {
+    if (!showStatusStrip) return null
+    for (let index = log.length - 1; index >= 0; index--) {
+      if (!isTurnCompleteMarker(log[index])) continue
+      for (let next = index + 1; next < log.length; next++) {
+        if (log[next].timestamp > 0) return log[next].timestamp
+      }
+      return null
+    }
+    return null
+  }, [showStatusStrip, log, logVersion])
   const slashOpen = !askPending && !slashDismissed && isSlashInput(input)
   const slashRows = useMemo(
     () => (slashOpen ? filterSlashCommands(slashCommands, slashQuery(input)) : []),
@@ -1830,33 +1930,6 @@ function LoopStream({ loop }: { loop: string }) {
             }}
           >
             {virtualItems.map((virtualItem) => {
-              const isProcessingRow = virtualItem.index >= displayItems.length
-              if (isProcessingRow) {
-                return (
-                  <div
-                    key="activity-indicator"
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '100%',
-                      transform: `translateY(${virtualItem.start}px)`,
-                    }}
-                    data-index={virtualItem.index}
-                    ref={virtualizer.measureElement}
-                  >
-                    <div className="flex items-center gap-2 text-sm text-neutral-400 px-3 py-1">
-                      <div className="flex gap-1">
-                        <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full animate-bounce" />
-                        <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full animate-bounce [animation-delay:0.1s]" />
-                        <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full animate-bounce [animation-delay:0.2s]" />
-                      </div>
-                      {starting && <span>Starting agent&hellip;</span>}
-                    </div>
-                  </div>
-                )
-              }
-
               const displayItem = displayItems[virtualItem.index]
               if (!displayItem) return null
               const attentionRequired = displayItem.kind === 'activity' && activityNeedsAttention(displayItem.entries)
@@ -1990,6 +2063,20 @@ function LoopStream({ loop }: { loop: string }) {
         <ChatWidthToggle />
       </div>
       </div>
+
+      {/* Pinned status strip — lives OUTSIDE the scroller so it never scrolls
+          away and never enters the virtualiser's height maths. Sits above the
+          composer's full-bleed hairline, narrowing with the column like the
+          composer does: log → strip → hairline → composer. */}
+      {statusPhase && (
+        <div className={columnClass}>
+          <AgentStatusStrip
+            label={statusPhase.label}
+            dotClass={statusPhase.dotClass}
+            turnStartedAt={turnStartedAt}
+          />
+        </div>
+      )}
 
       {/* Input */}
       {(() => {
