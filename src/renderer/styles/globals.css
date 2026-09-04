@@ -297,7 +297,7 @@ body,
 .mesh-traffic-pulse {
   position: absolute;
   inset: 0;
-  animation: meshTrafficDissolve linear both;
+  animation: meshTrafficDissolve var(--mesh-traffic-duration) linear both;
 }
 
 .mesh-traffic-pulse[data-direction='receive'] {
@@ -315,7 +315,8 @@ body,
     rgba(74, 222, 128, 0.18) 60%,
     rgba(74, 222, 128, 0.04) 72%,
     transparent 88%);
-  animation: meshTrafficRipple 7s cubic-bezier(0.2, 0.45, 0.3, 1) both;
+  /* Leave room for the last crest's 900ms delay before the group expires. */
+  animation: meshTrafficRipple calc(var(--mesh-traffic-duration) - 1s) cubic-bezier(0.2, 0.45, 0.3, 1) both;
 }
 
 .mesh-traffic-wave:nth-child(2) {

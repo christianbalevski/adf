@@ -1,6 +1,6 @@
 import type { MeshEvent } from '../../shared/types/ipc.types'
 
-export const MESH_TRAFFIC_PULSE_MS = 8000
+export const MESH_TRAFFIC_PULSE_MS = 30_000
 const BURST_WINDOW_MS = 250
 const MAX_PULSES = 10
 

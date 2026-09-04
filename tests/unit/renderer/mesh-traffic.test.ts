@@ -58,11 +58,11 @@ describe('mesh traffic pulses', () => {
 
   it('lets activity build over several seconds before diffusing away', () => {
     const first = addMeshTrafficPulse([], 1000, 'send')
-    const later = addMeshTrafficPulse(first, 6000, 'receive')
+    const later = addMeshTrafficPulse(first, 21_000, 'receive')
     expect(later).toHaveLength(2)
     expect(later[0]).toBe(first[0])
     expect(addMeshTrafficPulse(later, 1000 + MESH_TRAFFIC_PULSE_MS, 'send')).toEqual([
-      { startedAt: 6000, direction: 'receive' },
+      { startedAt: 21_000, direction: 'receive' },
       { startedAt: 1000 + MESH_TRAFFIC_PULSE_MS, direction: 'send' },
     ])
   })

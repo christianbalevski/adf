@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import type { MeshEvent } from '../../../shared/types/ipc.types'
 import {
   addMeshTrafficPulse,
@@ -26,7 +26,7 @@ export function MeshTrafficBar() {
           key={`${pulse.direction}:${pulse.startedAt}`}
           className="mesh-traffic-pulse"
           data-direction={pulse.direction}
-          style={{ animationDuration: `${MESH_TRAFFIC_PULSE_MS}ms` }}
+          style={{ '--mesh-traffic-duration': `${MESH_TRAFFIC_PULSE_MS}ms` } as CSSProperties}
           onAnimationEnd={(event) => {
             // Child crests finish separately; retain the disturbance until its
             // own slow fade ends, without timers or per-frame React updates.
