@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useAppStore, selectChatInCenter, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
+import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml } from '../../utils/markdown'
@@ -2126,7 +2126,6 @@ function LoopStream({ loop }: { loop: string }) {
             </svg>
           </button>
         )}
-        <ChatWidthToggle />
       </div>
       </div>
 
@@ -2547,50 +2546,6 @@ function PromoteChatToCenter() {
         <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
         <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
       </svg>
-    </button>
-  )
-}
-
-/**
- * Toggles the chat's reading-column cap. Center placement only: in the dock the
- * panel is already narrow, so the control would be a switch with no visible
- * effect. Lives in the stream's bottom-right corner rather than the tab strip —
- * it is a property of the text you are reading, and the strip is absent
- * entirely for single-loop agents.
- */
-function ChatWidthToggle() {
-  const inCenter = useAppStore(selectChatInCenter)
-  const chatWidth = useAppStore((s: AppState) => s.chatWidth)
-  const setChatWidth = useAppStore((s: AppState) => s.setChatWidth)
-  if (!inCenter) return null
-
-  const goFull = chatWidth === 'comfortable'
-  const label = goFull ? 'Full width' : 'Comfortable width'
-
-  return (
-    <button
-      type="button"
-      onClick={() => setChatWidth(goFull ? 'full' : 'comfortable')}
-      title={label}
-      aria-label={label}
-      className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-    >
-      {goFull ? (
-        /* arrows-out-horizontal */
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M6 8l-4 4 4 4" />
-          <path d="M18 8l4 4-4 4" />
-          <path d="M2 12h20" />
-        </svg>
-      ) : (
-        /* arrows-in-horizontal */
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M6 8l4 4-4 4" />
-          <path d="M18 8l-4 4 4 4" />
-          <path d="M2 12h8" />
-          <path d="M14 12h8" />
-        </svg>
-      )}
     </button>
   )
 }

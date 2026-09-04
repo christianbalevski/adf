@@ -1488,6 +1488,8 @@ export function SettingsPage() {
   const [grokDeviceInfo, setGrokDeviceInfo] = useState<{ userCode: string; verificationUri: string; verificationUriComplete?: string } | null>(null)
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
+  const chatWidth = useAppStore((s) => s.chatWidth)
+  const setChatWidth = useAppStore((s) => s.setChatWidth)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const consumePendingSettingsSection = useAppStore((s) => s.consumePendingSettingsSection)
   const hasLoaded = useRef(false)
@@ -1949,6 +1951,21 @@ export function SettingsPage() {
                 ]}
                 onChange={handleThemeChange}
                 ariaLabel="Theme"
+              />
+            </SettingsRow>
+            <SettingsRow
+              label="Chat width"
+              description="How wide the loop thread runs when the chat is in the center stage. Comfortable caps it at a reading column; Full uses the whole stage."
+              help="Only applies when the chat is in the center. In the side dock the panel is already narrow."
+            >
+              <SegmentedControl
+                value={chatWidth}
+                options={[
+                  { value: 'comfortable', label: 'Comfortable' },
+                  { value: 'full', label: 'Full' },
+                ]}
+                onChange={setChatWidth}
+                ariaLabel="Chat width"
               />
             </SettingsRow>
           </SettingsGroup>
