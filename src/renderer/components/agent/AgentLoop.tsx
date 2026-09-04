@@ -1227,11 +1227,34 @@ function LoopStream({ loop }: { loop: string }) {
     }
   }, [virtualTotalSize, activity.phase])
 
+  // The composer grows as the user types (up to MAX_INPUT_ROWS), shrinking the
+  // log viewport above it. scrollTop doesn't move on resize, so without this
+  // the tail slides under the composer instead of the log lifting to stay
+  // pinned. Re-pin on every viewport height change while at the bottom.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      if (isAtBottom.current) el.scrollTop = el.scrollHeight
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
     }
     setShowScrollBtn(false)
+  }, [])
+
+  // Sending is an explicit "take me to the tail": pin immediately (even if the
+  // user had scrolled up to read) so the logVersion / total-size effects keep
+  // the new entry in view rather than raising the scroll-to-bottom button.
+  const pinToBottom = useCallback(() => {
+    isAtBottom.current = true
+    setShowScrollBtn(false)
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
   }, [])
 
   // Auto-resize textarea to fit content, up to MAX_INPUT_ROWS lines
@@ -1428,6 +1451,7 @@ function LoopStream({ loop }: { loop: string }) {
   const sendUserMessage = async (message: string, content: ContentBlock[], previews: string[]) => {
     // Capture the target agent at submit time so navigation can't redirect the message
     const targetFilePath = filePath
+    pinToBottom()
 
     // Autonomous + active: queue message instead of sending directly
     if (state === 'active') {
