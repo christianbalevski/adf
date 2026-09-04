@@ -1400,7 +1400,7 @@ function LoopStream({ loop }: { loop: string }) {
     if (!showStatusStrip) return null
     if (starting) return { label: 'Starting agent', dotClass: TOOL_FAMILY_STYLES.neutral.dot, entry: null }
     if (waitingForUser) return { label: 'Waiting for you', dotClass: ATTENTION_TOOL_STYLE.dot, entry: null }
-    if (inFlightEntry) {
+    if (inFlightEntry?.type === 'tool_call') {
       const summary = getActivitySummary([inFlightEntry])
       return { label: summary.label, dotClass: TOOL_FAMILY_STYLES[summary.family].dot, entry: inFlightEntry }
     }
@@ -1410,6 +1410,17 @@ function LoopStream({ loop }: { loop: string }) {
     // into it); quiet-turn markers are terminal, not streaming.
     const tail = log.at(-1)
     if (tail?.type === 'text' && !tail.metadata?.quietTurn) return null
+    // Otherwise the strip names the last tool call of this turn: after its
+    // result lands the tail is a result or a reasoning summary, and the model
+    // is still working *on that call*, so its reason is the honest status.
+    // Only a fresh turn (no call yet) reads "Thinking".
+    for (let index = log.length - 1; index >= 0; index--) {
+      const entry = log[index]
+      if (isTurnCompleteMarker(entry)) break
+      if (entry.type !== 'tool_call') continue
+      const summary = getActivitySummary([entry])
+      return { label: summary.label, dotClass: TOOL_FAMILY_STYLES[summary.family].dot, entry }
+    }
     return { label: 'Thinking', dotClass: TOOL_FAMILY_STYLES.neutral.dot, entry: null }
   }, [showStatusStrip, starting, waitingForUser, inFlightEntry, log, logVersion])
 
