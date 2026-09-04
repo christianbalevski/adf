@@ -428,6 +428,16 @@ function isTurnCompleteMarker(entry: AgentLogEntry): boolean {
   return entry.type === 'system' && entry.content.trim().toLowerCase() === 'turn complete'
 }
 
+/**
+ * Where one turn ends and the next begins, as seen from the log: the runtime's
+ * "turn complete" marker, or whatever started a turn (a user message, a
+ * trigger). The status strip must never look past one of these — a tool call
+ * from the previous turn is not what the agent is doing now.
+ */
+function isTurnBoundary(entry: AgentLogEntry): boolean {
+  return entry.type === 'user' || entry.type === 'trigger' || isTurnCompleteMarker(entry)
+}
+
 function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairIndex): number | null {
   let startedAt = Number.POSITIVE_INFINITY
   let completedAt = 0
@@ -1440,7 +1450,7 @@ function LoopStream({ loop }: { loop: string }) {
     // Only a fresh turn (no call yet) reads "Thinking".
     for (let index = log.length - 1; index >= 0; index--) {
       const entry = log[index]
-      if (isTurnCompleteMarker(entry)) break
+      if (isTurnBoundary(entry)) break
       if (entry.type !== 'tool_call') continue
       const summary = getActivitySummary([entry])
       return { label: summary.label, accent: TOOL_FAMILY_STYLES[summary.family], entry }
@@ -1455,7 +1465,11 @@ function LoopStream({ loop }: { loop: string }) {
   const turnStartedAt = useMemo((): number | null => {
     if (!showStatusStrip) return null
     for (let index = log.length - 1; index >= 0; index--) {
-      if (!isTurnCompleteMarker(log[index])) continue
+      const entry = log[index]
+      if (!isTurnBoundary(entry)) continue
+      // A user message or trigger IS the turn's first entry; the runtime's
+      // marker closes the previous turn, so the next stamped entry opens this one.
+      if (!isTurnCompleteMarker(entry) && entry.timestamp > 0) return entry.timestamp
       for (let next = index + 1; next < log.length; next++) {
         if (log[next].timestamp > 0) return log[next].timestamp
       }
