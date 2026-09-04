@@ -141,13 +141,15 @@ body,
   background: transparent;
 }
 
+/* Translucent thumbs: faint at rest, a little firmer under the pointer, and
+   they take their tone from whatever surface they sit on. */
 ::-webkit-scrollbar-thumb {
-  background: #d1d5db;
+  background: rgb(0 0 0 / 0.12);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af;
+  background: rgb(0 0 0 / 0.24);
 }
 
 /* Reusable field input style for config editor */
@@ -174,11 +176,11 @@ body,
 
 /* Dark scrollbar */
 .dark ::-webkit-scrollbar-thumb {
-  background: #525252;
+  background: rgb(255 255 255 / 0.1);
 }
 
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: #737373;
+  background: rgb(255 255 255 / 0.2);
 }
 
 /* Horizontal strips (the loop tab strip) hide their scrollbar outright — a
@@ -203,11 +205,19 @@ body,
 }
 
 .scrollbar-autohide:hover {
-  scrollbar-color: #d1d5db transparent;
+  scrollbar-color: rgb(0 0 0 / 0.12) transparent;
 }
 
 .scrollbar-autohide:hover::-webkit-scrollbar-thumb {
-  background: #d1d5db;
+  background: rgb(0 0 0 / 0.12);
+}
+
+.dark .scrollbar-autohide:hover {
+  scrollbar-color: rgb(255 255 255 / 0.1) transparent;
+}
+
+.dark .scrollbar-autohide:hover::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.1);
 }
 
 .scrollbar-autohide:hover::-webkit-scrollbar-thumb:hover {
