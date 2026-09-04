@@ -149,7 +149,7 @@ export function AppShell() {
         {!showSettings && !showMeshGraph && <Sidebar />}
 
         {showMeshGraph ? (
-          <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-1 flex flex-col overflow-hidden bg-surface-1">
             <div className="flex-1 overflow-hidden">
               <MeshGraphView />
             </div>
@@ -158,7 +158,7 @@ export function AppShell() {
             {showLogsPanel && filePath && <BottomPanel />}
           </div>
         ) : (
-          <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-1 flex flex-col overflow-hidden bg-surface-1">
             <div className="flex-1 flex flex-col overflow-hidden">
               {showSettings ? (
                 <SettingsPage />
@@ -187,7 +187,7 @@ export function AppShell() {
             />
             <div
               style={{ width: rightPanelWidth }}
-              className="shrink-0 border-l border-neutral-200 dark:border-neutral-700 flex flex-col bg-white dark:bg-neutral-900"
+              className="shrink-0 flex flex-col bg-surface-2"
             >
               <RightDock reserveWindowControls={dockUnderWindowControls} />
             </div>

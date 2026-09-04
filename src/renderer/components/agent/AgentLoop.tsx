@@ -2160,10 +2160,9 @@ function LoopStream({ loop }: { loop: string }) {
           : (input.trim().length > 0 || attachments.some((item) => item.native && item.contentBlock)) && !starting && !uploadingFiles
 
         return (
-          // The divider stays full-bleed (like the tab strip above) while the
-          // composer itself narrows with the stream — a hairline that stopped
-          // at the column edge would read as an unfinished panel.
-          <div className={`border-t ${activeAsk ? 'border-blue-400 dark:border-blue-600' : 'border-neutral-200 dark:border-neutral-700'}`}>
+          // No divider above the composer: it reads as a floating card
+          // (raised surface + shadow) rather than a panel with a hairline.
+          <div className="pt-1">
           <form
             onSubmit={handleInputSubmit}
             onDrop={activeAsk ? undefined : handleInputDrop}
@@ -2232,12 +2231,12 @@ function LoopStream({ loop }: { loop: string }) {
                 }}
               />
             )}
-            <div className={`relative overflow-hidden rounded-2xl border bg-white shadow-sm transition-[border-color,box-shadow] dark:bg-neutral-900 ${
+            <div className={`relative overflow-hidden rounded-2xl border bg-surface-raised shadow-card transition-[border-color,box-shadow] ${
               draggingOverInput
                 ? 'border-[var(--adf-ui-accent)] ring-2 ring-[var(--adf-ui-focus)]'
                 : activeAsk
                   ? 'border-blue-400 dark:border-blue-600'
-                  : `border-neutral-200 dark:border-neutral-700 ${loopStyle.focus}`
+                  : `border-hairline ${loopStyle.focus}`
             }`}>
               {draggingOverInput && (
                 <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-blue-50/90 text-sm font-medium text-blue-600 dark:bg-blue-950/70 dark:text-blue-300">

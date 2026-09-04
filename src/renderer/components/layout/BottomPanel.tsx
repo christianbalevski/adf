@@ -46,7 +46,7 @@ export function BottomPanel() {
   }, [panelHeight, setPanelHeight])
 
   return (
-    <div style={{ height: panelHeight }} className="flex flex-col border-t border-neutral-700 bg-neutral-950 shrink-0">
+    <div style={{ height: panelHeight }} className="flex flex-col border-t border-hairline bg-neutral-950 shrink-0">
       {/* Resize handle */}
       <div
         onMouseDown={handleResizeMouseDown}
@@ -54,7 +54,7 @@ export function BottomPanel() {
       />
 
       {/* Tab bar */}
-      <div className="flex items-center gap-0 px-2 bg-neutral-900 border-b border-neutral-800 text-xs shrink-0">
+      <div className="flex items-center gap-0 px-2 bg-neutral-900 border-b border-white/5 text-xs shrink-0">
         <TabButton
           label="Logs"
           active={activeTab === 'logs'}

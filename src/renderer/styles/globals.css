@@ -16,6 +16,19 @@
   --color-accent: var(--color-blue-500);
 }
 
+/* Layered surfaces + whisper hairline. `inline` so utilities emit the
+   var() itself and the .dark override resolves per element:
+   bg-surface-0/1/2, bg-surface-raised, border-hairline, shadow-card.
+   Panel edges read from the tone step between layers, not from lines. */
+@theme inline {
+  --color-surface-0: var(--adf-surface-0);
+  --color-surface-1: var(--adf-surface-1);
+  --color-surface-2: var(--adf-surface-2);
+  --color-surface-raised: var(--adf-surface-raised);
+  --color-hairline: var(--adf-hairline);
+  --shadow-card: var(--adf-shadow-card);
+}
+
 /* ADF Studio UI tokens
    Additive, opt-in tokens for Settings and ordinary shared controls. Fleet
    surfaces intentionally continue to use their existing visual system. */
@@ -49,6 +62,14 @@
      consistently (a colored logo on a dark surface would clash/vanish). */
   --adf-ui-logo-tile: #ffffff;
   --adf-ui-logo-tile-border: #e4e4e7;
+  /* Surface ladder: 0 = shell chrome (titlebar/statusbar), 1 = main content,
+     2 = side panels (sidebar, dock, drawer), raised = floating cards. */
+  --adf-surface-0: #f4f4f5;
+  --adf-surface-1: #ffffff;
+  --adf-surface-2: #fafafa;
+  --adf-surface-raised: #ffffff;
+  --adf-hairline: rgb(0 0 0 / 0.06);
+  --adf-shadow-card: 0 2px 8px rgb(0 0 0 / 0.08);
 }
 
 .dark {
@@ -76,6 +97,12 @@
   /* Kept light on purpose (see :root) — full-color brand marks read on it. */
   --adf-ui-logo-tile: #f4f4f5;
   --adf-ui-logo-tile-border: rgba(0, 0, 0, 0.28);
+  --adf-surface-0: #0a0a0a;
+  --adf-surface-1: #171717;
+  --adf-surface-2: #121212;
+  --adf-surface-raised: #1f1f1f;
+  --adf-hairline: rgb(255 255 255 / 0.06);
+  --adf-shadow-card: 0 4px 16px rgb(0 0 0 / 0.45);
 }
 
 html,
@@ -126,7 +153,7 @@ body,
 /* Dark mode body */
 .dark body,
 .dark #root {
-  background: #171717;
+  background: var(--adf-surface-1);
   color: #f5f5f5;
 }
 
@@ -533,5 +560,18 @@ body.panel-resizing webview {
     background-clip: text;
     -webkit-text-fill-color: transparent;
     animation: adfShimmerText 2s linear infinite;
+  }
+  /* Title-bar variant: slower sweep, narrower highlight, so it glimmers
+     rather than flashes on chrome that is always in view. */
+  .adf-shimmer-text--slow {
+    background-image: linear-gradient(
+      90deg,
+      currentColor 0%,
+      currentColor 44%,
+      var(--adf-ui-text) 50%,
+      currentColor 56%,
+      currentColor 100%
+    );
+    animation-duration: 3s;
   }
 }

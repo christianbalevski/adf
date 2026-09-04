@@ -175,7 +175,7 @@ export function Sidebar() {
 
   if (collapsed) {
     return (
-      <div className="w-10 border-r border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 flex flex-col items-center py-2 gap-1">
+      <div className="w-10 bg-surface-2 flex flex-col items-center py-2 gap-1">
         <button
           onClick={toggleSidebar}
           title="Expand Sidebar"
@@ -191,7 +191,7 @@ export function Sidebar() {
   }
 
   return (
-    <div className="w-60 border-r border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 flex flex-col overflow-hidden">
+    <div className="w-60 bg-surface-2 flex flex-col overflow-hidden">
       <div className="h-10 px-2.5 flex items-center gap-1 shrink-0">
         <span className="flex-1 min-w-0 text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
           Agents
@@ -250,7 +250,7 @@ export function Sidebar() {
           <div className="pb-1">
             {visibleDirectories.map((dirPath, index) => (
               <div key={dirPath}>
-                {index > 0 && <div className="border-t border-neutral-200 dark:border-neutral-700 my-1" />}
+                {index > 0 && <div className="border-t border-hairline my-1" />}
                 <DirectorySection
                   dirPath={dirPath}
                   files={visibleFilesByDir[dirPath] ?? []}

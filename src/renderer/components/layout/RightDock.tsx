@@ -49,12 +49,12 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       {reserveWindowControls && (
         <div
           aria-hidden
-          className="shrink-0 border-b border-neutral-200 dark:border-neutral-800"
+          className="shrink-0 border-b border-hairline"
           style={{ height: 'env(titlebar-area-height, 0px)', WebkitAppRegion: 'drag' } as React.CSSProperties}
         />
       )}
       {/* Top-level tab switcher */}
-      <div className="flex items-center border-b border-neutral-200 dark:border-neutral-700">
+      <div className="flex items-center border-b border-hairline">
         <div className="flex-1 flex justify-center gap-1">
           {(chatInCenter ? DOCK_TABS_CHAT_IN_CENTER : DOCK_TABS).map((tab) => (
             <button
@@ -93,14 +93,14 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       </div>
       {/* Agent sub-tabs */}
       {rightPanel === 'agent' && (
-        <div className="flex border-b border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50">
+        <div className="flex border-b border-hairline bg-surface-0">
           {(['timers', 'identity', 'skills', 'config'] as const).map((sub) => (
             <button
               key={sub}
               onClick={() => setAgentSubTab(sub)}
               className={`flex-1 px-2 py-1.5 text-[11px] font-medium ${
                 agentSubTab === sub
-                  ? 'text-blue-600 dark:text-blue-400 bg-white dark:bg-neutral-900'
+                  ? 'text-blue-600 dark:text-blue-400 bg-surface-2'
                   : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300'
               }`}
             >
@@ -168,7 +168,7 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
 
   return (
     <div
-      className="w-10 shrink-0 border-l border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 flex flex-col items-center py-2 gap-1"
+      className="w-10 shrink-0 bg-surface-2 flex flex-col items-center py-2 gap-1"
       // The whole bar lives under the window-controls overlay's horizontal span
       // when it's the top-right element (fleet map open), so drop the icons
       // below the controls' height. That top padding also doubles as the
@@ -209,7 +209,7 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
       </RightDockIconButton>
 
       {/* Divider */}
-      <div className="w-5 border-t border-neutral-200 dark:border-neutral-700 my-1" />
+      <div className="w-5 border-t border-hairline my-1" />
 
       {/* Timers */}
       <RightDockIconButton title="Timers" active={isActive('agent', 'timers')} onClick={() => expandRightPanelToTab('agent', 'timers')}>
