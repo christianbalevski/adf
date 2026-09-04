@@ -132,6 +132,38 @@ export function diffAgentTemplate(
   return out as AgentTemplate
 }
 
+/**
+ * Files AdfDatabase.create seeds itself. A template extra file may not target
+ * these (the seed would clobber it or vice versa); the textarea seeds cover
+ * README.md / mind.md / soul.md.
+ */
+export const RESERVED_SEED_FILE_PATHS = ['README.md', 'mind.md', 'mind/log.md', 'soul.md'] as const
+
+/** Single-file size cap for template extra files (bytes). */
+export const TEMPLATE_EXTRA_FILE_MAX_BYTES = 25 * 1024 * 1024
+
+/**
+ * Validate a template extra file's destination path inside the agent.
+ * Returns an error message, or `null` when the path is usable. Rules:
+ * non-empty, relative (no leading `/`, no drive letter), forward slashes only,
+ * no `.`/`..` segments or empty segments, not a reserved seed file (case-
+ * insensitive), and not one of `taken` (other extra files' paths).
+ */
+export function validateTemplateFilePath(path: string, taken: readonly string[] = []): string | null {
+  const p = path.trim()
+  if (!p) return 'Path is required.'
+  if (p.includes('\\')) return 'Use forward slashes.'
+  if (p.startsWith('/') || /^[A-Za-z]:/.test(p)) return 'Path must be relative.'
+  if (p.endsWith('/')) return 'Path must name a file.'
+  const segments = p.split('/')
+  if (segments.some((s) => s === '' || s === '.' || s === '..')) return 'Path may not contain empty, "." or ".." segments.'
+  if (/[\u0000-\u001f]/.test(p)) return 'Path contains control characters.'
+  const lower = p.toLowerCase()
+  if (RESERVED_SEED_FILE_PATHS.some((r) => r.toLowerCase() === lower)) return `${p} is created by the agent itself.`
+  if (taken.some((t) => t.trim().toLowerCase() === lower)) return 'Another template file already uses this path.'
+  return null
+}
+
 /** True when the template overrides anything under one of `keys`. */
 export function templateOverrides(template: AgentTemplate | null | undefined, keys: readonly (keyof AgentTemplate)[]): boolean {
   if (!template) return false

@@ -120,6 +120,7 @@ import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { AdfDatabase } from '../adf/adf-database'
 import { buildStudioCreateOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
+import { addAgentTemplateFiles, agentTemplateFilesDir, missingAgentTemplateFiles, removeAgentTemplateFile } from '../adf/agent-template-files'
 import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
@@ -2036,6 +2037,7 @@ export function registerAllIpcHandlers(): void {
       // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
       const agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
       const createOptions = buildStudioCreateOptions(agentName, agentTemplate, defaultProvider)
+      createOptions.templateFilesDir = agentTemplateFilesDir()
       currentWorkspace = AdfWorkspace.create(result.filePath, createOptions)
       currentFilePath = result.filePath
       attachWorkspaceDataForwarder(currentWorkspace)
@@ -4761,6 +4763,36 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
+  // --- Agent template extra files ---
+  // Blobs only: the renderer merges the returned metadata into
+  // settings.agentTemplate.files.extra and writes it via SETTINGS_SET, so the
+  // settings store stays the single source of truth for the list.
+
+  ipcMain.handle(IPC.AGENT_TEMPLATE_FILES_ADD, async () => {
+    const win = BrowserWindow.getFocusedWindow() ?? undefined
+    const result = win
+      ? await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] })
+      : await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'] })
+    if (result.canceled || result.filePaths.length === 0) return { success: false, error: 'Cancelled' }
+    const template = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
+    const taken = (template?.files?.extra ?? []).map((f) => f.path)
+    try {
+      return addAgentTemplateFiles(result.filePaths, taken)
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.AGENT_TEMPLATE_FILES_REMOVE, async (_event, id: string) => {
+    if (typeof id !== 'string') return { success: false }
+    return removeAgentTemplateFile(id)
+  })
+
+  ipcMain.handle(IPC.AGENT_TEMPLATE_FILES_STAT, async (_event, ids: string[]) => {
+    if (!Array.isArray(ids)) return { missing: [] }
+    return { missing: missingAgentTemplateFiles(ids.filter((id): id is string => typeof id === 'string')) }
+  })
+
   // --- Tracked directories ---
 
   ipcMain.handle(IPC.TRACKED_DIRS_GET, async () => {
@@ -5528,6 +5560,7 @@ export function registerAllIpcHandlers(): void {
       // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
       const agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
       const createOptions = buildStudioCreateOptions(name, agentTemplate, defaultProvider)
+      createOptions.templateFilesDir = agentTemplateFilesDir()
       const workspace = AdfWorkspace.create(filePath, createOptions)
       try {
         try {

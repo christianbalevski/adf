@@ -585,10 +585,26 @@ export type DeepPartial<T> = T extends (infer U)[]
 /** Config keys a template never carries: they come from the file and its lifecycle. */
 export type AgentTemplateExcludedKey = 'id' | 'metadata' | 'adf_version' | 'name' | 'description' | 'state'
 
+/**
+ * An arbitrary file copied into every new agent. The bytes live on disk under
+ * `<userData>/agent-template-files/<id>` (never in the settings JSON); this is
+ * only the metadata. `path` is the destination inside the agent (relative,
+ * forward slashes; see validateTemplateFilePath).
+ */
+export interface AgentTemplateExtraFile {
+  id: string
+  path: string
+  mime: string
+  size: number
+}
+
 /** Seed content for the files a new agent starts with. Empty/absent = code default. */
 export interface AgentTemplateFiles {
   readme?: string
   mind?: string
+  soul?: string
+  /** Extra files copied into every new agent. Whole list; replaces, never merges. */
+  extra?: AgentTemplateExtraFile[]
 }
 
 /**
@@ -612,13 +628,19 @@ export interface CreateAgentOptions {
   /**
    * User's "Agent template" from Studio settings, merged over the code
    * defaults BEFORE the explicit fields below are applied. Its `files` seed
-   * README.md / mind.md in place of the code defaults when non-empty. Set only by
+   * README.md / mind.md / soul.md in place of the code defaults when non-empty
+   * and copy `files.extra` into the agent. Set only by
    * user-initiated creation from Studio (FILE_CREATE and fleet-map founding).
    * Agent-spawned children (sys_create_adf) and the headless harness never
    * pass it: the template is the owner's preference for agents they make
    * themselves, not an inherited trait of the whole fleet.
    */
   template?: AgentTemplate
+  /**
+   * Directory holding the template's extra-file blobs (`<userData>/agent-template-files`).
+   * Set by the Studio host alongside `template`; without it `files.extra` is skipped.
+   */
+  templateFilesDir?: string
   description?: string
   instructions?: string
   icon?: string

@@ -2014,6 +2014,11 @@ export class AdfWorkspace {
 
 
   getMimeType(path: string): string {
+    return AdfWorkspace.mimeTypeForPath(path)
+  }
+
+  /** Extension → MIME lookup; pure, usable without an open workspace. */
+  static mimeTypeForPath(path: string): string {
     const ext = path.split('.').pop()?.toLowerCase()
     const mimeTypes: Record<string, string> = {
       // Text / code

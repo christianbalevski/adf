@@ -1,5 +1,5 @@
 import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
-import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
+import type { AgentConfig, AdfLogEntry, AgentTemplateExtraFile, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
@@ -88,6 +88,16 @@ export interface AdfApi {
   // Settings
   getSettings: () => Promise<AppSettings>
   setSettings: (settings: Record<string, unknown>) => Promise<{ success: boolean }>
+  /**
+   * Agent template extra files. `add` opens a multi-select picker and copies
+   * the chosen files into the blob store, returning their metadata; the
+   * renderer merges that into settings.agentTemplate.files.extra itself.
+   * `remove` deletes the stored blob (the renderer drops the settings entry).
+   */
+  agentTemplateFilesAdd: () => Promise<{ success: boolean; added?: AgentTemplateExtraFile[]; error?: string }>
+  agentTemplateFilesRemove: (id: string) => Promise<{ success: boolean }>
+  /** Which of these blob ids are absent from the store (shown as "missing" in the template UI). */
+  agentTemplateFilesStat: (ids: string[]) => Promise<{ missing: string[] }>
   /** Whole-window zoom (1 = 100%). Menu zoomIn/zoomOut layer on top of it. */
   setZoomFactor: (factor: number) => void
 

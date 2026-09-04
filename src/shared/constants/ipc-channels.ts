@@ -76,6 +76,10 @@ export const IPC = {
   // Settings
   SETTINGS_GET: 'adf:settings:get',
   SETTINGS_SET: 'adf:settings:set',
+  // Agent template extra files (blob store under <userData>/agent-template-files)
+  AGENT_TEMPLATE_FILES_ADD: 'adf:agent-template:files:add',
+  AGENT_TEMPLATE_FILES_REMOVE: 'adf:agent-template:files:remove',
+  AGENT_TEMPLATE_FILES_STAT: 'adf:agent-template:files:stat',
 
   // Tracked directories
   TRACKED_DIRS_GET: 'adf:tracked-dirs:get',

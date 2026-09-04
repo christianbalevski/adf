@@ -60,7 +60,12 @@ describe('mergeAgentTemplate', () => {
 
   it('ignores seed files and per-agent keys', () => {
     const merged = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, {
-      files: { readme: '# Hi', mind: '# Mind' },
+      files: {
+        readme: '# Hi',
+        mind: '# Mind',
+        soul: '# Soul',
+        extra: [{ id: 'ab12', path: 'docs/guide.pdf', mime: 'application/pdf', size: 10 }],
+      },
       ...({ name: 'nope', id: 'x', state: 'idle' } as object),
     })
     expect(merged).toEqual(DEFAULT_AGENT_CONFIG)
@@ -97,6 +102,14 @@ describe('diffAgentTemplate', () => {
 
   it('never emits per-agent keys', () => {
     const effective = { ...DEFAULT_AGENT_CONFIG, name: 'Other', description: 'd', state: 'idle' as const }
+    expect(diffAgentTemplate(DEFAULT_AGENT_CONFIG, effective)).toEqual({})
+  })
+
+  it('never emits seed files, even when the effective config carries them', () => {
+    const effective = {
+      ...DEFAULT_AGENT_CONFIG,
+      ...({ files: { soul: '# S', extra: [{ id: 'ab12', path: 'a.txt', mime: 'text/plain', size: 1 }] } } as object),
+    }
     expect(diffAgentTemplate(DEFAULT_AGENT_CONFIG, effective)).toEqual({})
   })
 

@@ -116,6 +116,12 @@ const api: AdfApi = {
   getSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET),
   setSettings: (settings: Record<string, unknown>) =>
     ipcRenderer.invoke(IPC.SETTINGS_SET, settings),
+  agentTemplateFilesAdd: () =>
+    ipcRenderer.invoke(IPC.AGENT_TEMPLATE_FILES_ADD),
+  agentTemplateFilesRemove: (id: string) =>
+    ipcRenderer.invoke(IPC.AGENT_TEMPLATE_FILES_REMOVE, id),
+  agentTemplateFilesStat: (ids: string[]) =>
+    ipcRenderer.invoke(IPC.AGENT_TEMPLATE_FILES_STAT, ids),
   setZoomFactor: (factor: number) => {
     if (Number.isFinite(factor) && factor > 0) webFrame.setZoomFactor(factor)
   },
