@@ -9,6 +9,8 @@ see_also:
 
 ADF agents can execute commands in an authorized set of compute environments: the **shared container**, an **isolated container**, registered **external Docker/Podman containers**, and the **host machine**. Each agent has an allowlist and one default environment.
 
+For a task-oriented workflow for visible GUI applications, file transfer, and screenshot validation, see [Desktop Applications with Isolated Compute](../knowledge/desktop-apps.md).
+
 ## Environments
 
 ADF-managed Podman is the recommended configuration because Studio owns setup, lifecycle, agent assignment, workspaces, and rebuilds. External Docker/Podman targets and direct host access are advanced options: the user owns their availability, lifecycle, and security posture.
