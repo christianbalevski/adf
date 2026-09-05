@@ -31,6 +31,11 @@ Guides carry YAML frontmatter (`type`, `description`, `see_also`) mirroring the 
 - **compute.md** — shared/isolated containers and host command execution
 - **mcp-integration.md** — connecting external MCP tool servers
 
+## Knowledge Base
+
+- **../knowledge/index.md** — consultable task references: explanations, verified discoveries, troubleshooting, and recipes
+- **../knowledge/desktop-apps.md** — visible Linux GUI processes in isolated compute, file transfer, validation, lifecycle, and security boundaries
+
 ## Memory & Files
 
 - **memory-management.md** — managing the loop (history) and mind (working memory)

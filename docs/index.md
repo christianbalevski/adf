@@ -30,6 +30,12 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 
 - [Getting Started](getting-started.md) — Create your first agent and start a conversation
 
+### Knowledge Base
+
+The [Knowledge Base](knowledge/index.md) is a task-oriented routing layer for reusable capabilities.
+
+- [Desktop Applications with Isolated Compute](knowledge/desktop-apps.md) — Run available Linux GUI applications in a visible, agent-dedicated container, transfer files, and validate screenshots without assuming a full desktop or generic GUI automation.
+
 ### Studio Concepts
 
 - [Core Concepts](core-concepts.md) — Sovereignty, one-agent-one-document, and the ADF stack
