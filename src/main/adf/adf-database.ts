@@ -11,9 +11,9 @@ import { nanoid as _nanoid } from 'nanoid'
 
 /** Short 10-char IDs — sufficient for per-agent uniqueness */
 const nanoid = () => _nanoid(10)
-import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, readFileSync, promises as fsp } from 'fs'
+import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, readFileSync, mkdtempSync, rmdirSync, linkSync, promises as fsp } from 'fs'
 import { brotliDecompressSync } from 'zlib'
-import { join, resolve, sep } from 'path'
+import { basename, dirname, join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type {
   AgentConfig,
@@ -1974,169 +1974,256 @@ export class AdfDatabase {
     return new AdfDatabase(db, filePath)
   }
 
+  /**
+   * Create a new ADF without opening the destination until a temporary,
+   * initialized database has won an atomic hard-link race. The default is
+   * non-destructive: an existing destination (including a symlink) causes
+   * EEXIST and neither it nor its WAL/SHM sidecars is touched.
+   *
+   * There is deliberately no overwrite option here: all callers, including
+   * owner-operated Studio creation, must choose a different destination rather
+   * than destroy an existing ADF.
+   */
   static create(
     filePath: string,
     options: CreateAgentOptions
   ): AdfDatabase {
-    if (existsSync(filePath)) {
-      unlinkSync(filePath)
-      const shmPath = `${filePath}-shm`
-      const walPath = `${filePath}-wal`
-      if (existsSync(shmPath)) unlinkSync(shmPath)
-      if (existsSync(walPath)) unlinkSync(walPath)
+    // SQLite's named in-memory database is intentionally not a filesystem
+    // creation and cannot participate in the hard-link protocol.
+    if (filePath === ':memory:') {
+      return AdfDatabase.createInPlace(filePath, options)
     }
 
+    const parentDir = resolve(dirname(filePath))
+    const baseName = basename(filePath)
+    let tempDir: string | null = null
+    let temporaryPath: string | null = null
+
+    const cleanupTemporary = (): void => {
+      if (!temporaryPath) return
+      // The temporary path is ours: it was created below our private mkdtemp
+      // directory, so cleanup cannot remove a colliding creator's files.
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { unlinkSync(temporaryPath + suffix) } catch { /* already absent */ }
+      }
+      if (tempDir) {
+        try { rmdirSync(tempDir) } catch { /* leave unexpected residue visible */ }
+      }
+    }
+
+    const rejectOrphanedSidecars = (): void => {
+      const sidecars = [`${filePath}-wal`, `${filePath}-shm`].filter((sidecar) => existsSync(sidecar))
+      if (sidecars.length > 0 && !existsSync(filePath)) {
+        throw new Error(`ADF sidecar exists without destination: ${sidecars.join(', ')}`)
+      }
+    }
+
+    try {
+      // Do not adopt a WAL/SHM left behind without its database. It may belong
+      // to a crashed creator, and deleting it would violate cleanup ownership;
+      // failing leaves it available for the orphan sweep instead.
+      rejectOrphanedSidecars()
+      // mkdtemp is atomic and gives each creator a private namespace; linkSync
+      // below is the no-overwrite commit point for the destination.
+      tempDir = mkdtempSync(resolve(parentDir, `.${baseName}.create-`))
+      temporaryPath = resolve(tempDir, baseName)
+      const temporaryDb = AdfDatabase.createInPlace(temporaryPath, options)
+      try {
+        // Ensure no WAL frames remain under the temporary name before linking.
+        temporaryDb.checkpoint()
+      } finally {
+        temporaryDb.close()
+      }
+
+      // Recheck immediately before the hard-link commit: only this call may
+      // publish the new destination, while orphan sidecars remain untouched.
+      rejectOrphanedSidecars()
+      try {
+        linkSync(temporaryPath, filePath)
+      } catch (error) {
+        const code = (error as { code?: unknown }).code
+        if (code === 'EEXIST') {
+          throw new Error(`ADF file already exists: ${filePath}`)
+        }
+        throw error
+      }
+
+      cleanupTemporary()
+      temporaryPath = null
+      tempDir = null
+      // Reopen through the destination path so normal integrity, migration,
+      // clean-close marker, and open-count initialization remain centralized.
+      return AdfDatabase.open(filePath)
+    } catch (error) {
+      cleanupTemporary()
+      throw error
+    }
+  }
+
+  private static createInPlace(
+    filePath: string,
+    options: CreateAgentOptions
+  ): AdfDatabase {
     const db = new Database(filePath)
-    db.exec(SCHEMA_SQL)
+    let adfDb: AdfDatabase | null = null
+    try {
+      db.exec(SCHEMA_SQL)
 
-    const adfDb = new AdfDatabase(db, filePath)
+      adfDb = new AdfDatabase(db, filePath)
 
-    // Set meta values
-    const now = new Date().toISOString()
-    adfDb.setMeta('adf_version', '0.2', 'readonly')
-    adfDb.setMeta('adf_schema_version', String(ADF_LATEST_SCHEMA_VERSION), 'readonly')
+      // Set meta values
+      const now = new Date().toISOString()
+      adfDb.setMeta('adf_version', '0.2', 'readonly')
+      adfDb.setMeta('adf_schema_version', String(ADF_LATEST_SCHEMA_VERSION), 'readonly')
 
-    const agentId = _nanoid(12)
+      const agentId = _nanoid(12)
 
-    // Order: code defaults -> Studio's "Agent template" (settings.agentTemplate)
-    // -> explicit options. Only user-initiated creation from Studio passes a
-    // template (see CreateAgentOptions.template); every other caller —
-    // sys_create_adf children, the headless harness — gets the bare code
-    // defaults, where instructions stay empty unless the caller supplies them.
-    // mergeAgentTemplate clones, so nothing below aliases the shared defaults.
-    const base = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, options.template)
+      // Order: code defaults -> Studio's "Agent template" (settings.agentTemplate)
+      // -> explicit options. Only user-initiated creation from Studio passes a
+      // template (see CreateAgentOptions.template); every other caller —
+      // sys_create_adf children, the headless harness — gets the bare code
+      // defaults, where instructions stay empty unless the caller supplies them.
+      // mergeAgentTemplate clones, so nothing below aliases the shared defaults.
+      const base = mergeAgentTemplate(DEFAULT_AGENT_CONFIG, options.template)
 
-    // Merge tools: if caller provided overrides, apply them on top of the base list
-    let tools = [...base.tools]
-    if (options.tools) {
-      const overrideMap = new Map(options.tools.map(t => [t.name, t]))
-      tools = tools.map(t => overrideMap.has(t.name) ? { ...t, ...overrideMap.get(t.name)! } : t)
-      // Add any tools not in defaults (e.g. custom tool declarations)
-      for (const t of options.tools) {
-        if (!tools.some(dt => dt.name === t.name)) {
-          tools.push(t)
+      // Merge tools: if caller provided overrides, apply them on top of the base list
+      let tools = [...base.tools]
+      if (options.tools) {
+        const overrideMap = new Map(options.tools.map(t => [t.name, t]))
+        tools = tools.map(t => overrideMap.has(t.name) ? { ...t, ...overrideMap.get(t.name)! } : t)
+        // Add any tools not in defaults (e.g. custom tool declarations)
+        for (const t of options.tools) {
+          if (!tools.some(dt => dt.name === t.name)) {
+            tools.push(t)
+          }
         }
       }
-    }
 
-    // Merge triggers: spread per trigger type from defaults, override with provided
-    const mergedTriggers: TriggersConfigV3 = { ...base.triggers }
-    if (options.triggers) {
-      for (const key of Object.keys(options.triggers) as TriggerTypeV3[]) {
-        const override = options.triggers[key]
-        if (override) {
-          mergedTriggers[key] = override
+      // Merge triggers: spread per trigger type from defaults, override with provided
+      const mergedTriggers: TriggersConfigV3 = { ...base.triggers }
+      if (options.triggers) {
+        for (const key of Object.keys(options.triggers) as TriggerTypeV3[]) {
+          const override = options.triggers[key]
+          if (override) {
+            mergedTriggers[key] = override
+          }
         }
       }
-    }
 
-    const config: AgentConfig = {
-      // Template-only sections with no explicit option (recovery, loops,
-      // stream bindings, umbilical, prompt flags, ...) ride along here.
-      ...base,
-      adf_version: '0.2',
-      id: agentId,
-      name: options.name,
-      description: options.description || '',
-      icon: options.icon || base.icon || pickAgentIcon(agentId),
-      ...(options.handle ? { handle: options.handle } : {}),
-      state: options.start_in_state ?? base.start_in_state ?? base.state,
-      start_in_state: options.start_in_state ?? base.start_in_state,
-      autonomous: options.autonomous ?? base.autonomous,
-      autostart: options.autostart ?? base.autostart ?? false,
-      model: { ...base.model, ...options.model },
-      instructions: options.instructions || base.instructions,
-      context: {
-        ...base.context,
-        ...options.context,
-        audit: { ...base.context.audit, ...options.context?.audit },
-        dynamic_instructions: { ...base.context.dynamic_instructions, ...options.context?.dynamic_instructions }
-      },
-      tools,
-      triggers: mergedTriggers,
-      security: { ...base.security, ...options.security },
-      limits: { ...base.limits, ...options.limits },
-      messaging: { ...base.messaging, ...options.messaging },
-      audit: { ...base.audit, ...options.audit },
-      code_execution: { ...base.code_execution, ...options.code_execution },
-      compute: { ...base.compute },
-      logging: { ...base.logging, ...options.logging },
-      mcp: options.mcp ?? base.mcp,
-      adapters: { ...base.adapters, ...options.adapters },
-      serving: options.serving ?? base.serving,
-      ws_connections: options.ws_connections ?? base.ws_connections ?? [],
-      providers: options.providers ?? base.providers ?? [],
-      // Union, not replace: defensive even though AGENT_DEFAULTS.locked_fields
-      // is now [] — the dangerous capability locks (security.allow_local_fetch,
-      // stream_bind) live in code (DEFAULT_LOCKED_PATHS in
-      // sys-update-config.tool.ts), not in this default, so they're enforced
-      // uniformly regardless of what this union produces. This still unions
-      // any future/non-empty defaults with caller-supplied locks correctly.
-      locked_fields: Array.from(new Set([...(base.locked_fields ?? []), ...(options.locked_fields ?? [])])),
-      card: options.card ?? base.card,
-      metadata: {
-        created_at: now,
-        updated_at: now,
-        ...options.metadata
-      }
-    }
-
-    adfDb.setConfig(config)
-
-    // Denormalized meta keys for fast lookup
-    adfDb.setMeta('adf_name', options.name, 'readonly')
-    adfDb.setMeta('adf_handle', options.handle || slugify(options.name), 'readonly')
-    adfDb.setMeta('adf_parent_did', '', 'readonly')
-    adfDb.setMeta('adf_created_at', now, 'readonly')
-    adfDb.setMeta('adf_updated_at', now, 'readonly')
-
-    // Default agent key
-    adfDb.setMeta('status', '', 'none')
-
-    // Seed files: the template's content when it has any, else the code defaults.
-    const seedReadme = options.template?.files?.readme
-    const seedMind = options.template?.files?.mind
-    const seedSoul = options.template?.files?.soul
-    const documentContent = seedReadme && seedReadme.trim() ? seedReadme : getDefaultDocumentContent(options.name)
-    const mindContent = seedMind && seedMind.trim() ? seedMind : DEFAULT_MIND_CONTENT
-    const soulContent = seedSoul && seedSoul.trim() ? seedSoul : DEFAULT_SOUL_CONTENT
-    adfDb.writeFile('README.md', Buffer.from(documentContent), 'text/markdown', 'no_delete')
-    adfDb.writeFile('mind.md', Buffer.from(mindContent), 'text/markdown', 'no_delete')
-    adfDb.writeFile('mind/log.md', Buffer.from(DEFAULT_MIND_LOG_CONTENT), 'text/markdown', 'no_delete')
-    adfDb.writeFile('soul.md', Buffer.from(soulContent), 'text/markdown', 'no_delete')
-
-    // Template extra files: blobs live under options.templateFilesDir (host-
-    // provided; the settings JSON holds only metadata). A missing blob or a
-    // path the validator rejects is skipped with a warning, never fatal.
-    const extras = options.template?.files?.extra ?? []
-    if (extras.length > 0 && options.templateFilesDir) {
-      const written: string[] = []
-      for (const extra of extras) {
-        if (!/^[0-9a-f]+$/i.test(extra.id ?? '')) continue
-        const invalid = validateTemplateFilePath(extra.path ?? '', written)
-        if (invalid) {
-          console.warn(`[AdfDatabase] Template file ${extra.id} skipped (${extra.path}): ${invalid}`)
-          continue
-        }
-        const blobPath = join(options.templateFilesDir, extra.id)
-        if (!existsSync(blobPath)) {
-          console.warn(`[AdfDatabase] Template file ${extra.id} (${extra.path}) missing on disk; skipped`)
-          continue
-        }
-        try {
-          adfDb.writeFile(extra.path.trim(), readFileSync(blobPath), extra.mime || 'application/octet-stream')
-          written.push(extra.path.trim())
-        } catch (err) {
-          console.warn(`[AdfDatabase] Template file ${extra.id} (${extra.path}) could not be copied:`, err)
+      const config: AgentConfig = {
+        // Template-only sections with no explicit option (recovery, loops,
+        // stream bindings, umbilical, prompt flags, ...) ride along here.
+        ...base,
+        adf_version: '0.2',
+        id: agentId,
+        name: options.name,
+        description: options.description || '',
+        icon: options.icon || base.icon || pickAgentIcon(agentId),
+        ...(options.handle ? { handle: options.handle } : {}),
+        state: options.start_in_state ?? base.start_in_state ?? base.state,
+        start_in_state: options.start_in_state ?? base.start_in_state,
+        autonomous: options.autonomous ?? base.autonomous,
+        autostart: options.autostart ?? base.autostart ?? false,
+        model: { ...base.model, ...options.model },
+        instructions: options.instructions || base.instructions,
+        context: {
+          ...base.context,
+          ...options.context,
+          audit: { ...base.context.audit, ...options.context?.audit },
+          dynamic_instructions: { ...base.context.dynamic_instructions, ...options.context?.dynamic_instructions }
+        },
+        tools,
+        triggers: mergedTriggers,
+        security: { ...base.security, ...options.security },
+        limits: { ...base.limits, ...options.limits },
+        messaging: { ...base.messaging, ...options.messaging },
+        audit: { ...base.audit, ...options.audit },
+        code_execution: { ...base.code_execution, ...options.code_execution },
+        compute: { ...base.compute },
+        logging: { ...base.logging, ...options.logging },
+        mcp: options.mcp ?? base.mcp,
+        adapters: { ...base.adapters, ...options.adapters },
+        serving: options.serving ?? base.serving,
+        ws_connections: options.ws_connections ?? base.ws_connections ?? [],
+        providers: options.providers ?? base.providers ?? [],
+        // Union, not replace: defensive even though AGENT_DEFAULTS.locked_fields
+        // is now [] — the dangerous capability locks (security.allow_local_fetch,
+        // stream_bind) live in code (DEFAULT_LOCKED_PATHS in
+        // sys-update-config.tool.ts), not in this default, so they're enforced
+        // uniformly regardless of what this union produces. This still unions
+        // any future/non-empty defaults with caller-supplied locks correctly.
+        locked_fields: Array.from(new Set([...(base.locked_fields ?? []), ...(options.locked_fields ?? [])])),
+        card: options.card ?? base.card,
+        metadata: {
+          created_at: now,
+          updated_at: now,
+          ...options.metadata
         }
       }
+
+      adfDb.setConfig(config)
+
+      // Denormalized meta keys for fast lookup
+      adfDb.setMeta('adf_name', options.name, 'readonly')
+      adfDb.setMeta('adf_handle', options.handle || slugify(options.name), 'readonly')
+      adfDb.setMeta('adf_parent_did', '', 'readonly')
+      adfDb.setMeta('adf_created_at', now, 'readonly')
+      adfDb.setMeta('adf_updated_at', now, 'readonly')
+
+      // Default agent key
+      adfDb.setMeta('status', '', 'none')
+
+      // Seed files: the template's content when it has any, else the code defaults.
+      const seedReadme = options.template?.files?.readme
+      const seedMind = options.template?.files?.mind
+      const seedSoul = options.template?.files?.soul
+      const documentContent = seedReadme && seedReadme.trim() ? seedReadme : getDefaultDocumentContent(options.name)
+      const mindContent = seedMind && seedMind.trim() ? seedMind : DEFAULT_MIND_CONTENT
+      const soulContent = seedSoul && seedSoul.trim() ? seedSoul : DEFAULT_SOUL_CONTENT
+      adfDb.writeFile('README.md', Buffer.from(documentContent), 'text/markdown', 'no_delete')
+      adfDb.writeFile('mind.md', Buffer.from(mindContent), 'text/markdown', 'no_delete')
+      adfDb.writeFile('mind/log.md', Buffer.from(DEFAULT_MIND_LOG_CONTENT), 'text/markdown', 'no_delete')
+      adfDb.writeFile('soul.md', Buffer.from(soulContent), 'text/markdown', 'no_delete')
+
+      // Template extra files: blobs live under options.templateFilesDir (host-
+      // provided; the settings JSON holds only metadata). A missing blob or a
+      // path the validator rejects is skipped with a warning, never fatal.
+      const extras = options.template?.files?.extra ?? []
+      if (extras.length > 0 && options.templateFilesDir) {
+        const written: string[] = []
+        for (const extra of extras) {
+          if (!/^[0-9a-f]+$/i.test(extra.id ?? '')) continue
+          const invalid = validateTemplateFilePath(extra.path ?? '', written)
+          if (invalid) {
+            console.warn(`[AdfDatabase] Template file ${extra.id} skipped (${extra.path}): ${invalid}`)
+            continue
+          }
+          const blobPath = join(options.templateFilesDir, extra.id)
+          if (!existsSync(blobPath)) {
+            console.warn(`[AdfDatabase] Template file ${extra.id} (${extra.path}) missing on disk; skipped`)
+            continue
+          }
+          try {
+            adfDb.writeFile(extra.path.trim(), readFileSync(blobPath), extra.mime || 'application/octet-stream')
+            written.push(extra.path.trim())
+          } catch (err) {
+            console.warn(`[AdfDatabase] Template file ${extra.id} (${extra.path}) could not be copied:`, err)
+          }
+        }
+      }
+
+      // Identity keys are not generated by default for local ADFs.
+      // Users can manually generate keys via the Identity Panel UI or IPC calls.
+      // The adf_identity table schema is still created, just left empty.
+
+      return adfDb
+    } catch (error) {
+      try {
+        if (adfDb) adfDb.close()
+        else db.close()
+      } catch { /* preserve the original creation error */ }
+      throw error
     }
-
-    // Identity keys are not generated by default for local ADFs.
-    // Users can manually generate keys via the Identity Panel UI or IPC calls.
-    // The adf_identity table schema is still created, just left empty.
-
-    return adfDb
   }
 
   /**
