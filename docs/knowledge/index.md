@@ -18,3 +18,5 @@ When a feature contract already exists, link to its guide. Put task context, exp
 ## Articles
 
 - [Desktop applications with isolated compute](desktop-apps.md) — Run an already-available Linux GUI application in an agent's dedicated container, share the container's visible `DISPLAY=:99` between processes, move files through the VFS airlock, and validate screenshots without treating ADF as a full desktop or generic GUI automation framework.
+
+- [Engineering work with isolated agents](engineering-work.md) — Workspace and dependency isolation, GitHub permission checks, credential handling, bounded loops, and accountable delivery.
