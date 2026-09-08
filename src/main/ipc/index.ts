@@ -9,6 +9,7 @@ import { initApplicationMenu, recordRecentFile } from '../menu'
 import { verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
 import { BackgroundEventBatcher } from './background-event-batch'
+import { makeFileCreateHandler } from './file-create-handler'
 
 /**
  * Delete an ADF file and its associated SQLite WAL files (-shm, -wal).
@@ -2016,56 +2017,53 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC.FILE_CREATE, async (_event, args: { name: string }) => {
-    try {
-      console.log('[IPC] FILE_CREATE called with name:', args.name)
-      const result = await dialog.showSaveDialog({
-        defaultPath: `${args.name}.adf`,
-        filters: [{ name: 'Agent Document Format', extensions: ['adf'] }]
-      })
-      if (result.canceled || !result.filePath) {
-        return { success: false, error: 'Cancelled' }
-      }
-
-      console.log('[IPC] FILE_CREATE: Creating file at:', result.filePath)
-      rememberAdfDirectory(result.filePath)
-      recordRecentFile(result.filePath)
-      await cleanupCurrentFile()
-
-      const agentName = basename(result.filePath, '.adf')
-      console.log('[IPC] FILE_CREATE: Creating workspace for agent:', agentName)
+  ipcMain.handle(IPC.FILE_CREATE, makeFileCreateHandler({
+    showSaveDialog: (options) => dialog.showSaveDialog(options),
+    buildCreateOptions: (agentName) => {
       const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
       const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
       // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
       const agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
       const createOptions = buildStudioCreateOptions(agentName, agentTemplate, defaultProvider)
       createOptions.templateFilesDir = agentTemplateFilesDir()
-      currentWorkspace = AdfWorkspace.create(result.filePath, createOptions)
-      currentFilePath = result.filePath
-      attachWorkspaceDataForwarder(currentWorkspace)
-
+      return createOptions
+    },
+    createWorkspace: (filePath, options) => {
+      const workspace = AdfWorkspace.create(filePath, options)
       // D1: every new file gets identity keys, sealed in owner/runtime envelopes.
       try {
-        settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
+        settings.getOwnerIdentity().ensureWorkspaceIdentity(workspace)
       } catch (err) {
         console.warn('[OwnerIdentity] Identity provisioning on create failed:', err)
       }
-
-      // Auto-track the parent directory (or refresh existing parent) + notify renderer
-      notifyAdfFileCreated(result.filePath)
-
-      // Auto-register as reviewed (user created it)
-      const newConfig = currentWorkspace.getAgentConfig()
+      return workspace
+    },
+    closeWorkspace: (workspace) => workspace.close(),
+    cleanupCurrentFile,
+    prepareWorkspace: (workspace) => {
+      // Attach while detached. If callback preparation fails, the old
+      // foreground has not been cleaned up and remains authoritative.
+      attachWorkspaceDataForwarder(workspace)
+    },
+    installWorkspace: (workspace, filePath) => {
+      // Preparation is complete; this commit is assignment-only.
+      currentWorkspace = workspace
+      currentFilePath = filePath
+    },
+    onInstalled: (workspace, filePath) => {
+      // The switch is committed before these side effects. If any post-
+      // commit operation throws, the helper logs it without reporting a false
+      // create failure after the new workspace is already foreground.
+      rememberAdfDirectory(filePath)
+      recordRecentFile(filePath)
+      notifyAdfFileCreated(filePath)
+      const newConfig = workspace.getAgentConfig()
       settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), newConfig))
-
-      console.log('[IPC] FILE_CREATE: Success')
-
-      return { success: true, filePath: result.filePath }
-    } catch (error) {
-      console.error('[IPC] FILE_CREATE error:', error)
-      return { success: false, error: String(error) }
-    }
-  })
+    },
+    onPostInstallError: (error) => {
+      console.error('[IPC] FILE_CREATE post-install bookkeeping error:', error)
+    },
+  }))
 
   ipcMain.handle(IPC.FILE_CLOSE, async () => {
     await cleanupCurrentFile()

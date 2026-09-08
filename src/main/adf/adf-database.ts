@@ -11,9 +11,9 @@ import { nanoid as _nanoid } from 'nanoid'
 
 /** Short 10-char IDs — sufficient for per-agent uniqueness */
 const nanoid = () => _nanoid(10)
-import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, readFileSync, mkdtempSync, rmdirSync, linkSync, promises as fsp } from 'fs'
+import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, readFileSync, openSync, closeSync, lstatSync, fstatSync, promises as fsp } from 'fs'
 import { brotliDecompressSync } from 'zlib'
-import { basename, dirname, join, resolve, sep } from 'path'
+import { join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type {
   AgentConfig,
@@ -1975,71 +1975,82 @@ export class AdfDatabase {
   }
 
   /**
-   * Create a new ADF without opening the destination until a temporary,
-   * initialized database has won an atomic hard-link race. The default is
-   * non-destructive: an existing destination (including a symlink) causes
-   * EEXIST and neither it nor its WAL/SHM sidecars is touched.
+   * Create a new ADF without replacing an existing destination.
    *
-   * There is deliberately no overwrite option here: all callers, including
-   * owner-operated Studio creation, must choose a different destination rather
-   * than destroy an existing ADF.
+   * The exclusive `wx` open is the creation arbiter: it is intentionally
+   * retained even though the existence check below is useful for a friendly
+   * error.  The destination is initialized in place, matching the historical
+   * visibility/crash semantics (a creator crash can leave an incomplete
+   * destination for the existing orphan/recovery lifecycle).  This is a
+   * collision fix, not an atomic-publication protocol.
    */
   static create(
     filePath: string,
     options: CreateAgentOptions
   ): AdfDatabase {
     // SQLite's named in-memory database is intentionally not a filesystem
-    // creation and cannot participate in the hard-link protocol.
+    // creation and cannot participate in the exclusive path protocol.
     if (filePath === ':memory:') {
       return AdfDatabase.createInPlace(filePath, options)
     }
 
-    const parentDir = resolve(dirname(filePath))
-    const baseName = basename(filePath)
-    let tempDir: string | null = null
-    let temporaryPath: string | null = null
+    let reservationFd: number | null = null
+    let owner: { dev: number; ino: number } | null = null
 
-    const cleanupTemporary = (): void => {
-      if (!temporaryPath) return
-      // The temporary path is ours: it was created below our private mkdtemp
-      // directory, so cleanup cannot remove a colliding creator's files.
-      for (const suffix of ['', '-wal', '-shm']) {
-        try { unlinkSync(temporaryPath + suffix) } catch { /* already absent */ }
-      }
-      if (tempDir) {
-        try { rmdirSync(tempDir) } catch { /* leave unexpected residue visible */ }
+    const sameOwnedDestination = (): boolean => {
+      if (!owner) return false
+      try {
+        const stat = lstatSync(filePath)
+        return stat.dev === owner.dev && stat.ino === owner.ino
+      } catch {
+        return false
       }
     }
 
-    const rejectOrphanedSidecars = (): void => {
-      const sidecars = [`${filePath}-wal`, `${filePath}-shm`].filter((sidecar) => existsSync(sidecar))
-      if (sidecars.length > 0 && !existsSync(filePath)) {
-        throw new Error(`ADF sidecar exists without destination: ${sidecars.join(', ')}`)
+    const cleanupOwnedDestination = (cause: unknown): Error | null => {
+      // Best-effort ownership guard only: lstat followed by unlink is not an
+      // atomic filesystem operation. If the identity no longer matches, leave
+      // the path alone; an external replacement can still slip between the
+      // check and unlink on filesystems without a compare-and-delete primitive.
+      if (!sameOwnedDestination()) return null
+
+      // Do not unlink sidecars here. Once the DB connection is closed, any
+      // remaining WAL/SHM belongs to the established orphan-sidecar lifecycle;
+      // a reader or another creator may have opened the visible destination
+      // meanwhile, and a name-only unlink could delete its files. Reaping is
+      // deliberately deferred to `reapSidecars`/directory cleanup.
+      const cleanupErrors: string[] = []
+      if (sameOwnedDestination()) {
+        try {
+          // The preceding identity check narrows cleanup to our inode, but
+          // cannot make this unlink atomic against an arbitrary replacer.
+          unlinkSync(filePath)
+        } catch (error) {
+          cleanupErrors.push(`${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+        }
       }
+
+      if (cleanupErrors.length === 0) return null
+      const original = cause instanceof Error ? cause.message : String(cause)
+      return new Error(`${original}; creation cleanup failed: ${cleanupErrors.join('; ')}`)
     }
 
     try {
-      // Do not adopt a WAL/SHM left behind without its database. It may belong
-      // to a crashed creator, and deleting it would violate cleanup ownership;
-      // failing leaves it available for the orphan sweep instead.
-      rejectOrphanedSidecars()
-      // mkdtemp is atomic and gives each creator a private namespace; linkSync
-      // below is the no-overwrite commit point for the destination.
-      tempDir = mkdtempSync(resolve(parentDir, `.${baseName}.create-`))
-      temporaryPath = resolve(tempDir, baseName)
-      const temporaryDb = AdfDatabase.createInPlace(temporaryPath, options)
-      try {
-        // Ensure no WAL frames remain under the temporary name before linking.
-        temporaryDb.checkpoint()
-      } finally {
-        temporaryDb.close()
+      // An absent destination with WAL/SHM is an orphan from an earlier
+      // attempt. Reuse the established, lock-aware reaper instead of making
+      // creation a permanent failure or deleting sidecars blindly.
+      if (!existsSync(filePath) &&
+          (existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`))) {
+        const reaped = AdfDatabase.reapSidecars(filePath)
+        if (reaped === 'busy' || reaped === 'error') {
+          throw new Error(`Cannot safely reap ADF sidecars for ${filePath} (${reaped})`)
+        }
       }
 
-      // Recheck immediately before the hard-link commit: only this call may
-      // publish the new destination, while orphan sidecars remain untouched.
-      rejectOrphanedSidecars()
+      // This preflight only improves the error message. `openSync('wx')`
+      // below remains the sole race-safe no-replace decision.
       try {
-        linkSync(temporaryPath, filePath)
+        reservationFd = openSync(filePath, 'wx')
       } catch (error) {
         const code = (error as { code?: unknown }).code
         if (code === 'EEXIST') {
@@ -2047,15 +2058,23 @@ export class AdfDatabase {
         }
         throw error
       }
+      const reserved = fstatSync(reservationFd)
+      owner = { dev: reserved.dev, ino: reserved.ino }
+      closeSync(reservationFd)
+      reservationFd = null
 
-      cleanupTemporary()
-      temporaryPath = null
-      tempDir = null
-      // Reopen through the destination path so normal integrity, migration,
-      // clean-close marker, and open-count initialization remain centralized.
-      return AdfDatabase.open(filePath)
+      // Direct initialization is the historical create path. The checkpoint,
+      // close, and reopen sequence belonged only to the removed hard-link
+      // publication experiment; returning this handle preserves baseline
+      // visibility and avoids a redundant full open/integrity pass.
+      return AdfDatabase.createInPlace(filePath, options)
     } catch (error) {
-      cleanupTemporary()
+      if (reservationFd !== null) {
+        try { closeSync(reservationFd) } catch { /* preserve creation error */ }
+        reservationFd = null
+      }
+      const cleanupError = cleanupOwnedDestination(error)
+      if (cleanupError) throw cleanupError
       throw error
     }
   }

@@ -35,6 +35,7 @@ function runConcurrentCreate(filePath: string, name: string): Promise<{ ok: bool
       process.exitCode = 0
     }
   `
+  const timeoutMs = 30_000
   return new Promise((resolvePromise, reject) => {
     const child = spawn(process.execPath, ['-r', require.resolve('tsx/cjs'), '-e', script, filePath, name], {
       cwd: resolve(__dirname, '../..'),
@@ -42,15 +43,31 @@ function runConcurrentCreate(filePath: string, name: string): Promise<{ ok: bool
     })
     let output = ''
     let error = ''
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      child.kill('SIGKILL')
+      reject(new Error(`child timed out after ${timeoutMs}ms: ${error}`))
+    }, timeoutMs)
     child.stdout.on('data', (chunk) => { output += String(chunk) })
     child.stderr.on('data', (chunk) => { error += String(chunk) })
-    child.once('error', reject)
+    child.once('error', (spawnError) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(spawnError)
+    })
     child.once('exit', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
       if (code !== 0) reject(new Error(`child exited ${code}: ${error}`))
       else resolvePromise({ ok: output.includes('"ok":true'), output })
     })
   })
 }
+
 
 describe('AdfDatabase collision-safe creation', () => {
   const dirs: string[] = []
@@ -76,20 +93,19 @@ describe('AdfDatabase collision-safe creation', () => {
     expect(readdirSync(dir).sort()).toEqual(['existing.adf', 'existing.adf-shm', 'existing.adf-wal'])
   }, 30_000)
 
-  it('fails on orphan sidecars without adopting or deleting them', () => {
+  it('reaps orphan sidecars through the established lifecycle before creating', () => {
     const dir = createDir(); dirs.push(dir)
     const filePath = join(dir, 'orphan.adf')
     writeFileSync(`${filePath}-wal`, Buffer.from('orphan-wal'))
     writeFileSync(`${filePath}-shm`, Buffer.from('orphan-shm'))
 
-    expect(() => AdfDatabase.create(filePath, { name: 'orphan' })).toThrow(/sidecar exists/)
-    expect(existsSync(filePath)).toBe(false)
-    expect(readFileSync(`${filePath}-wal`)).toEqual(Buffer.from('orphan-wal'))
-    expect(readFileSync(`${filePath}-shm`)).toEqual(Buffer.from('orphan-shm'))
-    expect(readdirSync(dir).sort()).toEqual(['orphan.adf-shm', 'orphan.adf-wal'])
+    const db = AdfDatabase.create(filePath, { name: 'orphan' })
+    db.close()
+    expect(existsSync(filePath)).toBe(true)
+    expect(readdirSync(dir).sort()).toEqual(['orphan.adf'])
   })
 
-  it('creates a new file and cleans its private temporary namespace', () => {
+  it('creates a new file without auxiliary reservation artifacts', () => {
     const dir = createDir(); dirs.push(dir)
     const filePath = join(dir, 'new-agent.adf')
     const db = AdfDatabase.create(filePath, { name: 'new-agent' })
@@ -100,7 +116,7 @@ describe('AdfDatabase collision-safe creation', () => {
     expect(readdirSync(dir)).toEqual(['new-agent.adf'])
   })
 
-  it('cleans only the private temporary database when initialization fails', () => {
+  it('removes only the failed reserved destination when initialization fails', () => {
     const dir = createDir(); dirs.push(dir)
     const filePath = join(dir, 'failed.adf')
     const invalidOptions = {
