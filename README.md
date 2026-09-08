@@ -21,6 +21,16 @@
 
 This repository contains the spec, the runtime daemon, the CLI, and the desktop **ADF Studio** — the reference implementation of ADF.
 
+## Download ADF Studio
+
+**Available for Windows, macOS and Linux.** [Download ADF Studio from the latest release](https://github.com/christianbalevski/adf/releases/latest), then choose the installer for your machine under **Assets**:
+
+- **Windows (x64):** the `.exe` installer.
+- **macOS:** the universal `.dmg` for Intel and Apple Silicon, or the arm64 `.dmg` for Apple Silicon.
+- **Linux (x86_64/amd64):** the `.deb` package or `.AppImage`.
+
+The [Quick start](#quick-start) below is for developers running ADF from source; use the release downloads above if you just want the desktop application.
+
 ## Highlights
 
 - 📄 **The agent is a file.** Config, conversation history, files, memory, timers, identity keys — one portable SQLite database. Copy it, back it up, hand it to a friend, run it on another machine.
