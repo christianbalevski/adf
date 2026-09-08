@@ -1,0 +1,91 @@
+name: Windows Node and filesystem validation
+
+# CI currently exercises tests/typecheck/lint/build only on Ubuntu. The release
+# workflow uses windows-2022 for packaging, but does not execute the collision
+# or SQLite sidecar behavior. Keep this behavioral gate separate so the runner's
+# native Windows semantics are explicit and reusable for future changes.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-validation.yml'
+      - 'src/main/adf/adf-database.ts'
+      - 'src/main/adf/adf-workspace.ts'
+      - 'src/main/adf/agent-template-files.ts'
+      - 'src/main/utils/user-data-path.ts'
+      - 'src/main/ipc/**'
+      - 'src/renderer/hooks/useAdfFile.ts'
+      - 'src/renderer/utils/file-operation-errors.ts'
+      - 'src/shared/types/ipc.types.ts'
+      - 'tests/unit/adf-database-create-collision.test.ts'
+      - 'tests/unit/adf-database-wal-cleanup.test.ts'
+      - 'tests/unit/ipc/file-create-handler.test.ts'
+      - 'tests/unit/ipc/file-create-recovery.test.ts'
+      - 'tests/unit/renderer/file-operation-errors.test.ts'
+      - 'tests/unit/tools/sys-create-adf-collision.test.ts'
+      - 'tests/daemon-node-runtime.test.ts'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-validation-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  windows-2022:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      # Match CI's Node-test setup rather than Electron postinstall. The test
+      # process runs under Node 22, so rebuild better-sqlite3 for that ABI.
+      - name: Install Node-test dependencies
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts
+          $ciExit = $LASTEXITCODE
+          if ($ciExit -ne 0) { throw "npm ci --ignore-scripts failed with exit code $ciExit" }
+          npm rebuild better-sqlite3
+          $rebuildExit = $LASTEXITCODE
+          if ($rebuildExit -ne 0) { throw "npm rebuild better-sqlite3 failed with exit code $rebuildExit" }
+
+      - name: Focused collision and lifecycle tests
+        shell: pwsh
+        run: >-
+          npx vitest run
+          tests/unit/adf-database-create-collision.test.ts
+          tests/unit/adf-database-wal-cleanup.test.ts
+          tests/unit/ipc/file-create-handler.test.ts
+          tests/unit/ipc/file-create-recovery.test.ts
+          tests/unit/renderer/file-operation-errors.test.ts
+          tests/unit/tools/sys-create-adf-collision.test.ts
+          tests/daemon-node-runtime.test.ts
+          --reporter=verbose
+
+      # Full-suite validation is intentional: sidecar cleanup, lifecycle, and
+      # renderer/main contracts can regress outside the focused files above.
+      - name: Full test suite
+        run: npm test
+
+      # Keep this identical to the Linux CI lifecycle gate so this runner also
+      # exercises the closed-ledger and architecture-fence suites.
+      - name: Lifecycle conformance, closed ledger, and architecture fences
+        run: npm run test:lifecycle -- --reporter=verbose
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
