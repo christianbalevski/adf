@@ -1,5 +1,6 @@
 import type { CreateAgentOptions } from '../../shared/types/adf-v02.types'
 import type { FileOperationResult } from '../../shared/types/ipc.types'
+import type { FileCreateRecoveryOutcome } from './file-create-recovery'
 
 export interface FileCreateDialogResult {
   canceled: boolean
@@ -21,6 +22,8 @@ export interface FileCreateHandlerDeps<Workspace> {
   installWorkspace: (workspace: Workspace, filePath: string) => void
   /** Best-effort bookkeeping after the foreground switch has committed. */
   onInstalled: (workspace: Workspace, filePath: string) => void
+  /** Synchronize main ownership if old cleanup rejects. */
+  recoverAfterCleanupFailure?: () => Promise<FileCreateRecoveryOutcome> | FileCreateRecoveryOutcome
   onPostInstallError?: (error: unknown) => void
 }
 
@@ -53,6 +56,7 @@ export function makeFileCreateHandler<Workspace>(
 
       let candidate: Workspace | null = null
       let installed = false
+      let cleanupFailed = false
       try {
         // This is the race-safe creation boundary: createWorkspace must use
         // an exclusive no-replace primitive, not this handler's preflight.
@@ -64,7 +68,12 @@ export function makeFileCreateHandler<Workspace>(
 
         // Only the transition itself may now release the old foreground. The
         // following install is assignment-only in production.
-        await deps.cleanupCurrentFile()
+        try {
+          await deps.cleanupCurrentFile()
+        } catch (error) {
+          cleanupFailed = true
+          throw error
+        }
         deps.installWorkspace(candidate, filePath)
         installed = true
         const installedWorkspace = candidate
@@ -82,10 +91,36 @@ export function makeFileCreateHandler<Workspace>(
         return { success: true, filePath }
       } catch (error) {
         if (candidate && !installed) {
+          // Creation succeeded, so closing releases the candidate DB handle;
+          // it intentionally does not delete the valid destination file.
           try {
             deps.closeWorkspace(candidate)
           } catch (closeError) {
             deps.onPostInstallError?.(closeError)
+          }
+        }
+        if (cleanupFailed) {
+          // cleanupCurrentFile can reject after detaching old runtime aliases.
+          // Main must not leave the renderer looking at that half-live agent.
+          let recovery: FileCreateRecoveryOutcome | undefined
+          try {
+            recovery = await deps.recoverAfterCleanupFailure?.()
+          } catch (recoveryError) {
+            deps.onPostInstallError?.(recoveryError)
+          }
+          const message = error instanceof Error ? error.message : String(error)
+          const ownershipNotice = recovery?.retainedByBackground
+            ? 'The previous agent remains owned by the background manager; only its foreground view was detached.'
+            : recovery?.workspaceCloseFailed
+              ? 'The foreground was detached, but closing the previous workspace failed; it may require process cleanup.'
+              : recovery?.workspaceCloseAttempted
+                ? 'The foreground was detached and no file is open.'
+                : 'The foreground was detached; its workspace remains owned by an in-flight start.'
+          return {
+            success: false,
+            foregroundDetached: true,
+            filePath,
+            error: `${message}\n\n${ownershipNotice} The newly created file was preserved at:\n${filePath}`,
           }
         }
         throw error

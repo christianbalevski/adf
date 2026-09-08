@@ -55,12 +55,101 @@ describe('FILE_CREATE transaction boundary', () => {
       expect(onInstalled).not.toHaveBeenCalled()
       expect(recentFiles).toEqual([oldPath])
       // The old foreground is still a live, readable workspace after failure.
+      // The old runtime is deliberately not presented as usable after partial cleanup.
       expect(oldWorkspace.getAgentConfig().name).toBe('old-agent')
       expect(oldWorkspace.readFile('README.md')?.toString()).toContain('old-agent')
       expect(readFileSync(collisionPath)).toEqual(originalBytes)
       expect(readFileSync(`${collisionPath}-wal`)).toEqual(wal)
       expect(readFileSync(`${collisionPath}-shm`)).toEqual(shm)
       expect(existsSync(collisionPath)).toBe(true)
+    } finally {
+      oldWorkspace.close()
+    }
+  }, 30_000)
+
+  it('reports partial cleanup failure without deleting the valid candidate file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-file-create-cleanup-failure-'))
+    dirs.push(dir)
+    const oldPath = join(dir, 'old.adf')
+    const candidatePath = join(dir, 'candidate.adf')
+    const oldWorkspace = AdfWorkspace.create(oldPath, { name: 'old-agent' })
+    const mainState: {
+      currentWorkspace: AdfWorkspace | null
+      currentFilePath: string | null
+      currentHostAttachment: object | null
+      currentAgentExecutor: object | null
+    } = {
+      currentWorkspace: oldWorkspace,
+      currentFilePath: oldPath,
+      currentHostAttachment: {},
+      currentAgentExecutor: {},
+    }
+    let rendererFilePath = oldPath
+    const recentFiles = [oldPath]
+    const recoverAfterCleanupFailure = vi.fn(() => {
+      // Model the production detached/no-file recovery callback.
+      mainState.currentWorkspace = null
+      mainState.currentFilePath = null
+      rendererFilePath = ''
+      return {
+        foregroundDetached: true,
+        retainedByBackground: false,
+        workspaceCloseAttempted: true,
+        workspaceCloseFailed: false,
+        meshUnregistered: true,
+      }
+    })
+    const handler = makeFileCreateHandler<AdfWorkspace>({
+      showSaveDialog: async () => ({ canceled: false, filePath: candidatePath }),
+      buildCreateOptions: (name) => ({ name }),
+      createWorkspace: (filePath, options) => AdfWorkspace.create(filePath, options),
+      closeWorkspace: (workspace) => workspace.close(),
+      prepareWorkspace: () => {},
+      // Model cleanupCurrentFile's no-transition partial failure: it detaches
+      // runtime ownership before an awaited dispose rejects, but its final
+      // currentWorkspace/currentFilePath nulling has not run yet.
+      cleanupCurrentFile: async () => {
+        mainState.currentHostAttachment = null
+        mainState.currentAgentExecutor = null
+        throw new Error('old assembled agent dispose failed')
+      },
+      recoverAfterCleanupFailure,
+      installWorkspace: (workspace, filePath) => {
+        mainState.currentWorkspace = workspace
+        mainState.currentFilePath = filePath
+        rendererFilePath = filePath
+      },
+      onInstalled: (_, filePath) => {
+        recentFiles.unshift(filePath)
+      },
+    })
+
+    try {
+      const result = await handler(undefined, { name: 'candidate' })
+
+      expect(result).toEqual({
+        success: false,
+        foregroundDetached: true,
+        filePath: candidatePath,
+        error: `old assembled agent dispose failed\n\nThe foreground was detached and no file is open. The newly created file was preserved at:\n${candidatePath}`,
+      })
+      expect(recoverAfterCleanupFailure).toHaveBeenCalledTimes(1)
+      expect(mainState.currentWorkspace).toBeNull()
+      expect(mainState.currentFilePath).toBeNull()
+      expect(mainState.currentHostAttachment).toBeNull()
+      expect(mainState.currentAgentExecutor).toBeNull()
+      expect(rendererFilePath).toBe('')
+      expect(recentFiles).toEqual([oldPath])
+      // Successful candidate creation is closed to release SQLite, not deleted.
+      // The valid file remains available for recovery/manual open.
+      expect(existsSync(candidatePath)).toBe(true)
+      const candidateDb = AdfDatabase.open(candidatePath)
+      try {
+        expect(candidateDb.getConfig().name).toBe('candidate')
+      } finally {
+        candidateDb.close()
+      }
+      expect(oldWorkspace.getAgentConfig().name).toBe('old-agent')
     } finally {
       oldWorkspace.close()
     }

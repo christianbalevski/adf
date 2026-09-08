@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fileOperationErrorMessage, reportFileOperationError } from '../../../src/renderer/utils/file-operation-errors'
+import { fileOperationDetachedForeground, fileOperationErrorMessage, reportFileOperationError } from '../../../src/renderer/utils/file-operation-errors'
 
 describe('renderer file-operation errors', () => {
   it('reports a create collision while leaving success/cancel silent', () => {
@@ -9,6 +9,8 @@ describe('renderer file-operation errors', () => {
     )
     expect(fileOperationErrorMessage('create', { success: false, error: 'Cancelled' })).toBeNull()
     expect(fileOperationErrorMessage('create', { success: true })).toBeNull()
+    expect(fileOperationDetachedForeground({ success: false, foregroundDetached: true })).toBe(true)
+    expect(fileOperationDetachedForeground({ success: false, foregroundDetached: false })).toBe(false)
 
     const notify = vi.fn()
     expect(reportFileOperationError('create', result, notify)).toBe(true)

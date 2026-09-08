@@ -9,6 +9,11 @@ export function fileOperationErrorMessage(
   return `Failed to ${operation} file:\n\n${result.error}`
 }
 
+/** Whether a failed create crossed cleanup and detached the foreground. */
+export function fileOperationDetachedForeground(result: FileOperationResult): boolean {
+  return !result.success && result.foregroundDetached === true
+}
+
 /** Report a failed file operation without treating a cancelled dialog as an error. */
 export function reportFileOperationError(
   operation: 'open' | 'create',

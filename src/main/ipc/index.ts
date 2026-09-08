@@ -10,6 +10,7 @@ import { verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
 import { BackgroundEventBatcher } from './background-event-batch'
 import { makeFileCreateHandler } from './file-create-handler'
+import { recoverFileCreateCleanupFailure } from './file-create-recovery'
 
 /**
  * Delete an ADF file and its associated SQLite WAL files (-shm, -wal).
@@ -965,6 +966,52 @@ function stopDirWatcher(): void {
 /**
  * Clean up the currently open file, agent, and session.
  */
+/**
+ * Synchronize main after FILE_CREATE cleanup rejects. This is state exposure
+ * recovery, not rollback: background/start ownership stays with its owner.
+ */
+function recoverAfterFileCreateCleanupFailure() {
+  const filePath = currentFilePath
+  const workspace = currentWorkspace
+  const retainedByBackground = !!(filePath && backgroundAgentManager?.hasAgent(filePath))
+  const startInFlight = !!(filePath && startingFilePaths.has(filePath))
+
+  return recoverFileCreateCleanupFailure({
+    retainedByBackground,
+    startInFlight,
+    unregisterMesh: () => {
+      if (filePath && meshManager?.isEnabled()) meshManager.unregisterAgent(filePath)
+    },
+    closeWorkspace: () => {
+      if (workspace) workspace.close()
+    },
+    clearForeground: () => {
+      currentWorkspace = null
+      currentFilePath = null
+      currentSession = null
+      try { currentHostAttachment?.detach() } catch (error) {
+        console.error('[IPC] FILE_CREATE recovery host detach failed:', error)
+      }
+      currentHostAttachment = null
+      currentAssembledAgent = null
+      currentDerivedKey = null
+      currentTapManager = null
+      currentUmbilicalAgentId = null
+      currentStreamBindingManager = null
+      currentAdapterManager = null
+      currentMcpManager = null
+      currentMcpReconcile = null
+      currentScratchDir = null
+      currentAgentToolRegistry = null
+      currentAdfCallHandler = null
+      agentExecutor = null
+      triggerEvaluator = null
+    },
+    onRecoveryError: (error) => {
+      console.error('[IPC] FILE_CREATE recovery cleanup failed:', error)
+    },
+  })
+}
 async function cleanupCurrentFile(): Promise<void> {
   const t0 = performance.now()
   const filePath = currentFilePath
@@ -2040,6 +2087,7 @@ export function registerAllIpcHandlers(): void {
     },
     closeWorkspace: (workspace) => workspace.close(),
     cleanupCurrentFile,
+    recoverAfterCleanupFailure: recoverAfterFileCreateCleanupFailure,
     prepareWorkspace: (workspace) => {
       // Attach while detached. If callback preparation fails, the old
       // foreground has not been cleaned up and remains authoritative.
