@@ -10,6 +10,7 @@ import { initApplicationMenu, recordRecentFile } from '../menu'
 import { verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
 import { BackgroundEventBatcher } from './background-event-batch'
+import { makeFileCreateHandler } from './file-create-handler'
 
 /**
  * Delete an ADF file and its associated SQLite WAL files (-shm, -wal).
