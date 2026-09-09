@@ -9,7 +9,7 @@
  * blobs via CreateAgentOptions.templateFilesDir.
  */
 
-import { app } from 'electron'
+import { getUserDataPath } from '../utils/user-data-path'
 import { copyFileSync, existsSync, mkdirSync, statSync, unlinkSync } from 'fs'
 import { basename, join } from 'path'
 import { randomBytes } from 'crypto'
@@ -19,7 +19,7 @@ import { AdfWorkspace } from './adf-workspace'
 
 /** Same root the settings store uses, so blobs and metadata travel together. */
 export function agentTemplateFilesDir(): string {
-  const userDataPath = process.env.ADF_USER_DATA_DIR ?? app.getPath('userData')
+  const userDataPath = getUserDataPath()
   return join(userDataPath, 'agent-template-files')
 }
 

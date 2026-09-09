@@ -7,6 +7,7 @@ import { nanoid } from 'nanoid'
 import { toDisplayState } from './useAgent'
 import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
+import { fileOperationDetachedForeground, reportFileOperationError } from '../utils/file-operation-errors'
 
 /**
  * Files opened in the editor when an agent has no saved tab set: its document,
@@ -335,7 +336,7 @@ export function useAdfFile() {
         console.log(`[PERF:renderer] openFile total: ${(performance.now() - tTotal).toFixed(1)}ms`)
       } else {
         console.error('[useAdfFile] Failed to open file:', result.error)
-        // Show error to user
+        // Show errors to the user, but keep the historical migration-specific copy.
         if (result.error?.includes('old ZIP format')) {
           alert(
             'Cannot open this file\n\n' +
@@ -344,7 +345,7 @@ export function useAdfFile() {
             'Please delete this file and create a new one with the same name.'
           )
         } else {
-          alert(`Failed to open file:\n\n${result.error}`)
+          reportFileOperationError('open', result, alert)
         }
       }
       return result
@@ -366,12 +367,27 @@ export function useAdfFile() {
         // A fresh file never inherits the previous file's review state.
         useAppStore.getState().resetAgentReview()
         await loadFileContents()
+      } else {
+        if (fileOperationDetachedForeground(result)) {
+          // Main cleared its foreground aliases after cleanup rejected. Clear
+          // the renderer too, rather than leaving the old agent looking usable.
+          resetDocument()
+          resetAgent()
+          useAppStore.getState().resetAgentReview()
+          useEditorTabsStore.getState().reset()
+          setStatusText('No file is open in the foreground after an incomplete file transition.')
+          reportFileOperationError('create', result, alert)
+        } else {
+          // Collision/I/O failures occur before old cleanup and preserve the
+          // current renderer state.
+          reportFileOperationError('create', result, alert)
+        }
       }
       return result
     } finally {
       endAgentSwitch()
     }
-  }, [setShowSettings, setFilePath, loadFileContents])
+  }, [setShowSettings, setFilePath, loadFileContents, resetDocument, resetAgent, setStatusText])
 
   const saveFile = useCallback(async () => {
     const result = await window.adfApi.saveFile()

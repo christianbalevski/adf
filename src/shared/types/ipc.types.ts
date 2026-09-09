@@ -44,6 +44,8 @@ export interface AgentExecutionEvent {
 export interface FileOperationResult {
   success: boolean
   filePath?: string
+  /** Create failed after old cleanup began; renderer must show detached/no-file state. */
+  foregroundDetached?: boolean
   error?: string
   agentWasRunning?: boolean
   needsPassword?: boolean
