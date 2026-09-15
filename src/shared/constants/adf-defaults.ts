@@ -201,12 +201,12 @@ Reusable procedures are a separate system, see Skills below.${SOUL_PROMPT_SECTIO
  * schema: hidden shell = zero shell context, no prompt-assembly conditionals.)
  */
 export const DEFAULT_TOOL_PROMPTS: Record<string, string> = {
-  /** Included when the agent has its isolated visible browser enabled. */
-  _browser: `## Visible Browser
+  /** Included when the agent has its isolated visible desktop enabled. */
+  _browser: `## Computer
 
-Your isolated compute environment has one persistent visible browser session. Browser MCP tools attach to that session, so tabs, cookies, and logins survive MCP server restarts. Prefer the maintained \`@playwright/mcp\` server for browser automation.
+Your isolated compute environment has a visible desktop that your principal sees in the Computer tab. It runs one persistent Chromium session; browser MCP tools attach to it, so tabs, cookies, and logins survive MCP server restarts. Prefer the maintained \`@playwright/mcp\` server for browser automation. For anything else on the desktop, \`compute_exec\` has \`xdotool\` (click, type, key) and \`scrot\` (screenshot to a file you \`fs_transfer\` out and look at).
 
-If a site presents sign-in, CAPTCHA, MFA, passkey, or another security check, stop and ask your principal to take over the visible browser. Resume only after they say it's done.`,
+If a site presents sign-in, CAPTCHA, MFA, passkey, or another security check, stop and ask your principal to take over in the Computer tab. Resume only after they say it's done.`,
 
   /** Included when shell is NOT enabled — cross-tool workflow guidance */
   tool_best_practices: `## Tools
@@ -389,5 +389,5 @@ export const TOOL_PROMPT_CONDITIONS: Record<string, string> = {
   database: 'Injected when db_query or db_execute is enabled.',
   state_management: 'Injected when sys_set_state is enabled (and the application base system prompt is included).',
   _autonomous: 'Appended when the agent runs in autonomous mode.',
-  _browser: 'Injected when the agent has an isolated compute environment with the visible browser enabled (compute.enabled, compute.browser not disabled).',
+  _browser: 'Injected when the agent has an isolated compute environment with the visible desktop enabled (compute.enabled, compute.browser not disabled).',
 }

@@ -383,9 +383,10 @@ export interface ComputeConfig {
   default_target?: string
   /** Allow the agent to install/run MCP servers on the host machine. Default false. */
   host_access?: boolean
-  /** Visible browser display in the isolated container (Xvfb + noVNC viewer tab).
-   *  Default true. Disable to skip the display stack and browser watcher —
-   *  automation then runs headless-only with no viewer. */
+  /** Visible desktop in the isolated container (Xtigervnc + IceWM + managed
+   *  Chromium, streamed to the Computer tab via noVNC). Default true. Disable to
+   *  skip the display stack and browser watcher — automation then runs
+   *  headless-only with no viewer. */
   browser?: boolean
 }
 

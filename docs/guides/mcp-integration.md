@@ -346,7 +346,7 @@ Bulk controls respect locked tool declarations. A mixed-state control indicates 
 
 Use the maintained `@playwright/mcp` server for an agent's visible browser. ADF owns Chromium and its persistent profile; Playwright attaches to the existing loopback CDP endpoint instead of launching a separate browser. This keeps the Studio viewer, the user, and automation on the same tabs, cookies, and login state.
 
-Installing `@modelcontextprotocol/server-puppeteer` is treated as a compatibility alias and routed to the Playwright integration. See [Visible Browser](browser.md) for lifecycle, authentication, and profile portability details.
+Installing `@modelcontextprotocol/server-puppeteer` is treated as a compatibility alias and routed to the Playwright integration. See [Computer](browser.md) for lifecycle, authentication, and profile portability details.
 
 ### Disabled Tool Guard
 

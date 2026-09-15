@@ -11,14 +11,15 @@ interface WebviewElement extends HTMLElement {
 }
 
 /**
- * Live view of an agent's container browser: a <webview> hosting the noVNC
- * page published on host loopback. The user watches and interacts with the
- * same X display (:99) the agent's automation drives.
+ * Live view of an agent's container desktop (the Computer tab): a <webview>
+ * hosting the noVNC page published on host loopback. The user watches and
+ * interacts with the same X display (:99) the agent's automation drives —
+ * IceWM desktop, managed Chromium, and whatever else the agent launches.
  *
  * resize=remote — Xtigervnc supports dynamic desktop resize, so the container
- * desktop always matches the viewer tab exactly (no letterboxing); matchbox
- * keeps browser windows maximized to it. reconnect=1 retries every 2s while
- * the container/stack is down, so a restart reattaches by itself.
+ * desktop always matches the viewer tab exactly (no letterboxing); IceWM
+ * re-fits maximized windows on each resize. reconnect=1 retries every 2s
+ * while the container/stack is down, so a restart reattaches by itself.
  */
 export function BrowserViewer({ hostPort, reloadNonce }: Props) {
   const webviewRef = useRef<WebviewElement | null>(null)

@@ -93,6 +93,31 @@ const BROWSER_CDP_PORT = 9222
 const BROWSER_PROFILE_DIR = '/var/lib/adf/browser-profile'
 const BROWSER_PID_FILE = '/tmp/adf-browser/chromium.pid'
 
+/** IceWM private config dir (ICEWM_PRIVCFG). Written on every stack start so
+ *  preference changes ship with Studio upgrades. */
+const ICEWM_CONFIG_DIR = '/var/lib/adf/icewm'
+
+/** Taskbar trimmed to what a container desktop needs: window buttons and a
+ *  start menu (installed apps). Monitors/mail/logout entries are noise here. */
+const ICEWM_PREFERENCES = `TaskBarShowWorkspaces=0
+TaskBarShowMailboxStatus=0
+TaskBarShowCPUStatus=0
+TaskBarShowMEMStatus=0
+TaskBarShowNetStatus=0
+TaskBarShowAPMStatus=0
+TaskBarShowCollapseButton=0
+TaskBarShowShowDesktopButton=0
+TaskBarShowWindowListMenu=0
+ShowThemesMenu=0
+ShowHelp=0
+ShowAbout=0
+ShowLogoutMenu=0
+ShowLogoutSubMenu=0
+ConfirmLogout=0
+ClickToFocus=1
+FocusOnAppRaise=1
+`
+
 /** Display stack daemons. Started via `podman exec -d` — a one-shot exec's
  *  background children are killed when its session ends, so detached exec
  *  sessions (reaped by their own conmon) are the only way to keep daemons
@@ -100,9 +125,11 @@ const BROWSER_PID_FILE = '/tmp/adf-browser/chromium.pid'
  *
  *  Xtigervnc is X server + VNC server in one and supports dynamic desktop
  *  resize (ExtendedDesktopSize) — the noVNC viewer (resize=remote) resizes the
- *  container desktop to exactly fit the viewer tab. matchbox is a minimal
- *  auto-maximizing window manager so browser windows always fill the desktop
- *  and follow resizes. */
+ *  container desktop to exactly fit the viewer tab. IceWM is a small desktop
+ *  (window manager + taskbar in one process): every window gets a titlebar
+ *  with a close button and a taskbar entry, so popups (OAuth sign-in, print
+ *  dialogs, second windows) can always be closed or switched away from by the
+ *  user. It follows XRandR resizes, re-fitting maximized windows. */
 const BROWSER_STACK_DAEMONS: { proc: string; command: string; waitAfter?: string }[] = [
   {
     proc: 'Xtigervnc',
@@ -112,13 +139,15 @@ const BROWSER_STACK_DAEMONS: { proc: string; command: string; waitAfter?: string
     // The WM exits if the display isn't up yet — wait for the X socket.
     waitAfter: 'i=0; while [ $i -lt 20 ] && [ ! -S /tmp/.X11-unix/X99 ]; do i=$((i+1)); sleep 0.25; done; [ -S /tmp/.X11-unix/X99 ]',
   },
-  // comm is truncated to 15 chars: "matchbox-window"
-  { proc: 'matchbox-window', command: 'export DISPLAY=:99; exec matchbox-window-manager -use_titlebar no >/tmp/adf-browser/wm.log 2>&1' },
+  // Containers provisioned before the desktop switch may still run matchbox
+  // (daemons outlive Studio restarts); it must release the WM selection first.
+  { proc: 'icewm', command: `export DISPLAY=:99 ICEWM_PRIVCFG='${ICEWM_CONFIG_DIR}'; pkill -x matchbox-window 2>/dev/null; sleep 0.3; exec icewm >/tmp/adf-browser/wm.log 2>&1` },
   { proc: 'websockify', command: 'exec websockify --web /usr/share/novnc 6080 localhost:5900 >/tmp/adf-browser/websockify.log 2>&1' },
 ]
 
-/** Prep: state dirs + self-heal packages on containers provisioned pre-feature. */
-const BROWSER_STACK_PREP = `mkdir -p /tmp/adf-browser ${BROWSER_PROFILE_DIR}; missing=''; for pkg in tigervnc-standalone-server matchbox-window-manager novnc websockify tzdata fonts-noto-core fonts-noto-color-emoji; do dpkg-query -W -f='\${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $pkg"; done; if [ -n "$missing" ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; fi`
+/** Prep: state dirs, IceWM prefs, self-heal packages on containers provisioned
+ *  pre-feature (or pre-desktop: icewm + the computer-use CLI tools). */
+const BROWSER_STACK_PREP = `mkdir -p /tmp/adf-browser ${BROWSER_PROFILE_DIR} ${ICEWM_CONFIG_DIR}; printf '%s' '${ICEWM_PREFERENCES}' > ${ICEWM_CONFIG_DIR}/preferences; missing=''; for pkg in tigervnc-standalone-server icewm novnc websockify tzdata fonts-noto-core fonts-noto-color-emoji xdotool scrot xclip xterm; do dpkg-query -W -f='\${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $pkg"; done; if [ -n "$missing" ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; fi`
 
 /** Wait for the X display socket, then for noVNC to answer. */
 const BROWSER_STACK_READY = 'i=0; while [ $i -lt 40 ]; do wget -qO /dev/null http://127.0.0.1:6080/vnc.html 2>/dev/null && exit 0; i=$((i+1)); sleep 0.25; done; echo "noVNC not ready; see /tmp/adf-browser/*.log" >&2; exit 1'
@@ -253,7 +282,7 @@ export interface ComputeEnvSettings {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SETTINGS: ComputeEnvSettings = {
-  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'matchbox-window-manager', 'novnc', 'websockify'],
+  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'icewm', 'novnc', 'websockify', 'xdotool', 'scrot', 'xclip', 'xterm'],
   machineCpus: 2,
   machineMemoryMb: 2048,
   containerImage: 'docker.io/library/node:20-slim',
@@ -1277,7 +1306,7 @@ export class PodmanService extends EventEmitter {
   }
 
   // ---------------------------------------------------------------------------
-  // Visible browser (Xvfb + x11vnc + noVNC inside agent containers)
+  // Visible desktop + browser (Xtigervnc + IceWM + noVNC inside agent containers)
   // ---------------------------------------------------------------------------
 
   /**
@@ -1359,7 +1388,7 @@ export class PodmanService extends EventEmitter {
       if (ready.code !== 0) throw new Error(ready.stderr.slice(0, 300) || 'noVNC readiness check failed')
       await this.ensureManagedBrowser(bin, containerName)
       this._stackStarted.add(containerName)
-      console.log(`[Compute] Managed browser ready in ${containerName} (noVNC on 127.0.0.1:${hostPort}, CDP on container loopback)`)
+      console.log(`[Compute] Desktop + managed browser ready in ${containerName} (noVNC on 127.0.0.1:${hostPort}, CDP on container loopback)`)
     })()
     const tracked = start.catch((err) => {
       console.warn(`[Compute] Browser display stack failed in ${containerName}:`, err instanceof Error ? err.message : err)

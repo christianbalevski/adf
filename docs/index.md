@@ -51,7 +51,7 @@ The [Knowledge Base](knowledge/index.md) is a task-oriented routing layer for re
 - [Code Execution Environment](guides/code-execution.md) — Sandbox, security, and execution contexts
 - [The adf Proxy Object](guides/adf-object.md) — API reference for code running in the sandbox
 - [MCP Integration](guides/mcp-integration.md) — Connect external tool servers via MCP
-- [Visible Browser](guides/browser.md) — Managed Chromium, Playwright automation, interactive login, and portable profiles
+- [Computer](guides/browser.md) — Each isolated agent's visible desktop: managed Chromium, Playwright automation, xdotool/scrot computer use, interactive login, and portable profiles
 - [Triggers](guides/triggers.md) — Configure what events activate your agent
 - [Inner Loops](guides/inner-loops.md) — Multiple named cognition streams inside one agent: main plus inner loops, the loop_* tools, and per-loop pacing
 - [Messaging](guides/messaging.md) — Inter-agent communication, channels, and routing

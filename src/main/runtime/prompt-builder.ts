@@ -78,7 +78,7 @@ export function assemblePrompt(ctx: PromptContext): string {
     push(ctx.toolPrompts['state_management'])
   }
 
-  // 10. Visible browser lifecycle + authentication handoff. The handoff is an
+  // 10. Visible desktop (Computer tab) + authentication handoff. The handoff is an
   // agent behavior, not a bespoke Studio auth flow.
   if (ctx.config.compute?.enabled && ctx.config.compute.browser !== false) {
     push(ctx.toolPrompts['_browser'])
