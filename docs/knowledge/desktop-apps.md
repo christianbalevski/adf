@@ -3,15 +3,16 @@ type: reference
 description: Run visible Linux desktop applications in isolated compute, transfer files, and validate visual results without assuming generic desktop automation
 see_also:
   - ../guides/compute.md — compute targets, configuration, approvals, and security boundaries
-  - ../guides/browser.md — the managed Chromium session, noVNC viewer, and authentication handoff
+  - ../guides/computer-use.md — driving the desktop: the look-act-look loop, xdotool, opening apps and files
+  - ../guides/browser.md — the Computer tab: desktop, managed Chromium, and authentication handoff
   - ../guides/documents-and-files.md — the agent VFS and file protection
 ---
 
 # Desktop Applications with Isolated Compute
 
-ADF can run real Linux GUI processes in an agent's managed **isolated** container. This is useful when a task needs a native PDF or image viewer, an editor, or another desktop application that is already present in the image. The capability is a process-and-display environment, not a claim that ADF ships a full desktop, an application catalog, or a universal GUI automation API.
+ADF can run real Linux GUI processes in an agent's managed **isolated** container, on the same small desktop the principal sees in the Computer tab. This article is the end-to-end recipe for a native application: inputs in, launch, interact, validate, results out. The general driving skills (screenshots, `xdotool`, opening apps and files) are in the [Computer Use](../guides/computer-use.md) guide.
 
-This article composes a task recipe; it does not replace the feature contracts in the [Compute Environments guide](../guides/compute.md), [Visible Browser guide](../guides/browser.md), or [Documents and Files guide](../guides/documents-and-files.md). Follow those guides for canonical configuration, browser lifecycle, file-protection, and security procedures. An installable executable workflow belongs in a skill, not in this article.
+This article composes a task recipe; it does not replace the feature contracts in the [Compute Environments guide](../guides/compute.md), [Computer guide](../guides/browser.md), or [Documents and Files guide](../guides/documents-and-files.md). Follow those guides for canonical configuration, browser lifecycle, file-protection, and security procedures. An installable executable workflow belongs in a skill, not in this article.
 
 ## Capability boundary
 
@@ -19,15 +20,17 @@ This article composes a task recipe; it does not replace the feature contracts i
 
 - `compute_exec` runs real shell commands in the selected compute environment. An isolated agent container uses `/workspace` as its working directory.
 - When isolated compute has browser display support enabled (`compute.enabled: true` and `compute.browser` not `false`), managed agent-container processes receive `DISPLAY=:99`. The display is shared by processes in that **same isolated container**: a GUI process can render there while the user watches the container's VNC/noVNC view.
-- ADF starts a display stack in that container (X server, a small window manager, VNC, and a loopback-published noVNC endpoint). The Studio viewer embeds that noVNC page and can show the X display; it is not a second desktop session.
+- ADF starts a display stack in that container (X server, the Openbox window manager, the tint2 panel with an application menu, PCManFM for the wallpaper and files, VNC, and a loopback-published noVNC endpoint). The Studio Computer tab embeds that noVNC page and shows the X display; it is not a second desktop session. Every window gets a close button and a panel task button, so the human can close or switch windows.
+- The managed Chromium opens on demand (`adf-browser start`, an attaching browser MCP server, or the panel button) and stays closed once closed. Use `adf-browser stop` / `adf-browser resume` when a task needs it held down (for example a profile swap).
+- The image ships `xdotool`, `scrot`, `xclip`, and `xterm`. Through `compute_exec` an agent can move and click the mouse, type, send key chords, focus windows by title, screenshot the desktop to a file, and read or write the clipboard.
 - `fs_transfer` moves files between the agent VFS and `isolated` or `shared` managed containers. Paths are relative to the selected endpoint and must not escape it. External containers are not file-transfer endpoints in this release.
 - The maintained `@playwright/mcp` integration attaches to ADF's managed Chromium through its container-loopback CDP endpoint. This is the supported agent automation mechanism for web pages.
 
 The `shared` target is a different, multi-agent container. Its workspace is namespaced under `/workspace/{agentId}`. The source exposes the visible `DISPLAY=:99` capability for browser-enabled **isolated** containers; do not infer that a shared-container command has a GUI display. Use isolated compute when a task needs a dedicated visible desktop process.
 
-### Not generic desktop control
+### Desktop control is CLI-level, not a structured tool
 
-ADF does not expose a general pointer/keyboard/window-control tool for arbitrary Linux applications. Browser MCP is browser automation, not desktop automation. For a non-browser application, an agent can launch it, inspect its process/output, and exchange files; interaction must come from the application's own CLI/API or from the human using the visible viewer. Do not promise clicks, drag-and-drop, keyboard shortcuts, accessibility control, audio, printing, or GPU acceleration unless the application and environment have been separately verified.
+ADF does not expose a dedicated pointer/keyboard tool. Desktop control goes through `compute_exec` with `xdotool` and `scrot`: screenshot, look at the image, act, screenshot again (worked examples in [Computer Use](../guides/computer-use.md)). This is coordinate-based and works for any X application, but it is slower and less reliable than an application's own CLI/API or the Playwright MCP server for web content; prefer those where they exist. Accessibility control, audio, printing, and GPU acceleration are not verified; do not promise them.
 
 ## Prerequisites
 
@@ -87,15 +90,15 @@ compute_exec({
 })
 ```
 
-`compute_exec` runs `sh -c` through a one-shot container exec. Do not assume that appending `&` makes an arbitrary GUI process persistent after the tool call: the managed display daemons use a separately detached exec path for that reason. A persistent native GUI launcher needs an application-specific supervisor/daemon or a separately verified detached launcher; this article does not prescribe a generic one. Use a stable app-specific output or CLI/API where possible. Keep logs and generated artifacts under `/workspace` when they need to be transferred; `/tmp` is suitable for diagnostics only.
+`compute_exec` runs `sh -c` through a one-shot container exec. Appending `&` does not make a GUI process persistent after the tool call; the exec session takes its children with it. Launch it in its own session instead: `setsid -f my-viewer /workspace/inputs/source.pdf </dev/null >/workspace/logs/my-viewer.log 2>&1` (verified: this is how `adf-browser start` launches the managed Chromium from a one-shot exec). Use a stable app-specific output or CLI/API where possible. Keep logs and generated artifacts under `/workspace` when they need to be transferred; `/tmp` is suitable for diagnostics only.
 
 Do not copy Chromium's container-specific `--no-sandbox` setting to every GUI application. The managed browser and root-owned smoke tests have special launch constraints; `--no-sandbox` weakens a sandbox and is not a universal recommendation. Likewise, a GPU-disabled launch may be a useful experiment-specific workaround, but the repository evidence does not establish a general GPU failure cause or a universal flag set.
 
 ### 3. Watch or interact
 
-- A human can use the Studio browser viewer when the managed display is available. The viewer is a noVNC view of the container's X display, so other X clients may be visible on that display as well as Chromium.
+- A human can use the Computer tab when the managed display is available. It is a noVNC view of the container's X display, so other X clients are visible there as well as Chromium, each with its own window and taskbar entry.
 - For web content, configure the maintained Playwright MCP server. It attaches to the already-running managed Chromium, preserving the same tabs, cookies, and visible session.
-- For a native non-browser app, use its CLI/API or ask the human to operate it in the viewer. A process being alive does not prove that the correct window is visible or that an operation completed.
+- For a native non-browser app, use its CLI/API, drive it with `xdotool` after inspecting a `scrot` screenshot, or ask the human to operate it in the Computer tab. A process being alive does not prove that the correct window is visible or that an operation completed.
 
 When a browser site requests sign-in, CAPTCHA, MFA, passkey, or another security review, stop automation and ask the human to take over the visible browser. Do not bypass the challenge or ask automation to handle the human's browser credentials; the human completes the sign-in or security review in the visible browser. Follow the relevant identity or channel guide for other credential setup.
 
@@ -105,7 +108,7 @@ Validate at three levels:
 
 1. **Artifact:** confirm the expected file exists and has a plausible size/type.
 2. **Application:** inspect the app's output, log, or API result and check its exit status.
-3. **Visible evidence:** use the viewer or the application's own export/screenshot facility when available, transfer the image to the VFS, and inspect the actual image. ADF does not provide a generic native-desktop screenshot operation. Assert the expected title/content and select the intended X client or browser target when more than one full-screen window is present.
+3. **Visible evidence:** run `mkdir -p /workspace/shots && scrot -o /workspace/shots/result.png` through `compute_exec`, transfer the image to the VFS, and inspect the actual image. Assert the expected title/content and select the intended X client or browser target when more than one full-screen window is present.
 
 Do not claim success from a PID, window-list entry, process metadata, or a successful launch command alone. A screenshot of an old `about:blank` browser tab is not evidence that another application rendered. Keep screenshots as evidence only after inspecting them; do not leave transient PIDs or experiment-specific absolute paths in reusable instructions.
 
@@ -121,6 +124,7 @@ This persistence is container-local, not a guarantee of durable backup, cross-ma
 
 - **Isolated is the least-privileged GUI choice, not a security proof.** It gives an agent-dedicated managed container and workspace rather than host filesystem access, but it is still a runtime/container boundary. Review the image, packages, network, and Podman configuration for your threat model.
 - Managed containers use bridge networking. A GUI process can make network requests if its program does so; visible does not mean offline.
+- New managed containers are network-isolated from other agents' containers. All managed containers (isolated and shared) share Podman's default bridge—required for reliable outbound internet on the macOS Podman machine—but each one runs an in-container nftables rule set, added at startup via a `NET_ADMIN` capability, that drops new inbound connections arriving from sibling containers on the bridge. Outbound internet, container loopback, established/return traffic, and the host-loopback noVNC port-forward still work. Because each container self-protects on its own inbound path, one agent cannot reach another agent's container, and a misbehaving agent can at most re-expose *itself*, never a peer. This is peer isolation on a shared bridge, not separate networks and not protection against the host. It applies only to containers **created after** this change; a container created earlier keeps the old behavior—reachable by sibling containers—until it is rebuilt, and a rebuild erases its workspace files, installed packages, and browser profile, so it is the user's choice, not automatic.
 - The shared container is not agent-isolated: agents use separate workspace directories but can see the shared container's filesystem according to its permissions, and processes can contend for resources. Use isolated for sensitive or interfering desktop work.
 - Managed containers share an npm/npx cache volume. Do not treat every container artifact or cache as a private secret store.
 - Host execution is not a safer fallback. It requires both the agent's `compute.host_access` and the runtime's owner-controlled host-access setting, and then runs with the user's OS privileges.

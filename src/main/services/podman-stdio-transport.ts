@@ -20,6 +20,7 @@ import { dirname, join } from 'path'
 import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport'
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types'
 import { NPM_CACHE_MOUNT } from './podman.service'
+import { ensureManagedBrowserForSpawn } from './managed-browser-hook'
 
 // The SDK's subpath exports break CJS require().  Resolve from the working
 // /client entry and navigate to ../shared/ — same workaround as mcp-client-manager.ts.
@@ -70,6 +71,16 @@ export interface PodmanStdioTransportOptions {
   env?: Record<string, string>
   /** Working directory inside the container. */
   cwd?: string
+}
+
+const MANAGED_CDP_RE = /(127\.0\.0\.1|localhost|\[::1\]):9222/
+
+/** True when the server's args point CDP at the container-loopback managed browser. */
+function attachesToManagedBrowser(args: string[] | undefined): boolean {
+  if (!args) return false
+  return args.some((arg, i) =>
+    (arg === '--cdp-endpoint' && MANAGED_CDP_RE.test(args[i + 1] ?? '')) ||
+    (arg.startsWith('--cdp-endpoint=') && MANAGED_CDP_RE.test(arg)))
 }
 
 export class PodmanStdioTransport implements Transport {
@@ -133,6 +144,13 @@ export class PodmanStdioTransport implements Transport {
   async start(): Promise<void> {
     if (this._process) {
       throw new Error('PodmanStdioTransport already started')
+    }
+    // A server attaching to the managed browser needs it open — the browser is
+    // on demand (closed windows stay closed until something asks for it). A
+    // browser that cannot open fails the spawn with the reason, instead of a
+    // server that later dies on an opaque CDP connection error.
+    if (attachesToManagedBrowser(this._opts.args)) {
+      await ensureManagedBrowserForSpawn(this._opts.containerName)
     }
 
     return new Promise<void>((resolve, reject) => {

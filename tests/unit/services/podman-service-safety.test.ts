@@ -249,13 +249,111 @@ describe('PodmanService managed container safety', () => {
 
     await (service as any).ensureManagedBrowser('/usr/bin/podman', 'adf-agent-12345678')
 
-    const startCall = exec0.mock.calls.find(([, args]) => args[0] === 'exec' && args[1] === '-d')
-    const command = startCall?.[1][5] ?? ''
-    expect(command).toContain("export TZ='America/New_York'")
-    expect(command).toContain("--user-data-dir='/var/lib/adf/browser-profile'")
-    expect(command).toContain('--remote-debugging-address=127.0.0.1')
-    expect(command).toContain('--remote-debugging-port=9222')
-    expect(command).not.toContain('--enable-automation')
+    // The launch lives in the adf-browser control script, installed as a base64
+    // blob; the detached exec only starts its supervisor.
+    // Installed atomically: written to .tmp, chmod, then renamed over the live script.
+    const installCall = exec0.mock.calls.find(([, args]) => args[0] === 'exec' && args[3] === '-c' && String(args[4]).includes("> '/usr/local/bin/adf-browser.tmp'"))
+    expect(String(installCall?.[1][4])).toContain("mv -f '/usr/local/bin/adf-browser.tmp' '/usr/local/bin/adf-browser'")
+    const blob = /printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d/.exec(String(installCall?.[1][4] ?? ''))?.[1] ?? ''
+    const script = Buffer.from(blob, 'base64').toString('utf8')
+    expect(script).toContain("TZ='America/New_York'")
+    expect(script).toContain("PROFILE='/var/lib/adf/browser-profile'")
+    expect(script).toContain('--user-data-dir="$PROFILE"')
+    expect(script).toContain('--remote-debugging-address=127.0.0.1')
+    expect(script).toContain('--remote-debugging-port=9222')
+    expect(script).not.toContain('--enable-automation')
+
+    // Desktop boot opens the browser through the script (which returns once CDP answers).
+    const startCall = exec0.mock.calls.find(([, args]) => args[0] === 'exec' && String(args[4] ?? '').includes("'/usr/local/bin/adf-browser' start"))
+    expect(startCall).toBeDefined()
+  })
+
+  it('opens the managed browser on demand for a CDP consumer and surfaces a hold', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' })
+    ;(service as any).exec0 = exec0
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
+    const kick = vi.fn()
+    ;(service as any).kickBrowserReady = kick
+
+    // The shared container has no managed browser: nothing to do, ever.
+    await service.ensureManagedBrowserUp('adf-mcp')
+    expect(kick).not.toHaveBeenCalled()
+
+    // Desktop not booted yet: only kick the boot, never block the MCP spawn.
+    await service.ensureManagedBrowserUp('adf-agent-12345678')
+    expect(kick).toHaveBeenCalledWith('adf-agent-12345678')
+    expect(exec0).not.toHaveBeenCalled()
+
+    // Desktop running: start the browser through the control script.
+    ;(service as any)._stackStarted.add('adf-agent-12345678')
+    await service.ensureManagedBrowserUp('adf-agent-12345678')
+    const call = exec0.mock.calls[0][1]
+    expect(call.slice(0, 4)).toEqual(['exec', 'adf-agent-12345678', 'sh', '-c'])
+    expect(call[4]).toBe("'/usr/local/bin/adf-browser' start")
+
+    // Held down by `adf-browser stop` (exit 3): the consumer learns why.
+    exec0.mockResolvedValueOnce({ code: 3, stdout: '', stderr: "managed Chromium is held down by 'adf-browser stop'; run 'adf-browser resume'\n" })
+    await expect(service.ensureManagedBrowserUp('adf-agent-12345678')).rejects.toThrow("held down by 'adf-browser stop'")
+  })
+
+  it('does not fail the desktop stack when the browser cannot open at boot', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'exec' && String(args[4] ?? '').includes("'/usr/local/bin/adf-browser' start")) {
+        return { code: 3, stdout: '', stderr: 'held' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    ;(service as any).exec0 = exec0
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({})
+    ;(service as any).getBrowserHostIdentity = vi.fn().mockReturnValue({ timezone: 'UTC', locale: 'en-US' })
+    await expect((service as any).ensureManagedBrowser('/usr/bin/podman', 'adf-agent-12345678')).resolves.toBeUndefined()
+  })
+
+  it('creates isolation-capable containers with NET_ADMIN and the peer-isolation label', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'container' && args[1] === 'inspect') return { code: 1, stdout: '', stderr: 'no such container' }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    ;(service as any).exec0 = exec0
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({})
+    ;(service as any).getBrowserHostIdentity = vi.fn().mockReturnValue({ timezone: 'UTC', locale: 'en-US' })
+    ;(service as any).allocateNovncPort = vi.fn().mockResolvedValue(36080)
+    ;(service as any).ensureBrowserCompatibility = vi.fn().mockResolvedValue(undefined)
+
+    await (service as any).ensureContainerRunning('/usr/bin/podman', 'adf-agent-12345678', { kind: 'agent', agentId: 'agent-1234', agentName: 'a', browser: false })
+
+    const runCall = exec0.mock.calls.find(([, args]) => args[0] === 'run' && args.includes('adf-agent-12345678'))
+    const runArgs = runCall?.[1] ?? []
+    expect(runArgs).toEqual(expect.arrayContaining(['--cap-add', 'NET_ADMIN']))
+    const labelIdx = runArgs.indexOf('io.adf.peer-isolation=v1')
+    expect(labelIdx).toBeGreaterThan(-1)
+    expect(runArgs[labelIdx - 1]).toBe('--label')
+  })
+
+  it('applyPeerFirewall runs only for labelled (isolation-capable) containers', async () => {
+    const service = new PodmanService()
+    const calls: string[][] = []
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      calls.push(args)
+      if (args[0] === 'inspect' && String(args[3] ?? '').includes('peer-isolation')) {
+        // First container carries the label, second does not.
+        return { code: 0, stdout: (args[1] === 'adf-new' ? 'v1' : ''), stderr: '' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    ;(service as any).exec0 = exec0
+
+    await (service as any).applyPeerFirewall('/usr/bin/podman', 'adf-new')
+    await (service as any).applyPeerFirewall('/usr/bin/podman', 'adf-old')
+
+    const execRuns = calls.filter((a) => a[0] === 'exec')
+    expect(execRuns).toHaveLength(1)
+    expect(execRuns[0][1]).toBe('adf-new')
+    expect(String(execRuns[0][4])).toContain('nft add rule inet adf input')
+    expect(String(execRuns[0][4])).toContain('ct state new drop')
   })
 
   it('refuses lifecycle changes for unlabeled containers', async () => {

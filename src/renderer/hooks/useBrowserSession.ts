@@ -4,7 +4,7 @@ import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import type { BrowserSessionEvent } from '../../shared/types/compute.types'
 
 /**
- * Subscribes to COMPUTE_BROWSER_SESSION IPC and auto-opens the browser tab (in
+ * Subscribes to COMPUTE_BROWSER_SESSION IPC and auto-opens the Computer tab (in
  * the background) when a browser process appears in the focused agent's container.
  * Should be called once at the app root level.
  */

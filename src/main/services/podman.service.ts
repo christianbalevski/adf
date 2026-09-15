@@ -8,6 +8,8 @@
  *   MCP transport layer and fs_transfer tool.
  */
 
+import { createHash } from 'crypto'
+import { gradientWallpaperPng } from './desktop-wallpaper'
 import { execFile, spawn, type ChildProcess } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -65,6 +67,32 @@ const RUNTIME_PLATFORM_LABEL = 'io.adf.runtime.platform'
 const RUNTIME_SCHEMA_LABEL = 'io.adf.runtime.schema'
 const RUNTIME_BROWSER_COMPAT_LABEL = 'io.adf.runtime.browser-compat'
 const RUNTIME_SCHEMA = '4'
+
+/** Peer network isolation: containers created at this version carry an
+ *  in-container firewall that drops inbound from sibling containers on the
+ *  shared bridge. Bumping the version marks older containers `outdated` so the
+ *  UI can offer a (data-losing) rebuild. */
+const PEER_ISOLATION_LABEL = 'io.adf.peer-isolation'
+const PEER_ISOLATION_VERSION = 'v1'
+
+/** nftables INPUT filter run in each isolation-capable container on every
+ *  bring-up. All managed containers share podman's default bridge (user-
+ *  defined networks have no outbound on macOS podman-machine), so peers are
+ *  fenced off here instead. Host port-forwards arrive from the container's own
+ *  IP and are allowed; sibling containers arrive from other bridge addresses
+ *  and their new connections are dropped. Idempotent (flush then rebuild). */
+const PEER_FIREWALL_SCRIPT = [
+  `own=$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | head -1)`,
+  `[ -n "$own" ] || { echo 'peer-firewall: no global IPv4 address' >&2; exit 1; }`,
+  `ip=\${own%/*}`,
+  `nft add table inet adf 2>/dev/null || true`,
+  `nft add chain inet adf input '{ type filter hook input priority filter; policy accept; }' 2>/dev/null || true`,
+  `nft flush chain inet adf input`,
+  `nft add rule inet adf input ct state established,related accept`,
+  `nft add rule inet adf input iifname lo accept`,
+  `nft add rule inet adf input ip saddr "$ip" accept`,
+  `nft add rule inet adf input ip saddr "$own" ct state new drop`,
+].join('; ')
 const NOVNC_PORT_BASE = 36080
 const NOVNC_CONTAINER_PORT = 6080
 /** Browser watcher cadence: a few fast polls right after start, then slow.
@@ -91,7 +119,298 @@ const NPM_CACHE_VOLUME = 'adf-npx-cache'
 export const NPM_CACHE_MOUNT = '/var/cache/adf-npm'
 const BROWSER_CDP_PORT = 9222
 const BROWSER_PROFILE_DIR = '/var/lib/adf/browser-profile'
-const BROWSER_PID_FILE = '/tmp/adf-browser/chromium.pid'
+
+/** Desktop config root: XDG_CONFIG_HOME for openbox, tint2, jgmenu, pcmanfm
+ *  and GTK, plus the panel launcher .desktop entries and the wallpaper.
+ *  Written when the generated set changes (see DESKTOP_CONFIG_VERSION). */
+const DESKTOP_CONFIG_DIR = '/var/lib/adf/desktop'
+
+/** Managed-browser control script (see browserControlScript) and the hold
+ *  marker `adf-browser stop` sets so nothing starts the browser again. */
+const BROWSER_CONTROL_SCRIPT = '/usr/local/bin/adf-browser'
+const BROWSER_HOLD_FILE = '/tmp/adf-browser/hold'
+/** `adf-browser start` exit status while `stop` holds the browser down. */
+const BROWSER_HELD_EXIT_CODE = 3
+/** Script-side CDP wait is 25 s; the exec budget adds podman round-trip margin. */
+const BROWSER_START_TIMEOUT_MS = 35_000
+
+/** Complete flat icon set (~16 MB). Adwaita stays installed as GTK's own
+ *  dependency but ships only symbolic icons in bookworm. */
+const DESKTOP_ICON_THEME = 'elementary-xfce'
+/** Session bus at a fixed address so every desktop process (daemons, the
+ *  browser script, apps launched from the panel) shares one bus; GSettings-
+ *  backed apps cannot persist preferences without it. */
+const DESKTOP_DBUS_SOCKET = '/tmp/adf-browser/dbus.sock'
+const DESKTOP_ENV = `export DISPLAY=:99 XDG_CONFIG_HOME='${DESKTOP_CONFIG_DIR}' DBUS_SESSION_BUS_ADDRESS='unix:path=${DESKTOP_DBUS_SOCKET}'`
+const DESKTOP_FONT = 'Noto Sans 10'
+const DESKTOP_TERMINAL_COMMAND = 'lxterminal --working-directory=/workspace'
+const DESKTOP_FILES_COMMAND = 'pcmanfm /workspace'
+
+/** tint2 panel: app menu, launchers (browser, files, terminal), window
+ *  buttons, clock. Flat and dark; background ids are positional
+ *  (1 = panel, 2 = task, 3 = active task, 4 = urgent task). */
+const DESKTOP_TINT2RC = `# ADF desktop panel (written by ADF Studio on every desktop start)
+rounded = 0
+border_width = 0
+background_color = #1c1c21 100
+border_color = #000000 0
+rounded = 4
+border_width = 0
+background_color = #ffffff 8
+border_color = #000000 0
+background_color_hover = #ffffff 14
+border_color_hover = #000000 0
+rounded = 4
+border_width = 0
+background_color = #ffffff 22
+border_color = #000000 0
+background_color_hover = #ffffff 26
+border_color_hover = #000000 0
+rounded = 4
+border_width = 0
+background_color = #d97706 100
+border_color = #000000 0
+
+panel_items = LTC
+panel_size = 100% 34
+panel_margin = 0 0
+panel_padding = 6 3 6
+panel_background_id = 1
+wm_menu = 1
+panel_dock = 0
+panel_position = bottom center horizontal
+panel_layer = normal
+panel_monitor = all
+strut_policy = follow_size
+panel_window_name = tint2
+disable_transparency = 1
+mouse_effects = 1
+font_shadow = 0
+
+taskbar_mode = single_desktop
+taskbar_padding = 0 0 4
+taskbar_background_id = 0
+taskbar_active_background_id = 0
+taskbar_name = 0
+task_text = 1
+task_icon = 1
+task_centered = 0
+task_maximum_size = 220 30
+task_padding = 8 3 6
+task_tooltip = 1
+task_font = ${DESKTOP_FONT}
+task_font_color = #e6e6e6 100
+task_active_font_color = #ffffff 100
+task_background_id = 2
+task_active_background_id = 3
+task_urgent_background_id = 4
+task_iconified_background_id = 2
+mouse_left = toggle_iconify
+mouse_middle = none
+mouse_right = close
+mouse_scroll_up = none
+mouse_scroll_down = none
+
+launcher_padding = 2 2 6
+launcher_background_id = 0
+launcher_icon_background_id = 0
+launcher_icon_size = 22
+launcher_icon_theme = ${DESKTOP_ICON_THEME}
+launcher_icon_theme_override = 1
+startup_notifications = 0
+launcher_tooltip = 1
+launcher_item_app = ${DESKTOP_CONFIG_DIR}/apps.desktop
+launcher_item_app = ${DESKTOP_CONFIG_DIR}/browser.desktop
+launcher_item_app = ${DESKTOP_CONFIG_DIR}/files.desktop
+launcher_item_app = ${DESKTOP_CONFIG_DIR}/terminal.desktop
+
+time1_format = %H:%M
+time1_font = ${DESKTOP_FONT}
+clock_font_color = #e6e6e6 100
+clock_padding = 8 0
+clock_background_id = 0
+clock_tooltip = %A %d %B
+`
+
+/** jgmenu: the panel's application menu, generated from every installed
+ *  .desktop file (so apt-installed apps show up by themselves). */
+const DESKTOP_JGMENURC = `stay_alive = 0
+csv_cmd = apps
+position_mode = pointer
+menu_width = 260
+menu_padding_top = 8
+menu_padding_right = 8
+menu_padding_bottom = 8
+menu_padding_left = 8
+menu_radius = 6
+menu_border = 1
+item_height = 30
+item_padding_x = 8
+item_radius = 4
+icon_size = 22
+icon_theme = ${DESKTOP_ICON_THEME}
+font = ${DESKTOP_FONT}
+color_menu_bg = #1c1c21 100
+color_menu_border = #3a3a42 100
+color_norm_bg = #000000 0
+color_norm_fg = #e6e6e6 100
+color_sel_bg = #ffffff 22
+color_sel_fg = #ffffff 100
+color_sep_fg = #3a3a42 100
+color_title_fg = #9a9aa3 100
+color_title_bg = #000000 0
+`
+
+/** pcmanfm --desktop: wallpaper + right-click desktop menu (with its own
+ *  "Desktop Preferences"). No icons on the desktop — /workspace is one click
+ *  away on the panel. */
+const DESKTOP_PCMANFM_ITEMS = `[*]
+wallpaper_mode=stretch
+wallpaper_common=1
+wallpaper=${DESKTOP_CONFIG_DIR}/wallpaper.png
+desktop_bg=#1a1f2b
+desktop_fg=#e6e6e6
+desktop_shadow=#000000
+desktop_font=${DESKTOP_FONT}
+show_wm_menu=0
+show_documents=0
+show_trash=0
+show_mounts=0
+`
+const DESKTOP_WALLPAPER_TOP: [number, number, number] = [0x2a, 0x33, 0x46]
+const DESKTOP_WALLPAPER_BOTTOM: [number, number, number] = [0x12, 0x15, 0x1c]
+
+const DESKTOP_GTK_SETTINGS = `[Settings]
+gtk-icon-theme-name=${DESKTOP_ICON_THEME}
+gtk-font-name=${DESKTOP_FONT}
+gtk-cursor-theme-name=Adwaita
+`
+const DESKTOP_LIBFM_CONF = `[config]
+terminal=lxterminal
+`
+const BROWSER_MIME_TYPES = ['text/html', 'application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml', 'x-scheme-handler/http', 'x-scheme-handler/https']
+/** Web content, images and PDFs open in the managed browser — no extra viewers. */
+const DESKTOP_MIMEAPPS = `[Default Applications]
+${BROWSER_MIME_TYPES.map((mime) => `${mime}=adf-browser.desktop`).join('\n')}
+`
+
+/** Openbox root menu (right-click on the panel; the desktop has pcmanfm's). */
+const DESKTOP_OPENBOX_MENU = `<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+<menu id="root-menu" label="ADF">
+  <item label="Browser"><action name="Execute"><execute>${BROWSER_CONTROL_SCRIPT} resume</execute></action></item>
+  <item label="Files"><action name="Execute"><execute>${DESKTOP_FILES_COMMAND}</execute></action></item>
+  <item label="Terminal"><action name="Execute"><execute>${DESKTOP_TERMINAL_COMMAND}</execute></action></item>
+</menu>
+</openbox_menu>
+`
+
+const desktopEntry = (name: string, comment: string, exec: string, icon: string, extra = ''): string =>
+  `[Desktop Entry]\nType=Application\nName=${name}\nComment=${comment}\nExec=${exec}\nIcon=${icon}\n${extra}`
+
+/** Panel launcher: the human override — lifts a hold (`resume`). */
+const DESKTOP_BROWSER_LAUNCHER = desktopEntry(
+  'Browser', 'ADF managed Chromium (opens a window in the running session)',
+  `${BROWSER_CONTROL_SCRIPT} resume %U`, 'chromium',
+)
+/** Default handler for web content, images and PDFs (respects a hold). Not a
+ *  menu entry: the menu's Chromium entry is the stock one, rewritten below. */
+const DESKTOP_BROWSER_HANDLER = desktopEntry(
+  'Browser', 'ADF managed Chromium',
+  `${BROWSER_CONTROL_SCRIPT} start %U`, 'chromium',
+  `NoDisplay=true\nMimeType=${BROWSER_MIME_TYPES.join(';')};\n`,
+)
+/** Debian's chromium.desktop runs /usr/bin/chromium, which refuses to start as
+ *  root without --no-sandbox — an unmanaged launch from the app menu did
+ *  nothing. jgmenu does not honour a same-id shadow under /usr/local/share, so
+ *  the stock entry itself is pointed at the managed launch (idempotent sed). */
+const STOCK_CHROMIUM_ENTRY_SED = `sed -i 's#^Exec=/usr/bin/chromium#Exec=${BROWSER_CONTROL_SCRIPT} start#' /usr/share/applications/chromium.desktop 2>/dev/null || true`
+
+/** Shell fragment writing a file from a base64 blob — multi-line text or
+ *  binary content crosses `sh -c` without escaping hazards. */
+const shellWriteFile = (path: string, content: string | Buffer): string =>
+  `printf '%s' '${(Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8')).toString('base64')}' | base64 -d > '${path}'`
+
+/** The managed-browser control script: one definition of the Chromium
+ *  launch, shared by Studio (desktop boot, MCP attach), the panel/menu
+ *  launcher and agents (compute_exec). The browser opens on demand and stays
+ *  closed when the user closes it — nothing relaunches it behind their back.
+ *  `start` hands a URL to a running instance (same profile dir) and exits, is
+ *  a no-op with no URL while it runs, refuses while `stop` holds it down
+ *  (exit 3), and otherwise launches detached (setsid survives the one-shot
+ *  exec it was called from) and returns once CDP answers. `resume` is the
+ *  explicit override that lifts a hold — the panel button runs it. */
+function browserControlScript(chromium: string, identity: BrowserHostIdentity): string {
+  return `#!/bin/sh
+# ADF managed browser control. Written by ADF Studio on every desktop start.
+#   adf-browser start [url]  open the managed Chromium, or hand a URL to / raise the running one; exit 3 while held
+#   adf-browser stop         stop it and hold it down: nothing starts it until resume
+#   adf-browser resume [url] lift the hold and start it
+#   adf-browser status       running | held | stopped | running-no-cdp
+HOLD='${BROWSER_HOLD_FILE}'
+PROFILE='${BROWSER_PROFILE_DIR}'
+${DESKTOP_ENV} TZ='${identity.timezone}' LANG=C.UTF-8 LC_ALL=C.UTF-8
+mkdir -p "$PROFILE" /tmp/adf-browser
+# Bounded: a Chromium still shutting down accepts the connection and never answers.
+cdp_up() { wget -q -T 2 -t 1 -O /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/json/version 2>/dev/null; }
+launch() {
+  exec '${chromium}' --no-sandbox --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-session-crashed-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} "$@" </dev/null >>/tmp/adf-browser/chromium.log 2>&1
+}
+# Browser (main) processes only — renderers/zygotes carry --type= and follow their parent.
+browser_pids() {
+  for pid in $(pgrep -f -- "--user-data-dir=$PROFILE"); do
+    [ -r /proc/$pid/cmdline ] || continue
+    grep -qz -- '--type=' /proc/$pid/cmdline 2>/dev/null || echo $pid
+  done
+}
+# TERM, then KILL: a browser stuck on a beforeunload prompt must not keep the profile.
+kill_browser() {
+  kill -TERM $(browser_pids) 2>/dev/null
+  i=0; while [ -n "$(browser_pids)" ] && [ $i -lt 40 ]; do i=$((i+1)); sleep 0.25; done
+  [ -z "$(browser_pids)" ] && return 0
+  kill -KILL $(browser_pids) 2>/dev/null
+  i=0; while [ -n "$(browser_pids)" ] && [ $i -lt 8 ]; do i=$((i+1)); sleep 0.25; done
+  [ -z "$(browser_pids)" ]
+}
+cmd="$1"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  start)
+    if [ -f "$HOLD" ]; then echo "managed Chromium is held down by 'adf-browser stop'; run 'adf-browser resume'" >&2; exit 3; fi
+    # Running: hand a URL to it, or (panel button, no URL) raise its windows —
+    # by title, so Chromium's hidden helper windows are not mapped onto the panel.
+    if cdp_up; then [ $# -gt 0 ] && launch "$@"; xdotool search --name " - Chromium$" windowactivate %@ >/dev/null 2>&1; exit 0; fi
+    # A Chromium that owns the profile but serves no CDP (crash, port clash)
+    # would swallow our launch via its singleton: reclaim the profile first.
+    [ -n "$(browser_pids)" ] && kill_browser
+    [ $# -eq 0 ] && set -- about:blank
+    setsid -f "$0" launch-detached "$@" </dev/null >/dev/null 2>&1
+    i=0; while ! cdp_up && [ $i -lt 100 ]; do i=$((i+1)); sleep 0.25; done
+    cdp_up || { echo "managed Chromium did not come up; see /tmp/adf-browser/chromium.log" >&2; exit 1; } ;;
+  launch-detached) launch "$@" ;;
+  stop)
+    touch "$HOLD"
+    kill_browser || { echo "managed Chromium still running" >&2; exit 1; } ;;
+  resume) rm -f "$HOLD"; exec "$0" start "$@" ;;
+  status)
+    if cdp_up; then echo running
+    elif [ -f "$HOLD" ]; then echo held
+    elif [ -n "$(browser_pids)" ]; then echo running-no-cdp
+    else echo stopped; fi ;;
+  *) echo "usage: adf-browser start [url] | stop | resume [url] | status" >&2; exit 2 ;;
+esac
+`
+}
+
+/** Zombie-safe check for a live process by comm name (ERE alternation allowed).
+ *  Dead exec-session children linger as zombies under `sleep infinity` (which
+ *  never reaps), so plain pgrep would false-positive forever. */
+const aliveTest = (namePattern: string) =>
+  `ps -eo stat=,comm= | grep -Ev '^Z' | grep -Eq ' (${namePattern})$'`
+const aliveCheck = (namePattern: string) => `${aliveTest(namePattern)} && echo yes || echo no`
+
+/** Poll a shell test (exit 0 = ready) every 250 ms; exit 1 after `tries`. */
+const waitUntil = (test: string, tries = 40) =>
+  `i=0; while [ $i -lt ${tries} ] && ! { ${test}; }; do i=$((i+1)); sleep 0.25; done; { ${test}; }`
 
 /** Display stack daemons. Started via `podman exec -d` — a one-shot exec's
  *  background children are killed when its session ends, so detached exec
@@ -100,38 +419,95 @@ const BROWSER_PID_FILE = '/tmp/adf-browser/chromium.pid'
  *
  *  Xtigervnc is X server + VNC server in one and supports dynamic desktop
  *  resize (ExtendedDesktopSize) — the noVNC viewer (resize=remote) resizes the
- *  container desktop to exactly fit the viewer tab. matchbox is a minimal
- *  auto-maximizing window manager so browser windows always fill the desktop
- *  and follow resizes. */
+ *  container desktop to exactly fit the viewer tab. Openbox (window manager),
+ *  tint2 (panel: app menu, launchers, task buttons) and pcmanfm (wallpaper,
+ *  file manager) make it a small standard desktop: every window gets a close
+ *  button and a task button, so popups (OAuth sign-in, print dialogs, second
+ *  windows) can always be closed or switched away from by the user; all follow
+ *  XRandR resizes. Chromium draws its own frame; other windows get Breeze. */
 const BROWSER_STACK_DAEMONS: { proc: string; command: string; waitAfter?: string }[] = [
+  {
+    proc: 'dbus-daemon',
+    command: `rm -f '${DESKTOP_DBUS_SOCKET}'; exec dbus-daemon --session --nofork --nopidfile --address='unix:path=${DESKTOP_DBUS_SOCKET}' >/tmp/adf-browser/dbus.log 2>&1`,
+    waitAfter: waitUntil(`[ -S '${DESKTOP_DBUS_SOCKET}' ]`),
+  },
   {
     proc: 'Xtigervnc',
     // Stale lock/socket files survive container restarts (overlay /tmp) and
     // make the X server refuse to start — clear them first (only runs when down).
     command: 'rm -f /tmp/.X99-lock /tmp/.X11-unix/X99; exec Xtigervnc :99 -geometry 1440x900 -depth 24 -localhost -rfbport 5900 -SecurityTypes None -AlwaysShared >/tmp/adf-browser/xvnc.log 2>&1',
-    // The WM exits if the display isn't up yet — wait for the X socket.
-    waitAfter: 'i=0; while [ $i -lt 20 ] && [ ! -S /tmp/.X11-unix/X99 ]; do i=$((i+1)); sleep 0.25; done; [ -S /tmp/.X11-unix/X99 ]',
+    // The WM exits if the display isn't up yet, and noVNC serves its static
+    // page even with no VNC backend — wait for the X socket AND the rfb port.
+    waitAfter: waitUntil("[ -S /tmp/.X11-unix/X99 ] && grep -qs ':170C ' /proc/net/tcp /proc/net/tcp6"),
   },
-  // comm is truncated to 15 chars: "matchbox-window"
-  { proc: 'matchbox-window', command: 'export DISPLAY=:99; exec matchbox-window-manager -use_titlebar no >/tmp/adf-browser/wm.log 2>&1' },
+  // Containers provisioned before the desktop switch may still run matchbox or
+  // icewm (daemons outlive Studio restarts); they must release the WM selection
+  // first. Openbox exits quietly if they haven't — verify it is alive.
+  { proc: 'openbox', command: `${DESKTOP_ENV}; pkill -x matchbox-window 2>/dev/null; pkill -x icewm 2>/dev/null; sleep 0.3; exec openbox >/tmp/adf-browser/wm.log 2>&1`, waitAfter: waitUntil(aliveTest('openbox')) },
+  { proc: 'tint2', command: `${DESKTOP_ENV}; exec tint2 >/tmp/adf-browser/tint2.log 2>&1`, waitAfter: waitUntil(aliveTest('tint2')) },
+  // Wallpaper + desktop right-click menu. pcmanfm is single-instance: file
+  // manager windows opened later run inside this process.
+  { proc: 'pcmanfm', command: `${DESKTOP_ENV}; exec pcmanfm --desktop --profile default >/tmp/adf-browser/pcmanfm.log 2>&1`, waitAfter: waitUntil(aliveTest('pcmanfm')) },
   { proc: 'websockify', command: 'exec websockify --web /usr/share/novnc 6080 localhost:5900 >/tmp/adf-browser/websockify.log 2>&1' },
 ]
 
-/** Prep: state dirs + self-heal packages on containers provisioned pre-feature. */
-const BROWSER_STACK_PREP = `mkdir -p /tmp/adf-browser ${BROWSER_PROFILE_DIR}; missing=''; for pkg in tigervnc-standalone-server matchbox-window-manager novnc websockify tzdata fonts-noto-core fonts-noto-color-emoji; do dpkg-query -W -f='\${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $pkg"; done; if [ -n "$missing" ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; fi`
+/** Desktop packages: display server, window manager, panel, app menu, file
+ *  manager, terminal, editor, appearance settings, icons, computer-use CLI tools. */
+const DESKTOP_PACKAGES = ['tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm']
+
+/** Stock Debian rc.xml with: the flat Breeze theme; one virtual desktop (the
+ *  stock four have no pager here — Ctrl+Alt+Right would land on an empty
+ *  screen that looks like a crash); no reference to the absent debian-menu. */
+const OPENBOX_RC_SED = `sed -e 's#<name>Clearlooks</name>#<name>Breeze-ob</name>#' -e 's#<number>4</number>#<number>1</number>#' -e '/debian-menu.xml/d' /etc/xdg/openbox/rc.xml > ${DESKTOP_CONFIG_DIR}/openbox/rc.xml`
+
+/** Generated desktop files. Written only when this set changes (version stamp),
+ *  so what the user changes through Desktop Preferences, tint2conf or
+ *  LXAppearance survives until a Studio upgrade ships new defaults. */
+const DESKTOP_CONFIG_FILES: [string, string | Buffer][] = [
+  [`${DESKTOP_CONFIG_DIR}/openbox/menu.xml`, DESKTOP_OPENBOX_MENU],
+  [`${DESKTOP_CONFIG_DIR}/tint2/tint2rc`, DESKTOP_TINT2RC],
+  [`${DESKTOP_CONFIG_DIR}/jgmenu/jgmenurc`, DESKTOP_JGMENURC],
+  [`${DESKTOP_CONFIG_DIR}/pcmanfm/default/desktop-items-0.conf`, DESKTOP_PCMANFM_ITEMS],
+  [`${DESKTOP_CONFIG_DIR}/wallpaper.png`, gradientWallpaperPng(DESKTOP_WALLPAPER_TOP, DESKTOP_WALLPAPER_BOTTOM)],
+  [`${DESKTOP_CONFIG_DIR}/gtk-3.0/settings.ini`, DESKTOP_GTK_SETTINGS],
+  [`${DESKTOP_CONFIG_DIR}/libfm/libfm.conf`, DESKTOP_LIBFM_CONF],
+  [`${DESKTOP_CONFIG_DIR}/mimeapps.list`, DESKTOP_MIMEAPPS],
+  [`${DESKTOP_CONFIG_DIR}/apps.desktop`, desktopEntry('Applications', 'Application menu', 'jgmenu_run', 'start-here')],
+  [`${DESKTOP_CONFIG_DIR}/browser.desktop`, DESKTOP_BROWSER_LAUNCHER],
+  ['/usr/local/share/applications/adf-browser.desktop', DESKTOP_BROWSER_HANDLER],
+  [`${DESKTOP_CONFIG_DIR}/files.desktop`, desktopEntry('Files', 'File manager', DESKTOP_FILES_COMMAND, 'system-file-manager')],
+  [`${DESKTOP_CONFIG_DIR}/terminal.desktop`, desktopEntry('Terminal', 'Shell on the desktop', DESKTOP_TERMINAL_COMMAND, 'utilities-terminal')],
+]
+const DESKTOP_CONFIG_VERSION = createHash('sha1')
+  .update(OPENBOX_RC_SED)
+  .update(STOCK_CHROMIUM_ENTRY_SED)
+  .update(DESKTOP_CONFIG_FILES.map(([path, content]) => `${path}\n${Buffer.isBuffer(content) ? content.toString('base64') : content}`).join('\n'))
+  .digest('hex').slice(0, 12)
+/** Printed by the prep when it (re)wrote the config, so the stack start can
+ *  restart the panel/desktop and reconfigure the WM on an already-running desktop. */
+const DESKTOP_CONFIG_UPDATED_MARK = 'desktop-config-updated'
+
+/** Prep: state dirs, self-heal packages on containers provisioned pre-feature
+ *  (or pre-desktop), then the desktop config when its version changed. Package
+ *  install runs first — rc.xml derives from the stock Debian one (Alt+F4
+ *  close, Alt+Tab, … keybindings). */
+const BROWSER_STACK_PREP = [
+  `mkdir -p /tmp/adf-browser ${BROWSER_PROFILE_DIR} /workspace /usr/local/share/applications ${['openbox', 'tint2', 'jgmenu', 'pcmanfm/default', 'gtk-3.0', 'libfm'].map((d) => `${DESKTOP_CONFIG_DIR}/${d}`).join(' ')}`,
+  `{ missing=''; for pkg in ${DESKTOP_PACKAGES.join(' ')} tzdata fonts-noto-core fonts-noto-color-emoji; do dpkg-query -W -f='\${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $pkg"; done; if [ -n "$missing" ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; fi; }`,
+  `if [ "$(cat ${DESKTOP_CONFIG_DIR}/.version 2>/dev/null)" != '${DESKTOP_CONFIG_VERSION}' ]; then ${[
+    OPENBOX_RC_SED,
+    STOCK_CHROMIUM_ENTRY_SED,
+    ...DESKTOP_CONFIG_FILES.map(([path, content]) => shellWriteFile(path, content)),
+    'update-desktop-database /usr/local/share/applications 2>/dev/null || true',
+    `echo '${DESKTOP_CONFIG_VERSION}' > ${DESKTOP_CONFIG_DIR}/.version`,
+    `echo ${DESKTOP_CONFIG_UPDATED_MARK}`,
+  ].join(' && ')}; fi`,
+].join(' && ')
 
 /** Wait for the X display socket, then for noVNC to answer. */
-const BROWSER_STACK_READY = 'i=0; while [ $i -lt 40 ]; do wget -qO /dev/null http://127.0.0.1:6080/vnc.html 2>/dev/null && exit 0; i=$((i+1)); sleep 0.25; done; echo "noVNC not ready; see /tmp/adf-browser/*.log" >&2; exit 1'
+const BROWSER_STACK_READY = 'i=0; while [ $i -lt 40 ]; do wget -q -T 2 -t 1 -O /dev/null http://127.0.0.1:6080/vnc.html 2>/dev/null && exit 0; i=$((i+1)); sleep 0.25; done; echo "noVNC not ready; see /tmp/adf-browser/*.log" >&2; exit 1'
 
-/** The browser control socket is container-loopback only. It is consumed by
- *  browser MCP servers inside the same agent container and is never published. */
-const BROWSER_CDP_READY = `i=0; while [ $i -lt 80 ]; do wget -qO /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/json/version 2>/dev/null && exit 0; i=$((i+1)); sleep 0.25; done; echo "Chromium CDP not ready; see /tmp/adf-browser/chromium.log" >&2; exit 1`
 
-/** Zombie-safe check for a live process by comm name (ERE alternation allowed).
- *  Dead exec-session children linger as zombies under `sleep infinity` (which
- *  never reaps), so plain pgrep would false-positive forever. */
-const aliveCheck = (namePattern: string) =>
-  `ps -eo stat=,comm= | grep -Ev '^Z' | grep -Eq ' (${namePattern})$' && echo yes || echo no`
 
 /** Browser process comm names: chromium's comm is "chromium"/"chrome", firefox "firefox". */
 const BROWSER_PROC_PATTERN = 'chromium|chrome|firefox'
@@ -253,7 +629,7 @@ export interface ComputeEnvSettings {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SETTINGS: ComputeEnvSettings = {
-  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'matchbox-window-manager', 'novnc', 'websockify'],
+  containerPackages: ['python3-full', 'python3-pip', 'nftables', 'iproute2', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm'],
   machineCpus: 2,
   machineMemoryMb: 2048,
   containerImage: 'docker.io/library/node:20-slim',
@@ -303,6 +679,8 @@ export class PodmanService extends EventEmitter {
   private _browserSeen = new Map<string, boolean>()
   /** Containers whose Chromium renderer passed the runtime probe this run. */
   private _browserRuntimeVerified = new Set<string>()
+  /** Containers whose Computer tab was announced this run ('browser-session'). */
+  private _browserAnnounced = new Set<string>()
   /** Containers with the native Chromium compatibility shim installed. */
   private _browserCompatibilityInstalled = new Set<string>()
   /** Podman CPU compatibility decision is stable for the lifetime of the VM/app. */
@@ -438,6 +816,7 @@ export class PodmanService extends EventEmitter {
     try {
       await this.ensureMachine(bin)
       await this.ensureContainerRunning(bin, SHARED_CONTAINER, { kind: 'shared' })
+      await this.applyPeerFirewall(bin, SHARED_CONTAINER)
       this.setStatus('running')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -525,6 +904,7 @@ export class PodmanService extends EventEmitter {
       const bin = await this.requirePodman()
       await this.ensureMachine(bin)
       await this.ensureContainerRunning(bin, name, { kind: 'agent', agentId, agentName, browser: browserEnabled })
+      await this.applyPeerFirewall(bin, name)
       await this.ensurePipPackages(bin, name, pipPackages)
       console.log(`[Compute] Isolated container ${name} ready`)
     })().finally(() => {
@@ -589,13 +969,21 @@ export class PodmanService extends EventEmitter {
   }
 
   /** Stop an isolated container (preserves state). */
-  async stopIsolated(agentName: string, agentId: string): Promise<void> {
-    const name = isolatedContainerName(agentName, agentId)
+  /** Forget everything tied to one container run: display stack, browser
+   *  probes, watcher, viewer announcement. Any stop path must call this or the
+   *  next start short-circuits onto dead daemons. */
+  private forgetContainerRunState(name: string): void {
     this.stopBrowserWatch(name)
     this._stackStarted.delete(name)
     this._stackStartPending.delete(name)
     this._browserRuntimeVerified.delete(name)
+    this._browserAnnounced.delete(name)
     this.invalidateContainer(name)
+  }
+
+  async stopIsolated(agentName: string, agentId: string): Promise<void> {
+    const name = isolatedContainerName(agentName, agentId)
+    this.forgetContainerRunState(name)
     const bin = await this.findPodman()
     if (!bin) return
     try { await this.exec0(bin, ['stop', '-t', '5', name], STOP_EXEC_TIMEOUT_MS) } catch { /* ok */ }
@@ -639,6 +1027,8 @@ export class PodmanService extends EventEmitter {
       const labels: Record<string, string> = row?.Labels && typeof row.Labels === 'object' ? row.Labels : {}
       const managed = labels['io.adf.managed'] === 'true'
       const kind = labels['io.adf.kind']
+      // Managed containers created before the current isolation feature set.
+      const outdated = managed && labels[PEER_ISOLATION_LABEL] !== PEER_ISOLATION_VERSION
       const state = String(row?.State ?? '').trim() || 'unknown'
       return [{
         id: String(row?.Id ?? name).slice(0, 12),
@@ -652,6 +1042,7 @@ export class PodmanService extends EventEmitter {
         scope: (managed ? (kind === 'shared' ? 'shared' : 'dedicated') : 'legacy') as ContainerSummary['scope'],
         agentId: labels['io.adf.agent-id'],
         agentName: labels['io.adf.agent-name'],
+        outdated,
       }]
     })
   }
@@ -741,13 +1132,7 @@ export class PodmanService extends EventEmitter {
     await Promise.all(
       running.map((c) => this.exec0(bin, ['stop', '-t', '5', c.name], STOP_EXEC_TIMEOUT_MS).catch(() => {}))
     )
-    for (const c of running) {
-      this.stopBrowserWatch(c.name)
-      this._stackStarted.delete(c.name)
-      this._stackStartPending.delete(c.name)
-      this._browserRuntimeVerified.delete(c.name)
-      this.invalidateContainer(c.name)
-    }
+    for (const c of running) this.forgetContainerRunState(c.name)
     this.activeAgentIds.clear()
     this.setStatus('stopped')
   }
@@ -756,7 +1141,7 @@ export class PodmanService extends EventEmitter {
     const bin = await this.findPodman()
     if (!bin) return false
     await this.assertManagedContainer(bin, name)
-    this.invalidateContainer(name)
+    this.forgetContainerRunState(name)
     const result = await this.exec0(bin, ['stop', '-t', '5', name], STOP_EXEC_TIMEOUT_MS)
     return result.code === 0
   }
@@ -766,6 +1151,9 @@ export class PodmanService extends EventEmitter {
     if (!bin) return false
     await this.assertManagedContainer(bin, name)
     const result = await this.exec0(bin, ['start', name])
+    // The netns (and its firewall) is fresh after a start — reload it. No-op
+    // for containers created before the feature.
+    if (result.code === 0) await this.applyPeerFirewall(bin, name)
     return result.code === 0
   }
 
@@ -777,13 +1165,9 @@ export class PodmanService extends EventEmitter {
     // so removal must not require the very label they are missing.
     await this.assertManagedContainer(bin, name, { allowLegacy: true })
     const result = await this.exec0(bin, ['rm', '-f', name])
-    this.stopBrowserWatch(name)
-    this._stackStarted.delete(name)
-    this._stackStartPending.delete(name)
-    this._browserRuntimeVerified.delete(name)
+    this.forgetContainerRunState(name)
     this._browserCompatibilityInstalled.delete(name)
     this._novncPorts.delete(name)
-    this.invalidateContainer(name)
     return result.code === 0
   }
 
@@ -1050,6 +1434,7 @@ export class PodmanService extends EventEmitter {
           this._stackStarted.delete(containerName)
           this._stackStartPending.delete(containerName)
           this._browserRuntimeVerified.delete(containerName)
+          this._browserAnnounced.delete(containerName)
           this.kickBrowserReady(containerName)
         }
         return
@@ -1079,7 +1464,10 @@ export class PodmanService extends EventEmitter {
         // resolves `npx -y <pkg>` from a warm cache instead of the registry.
         '-v', `${NPM_CACHE_VOLUME}:${NPM_CACHE_MOUNT}`,
         '-e', `npm_config_cache=${NPM_CACHE_MOUNT}`,
+        // Scoped to this container's own netns: lets the peer firewall load.
+        '--cap-add', 'NET_ADMIN',
         '--label', 'io.adf.managed=true',
+        '--label', `${PEER_ISOLATION_LABEL}=${PEER_ISOLATION_VERSION}`,
         '--label', `io.adf.kind=${identity.kind}`,
         '--label', `io.adf.schema=${RUNTIME_SCHEMA}`,
         '--label', `${RUNTIME_SCHEMA_LABEL}=${RUNTIME_SCHEMA}`,
@@ -1183,6 +1571,22 @@ export class PodmanService extends EventEmitter {
     if (browserWanted) this.kickBrowserReady(containerName)
   }
 
+  /** Load the peer-isolation firewall in a container that was created with it
+   *  (labelled + NET_ADMIN). Runs on every bring-up because the netns — and its
+   *  nftables — is fresh after each container start. A no-op for older
+   *  containers (label absent), which the UI surfaces as `outdated`. Best
+   *  effort: a failure is logged, never fatal to the container bring-up. */
+  private async applyPeerFirewall(bin: string, containerName: string): Promise<void> {
+    const labelled = await this.exec0(bin, [
+      'inspect', containerName, '--format', `{{index .Config.Labels "${PEER_ISOLATION_LABEL}"}}`,
+    ], QUICK_EXEC_TIMEOUT_MS)
+    if (labelled.code !== 0 || labelled.stdout.trim() !== PEER_ISOLATION_VERSION) return
+    const res = await this.exec0(bin, ['exec', containerName, 'sh', '-c', PEER_FIREWALL_SCRIPT], 15_000)
+    if (res.code !== 0) {
+      console.warn(`[Compute] Peer firewall not applied in ${containerName}: ${(res.stderr || res.stdout).slice(0, 200)}`)
+    }
+  }
+
   /** Select the process-local compatibility needed by the browser runtime. */
   private getBrowserRuntimeCompatibility(bin: string): Promise<BrowserRuntimeCompatibility> {
     if (this._browserCompatibilitySelection) return this._browserCompatibilitySelection
@@ -1277,7 +1681,7 @@ export class PodmanService extends EventEmitter {
   }
 
   // ---------------------------------------------------------------------------
-  // Visible browser (Xvfb + x11vnc + noVNC inside agent containers)
+  // Visible desktop + browser (Xtigervnc + Openbox/tint2 + noVNC inside agent containers)
   // ---------------------------------------------------------------------------
 
   /**
@@ -1342,8 +1746,16 @@ export class PodmanService extends EventEmitter {
       const hostPort = await this.getNovncHostPort(containerName)
       if (hostPort === null) throw new Error('container has no published noVNC port')
       const bin = await this.requirePodman()
-      const prep = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_STACK_PREP], 300_000)
+      // Self-heal may install the whole desktop on an older container — same budget as provisioning.
+      const prep = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_STACK_PREP], 600_000)
       if (prep.code !== 0) throw new Error(prep.stderr.slice(0, 300) || 'display stack prep failed')
+      const configUpdated = prep.stdout.includes(DESKTOP_CONFIG_UPDATED_MARK)
+      if (configUpdated) {
+        // Daemons outlive Studio restarts and read config only at start:
+        // restart the panel and desktop (the loop below brings them back),
+        // reconfigure the WM in place after the loop.
+        await this.exec0(bin, ['exec', containerName, 'sh', '-c', 'pkill -x tint2; pkill -x pcmanfm; sleep 0.5; true'], 15_000)
+      }
       for (const daemon of BROWSER_STACK_DAEMONS) {
         const check = await this.exec0(bin, ['exec', containerName, 'sh', '-c', aliveCheck(daemon.proc)], 15_000)
         if (check.stdout.trim() !== 'yes') {
@@ -1352,14 +1764,19 @@ export class PodmanService extends EventEmitter {
         }
         if (daemon.waitAfter) {
           const waited = await this.exec0(bin, ['exec', containerName, 'sh', '-c', daemon.waitAfter], 15_000)
-          if (waited.code !== 0) throw new Error(`${daemon.proc} did not come up; see /tmp/adf-browser/${daemon.proc.toLowerCase()}.log`)
+          if (waited.code !== 0) throw new Error(`${daemon.proc} did not come up; see /tmp/adf-browser/*.log`)
         }
+      }
+      if (configUpdated) {
+        await this.exec0(bin, ['exec', containerName, 'sh', '-c', `${DESKTOP_ENV}; openbox --reconfigure`], 15_000)
       }
       const ready = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_STACK_READY], 30_000)
       if (ready.code !== 0) throw new Error(ready.stderr.slice(0, 300) || 'noVNC readiness check failed')
-      await this.ensureManagedBrowser(bin, containerName)
+      // The desktop is up: a browser that fails to open must not fail the
+      // stack (and re-run prep on every later call) — it is retried on demand.
       this._stackStarted.add(containerName)
-      console.log(`[Compute] Managed browser ready in ${containerName} (noVNC on 127.0.0.1:${hostPort}, CDP on container loopback)`)
+      console.log(`[Compute] Desktop ready in ${containerName} (noVNC on 127.0.0.1:${hostPort})`)
+      await this.ensureManagedBrowser(bin, containerName)
     })()
     const tracked = start.catch((err) => {
       console.warn(`[Compute] Browser display stack failed in ${containerName}:`, err instanceof Error ? err.message : err)
@@ -1372,48 +1789,54 @@ export class PodmanService extends EventEmitter {
     return tracked
   }
 
-  /** Start the one browser process owned by ADF, independently of any MCP
-   *  server. MCP processes may restart and reconnect over CDP without closing
-   *  the user's tabs, cookies, or authenticated session. */
+  /** Install the managed-browser control script and open the browser as part
+   *  of desktop boot. ADF owns one Chromium, independently of any MCP server:
+   *  MCP processes may restart and reconnect over CDP without closing the
+   *  user's tabs, cookies, or authenticated session. After boot the browser is
+   *  on demand — see ensureManagedBrowserUp and the script itself. A browser
+   *  that fails to open (or is held down) does not fail the desktop: the
+   *  reason is logged and resurfaces when a consumer asks for the browser. */
   private async ensureManagedBrowser(bin: string, containerName: string): Promise<void> {
-    const alreadyReady = await this.exec0(bin, [
-      'exec', containerName, 'wget', '-qO', '/dev/null', `http://127.0.0.1:${BROWSER_CDP_PORT}/json/version`,
-    ], 10_000)
-    if (alreadyReady.code === 0) return
-
     const identity = this.getBrowserHostIdentity()
     const compatibility = await this.getBrowserRuntimeCompatibility(bin)
     const chromium = compatibility.maskSme ? CHROMIUM_WRAPPER : '/usr/bin/chromium'
-    const setup = [
-      'export DISPLAY=:99',
-      `export TZ='${identity.timezone}'`,
-      'export LANG=C.UTF-8',
-      'export LC_ALL=C.UTF-8',
-      `mkdir -p '${BROWSER_PROFILE_DIR}' /tmp/adf-browser`,
-      `echo $$ > '${BROWSER_PID_FILE}'`,
-    ].join('; ')
-    const chromiumArgs = [
-      '--no-sandbox',
-      '--disable-dev-shm-usage',
-      '--start-maximized',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--password-store=basic',
-      '--disable-session-crashed-bubble',
-      `--lang='${identity.locale}'`,
-      `--user-data-dir='${BROWSER_PROFILE_DIR}'`,
-      '--remote-debugging-address=127.0.0.1',
-      `--remote-debugging-port=${BROWSER_CDP_PORT}`,
-      'about:blank',
-    ].join(' ')
-    const command = `${setup}; exec '${chromium}' ${chromiumArgs} >/tmp/adf-browser/chromium.log 2>&1`
+    const script = browserControlScript(chromium, identity)
+    // Atomic replace: a launcher or agent may be executing the old script.
+    const installed = await this.exec0(bin, [
+      'exec', containerName, 'sh', '-c',
+      `${shellWriteFile(`${BROWSER_CONTROL_SCRIPT}.tmp`, script)} && chmod 755 '${BROWSER_CONTROL_SCRIPT}.tmp' && mv -f '${BROWSER_CONTROL_SCRIPT}.tmp' '${BROWSER_CONTROL_SCRIPT}'`,
+    ], 15_000)
+    if (installed.code !== 0) throw new Error(`adf-browser install: ${installed.stderr.slice(0, 300)}`)
 
-    const started = await this.exec0(bin, ['exec', '-d', containerName, 'sh', '-c', command], 15_000)
-    if (started.code !== 0) throw new Error(`chromium: ${started.stderr.slice(0, 300)}`)
-    const ready = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_CDP_READY], 30_000)
-    if (ready.code !== 0) {
-      const log = await this.exec0(bin, ['exec', containerName, 'sh', '-c', 'tail -n 40 /tmp/adf-browser/chromium.log 2>/dev/null'], 15_000)
-      throw new Error((log.stdout || ready.stderr || 'managed Chromium failed to start').slice(0, 1000))
+    const started = await this.exec0(bin, ['exec', containerName, 'sh', '-c', `'${BROWSER_CONTROL_SCRIPT}' start`], BROWSER_START_TIMEOUT_MS)
+    if (started.code === BROWSER_HELD_EXIT_CODE) {
+      console.log(`[Compute] Managed browser in ${containerName} is held down (adf-browser stop); leaving it closed`)
+    } else if (started.code !== 0) {
+      console.warn(`[Compute] Managed browser did not open in ${containerName}:`, started.stderr.slice(0, 300))
+    }
+  }
+
+  /**
+   * Open the managed browser for a consumer about to attach over CDP (a
+   * browser MCP server being spawned). While the desktop is still booting
+   * this only kicks the boot (which opens the browser) — MCP spawn paths must
+   * not wait tens of seconds. Once the desktop runs, a closed browser is
+   * opened again (a few seconds). Throws with the reason when it cannot be
+   * opened, including when `adf-browser stop` holds it down — the spawn then
+   * fails with that message instead of an opaque CDP connection error.
+   */
+  async ensureManagedBrowserUp(containerName: string): Promise<void> {
+    if (containerName === SHARED_CONTAINER || this._shuttingDown) return
+    if (!this._stackStarted.has(containerName)) {
+      this.kickBrowserReady(containerName)
+      return
+    }
+    const bin = await this.requirePodman()
+    const result = await this.exec0(bin, ['exec', containerName, 'sh', '-c', `'${BROWSER_CONTROL_SCRIPT}' start`], BROWSER_START_TIMEOUT_MS)
+    if (result.code !== 0) {
+      const reason = result.stderr.trim().slice(0, 300) || 'managed Chromium did not come up'
+      console.warn(`[Compute] Managed browser in ${containerName}: ${reason}`)
+      throw new Error(reason)
     }
   }
 
@@ -1446,11 +1869,15 @@ export class PodmanService extends EventEmitter {
           const present = result.code === 0 && result.stdout.trim() === 'yes'
           const wasPresent = this._browserSeen.get(containerName) ?? false
           this._browserSeen.set(containerName, present)
-          if (present && !wasPresent) {
+          // Once per container run: the browser is on demand now, and a
+          // reopen (MCP restart, panel click) must not bring back a Computer
+          // tab the user closed. The tab can always be reopened by hand.
+          if (present && !wasPresent && !this._browserAnnounced.has(containerName)) {
             const hostPort = await this.getNovncHostPort(containerName)
             if (hostPort !== null) {
               // Ensure noVNC answers before the UI opens a viewer tab.
               await this.browserReady(containerName).catch(() => {})
+              this._browserAnnounced.add(containerName)
               this.emit('browser-session', {
                 agentId: meta.agentId,
                 agentName: meta.agentName,

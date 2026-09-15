@@ -56,6 +56,9 @@ export interface ContainerSummary {
   scope: 'shared' | 'dedicated' | 'legacy'
   agentId?: string
   agentName?: string
+  /** Managed container created before the current isolation feature set —
+   *  gains it only via a (data-losing) rebuild. Undefined/false = up to date. */
+  outdated?: boolean
 }
 
 /** Pushed to the renderer when a browser process appears in an agent's isolated container. */

@@ -24,6 +24,7 @@ The shared container starts on app launch and is always available when Podman is
 - **Scope:** All agents share one container
 - **Workspace:** `/workspace/{agentId}/` — each agent gets its own directory
 - **Use case:** MCP server execution, shared utilities, inter-agent file exchange via the shared filesystem
+- **Network:** Network-isolated from other agents' containers (new containers only — see [Security Considerations](#security-considerations))
 - **Risk level:** Low — agents can see each other's workspace directories but the container itself is isolated from the host
 
 ### Isolated Container (`adf-{name}-{shortid}`)
@@ -33,6 +34,7 @@ A dedicated container per agent, created when `compute.enabled` is set to `true`
 - **Scope:** One container per agent
 - **Workspace:** `/workspace/` — the agent owns the entire workspace
 - **Use case:** Agents that need a clean environment, custom packages, or shouldn't interfere with other agents' MCP servers
+- **Network:** Network-isolated from other agents' containers (new containers only — see [Security Considerations](#security-considerations))
 - **Risk level:** Low — fully isolated from other agents and the host
 - **Lifecycle:** Container persists across agent restarts (stopped, not removed). Rebuild for a clean slate.
 
@@ -77,7 +79,7 @@ Compute settings are per-agent in the agent config:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Create an isolated container for this agent |
-| `browser` | `true` | Run the Xvfb/noVNC display stack in the isolated container; `false` = headless-only |
+| `browser` | `true` | Run the visible desktop (X server, Openbox, tint2, PCManFM, noVNC, managed Chromium) in the isolated container and show the Computer tab; `false` = headless-only |
 | `host_access` | `false` | Allow host machine execution |
 | `allowed_targets` | legacy defaults | Built-in names and registered external target IDs this agent may use |
 | `default_target` | first available | Environment used when `compute_exec.target` is omitted |
@@ -194,10 +196,12 @@ Code running from an authorized file can call `compute_exec` directly without HI
 - **Cross-agent visibility:** All agents share `/workspace/`. Agent A can read/write Agent B's files at `/workspace/{agentB-id}/`. This is by design — agents are assumed to be under the same operator's control. If isolation is needed, use isolated containers.
 - **MCP interference:** A command in the shared container can affect running MCP server processes. Agents cannot kill each other's MCP servers directly (PIDs are managed by the runtime), but resource exhaustion is possible.
 - **No host access:** The container has no mounted host volumes and cannot reach the host filesystem.
+- **Network isolation from other containers:** A new shared container is firewalled from other agents' containers on the bridge — see [Network isolation between containers](#network-isolation-between-containers).
 
 ### Isolated Container
 
 - **Full isolation from other agents.** No shared filesystem, no shared processes.
+- **Network isolation from other containers:** A new isolated container is firewalled from other agents' containers on the bridge — see [Network isolation between containers](#network-isolation-between-containers).
 - **Pre-installed packages** (`compute.packages`) run inside the container with no host access.
 - **Container persistence:** Containers are stopped (not removed) on agent stop. State persists across restarts. Use the container rebuild action in the UI for a clean slate.
 
@@ -218,12 +222,21 @@ Code running from an authorized file can call `compute_exec` directly without HI
 - Prefer isolated or shared containers when host access isn't strictly necessary
 - Monitor the agent's activity via `adf_logs` and the audit trail
 
+### Network isolation between containers
+
+All managed containers — the shared container and every isolated container — share Podman's default bridge. On the macOS Podman machine a per-container network has no outbound route, so the shared bridge is what gives each container reliable outbound internet. Previously that also meant any container could reach any other container by its bridge IP.
+
+New containers close that path. Each managed container brings up an nftables rule set at startup (via a `NET_ADMIN` capability) that drops **new inbound** connections arriving from sibling containers on the bridge, while allowing loopback, established and return traffic, and the host-loopback port-forward that publishes the noVNC viewer. Because each container enforces this on its own inbound path, one agent cannot reach another agent's container, and a misbehaving agent can at most re-expose *itself* — never a peer. Outbound internet and the Computer-tab viewer are unaffected.
+
+This is peer isolation on a shared bridge, not separate networks, and it does not change the host boundary. It applies only to containers **created after** this change. A container created earlier keeps the old behavior — reachable by sibling containers — until it is rebuilt. Rebuilding erases the container's workspace files, installed packages, and browser session/profile, so gaining the isolation on an existing container is the user's deliberate choice, not automatic.
+
 ### Defense Layers by Environment
 
 | Control | Shared | Isolated | Host |
 |---------|--------|----------|------|
 | Container isolation from host | Yes | Yes | **No** |
 | Agent isolation from other agents | No (shared filesystem) | Yes | **No** |
+| Network isolation from other containers | Yes (new containers) | Yes (new containers) | n/a |
 | `restricted` enforcement | Yes | Yes | Yes (but bypassable via direct file access) |
 | `locked_fields` enforcement | Yes | Yes | Yes (but bypassable via direct file access) |
 | Config lock integrity | Yes | Yes | **No** (agent can edit .adf file) |

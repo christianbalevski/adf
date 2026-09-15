@@ -108,9 +108,9 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
         {tabs.map((tab) => {
           const isActive = tab.path === activeTabPath
           const isBrowser = tab.kind === 'browser'
-          const fileName = isBrowser ? 'Browser' : tab.path.split('/').pop() ?? tab.path
+          const fileName = isBrowser ? 'Computer' : tab.path.split('/').pop() ?? tab.path
           const hoverTitle = isBrowser && tab.browserMeta
-            ? `Agent browser — http://127.0.0.1:${tab.browserMeta.hostPort}`
+            ? `Agent computer — http://127.0.0.1:${tab.browserMeta.hostPort}`
             : tab.path
 
           return (

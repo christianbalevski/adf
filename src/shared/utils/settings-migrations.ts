@@ -92,7 +92,8 @@ function migrateComputeDefaults(data: Record<string, unknown>): boolean {
   if (!saved) return false // No saved compute settings — DEFAULTS will apply
 
   // Remove stale Alpine package names that don't exist on Debian
-  const STALE_PACKAGES = ['py3-pip', 'python3-full']  // Alpine names → python3-pip on Debian
+  // Alpine names → python3-pip on Debian; matchbox/icewm → openbox (desktop switch)
+  const STALE_PACKAGES = ['py3-pip', 'python3-full', 'matchbox-window-manager', 'icewm']
   const savedPkgs = (saved.containerPackages as string[]) ?? []
   let merged = savedPkgs.filter((p) => !STALE_PACKAGES.includes(p))
   let changed = merged.length !== savedPkgs.length
