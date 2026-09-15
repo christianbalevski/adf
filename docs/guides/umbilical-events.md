@@ -265,6 +265,24 @@ never retry.
 trigger) took over before the backoff elapsed — that turn resumes from the same
 loop history, so the failed work is not lost.
 
+## `error.*` — stable
+
+Recovery from the terminal `error` state. Non-auth errors (`tool_mismatch`,
+`turn_error`) let the next incoming agent-scope trigger run as a recovery
+attempt instead of being dropped; auth errors stay parked until fixed.
+
+| Event | Payload |
+|---|---|
+| `error.recovery_trigger` | `{ reason: 'auth' \| 'tool_mismatch' \| 'turn_error', trigger, after_cooldown }` |
+| `error.recovery_suppressed` | `{ reason, trigger, attempts, max_attempts }` |
+
+`recovery_trigger` fires when a trigger is spent as a recovery turn; `trigger`
+is the trigger type that woke the agent, and `after_cooldown` is true when the
+attempt cap had been hit but the cooldown window had elapsed. `recovery_suppressed`
+fires once per error episode when the cap is hit and the cooldown has not
+elapsed — every agent-scope trigger is dropped until a chat message arrives or
+the cooldown passes.
+
 ## `timer.*` — stable
 
 | Event | Payload |

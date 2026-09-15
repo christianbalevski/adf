@@ -111,6 +111,12 @@ export const UMBILICAL_EVENT_TYPES = [
   'provider.retry_scheduled',
   'provider.retry_started',
   'provider.retry_cancelled',
+  // Recovery from the terminal `error` state: an incoming agent-scope trigger
+  // may spend itself as a recovery turn (recovery_trigger); once the attempt
+  // cap is hit and the cooldown has not elapsed, triggers are dropped and the
+  // suppression is announced once per episode (recovery_suppressed).
+  'error.recovery_trigger',
+  'error.recovery_suppressed',
   'ws.reconnecting',
   'turn.delta',
 ] as const
