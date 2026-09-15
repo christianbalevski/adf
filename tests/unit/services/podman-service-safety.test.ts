@@ -408,6 +408,7 @@ describe('PodmanService lifecycle hardening', () => {
     const ensureContainerRunning = vi.fn().mockResolvedValue(undefined)
     ;(service as any).ensureMachine = ensureMachine
     ;(service as any).ensureContainerRunning = ensureContainerRunning
+    ;(service as any).applyPeerFirewall = vi.fn().mockResolvedValue(undefined)
 
     const first = service.ensureRunning()
     const second = service.ensureRunning()
@@ -425,6 +426,7 @@ describe('PodmanService lifecycle hardening', () => {
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValue(undefined)
     ;(service as any).ensureContainerRunning = ensureContainerRunning
+    ;(service as any).applyPeerFirewall = vi.fn().mockResolvedValue(undefined)
 
     await expect(service.ensureRunning()).rejects.toThrow('boom')
     await expect(service.ensureRunning()).resolves.toBeUndefined()
@@ -437,6 +439,7 @@ describe('PodmanService lifecycle hardening', () => {
     ;(service as any).ensureMachine = vi.fn().mockResolvedValue(undefined)
     const ensureContainerRunning = vi.fn().mockResolvedValue(undefined)
     ;(service as any).ensureContainerRunning = ensureContainerRunning
+    ;(service as any).applyPeerFirewall = vi.fn().mockResolvedValue(undefined)
     await service.ensureRunning()
 
     ;(service as any).noteContainerExec('adf-mcp', { code: 1, stderr: 'Error: container adf-mcp is not running' })
@@ -574,6 +577,7 @@ describe('PodmanService lifecycle hardening', () => {
     const gate = new Promise<void>((resolve) => { release = resolve })
     const ensureContainerRunning = vi.fn().mockImplementation(() => gate)
     ;(service as any).ensureContainerRunning = ensureContainerRunning
+    ;(service as any).applyPeerFirewall = vi.fn().mockResolvedValue(undefined)
 
     const first = service.ensureRunning()
     await new Promise((resolve) => setImmediate(resolve))

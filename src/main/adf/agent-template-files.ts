@@ -9,18 +9,23 @@
  * blobs via CreateAgentOptions.templateFilesDir.
  */
 
-import { app } from 'electron'
 import { copyFileSync, existsSync, mkdirSync, statSync, unlinkSync } from 'fs'
 import { basename, join } from 'path'
 import { randomBytes } from 'crypto'
 import type { AgentTemplateExtraFile } from '../../shared/types/adf-v02.types'
 import { TEMPLATE_EXTRA_FILE_MAX_BYTES, validateTemplateFilePath } from '../../shared/utils/agent-template'
+import { getUserDataPath } from '../utils/user-data-path'
 import { AdfWorkspace } from './adf-workspace'
 
-/** Same root the settings store uses, so blobs and metadata travel together. */
+/**
+ * Same root the settings store uses, so blobs and metadata travel together.
+ *
+ * Resolved through the electron-free helper: this module sits in the daemon's
+ * import graph (RuntimeService), so a top-level `import from 'electron'` would
+ * throw under plain Node before any call site's try/catch could run.
+ */
 export function agentTemplateFilesDir(): string {
-  const userDataPath = process.env.ADF_USER_DATA_DIR ?? app.getPath('userData')
-  return join(userDataPath, 'agent-template-files')
+  return join(getUserDataPath(), 'agent-template-files')
 }
 
 export interface AddTemplateFilesResult {
