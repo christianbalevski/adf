@@ -133,6 +133,9 @@ describe('cat oversized media', () => {
     }))
     const result = await cat.execute(ctx)
     expect(result.stdout).toContain('attached for viewing')
+    // fs_read-style tombstone: the loop parser rebuilds the image preview from
+    // this text on reload, so the shape is load-bearing.
+    expect(result.stdout).toContain('[image: ok.png (image/png), 1000 bytes')
     expect(result.media).toEqual([{ path: 'ok.png', mime_type: 'image/png' }])
   })
 })

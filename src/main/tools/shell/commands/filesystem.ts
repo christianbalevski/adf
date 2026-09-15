@@ -60,7 +60,11 @@ const catHandler: CommandHandler = {
           continue
         }
         media.push({ path: row.path ?? path, mime_type: mime })
-        outputs.push(`[${mime}: ${row.path ?? path}${row.size ? `, ${row.size} bytes` : ''} — attached for viewing if your model supports this modality]`)
+        // Same `[kind: path (mime)]` tombstone fs_read emits — the loop parser
+        // recovers the renderer preview from this text when the loop is
+        // reloaded (loop-parser extractImageUrl), so the shape must match.
+        const kind = mime.startsWith('image/') ? 'image' : mime.startsWith('audio/') ? 'audio' : 'video'
+        outputs.push(`[${kind}: ${row.path ?? path} (${mime})${row.size ? `, ${row.size} bytes` : ''} — attached for viewing if your model supports this modality]`)
         continue
       }
       if (!isTextRow(row)) {
