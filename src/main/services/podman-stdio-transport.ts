@@ -73,12 +73,14 @@ export interface PodmanStdioTransportOptions {
   cwd?: string
 }
 
+const MANAGED_CDP_RE = /(127\.0\.0\.1|localhost|\[::1\]):9222/
+
 /** True when the server's args point CDP at the container-loopback managed browser. */
 function attachesToManagedBrowser(args: string[] | undefined): boolean {
   if (!args) return false
   return args.some((arg, i) =>
-    (arg === '--cdp-endpoint' && /127\.0\.0\.1:9222/.test(args[i + 1] ?? '')) ||
-    (arg.startsWith('--cdp-endpoint=') && /127\.0\.0\.1:9222/.test(arg)))
+    (arg === '--cdp-endpoint' && MANAGED_CDP_RE.test(args[i + 1] ?? '')) ||
+    (arg.startsWith('--cdp-endpoint=') && MANAGED_CDP_RE.test(arg)))
 }
 
 export class PodmanStdioTransport implements Transport {
@@ -144,9 +146,11 @@ export class PodmanStdioTransport implements Transport {
       throw new Error('PodmanStdioTransport already started')
     }
     // A server attaching to the managed browser needs it open — the browser is
-    // on demand (closed windows stay closed until something asks for it).
+    // on demand (closed windows stay closed until something asks for it). A
+    // browser that cannot open fails the spawn with the reason, instead of a
+    // server that later dies on an opaque CDP connection error.
     if (attachesToManagedBrowser(this._opts.args)) {
-      await ensureManagedBrowserForSpawn(this._opts.containerName).catch(() => { /* logged by the service */ })
+      await ensureManagedBrowserForSpawn(this._opts.containerName)
     }
 
     return new Promise<void>((resolve, reject) => {

@@ -20,15 +20,15 @@ Both are agent-writable via `sys_update_config` (HIL-gated: your principal appro
 
 ## What is on the desktop
 
-A small standard Linux desktop, kept light (about 100 MB of packages on top of Chromium):
+A small standard Linux desktop, kept light:
 
 - **Openbox window manager and tint2 panel.** Every window has a close button and a task button on the dark panel at the bottom. Popup windows (OAuth sign-in, print dialogs, a second browser window) open as their own windows: close them with their close button or `Alt+F4`, switch with the panel or `Alt+Tab`.
 - **Panel launchers**, left to right: the application menu (every installed app, grouped by category; anything installed with `apt` appears automatically), Browser (the managed Chromium), Files (the workspace in the PCManFM file manager), Terminal (LXTerminal in the workspace).
-- **Applications:** PCManFM (files, and the desktop wallpaper with its own right-click menu and Desktop Preferences), LXTerminal, Mousepad (text editor), LXAppearance (GTK theme, icon and font settings), xterm. Images, PDFs and web content open in the managed browser, so no separate viewers are needed.
+- **Applications:** PCManFM (files, and the desktop wallpaper with its own right-click menu and Desktop Preferences), LXTerminal, Mousepad (text editor), LXAppearance (GTK theme, icon and font settings), xterm. Images, PDFs and web content open in the managed browser, so no separate viewers are needed. The Chromium entry under Internet is the managed browser too. Changes made in Desktop Preferences, tint2 settings or LXAppearance persist until a Studio upgrade ships new desktop defaults, which rewrites those files.
 - **Managed Chromium**, started maximized with a persistent profile and a loopback CDP endpoint (see below).
 - **Computer-use CLI tools** for `compute_exec`: `xdotool` (mouse, keyboard, window focus), `scrot` (screenshot to a file), `xclip` (clipboard). See [Computer Use](computer-use.md).
 
-The desktop resizes to fit the Computer tab exactly; maximized windows follow. The stack is brought up lazily the first time it is needed and restarted automatically when a container comes back. Containers provisioned by older Studio versions receive the desktop packages on their next stack start. Nothing stops an agent (with the owner's approval) or a user from installing more with `apt`: the desktop is unrestricted, only its defaults are small.
+The desktop resizes to fit the Computer tab exactly; maximized windows follow. The stack is brought up lazily the first time it is needed and restarted automatically when a container comes back. Containers created before the desktop switch receive the desktop packages on their next stack start (a slow first open); a container created before visible-browser support has no published noVNC port and must be rebuilt from Settings. Nothing stops an agent (with the owner's approval) or a user from installing more with `apt`: the desktop is unrestricted, only its defaults are small.
 
 ## Lifecycle and ownership
 
@@ -40,16 +40,16 @@ The browser runtime accounts for host and Podman architecture differences across
 
 ## Managed browser lifecycle
 
-The browser is **on demand**. It opens when the desktop first boots, when a browser MCP server attaches to it, or when someone clicks the panel's Browser button. If the user closes its last window it stays closed; nothing reopens it behind their back. The container has an `adf-browser` command, rewritten by Studio on every desktop start with the exact managed launch:
+The browser is **on demand**. It opens when the desktop first boots, when a browser MCP server is about to be spawned, or when someone clicks the panel's Browser button. If the user closes its last window it stays closed; nothing reopens it behind their back. The container has an `adf-browser` command, rewritten by Studio on every desktop start with the exact managed launch:
 
 | Command | Effect |
 |---------|--------|
-| `adf-browser start [url]` | Open the managed Chromium and return once CDP answers, or hand the URL to the running one. What the panel's Browser launcher runs. |
-| `adf-browser stop` | Stop Chromium and hold it down: Studio, an attaching MCP server, and the launcher's implicit start will not reopen it until `resume`. Use this before touching the profile directory. |
-| `adf-browser resume` | Lift the hold and start Chromium again. |
-| `adf-browser status` | `running`, `held`, or `stopped`. |
+| `adf-browser start [url]` | Open the managed Chromium and return once CDP answers, or hand the URL to the running one (no URL and already running: raises its window). Exits 3 while held. |
+| `adf-browser stop` | Stop Chromium and hold it down: desktop boot, an MCP server spawn, and file-open handlers will not reopen it until `resume`. Use this before touching the profile directory. |
+| `adf-browser resume [url]` | Lift the hold and start Chromium. This is what the panel's Browser button runs: a human clicking it is the override. |
+| `adf-browser status` | `running`, `held`, `stopped`, or `running-no-cdp` (a Chromium owns the profile without serving CDP; `start` reclaims it). |
 
-Browser MCP servers are spawned after a `start`, so an agent whose browser was closed gets it back by restarting the server (`mcp_restart`). A held browser is reported plainly if Studio later waits for it.
+A browser MCP server asks for the browser before it spawns. Once the desktop is up that means a closed browser is opened first, and a browser that cannot open (held down, or failing) fails the spawn with that reason instead of an opaque CDP error. While the desktop is still booting, the server spawns first and the browser follows; restart the server (`mcp_restart`, disabled by default: `tools.mcp_restart.enabled` to request) if it connected before Chromium was ready.
 
 ## Browser automation
 

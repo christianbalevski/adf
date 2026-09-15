@@ -108,7 +108,7 @@ Validate at three levels:
 
 1. **Artifact:** confirm the expected file exists and has a plausible size/type.
 2. **Application:** inspect the app's output, log, or API result and check its exit status.
-3. **Visible evidence:** run `scrot -o /workspace/shots/result.png` through `compute_exec`, transfer the image to the VFS, and inspect the actual image. Assert the expected title/content and select the intended X client or browser target when more than one full-screen window is present.
+3. **Visible evidence:** run `mkdir -p /workspace/shots && scrot -o /workspace/shots/result.png` through `compute_exec`, transfer the image to the VFS, and inspect the actual image. Assert the expected title/content and select the intended X client or browser target when more than one full-screen window is present.
 
 Do not claim success from a PID, window-list entry, process metadata, or a successful launch command alone. A screenshot of an old `about:blank` browser tab is not evidence that another application rendered. Keep screenshots as evidence only after inspecting them; do not leave transient PIDs or experiment-specific absolute paths in reusable instructions.
 

@@ -251,7 +251,9 @@ describe('PodmanService managed container safety', () => {
 
     // The launch lives in the adf-browser control script, installed as a base64
     // blob; the detached exec only starts its supervisor.
-    const installCall = exec0.mock.calls.find(([, args]) => args[0] === 'exec' && args[3] === '-c' && String(args[4]).includes("> '/usr/local/bin/adf-browser'"))
+    // Installed atomically: written to .tmp, chmod, then renamed over the live script.
+    const installCall = exec0.mock.calls.find(([, args]) => args[0] === 'exec' && args[3] === '-c' && String(args[4]).includes("> '/usr/local/bin/adf-browser.tmp'"))
+    expect(String(installCall?.[1][4])).toContain("mv -f '/usr/local/bin/adf-browser.tmp' '/usr/local/bin/adf-browser'")
     const blob = /printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d/.exec(String(installCall?.[1][4] ?? ''))?.[1] ?? ''
     const script = Buffer.from(blob, 'base64').toString('utf8')
     expect(script).toContain("TZ='America/New_York'")
@@ -266,7 +268,7 @@ describe('PodmanService managed container safety', () => {
     expect(startCall).toBeDefined()
   })
 
-  it('opens the managed browser on demand for a CDP consumer, respecting a hold', async () => {
+  it('opens the managed browser on demand for a CDP consumer and surfaces a hold', async () => {
     const service = new PodmanService()
     const exec0 = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' })
     ;(service as any).exec0 = exec0
@@ -274,18 +276,39 @@ describe('PodmanService managed container safety', () => {
     const kick = vi.fn()
     ;(service as any).kickBrowserReady = kick
 
+    // The shared container has no managed browser: nothing to do, ever.
+    await service.ensureManagedBrowserUp('adf-mcp')
+    expect(kick).not.toHaveBeenCalled()
+
     // Desktop not booted yet: only kick the boot, never block the MCP spawn.
     await service.ensureManagedBrowserUp('adf-agent-12345678')
     expect(kick).toHaveBeenCalledWith('adf-agent-12345678')
     expect(exec0).not.toHaveBeenCalled()
 
-    // Desktop running: start the browser unless `adf-browser stop` holds it down.
+    // Desktop running: start the browser through the control script.
     ;(service as any)._stackStarted.add('adf-agent-12345678')
     await service.ensureManagedBrowserUp('adf-agent-12345678')
     const call = exec0.mock.calls[0][1]
     expect(call.slice(0, 4)).toEqual(['exec', 'adf-agent-12345678', 'sh', '-c'])
-    expect(call[4]).toContain("[ -f '/tmp/adf-browser/hold' ] && exit 0")
-    expect(call[4]).toContain("'/usr/local/bin/adf-browser' start")
+    expect(call[4]).toBe("'/usr/local/bin/adf-browser' start")
+
+    // Held down by `adf-browser stop` (exit 3): the consumer learns why.
+    exec0.mockResolvedValueOnce({ code: 3, stdout: '', stderr: "managed Chromium is held down by 'adf-browser stop'; run 'adf-browser resume'\n" })
+    await expect(service.ensureManagedBrowserUp('adf-agent-12345678')).rejects.toThrow("held down by 'adf-browser stop'")
+  })
+
+  it('does not fail the desktop stack when the browser cannot open at boot', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'exec' && String(args[4] ?? '').includes("'/usr/local/bin/adf-browser' start")) {
+        return { code: 3, stdout: '', stderr: 'held' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    ;(service as any).exec0 = exec0
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({})
+    ;(service as any).getBrowserHostIdentity = vi.fn().mockReturnValue({ timezone: 'UTC', locale: 'en-US' })
+    await expect((service as any).ensureManagedBrowser('/usr/bin/podman', 'adf-agent-12345678')).resolves.toBeUndefined()
   })
 
   it('refuses lifecycle changes for unlabeled containers', async () => {

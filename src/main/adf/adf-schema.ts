@@ -593,7 +593,7 @@ export const AgentConfigSchema = z.object({
     default_target: z.string().min(1).optional(),
     host_access: z.boolean().optional(),
     browser: z.boolean().optional()
-      .describe('Run the Xvfb/noVNC display stack in the isolated container (default true). false = headless-only, no viewer.'),
+      .describe('Run the visible desktop (X server, Openbox, tint2, noVNC, managed Chromium) in the isolated container and show the Computer tab (default true). false = headless-only, no viewer.'),
   }).optional(),
   logging: LoggingConfigSchema.optional(),
   adapters: z.record(AdapterInstanceConfigSchema).optional(),

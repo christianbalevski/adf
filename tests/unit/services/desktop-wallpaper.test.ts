@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { inflateSync } from 'zlib'
+import { inflateSync, crc32 } from 'zlib'
 import { gradientWallpaperPng } from '../../../src/main/services/desktop-wallpaper'
 
 describe('gradientWallpaperPng', () => {
@@ -11,9 +11,13 @@ describe('gradientWallpaperPng', () => {
     expect(png.readUInt32BE(20)).toBe(3)
     expect(png[24]).toBe(8)
     expect(png[25]).toBe(2)
+    expect([png[26], png[27], png[28]]).toEqual([0, 0, 0]) // compression, filter, interlace
+    // Chunk CRC covers type + data, not the length prefix.
+    expect(png.readUInt32BE(29)).toBe(crc32(png.subarray(12, 29)))
 
     const idatLength = png.readUInt32BE(33)
     expect(png.subarray(37, 41).toString('latin1')).toBe('IDAT')
+    expect(png.readUInt32BE(41 + idatLength)).toBe(crc32(png.subarray(37, 41 + idatLength)))
     const raw = inflateSync(png.subarray(41, 41 + idatLength))
     const stride = 1 + 2 * 3
     expect(raw.length).toBe(stride * 3)

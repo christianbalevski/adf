@@ -50,7 +50,7 @@ Always write the inactive slot, verify it by reading every value back, and updat
 ## Checkpoint the profile
 
 1. Create a private transfer directory under `/workspace` in the isolated container and install a cleanup trap. `fs_transfer` addresses only that container workspace; keep the plaintext archive there only until it is encrypted and deleted.
-2. Stop Chromium with `adf-browser stop` (it exits gracefully, waits for exit, and holds the browser down so Studio, an attaching MCP server, or the desktop launcher cannot reopen it mid-operation), then remove only transient lock/socket files.
+2. Stop Chromium with `adf-browser stop` (it exits gracefully, waits for exit, and holds the browser down so Studio, an MCP server spawn, or a file-open cannot reopen it mid-operation; only `resume`, which the desktop's Browser button also runs, lifts the hold — tell the user not to click it while you work), then remove only transient lock/socket files.
 3. Archive the profile while retaining login and password data. Exclude disposable caches and crash artifacts only.
 4. Generate a random 256-bit data-encryption key in sandbox code.
 5. Establish an ephemeral public-key bridge so the raw key never appears in `compute_exec` arguments or output:

@@ -10,19 +10,21 @@ see_also:
 
 # Computer Use
 
-Your isolated container has a real Linux desktop (X display `:99`): a panel with an application menu, a file manager, a terminal, a text editor, and the managed Chromium. Your principal sees the same screen in the **Computer** tab. Everything below runs through `compute_exec` on the isolated target; `DISPLAY` is already set for you.
+Your isolated container has a real Linux desktop (X display `:99`, one workspace, a session D-Bus): a panel with an application menu, a file manager, a terminal and the managed Chromium, plus a text editor (Mousepad) in the menu. Your principal sees the same screen in the **Computer** tab. Everything below runs through `compute_exec` on the isolated target; `DISPLAY` is already set for you.
 
 ## The loop: look, act, look again
 
 Desktop control is coordinate based, so every action is a three-step loop. Screenshot, look at the image, act; then screenshot again to see what happened.
 
 ```text
-compute_exec({ command: "scrot -o /workspace/shots/1.png", target: "isolated" })
+compute_exec({ command: "mkdir -p /workspace/shots && scrot -o /workspace/shots/1.png", target: "isolated" })
 fs_transfer({ from: "isolated", to: "vfs", path: "shots/1.png", save_as: "shots/1.png" })
 → open shots/1.png and read the screen
 compute_exec({ command: "xdotool mousemove 412 233 click 1", target: "isolated" })
 compute_exec({ command: "scrot -o /workspace/shots/2.png", target: "isolated" })
 ```
+
+`target` exists only when you have more than one environment; if isolated is your only one, omit it.
 
 The desktop is exactly the size of the Computer tab, so coordinates from an old screenshot go stale when your principal resizes the window. `xdotool getdisplaygeometry` tells you the current size; if it changed, take a fresh screenshot before clicking.
 
@@ -49,13 +51,13 @@ xdotool key Return  |  key Escape  |  key alt+F4  |  key alt+Tab
 xdotool search --onlyvisible --name 'Mousepad' windowactivate --sync   # focus a window first
 ```
 
-For long text, or anything beyond ASCII, go through the clipboard instead of `type`:
+For long text, or anything beyond ASCII, go through the clipboard instead of `type`. The clipboard is owned by a process, and a one-shot `compute_exec` takes its children with it, so the owner has to be detached:
 
 ```text
-printf '%s' "$TEXT" | xclip -selection clipboard && xdotool key ctrl+v
+setsid -f sh -c "printf '%s' 'Ünïcödé, long text…' | xclip -selection clipboard" && sleep 0.3 && xdotool key ctrl+v
 ```
 
-Reading the clipboard back is `xclip -selection clipboard -o`.
+Reading the clipboard back is `xclip -selection clipboard -o`, valid while an owner is still running (an application that copied, or your detached `xclip`).
 
 ## Opening applications
 
@@ -68,7 +70,7 @@ setsid -f mousepad /workspace/notes.md </dev/null >/dev/null 2>&1
 setsid -f pcmanfm /workspace </dev/null >/dev/null 2>&1
 ```
 
-Anything else the task needs can be installed with `apt-get install`; it appears in the application menu by itself. Whether that command runs without approval depends on your compute policy (see [Compute Environments](compute.md)).
+Anything else the task needs can be installed with `apt-get update && apt-get install -y <package>` (the package lists are cleared after provisioning, so `update` is not optional); it appears in the application menu by itself. Whether that command runs without approval depends on your compute policy (see [Compute Environments](compute.md)).
 
 ## Files
 
@@ -80,14 +82,16 @@ adf-browser start file:///workspace/report.pdf
 
 ## Browser versus desktop
 
-For web pages use the Playwright MCP server: it reads the DOM and needs no coordinates. Reach for `xdotool` when the DOM does not cover it — a native file chooser, a print dialog, a popup window you cannot address, another application. A file chooser is usually just a path and Return:
+For web pages use the Playwright MCP server: it reads the DOM and needs no coordinates. Reach for `xdotool` when the DOM does not cover it — a native file chooser, a print dialog, a popup window you cannot address, another application. A file chooser is usually just a path and Return. Focus the window in one call and send keys in separate ones: chaining `key` or `type` after `search` targets that window directly, which switches xdotool to synthetic events that Chromium and most toolkits ignore.
 
 ```text
-xdotool search --onlyvisible --name 'Open File' windowactivate --sync key ctrl+l type '/workspace/inputs/photo.png'
+xdotool search --onlyvisible --name 'Open File' windowactivate --sync
+xdotool key ctrl+l
+xdotool type '/workspace/inputs/photo.png'
 xdotool key Return
 ```
 
-The browser opens on demand and stays closed once closed. If a browser tool fails because it is gone, `adf-browser status` tells you; restarting the browser MCP server (`mcp_restart`) or `adf-browser start` brings it back.
+The browser opens on demand and stays closed once closed. If a browser tool fails because it is gone, `adf-browser status` tells you; `adf-browser start` brings it back, and so does restarting the browser MCP server (`mcp_restart`, off by default: `tools.mcp_restart.enabled` to request).
 
 ## Sharing the screen
 
@@ -95,4 +99,4 @@ It is one desktop, and your principal's mouse is the same mouse. Say when you ar
 
 ## What to trust
 
-Trust screenshots and application output, not launch commands. A successful `xdotool` exit code means the event was sent, not that the application did anything with it. Audio, printing and GPU acceleration are not part of this desktop.
+Trust screenshots and application output, not launch commands. A successful `xdotool` exit code means the event was sent, not that the application did anything with it. No print system or audio is installed and GPU acceleration is unverified; Chromium's own Save as PDF still works.
