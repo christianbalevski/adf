@@ -2885,7 +2885,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   <p className="mt-1 text-[10px] text-neutral-400 dark:text-neutral-500">JavaScript packages are configured separately under Code execution.</p>
                 </div>
 
-                {/* Container browser viewer */}
+                {/* Container desktop (Computer tab) */}
                 <div className="mt-2">
                   <label className="flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50 cursor-pointer">
                     <span>

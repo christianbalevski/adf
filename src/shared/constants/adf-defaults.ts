@@ -371,7 +371,7 @@ export const TOOL_PROMPT_LABELS: Record<string, string> = {
   database: 'Database Schema',
   state_management: 'State Management',
   _autonomous: 'Autonomous Mode',
-  _browser: 'Visible Browser',
+  _browser: 'Computer',
 }
 
 /**
