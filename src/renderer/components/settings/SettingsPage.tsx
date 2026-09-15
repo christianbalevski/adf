@@ -23,6 +23,14 @@ import type { ContainerOverview, ContainerSummary, ExecutionTarget, LocalContain
 import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 import { reconcileHostApprovedRegistrations } from '../../../shared/utils/mcp-config'
 
+/**
+ * Hover copy for the "Update available" advisory shown on managed containers
+ * that predate the current feature set (they lack network isolation). Rebuilding
+ * is optional and destructive — it must be the owner's choice, never automatic.
+ */
+const OUTDATED_CONTAINER_ADVISORY =
+  'This container was built before newer features. Rebuilding it adds network isolation from other agents.\n\nRebuilding erases its workspace files, installed packages, and any saved browser session, so it is optional and up to you. Use Rebuild in the More actions menu when you choose to.'
+
 type SettingsNavItem = {
   id: SettingsSection
   label: string
@@ -3022,6 +3030,13 @@ function ComputeTab({
                 <span>
                   <span className="flex items-center gap-1.5 text-[11px] text-[var(--adf-ui-text)]"><span className={`size-1.5 rounded-full ${c.running ? 'bg-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-text-subtle)]'}`} />{c.running ? 'Running' : 'Stopped'}</span>
                   <span className="mt-0.5 block text-[10px] text-[var(--adf-ui-text-muted)]">{isShared ? 'Shared' : c.scope === 'legacy' ? 'Legacy' : 'Dedicated'}</span>
+                  {c.managed && c.outdated && (
+                    <Tooltip tip={OUTDATED_CONTAINER_ADVISORY}>
+                      <span className="mt-0.5 inline-flex items-center gap-1 rounded bg-[var(--adf-ui-warning-subtle)] px-1.5 py-0.5 text-[10px] text-[var(--adf-ui-warning)]">
+                        <span className="size-1 rounded-full bg-[var(--adf-ui-warning)]" aria-hidden="true" />Update available
+                      </span>
+                    </Tooltip>
+                  )}
                 </span>
                 <span className="truncate text-[11px] text-[var(--adf-ui-text-muted)]">{isShared ? `${computeEnvStatus.activeAgents.length} active agents` : c.agentName || c.agentId || 'Unassigned'}</span>
                 <div className="relative flex justify-end gap-1">
@@ -3797,6 +3812,12 @@ function ContainerDetailPanel({ container, onClose }: { container: ContainerSumm
           {error && <div className="mb-3 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-danger-subtle)] px-3 py-2 text-[11px] text-[var(--adf-ui-danger)]">{error} <button className="underline" onClick={refresh}>Retry</button></div>}
           {loading && !detail && <div className="py-12 text-center text-[11px] text-[var(--adf-ui-text-muted)]">Loading container details…</div>}
 
+          {tab === 'summary' && detail && container.managed && container.outdated && (
+            <div className="mb-3 flex items-start gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[11px] text-[var(--adf-ui-warning)]">
+              <span className="mt-1 size-1.5 shrink-0 rounded-full bg-[var(--adf-ui-warning)]" aria-hidden="true" />
+              <span className="leading-snug">Update available — rebuilding adds network isolation from other agents. It also erases this container&apos;s workspace files, installed packages, and any saved browser session, so it is optional and up to you.</span>
+            </div>
+          )}
           {tab === 'summary' && detail && (
             <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
               <section className="rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] p-4">

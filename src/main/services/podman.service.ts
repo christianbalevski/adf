@@ -67,6 +67,32 @@ const RUNTIME_PLATFORM_LABEL = 'io.adf.runtime.platform'
 const RUNTIME_SCHEMA_LABEL = 'io.adf.runtime.schema'
 const RUNTIME_BROWSER_COMPAT_LABEL = 'io.adf.runtime.browser-compat'
 const RUNTIME_SCHEMA = '4'
+
+/** Peer network isolation: containers created at this version carry an
+ *  in-container firewall that drops inbound from sibling containers on the
+ *  shared bridge. Bumping the version marks older containers `outdated` so the
+ *  UI can offer a (data-losing) rebuild. */
+const PEER_ISOLATION_LABEL = 'io.adf.peer-isolation'
+const PEER_ISOLATION_VERSION = 'v1'
+
+/** nftables INPUT filter run in each isolation-capable container on every
+ *  bring-up. All managed containers share podman's default bridge (user-
+ *  defined networks have no outbound on macOS podman-machine), so peers are
+ *  fenced off here instead. Host port-forwards arrive from the container's own
+ *  IP and are allowed; sibling containers arrive from other bridge addresses
+ *  and their new connections are dropped. Idempotent (flush then rebuild). */
+const PEER_FIREWALL_SCRIPT = [
+  `own=$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | head -1)`,
+  `[ -n "$own" ] || { echo 'peer-firewall: no global IPv4 address' >&2; exit 1; }`,
+  `ip=\${own%/*}`,
+  `nft add table inet adf 2>/dev/null || true`,
+  `nft add chain inet adf input '{ type filter hook input priority filter; policy accept; }' 2>/dev/null || true`,
+  `nft flush chain inet adf input`,
+  `nft add rule inet adf input ct state established,related accept`,
+  `nft add rule inet adf input iifname lo accept`,
+  `nft add rule inet adf input ip saddr "$ip" accept`,
+  `nft add rule inet adf input ip saddr "$own" ct state new drop`,
+].join('; ')
 const NOVNC_PORT_BASE = 36080
 const NOVNC_CONTAINER_PORT = 6080
 /** Browser watcher cadence: a few fast polls right after start, then slow.
@@ -603,7 +629,7 @@ export interface ComputeEnvSettings {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SETTINGS: ComputeEnvSettings = {
-  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm'],
+  containerPackages: ['python3-full', 'python3-pip', 'nftables', 'iproute2', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm'],
   machineCpus: 2,
   machineMemoryMb: 2048,
   containerImage: 'docker.io/library/node:20-slim',
@@ -790,6 +816,7 @@ export class PodmanService extends EventEmitter {
     try {
       await this.ensureMachine(bin)
       await this.ensureContainerRunning(bin, SHARED_CONTAINER, { kind: 'shared' })
+      await this.applyPeerFirewall(bin, SHARED_CONTAINER)
       this.setStatus('running')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -877,6 +904,7 @@ export class PodmanService extends EventEmitter {
       const bin = await this.requirePodman()
       await this.ensureMachine(bin)
       await this.ensureContainerRunning(bin, name, { kind: 'agent', agentId, agentName, browser: browserEnabled })
+      await this.applyPeerFirewall(bin, name)
       await this.ensurePipPackages(bin, name, pipPackages)
       console.log(`[Compute] Isolated container ${name} ready`)
     })().finally(() => {
@@ -999,6 +1027,8 @@ export class PodmanService extends EventEmitter {
       const labels: Record<string, string> = row?.Labels && typeof row.Labels === 'object' ? row.Labels : {}
       const managed = labels['io.adf.managed'] === 'true'
       const kind = labels['io.adf.kind']
+      // Managed containers created before the current isolation feature set.
+      const outdated = managed && labels[PEER_ISOLATION_LABEL] !== PEER_ISOLATION_VERSION
       const state = String(row?.State ?? '').trim() || 'unknown'
       return [{
         id: String(row?.Id ?? name).slice(0, 12),
@@ -1012,6 +1042,7 @@ export class PodmanService extends EventEmitter {
         scope: (managed ? (kind === 'shared' ? 'shared' : 'dedicated') : 'legacy') as ContainerSummary['scope'],
         agentId: labels['io.adf.agent-id'],
         agentName: labels['io.adf.agent-name'],
+        outdated,
       }]
     })
   }
@@ -1120,6 +1151,9 @@ export class PodmanService extends EventEmitter {
     if (!bin) return false
     await this.assertManagedContainer(bin, name)
     const result = await this.exec0(bin, ['start', name])
+    // The netns (and its firewall) is fresh after a start — reload it. No-op
+    // for containers created before the feature.
+    if (result.code === 0) await this.applyPeerFirewall(bin, name)
     return result.code === 0
   }
 
@@ -1430,7 +1464,10 @@ export class PodmanService extends EventEmitter {
         // resolves `npx -y <pkg>` from a warm cache instead of the registry.
         '-v', `${NPM_CACHE_VOLUME}:${NPM_CACHE_MOUNT}`,
         '-e', `npm_config_cache=${NPM_CACHE_MOUNT}`,
+        // Scoped to this container's own netns: lets the peer firewall load.
+        '--cap-add', 'NET_ADMIN',
         '--label', 'io.adf.managed=true',
+        '--label', `${PEER_ISOLATION_LABEL}=${PEER_ISOLATION_VERSION}`,
         '--label', `io.adf.kind=${identity.kind}`,
         '--label', `io.adf.schema=${RUNTIME_SCHEMA}`,
         '--label', `${RUNTIME_SCHEMA_LABEL}=${RUNTIME_SCHEMA}`,
@@ -1532,6 +1569,22 @@ export class PodmanService extends EventEmitter {
       await this.ensureBrowserCompatibility(bin, containerName, compatibility)
     }
     if (browserWanted) this.kickBrowserReady(containerName)
+  }
+
+  /** Load the peer-isolation firewall in a container that was created with it
+   *  (labelled + NET_ADMIN). Runs on every bring-up because the netns — and its
+   *  nftables — is fresh after each container start. A no-op for older
+   *  containers (label absent), which the UI surfaces as `outdated`. Best
+   *  effort: a failure is logged, never fatal to the container bring-up. */
+  private async applyPeerFirewall(bin: string, containerName: string): Promise<void> {
+    const labelled = await this.exec0(bin, [
+      'inspect', containerName, '--format', `{{index .Config.Labels "${PEER_ISOLATION_LABEL}"}}`,
+    ], QUICK_EXEC_TIMEOUT_MS)
+    if (labelled.code !== 0 || labelled.stdout.trim() !== PEER_ISOLATION_VERSION) return
+    const res = await this.exec0(bin, ['exec', containerName, 'sh', '-c', PEER_FIREWALL_SCRIPT], 15_000)
+    if (res.code !== 0) {
+      console.warn(`[Compute] Peer firewall not applied in ${containerName}: ${(res.stderr || res.stdout).slice(0, 200)}`)
+    }
   }
 
   /** Select the process-local compatibility needed by the browser runtime. */

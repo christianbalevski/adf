@@ -311,6 +311,51 @@ describe('PodmanService managed container safety', () => {
     await expect((service as any).ensureManagedBrowser('/usr/bin/podman', 'adf-agent-12345678')).resolves.toBeUndefined()
   })
 
+  it('creates isolation-capable containers with NET_ADMIN and the peer-isolation label', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'container' && args[1] === 'inspect') return { code: 1, stdout: '', stderr: 'no such container' }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    ;(service as any).exec0 = exec0
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({})
+    ;(service as any).getBrowserHostIdentity = vi.fn().mockReturnValue({ timezone: 'UTC', locale: 'en-US' })
+    ;(service as any).allocateNovncPort = vi.fn().mockResolvedValue(36080)
+    ;(service as any).ensureBrowserCompatibility = vi.fn().mockResolvedValue(undefined)
+
+    await (service as any).ensureContainerRunning('/usr/bin/podman', 'adf-agent-12345678', { kind: 'agent', agentId: 'agent-1234', agentName: 'a', browser: false })
+
+    const runCall = exec0.mock.calls.find(([, args]) => args[0] === 'run' && args.includes('adf-agent-12345678'))
+    const runArgs = runCall?.[1] ?? []
+    expect(runArgs).toEqual(expect.arrayContaining(['--cap-add', 'NET_ADMIN']))
+    const labelIdx = runArgs.indexOf('io.adf.peer-isolation=v1')
+    expect(labelIdx).toBeGreaterThan(-1)
+    expect(runArgs[labelIdx - 1]).toBe('--label')
+  })
+
+  it('applyPeerFirewall runs only for labelled (isolation-capable) containers', async () => {
+    const service = new PodmanService()
+    const calls: string[][] = []
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      calls.push(args)
+      if (args[0] === 'inspect' && String(args[3] ?? '').includes('peer-isolation')) {
+        // First container carries the label, second does not.
+        return { code: 0, stdout: (args[1] === 'adf-new' ? 'v1' : ''), stderr: '' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    ;(service as any).exec0 = exec0
+
+    await (service as any).applyPeerFirewall('/usr/bin/podman', 'adf-new')
+    await (service as any).applyPeerFirewall('/usr/bin/podman', 'adf-old')
+
+    const execRuns = calls.filter((a) => a[0] === 'exec')
+    expect(execRuns).toHaveLength(1)
+    expect(execRuns[0][1]).toBe('adf-new')
+    expect(String(execRuns[0][4])).toContain('nft add rule inet adf input')
+    expect(String(execRuns[0][4])).toContain('ct state new drop')
+  })
+
   it('refuses lifecycle changes for unlabeled containers', async () => {
     const service = new PodmanService()
     vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')

@@ -11,6 +11,8 @@ export const DEFAULT_COMPUTE_SETTINGS = {
   containerPackages: [
     'python3-full',
     'python3-pip',
+    'nftables',
+    'iproute2',
     'git',
     'curl',
     'wget',

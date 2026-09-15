@@ -32,7 +32,7 @@ The desktop resizes to fit the Computer tab exactly; maximized windows follow. T
 
 ## Lifecycle and ownership
 
-ADF starts the display server, window manager, noVNC bridge, and Chromium in the agent's isolated Podman container. Studio waits for the noVNC endpoint before opening the viewer, avoiding transient `ERR_EMPTY_RESPONSE` failures during container startup.
+ADF starts the display server, window manager, noVNC bridge, and Chromium in the agent's isolated Podman container. Studio waits for the noVNC endpoint before opening the viewer, avoiding transient `ERR_EMPTY_RESPONSE` failures during container startup. The viewer port is published on host loopback only; in a container created after network isolation shipped, sibling containers also cannot reach the in-container noVNC port (6080) over the Podman bridge. See [Network isolation between containers](compute.md#network-isolation-between-containers).
 
 Chromium uses a persistent profile at `/var/lib/adf/browser-profile`. The profile survives browser and MCP restarts while the container exists. Chromium uses its portable basic password store, so its ordinary saved-password database remains part of this sensitive profile instead of depending on a host OS keychain. ADF reconciles existing containers on startup so containers created by older versions receive required packages, fonts, timezone data, compatibility support, and managed-browser configuration.
 
