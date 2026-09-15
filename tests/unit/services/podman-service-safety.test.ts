@@ -249,13 +249,20 @@ describe('PodmanService managed container safety', () => {
 
     await (service as any).ensureManagedBrowser('/usr/bin/podman', 'adf-agent-12345678')
 
+    // The launch lives in the adf-browser control script, installed as a base64
+    // blob; the detached exec only starts its supervisor.
+    const installCall = exec0.mock.calls.find(([, args]) => args[0] === 'exec' && args[3] === '-c' && String(args[4]).includes("> '/usr/local/bin/adf-browser'"))
+    const blob = /printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d/.exec(String(installCall?.[1][4] ?? ''))?.[1] ?? ''
+    const script = Buffer.from(blob, 'base64').toString('utf8')
+    expect(script).toContain("TZ='America/New_York'")
+    expect(script).toContain("PROFILE='/var/lib/adf/browser-profile'")
+    expect(script).toContain('--user-data-dir="$PROFILE"')
+    expect(script).toContain('--remote-debugging-address=127.0.0.1')
+    expect(script).toContain('--remote-debugging-port=9222')
+    expect(script).not.toContain('--enable-automation')
+
     const startCall = exec0.mock.calls.find(([, args]) => args[0] === 'exec' && args[1] === '-d')
-    const command = startCall?.[1][5] ?? ''
-    expect(command).toContain("export TZ='America/New_York'")
-    expect(command).toContain("--user-data-dir='/var/lib/adf/browser-profile'")
-    expect(command).toContain('--remote-debugging-address=127.0.0.1')
-    expect(command).toContain('--remote-debugging-port=9222')
-    expect(command).not.toContain('--enable-automation')
+    expect(startCall?.[1][5] ?? '').toContain("'/usr/local/bin/adf-browser' supervise")
   })
 
   it('refuses lifecycle changes for unlabeled containers', async () => {

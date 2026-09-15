@@ -1,6 +1,6 @@
 ---
 type: guide
-description: The Computer tab — each isolated agent's visible desktop with a managed Chromium session, IceWM window management, computer-use CLI tools, user takeover for security checks, and portable browser profiles
+description: The Computer tab — each isolated agent's visible desktop with a managed Chromium session, Openbox/tint2 window management, computer-use CLI tools, user takeover for security checks, and portable browser profiles
 see_also:
   - compute.md — enabling the isolated container the desktop runs in
   - ../knowledge/desktop-apps.md — running other GUI applications on the same desktop
@@ -13,14 +13,15 @@ Each agent with isolated compute and desktop support enabled has a visible Linux
 ## Prerequisites
 
 - `compute.enabled: true` — the isolated container the desktop runs in (see [Compute Environments](compute.md))
-- `compute.browser: true` (the default) — the display stack (X server, IceWM, noVNC) and managed Chromium; `false` means headless-only with no Computer tab
+- `compute.browser: true` (the default) — the display stack (X server, Openbox, tint2, noVNC) and managed Chromium; `false` means headless-only with no Computer tab
 
 Both are agent-writable via `sys_update_config` (HIL-gated: your principal approves). Browser automation additionally uses an `mcp.servers[]` entry for `@playwright/mcp` — installable via `mcp_install`, which is disabled by default (`tools.mcp_install.enabled` to request). See [MCP Integration](mcp-integration.md).
 
 ## What is on the desktop
 
-- **Window manager: IceWM.** Every window has a titlebar with a close button and an entry on the taskbar at the bottom of the screen. Popup windows (OAuth sign-in, print dialogs, a second browser window) open as their own windows: close them with the titlebar button or `Alt+F4`, and switch between windows with the taskbar or `Alt+Tab`. The start menu at the left of the taskbar lists installed applications.
-- **Managed Chromium**, started maximized with a persistent profile and a loopback CDP endpoint (see below).
+- **Openbox window manager and tint2 panel.** Every window has a close button and a task button on the dark panel at the bottom of the screen. Popup windows (OAuth sign-in, print dialogs, a second browser window) open as their own windows: close them with their close button or `Alt+F4`, and switch between windows with the panel or `Alt+Tab`. Right-click the desktop or the panel for a menu.
+- **Panel launchers** at the left: Browser opens a window in the managed Chromium (starting it if needed) and Terminal opens xterm.
+- **Managed Chromium**, started maximized with a persistent profile and a loopback CDP endpoint (see below). Closing its last window is safe: a supervisor relaunches it within a couple of seconds, so the agent's automation target and the user's session never disappear.
 - **Computer-use CLI tools** for `compute_exec`: `xdotool` (mouse, keyboard, window focus), `scrot` (screenshot to a file), `xclip` (clipboard), and `xterm` (a terminal on the desktop). See [Driving the desktop from a tool call](#driving-the-desktop-from-a-tool-call).
 
 The desktop resizes to fit the Computer tab exactly; maximized windows follow. The stack is brought up lazily the first time it is needed and restarted automatically when a container comes back. Containers provisioned by older Studio versions receive the desktop packages on their next stack start.
@@ -32,6 +33,18 @@ ADF starts the display server, window manager, noVNC bridge, and Chromium in the
 Chromium uses a persistent profile at `/var/lib/adf/browser-profile`. The profile survives browser and MCP restarts while the container exists. Chromium uses its portable basic password store, so its ordinary saved-password database remains part of this sensitive profile instead of depending on a host OS keychain. ADF reconciles existing containers on startup so containers created by older versions receive required packages, fonts, timezone data, compatibility support, and managed-browser configuration.
 
 The browser runtime accounts for host and Podman architecture differences across Apple Silicon and Intel macOS, Intel and AMD Windows, and Intel and AMD Linux. A renderer probe runs before the visible browser is considered ready; a failing native Chromium runtime is repaired or reported instead of producing a delayed `SIGILL` crash page.
+
+## Managed browser lifecycle
+
+The container has an `adf-browser` command, rewritten by Studio on every desktop start with the exact managed launch:
+
+| Command | Effect |
+|---------|--------|
+| `adf-browser start` | Open a window in the managed Chromium, launching it if it is not running. What the panel's Browser launcher runs. |
+| `adf-browser stop` | Stop Chromium and hold it down. The supervisor will not relaunch it until `resume`. Use this before touching the profile directory. |
+| `adf-browser resume` | Lift the hold; the supervisor relaunches Chromium within seconds. |
+
+Do not `kill` Chromium directly to stop it: the supervisor treats an exit as an accident and relaunches. `stop` is the only way to keep it down, and a held browser is reported plainly if Studio later waits for it.
 
 ## Browser automation
 

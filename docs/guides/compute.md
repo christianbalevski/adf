@@ -77,7 +77,7 @@ Compute settings are per-agent in the agent config:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Create an isolated container for this agent |
-| `browser` | `true` | Run the visible desktop (X server, IceWM, noVNC, managed Chromium) in the isolated container and show the Computer tab; `false` = headless-only |
+| `browser` | `true` | Run the visible desktop (X server, Openbox, tint2, noVNC, managed Chromium) in the isolated container and show the Computer tab; `false` = headless-only |
 | `host_access` | `false` | Allow host machine execution |
 | `allowed_targets` | legacy defaults | Built-in names and registered external target IDs this agent may use |
 | `default_target` | first available | Environment used when `compute_exec.target` is omitted |

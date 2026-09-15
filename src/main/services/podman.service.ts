@@ -91,32 +91,167 @@ const NPM_CACHE_VOLUME = 'adf-npx-cache'
 export const NPM_CACHE_MOUNT = '/var/cache/adf-npm'
 const BROWSER_CDP_PORT = 9222
 const BROWSER_PROFILE_DIR = '/var/lib/adf/browser-profile'
-const BROWSER_PID_FILE = '/tmp/adf-browser/chromium.pid'
 
-/** IceWM private config dir (ICEWM_PRIVCFG). Written on every stack start so
- *  preference changes ship with Studio upgrades. */
-const ICEWM_CONFIG_DIR = '/var/lib/adf/icewm'
+/** Desktop config root: XDG_CONFIG_HOME for openbox + tint2, plus the panel
+ *  launcher .desktop entries. Rewritten on every stack start so config
+ *  changes ship with Studio upgrades. */
+const DESKTOP_CONFIG_DIR = '/var/lib/adf/desktop'
 
-/** Taskbar trimmed to what a container desktop needs: window buttons and a
- *  start menu (installed apps). Monitors/mail/logout entries are noise here. */
-const ICEWM_PREFERENCES = `TaskBarShowWorkspaces=0
-TaskBarShowMailboxStatus=0
-TaskBarShowCPUStatus=0
-TaskBarShowMEMStatus=0
-TaskBarShowNetStatus=0
-TaskBarShowAPMStatus=0
-TaskBarShowCollapseButton=0
-TaskBarShowShowDesktopButton=0
-TaskBarShowWindowListMenu=0
-ShowThemesMenu=0
-ShowHelp=0
-ShowAbout=0
-ShowLogoutMenu=0
-ShowLogoutSubMenu=0
-ConfirmLogout=0
-ClickToFocus=1
-FocusOnAppRaise=1
+/** Managed-browser control script (see browserControlScript) and the hold
+ *  marker `adf-browser stop` sets to keep the supervisor from relaunching. */
+const BROWSER_CONTROL_SCRIPT = '/usr/local/bin/adf-browser'
+const BROWSER_HOLD_FILE = '/tmp/adf-browser/hold'
+
+// X11 rgb: color syntax — a '#' would end the Exec= line for tint2's desktop-entry parser.
+const DESKTOP_TERMINAL_COMMAND = 'xterm -fa Monospace -fs 11 -bg rgb:1c/1c/21 -fg rgb:e6/e6/e6'
+
+/** tint2 panel: launchers (browser, terminal), window buttons, clock. Flat and
+ *  dark; background ids are positional (1 = panel, 2 = task, 3 = active, 4 = urgent). */
+const DESKTOP_TINT2RC = `# ADF desktop panel (written by ADF Studio on every desktop start)
+rounded = 0
+border_width = 0
+background_color = #1c1c21 100
+border_color = #000000 0
+rounded = 4
+border_width = 0
+background_color = #ffffff 8
+border_color = #000000 0
+background_color_hover = #ffffff 14
+border_color_hover = #000000 0
+rounded = 4
+border_width = 0
+background_color = #ffffff 22
+border_color = #000000 0
+background_color_hover = #ffffff 26
+border_color_hover = #000000 0
+rounded = 4
+border_width = 0
+background_color = #d97706 100
+border_color = #000000 0
+
+panel_items = LTC
+panel_size = 100% 34
+panel_margin = 0 0
+panel_padding = 6 3 6
+panel_background_id = 1
+wm_menu = 1
+panel_dock = 0
+panel_position = bottom center horizontal
+panel_layer = top
+panel_monitor = all
+strut_policy = follow_size
+panel_window_name = tint2
+disable_transparency = 1
+mouse_effects = 1
+font_shadow = 0
+
+taskbar_mode = single_desktop
+taskbar_padding = 0 0 4
+taskbar_background_id = 0
+taskbar_active_background_id = 0
+taskbar_name = 0
+task_text = 1
+task_icon = 1
+task_centered = 0
+task_maximum_size = 220 30
+task_padding = 8 3 6
+task_tooltip = 1
+task_font = Noto Sans 10
+task_font_color = #e6e6e6 100
+task_active_font_color = #ffffff 100
+task_background_id = 2
+task_active_background_id = 3
+task_urgent_background_id = 4
+task_iconified_background_id = 2
+mouse_left = toggle_iconify
+mouse_middle = none
+mouse_right = close
+mouse_scroll_up = none
+mouse_scroll_down = none
+
+launcher_padding = 2 2 6
+launcher_background_id = 0
+launcher_icon_background_id = 0
+launcher_icon_size = 22
+launcher_icon_theme_override = 0
+startup_notifications = 0
+launcher_tooltip = 1
+launcher_item_app = ${DESKTOP_CONFIG_DIR}/browser.desktop
+launcher_item_app = ${DESKTOP_CONFIG_DIR}/terminal.desktop
+
+time1_format = %H:%M
+time1_font = Noto Sans 10
+clock_font_color = #e6e6e6 100
+clock_padding = 8 0
+clock_background_id = 0
+clock_tooltip = %A %d %B
 `
+
+/** Openbox root menu (right-click on the desktop or the panel). */
+const DESKTOP_OPENBOX_MENU = `<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+<menu id="root-menu" label="ADF">
+  <item label="Browser"><action name="Execute"><execute>${BROWSER_CONTROL_SCRIPT} start</execute></action></item>
+  <item label="Terminal"><action name="Execute"><execute>${DESKTOP_TERMINAL_COMMAND}</execute></action></item>
+</menu>
+</openbox_menu>
+`
+
+const desktopEntry = (name: string, comment: string, exec: string, icon: string): string =>
+  `[Desktop Entry]\nType=Application\nName=${name}\nComment=${comment}\nExec=${exec}\nIcon=${icon}\n`
+
+/** Shell fragment writing a file from a base64 blob — multi-line content with
+ *  arbitrary quotes crosses `sh -c` without escaping hazards. */
+const shellWriteFile = (path: string, content: string): string =>
+  `printf '%s' '${Buffer.from(content, 'utf8').toString('base64')}' | base64 -d > '${path}'`
+
+/** The managed-browser control script: one definition of the Chromium launch,
+ *  shared by the supervisor (relaunch after the user closes the last window),
+ *  the panel/menu launcher, and agents or skills that must stop the browser
+ *  (profile swaps). A second `start` while Chromium runs hands off to the
+ *  running instance (same profile dir) and exits — that is how the launcher
+ *  raises the existing browser instead of starting a competing one. */
+function browserControlScript(chromium: string, identity: BrowserHostIdentity): string {
+  return `#!/bin/sh
+# ADF managed browser control. Written by ADF Studio on every desktop start.
+#   adf-browser start      open a window in the managed Chromium (launches it if needed)
+#   adf-browser stop       stop the managed Chromium and hold it down (no auto-relaunch)
+#   adf-browser resume     lift the hold; the supervisor relaunches within seconds
+#   adf-browser supervise  (internal) relaunch loop run by ADF Studio
+HOLD='${BROWSER_HOLD_FILE}'
+PROFILE='${BROWSER_PROFILE_DIR}'
+export DISPLAY=:99 TZ='${identity.timezone}' LANG=C.UTF-8 LC_ALL=C.UTF-8
+mkdir -p "$PROFILE" /tmp/adf-browser
+cdp_up() { wget -qO /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/json/version 2>/dev/null; }
+launch() {
+  exec '${chromium}' --no-sandbox --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-session-crashed-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} about:blank >>/tmp/adf-browser/chromium.log 2>&1
+}
+# Browser (main) processes only — renderers/zygotes carry --type= and follow their parent.
+browser_pids() {
+  for pid in $(pgrep -f -- "--user-data-dir=$PROFILE"); do
+    grep -qz -- '--type=' /proc/$pid/cmdline 2>/dev/null || echo $pid
+  done
+}
+case "$1" in
+  start) rm -f "$HOLD"; launch ;;
+  stop)
+    touch "$HOLD"
+    kill -TERM $(browser_pids) 2>/dev/null
+    i=0; while [ -n "$(browser_pids)" ] && [ $i -lt 40 ]; do i=$((i+1)); sleep 0.25; done
+    [ -z "$(browser_pids)" ] || { echo "managed Chromium still running" >&2; exit 1; } ;;
+  resume) rm -f "$HOLD" ;;
+  supervise)
+    while :; do
+      if [ ! -f "$HOLD" ] && ! cdp_up; then
+        (launch); sleep 1
+      else
+        sleep 2
+      fi
+    done ;;
+  *) echo "usage: adf-browser start|stop|resume" >&2; exit 2 ;;
+esac
+`
+}
 
 /** Display stack daemons. Started via `podman exec -d` — a one-shot exec's
  *  background children are killed when its session ends, so detached exec
@@ -125,11 +260,11 @@ FocusOnAppRaise=1
  *
  *  Xtigervnc is X server + VNC server in one and supports dynamic desktop
  *  resize (ExtendedDesktopSize) — the noVNC viewer (resize=remote) resizes the
- *  container desktop to exactly fit the viewer tab. IceWM is a small desktop
- *  (window manager + taskbar in one process): every window gets a titlebar
- *  with a close button and a taskbar entry, so popups (OAuth sign-in, print
- *  dialogs, second windows) can always be closed or switched away from by the
- *  user. It follows XRandR resizes, re-fitting maximized windows. */
+ *  container desktop to exactly fit the viewer tab. Openbox (window manager)
+ *  + tint2 (panel) make it a desktop: every window gets a close button and a
+ *  panel task button, so popups (OAuth sign-in, print dialogs, second windows)
+ *  can always be closed or switched away from by the user; both follow XRandR
+ *  resizes. Chromium draws its own frame; other windows get the Breeze theme. */
 const BROWSER_STACK_DAEMONS: { proc: string; command: string; waitAfter?: string }[] = [
   {
     proc: 'Xtigervnc',
@@ -139,22 +274,33 @@ const BROWSER_STACK_DAEMONS: { proc: string; command: string; waitAfter?: string
     // The WM exits if the display isn't up yet — wait for the X socket.
     waitAfter: 'i=0; while [ $i -lt 20 ] && [ ! -S /tmp/.X11-unix/X99 ]; do i=$((i+1)); sleep 0.25; done; [ -S /tmp/.X11-unix/X99 ]',
   },
-  // Containers provisioned before the desktop switch may still run matchbox
-  // (daemons outlive Studio restarts); it must release the WM selection first.
-  { proc: 'icewm', command: `export DISPLAY=:99 ICEWM_PRIVCFG='${ICEWM_CONFIG_DIR}'; pkill -x matchbox-window 2>/dev/null; sleep 0.3; exec icewm >/tmp/adf-browser/wm.log 2>&1` },
+  // Containers provisioned before the desktop switch may still run matchbox or
+  // icewm (daemons outlive Studio restarts); they must release the WM selection first.
+  { proc: 'openbox', command: `export DISPLAY=:99 XDG_CONFIG_HOME='${DESKTOP_CONFIG_DIR}'; pkill -x matchbox-window 2>/dev/null; pkill -x icewm 2>/dev/null; sleep 0.3; exec openbox >/tmp/adf-browser/wm.log 2>&1` },
+  { proc: 'tint2', command: `export DISPLAY=:99 XDG_CONFIG_HOME='${DESKTOP_CONFIG_DIR}'; sleep 0.5; exec tint2 >/tmp/adf-browser/tint2.log 2>&1` },
   { proc: 'websockify', command: 'exec websockify --web /usr/share/novnc 6080 localhost:5900 >/tmp/adf-browser/websockify.log 2>&1' },
 ]
 
-/** Prep: state dirs, IceWM prefs, self-heal packages on containers provisioned
- *  pre-feature (or pre-desktop: icewm + the computer-use CLI tools). */
-const BROWSER_STACK_PREP = `mkdir -p /tmp/adf-browser ${BROWSER_PROFILE_DIR} ${ICEWM_CONFIG_DIR}; printf '%s' '${ICEWM_PREFERENCES}' > ${ICEWM_CONFIG_DIR}/preferences; missing=''; for pkg in tigervnc-standalone-server icewm novnc websockify tzdata fonts-noto-core fonts-noto-color-emoji xdotool scrot xclip xterm; do dpkg-query -W -f='\${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $pkg"; done; if [ -n "$missing" ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; fi`
+/** Prep: state dirs, self-heal packages on containers provisioned pre-feature
+ *  (or pre-desktop: openbox/tint2 + the computer-use CLI tools), then the
+ *  desktop config. Package install runs first — rc.xml derives from the stock
+ *  Debian one (Alt+F4 close, Alt+Tab, … keybindings) with the flat Breeze theme. */
+const BROWSER_STACK_PREP = [
+  `mkdir -p /tmp/adf-browser ${BROWSER_PROFILE_DIR} ${DESKTOP_CONFIG_DIR}/openbox ${DESKTOP_CONFIG_DIR}/tint2`,
+  `missing=''; for pkg in tigervnc-standalone-server openbox tint2 novnc websockify tzdata fonts-noto-core fonts-noto-color-emoji xdotool scrot xclip xterm; do dpkg-query -W -f='\${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $pkg"; done; if [ -n "$missing" ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; fi`,
+  `sed 's#<name>Clearlooks</name>#<name>Breeze-ob</name>#' /etc/xdg/openbox/rc.xml > ${DESKTOP_CONFIG_DIR}/openbox/rc.xml`,
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/openbox/menu.xml`, DESKTOP_OPENBOX_MENU),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/tint2/tint2rc`, DESKTOP_TINT2RC),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/browser.desktop`, desktopEntry('Browser', 'ADF managed Chromium (opens a window in the running session)', `${BROWSER_CONTROL_SCRIPT} start`, 'chromium')),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/terminal.desktop`, desktopEntry('Terminal', 'Shell on the desktop', DESKTOP_TERMINAL_COMMAND, 'xterm')),
+].join(' && ')
 
 /** Wait for the X display socket, then for noVNC to answer. */
 const BROWSER_STACK_READY = 'i=0; while [ $i -lt 40 ]; do wget -qO /dev/null http://127.0.0.1:6080/vnc.html 2>/dev/null && exit 0; i=$((i+1)); sleep 0.25; done; echo "noVNC not ready; see /tmp/adf-browser/*.log" >&2; exit 1'
 
 /** The browser control socket is container-loopback only. It is consumed by
  *  browser MCP servers inside the same agent container and is never published. */
-const BROWSER_CDP_READY = `i=0; while [ $i -lt 80 ]; do wget -qO /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/json/version 2>/dev/null && exit 0; i=$((i+1)); sleep 0.25; done; echo "Chromium CDP not ready; see /tmp/adf-browser/chromium.log" >&2; exit 1`
+const BROWSER_CDP_READY = `i=0; while [ $i -lt 80 ]; do wget -qO /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/json/version 2>/dev/null && exit 0; [ -f '${BROWSER_HOLD_FILE}' ] && { echo "managed Chromium is held down by 'adf-browser stop'; run 'adf-browser resume'" >&2; exit 1; }; i=$((i+1)); sleep 0.25; done; echo "Chromium CDP not ready; see /tmp/adf-browser/chromium.log" >&2; exit 1`
 
 /** Zombie-safe check for a live process by comm name (ERE alternation allowed).
  *  Dead exec-session children linger as zombies under `sleep infinity` (which
@@ -282,7 +428,7 @@ export interface ComputeEnvSettings {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SETTINGS: ComputeEnvSettings = {
-  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'icewm', 'novnc', 'websockify', 'xdotool', 'scrot', 'xclip', 'xterm'],
+  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'openbox', 'tint2', 'novnc', 'websockify', 'xdotool', 'scrot', 'xclip', 'xterm'],
   machineCpus: 2,
   machineMemoryMb: 2048,
   containerImage: 'docker.io/library/node:20-slim',
@@ -1306,7 +1452,7 @@ export class PodmanService extends EventEmitter {
   }
 
   // ---------------------------------------------------------------------------
-  // Visible desktop + browser (Xtigervnc + IceWM + noVNC inside agent containers)
+  // Visible desktop + browser (Xtigervnc + Openbox/tint2 + noVNC inside agent containers)
   // ---------------------------------------------------------------------------
 
   /**
@@ -1401,48 +1547,37 @@ export class PodmanService extends EventEmitter {
     return tracked
   }
 
-  /** Start the one browser process owned by ADF, independently of any MCP
-   *  server. MCP processes may restart and reconnect over CDP without closing
-   *  the user's tabs, cookies, or authenticated session. */
+  /** Install the managed-browser control script and its supervisor. ADF owns
+   *  one Chromium, independently of any MCP server: MCP processes may restart
+   *  and reconnect over CDP without closing the user's tabs, cookies, or
+   *  authenticated session. The supervisor relaunches Chromium after the user
+   *  closes its last window; `adf-browser stop` holds it down (profile swaps). */
   private async ensureManagedBrowser(bin: string, containerName: string): Promise<void> {
-    const alreadyReady = await this.exec0(bin, [
-      'exec', containerName, 'wget', '-qO', '/dev/null', `http://127.0.0.1:${BROWSER_CDP_PORT}/json/version`,
-    ], 10_000)
-    if (alreadyReady.code === 0) return
-
     const identity = this.getBrowserHostIdentity()
     const compatibility = await this.getBrowserRuntimeCompatibility(bin)
     const chromium = compatibility.maskSme ? CHROMIUM_WRAPPER : '/usr/bin/chromium'
-    const setup = [
-      'export DISPLAY=:99',
-      `export TZ='${identity.timezone}'`,
-      'export LANG=C.UTF-8',
-      'export LC_ALL=C.UTF-8',
-      `mkdir -p '${BROWSER_PROFILE_DIR}' /tmp/adf-browser`,
-      `echo $$ > '${BROWSER_PID_FILE}'`,
-    ].join('; ')
-    const chromiumArgs = [
-      '--no-sandbox',
-      '--disable-dev-shm-usage',
-      '--start-maximized',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--password-store=basic',
-      '--disable-session-crashed-bubble',
-      `--lang='${identity.locale}'`,
-      `--user-data-dir='${BROWSER_PROFILE_DIR}'`,
-      '--remote-debugging-address=127.0.0.1',
-      `--remote-debugging-port=${BROWSER_CDP_PORT}`,
-      'about:blank',
-    ].join(' ')
-    const command = `${setup}; exec '${chromium}' ${chromiumArgs} >/tmp/adf-browser/chromium.log 2>&1`
+    const script = browserControlScript(chromium, identity)
+    const installed = await this.exec0(bin, [
+      'exec', containerName, 'sh', '-c',
+      `${shellWriteFile(BROWSER_CONTROL_SCRIPT, script)} && chmod 755 '${BROWSER_CONTROL_SCRIPT}'`,
+    ], 15_000)
+    if (installed.code !== 0) throw new Error(`adf-browser install: ${installed.stderr.slice(0, 300)}`)
 
-    const started = await this.exec0(bin, ['exec', '-d', containerName, 'sh', '-c', command], 15_000)
-    if (started.code !== 0) throw new Error(`chromium: ${started.stderr.slice(0, 300)}`)
+    const alive = await this.exec0(bin, ['exec', containerName, 'sh', '-c', aliveCheck('adf-browser')], 10_000)
+    if (alive.stdout.trim() !== 'yes') {
+      // Fresh supervisor: a hold left over from a previous container run must
+      // not keep the browser down. (An existing supervisor keeps its hold — an
+      // agent mid profile-swap owns that state.)
+      const started = await this.exec0(bin, [
+        'exec', '-d', containerName, 'sh', '-c',
+        `rm -f '${BROWSER_HOLD_FILE}'; exec '${BROWSER_CONTROL_SCRIPT}' supervise >/tmp/adf-browser/supervise.log 2>&1`,
+      ], 15_000)
+      if (started.code !== 0) throw new Error(`adf-browser supervise: ${started.stderr.slice(0, 300)}`)
+    }
     const ready = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_CDP_READY], 30_000)
     if (ready.code !== 0) {
       const log = await this.exec0(bin, ['exec', containerName, 'sh', '-c', 'tail -n 40 /tmp/adf-browser/chromium.log 2>/dev/null'], 15_000)
-      throw new Error((log.stdout || ready.stderr || 'managed Chromium failed to start').slice(0, 1000))
+      throw new Error((ready.stderr || log.stdout || 'managed Chromium failed to start').slice(0, 1000))
     }
   }
 
