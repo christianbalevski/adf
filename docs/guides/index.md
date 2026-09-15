@@ -42,6 +42,7 @@ Guides carry YAML frontmatter (`type`, `description`, `see_also`) mirroring the 
 - **agent-memory.md** — the mind wiki pattern: index, pages, log, source citations, and audit retrieval
 - **documents-and-files.md** — the virtual filesystem, README.md, and mind file
 - **skills.md** — file-backed reusable agent procedures and their catalog
+- **computer-use.md** — driving the desktop: the look-act-look loop with scrot and xdotool, clipboard, opening apps and files, sharing the screen with the principal
 - **browser.md** — the Computer tab: visible desktop (Openbox, tint2, PCManFM), on-demand managed Chromium, interactive takeover, MCP automation, xdotool/scrot computer use, and portable encrypted profiles
 - **logging.md** — structured runtime logs in adf_logs
 

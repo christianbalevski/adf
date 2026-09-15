@@ -3,13 +3,14 @@ type: reference
 description: Run visible Linux desktop applications in isolated compute, transfer files, and validate visual results without assuming generic desktop automation
 see_also:
   - ../guides/compute.md — compute targets, configuration, approvals, and security boundaries
-  - ../guides/browser.md — the Computer tab: desktop, managed Chromium, xdotool/scrot, and authentication handoff
+  - ../guides/computer-use.md — driving the desktop: the look-act-look loop, xdotool, opening apps and files
+  - ../guides/browser.md — the Computer tab: desktop, managed Chromium, and authentication handoff
   - ../guides/documents-and-files.md — the agent VFS and file protection
 ---
 
 # Desktop Applications with Isolated Compute
 
-ADF can run real Linux GUI processes in an agent's managed **isolated** container. This is useful when a task needs a native PDF or image viewer, an editor, or another desktop application that is already present in the image. The capability is a process-and-display environment, not a claim that ADF ships a full desktop, an application catalog, or a universal GUI automation API.
+ADF can run real Linux GUI processes in an agent's managed **isolated** container, on the same small desktop the principal sees in the Computer tab. This article is the end-to-end recipe for a native application: inputs in, launch, interact, validate, results out. The general driving skills (screenshots, `xdotool`, opening apps and files) are in the [Computer Use](../guides/computer-use.md) guide.
 
 This article composes a task recipe; it does not replace the feature contracts in the [Compute Environments guide](../guides/compute.md), [Computer guide](../guides/browser.md), or [Documents and Files guide](../guides/documents-and-files.md). Follow those guides for canonical configuration, browser lifecycle, file-protection, and security procedures. An installable executable workflow belongs in a skill, not in this article.
 
@@ -29,7 +30,7 @@ The `shared` target is a different, multi-agent container. Its workspace is name
 
 ### Desktop control is CLI-level, not a structured tool
 
-ADF does not expose a dedicated pointer/keyboard tool. Desktop control goes through `compute_exec` with `xdotool` and `scrot`: screenshot, look at the image, act, screenshot again. This is coordinate-based and works for any X application, but it is slower and less reliable than an application's own CLI/API or the Playwright MCP server for web content; prefer those where they exist. Drag-and-drop, accessibility control, audio, printing, and GPU acceleration are not verified; do not promise them.
+ADF does not expose a dedicated pointer/keyboard tool. Desktop control goes through `compute_exec` with `xdotool` and `scrot`: screenshot, look at the image, act, screenshot again (worked examples in [Computer Use](../guides/computer-use.md)). This is coordinate-based and works for any X application, but it is slower and less reliable than an application's own CLI/API or the Playwright MCP server for web content; prefer those where they exist. Accessibility control, audio, printing, and GPU acceleration are not verified; do not promise them.
 
 ## Prerequisites
 

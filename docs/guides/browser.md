@@ -2,6 +2,7 @@
 type: guide
 description: The Computer tab — each isolated agent's visible desktop with a managed Chromium session, Openbox/tint2 window management, computer-use CLI tools, user takeover for security checks, and portable browser profiles
 see_also:
+  - computer-use.md — driving the desktop: screenshots, xdotool, opening apps and files
   - compute.md — enabling the isolated container the desktop runs in
   - ../knowledge/desktop-apps.md — running other GUI applications on the same desktop
 ---
@@ -25,7 +26,7 @@ A small standard Linux desktop, kept light (about 100 MB of packages on top of C
 - **Panel launchers**, left to right: the application menu (every installed app, grouped by category; anything installed with `apt` appears automatically), Browser (the managed Chromium), Files (the workspace in the PCManFM file manager), Terminal (LXTerminal in the workspace).
 - **Applications:** PCManFM (files, and the desktop wallpaper with its own right-click menu and Desktop Preferences), LXTerminal, Mousepad (text editor), LXAppearance (GTK theme, icon and font settings), xterm. Images, PDFs and web content open in the managed browser, so no separate viewers are needed.
 - **Managed Chromium**, started maximized with a persistent profile and a loopback CDP endpoint (see below).
-- **Computer-use CLI tools** for `compute_exec`: `xdotool` (mouse, keyboard, window focus), `scrot` (screenshot to a file), `xclip` (clipboard). See [Driving the desktop from a tool call](#driving-the-desktop-from-a-tool-call).
+- **Computer-use CLI tools** for `compute_exec`: `xdotool` (mouse, keyboard, window focus), `scrot` (screenshot to a file), `xclip` (clipboard). See [Computer Use](computer-use.md).
 
 The desktop resizes to fit the Computer tab exactly; maximized windows follow. The stack is brought up lazily the first time it is needed and restarted automatically when a container comes back. Containers provisioned by older Studio versions receive the desktop packages on their next stack start. Nothing stops an agent (with the owner's approval) or a user from installing more with `apt`: the desktop is unrestricted, only its defaults are small.
 
@@ -58,27 +59,7 @@ The agent should call `mcp_restart` after restoring a browser profile or when an
 
 ## Driving the desktop from a tool call
 
-For anything that is not a web page — a native application, a browser popup the automation cannot reach, a file dialog — the agent uses the computer-use CLI tools through `compute_exec` on the isolated target. `DISPLAY=:99` is already set for managed-container processes.
-
-```text
-compute_exec({
-  command: "scrot -o /workspace/shots/desktop.png && xdotool search --onlyvisible --name '' getwindowname %@",
-  target: "isolated"
-})
-```
-
-Then `fs_transfer` the screenshot to the VFS and look at it before acting. Act with `xdotool`:
-
-```text
-compute_exec({
-  command: "xdotool search --onlyvisible --name 'Sign in' windowactivate --sync key ctrl+l type 'https://example.com'; xdotool key Return",
-  target: "isolated"
-})
-```
-
-Useful verbs: `xdotool mousemove X Y click 1`, `xdotool type 'text'`, `xdotool key ctrl+w`, `xdotool key alt+F4` (close the focused window), `xdotool search --onlyvisible --name PATTERN windowactivate`. `xclip -selection clipboard` reads or writes the desktop clipboard. Coordinates are in desktop pixels; take a fresh screenshot after each action that changes the screen, and check the result instead of trusting the exit status. `compute_exec` is a one-shot exec, so a GUI process that must outlive the call needs its own session: `setsid -f myapp </dev/null >/dev/null 2>&1` (this is how `adf-browser start` launches Chromium); see [Desktop Applications](../knowledge/desktop-apps.md).
-
-Prefer the Playwright MCP server for web content: it sees the DOM and does not need coordinates. Use `xdotool` for what the DOM does not cover.
+Everything that is not a web page — native dialogs, other applications, a popup the automation cannot reach — is driven with `xdotool`, `scrot` and `xclip` through `compute_exec`. The [Computer Use](computer-use.md) guide covers the look-act-look loop, opening applications, files, and sharing the screen with your principal. Prefer the Playwright MCP server for web content: it sees the DOM and needs no coordinates.
 
 ## Login and security reviews
 
