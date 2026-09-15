@@ -174,6 +174,7 @@ import { captureEnvSchema, resolveMcpSpawnConfig, resolveMcpEnvVars } from '../s
 import { SandboxStdlibService } from '../services/sandbox-stdlib.service'
 import { SandboxPackagesService } from '../services/sandbox-packages.service'
 import { PodmanService, isolatedContainerName, containerWorkspacePath, containerAgentHome } from '../services/podman.service'
+import { setManagedBrowserEnsurer } from '../services/managed-browser-hook'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { containerLinkedFileReader } from '../services/mcp-linked-files'
 import { shouldContainerize, shouldIsolate, isServerForceShared, hostDenialReason, type ComputeSettings } from '../services/container-routing'
@@ -551,6 +552,8 @@ async function stopMdnsAndCleanup(): Promise<void> {
   }
 }
 const podmanService = new PodmanService()
+// Container MCP servers that attach over CDP ask for the managed browser before spawning.
+setManagedBrowserEnsurer((containerName) => podmanService.ensureManagedBrowserUp(containerName))
 const externalExecutionService = new ExternalExecutionService()
 // Mount host MCP install directories into the container so MCP servers can run
 // No host mounts — MCP packages are installed directly inside the container

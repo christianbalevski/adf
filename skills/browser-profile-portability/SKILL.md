@@ -30,7 +30,7 @@ Carry the agent's complete useful browser identity without exposing profile byte
 3. Call `adf.identity_status({})` and require `envelopes.credentials === 'unlocked'`. Then write and list a harmless `browser:profile:v1` probe to verify it is reported as encrypted before writing profile material. Before moving the `.adf` to another owner or environment without the same owner identity, require and test a credentials share password. Do not create a snapshot in an absent, foreign, locked, or legacy plaintext credentials store.
 4. Discover the managed Chromium command line, profile directory, executable, version, CDP port, and process owner. The current ADF default is `/var/lib/adf/browser-profile`, but discovery is authoritative.
 5. Confirm that Node.js and its standard `crypto` module are available in both the code sandbox and container. Use standard RSA-OAEP/SHA-256 and AES-256-GCM primitives; do not invent encryption.
-6. Abort before navigation if a restore is required. If Chromium is already running, stop it with `adf-browser stop` before replacing the profile and `adf-browser resume` afterward; a plain kill is undone by the supervisor.
+6. Abort before navigation if a restore is required. If Chromium is already running, stop it with `adf-browser stop` before replacing the profile and `adf-browser resume` afterward; a plain kill leaves no hold, so an attaching MCP server could reopen it mid-swap.
 
 If the environment cannot transfer an encrypted archive without exposing its key or plaintext, stop and explain the missing capability. Do not silently downgrade to plaintext staging.
 
@@ -50,7 +50,7 @@ Always write the inactive slot, verify it by reading every value back, and updat
 ## Checkpoint the profile
 
 1. Create a private transfer directory under `/workspace` in the isolated container and install a cleanup trap. `fs_transfer` addresses only that container workspace; keep the plaintext archive there only until it is encrypted and deleted.
-2. Stop Chromium with `adf-browser stop` (it exits gracefully, waits for exit, and holds the supervisor off so the browser is not relaunched mid-operation), then remove only transient lock/socket files.
+2. Stop Chromium with `adf-browser stop` (it exits gracefully, waits for exit, and holds the browser down so Studio, an attaching MCP server, or the desktop launcher cannot reopen it mid-operation), then remove only transient lock/socket files.
 3. Archive the profile while retaining login and password data. Exclude disposable caches and crash artifacts only.
 4. Generate a random 256-bit data-encryption key in sandbox code.
 5. Establish an ephemeral public-key bridge so the raw key never appears in `compute_exec` arguments or output:
@@ -63,7 +63,7 @@ Always write the inactive slot, verify it by reading every value back, and updat
 7. Store the ciphertext chunks, data key, and manifest in the inactive `adf_identity` slot.
 8. Read the complete inactive slot back, reconstruct it in code, and verify its ciphertext digest and manifest before flipping the active pointer.
 9. Delete transfer files from VFS and the container. Ciphertext remnants are acceptable; plaintext and keys are not.
-10. Run `adf-browser resume` so the supervisor relaunches ADF-managed Chromium, then restart the browser MCP. Verify CDP and a simple page before reporting success.
+10. Run `adf-browser resume` to start ADF-managed Chromium again, then restart the browser MCP. Verify CDP and a simple page before reporting success.
 
 ## Restore the profile
 
@@ -73,7 +73,7 @@ Always write the inactive slot, verify it by reading every value back, and updat
 4. Use a new ephemeral container RSA keypair to wrap the stored data key across the code/container boundary. Never place the raw key in a command.
 5. Decrypt and authenticate into a private staging directory. Validate every archive member first; reject authentication failure, absolute paths, `..` traversal, and links that escape staging. Extract without preserving archive ownership or permissions, and reject an incompatible Chromium major.
 6. Stop Chromium with `adf-browser stop` and verify exit. Rename the current profile to a rollback directory, atomically move the staged profile into place, and correct ownership and permissions.
-7. Remove stale runtime lock files, run `adf-browser resume` to relaunch managed Chromium, restart the browser MCP, and verify CDP plus expected profile metadata.
+7. Remove stale runtime lock files, run `adf-browser resume` to start managed Chromium again, restart the browser MCP, and verify CDP plus expected profile metadata.
 8. Restore the rollback directory if launch, CDP, or profile validation fails. Delete the rollback only after successful verification.
 
 ## Handle authentication safely

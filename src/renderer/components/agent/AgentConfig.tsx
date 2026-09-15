@@ -2889,7 +2889,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <div className="mt-2">
                   <label className="flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50 cursor-pointer">
                     <span>
-                      <span className="text-neutral-700 dark:text-neutral-300">Visible desktop<InfoHint tip="Desktop and managed browser in the container plus an auto-opening Computer tab. Disable to run automation headless-only. Restart the agent to apply." /></span>
+                      <span className="text-neutral-700 dark:text-neutral-300">Visible desktop<InfoHint tip="Linux desktop (panel, file manager, terminal, managed browser) in the container plus an auto-opening Computer tab. Disable to run automation headless-only. Restart the agent to apply." /></span>
                     </span>
                     <input
                       type="checkbox"

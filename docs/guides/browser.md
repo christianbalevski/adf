@@ -19,12 +19,15 @@ Both are agent-writable via `sys_update_config` (HIL-gated: your principal appro
 
 ## What is on the desktop
 
-- **Openbox window manager and tint2 panel.** Every window has a close button and a task button on the dark panel at the bottom of the screen. Popup windows (OAuth sign-in, print dialogs, a second browser window) open as their own windows: close them with their close button or `Alt+F4`, and switch between windows with the panel or `Alt+Tab`. Right-click the desktop or the panel for a menu.
-- **Panel launchers** at the left: Browser opens a window in the managed Chromium (starting it if needed) and Terminal opens xterm.
-- **Managed Chromium**, started maximized with a persistent profile and a loopback CDP endpoint (see below). Closing its last window is safe: a supervisor relaunches it within a couple of seconds, so the agent's automation target and the user's session never disappear.
-- **Computer-use CLI tools** for `compute_exec`: `xdotool` (mouse, keyboard, window focus), `scrot` (screenshot to a file), `xclip` (clipboard), and `xterm` (a terminal on the desktop). See [Driving the desktop from a tool call](#driving-the-desktop-from-a-tool-call).
+A small standard Linux desktop, kept light (about 100 MB of packages on top of Chromium):
 
-The desktop resizes to fit the Computer tab exactly; maximized windows follow. The stack is brought up lazily the first time it is needed and restarted automatically when a container comes back. Containers provisioned by older Studio versions receive the desktop packages on their next stack start.
+- **Openbox window manager and tint2 panel.** Every window has a close button and a task button on the dark panel at the bottom. Popup windows (OAuth sign-in, print dialogs, a second browser window) open as their own windows: close them with their close button or `Alt+F4`, switch with the panel or `Alt+Tab`.
+- **Panel launchers**, left to right: the application menu (every installed app, grouped by category; anything installed with `apt` appears automatically), Browser (the managed Chromium), Files (the workspace in the PCManFM file manager), Terminal (LXTerminal in the workspace).
+- **Applications:** PCManFM (files, and the desktop wallpaper with its own right-click menu and Desktop Preferences), LXTerminal, Mousepad (text editor), LXAppearance (GTK theme, icon and font settings), xterm. Images, PDFs and web content open in the managed browser, so no separate viewers are needed.
+- **Managed Chromium**, started maximized with a persistent profile and a loopback CDP endpoint (see below).
+- **Computer-use CLI tools** for `compute_exec`: `xdotool` (mouse, keyboard, window focus), `scrot` (screenshot to a file), `xclip` (clipboard). See [Driving the desktop from a tool call](#driving-the-desktop-from-a-tool-call).
+
+The desktop resizes to fit the Computer tab exactly; maximized windows follow. The stack is brought up lazily the first time it is needed and restarted automatically when a container comes back. Containers provisioned by older Studio versions receive the desktop packages on their next stack start. Nothing stops an agent (with the owner's approval) or a user from installing more with `apt`: the desktop is unrestricted, only its defaults are small.
 
 ## Lifecycle and ownership
 
@@ -36,15 +39,16 @@ The browser runtime accounts for host and Podman architecture differences across
 
 ## Managed browser lifecycle
 
-The container has an `adf-browser` command, rewritten by Studio on every desktop start with the exact managed launch:
+The browser is **on demand**. It opens when the desktop first boots, when a browser MCP server attaches to it, or when someone clicks the panel's Browser button. If the user closes its last window it stays closed; nothing reopens it behind their back. The container has an `adf-browser` command, rewritten by Studio on every desktop start with the exact managed launch:
 
 | Command | Effect |
 |---------|--------|
-| `adf-browser start` | Open a window in the managed Chromium, launching it if it is not running. What the panel's Browser launcher runs. |
-| `adf-browser stop` | Stop Chromium and hold it down. The supervisor will not relaunch it until `resume`. Use this before touching the profile directory. |
-| `adf-browser resume` | Lift the hold; the supervisor relaunches Chromium within seconds. |
+| `adf-browser start [url]` | Open the managed Chromium and return once CDP answers, or hand the URL to the running one. What the panel's Browser launcher runs. |
+| `adf-browser stop` | Stop Chromium and hold it down: Studio, an attaching MCP server, and the launcher's implicit start will not reopen it until `resume`. Use this before touching the profile directory. |
+| `adf-browser resume` | Lift the hold and start Chromium again. |
+| `adf-browser status` | `running`, `held`, or `stopped`. |
 
-Do not `kill` Chromium directly to stop it: the supervisor treats an exit as an accident and relaunches. `stop` is the only way to keep it down, and a held browser is reported plainly if Studio later waits for it.
+Browser MCP servers are spawned after a `start`, so an agent whose browser was closed gets it back by restarting the server (`mcp_restart`). A held browser is reported plainly if Studio later waits for it.
 
 ## Browser automation
 
@@ -72,7 +76,7 @@ compute_exec({
 })
 ```
 
-Useful verbs: `xdotool mousemove X Y click 1`, `xdotool type 'text'`, `xdotool key ctrl+w`, `xdotool key alt+F4` (close the focused window), `xdotool search --onlyvisible --name PATTERN windowactivate`. `xclip -selection clipboard` reads or writes the desktop clipboard. Coordinates are in desktop pixels; take a fresh screenshot after each action that changes the screen, and check the result instead of trusting the exit status. `compute_exec` is a one-shot exec, so a GUI process launched from it should be started through a detached supervisor if it must outlive the call; see [Desktop Applications](../knowledge/desktop-apps.md).
+Useful verbs: `xdotool mousemove X Y click 1`, `xdotool type 'text'`, `xdotool key ctrl+w`, `xdotool key alt+F4` (close the focused window), `xdotool search --onlyvisible --name PATTERN windowactivate`. `xclip -selection clipboard` reads or writes the desktop clipboard. Coordinates are in desktop pixels; take a fresh screenshot after each action that changes the screen, and check the result instead of trusting the exit status. `compute_exec` is a one-shot exec, so a GUI process that must outlive the call needs its own session: `setsid -f myapp </dev/null >/dev/null 2>&1` (this is how `adf-browser start` launches Chromium); see [Desktop Applications](../knowledge/desktop-apps.md).
 
 Prefer the Playwright MCP server for web content: it sees the DOM and does not need coordinates. Use `xdotool` for what the DOM does not cover.
 

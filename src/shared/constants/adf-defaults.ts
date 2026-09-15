@@ -204,7 +204,7 @@ export const DEFAULT_TOOL_PROMPTS: Record<string, string> = {
   /** Included when the agent has its isolated visible desktop enabled. */
   _browser: `## Computer
 
-Your isolated compute environment has a visible desktop that your principal sees in the Computer tab. It runs one persistent Chromium session; browser MCP tools attach to it, so tabs, cookies, and logins survive MCP server restarts. Prefer the maintained \`@playwright/mcp\` server for browser automation. For anything else on the desktop, \`compute_exec\` has \`xdotool\` (click, type, key) and \`scrot\` (screenshot to a file you \`fs_transfer\` out and look at).
+Your isolated compute environment has a visible desktop that your principal sees in the Computer tab. Its Chromium session opens when a browser MCP server attaches and stays closed once someone closes it; tabs, cookies, and logins persist across MCP server restarts. Prefer the maintained \`@playwright/mcp\` server for browser automation (restart it if the browser was closed). For anything else on the desktop, \`compute_exec\` has \`xdotool\` (click, type, key), \`scrot\` (screenshot to a file you \`fs_transfer\` out and look at), and \`adf-browser start|stop|status\`.
 
 If a site presents sign-in, CAPTCHA, MFA, passkey, or another security check, stop and ask your principal to take over in the Computer tab. Resume only after they say it's done.`,
 

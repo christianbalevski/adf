@@ -261,8 +261,31 @@ describe('PodmanService managed container safety', () => {
     expect(script).toContain('--remote-debugging-port=9222')
     expect(script).not.toContain('--enable-automation')
 
-    const startCall = exec0.mock.calls.find(([, args]) => args[0] === 'exec' && args[1] === '-d')
-    expect(startCall?.[1][5] ?? '').toContain("'/usr/local/bin/adf-browser' supervise")
+    // Desktop boot opens the browser through the script (which returns once CDP answers).
+    const startCall = exec0.mock.calls.find(([, args]) => args[0] === 'exec' && String(args[4] ?? '').includes("'/usr/local/bin/adf-browser' start"))
+    expect(startCall).toBeDefined()
+  })
+
+  it('opens the managed browser on demand for a CDP consumer, respecting a hold', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' })
+    ;(service as any).exec0 = exec0
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
+    const kick = vi.fn()
+    ;(service as any).kickBrowserReady = kick
+
+    // Desktop not booted yet: only kick the boot, never block the MCP spawn.
+    await service.ensureManagedBrowserUp('adf-agent-12345678')
+    expect(kick).toHaveBeenCalledWith('adf-agent-12345678')
+    expect(exec0).not.toHaveBeenCalled()
+
+    // Desktop running: start the browser unless `adf-browser stop` holds it down.
+    ;(service as any)._stackStarted.add('adf-agent-12345678')
+    await service.ensureManagedBrowserUp('adf-agent-12345678')
+    const call = exec0.mock.calls[0][1]
+    expect(call.slice(0, 4)).toEqual(['exec', 'adf-agent-12345678', 'sh', '-c'])
+    expect(call[4]).toContain("[ -f '/tmp/adf-browser/hold' ] && exit 0")
+    expect(call[4]).toContain("'/usr/local/bin/adf-browser' start")
   })
 
   it('refuses lifecycle changes for unlabeled containers', async () => {

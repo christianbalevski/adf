@@ -7,6 +7,7 @@ import { MeshManager } from '../runtime/mesh-manager'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { PodmanService, type ComputeEnvSettings } from '../services/podman.service'
+import { setManagedBrowserEnsurer } from '../services/managed-browser-hook'
 import { SandboxPackagesService } from '../services/sandbox-packages.service'
 import { SandboxStdlibService } from '../services/sandbox-stdlib.service'
 import { MeshServer } from '../services/mesh-server'
@@ -134,6 +135,8 @@ codeSandboxService.setMaxWorkers(settings.get('sandboxMaxWorkers') as number | u
 const sandboxPackagesService = new SandboxPackagesService()
 const sandboxStdlibService = new SandboxStdlibService()
 const podmanService = new PodmanService()
+// Container MCP servers that attach over CDP ask for the managed browser before spawning.
+setManagedBrowserEnsurer((containerName) => podmanService.ensureManagedBrowserUp(containerName))
 podmanService.setSettingsAccessor(() => readComputeSettings(settings.get('compute')))
 const uvManager = new UvManager()
 const mcpPackageResolver = new PackageResolver('mcp-servers')

@@ -8,6 +8,7 @@
  *   MCP transport layer and fs_transfer tool.
  */
 
+import { gradientWallpaperPng } from './desktop-wallpaper'
 import { execFile, spawn, type ChildProcess } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -92,21 +93,26 @@ export const NPM_CACHE_MOUNT = '/var/cache/adf-npm'
 const BROWSER_CDP_PORT = 9222
 const BROWSER_PROFILE_DIR = '/var/lib/adf/browser-profile'
 
-/** Desktop config root: XDG_CONFIG_HOME for openbox + tint2, plus the panel
- *  launcher .desktop entries. Rewritten on every stack start so config
- *  changes ship with Studio upgrades. */
+/** Desktop config root: XDG_CONFIG_HOME for openbox, tint2, jgmenu, pcmanfm
+ *  and GTK, plus the panel launcher .desktop entries and the wallpaper.
+ *  Rewritten on every stack start so config changes ship with Studio upgrades. */
 const DESKTOP_CONFIG_DIR = '/var/lib/adf/desktop'
 
 /** Managed-browser control script (see browserControlScript) and the hold
- *  marker `adf-browser stop` sets to keep the supervisor from relaunching. */
+ *  marker `adf-browser stop` sets so nothing starts the browser again. */
 const BROWSER_CONTROL_SCRIPT = '/usr/local/bin/adf-browser'
 const BROWSER_HOLD_FILE = '/tmp/adf-browser/hold'
 
-// X11 rgb: color syntax — a '#' would end the Exec= line for tint2's desktop-entry parser.
-const DESKTOP_TERMINAL_COMMAND = 'xterm -fa Monospace -fs 11 -bg rgb:1c/1c/21 -fg rgb:e6/e6/e6'
+/** Complete flat icon set (~16 MB). Adwaita stays installed as GTK's own
+ *  dependency but ships only symbolic icons in bookworm. */
+const DESKTOP_ICON_THEME = 'elementary-xfce'
+const DESKTOP_FONT = 'Noto Sans 10'
+const DESKTOP_TERMINAL_COMMAND = 'lxterminal --working-directory=/workspace'
+const DESKTOP_FILES_COMMAND = 'pcmanfm /workspace'
 
-/** tint2 panel: launchers (browser, terminal), window buttons, clock. Flat and
- *  dark; background ids are positional (1 = panel, 2 = task, 3 = active, 4 = urgent). */
+/** tint2 panel: app menu, launchers (browser, files, terminal), window
+ *  buttons, clock. Flat and dark; background ids are positional
+ *  (1 = panel, 2 = task, 3 = active task, 4 = urgent task). */
 const DESKTOP_TINT2RC = `# ADF desktop panel (written by ADF Studio on every desktop start)
 rounded = 0
 border_width = 0
@@ -156,7 +162,7 @@ task_centered = 0
 task_maximum_size = 220 30
 task_padding = 8 3 6
 task_tooltip = 1
-task_font = Noto Sans 10
+task_font = ${DESKTOP_FONT}
 task_font_color = #e6e6e6 100
 task_active_font_color = #ffffff 100
 task_background_id = 2
@@ -173,58 +179,131 @@ launcher_padding = 2 2 6
 launcher_background_id = 0
 launcher_icon_background_id = 0
 launcher_icon_size = 22
-launcher_icon_theme_override = 0
+launcher_icon_theme = ${DESKTOP_ICON_THEME}
+launcher_icon_theme_override = 1
 startup_notifications = 0
 launcher_tooltip = 1
+launcher_item_app = ${DESKTOP_CONFIG_DIR}/apps.desktop
 launcher_item_app = ${DESKTOP_CONFIG_DIR}/browser.desktop
+launcher_item_app = ${DESKTOP_CONFIG_DIR}/files.desktop
 launcher_item_app = ${DESKTOP_CONFIG_DIR}/terminal.desktop
 
 time1_format = %H:%M
-time1_font = Noto Sans 10
+time1_font = ${DESKTOP_FONT}
 clock_font_color = #e6e6e6 100
 clock_padding = 8 0
 clock_background_id = 0
 clock_tooltip = %A %d %B
 `
 
-/** Openbox root menu (right-click on the desktop or the panel). */
+/** jgmenu: the panel's application menu, generated from every installed
+ *  .desktop file (so apt-installed apps show up by themselves). */
+const DESKTOP_JGMENURC = `stay_alive = 0
+csv_cmd = apps
+position_mode = pointer
+menu_width = 260
+menu_padding_top = 8
+menu_padding_right = 8
+menu_padding_bottom = 8
+menu_padding_left = 8
+menu_radius = 6
+menu_border = 1
+item_height = 30
+item_padding_x = 8
+item_radius = 4
+icon_size = 22
+icon_theme = ${DESKTOP_ICON_THEME}
+font = ${DESKTOP_FONT}
+color_menu_bg = #1c1c21 100
+color_menu_border = #3a3a42 100
+color_norm_bg = #000000 0
+color_norm_fg = #e6e6e6 100
+color_sel_bg = #ffffff 22
+color_sel_fg = #ffffff 100
+color_sep_fg = #3a3a42 100
+color_title_fg = #9a9aa3 100
+color_title_bg = #000000 0
+`
+
+/** pcmanfm --desktop: wallpaper + right-click desktop menu (with its own
+ *  "Desktop Preferences"). No icons on the desktop — /workspace is one click
+ *  away on the panel. */
+const DESKTOP_PCMANFM_ITEMS = `[*]
+wallpaper_mode=stretch
+wallpaper_common=1
+wallpaper=${DESKTOP_CONFIG_DIR}/wallpaper.png
+desktop_bg=#1a1f2b
+desktop_fg=#e6e6e6
+desktop_shadow=#000000
+desktop_font=${DESKTOP_FONT}
+show_wm_menu=0
+show_documents=0
+show_trash=0
+show_mounts=0
+`
+const DESKTOP_WALLPAPER_TOP: [number, number, number] = [0x2a, 0x33, 0x46]
+const DESKTOP_WALLPAPER_BOTTOM: [number, number, number] = [0x12, 0x15, 0x1c]
+
+const DESKTOP_GTK_SETTINGS = `[Settings]
+gtk-icon-theme-name=${DESKTOP_ICON_THEME}
+gtk-font-name=${DESKTOP_FONT}
+gtk-cursor-theme-name=Adwaita
+`
+const DESKTOP_LIBFM_CONF = `[config]
+terminal=lxterminal
+`
+const BROWSER_MIME_TYPES = ['text/html', 'application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml', 'x-scheme-handler/http', 'x-scheme-handler/https']
+/** Web content, images and PDFs open in the managed browser — no extra viewers. */
+const DESKTOP_MIMEAPPS = `[Default Applications]
+${BROWSER_MIME_TYPES.map((mime) => `${mime}=adf-browser.desktop`).join('\n')}
+`
+
+/** Openbox root menu (right-click on the panel; the desktop has pcmanfm's). */
 const DESKTOP_OPENBOX_MENU = `<?xml version="1.0" encoding="UTF-8"?>
 <openbox_menu xmlns="http://openbox.org/3.4/menu">
 <menu id="root-menu" label="ADF">
   <item label="Browser"><action name="Execute"><execute>${BROWSER_CONTROL_SCRIPT} start</execute></action></item>
+  <item label="Files"><action name="Execute"><execute>${DESKTOP_FILES_COMMAND}</execute></action></item>
   <item label="Terminal"><action name="Execute"><execute>${DESKTOP_TERMINAL_COMMAND}</execute></action></item>
 </menu>
 </openbox_menu>
 `
 
-const desktopEntry = (name: string, comment: string, exec: string, icon: string): string =>
-  `[Desktop Entry]\nType=Application\nName=${name}\nComment=${comment}\nExec=${exec}\nIcon=${icon}\n`
+const desktopEntry = (name: string, comment: string, exec: string, icon: string, extra = ''): string =>
+  `[Desktop Entry]\nType=Application\nName=${name}\nComment=${comment}\nExec=${exec}\nIcon=${icon}\n${extra}`
 
-/** Shell fragment writing a file from a base64 blob — multi-line content with
- *  arbitrary quotes crosses `sh -c` without escaping hazards. */
-const shellWriteFile = (path: string, content: string): string =>
-  `printf '%s' '${Buffer.from(content, 'utf8').toString('base64')}' | base64 -d > '${path}'`
+const DESKTOP_BROWSER_ENTRY = desktopEntry(
+  'Browser', 'ADF managed Chromium (opens a window in the running session)',
+  `${BROWSER_CONTROL_SCRIPT} start %U`, 'chromium',
+  `MimeType=${BROWSER_MIME_TYPES.join(';')};\n`,
+)
 
-/** The managed-browser control script: one definition of the Chromium launch,
- *  shared by the supervisor (relaunch after the user closes the last window),
- *  the panel/menu launcher, and agents or skills that must stop the browser
- *  (profile swaps). A second `start` while Chromium runs hands off to the
- *  running instance (same profile dir) and exits — that is how the launcher
- *  raises the existing browser instead of starting a competing one. */
+/** Shell fragment writing a file from a base64 blob — multi-line text or
+ *  binary content crosses `sh -c` without escaping hazards. */
+const shellWriteFile = (path: string, content: string | Buffer): string =>
+  `printf '%s' '${(Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8')).toString('base64')}' | base64 -d > '${path}'`
+
+/** The managed-browser control script: one definition of the Chromium
+ *  launch, shared by Studio (desktop boot, MCP attach), the panel/menu
+ *  launcher and agents (compute_exec). The browser opens on demand and stays
+ *  closed when the user closes it — nothing relaunches it behind their back.
+ *  A `start` while Chromium runs hands the URL to the running instance (same
+ *  profile dir) and exits; otherwise it launches detached (setsid survives
+ *  the one-shot exec it was called from) and returns once CDP answers. */
 function browserControlScript(chromium: string, identity: BrowserHostIdentity): string {
   return `#!/bin/sh
 # ADF managed browser control. Written by ADF Studio on every desktop start.
-#   adf-browser start      open a window in the managed Chromium (launches it if needed)
-#   adf-browser stop       stop the managed Chromium and hold it down (no auto-relaunch)
-#   adf-browser resume     lift the hold; the supervisor relaunches within seconds
-#   adf-browser supervise  (internal) relaunch loop run by ADF Studio
+#   adf-browser start [url]  open the managed Chromium (or a window/URL in the running one)
+#   adf-browser stop         stop it and hold it down: nothing starts it until resume
+#   adf-browser resume       lift the hold and start it again
+#   adf-browser status       running | held | stopped
 HOLD='${BROWSER_HOLD_FILE}'
 PROFILE='${BROWSER_PROFILE_DIR}'
 export DISPLAY=:99 TZ='${identity.timezone}' LANG=C.UTF-8 LC_ALL=C.UTF-8
 mkdir -p "$PROFILE" /tmp/adf-browser
 cdp_up() { wget -qO /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/json/version 2>/dev/null; }
 launch() {
-  exec '${chromium}' --no-sandbox --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-session-crashed-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} about:blank >>/tmp/adf-browser/chromium.log 2>&1
+  exec '${chromium}' --no-sandbox --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-session-crashed-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} "$@" >>/tmp/adf-browser/chromium.log 2>&1
 }
 # Browser (main) processes only — renderers/zygotes carry --type= and follow their parent.
 browser_pids() {
@@ -232,23 +311,24 @@ browser_pids() {
     grep -qz -- '--type=' /proc/$pid/cmdline 2>/dev/null || echo $pid
   done
 }
-case "$1" in
-  start) rm -f "$HOLD"; launch ;;
+cmd="$1"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  start)
+    rm -f "$HOLD"
+    [ $# -eq 0 ] && set -- about:blank
+    if cdp_up; then launch "$@"; fi
+    setsid -f "$0" launch-detached "$@" </dev/null >/dev/null 2>&1
+    i=0; while ! cdp_up && [ $i -lt 100 ]; do i=$((i+1)); sleep 0.25; done
+    cdp_up || { echo "managed Chromium did not come up; see /tmp/adf-browser/chromium.log" >&2; exit 1; } ;;
+  launch-detached) launch "$@" ;;
   stop)
     touch "$HOLD"
     kill -TERM $(browser_pids) 2>/dev/null
     i=0; while [ -n "$(browser_pids)" ] && [ $i -lt 40 ]; do i=$((i+1)); sleep 0.25; done
     [ -z "$(browser_pids)" ] || { echo "managed Chromium still running" >&2; exit 1; } ;;
-  resume) rm -f "$HOLD" ;;
-  supervise)
-    while :; do
-      if [ ! -f "$HOLD" ] && ! cdp_up; then
-        (launch); sleep 1
-      else
-        sleep 2
-      fi
-    done ;;
-  *) echo "usage: adf-browser start|stop|resume" >&2; exit 2 ;;
+  resume) rm -f "$HOLD"; exec "$0" start ;;
+  status) if cdp_up; then echo running; elif [ -f "$HOLD" ]; then echo held; else echo stopped; fi ;;
+  *) echo "usage: adf-browser start [url] | stop | resume | status" >&2; exit 2 ;;
 esac
 `
 }
@@ -260,11 +340,12 @@ esac
  *
  *  Xtigervnc is X server + VNC server in one and supports dynamic desktop
  *  resize (ExtendedDesktopSize) — the noVNC viewer (resize=remote) resizes the
- *  container desktop to exactly fit the viewer tab. Openbox (window manager)
- *  + tint2 (panel) make it a desktop: every window gets a close button and a
- *  panel task button, so popups (OAuth sign-in, print dialogs, second windows)
- *  can always be closed or switched away from by the user; both follow XRandR
- *  resizes. Chromium draws its own frame; other windows get the Breeze theme. */
+ *  container desktop to exactly fit the viewer tab. Openbox (window manager),
+ *  tint2 (panel: app menu, launchers, task buttons) and pcmanfm (wallpaper,
+ *  file manager) make it a small standard desktop: every window gets a close
+ *  button and a task button, so popups (OAuth sign-in, print dialogs, second
+ *  windows) can always be closed or switched away from by the user; all follow
+ *  XRandR resizes. Chromium draws its own frame; other windows get Breeze. */
 const BROWSER_STACK_DAEMONS: { proc: string; command: string; waitAfter?: string }[] = [
   {
     proc: 'Xtigervnc',
@@ -278,21 +359,37 @@ const BROWSER_STACK_DAEMONS: { proc: string; command: string; waitAfter?: string
   // icewm (daemons outlive Studio restarts); they must release the WM selection first.
   { proc: 'openbox', command: `export DISPLAY=:99 XDG_CONFIG_HOME='${DESKTOP_CONFIG_DIR}'; pkill -x matchbox-window 2>/dev/null; pkill -x icewm 2>/dev/null; sleep 0.3; exec openbox >/tmp/adf-browser/wm.log 2>&1` },
   { proc: 'tint2', command: `export DISPLAY=:99 XDG_CONFIG_HOME='${DESKTOP_CONFIG_DIR}'; sleep 0.5; exec tint2 >/tmp/adf-browser/tint2.log 2>&1` },
+  // Wallpaper + desktop right-click menu. pcmanfm is single-instance: file
+  // manager windows opened later run inside this process.
+  { proc: 'pcmanfm', command: `export DISPLAY=:99 XDG_CONFIG_HOME='${DESKTOP_CONFIG_DIR}'; sleep 0.5; exec pcmanfm --desktop --profile default >/tmp/adf-browser/pcmanfm.log 2>&1` },
   { proc: 'websockify', command: 'exec websockify --web /usr/share/novnc 6080 localhost:5900 >/tmp/adf-browser/websockify.log 2>&1' },
 ]
 
+/** Desktop packages: display server, window manager, panel, app menu, file
+ *  manager, terminal, editor, appearance settings, icons, computer-use CLI tools. */
+const DESKTOP_PACKAGES = ['tigervnc-standalone-server', 'novnc', 'websockify', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'xdotool', 'scrot', 'xclip', 'xterm']
+
 /** Prep: state dirs, self-heal packages on containers provisioned pre-feature
- *  (or pre-desktop: openbox/tint2 + the computer-use CLI tools), then the
- *  desktop config. Package install runs first — rc.xml derives from the stock
- *  Debian one (Alt+F4 close, Alt+Tab, … keybindings) with the flat Breeze theme. */
+ *  (or pre-desktop), then the desktop config. Package install runs first —
+ *  rc.xml derives from the stock Debian one (Alt+F4 close, Alt+Tab, …
+ *  keybindings) with the flat Breeze theme. */
 const BROWSER_STACK_PREP = [
-  `mkdir -p /tmp/adf-browser ${BROWSER_PROFILE_DIR} ${DESKTOP_CONFIG_DIR}/openbox ${DESKTOP_CONFIG_DIR}/tint2`,
-  `missing=''; for pkg in tigervnc-standalone-server openbox tint2 novnc websockify tzdata fonts-noto-core fonts-noto-color-emoji xdotool scrot xclip xterm; do dpkg-query -W -f='\${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $pkg"; done; if [ -n "$missing" ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; fi`,
+  `mkdir -p /tmp/adf-browser ${BROWSER_PROFILE_DIR} /workspace /usr/local/share/applications ${['openbox', 'tint2', 'jgmenu', 'pcmanfm/default', 'gtk-3.0', 'libfm'].map((d) => `${DESKTOP_CONFIG_DIR}/${d}`).join(' ')}`,
+  `missing=''; for pkg in ${DESKTOP_PACKAGES.join(' ')} tzdata fonts-noto-core fonts-noto-color-emoji; do dpkg-query -W -f='\${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $pkg"; done; if [ -n "$missing" ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; fi`,
   `sed 's#<name>Clearlooks</name>#<name>Breeze-ob</name>#' /etc/xdg/openbox/rc.xml > ${DESKTOP_CONFIG_DIR}/openbox/rc.xml`,
   shellWriteFile(`${DESKTOP_CONFIG_DIR}/openbox/menu.xml`, DESKTOP_OPENBOX_MENU),
   shellWriteFile(`${DESKTOP_CONFIG_DIR}/tint2/tint2rc`, DESKTOP_TINT2RC),
-  shellWriteFile(`${DESKTOP_CONFIG_DIR}/browser.desktop`, desktopEntry('Browser', 'ADF managed Chromium (opens a window in the running session)', `${BROWSER_CONTROL_SCRIPT} start`, 'chromium')),
-  shellWriteFile(`${DESKTOP_CONFIG_DIR}/terminal.desktop`, desktopEntry('Terminal', 'Shell on the desktop', DESKTOP_TERMINAL_COMMAND, 'xterm')),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/jgmenu/jgmenurc`, DESKTOP_JGMENURC),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/pcmanfm/default/desktop-items-0.conf`, DESKTOP_PCMANFM_ITEMS),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/wallpaper.png`, gradientWallpaperPng(DESKTOP_WALLPAPER_TOP, DESKTOP_WALLPAPER_BOTTOM)),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/gtk-3.0/settings.ini`, DESKTOP_GTK_SETTINGS),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/libfm/libfm.conf`, DESKTOP_LIBFM_CONF),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/mimeapps.list`, DESKTOP_MIMEAPPS),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/apps.desktop`, desktopEntry('Applications', 'Application menu', 'jgmenu_run', 'start-here')),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/browser.desktop`, DESKTOP_BROWSER_ENTRY),
+  shellWriteFile('/usr/local/share/applications/adf-browser.desktop', DESKTOP_BROWSER_ENTRY),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/files.desktop`, desktopEntry('Files', 'File manager', DESKTOP_FILES_COMMAND, 'system-file-manager')),
+  shellWriteFile(`${DESKTOP_CONFIG_DIR}/terminal.desktop`, desktopEntry('Terminal', 'Shell on the desktop', DESKTOP_TERMINAL_COMMAND, 'utilities-terminal')),
 ].join(' && ')
 
 /** Wait for the X display socket, then for noVNC to answer. */
@@ -428,7 +525,7 @@ export interface ComputeEnvSettings {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SETTINGS: ComputeEnvSettings = {
-  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'openbox', 'tint2', 'novnc', 'websockify', 'xdotool', 'scrot', 'xclip', 'xterm'],
+  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'novnc', 'websockify', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'xdotool', 'scrot', 'xclip', 'xterm'],
   machineCpus: 2,
   machineMemoryMb: 2048,
   containerImage: 'docker.io/library/node:20-slim',
@@ -1547,11 +1644,11 @@ export class PodmanService extends EventEmitter {
     return tracked
   }
 
-  /** Install the managed-browser control script and its supervisor. ADF owns
-   *  one Chromium, independently of any MCP server: MCP processes may restart
-   *  and reconnect over CDP without closing the user's tabs, cookies, or
-   *  authenticated session. The supervisor relaunches Chromium after the user
-   *  closes its last window; `adf-browser stop` holds it down (profile swaps). */
+  /** Install the managed-browser control script and open the browser as part
+   *  of desktop boot. ADF owns one Chromium, independently of any MCP server:
+   *  MCP processes may restart and reconnect over CDP without closing the
+   *  user's tabs, cookies, or authenticated session. After boot the browser is
+   *  on demand — see ensureManagedBrowserUp and the script itself. */
   private async ensureManagedBrowser(bin: string, containerName: string): Promise<void> {
     const identity = this.getBrowserHostIdentity()
     const compatibility = await this.getBrowserRuntimeCompatibility(bin)
@@ -1563,21 +1660,35 @@ export class PodmanService extends EventEmitter {
     ], 15_000)
     if (installed.code !== 0) throw new Error(`adf-browser install: ${installed.stderr.slice(0, 300)}`)
 
-    const alive = await this.exec0(bin, ['exec', containerName, 'sh', '-c', aliveCheck('adf-browser')], 10_000)
-    if (alive.stdout.trim() !== 'yes') {
-      // Fresh supervisor: a hold left over from a previous container run must
-      // not keep the browser down. (An existing supervisor keeps its hold — an
-      // agent mid profile-swap owns that state.)
-      const started = await this.exec0(bin, [
-        'exec', '-d', containerName, 'sh', '-c',
-        `rm -f '${BROWSER_HOLD_FILE}'; exec '${BROWSER_CONTROL_SCRIPT}' supervise >/tmp/adf-browser/supervise.log 2>&1`,
-      ], 15_000)
-      if (started.code !== 0) throw new Error(`adf-browser supervise: ${started.stderr.slice(0, 300)}`)
-    }
-    const ready = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_CDP_READY], 30_000)
-    if (ready.code !== 0) {
+    // Desktop boot opens the browser (start clears any hold left from a
+    // previous container run) and returns once CDP answers.
+    const started = await this.exec0(bin, ['exec', containerName, 'sh', '-c', `'${BROWSER_CONTROL_SCRIPT}' start`], 45_000)
+    if (started.code !== 0) {
       const log = await this.exec0(bin, ['exec', containerName, 'sh', '-c', 'tail -n 40 /tmp/adf-browser/chromium.log 2>/dev/null'], 15_000)
-      throw new Error((ready.stderr || log.stdout || 'managed Chromium failed to start').slice(0, 1000))
+      throw new Error((started.stderr || log.stdout || 'managed Chromium failed to start').slice(0, 1000))
+    }
+  }
+
+  /**
+   * Open the managed browser for a consumer about to attach over CDP (a
+   * browser MCP server being spawned). While the desktop is still booting
+   * this only kicks the boot (which opens the browser) — MCP spawn paths must
+   * not wait tens of seconds. Once the desktop runs, a closed browser is
+   * opened again (a couple of seconds); one held down by `adf-browser stop`
+   * is left alone — an agent mid profile-swap owns that state.
+   */
+  async ensureManagedBrowserUp(containerName: string): Promise<void> {
+    if (!this._stackStarted.has(containerName)) {
+      this.kickBrowserReady(containerName)
+      return
+    }
+    const bin = await this.requirePodman()
+    const result = await this.exec0(bin, [
+      'exec', containerName, 'sh', '-c',
+      `[ -f '${BROWSER_HOLD_FILE}' ] && exit 0; '${BROWSER_CONTROL_SCRIPT}' start`,
+    ], 45_000)
+    if (result.code !== 0) {
+      console.warn(`[Compute] Managed browser did not come up in ${containerName}:`, result.stderr.slice(0, 300))
     }
   }
 
