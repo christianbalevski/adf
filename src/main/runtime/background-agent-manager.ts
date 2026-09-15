@@ -1111,8 +1111,8 @@ export class BackgroundAgentManager extends EventEmitter {
         workspace,
         config,
         provider,
-        createProviderForModel: (modelId: string) => {
-          const overrideConfig = { ...config, model: { ...config.model, model_id: modelId } }
+        createProviderForModel: (model) => {
+          const overrideConfig = { ...config, model }
           const overrideAdfProvider = overrideConfig.providers?.find(p => p.id === overrideConfig.model.provider)
           const overrideResolved = overrideAdfProvider ? {
             ...overrideAdfProvider,

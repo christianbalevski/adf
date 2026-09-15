@@ -54,3 +54,21 @@ describe('loop-parser media restore', () => {
     expect(display[0].metadata).not.toHaveProperty('imagePreviewUrls')
   })
 })
+
+describe('loop-parser turn error marker', () => {
+  it('reads a persisted turn error back as an error display entry in both parsers', () => {
+    const entries = [userEntry([{ type: 'text', text: '[Turn error] 400 Bad Request: model not supported' }], 7)]
+    for (const parse of [parseLoopToDisplay, parseLoopWithToolPairs]) {
+      const out = parse(entries)
+      expect(out).toHaveLength(1)
+      expect(out[0].type).toBe('error')
+      expect(out[0].content).toBe('400 Bad Request: model not supported')
+      expect(out[0].metadata?.seq).toBe(7)
+    }
+  })
+
+  it('does not treat ordinary user text as a turn error', () => {
+    const out = parseLoopToDisplay([userEntry([{ type: 'text', text: 'Turn error handling looks fine' }])])
+    expect(out[0].type).toBe('user')
+  })
+})

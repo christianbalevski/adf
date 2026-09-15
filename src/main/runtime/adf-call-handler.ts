@@ -2,7 +2,7 @@ import { nanoid } from 'nanoid'
 import type { ToolRegistry } from '../tools/tool-registry'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import { isReservedMcpRuntimePurpose, mcpRuntimeIdentityAccess } from '../adf/adf-workspace'
-import type { AgentConfig, CodeExecutionConfig, MetaProtectionLevel, FileProtectionLevel, AlfAttestation } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, ModelConfig, CodeExecutionConfig, MetaProtectionLevel, FileProtectionLevel, AlfAttestation } from '../../shared/types/adf-v02.types'
 import { CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, FILE_PROTECTION_LEVELS } from '../../shared/types/adf-v02.types'
 import { readAdfAttestations, addPeerAttestation, issuePeerAttestation } from '../services/attestation.service'
 import type { LLMProvider } from '../providers/provider.interface'
@@ -50,8 +50,8 @@ export interface AdfCallHandlerOptions {
   workspace: AdfWorkspace
   config: AgentConfig
   provider: LLMProvider
-  /** Factory to create a provider for a different model ID (used by model_invoke's `model` param). */
-  createProviderForModel?: (modelId: string) => LLMProvider
+  /** Factory to create a provider for a different model config (model_invoke's `model` param, a loop's `model` override). */
+  createProviderForModel?: (model: ModelConfig) => LLMProvider
   /** Resolve an identity value from adf_identity (respects code_access flag). Never falls back to app-level settings. */
   resolveIdentity?: (purpose: string) => string | null
   /** This agent's Ed25519 signing key (PKCS8 DER) for attestation_issue. Handles envelope/password decryption. */
@@ -76,7 +76,7 @@ export class AdfCallHandler {
   private workspace: AdfWorkspace
   private config: AgentConfig
   private provider: LLMProvider
-  private createProviderForModel?: (modelId: string) => LLMProvider
+  private createProviderForModel?: (model: ModelConfig) => LLMProvider
   private resolveIdentity?: (purpose: string) => string | null
   private getSigningKey?: () => Buffer | null
   // Bound by assembleAgent after it creates/restores the active session.
@@ -166,12 +166,11 @@ export class AdfCallHandler {
    * factory. The loop pool uses this to honour a loop's `model` override
    * without every host having to thread a provider factory of its own.
    */
-  providerForModel(modelId: string): LLMProvider | null {
-    try {
-      return this.createProviderForModel?.(modelId) ?? null
-    } catch {
-      return null
-    }
+  providerForModel(model: ModelConfig): LLMProvider | null {
+    // A factory failure (unknown provider id, missing credentials) propagates:
+    // the caller decides whether to fall back, and must not do so silently
+    // when the override names a different provider than the host's.
+    return this.createProviderForModel?.(model) ?? null
   }
 
   /** True when this handler serves a side loop (derived-config marker). */
@@ -587,7 +586,7 @@ export class AdfCallHandler {
         }
       }
       try {
-        provider = this.createProviderForModel(input.model)
+        provider = this.createProviderForModel({ ...this.config.model, model_id: input.model })
       } catch (err) {
         return {
           error: `Failed to create provider for model "${input.model}": ${err instanceof Error ? err.message : String(err)}`,

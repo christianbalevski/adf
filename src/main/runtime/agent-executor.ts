@@ -21,7 +21,7 @@ import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prom
 import { sliceWellFormed, toWellFormed } from '../../shared/utils/well-formed'
 import { DEFAULT_COMPACTION_PROMPT, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_TOOL_PROMPTS } from '../../shared/constants/adf-defaults'
 import { nanoid } from 'nanoid'
-import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
+import { parseLoopToDisplay, TURN_ERROR_MARKER } from '../../shared/utils/loop-parser'
 // Shared with deriveLoopConfig — both enforcement points must read a duplicated
 // declaration the same way, or a side loop inherits an un-gated copy of a tool
 // the executor treats as restricted.
@@ -197,18 +197,110 @@ interface CachedToolSnapshot {
  * checks (`instanceof APIError`) are unreliable. Pattern-match the message and
  * any preserved properties instead.
  */
-/** HTTP status preserved on an enriched provider error, if any. */
-function errorStatus(error: unknown): number | null {
-  const obj = (error && typeof error === 'object') ? error as Record<string, unknown> : null
-  return typeof obj?.status === 'number' ? obj.status
-    : typeof obj?.statusCode === 'number' ? obj.statusCode
-    : typeof obj?.responseStatus === 'number' ? obj.responseStatus
-    : null
+/**
+ * Walk an error and its `cause` chain, outermost first.
+ *
+ * undici nests the real reason: a dropped response body surfaces as
+ * `TypeError: terminated` whose `cause` is `SocketError: other side closed`
+ * carrying `code: 'UND_ERR_SOCKET'`. Classifying only the outer error throws
+ * away everything that makes the failure recognizable. Depth-bounded and
+ * cycle-guarded — a malformed error must never hang the classifier.
+ */
+function errorChain(error: unknown, maxDepth = 6): Record<string, unknown>[] {
+  const chain: Record<string, unknown>[] = []
+  const seen = new Set<unknown>()
+  let current: unknown = error
+  while (current && typeof current === 'object' && chain.length < maxDepth && !seen.has(current)) {
+    seen.add(current)
+    const obj = current as Record<string, unknown>
+    chain.push(obj)
+    current = obj.cause
+  }
+  return chain
 }
+
+/** HTTP status preserved on an enriched provider error (or one of its causes), if any. */
+function errorStatus(error: unknown): number | null {
+  for (const obj of errorChain(error)) {
+    const status = typeof obj.status === 'number' ? obj.status
+      : typeof obj.statusCode === 'number' ? obj.statusCode
+      : typeof obj.responseStatus === 'number' ? obj.responseStatus
+      : null
+    if (status !== null) return status
+  }
+  return null
+}
+
+/** Uppercased `code` strings found anywhere on the error's cause chain. */
+function errorCodes(error: unknown): string[] {
+  const codes: string[] = []
+  for (const obj of errorChain(error)) {
+    if (typeof obj.code === 'string') codes.push(obj.code.toUpperCase())
+  }
+  return codes
+}
+
+/** Lowercased messages of the error's cause chain, joined for substring matching. */
+function causeMessages(error: unknown): string {
+  return errorChain(error)
+    .map(obj => (typeof obj.message === 'string' ? obj.message : ''))
+    .filter(Boolean)
+    .join(' | ')
+    .toLowerCase()
+}
+
+/**
+ * Node/undici stream-drop wordings. These are connection failures the SDK
+ * surfaces with no status code — the response body was cut mid-stream. They
+ * used to fall through to the structural branch and brick the agent
+ * (2026-09: a bare `terminated` parked a background agent in `error` for 23h).
+ *
+ * Deliberately NOT here: bare "aborted" / "operation was aborted". Every
+ * owner-initiated abort in this executor is short-circuited BEFORE the
+ * classifier runs — the catch block returns early on `_interruptRestart`
+ * (chat interrupt), `_ownerStateTransitionRequested` (endTurnAndSetState),
+ * and `state === 'stopped'` (abort()) — but a bare "aborted" substring is too
+ * generic to risk re-classifying a user stop as a retryable outage if a new
+ * abort path ever forgets to set one of those flags. The undici-specific
+ * `UND_ERR_ABORTED` code is matched instead (see TRANSIENT_ERROR_CODES): it
+ * only appears on a socket/body abort, and a DOMException from a user abort
+ * carries a numeric `code` (20), never this string.
+ */
+const STREAM_DROP_PATTERNS = [
+  'other side closed',
+  'socket closed',
+  'premature close',
+  'stream closed',
+  'connection closed',
+  'econnaborted',
+  'network connection lost',
+  'body timeout',
+  'headers timeout',
+]
+
+const TRANSIENT_ERROR_CODES = [
+  'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNREFUSED', 'EAI_AGAIN', 'EPIPE',
+  'ECONNABORTED', 'EHOSTUNREACH', 'ENETUNREACH',
+  'UND_ERR_SOCKET', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_ABORTED',
+]
+
+/** Why the executor entered the terminal `error` state. Only 'auth' is a permanent brick. */
+export type ExecutorErrorReason = 'auth' | 'tool_mismatch' | 'turn_error'
+
+/**
+ * How long a capped-out agent waits before a background trigger may spend
+ * itself on another recovery attempt.
+ *
+ * Without this, a permanent structural fault plus a 1-minute timer flaps the
+ * agent error → idle → error every tick: a burning loop, a noisy fleet view,
+ * and one wasted provider call per minute. With it, the agent goes quiet after
+ * the attempt cap and probes once every 30 minutes — enough to self-heal from
+ * an outage that outlasts the backoff window, cheap enough to ignore.
+ */
+export const ERROR_RECOVERY_COOLDOWN_MS = 30 * 60 * 1000
 
 export function isTransientProviderError(error: unknown, message: string): boolean {
   const msg = message.toLowerCase()
-  const obj = (error && typeof error === 'object') ? error as Record<string, unknown> : null
 
   // A known HTTP status is authoritative: 408/429/5xx are transient, anything
   // else is not — a 400 whose body happens to mention "timeout" or contain a
@@ -216,11 +308,18 @@ export function isTransientProviderError(error: unknown, message: string): boole
   const status = errorStatus(error)
   if (status !== null) return status === 408 || status === 429 || (status >= 500 && status < 600)
 
-  const code = typeof obj?.code === 'string' ? obj.code : null
-  if (code && ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNREFUSED', 'EAI_AGAIN', 'EPIPE'].includes(code)) return true
+  const codes = errorCodes(error)
+  if (codes.some(code => TRANSIENT_ERROR_CODES.includes(code))) return true
 
   const name = error instanceof Error ? error.name : ''
   if (name === 'AI_RateLimitError' || name === 'AI_RetryError') return true
+
+  // Message matching spans the cause chain, not just the top-level message.
+  const chainMsg = `${msg} | ${causeMessages(error)}`
+  if (STREAM_DROP_PATTERNS.some(pattern => chainMsg.includes(pattern))) return true
+  // Word-boundary match: undici's bare `TypeError: terminated`. Anchored so it
+  // cannot fire on "terminated_account" style provider wording.
+  if (/\bterminated\b/.test(chainMsg)) return true
 
   if (/\b(429|500|502|503|504|529)\b/.test(msg)) return true
   if (msg.includes('rate limit') || msg.includes('rate_limit')) return true
@@ -422,6 +521,24 @@ export class AgentExecutor extends EventEmitter {
   // When the current failure sequence began — the anchor for the elapsed-time
   // notice injected into retry turns. Cleared alongside the attempt counter.
   private _recoveryFirstFailureAt: number | null = null
+  // When an attempt was last SPENT — counted against the cap, whether it was
+  // armed as a backoff retry or claimed by an incoming trigger. Anchors the
+  // post-cap cooldown, so it is deliberately stamped at the moment the attempt
+  // is counted rather than when the retry turn actually runs: a retry that was
+  // armed and then superseded still consumed the attempt.
+  private _lastRecoveryAttemptAt: number | null = null
+  // Why the executor last entered the terminal `error` state. 'auth' is a
+  // dead end by design (the user must fix credentials); every other reason is
+  // eligible for the bounded auto-recovery below, so a background agent does
+  // not sit red forever after one bad turn. null means "not in error" or an
+  // error entered by a path that predates this bookkeeping — treated as
+  // ineligible, i.e. the old drop-everything behavior.
+  private _errorReason: ExecutorErrorReason | null = null
+  // One `recovery_suppressed` log per error episode. Without the latch, a
+  // 1-minute timer against a capped-out agent writes one "why I'm idle" line
+  // per tick — the exact loop spam the cooldown exists to prevent. Cleared
+  // whenever the executor leaves `error` (see setState).
+  private _recoverySuppressedLogged = false
   // True once the give-up notice for the current outage has been written, so
   // repeated failing triggers during a dead-provider stretch don't spam the
   // loop with one notice per turn. Cleared on the next provider success.
@@ -1538,9 +1655,66 @@ export class AgentExecutor extends EventEmitter {
       return
     }
 
-    // In error state, only manual user messages can recover the agent.
-    if (this.state === 'error') {
-      if (eventType !== 'chat') return
+    // In error state, a manual user message always recovers the agent.
+    //
+    // Every OTHER agent-scope trigger used to be dropped here, which is what
+    // made `error` terminal for background agents: timers, inbox deliveries
+    // and adapter events fired into the void until a human noticed. An auth
+    // brick still swallows them (retrying a bad key just burns triggers and
+    // spams the loop), but a structural/unclassified error now spends the
+    // NEXT trigger as its recovery attempt: clear the error through setState
+    // so the manager/UI see the transition, then run the trigger normally.
+    // A fresh turn also supersedes any armed backoff retry further down, so
+    // the trigger and the timer never both fire.
+    if (this.state === 'error' && eventType !== 'chat') {
+      const recoverable = this._errorReason !== null && this._errorReason !== 'auth'
+      // activeAgentTurnCount is claimed before executeTurnImpl, so > 1 means a
+      // recovery turn is already in flight — don't stack a second one.
+      if (!recoverable || (!opts?.nested && this.activeAgentTurnCount > 1)) return
+
+      // Bounded: a trigger may spend itself as a recovery attempt while the
+      // attempt budget holds, or — once the budget is gone — at most once per
+      // cooldown. The cooldown is what keeps a permanent fault from flapping
+      // the agent on every timer tick without re-creating the 23-hour brick:
+      // the agent goes quiet, but never permanently deaf.
+      const maxAttempts = this.config.recovery?.max_attempts ?? RECOVERY_DEFAULTS.max_attempts
+      const withinCap = this._recoveryAttempts < maxAttempts
+      const sinceLastAttempt = this._lastRecoveryAttemptAt === null
+        ? null
+        : Date.now() - this._lastRecoveryAttemptAt
+      const cooledDown = sinceLastAttempt !== null && sinceLastAttempt >= ERROR_RECOVERY_COOLDOWN_MS
+      if (!withinCap && !cooledDown) {
+        // Say why the agent is sitting still — once per episode, not per tick.
+        if (!this._recoverySuppressedLogged) {
+          this._recoverySuppressedLogged = true
+          try {
+            this.session.getWorkspace().insertLog(
+              'warn', 'executor', 'recovery_suppressed', eventType ?? null,
+              `Recovery attempts exhausted (${this._recoveryAttempts}/${maxAttempts}); dropping agent-scope triggers until a chat message arrives or ` +
+              `${Math.round(ERROR_RECOVERY_COOLDOWN_MS / 60_000)} minutes have passed since the last attempt`
+            )
+          } catch { /* non-fatal */ }
+          this.emitRuntimeEvent('error.recovery_suppressed', {
+            reason: this._errorReason, trigger: eventType ?? null,
+            attempts: this._recoveryAttempts, max_attempts: maxAttempts,
+          })
+        }
+        return
+      }
+
+      const afterCooldown = !withinCap
+      this._lastRecoveryAttemptAt = Date.now()
+      try {
+        this.session.getWorkspace().insertLog(
+          'warn', 'executor', 'error_recovery_trigger', eventType ?? null,
+          `Agent was in error state (${this._errorReason}); running this ${eventType ?? 'trigger'} as a recovery attempt` +
+          (afterCooldown ? ' after cooldown' : '')
+        )
+      } catch { /* non-fatal */ }
+      this.emitRuntimeEvent('error.recovery_trigger', {
+        reason: this._errorReason, trigger: eventType ?? null, after_cooldown: afterCooldown,
+      })
+      this.setState('idle')
     }
 
     // Another turn is in flight when EITHER the state machine says so OR a
@@ -1806,7 +1980,7 @@ export class AgentExecutor extends EventEmitter {
             const friendly = `Your ${providerLabel} provider isn't authenticated. ` +
               `Check the API key, account balance, and plan limits in Settings → Providers, then try again.` +
               (validation.error ? `\n\nProvider response: ${validation.error}` : '')
-            this.setState('error')
+            this.enterErrorState('auth')
             this.emitEvent({
               type: 'error',
               payload: { error: friendly },
@@ -1935,6 +2109,9 @@ export class AgentExecutor extends EventEmitter {
         this._recoveryAttempts = 0
         this._recoveryFirstFailureAt = null
         this._recoveryGaveUp = false
+        // A turn that got a real answer clears the cooldown anchor too: the
+        // next outage starts from a full attempt budget with no waiting period.
+        this._lastRecoveryAttemptAt = null
 
         // Store provider metadata (e.g. rate limits) on workspace for tool access
         if (response.providerMetadata) {
@@ -2734,8 +2911,9 @@ export class AgentExecutor extends EventEmitter {
         // next turn will re-preflight (and re-surface the issue if it's still broken).
         const providerLabel = this.provider?.name || this.provider?.providerId || 'provider'
         this.providerValidated = false
-        this.setState('error')
+        this.enterErrorState('auth')
         try { this.session.getWorkspace().insertLog('error', 'executor', 'provider_credentials_invalid', null, errorMsg.slice(0, 300)) } catch { /* non-fatal */ }
+        this.persistTurnError(`${providerLabel} provider isn't authenticated: ${errorMsg}`)
         this.emitEvent({
           type: 'error',
           payload: {
@@ -2834,7 +3012,7 @@ export class AgentExecutor extends EventEmitter {
       // Image errors are recoverable user-content issues; don't move into the
       // terminal `error` state. Tool-mismatch and unknown errors still brick.
       if (!hasImageBlocks || isToolMismatch) {
-        this.setState('error')
+        this.enterErrorState(isToolMismatch ? 'tool_mismatch' : 'turn_error')
       }
       try { this.session.getWorkspace().insertLog(hasImageBlocks && !isToolMismatch ? 'warn' : 'error', 'executor', 'turn_error', null, errorMsg.slice(0, 300)) } catch { /* non-fatal */ }
 
@@ -2886,6 +3064,7 @@ export class AgentExecutor extends EventEmitter {
           return
         } catch (retryError) {
           // If retry also fails, show both errors
+          this.persistTurnError(`${errorMsg}\n\nRetry after history cleanup also failed: ${String(retryError)}`)
           this.emitEvent({
             type: 'error',
             payload: {
@@ -2932,11 +3111,31 @@ export class AgentExecutor extends EventEmitter {
           this._inImageRecovery = false
         }
       } else {
+        this.persistTurnError(errorMsg)
         this.emitEvent({
           type: 'error',
           payload: { error: errorMsg, details: errorDetails },
           timestamp: Date.now()
         })
+      }
+
+      // `error` used to be a dead end: the dispatcher drops every agent-scope
+      // trigger except `chat`, so a background agent that broke at 03:00 sat
+      // red until a human opened it. Arm the SAME bounded backoff transient
+      // failures use — a structural turn error is very often an unclassified
+      // upstream hiccup, and one retry costs far less than a dead agent.
+      // Auth bricks never reach here (they returned in the isAuthError branch
+      // above), and an inline auto-fix retry that already returned skips this.
+      if (this.state === 'error' && this._errorReason !== 'auth') {
+        const scheduled = this.scheduleProviderRecovery(dispatch, error, errorMsg, { fromErrorState: true })
+        if (!scheduled) {
+          try {
+            this.session.getWorkspace().insertLog(
+              'error', 'executor', 'recovery_exhausted', null,
+              `Auto-recovery exhausted after ${this._recoveryAttempts} attempts — agent stays in error state. Last error: ${errorMsg.slice(0, 200)}`
+            )
+          } catch { /* non-fatal */ }
+        }
       }
       } // end else (structural error path)
       } // end else (!_interruptRestart)
@@ -3349,6 +3548,26 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
+   * Write a failed turn into the loop so it survives a file switch / reload.
+   *
+   * The `error` event this accompanies lives only in renderer memory: a loop
+   * that failed while its file was not in the foreground rehydrated as a bare
+   * trigger with no response — a silent no-op where the owner saw an error
+   * bubble for their own messages. The row is read back as an `error` display
+   * entry (loop-parser TURN_ERROR_MARKER) and is model-visible like any other
+   * user-role notice, so the next turn knows the previous one never completed.
+   */
+  private persistTurnError(errorMsg: string): void {
+    try {
+      this.session.addMessage({
+        role: 'user',
+        content: [{ type: 'text', text: `${TURN_ERROR_MARKER}${errorMsg.slice(0, 2000)}` }]
+      })
+      this.session.flushToLoop()
+    } catch { /* non-fatal: the live event still fires */ }
+  }
+
+  /**
    * Arm a backoff retry of `dispatch` after a transient provider error.
    * Returns the schedule, or null when auto-recovery is disabled or attempts
    * are exhausted. The timer outlives the turn's finally block (the executor
@@ -3359,6 +3578,7 @@ export class AgentExecutor extends EventEmitter {
     dispatch: AdfEventDispatch | AdfBatchDispatch,
     error: unknown,
     errorMsg: string,
+    opts?: { fromErrorState?: boolean },
   ): { attempt: number; maxAttempts: number; delayMs: number } | null {
     const recovery = this.config.recovery
     if ((recovery?.auto_retry ?? RECOVERY_DEFAULTS.auto_retry) === false) return null
@@ -3367,6 +3587,11 @@ export class AgentExecutor extends EventEmitter {
 
     if (this._recoveryAttempts === 0) this._recoveryFirstFailureAt = Date.now()
     const attempt = ++this._recoveryAttempts
+    // Anchor the post-cap cooldown at the moment the attempt is COUNTED, so an
+    // armed retry that never fires (superseded, cancelled) still starts the
+    // clock — otherwise a capped-out agent whose retries were all superseded
+    // would have a null anchor and never cool down.
+    this._lastRecoveryAttemptAt = Date.now()
     const base = recovery?.base_delay_ms ?? RECOVERY_DEFAULTS.base_delay_ms
     const cap = recovery?.max_delay_ms ?? RECOVERY_DEFAULTS.max_delay_ms
     const backoff = Math.min(base * 2 ** (attempt - 1), cap)
@@ -3393,9 +3618,17 @@ export class AgentExecutor extends EventEmitter {
         this.emitRuntimeEvent('provider.retry_cancelled', { reason: 'disabled' })
         return
       }
+      // Recovery out of a NON-auth `error` state is the one case where a
+      // non-idle executor still retries: the whole point is to climb out.
+      // Re-checked at fire time, so an auth failure landing during the backoff
+      // (which rewrites _errorReason) cancels the retry as before.
+      const recoveringFromError = opts?.fromErrorState === true
+        && this.state === 'error'
+        && this._errorReason !== null
+        && this._errorReason !== 'auth'
       // Not idle: an auth error landed during the backoff (error state) or the
       // executor is being torn down. The retry is dead — say so.
-      if (this.state !== 'idle') {
+      if (this.state !== 'idle' && !recoveringFromError) {
         this.emitRuntimeEvent('provider.retry_cancelled', { reason: 'agent_state' })
         return
       }
@@ -3407,6 +3640,10 @@ export class AgentExecutor extends EventEmitter {
         this._recoveryTimer = setTimeout(fire, 5_000)
         return
       }
+      // Leave `error` through the normal path so the background manager and
+      // the UI see the agent go live again instead of silently running a turn
+      // while the fleet view still shows it red.
+      if (recoveringFromError) this.setState('idle')
       try { this.session.getWorkspace().insertLog('info', 'executor', 'provider_retry', null, `Auto-recovery retry ${attempt}/${maxAttempts}`) } catch { /* non-fatal */ }
       this.emitRuntimeEvent('provider.retry_started', { attempt, max_attempts: maxAttempts })
       const elapsed = this._recoveryFirstFailureAt !== null
@@ -3604,6 +3841,7 @@ export class AgentExecutor extends EventEmitter {
     this.abortController?.abort()
     this.cancelScheduledRecovery('abort')
     this._recoveryAttempts = 0
+    this._lastRecoveryAttemptAt = null
     this.pendingTriggers = []
     this.pendingInterrupt = null
     // Queued system dispatches never survive teardown — waking them here would
@@ -4105,12 +4343,41 @@ export class AgentExecutor extends EventEmitter {
   }
 
   private setState(state: AgentState): void {
+    // Leaving `error` ends the episode: the next brick records its own reason
+    // and gets its own single suppression notice.
+    if (state !== 'error') {
+      this._errorReason = null
+      this._recoverySuppressedLogged = false
+    }
     this.state = state
     this.emitEvent({
       type: 'state_changed',
       payload: { state },
       timestamp: Date.now()
     })
+  }
+
+  /**
+   * Enter the terminal `error` state, recording WHY.
+   *
+   * The reason decides whether the agent can climb out on its own: 'auth'
+   * stays bricked until the user fixes credentials (retrying the same key is
+   * pointless and noisy), everything else is eligible for bounded auto-
+   * recovery and for the next agent-scope trigger to act as a recovery turn.
+   * Routes through setState so `state_changed` still reaches the background
+   * manager and the UI.
+   */
+  private enterErrorState(reason: ExecutorErrorReason): void {
+    // Reason first: setState emits state_changed synchronously, and a listener
+    // that asks why must not observe a null reason. setState only clears the
+    // reason when the target state is NOT 'error', so this survives the call.
+    this._errorReason = reason
+    this.setState('error')
+  }
+
+  /** The reason for the current `error` state, or null when not bricked. */
+  getErrorReason(): ExecutorErrorReason | null {
+    return this.state === 'error' ? this._errorReason : null
   }
 
   /**

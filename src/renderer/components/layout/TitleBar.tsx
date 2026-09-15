@@ -54,6 +54,8 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
   const config = useAgentStore((s) => s.config)
   const agentState = useAgentStore((s) => s.state)
   const statusText = useAgentStore((s) => s.statusText)
+  // In-flight start for this file — the store still says 'off' until it returns.
+  const starting = useAppStore((s) => (filePath ? s.startingFilePaths.has(filePath) : false))
 
   const foregroundActive = agentState !== 'off'
 
@@ -146,7 +148,11 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
         {config.name}{isDirty ? ' •' : ''}
       </span>
       <span className="shrink-0 flex items-center">
-        {dotConfig.ring ? (
+        {starting ? (
+          <span className="relative w-2 h-2" title="Starting…">
+            <span className="absolute inset-[-1px] rounded-full border border-yellow-400 border-t-transparent animate-spin" />
+          </span>
+        ) : dotConfig.ring ? (
           <span className={`w-2 h-2 rounded-full border-[1.5px] ${dotConfig.color}`} title={agentState} />
         ) : dotConfig.pulse ? (
           <span className="relative w-2 h-2" title={agentState}>
@@ -157,7 +163,16 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
           <span className={`w-2 h-2 rounded-full ${dotConfig.color}`} title={agentState} />
         )}
       </span>
-      {statusText && (
+      {starting ? (
+        <span
+          className="min-w-0 flex-1 text-neutral-500 dark:text-neutral-400 truncate"
+          title="Attaching the running agent — rebuilding its runtime if the previous one errored"
+        >
+          <span className="inline-block max-w-full truncate align-bottom adf-shimmer-text adf-shimmer-text--activity">
+            Starting&hellip;
+          </span>
+        </span>
+      ) : statusText ? (
         <span
           className="min-w-0 flex-1 text-neutral-500 dark:text-neutral-400 truncate"
           title={statusText}
@@ -168,7 +183,7 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
             {statusText}
           </span>
         </span>
-      )}
+      ) : null}
       {isServing && servingHandle && (
         servingActive && servingUrl ? (
           <a
@@ -234,8 +249,13 @@ export function TitleBar() {
   const setSessionId = useAgentStore((s) => s.setSessionId)
   const addLogEntry = useAgentStore((s) => s.addLogEntry)
   const { closeFile } = useAdfFile()
-  const [starting, setStarting] = useState(false)
+  const [localStarting, setStarting] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  // Starts driven from elsewhere (openFile's foreground re-attach, the sidebar
+  // toggle) also belong on this button — otherwise a multi-second executor
+  // rebuild shows a plain "Start", i.e. the agent looks like it turned off.
+  const startingElsewhere = useAppStore((s) => (filePath ? s.startingFilePaths.has(filePath) : false))
+  const starting = localStarting || startingElsewhere
 
   const isMac = window.adfApi?.platform === 'darwin'
   const leftPaneWidth = sidebarCollapsed && !showSettings ? null : 240

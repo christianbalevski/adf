@@ -1,9 +1,10 @@
-import { describe, expect, it, beforeEach } from 'vitest'
+import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
+import { ERROR_RECOVERY_COOLDOWN_MS } from '../../../src/main/runtime/agent-executor'
 import { AgentRuntimeBuilder } from '../../../src/main/runtime/agent-runtime-builder'
 import { createHeadlessAgent, MockLLMProvider } from '../../../src/main/runtime/headless'
 import { clearAllUmbilicalBuses, ensureUmbilicalBus } from '../../../src/main/runtime/umbilical-bus'
@@ -108,6 +109,35 @@ class PreflightFlakyProvider implements LLMProvider {
   }
 }
 
+/**
+ * Provider whose failures are STRUCTURAL (no status, no transient wording), so
+ * the executor bricks into `error` state instead of taking the transient path.
+ * Outcomes follow a fixed script; the last entry repeats.
+ */
+class StructuralFailProvider implements LLMProvider {
+  readonly name = 'structural-provider'
+  readonly modelId = 'structural-model-v1'
+  createMessageCalls = 0
+
+  constructor(private script: Array<'fail' | 'ok'>) {}
+
+  async createMessage(_opts: CreateMessageOptions): Promise<LLMResponse> {
+    const step = this.script[Math.min(this.createMessageCalls, this.script.length - 1)]
+    this.createMessageCalls++
+    if (step === 'fail') throw new Error('unrecognized executor fault')
+    return {
+      id: `reply-${this.createMessageCalls}`,
+      content: [{ type: 'text', text: 'recovered from error state' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }
+  }
+
+  async validateConfig(): Promise<{ valid: boolean; error?: string }> {
+    return { valid: true }
+  }
+}
+
 function makeWorkspace(name: string) {
   const dir = mkdtempSync(join(tmpdir(), `adf-recovery-${name}-`))
   const filePath = join(dir, `${name}.adf`)
@@ -130,6 +160,28 @@ function chatDispatch(text = 'hello') {
           seq: 0,
           role: 'user',
           content_json: [{ type: 'text', text }],
+          created_at: Date.now(),
+        },
+      },
+    }),
+    { scope: 'agent' },
+  )
+}
+
+/** A background (non-chat) agent-scope trigger — the kind `error` state used to swallow. */
+function timerDispatch(payload = 'scheduled work') {
+  return createDispatch(
+    createEvent({
+      type: 'timer',
+      source: 'test',
+      data: {
+        timer: {
+          id: 1,
+          schedule: { mode: 'once', at: Date.now() },
+          next_wake_at: Date.now(),
+          payload,
+          scope: ['agent'],
+          run_count: 0,
           created_at: Date.now(),
         },
       },
@@ -484,6 +536,191 @@ describe('AgentExecutor — automatic provider-error recovery', () => {
       expect(provider.validateCalls).toBe(2)
       expect(events.filter(e => e.type === 'provider.retry_scheduled').length).toBe(1)
     } finally {
+      await agent.disposeAsync()
+    }
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// `error` state is no longer a dead end for background agents.
+//
+// Regression: an undici stream drop surfaced as a bare `terminated`, fell
+// through to the structural branch, and parked a background agent in `error`
+// for 23 hours — every timer/inbox trigger dropped, nothing ever retried.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('AgentExecutor — bounded recovery out of the error state', () => {
+  beforeEach(() => {
+    clearAllUmbilicalBuses()
+  })
+
+  it('schedules a bounded recovery for a non-auth error and returns to idle on success', async () => {
+    const { filePath, workspace } = makeWorkspace('error-recovers')
+    const provider = new StructuralFailProvider(['fail', 'ok'])
+    const events = collectRuntimeEvents(workspace.getAgentConfig().id)
+
+    const agent = await buildAgent(workspace, filePath, provider, { base_delay_ms: 20, max_delay_ms: 60 })
+    try {
+      await agent.executor.executeTurn(chatDispatch())
+      // The structural failure still bricks the turn...
+      expect(agent.executor.getState()).toBe('error')
+      expect(events.filter(e => e.type === 'provider.retry_scheduled').length).toBe(1)
+
+      // ...but the armed retry climbs back out on its own.
+      await until(() => provider.createMessageCalls >= 2)
+      await until(() => agent.executor.getState() === 'idle')
+
+      expect(provider.createMessageCalls).toBe(2)
+      expect(agent.executor.getState()).toBe('idle')
+      expect(events.filter(e => e.type === 'provider.retry_started').length).toBe(1)
+      expect(workspace.getLogs().some(l => l.event === 'recovery_exhausted')).toBe(false)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('never schedules recovery for an auth error — credentials stay bricked', async () => {
+    const { filePath, workspace } = makeWorkspace('error-auth-bricked')
+    const provider = new FlakyProvider(Number.POSITIVE_INFINITY, undefined, { statusCode: 401, message: 'Unauthorized' })
+    const events = collectRuntimeEvents(workspace.getAgentConfig().id)
+
+    const agent = await buildAgent(workspace, filePath, provider, { base_delay_ms: 20, max_delay_ms: 60 })
+    try {
+      await agent.executor.executeTurn(chatDispatch())
+      await sleep(250)
+
+      expect(agent.executor.getState()).toBe('error')
+      expect(provider.createMessageCalls).toBe(1)
+      expect(events.length).toBe(0)
+
+      // And a background trigger is still dropped — retrying a bad key is futile.
+      await agent.executor.executeTurn(timerDispatch())
+      await sleep(100)
+      expect(provider.createMessageCalls).toBe(1)
+      expect(agent.executor.getState()).toBe('error')
+      expect(workspace.getLogs().some(l => l.event === 'error_recovery_trigger')).toBe(false)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('spends the next background trigger as a recovery attempt instead of dropping it', async () => {
+    const { filePath, workspace } = makeWorkspace('error-trigger-recovers')
+    const provider = new StructuralFailProvider(['fail', 'ok'])
+
+    // Long backoff: the armed retry never fires, so the timer trigger is the
+    // only thing that can pull the agent out.
+    const agent = await buildAgent(workspace, filePath, provider, { base_delay_ms: 60_000 })
+    try {
+      await agent.executor.executeTurn(chatDispatch())
+      expect(agent.executor.getState()).toBe('error')
+
+      const states: string[] = []
+      agent.executor.on('event', (e: { type: string; payload?: { state?: string } }) => {
+        if (e.type === 'state_changed' && e.payload?.state) states.push(e.payload.state)
+      })
+
+      await agent.executor.executeTurn(timerDispatch())
+      await until(() => agent.executor.getState() === 'idle')
+
+      expect(provider.createMessageCalls).toBe(2)
+      expect(agent.executor.getState()).toBe('idle')
+      // The transition out of error must go through setState so the manager/UI see it.
+      expect(states).toContain('idle')
+      expect(states).toContain('thinking')
+      expect(workspace.getLogs().some(l => l.event === 'error_recovery_trigger')).toBe(true)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('stays in error and logs recovery_exhausted once the attempt cap is reached', async () => {
+    const { filePath, workspace } = makeWorkspace('error-exhausts')
+    const provider = new StructuralFailProvider(['fail'])
+
+    const agent = await buildAgent(workspace, filePath, provider, { max_attempts: 1, base_delay_ms: 20, max_delay_ms: 60 })
+    try {
+      await agent.executor.executeTurn(chatDispatch())
+      // Initial turn + the single permitted retry, then it gives up.
+      await until(() => provider.createMessageCalls >= 2)
+      await sleep(250)
+
+      expect(provider.createMessageCalls).toBe(2)
+      expect(agent.executor.getState()).toBe('error')
+      const exhausted = workspace.getLogs().filter(l => l.event === 'recovery_exhausted')
+      expect(exhausted.length).toBe(1)
+      expect(exhausted[0].message).toContain('stays in error state')
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('drops background triggers once the cap is hit, logging recovery_suppressed exactly once', async () => {
+    const { filePath, workspace } = makeWorkspace('error-suppressed')
+    const provider = new StructuralFailProvider(['fail'])
+
+    // One attempt, armed with a backoff long enough that it never fires here:
+    // the budget is spent, so every timer tick below must be refused.
+    const agent = await buildAgent(workspace, filePath, provider, { max_attempts: 1, base_delay_ms: 60_000 })
+    try {
+      await agent.executor.executeTurn(chatDispatch())
+      expect(agent.executor.getState()).toBe('error')
+      expect(provider.createMessageCalls).toBe(1)
+
+      for (let i = 0; i < 3; i++) {
+        await agent.executor.executeTurn(timerDispatch(`tick ${i}`))
+      }
+      await sleep(100)
+
+      // No flapping: the agent never left error and never burned a call.
+      expect(provider.createMessageCalls).toBe(1)
+      expect(agent.executor.getState()).toBe('error')
+
+      const suppressed = workspace.getLogs().filter(l => l.event === 'recovery_suppressed')
+      expect(suppressed.length).toBe(1)
+      expect(suppressed[0].message).toContain('Recovery attempts exhausted')
+      // ...and no trigger was mistaken for a recovery attempt.
+      expect(workspace.getLogs().some(l => l.event === 'error_recovery_trigger')).toBe(false)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('lets a background trigger recover once the cooldown has elapsed', async () => {
+    const { filePath, workspace } = makeWorkspace('error-cooldown')
+    const provider = new StructuralFailProvider(['fail', 'ok'])
+
+    const agent = await buildAgent(workspace, filePath, provider, { max_attempts: 1, base_delay_ms: 60_000 })
+    try {
+      await agent.executor.executeTurn(chatDispatch())
+      expect(agent.executor.getState()).toBe('error')
+
+      // Refused while the cooldown is running.
+      await agent.executor.executeTurn(timerDispatch('too soon'))
+      expect(provider.createMessageCalls).toBe(1)
+      expect(agent.executor.getState()).toBe('error')
+
+      // Jump past the cooldown. Only Date is faked, and only for the
+      // synchronous part of the dispatch that reads the clock — the gate runs
+      // before executeTurnImpl's first await, so real timers are back in place
+      // long before the recovery turn does any waiting.
+      let turn: Promise<void>
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + ERROR_RECOVERY_COOLDOWN_MS + 60_000 })
+      try {
+        turn = agent.executor.executeTurn(timerDispatch('after cooldown'))
+      } finally {
+        vi.useRealTimers()
+      }
+      await turn
+      await until(() => agent.executor.getState() === 'idle')
+
+      expect(provider.createMessageCalls).toBe(2)
+      expect(agent.executor.getState()).toBe('idle')
+      const admitted = workspace.getLogs().filter(l => l.event === 'error_recovery_trigger')
+      expect(admitted.length).toBe(1)
+      expect(admitted[0].message).toContain('after cooldown')
+    } finally {
+      vi.useRealTimers()
       await agent.disposeAsync()
     }
   })

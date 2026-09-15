@@ -29,7 +29,7 @@ import type { PodmanService } from '../services/podman.service'
 import type { CodeSandboxService } from './code-sandbox'
 import type { LLMProvider } from '../providers/provider.interface'
 import type { AdfWorkspace } from '../adf/adf-workspace'
-import type { AgentConfig } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, ModelConfig } from '../../shared/types/adf-v02.types'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
 import type { RuntimeSettingsStore } from './runtime-service'
 import { McpClientManager } from '../services/mcp-client-manager'
@@ -95,7 +95,7 @@ export interface BuildAgentRuntimeOptions {
   config: AgentConfig
   provider: LLMProvider
   restoreLoop?: boolean
-  createProviderForModel?: (modelId: string) => LLMProvider
+  createProviderForModel?: (model: ModelConfig) => LLMProvider
 }
 
 /**
@@ -363,7 +363,7 @@ export class AgentRuntimeBuilder {
     config: AgentConfig
     provider: LLMProvider
     registry: ToolRegistry
-    createProviderForModel?: (modelId: string) => LLMProvider
+    createProviderForModel?: (model: ModelConfig) => LLMProvider
   }): AdfCallHandler | null {
     if (!this.codeSandboxService) return null
 

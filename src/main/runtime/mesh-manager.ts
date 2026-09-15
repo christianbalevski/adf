@@ -518,10 +518,19 @@ export class MeshManager extends EventEmitter {
   /**
    * Unregister an agent from mesh. Removes comm tools via toolRegistry.unregister().
    * The agent keeps running — only messaging is removed.
+   *
+   * `keepWsConnections` marks a HANDOVER: the agent is moving between the
+   * foreground and background hosts, keeps its live WS connections, and is
+   * about to be re-registered with the SAME ToolRegistry object (Studio's
+   * cleanupCurrentFile → transitionToBackground, and FILE_OPEN →
+   * extractBackgroundAgent). Every other caller — disableMesh, explicit stop,
+   * owner-off, daemon agent-unloaded — omits it and gets the full teardown.
    */
   unregisterAgent(filePath: string, options?: { keepWsConnections?: boolean }): void {
     const reg = this.registeredAgents.get(filePath)
     if (!reg) return
+
+    const handover = options?.keepWsConnections === true
 
     // Clean up handle mapping
     if (this.handleToFilePath.get(reg.handle) === filePath) {
@@ -537,21 +546,50 @@ export class MeshManager extends EventEmitter {
     }
 
     // Clean up WS connections (skip if transitioning to background — connections survive)
-    if (this.wsConnectionManager && !options?.keepWsConnections) {
+    if (this.wsConnectionManager && !handover) {
       this.wsConnectionManager.unregisterAgent(filePath)
     }
 
-    // Remove communication tools from the agent's runtime registry.
-    // Config tool declarations are left intact so user toggles persist to disk.
-    reg.toolRegistry.unregister('msg_send')
-    reg.toolRegistry.unregister('agent_discover')
-    reg.toolRegistry.unregister('msg_list')
-    reg.toolRegistry.unregister('msg_read')
-    reg.toolRegistry.unregister('msg_update')
-    reg.toolRegistry.unregister('ws_connect')
-    reg.toolRegistry.unregister('ws_disconnect')
-    reg.toolRegistry.unregister('ws_connections')
-    reg.toolRegistry.unregister('ws_send')
+    // Remove the MESH-BOUND tools from the agent's runtime registry — the ones
+    // whose instances close over this manager (msg_send's send callback,
+    // agent_discover's directory) or the WS manager. Config tool declarations
+    // are left intact so user toggles persist to disk.
+    //
+    // msg_list / msg_read / msg_update are deliberately NOT removed: they are
+    // plain built-ins (registerBuiltInTools registers InboxCheck/InboxRead/
+    // InboxUpdate into every registry, mesh or not) that read the agent's OWN
+    // inbox — which channel adapters fill independently of the mesh.
+    // registerCommunicationTools only tops them up when absent, so unregistering
+    // them here removed tools the mesh never provided. Studio drives
+    // unregister→register on every foreground/background transition against the
+    // SAME registry object, so a tool_use landing in that window failed with
+    // "Unknown tool: msg_read" while the identical call through `adf.msg_read`
+    // succeeded moments later. chat_info is likewise registered-but-never-
+    // unregistered for the same reason.
+    //
+    // On a HANDOVER the mesh-bound tools are left in place too, for exactly the
+    // same reason: the follow-up registerAgent hands back the SAME registry, so
+    // removing them here only opens a window (~100ms of FILE_OPEN work) in which
+    // an in-flight tool_use resolves to "Unknown tool: msg_send". The tools stay
+    // correct across the gap — agent_discover closes over this manager and
+    // `filePath` only and resolves the registration live — and the two that DO
+    // close over per-registration state (msg_send: `config` +
+    // `isMessageTriggeredFn`; ws_*: the WsConnectionManager instance) are
+    // REBUILT unconditionally by registerCommunicationTools (see there), so the
+    // survivor is replaced rather than reused stale.
+    //
+    // The ws_* exception: when there is no WS manager, registerCommunicationTools
+    // will not re-register them, so a surviving instance would be orphaned.
+    if (!handover) {
+      reg.toolRegistry.unregister('msg_send')
+      reg.toolRegistry.unregister('agent_discover')
+    }
+    if (!handover || !this.wsConnectionManager) {
+      reg.toolRegistry.unregister('ws_connect')
+      reg.toolRegistry.unregister('ws_disconnect')
+      reg.toolRegistry.unregister('ws_connections')
+      reg.toolRegistry.unregister('ws_send')
+    }
 
     // Clear card builder from workspace
     reg.workspace._cardBuilder = undefined
@@ -2042,7 +2080,14 @@ export class MeshManager extends EventEmitter {
     toolRegistry: ToolRegistry,
     isMessageTriggeredFn?: () => boolean
   ): void {
-    if (!toolRegistry.get('msg_send')) {
+    // msg_send is ALWAYS rebuilt, never topped up: it closes over
+    // per-registration state — the `config` object it reads `messaging.mode`
+    // from, and `isMessageTriggeredFn`, which differs between the foreground
+    // host and the background manager. A handover unregister
+    // leaves the previous instance in the registry (so there is no window where
+    // the tool is missing); overwriting it here is what keeps it pointing at the
+    // live registration.
+    {
       const sendMessageTool = new SendMessageTool(
         async (recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta, contentType) =>
           this.sendMessage(filePath, recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta, contentType),
@@ -2102,10 +2147,16 @@ export class MeshManager extends EventEmitter {
       ))
     }
 
+    // Like msg_send, the ws_* tools are rebuilt rather than topped up: each
+    // closes over the WsConnectionManager instance live at registration time,
+    // and that reference is swapped (instance ↔ null) when WS serving is toggled
+    // in Settings. A handover leaves the previous instances in place so there is
+    // no window where the tools are missing; rebuilding here is what re-points
+    // them at the current manager.
     if (this.wsConnectionManager) {
       const wsm = this.wsConnectionManager
       const fp = filePath
-      if (!toolRegistry.get('ws_connect')) {
+      {
         toolRegistry.register(new WsConnectTool(
           async (opts) => {
             // `id` alone means "start an already-configured connection" — nothing
@@ -2138,7 +2189,7 @@ export class MeshManager extends EventEmitter {
           () => this.registeredAgents.get(fp)?.workspace.getAgentConfig().security
         ))
       }
-      if (!toolRegistry.get('ws_disconnect')) {
+      {
         toolRegistry.register(new WsDisconnectTool(
           async (connId, configId) => {
             if (connId) { wsm.disconnect(connId); return { success: true } }
@@ -2153,12 +2204,12 @@ export class MeshManager extends EventEmitter {
           }
         ))
       }
-      if (!toolRegistry.get('ws_connections')) {
+      {
         toolRegistry.register(new WsConnectionsTool(
           (filter) => wsm.getConnections(fp, filter)
         ))
       }
-      if (!toolRegistry.get('ws_send')) {
+      {
         toolRegistry.register(new WsSendTool(
           async (connId, data) => wsm.send(connId, data)
         ))

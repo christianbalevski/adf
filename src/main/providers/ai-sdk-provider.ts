@@ -70,7 +70,11 @@ export function toProviderError(error: unknown): Error {
     }
     // responseHeaders carries Retry-After, which the executor's auto-recovery
     // backoff honors when scheduling a retry.
-    for (const key of ['statusCode', 'status', 'code', 'url', 'responseBody', 'isRetryable', 'responseHeaders']) {
+    // `cause` rides along because undici nests the real reason there:
+    // `TypeError: terminated` ← `SocketError: other side closed (UND_ERR_SOCKET)`.
+    // Dropping it left the executor's classifier with a bare, unrecognizable
+    // message and the agent bricked in `error` state.
+    for (const key of ['statusCode', 'status', 'code', 'url', 'responseBody', 'isRetryable', 'responseHeaders', 'cause']) {
       if (source[key] !== undefined) (enriched as unknown as Record<string, unknown>)[key] = source[key]
     }
     // The executor's classifier checks error names (AI_RetryError etc.) —

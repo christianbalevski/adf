@@ -840,7 +840,7 @@ const AgentFileRow = memo(function AgentFileRow({
       {showToggle && (
         <button
           onClick={handleToggle}
-          disabled={toggling}
+          disabled={toggling || isStarting}
           role="switch"
           aria-checked={isRunning}
           className={`relative shrink-0 w-7 h-4 rounded-full transition-[background-color,opacity] ${
@@ -851,13 +851,13 @@ const AgentFileRow = memo(function AgentFileRow({
             isRunning || toggling || isStarting
               ? ''
               : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
-          } ${toggling ? 'cursor-wait' : ''}`}
-          title={isRunning ? 'Running — click to stop' : 'Stopped — click to start'}
+          } ${toggling || isStarting ? 'cursor-wait' : ''}`}
+          title={isStarting ? 'Starting…' : isRunning ? 'Running — click to stop' : 'Stopped — click to start'}
         >
           <span
             className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${
               isRunning ? 'translate-x-3' : 'translate-x-0'
-            } ${toggling ? 'animate-pulse' : ''}`}
+            } ${toggling || isStarting ? 'animate-pulse' : ''}`}
           />
         </button>
       )}

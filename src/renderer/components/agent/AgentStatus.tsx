@@ -1,4 +1,6 @@
 import { useAgentStore, type AgentState } from '../../stores/agent.store'
+import { useAppStore } from '../../stores/app.store'
+import { useDocumentStore } from '../../stores/document.store'
 
 const stateConfig: Record<AgentState, { label: string; color: string; ring?: boolean; pulse?: boolean }> = {
   active: { label: 'Active', color: 'bg-yellow-400', pulse: true },
@@ -11,7 +13,23 @@ const stateConfig: Record<AgentState, { label: string; color: string; ring?: boo
 
 export function AgentStatus() {
   const state = useAgentStore((s) => s.state)
+  // An in-flight start for THIS file (foreground re-attach, or a rebuild of an
+  // errored executor) leaves the store at 'off' until it returns. Show the start
+  // instead of "Off" so a multi-second rebuild never reads as "it turned off".
+  const filePath = useDocumentStore((s) => s.filePath)
+  const starting = useAppStore((s) => (filePath ? s.startingFilePaths.has(filePath) : false))
   const { label, color, ring, pulse } = stateConfig[state] ?? stateConfig.off
+
+  if (starting) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="relative w-2 h-2">
+          <span className="absolute inset-[-1px] rounded-full border border-yellow-400 border-t-transparent animate-spin" />
+        </span>
+        <span className="text-xs text-neutral-500 dark:text-neutral-400">Starting&hellip;</span>
+      </div>
+    )
+  }
 
   return (
     <div className="flex items-center gap-2">

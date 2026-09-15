@@ -37,6 +37,54 @@ describe('isTransientProviderError', () => {
     expect(isTransientProviderError(err({ code: 'ECONNRESET' }), 'x')).toBe(true)
     expect(isTransientProviderError(new Error('something broke'), 'something broke')).toBe(false)
   })
+
+  // Regression: a background agent sat in `error` for 23h after undici cut the
+  // response body mid-stream and threw a bare `terminated`.
+  describe('undici / Node stream drops', () => {
+    it('treats a bare `terminated` as transient', () => {
+      expect(isTransientProviderError(new Error('terminated'), 'terminated')).toBe(true)
+      expect(isTransientProviderError(new TypeError('terminated'), 'terminated')).toBe(true)
+    })
+
+    it('walks the cause chain for the code and message undici buries there', () => {
+      const cause = err({ code: 'UND_ERR_SOCKET' }, 'other side closed')
+      cause.name = 'SocketError'
+      const outer = new TypeError('terminated') as TypeError & { cause?: unknown }
+      outer.cause = cause
+      expect(isTransientProviderError(outer, 'terminated')).toBe(true)
+
+      // The cause alone is enough even when the outer message says nothing useful.
+      const opaque = new Error('fetch failed') as Error & { cause?: unknown }
+      opaque.cause = err({ code: 'UND_ERR_BODY_TIMEOUT' }, 'Body Timeout Error')
+      expect(isTransientProviderError(opaque, 'fetch failed')).toBe(true)
+    })
+
+    it('matches the stream-drop wordings and socket-level codes', () => {
+      for (const msg of [
+        'other side closed', 'socket closed', 'Premature close', 'stream closed',
+        'connection closed', 'network connection lost', 'Body Timeout Error',
+        'Headers Timeout Error',
+      ]) {
+        expect(isTransientProviderError(new Error(msg), msg)).toBe(true)
+      }
+      for (const code of ['UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_ABORTED', 'ECONNABORTED', 'EHOSTUNREACH', 'ENETUNREACH']) {
+        expect(isTransientProviderError(err({ code }, 'opaque'), 'opaque')).toBe(true)
+      }
+    })
+
+    it('a known status stays authoritative over stream-drop wording', () => {
+      // A 400 that happens to say "terminated" is a request the provider
+      // rejected, not a dropped socket — retrying it is futile.
+      const msg = '400 invalid_request_error: conversation terminated by policy'
+      expect(isTransientProviderError(err({ statusCode: 400 }, msg), msg)).toBe(false)
+      expect(isTransientProviderError(err({ status: 404 }, 'socket closed'), 'socket closed')).toBe(false)
+    })
+
+    it('does not over-match unrelated wording', () => {
+      expect(isTransientProviderError(new Error('terminated_account'), 'terminated_account')).toBe(false)
+      expect(isTransientProviderError(new Error('The operation was aborted'), 'The operation was aborted')).toBe(false)
+    })
+  })
 })
 
 describe('isAuthError', () => {
@@ -119,6 +167,16 @@ describe('toProviderError — RetryError unwrapping', () => {
     const enriched = toProviderError(apiErr) as Error & Record<string, unknown>
     expect(enriched.statusCode).toBe(400)
     expect(enriched.name).toBe('AI_APICallError')
+  })
+
+  it('preserves `cause` so the classifier can still see the undici socket error', () => {
+    const socketErr = err({ code: 'UND_ERR_SOCKET' }, 'other side closed')
+    const dropped = new TypeError('terminated') as TypeError & { cause?: unknown }
+    dropped.cause = socketErr
+
+    const enriched = toProviderError(dropped) as Error & Record<string, unknown>
+    expect(enriched.cause).toBe(socketErr)
+    expect(isTransientProviderError(enriched, enriched.message)).toBe(true)
   })
 
   it('is idempotent', () => {

@@ -122,11 +122,12 @@ export interface LoopCreateResult {
  *   thing a running turn keeps is the config for the model call already in
  *   flight. (`enabled: false` is the exception, above: dispatch is what reads
  *   it, so it lands at the boundary.)
- * - **A loop's `model` override may change the model, not the provider.** The
- *   per-model provider is built from the HOST's provider config and
- *   credentials, so `createLoop`/`updateLoop` REJECT an override whose
- *   `provider` differs from the host's rather than silently cross-wiring one
- *   vendor's model id onto another's client. Cross-provider loop models are F3.
+ * - **A loop's `model` override may change the model AND the provider.** The
+ *   per-loop provider is built from the override's own `provider` id (app
+ *   settings or the ADF's providers list resolve its credentials), never from
+ *   the host's client with a foreign model id. A cross-provider override that
+ *   cannot be built fails the loop start loudly rather than downgrading to the
+ *   host's provider.
  *   A host with no model factory at all (no `sys_code`/`sys_lambda`) cannot
  *   honour even a same-provider override: the loop runs on the agent's model
  *   and the pool logs the fallback once, rather than letting the loop's system

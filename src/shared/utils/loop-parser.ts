@@ -34,6 +34,20 @@ export function parseLoopSendStamp(text: string): { fromLoop: string; body: stri
   return match ? { fromLoop: match[1], body: match[2] } : null
 }
 
+/**
+ * Durable marker the executor writes into the loop when a turn fails
+ * (`AgentExecutor.persistTurnError`). The live `error` event is renderer
+ * memory only and was lost the moment the file left the foreground, so a
+ * failed turn rehydrated as a silent no-op. This row survives: it is read back
+ * as an `error` display entry, and — like every other user-role row — it is
+ * model-visible, so the next turn knows the previous one never completed.
+ */
+export const TURN_ERROR_MARKER = '[Turn error] '
+
+export function parseTurnErrorMarker(text: string): string | null {
+  return text.startsWith(TURN_ERROR_MARKER) ? text.slice(TURN_ERROR_MARKER.length) : null
+}
+
 /** Extract the first image VFS path from tool result text and return an adf-file:// URL. */
 function extractImageUrl(content: string): string | null {
   const match = content.match(/\[image: ([^\s]+) \(/)
@@ -113,6 +127,17 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
               timestamp,
               // model/tokens carry the compaction LLM call's usage
               metadata: { seq: entry.seq, audited, model: entry.model, tokens: entry.tokens }
+            })
+            continue
+          }
+          const turnError = parseTurnErrorMarker(block.text)
+          if (turnError !== null) {
+            displayEntries.push({
+              id: `loop-${entry.seq}-${bi}`,
+              type: 'error',
+              content: turnError,
+              timestamp,
+              metadata: { seq: entry.seq }
             })
             continue
           }
@@ -302,6 +327,17 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
               timestamp,
               // model/tokens carry the compaction LLM call's usage
               metadata: { seq: entry.seq, audited, model: entry.model, tokens: entry.tokens }
+            })
+            continue
+          }
+          const turnError = parseTurnErrorMarker(block.text)
+          if (turnError !== null) {
+            displayEntries.push({
+              id: `loop-${entry.seq}-${bi}`,
+              type: 'error',
+              content: turnError,
+              timestamp,
+              metadata: { seq: entry.seq }
             })
             continue
           }

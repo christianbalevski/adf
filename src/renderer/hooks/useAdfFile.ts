@@ -251,7 +251,18 @@ export function useAdfFile() {
         // If the agent was running in the background, auto-start it
         if (result.agentWasRunning) {
           t1 = performance.now()
-          const startResult = await window.adfApi.startAgent()
+          // The re-attach is NOT instant: an executor that was in error/stopped
+          // is rebuilt from scratch (container + MCP + adapters, seconds). The
+          // reset above left the store at its default 'off', so without this the
+          // whole window reads as "the agent turned itself off". Marking the file
+          // as starting makes every indicator (title bar, agent panel, sidebar
+          // row) show "Starting…" until the real state arrives.
+          useAppStore.getState().addStartingFilePath(result.filePath)
+          const startResult = await window.adfApi.startAgent().finally(() => {
+            // Clears on both outcomes — including the re-attach failure below,
+            // whose message must not be hidden behind a stuck spinner.
+            useAppStore.getState().removeStartingFilePath(result.filePath)
+          })
           console.log(`[PERF:renderer] openFile.startAgent IPC: ${(performance.now() - t1).toFixed(1)}ms`)
           if (startResult.success) {
             // Use the actual executor state (may be mid-turn: thinking/tool_use)

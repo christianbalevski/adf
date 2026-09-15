@@ -3160,6 +3160,16 @@ export function registerAllIpcHandlers(): void {
     // Error/stopped handles cannot restart. Dispose the old recipe once, retain
     // its session for loop continuity, and construct a fresh stable handle.
     if (currentAssembledAgent) {
+      // The rebuild costs seconds (container + MCP + adapters) and drops the
+      // user into a fresh system prompt. Record WHY in the workspace log so the
+      // loop shows a reason instead of an unexplained restart. Non-fatal.
+      const staleState = agentExecutor?.getState() ?? 'stopped'
+      try {
+        currentWorkspace.insertLog(
+          'warn', 'runtime', 'executor_rebuilt', null,
+          `Previous executor was in "${staleState}" — rebuilt on foreground open; session history retained`,
+        )
+      } catch { /* non-fatal */ }
       const staleHandle = currentAssembledAgent
       currentHostAttachment?.detach()
       currentHostAttachment = null
@@ -3332,8 +3342,8 @@ export function registerAllIpcHandlers(): void {
         workspace: capturedWorkspace,
         config,
         provider,
-        createProviderForModel: (modelId: string) => {
-          const overrideConfig = { ...config, model: { ...config.model, model_id: modelId } }
+        createProviderForModel: (model) => {
+          const overrideConfig = { ...config, model }
           const resolved = resolveProviderConfig(overrideConfig, capturedWorkspace, capturedDerivedKey)
           return createProvider(overrideConfig, settings, resolved)
         },

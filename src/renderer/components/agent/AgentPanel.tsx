@@ -20,7 +20,11 @@ export function AgentPanel() {
   const addLogEntry = useAgentStore((s) => s.addLogEntry)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const filePath = useDocumentStore((s) => s.filePath)
-  const [starting, setStarting] = useState(false)
+  const [localStarting, setStarting] = useState(false)
+  // Starts driven from elsewhere (openFile's foreground re-attach, sidebar
+  // toggle) must show here too — the store reads 'off' for the whole rebuild.
+  const startingElsewhere = useAppStore((s) => (filePath ? s.startingFilePaths.has(filePath) : false))
+  const starting = localStarting || startingElsewhere
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string }>({ running: false, port: 7295, host: '127.0.0.1' })
 

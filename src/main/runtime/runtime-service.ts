@@ -1648,9 +1648,9 @@ export class RuntimeService extends EventEmitter {
         config,
         provider,
         restoreLoop: true,
-        createProviderForModel: (modelId: string) => {
+        createProviderForModel: (model) => {
           if (!this.providerFactory) return provider
-          const resolved = this.providerFactory({ ...config, model: { ...config.model, model_id: modelId } }, filePath)
+          const resolved = this.providerFactory({ ...config, model }, filePath)
           if (isPromiseLike(resolved)) {
             throw new Error('RuntimeService: model_invoke providerFactory must be synchronous.')
           }

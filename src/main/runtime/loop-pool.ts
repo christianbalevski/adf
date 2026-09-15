@@ -801,7 +801,6 @@ export class LoopPool implements LoopPoolApi {
         refuse(`This agent already has ${existing.length} inner loops, the maximum (${MAX_SIDE_LOOPS}).`)
       }
       this.assertToolsGrantable(host, config.tools ?? [])
-      this.assertModelGrantable(host, config)
 
       // Config write FIRST, Map second (LoopPoolApi contract): a crash between
       // the two leaves a declared loop with no runtime, which the next assemble
@@ -829,7 +828,6 @@ export class LoopPool implements LoopPoolApi {
 
       const merged: LoopConfig = { ...loops[index], ...patch, name }
       this.assertToolsGrantable(host, merged.tools ?? [])
-      this.assertModelGrantable(host, merged)
 
       const next = loops.slice()
       next[index] = merged
@@ -1135,10 +1133,12 @@ export class LoopPool implements LoopPoolApi {
   private rederive(host: AgentConfig, runtime: LoopRuntime): void {
     try {
       const derived = deriveLoopConfig(host, runtime.config)
-      const modelChanged = derived.model?.model_id !== runtime.derived.model?.model_id
+      const modelChanged =
+        derived.model?.model_id !== runtime.derived.model?.model_id ||
+        derived.model?.provider !== runtime.derived.model?.provider
       runtime.derived = derived
-      // A changed model override needs a provider for the new id, or the loop
-      // would keep calling the old model while its config claims otherwise.
+      // A changed model override needs a provider for the new id/provider, or the
+      // loop would keep calling the old model while its config claims otherwise.
       if (modelChanged) runtime.executor.updateProvider(this.providerFor(derived, runtime.name))
       // The DERIVED config, never the raw host config: handing a loop
       // executor the host config is total attenuation loss (review D6b).
@@ -1234,7 +1234,9 @@ export class LoopPool implements LoopPoolApi {
   }
 
   /**
-   * A loop's `model` override needs a provider for that model id.
+   * A loop's `model` override needs a provider for that model config — its
+   * own `provider` id when it names one, else the host's, with the loop's
+   * model id and params.
    *
    * The host's provider factory rides on the call handler, so a host that wired
    * one (sys_code/sys_lambda enabled) gets per-loop models. A host that did NOT
@@ -1242,50 +1244,64 @@ export class LoopPool implements LoopPoolApi {
    * model while its system prompt claims the override, so the fallback is
    * logged once per loop instead of happening silently (review M4a/M4b).
    *
-   * MVP scope: the override must name the HOST's provider (enforced at
-   * create/update). Cross-provider loop models are F3 — the factory reuses the
-   * host's credentials, so honouring a different `provider` here would
-   * cross-wire them.
+   * A cross-provider override is honoured: the factory resolves credentials
+   * by the override's provider id (app settings or the ADF's own providers
+   * list), never by the host's. It is NEVER silently downgraded — a loop that
+   * asks for another provider and cannot get it must not run through the
+   * host's client with a foreign model id (that produced 400s like "'grok-4.6'
+   * is not supported when using Codex with a ChatGPT account"), so those
+   * failures throw and the loop does not start.
    *
    * `getProvider()` is read on every call, never captured: a host model change
    * must reach every non-overriding loop (review M4d).
    */
   private providerFor(derived: AgentConfig, loopName: string): LLMProvider {
     const hostProvider = this.deps.getProvider()
-    const modelId = derived.model?.model_id
-    const hostModelId = this.deps.getHostConfig().model?.model_id
-    if (!modelId || modelId === hostModelId) return hostProvider
-    const forModel = this.deps.adfCallHandler?.providerForModel(modelId)
-    if (forModel) return forModel
-    if (!this.modelFallbackWarned.has(loopName)) {
-      this.modelFallbackWarned.add(loopName)
-      this.logLoop('warn', 'loop_model_override_ignored', loopName,
-        `Loop "${loopName}" declares model "${modelId}" but this agent has no model factory ` +
-        '(sys_code/sys_lambda are not enabled), so it runs on the agent\'s model instead. ' +
-        'Enable code execution or drop the loop\'s model override.')
+    const hostModel = this.deps.getHostConfig().model
+    const model = derived.model
+    if (!model) return hostProvider
+    const providerId = model.provider || hostModel?.provider || ''
+    const crossProvider = providerId !== (hostModel?.provider || '')
+    const modelId = model.model_id
+    if (!crossProvider && (!modelId || modelId === hostModel?.model_id)) return hostProvider
+
+    const handler = this.deps.adfCallHandler
+    if (!handler) {
+      if (crossProvider) {
+        throw new Error(
+          `Loop "${loopName}" declares provider "${providerId}" but this agent has no model factory ` +
+          '(sys_code/sys_lambda are not enabled), so the override cannot be honoured. ' +
+          'Enable code execution or drop the loop\'s model override.')
+      }
+      if (!this.modelFallbackWarned.has(loopName)) {
+        this.modelFallbackWarned.add(loopName)
+        this.logLoop('warn', 'loop_model_override_ignored', loopName,
+          `Loop "${loopName}" declares model "${modelId}" but this agent has no model factory ` +
+          '(sys_code/sys_lambda are not enabled), so it runs on the agent\'s model instead. ' +
+          'Enable code execution or drop the loop\'s model override.')
+      }
+      return hostProvider
+    }
+    try {
+      const forModel = handler.providerForModel({ ...model, provider: providerId })
+      if (forModel) return forModel
+      if (crossProvider) {
+        throw new Error('this agent has no model factory (sys_code/sys_lambda are not enabled), ' +
+          'so the override cannot be honoured. Enable code execution or drop the loop\'s model override.')
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      if (crossProvider) {
+        throw new Error(`Loop "${loopName}" cannot use provider "${providerId}": ${reason}`)
+      }
+      if (!this.modelFallbackWarned.has(loopName)) {
+        this.modelFallbackWarned.add(loopName)
+        this.logLoop('warn', 'loop_model_override_ignored', loopName,
+          `Loop "${loopName}" declares model "${modelId}" but no provider could be built for it (${reason}), ` +
+          'so it runs on the agent\'s model instead.')
+      }
     }
     return hostProvider
-  }
-
-  /**
-   * A loop's `model` override may change the model, never the provider.
-   *
-   * `providerForModel` builds the new provider from the HOST's provider config
-   * and credentials, so a `provider: 'openai'` override on an Anthropic host
-   * would silently produce an Anthropic client for an OpenAI model id — a
-   * cross-wiring the loop's config claims is not happening. Reject it at the
-   * only two write paths instead of pretending (F3 lifts this).
-   */
-  private assertModelGrantable(host: AgentConfig, loop: LoopConfig): void {
-    const loopProvider = loop.model?.provider
-    if (!loopProvider) return
-    const hostProvider = host.model?.provider
-    if (!hostProvider || loopProvider === hostProvider) return
-    refuse(
-      `Loop "${loop.name}" cannot use provider "${loopProvider}": a loop's model override may change the model, ` +
-      `not the provider — this agent runs on "${hostProvider}", and a loop shares its credentials. ` +
-      `Pick a "${hostProvider}" model, or change the agent's provider.`
-    )
   }
 
   /**

@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useAppStore } from '../stores/app.store'
+import { useDocumentStore } from '../stores/document.store'
 import type { RendererBackgroundAgentEvent, BackgroundAgentStatus } from '../../shared/types/ipc.types'
 
 function handleFromPayload(payload: RendererBackgroundAgentEvent['payload']): string {
@@ -80,7 +81,11 @@ export function useBackgroundAgentEvents() {
             break
           }
           case 'agent_stopped': {
-            dropStarting(filePath)
+            // A background agent that is now the OPEN file was not stopped: it
+            // was extracted for foreground attach (FILE_OPEN), and openFile is
+            // re-starting it right now. Dropping its spinner here would race the
+            // re-attach and blank the indicator for the whole rebuild window.
+            if (filePath !== useDocumentStore.getState().filePath) dropStarting(filePath)
             dropStopping(filePath)
             if (agents.some((a) => a.filePath === filePath)) {
               agents = agents.filter((a) => a.filePath !== filePath)

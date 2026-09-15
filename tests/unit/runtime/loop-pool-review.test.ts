@@ -196,22 +196,22 @@ describe('LoopPool — refusals the pool owns', () => {
     expect(message).not.toContain(filePath)
   })
 
-  it('rejects a cross-provider model override on create AND update', async () => {
-    // providerForModel builds the new provider from the HOST's config and
-    // credentials, so honouring another vendor would silently cross-wire them.
+  it('accepts a cross-provider model override on create AND update', async () => {
+    // The per-loop provider is built from the override's own provider id, so a
+    // loop may run on a different configured provider than its host (a grok
+    // loop under a chatgpt host). The pool no longer rejects the mismatch.
     const host = ws.getAgentConfig()
     expect(host.model.provider).toBe('anthropic')
     const crossProvider = { provider: 'openai', model_id: 'gpt-whatever' } as never
 
-    await expect(pool.createLoop(loop({ name: 'critic', model: crossProvider })))
-      .rejects.toThrow(/may change the model, not the provider/)
-    expect(ws.getAgentConfig().loops?.map(l => l.name)).toEqual(['reflector'])
+    await pool.createLoop(loop({ name: 'critic', model: crossProvider }))
+    expect(ws.getAgentConfig().loops?.map(l => l.name)).toEqual(['reflector', 'critic'])
+    expect(ws.getAgentConfig().loops?.[1].model?.provider).toBe('openai')
 
-    await expect(pool.updateLoop('reflector', { model: crossProvider }))
-      .rejects.toThrow(/may change the model, not the provider/)
-    expect(ws.getAgentConfig().loops?.[0].model).toBeUndefined()
+    await pool.updateLoop('reflector', { model: crossProvider })
+    expect(ws.getAgentConfig().loops?.[0].model?.provider).toBe('openai')
 
-    // Same provider, different model id — the point of a per-loop model.
+    // Same provider, different model id still works.
     await pool.updateLoop('reflector', {
       model: { provider: host.model.provider, model_id: 'a-cheaper-model' } as never,
     })
@@ -668,5 +668,26 @@ describe('LoopPool — what the model actually sees', () => {
     respond = async () => { throw new Error('provider is down') }
     await runtime.dispatch(chatDispatch('e2')).catch(() => {})
     expect(settled).toBe(2)
+  })
+})
+
+// ===========================================================================
+// Cross-provider loop models never downgrade to the host's client
+// ===========================================================================
+
+describe('LoopPool — cross-provider model override', () => {
+  it('refuses to start a cross-provider loop when no provider can be built, instead of running it on the host client', async () => {
+    // No model factory on this host (adfCallHandler: null). A same-provider
+    // override falls back to the host provider with a logged warning; a
+    // cross-provider one must NOT — that is exactly how a grok model id ended
+    // up on a ChatGPT client. The loop stays declared but gets no runtime.
+    await pool.createLoop(loop({ name: 'cheaper', model: { provider: 'anthropic', model_id: 'a-cheaper-model' } as never }))
+    expect(pool.getRuntime('cheaper')).toBeDefined()
+
+    await pool.createLoop(loop({ name: 'grokker', model: { provider: 'grok-subscription', model_id: 'grok-4.6' } as never }))
+    expect(ws.getAgentConfig().loops?.map(l => l.name)).toContain('grokker')
+    expect(pool.getRuntime('grokker')).toBeUndefined()
+    const failed = ws.getLogs(50).find(l => l.event === 'loop_start_failed' && l.message.includes('grokker'))
+    expect(failed?.message).toMatch(/provider "grok-subscription"/)
   })
 })
