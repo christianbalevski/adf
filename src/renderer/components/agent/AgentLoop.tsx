@@ -1770,13 +1770,16 @@ function LoopStream({ loop }: { loop: string }) {
     }
   }, [])
 
-  const activityNeedsAttention = useCallback((entries: AgentLogEntry[]): boolean => {
-    return entries.some((entry) => {
-      if (pendingApprovals.has(entry.id) || pendingAsks.has(entry.id)) return true
-      const result = toolPairIndex.get(entry.id)?.result
-      return Boolean(result?.metadata?.imageUrl)
-    })
-  }, [pendingApprovals, pendingAsks, toolPairIndex])
+  // A group with an unanswered approval or ask is locked open — the user has
+  // to act on it. A group with an image result only opens by default: the
+  // preview is worth surfacing, but a manual collapse must still win.
+  const activityHasPendingInput = useCallback((entries: AgentLogEntry[]): boolean => {
+    return entries.some((entry) => pendingApprovals.has(entry.id) || pendingAsks.has(entry.id))
+  }, [pendingApprovals, pendingAsks])
+
+  const activityHasImage = useCallback((entries: AgentLogEntry[]): boolean => {
+    return entries.some((entry) => Boolean(toolPairIndex.get(entry.id)?.result?.metadata?.imageUrl))
+  }, [toolPairIndex])
 
   const renderLogEntry = (entry: AgentLogEntry, compact = false) => {
     const toolPair = entry.type === 'tool_call' ? toolPairIndex.get(entry.id) : undefined
@@ -1859,7 +1862,8 @@ function LoopStream({ loop }: { loop: string }) {
             {virtualItems.map((virtualItem) => {
               const displayItem = displayItems[virtualItem.index]
               if (!displayItem) return null
-              const attentionRequired = displayItem.kind === 'activity' && activityNeedsAttention(displayItem.entries)
+              const attentionRequired = displayItem.kind === 'activity' && activityHasPendingInput(displayItem.entries)
+              const openByDefault = displayItem.kind === 'activity' && activityHasImage(displayItem.entries)
               const isTailGroup = displayItem.kind === 'activity' && virtualItem.index === lastActivityIndex
               const isLiveTail = displayItem.kind === 'activity'
                 && displayItem.entries.some((entry) => entry.id === activity.entryId)
@@ -1888,7 +1892,7 @@ function LoopStream({ loop }: { loop: string }) {
                   : TOOL_FAMILY_STYLES[activitySummary.family]
               const activityExpanded = displayItem.kind === 'activity'
                 && (attentionRequired
-                  || ((isTailGroup || expandedActivityGroups.has(displayItem.id))
+                  || ((isTailGroup || openByDefault || expandedActivityGroups.has(displayItem.id))
                     && !collapsedActivityGroups.has(displayItem.id)))
 
               return (
