@@ -25,6 +25,11 @@ export interface ComputeCapabilities {
   defaultTarget?: ComputeTarget
   /** Isolated container name (e.g. adf-{name}-{shortid}), set when hasIsolated */
   isolatedContainerName?: string
+  /** Agent name, needed with agentId to bring the isolated container back
+   *  when a compute_exec finds it absent or stopped. */
+  agentName?: string
+  /** Agent-configured pip packages, installed on that same bring-up. */
+  pipPackages?: string[]
   /** Isolated container has a visible display (:99) the user can watch (compute.browser !== false). */
   browserDisplay?: boolean
   /** Agent DID */

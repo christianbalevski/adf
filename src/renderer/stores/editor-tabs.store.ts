@@ -1,10 +1,18 @@
 import { create } from 'zustand'
+import type { ContainerPhase } from '../../shared/types/compute.types'
 
 export interface BrowserTabMeta {
   agentFilePath: string
   containerName: string
-  /** Host loopback port serving the container's noVNC viewer. */
-  hostPort: number
+  /** Needed to re-query the viewer port once the container becomes ready. */
+  agentId: string
+  agentName: string
+  /** Host loopback port serving the container's noVNC viewer; null until the
+   *  container is ready and its display stack is up. */
+  hostPort: number | null
+  /** Container lifecycle at open time; the viewer follows live phase events after that. */
+  phase?: ContainerPhase
+  detail?: string
   /** Bumped by reloadBrowserTab — the viewer reloads when it changes. */
   reloadNonce?: number
 }

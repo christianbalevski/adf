@@ -3,7 +3,7 @@ import type { AgentConfig, AdfLogEntry, AgentTemplateExtraFile, McpToolInfo, Mcp
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
-import type { BrowserSessionEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
+import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 
 export interface AdfApi {
@@ -112,12 +112,14 @@ export interface AdfApi {
   computeStopContainer: (args: { name: string }) => Promise<{ success: boolean; error?: string }>
   computeStartContainer: (args: { name: string }) => Promise<{ success: boolean; error?: string }>
   computeDestroyContainer: (args: { name: string }) => Promise<{ success: boolean; error?: string }>
+  computeRebuildContainer: (args: { name: string }) => Promise<{ success: boolean; recreated?: boolean; error?: string }>
   computeSetup: (args: { step: 'install' | 'machine_init' | 'machine_start' | 'check'; installCommand?: string }) => Promise<Record<string, unknown>>
   computeContainerDetail: (args: { name: string }) => Promise<Record<string, unknown>>
   computeExecLog: (args: { name?: string }) => Promise<{ entries: unknown[] }>
   computeTestExecutionTarget: (target: LocalContainerExecutionTarget) => Promise<ExecutionTargetProbeResult>
   onBrowserSession: (callback: (event: BrowserSessionEvent) => void) => () => void
-  getBrowserSessionInfo: (args: { agentName: string; agentId: string }) => Promise<{ containerName: string; hostPort: number | null }>
+  getBrowserSessionInfo: (args: { agentName: string; agentId: string }) => Promise<BrowserSessionInfo>
+  onContainerPhase: (callback: (event: ContainerPhaseEvent) => void) => () => void
 
   // Tracked directories
   getTrackedDirectories: () => Promise<{ directories: string[] }>

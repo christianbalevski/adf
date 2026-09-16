@@ -2903,17 +2903,21 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       onClick={async () => {
                         const info = await window.adfApi?.getBrowserSessionInfo({ agentName: local.name, agentId: local.id })
                         const docPath = useDocumentStore.getState().filePath
-                        if (info?.hostPort != null && docPath) {
+                        if (info && docPath) {
                           useEditorTabsStore.getState().openBrowserTab({
                             agentFilePath: docPath,
                             containerName: info.containerName,
-                            hostPort: info.hostPort
+                            agentId: local.id,
+                            agentName: local.name,
+                            hostPort: info.hostPort,
+                            phase: info.phase,
+                            detail: info.detail,
                           })
                         }
                       }}
-                      title="Open a live view of this agent's container browser (opens automatically when the agent launches a browser)"
+                      title="Open a live view of this agent's container desktop (opens automatically when the agent launches a browser)"
                     >
-                      Open browser view
+                      Open computer view
                     </button>
                   )}
                 </div>

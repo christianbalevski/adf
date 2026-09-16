@@ -397,6 +397,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.COMPUTE_START_CONTAINER, args),
   computeDestroyContainer: (args: { name: string }) =>
     ipcRenderer.invoke(IPC.COMPUTE_DESTROY_CONTAINER, args),
+  computeRebuildContainer: (args: { name: string }) =>
+    ipcRenderer.invoke(IPC.COMPUTE_REBUILD_CONTAINER, args),
   computeSetup: (args: { step: 'install' | 'machine_init' | 'machine_start' | 'check'; installCommand?: string }) =>
     ipcRenderer.invoke(IPC.COMPUTE_SETUP, args),
   computeContainerDetail: (args: { name: string }) =>
@@ -413,6 +415,12 @@ const api: AdfApi = {
   },
   getBrowserSessionInfo: (args: { agentName: string; agentId: string }) =>
     ipcRenderer.invoke(IPC.COMPUTE_BROWSER_INFO, args),
+  onContainerPhase: (callback: (event: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
+      callback(data)
+    ipcRenderer.on(IPC.COMPUTE_CONTAINER_PHASE, handler)
+    return () => ipcRenderer.removeListener(IPC.COMPUTE_CONTAINER_PHASE, handler)
+  },
 
   // Python MCP packages (uvx)
   installPythonMcpPackage: (args: { package: string; name: string }) =>

@@ -220,12 +220,14 @@ export const IPC = {
   COMPUTE_STOP_CONTAINER: 'adf:compute:stop-container',
   COMPUTE_START_CONTAINER: 'adf:compute:start-container',
   COMPUTE_DESTROY_CONTAINER: 'adf:compute:destroy-container',
+  COMPUTE_REBUILD_CONTAINER: 'adf:compute:rebuild-container',
   COMPUTE_SETUP: 'adf:compute:setup',
   COMPUTE_CONTAINER_DETAIL: 'adf:compute:container-detail',
   COMPUTE_EXEC_LOG: 'adf:compute:exec-log',
   COMPUTE_TEST_EXECUTION_TARGET: 'adf:compute:test-execution-target',
   COMPUTE_BROWSER_SESSION: 'adf:compute:browser-session',
   COMPUTE_BROWSER_INFO: 'adf:compute:browser-info',
+  COMPUTE_CONTAINER_PHASE: 'adf:compute:container-phase',
 
   // Sandbox packages
   SANDBOX_CHECK_MISSING: 'adf:sandbox:check-missing',

@@ -16,7 +16,8 @@ import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
-import type { PodmanService } from '../../services/podman.service'
+import { PodmanService } from '../../services/podman.service'
+import type { ContainerPhase } from '../../../shared/types/compute.types'
 import { availableTargets, resolveTarget, type ComputeCapabilities, type ComputeTarget } from './compute-target'
 import { hostExec, ensureHostWorkspace } from '../../services/host-exec.service'
 import { ExternalExecutionService } from '../../services/external-execution.service'
@@ -94,10 +95,17 @@ export class ComputeExecTool implements Tool {
           if (!this.podmanService || !this.capabilities.isolatedContainerName) {
             return { content: 'Isolated container not available.', isError: true }
           }
-          await this.podmanService.ensureWorkspace(this.capabilities.isolatedContainerName, '/workspace').catch(() => {})
-          result = await this.podmanService.execInContainer(
-            this.capabilities.isolatedContainerName, '/workspace', command, effectiveTimeout
-          )
+          const name = this.capabilities.isolatedContainerName
+          const notReady = await this.readyIsolated(name)
+          if (notReady) return { content: notReady, isError: true }
+          await this.podmanService.ensureWorkspace(name, '/workspace').catch(() => {})
+          result = await this.podmanService.execInContainer(name, '/workspace', command, effectiveTimeout)
+          if (result.code !== 0 && PodmanService.isDeadContainerError(result.stderr)) {
+            // The container died under us; say what state it is in now
+            // rather than handing back podman's stderr as a shell failure.
+            const phase = await this.podmanService.containerPhase(name)
+            return { content: describeNotReady(phase.phase, phase.detail) ?? `compute_exec error: ${result.stderr}`, isError: true }
+          }
           break
         }
         case 'shared': {
@@ -161,6 +169,48 @@ export class ComputeExecTool implements Tool {
       description: this.description,
       input_schema: zodToJsonSchema(this.inputSchema) as Record<string, unknown>
     }
+  }
+
+  /**
+   * Gate an isolated exec on the container's phase. Provisioning and failure
+   * come back as plain text for the agent; absent/stopped is brought up here
+   * (the same bring-up the agent start runs) so a container lost mid-session
+   * heals on the next command instead of needing an agent restart.
+   */
+  private async readyIsolated(name: string): Promise<string | null> {
+    const podman = this.podmanService!
+    const { phase, detail } = await podman.containerPhase(name)
+    if (phase === 'ready') return null
+    if (phase === 'absent' || phase === 'stopped') {
+      const { agentName, agentId, pipPackages, browserDisplay } = this.capabilities
+      if (!agentName) return describeNotReady(phase, detail)
+      try {
+        await podman.ensureIsolatedRunning(agentName, agentId, pipPackages ?? [], undefined, browserDisplay !== false)
+        return null
+      } catch (err) {
+        const after = await podman.containerPhase(name)
+        return describeNotReady(after.phase, after.detail ?? (err instanceof Error ? err.message : String(err)))
+      }
+    }
+    return describeNotReady(phase, detail)
+  }
+}
+
+/** Agent-facing wording for a container that cannot run a command right now. */
+export function describeNotReady(phase: ContainerPhase, detail?: string): string | null {
+  switch (phase) {
+    case 'ready':
+      return null
+    case 'provisioning':
+      return `Your isolated container is still being set up${detail ? ` (${detail.toLowerCase()})` : ''}. Wait about a minute and retry.`
+    case 'starting':
+      return 'Your isolated container is starting. Retry in a few seconds.'
+    case 'failed':
+      return `Your isolated container could not be set up: ${detail ?? 'unknown error'}. Your principal can rebuild it in ADF Studio → Settings → Compute; ask them, then retry.`
+    case 'stopped':
+      return `Your isolated container is stopped${detail ? ` (${detail})` : ''}. It starts with you; ask your principal to start it from ADF Studio → Settings → Compute if this persists.`
+    case 'absent':
+      return `Your isolated container does not exist${detail ? ` (${detail})` : ''}. It is created when you start; ask your principal to check ADF Studio → Settings → Compute if this persists.`
   }
 }
 

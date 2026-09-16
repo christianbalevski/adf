@@ -97,7 +97,7 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
   const servingActive = isServing && meshServerStatus.running && foregroundActive
 
   // Visible container browser — one click opens the live noVNC viewer tab
-  // (same path as AgentConfig's "Open browser view", minus the scrolling).
+  // (same path as AgentConfig's "Open computer view", minus the scrolling).
   const hasBrowser = !!config?.compute?.enabled && config.compute.browser !== false
   const browserActive = hasBrowser && foregroundActive
   const [browserOpening, setBrowserOpening] = useState(false)
@@ -107,11 +107,17 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
     setBrowserOpening(true)
     try {
       const info = await window.adfApi?.getBrowserSessionInfo({ agentName: config.name, agentId: config.id })
-      if (info?.hostPort != null) {
+      // The tab opens in every phase: a container that is provisioning,
+      // stopped, or failed shows that instead of a blank viewer.
+      if (info) {
         useEditorTabsStore.getState().openBrowserTab({
           agentFilePath: filePath,
           containerName: info.containerName,
-          hostPort: info.hostPort
+          agentId: config.id,
+          agentName: config.name,
+          hostPort: info.hostPort,
+          phase: info.phase,
+          detail: info.detail,
         })
       }
     } catch { /* viewer is best-effort */ } finally {
@@ -217,18 +223,17 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
           onClick={openBrowserView}
           disabled={!browserActive || browserOpening}
           title={browserActive
-            ? (browserOpening ? 'Opening browser view…' : "Open this agent's browser")
-            : 'Browser view (agent off)'}
+            ? (browserOpening ? 'Opening computer…' : "Open this agent's computer")
+            : 'Computer (agent off)'}
           className={`pointer-events-auto shrink-0 flex items-center ${browserActive
             ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer'
             : 'text-neutral-400 dark:text-neutral-500 cursor-default'} ${browserOpening ? 'animate-pulse' : ''}`}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="4" width="20" height="16" rx="2" />
-            <line x1="2" y1="9" x2="22" y2="9" />
-            <circle cx="5.5" cy="6.5" r="0.5" fill="currentColor" />
-            <circle cx="8.5" cy="6.5" r="0.5" fill="currentColor" />
+            <rect x="2" y="3" width="20" height="14" rx="2" />
+            <line x1="8" y1="21" x2="16" y2="21" />
+            <line x1="12" y1="17" x2="12" y2="21" />
           </svg>
         </button>
       )}

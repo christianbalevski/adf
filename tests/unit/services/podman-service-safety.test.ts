@@ -642,6 +642,206 @@ describe('PodmanService lifecycle hardening', () => {
     }
   })
 
+  it('steps a lagging Podman machine clock before provisioning a container', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    try {
+      const service = new PodmanService()
+      const hostNow = Math.round(Date.now() / 1000)
+      const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+        if (args[0] === 'container' && args[1] === 'inspect') {
+          return { code: 1, stdout: '', stderr: 'no such container', timedOut: false }
+        }
+        if (args[0] === 'machine' && args[1] === 'ssh' && args[2] === 'date +%s') {
+          // 10h49m behind: the VM slept with the host and chrony has not caught up.
+          return { code: 0, stdout: String(hostNow - 38_945), stderr: '', timedOut: false }
+        }
+        return { code: 0, stdout: '', stderr: '', timedOut: false }
+      })
+      ;(service as any).exec0 = exec0
+      ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({})
+      ;(service as any).ensureBrowserCompatibility = vi.fn().mockResolvedValue(undefined)
+
+      await (service as any).ensureContainerRunning('/usr/bin/podman', 'adf-mcp', { kind: 'shared' })
+
+      const calls = exec0.mock.calls.map(([, args]) => args)
+      const stepAt = calls.findIndex((args) => args[0] === 'machine' && args[1] === 'ssh' && /^sudo date -u -s @\d+$/.test(args[2]))
+      const runAt = calls.findIndex((args) => args[0] === 'run')
+      expect(stepAt).toBeGreaterThan(-1)
+      expect(runAt).toBeGreaterThan(stepAt)
+    } finally {
+      Object.defineProperty(process, 'platform', descriptor)
+    }
+  })
+
+  it('leaves the Podman machine clock alone when it matches the host', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    try {
+      const service = new PodmanService()
+      const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+        if (args[0] === 'machine' && args[1] === 'ssh' && args[2] === 'date +%s') {
+          return { code: 0, stdout: String(Math.round(Date.now() / 1000) - 3), stderr: '', timedOut: false }
+        }
+        return { code: 0, stdout: '', stderr: '', timedOut: false }
+      })
+      ;(service as any).exec0 = exec0
+      await (service as any).syncMachineClock('/usr/bin/podman', { force: true })
+      expect(exec0.mock.calls.some(([, args]) => args[0] === 'machine' && args[1] === 'ssh' && /sudo date/.test(args[2]))).toBe(false)
+    } finally {
+      Object.defineProperty(process, 'platform', descriptor)
+    }
+  })
+
+  it('records a failed provision so the container list can show and retry it', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'container' && args[1] === 'inspect') {
+        return { code: 1, stdout: '', stderr: 'no such container', timedOut: false }
+      }
+      if (args[0] === 'exec' && args.includes('sh') && /apt-get/.test(args[args.length - 1])) {
+        return {
+          code: 1,
+          stdout: '',
+          stderr: 'W: some warning\nE: Release file for http://deb.debian.org/debian/dists/bookworm/InRelease is not valid yet (invalid for another 10h 49min 5s).',
+          timedOut: false,
+        }
+      }
+      if (args[0] === 'ps') return { code: 0, stdout: '[]', stderr: '', timedOut: false }
+      return { code: 0, stdout: '', stderr: '', timedOut: false }
+    })
+    ;(service as any).exec0 = exec0
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    ;(service as any).syncMachineClock = vi.fn().mockResolvedValue(undefined)
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({})
+    ;(service as any).ensureBrowserCompatibility = vi.fn().mockResolvedValue(undefined)
+    ;(service as any).allocateNovncPort = vi.fn().mockResolvedValue(36080)
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(
+      (service as any).ensureContainerRunning('/usr/bin/podman', 'adf-agent-12345678', { kind: 'agent', agentId: 'agent-1', agentName: 'Agent', browser: false })
+    ).rejects.toThrow(/Package installation failed.*not valid yet.*clock/)
+    // The half-provisioned container is removed, and the failure is logged
+    // by the service itself — callers that swallow the rejection still leave a trace.
+    expect(exec0.mock.calls.some(([, args]) => args[0] === 'rm' && args[1] === '-f' && args[2] === 'adf-agent-12345678')).toBe(true)
+    expect(errorLog).toHaveBeenCalledWith(expect.stringMatching(/\[Compute\] Package installation failed in adf-agent-12345678/))
+    errorLog.mockRestore()
+
+    const rows = await service.listContainers()
+    expect(rows).toEqual([expect.objectContaining({
+      name: 'adf-agent-12345678',
+      state: 'failed',
+      running: false,
+      managed: true,
+      scope: 'dedicated',
+      agentId: 'agent-1',
+      agentName: 'Agent',
+      error: expect.stringContaining('not valid yet'),
+    })])
+
+    // Remove on the failed row clears it even though no container exists.
+    await expect(service.destroyContainer('adf-agent-12345678')).resolves.toBe(true)
+    await expect(service.listContainers()).resolves.toEqual([])
+  })
+
+  it('rebuildContainer recreates a dedicated container from its labels right away', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'inspect' && args[3] === '{{json .Config.Labels}}') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ 'io.adf.managed': 'true', 'io.adf.kind': 'agent', 'io.adf.agent-id': 'agent-1', 'io.adf.agent-name': 'Research Desk' }),
+          stderr: '',
+          timedOut: false,
+        }
+      }
+      if (args[0] === 'inspect') return { code: 0, stdout: 'true', stderr: '', timedOut: false }
+      return { code: 0, stdout: '', stderr: '', timedOut: false }
+    })
+    ;(service as any).exec0 = exec0
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    const ensureIsolated = vi.spyOn(service, 'ensureIsolatedRunning').mockResolvedValue(undefined)
+
+    await expect(service.rebuildContainer('adf-research-desk-12345678')).resolves.toEqual({ recreated: true })
+    expect(exec0.mock.calls.some(([, args]) => args[0] === 'rm' && args[1] === '-f' && args[2] === 'adf-research-desk-12345678')).toBe(true)
+    expect(ensureIsolated).toHaveBeenCalledWith('Research Desk', 'agent-1', [], undefined, false)
+  })
+
+  it('rebuildContainer only removes a legacy container whose owner is unknown', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'inspect' && args[3] === '{{json .Config.Labels}}') return { code: 0, stdout: 'null', stderr: '', timedOut: false }
+      if (args[0] === 'inspect') return { code: 0, stdout: '', stderr: '', timedOut: false }
+      return { code: 0, stdout: '', stderr: '', timedOut: false }
+    })
+    ;(service as any).exec0 = exec0
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    const ensureIsolated = vi.spyOn(service, 'ensureIsolatedRunning').mockResolvedValue(undefined)
+
+    await expect(service.rebuildContainer('adf-old-12345678')).resolves.toEqual({ recreated: false })
+    expect(exec0.mock.calls.some(([, args]) => args[0] === 'rm' && args[1] === '-f')).toBe(true)
+    expect(ensureIsolated).not.toHaveBeenCalled()
+  })
+
+  it('walks a fresh container through provisioning to ready and tells listeners', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'container' && args[1] === 'inspect') return { code: 1, stdout: '', stderr: 'no such container', timedOut: false }
+      return { code: 0, stdout: '', stderr: '', timedOut: false }
+    })
+    ;(service as any).exec0 = exec0
+    ;(service as any).syncMachineClock = vi.fn().mockResolvedValue(undefined)
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({})
+    ;(service as any).ensureBrowserCompatibility = vi.fn().mockResolvedValue(undefined)
+    ;(service as any).allocateNovncPort = vi.fn().mockResolvedValue(36080)
+    const phases: string[] = []
+    const firstPhase = new Promise<void>((resolve) => {
+      service.on('container-phase', (e) => { phases.push(e.phase); expect(e.agentId).toBe('agent-1'); resolve() })
+    })
+
+    const pending = (service as any).ensureContainerRunning('/usr/bin/podman', 'adf-agent-12345678', { kind: 'agent', agentId: 'agent-1', agentName: 'Agent', browser: false })
+    // In flight: once the create has been announced, the phase answers from memory.
+    await firstPhase
+    await expect(service.containerPhase('adf-agent-12345678')).resolves.toMatchObject({ phase: 'provisioning' })
+    await pending
+    await expect(service.containerPhase('adf-agent-12345678')).resolves.toEqual({ phase: 'ready', detail: undefined })
+    expect(phases[0]).toBe('provisioning')
+    expect(phases[phases.length - 1]).toBe('ready')
+  })
+
+  it('reports failed after a provisioning failure and stopped after a stop', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'container' && args[1] === 'inspect') return { code: 1, stdout: '', stderr: 'no such container', timedOut: false }
+      if (args[0] === 'exec' && /apt-get/.test(args[args.length - 1])) return { code: 1, stdout: '', stderr: 'E: Unable to fetch some archives', timedOut: false }
+      if (args[0] === 'inspect') return { code: 0, stdout: 'true', stderr: '', timedOut: false }
+      return { code: 0, stdout: '', stderr: '', timedOut: false }
+    })
+    ;(service as any).exec0 = exec0
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    ;(service as any).syncMachineClock = vi.fn().mockResolvedValue(undefined)
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({})
+    ;(service as any).ensureBrowserCompatibility = vi.fn().mockResolvedValue(undefined)
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect((service as any).ensureContainerRunning('/usr/bin/podman', 'adf-mcp', { kind: 'shared' })).rejects.toThrow()
+    await expect(service.containerPhase('adf-mcp')).resolves.toEqual({ phase: 'failed', detail: expect.stringContaining('Unable to fetch') })
+
+    await service.stopContainer('adf-other-12345678')
+    await expect(service.containerPhase('adf-other-12345678')).resolves.toEqual({ phase: 'stopped', detail: undefined })
+    vi.mocked(console.error).mockRestore()
+  })
+
+  it('learns a container is gone from a dead-container exec', async () => {
+    const service = new PodmanService()
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
+    ;(service as any).exec0 = vi.fn().mockResolvedValue({ code: 1, stdout: '', stderr: 'Error: no container with name or ID "adf-agent-12345678" found: no such container', timedOut: false })
+    ;(service as any)._phases.set('adf-agent-12345678', { phase: 'ready' })
+
+    await service.execInContainer('adf-agent-12345678', '/workspace', 'true')
+    await expect(service.containerPhase('adf-agent-12345678')).resolves.toMatchObject({ phase: 'absent' })
+  })
+
   it('memoizes browserReady and clears the memo on failure', async () => {
     const service = new PodmanService()
     ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')

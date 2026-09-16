@@ -311,7 +311,7 @@ export function EditorPanel() {
       <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={selectFileTab} onClose={closeTab} onReload={reloadBrowserTab} chatTab={chatTab} />
       <div className="flex-1 overflow-hidden relative">
         {activeTab.kind === 'browser' && activeTab.browserMeta ? (
-          <BrowserViewer key={activeTab.path} hostPort={activeTab.browserMeta.hostPort} reloadNonce={activeTab.browserMeta.reloadNonce} />
+          <BrowserViewer key={activeTab.path} meta={activeTab.browserMeta} reloadNonce={activeTab.browserMeta.reloadNonce} />
         ) : activeTab.isBinary ? (
           <BinaryFilePlaceholder filePath={activeTab.path} />
         ) : isMarkdown ? (

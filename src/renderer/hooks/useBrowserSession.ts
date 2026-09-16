@@ -23,7 +23,10 @@ export function useBrowserSessionEvents() {
         useEditorTabsStore.getState().openBrowserTab({
           agentFilePath: event.agentFilePath,
           containerName: event.containerName,
-          hostPort: event.hostPort
+          agentId: event.agentId,
+          agentName: event.agentName,
+          hostPort: event.hostPort,
+          phase: 'ready',
         }, { activate: false })
       }).catch(() => {})
     })

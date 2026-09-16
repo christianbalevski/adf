@@ -59,6 +59,38 @@ export interface ContainerSummary {
   /** Managed container created before the current isolation feature set —
    *  gains it only via a (data-losing) rebuild. Undefined/false = up to date. */
   outdated?: boolean
+  /** Set when the last create+provision of this container failed (state is
+   *  then 'failed' and no container exists behind the row). The message is
+   *  the provisioning error; Rebuild retries, Remove clears the row. */
+  error?: string
+}
+
+/**
+ * Lifecycle of one managed container as the runtime sees it. `absent` = no
+ * container exists (created on the agent's next start), `provisioning` =
+ * create + package install in flight, `starting` = `podman start` of an
+ * existing container, `failed` = the last create+provision failed (nothing
+ * exists behind the name; Rebuild retries).
+ */
+export type ContainerPhase = 'absent' | 'provisioning' | 'starting' | 'ready' | 'stopped' | 'failed'
+
+/** Pushed to the renderer on every phase transition of a managed container. */
+export interface ContainerPhaseEvent {
+  containerName: string
+  phase: ContainerPhase
+  /** Human-readable step or failure message. */
+  detail?: string
+  agentId?: string
+  timestamp: number
+}
+
+/** Answer to a Computer-tab open request: the phase always, the noVNC port only when ready. */
+export interface BrowserSessionInfo {
+  containerName: string
+  hostPort: number | null
+  phase: ContainerPhase
+  /** Phase detail, or the browser bring-up error when the container is ready but its display is not. */
+  detail?: string
 }
 
 /** Pushed to the renderer when a browser process appears in an agent's isolated container. */

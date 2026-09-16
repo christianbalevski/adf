@@ -36,7 +36,8 @@ A dedicated container per agent, created when `compute.enabled` is set to `true`
 - **Use case:** Agents that need a clean environment, custom packages, or shouldn't interfere with other agents' MCP servers
 - **Network:** Network-isolated from other agents' containers (new containers only — see [Security Considerations](#security-considerations))
 - **Risk level:** Low — fully isolated from other agents and the host
-- **Lifecycle:** Container persists across agent restarts (stopped, not removed). Rebuild for a clean slate.
+- **Lifecycle:** Container persists across agent restarts (stopped, not removed). Rebuild for a clean slate: the container is deleted and a fresh one is provisioned right away. If provisioning fails, the container list keeps a "Setup failed" row with the error; Rebuild retries, Remove clears it.
+- **Not ready yet:** the Computer tab opens in every state and says what the container is doing (setting up, starting, stopped, setup failed) until the desktop is up. The agent's `compute_exec` gets the same state in plain words instead of a shell error; a missing or stopped container is brought back on the next command, a failed one waits for Rebuild.
 
 ### External Docker/Podman Container
 

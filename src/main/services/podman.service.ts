@@ -17,7 +17,7 @@ import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, rmSync } from 'fs
 import { EventEmitter } from 'events'
 import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
-import type { ContainerOverview, ContainerSummary } from '../../shared/types/compute.types'
+import type { ContainerOverview, ContainerSummary, ContainerPhase, ContainerPhaseEvent } from '../../shared/types/compute.types'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,6 +51,12 @@ export interface BrowserSessionEventPayload {
 interface PodmanServiceEvents {
   'status-changed': (info: ComputeEnvInfo) => void
   'browser-session': (payload: BrowserSessionEventPayload) => void
+  'container-phase': (payload: ContainerPhaseEvent) => void
+}
+
+export interface ContainerPhaseInfo {
+  phase: ContainerPhase
+  detail?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +119,15 @@ const LONG_STATUS_TIMEOUT_MS = 30_000
 /** `podman stop -t 5` gives the container its own 5s grace period before the
  *  kill, so the exec needs comfortable headroom beyond that. */
 const STOP_EXEC_TIMEOUT_MS = 12_000
+/** Podman machine VMs (applehv on macOS, WSL on Windows) keep their own clock.
+ *  After host sleep it lags by exactly the sleep time until chrony inside the
+ *  VM notices — minutes after wake. A fresh container inherits that clock:
+ *  apt-get rejects Debian's Release files as "not valid yet" (exit 100) and
+ *  TLS certificates read as not-yet-valid. Skew past this is stepped before
+ *  anything time-sensitive runs. */
+const CLOCK_SKEW_TOLERANCE_S = 30
+/** Routine (non-provisioning) clock checks are throttled to this interval. */
+const CLOCK_CHECK_INTERVAL_MS = 5 * 60_000
 /** Shared named volume for the npm/npx cache so the second+ agent container
  *  hits a warm cache instead of cold npm registry resolution per `npx -y`. */
 const NPM_CACHE_VOLUME = 'adf-npx-cache'
@@ -656,6 +671,13 @@ interface ExecResult {
   timedOut: boolean
 }
 
+interface ProvisionFailure {
+  message: string
+  at: number
+  image: string
+  identity: { kind: 'shared' } | { kind: 'agent'; agentId: string; agentName: string }
+}
+
 export class PodmanService extends EventEmitter {
   private status: ComputeEnvStatus = 'stopped'
   private podmanBin: string | null = null
@@ -710,6 +732,15 @@ export class PodmanService extends EventEmitter {
   private _workspacesEnsured = new Set<string>()
   /** containerName → in-flight/completed lazy browser bring-up. */
   private _browserReadyPending = new Map<string, Promise<void>>()
+  /** Last time the machine clock was compared against the host (0 = never). */
+  private _clockCheckedAt = 0
+  /** containerName → last known lifecycle phase (session memory; `containerPhase`
+   *  falls back to an inspect when a name is unknown). */
+  private _phases = new Map<string, ContainerPhaseInfo & { agentId?: string }>()
+  /** containerName → why its last create+provision failed. The container was
+   *  removed on failure, so this is the only trace the UI can show; cleared
+   *  when a container of that name provisions or is removed on request. */
+  private _provisionFailures = new Map<string, ProvisionFailure>()
 
   /** stderr signatures that mean the target container is gone/dead. */
   private static readonly DEAD_CONTAINER_RE = /is not running|no such container|container state improper/i
@@ -876,7 +907,49 @@ export class PodmanService extends EventEmitter {
   private noteContainerExec(name: string, result: { code: number; stderr: string }): void {
     if (result.code !== 0 && PodmanService.DEAD_CONTAINER_RE.test(result.stderr)) {
       this.invalidateContainer(name)
+      // Only when nothing is bringing it up: an exec racing a create/start
+      // must not overwrite the in-flight phase.
+      const known = this._phases.get(name)
+      if (known?.phase === 'ready' || known?.phase === 'stopped' || !known) {
+        this.setPhase(name, /no such container/i.test(result.stderr) ? 'absent' : 'stopped')
+      }
     }
+  }
+
+  /** Record a phase transition and tell listeners (the Computer tab, the
+   *  container list) when it actually changed. */
+  private setPhase(name: string, phase: ContainerPhase, detail?: string, agentId?: string): void {
+    const prev = this._phases.get(name)
+    const nextAgentId = agentId ?? prev?.agentId
+    if (prev && prev.phase === phase && prev.detail === detail) return
+    this._phases.set(name, { phase, detail, agentId: nextAgentId })
+    this.emit('container-phase', { containerName: name, phase, detail, agentId: nextAgentId, timestamp: Date.now() })
+  }
+
+  /** True when podman stderr says the target container is gone or not running. */
+  static isDeadContainerError(stderr: string): boolean {
+    return PodmanService.DEAD_CONTAINER_RE.test(stderr)
+  }
+
+  /**
+   * Lifecycle phase of a managed container. In-flight bring-ups and recorded
+   * failures answer from memory; otherwise one inspect settles it and the
+   * answer is cached until an exec or lifecycle call observes a change.
+   */
+  async containerPhase(name: string): Promise<ContainerPhaseInfo> {
+    // Memory answers for every phase the service itself drove; only an
+    // unknown or absent name pays for an inspect (absent is cheap to be wrong
+    // about — a bring-up on a container that exists after all reuses it).
+    const known = this._phases.get(name)
+    if (known && known.phase !== 'absent') return { phase: known.phase, detail: known.detail }
+    const failure = this._provisionFailures.get(name)
+    if (failure) return { phase: 'failed', detail: failure.message }
+    const bin = await this.findPodman()
+    if (!bin) return { phase: 'absent', detail: 'Podman is not available' }
+    const inspect = await this.execStatus(bin, ['container', 'inspect', name, '--format', '{{.State.Running}}'])
+    const phase: ContainerPhase = inspect.code !== 0 ? 'absent' : inspect.stdout.trim() === 'true' ? 'ready' : 'stopped'
+    this.setPhase(name, phase)
+    return { phase }
   }
 
   /**
@@ -987,6 +1060,7 @@ export class PodmanService extends EventEmitter {
     const bin = await this.findPodman()
     if (!bin) return
     try { await this.exec0(bin, ['stop', '-t', '5', name], STOP_EXEC_TIMEOUT_MS) } catch { /* ok */ }
+    this.setPhase(name, 'stopped', undefined, agentId)
   }
 
   /** Destroy an isolated container completely. */
@@ -997,6 +1071,7 @@ export class PodmanService extends EventEmitter {
     const bin = await this.findPodman()
     if (!bin) return
     try { await this.exec0(bin, ['rm', '-f', name]) } catch { /* ok */ }
+    this.setPhase(name, 'absent', undefined, agentId)
   }
 
   /**
@@ -1021,7 +1096,7 @@ export class PodmanService extends EventEmitter {
       return []
     }
 
-    return rows.flatMap((row) => {
+    const summaries = rows.flatMap((row): ContainerSummary[] => {
       const name = String(row?.Names?.[0] ?? row?.Name ?? '').trim()
       if (!name) return []
       const labels: Record<string, string> = row?.Labels && typeof row.Labels === 'object' ? row.Labels : {}
@@ -1045,6 +1120,28 @@ export class PodmanService extends EventEmitter {
         outdated,
       }]
     })
+
+    // A failed create+provision removed its container, so `ps` cannot show
+    // it; the failure row is what lets the user see what happened and retry.
+    const present = new Set(summaries.map((c) => c.name))
+    for (const [name, failure] of this._provisionFailures) {
+      if (present.has(name)) continue
+      summaries.push({
+        id: name,
+        name,
+        status: 'Setup failed',
+        state: 'failed',
+        running: false,
+        image: failure.image,
+        createdAt: new Date(failure.at).toISOString(),
+        managed: true,
+        scope: failure.identity.kind === 'shared' ? 'shared' : 'dedicated',
+        agentId: failure.identity.kind === 'agent' ? failure.identity.agentId : undefined,
+        agentName: failure.identity.kind === 'agent' ? failure.identity.agentName : undefined,
+        error: failure.message,
+      })
+    }
+    return summaries
   }
 
   /**
@@ -1132,7 +1229,10 @@ export class PodmanService extends EventEmitter {
     await Promise.all(
       running.map((c) => this.exec0(bin, ['stop', '-t', '5', c.name], STOP_EXEC_TIMEOUT_MS).catch(() => {}))
     )
-    for (const c of running) this.forgetContainerRunState(c.name)
+    for (const c of running) {
+      this.forgetContainerRunState(c.name)
+      this.setPhase(c.name, 'stopped', undefined, c.agentId)
+    }
     this.activeAgentIds.clear()
     this.setStatus('stopped')
   }
@@ -1143,6 +1243,7 @@ export class PodmanService extends EventEmitter {
     await this.assertManagedContainer(bin, name)
     this.forgetContainerRunState(name)
     const result = await this.exec0(bin, ['stop', '-t', '5', name], STOP_EXEC_TIMEOUT_MS)
+    if (result.code === 0) this.setPhase(name, 'stopped')
     return result.code === 0
   }
 
@@ -1153,7 +1254,10 @@ export class PodmanService extends EventEmitter {
     const result = await this.exec0(bin, ['start', name])
     // The netns (and its firewall) is fresh after a start — reload it. No-op
     // for containers created before the feature.
-    if (result.code === 0) await this.applyPeerFirewall(bin, name)
+    if (result.code === 0) {
+      await this.applyPeerFirewall(bin, name)
+      this.setPhase(name, 'ready')
+    }
     return result.code === 0
   }
 
@@ -1163,12 +1267,68 @@ export class PodmanService extends EventEmitter {
     // allowLegacy: containers created before the managed labels existed can
     // only be migrated by removal (ADF recreates a labeled one on next start),
     // so removal must not require the very label they are missing.
-    await this.assertManagedContainer(bin, name, { allowLegacy: true })
+    try {
+      await this.assertManagedContainer(bin, name, { allowLegacy: true })
+    } catch (err) {
+      // A failed-provision row has no container behind it: removing the row
+      // is the whole action.
+      if (this._provisionFailures.delete(name)) {
+        this.forgetContainerRunState(name)
+        this.setPhase(name, 'absent')
+        return true
+      }
+      throw err
+    }
     const result = await this.exec0(bin, ['rm', '-f', name])
     this.forgetContainerRunState(name)
     this._browserCompatibilityInstalled.delete(name)
     this._novncPorts.delete(name)
+    this._provisionFailures.delete(name)
+    if (result.code === 0) this.setPhase(name, 'absent')
     return result.code === 0
+  }
+
+  /**
+   * Delete a container and bring a fresh one up right away. Identity comes from
+   * the container's labels (or the failed-provision record when the container
+   * is already gone), so the recreate does not depend on the agent starting.
+   * Returns `recreated: false` for legacy (unlabeled) containers — their
+   * owner is unknown, so the next agent start recreates them.
+   */
+  async rebuildContainer(name: string): Promise<{ recreated: boolean }> {
+    const bin = await this.requirePodman()
+    const identity = await this.managedIdentity(bin, name)
+    if (identity?.kind === 'shared') {
+      await this.destroy()
+      await this.ensureRunning()
+      return { recreated: true }
+    }
+    const removed = await this.destroyContainer(name)
+    if (!removed) throw new Error(`Could not remove ${name}`)
+    if (!identity) return { recreated: false }
+    // No browser bring-up: the display stack starts with the agent, and
+    // pip packages come from the agent config on its next start.
+    await this.ensureIsolatedRunning(identity.agentName, identity.agentId, [], undefined, false)
+    return { recreated: true }
+  }
+
+  /** Managed identity of a container from its labels, or from the
+   *  failed-provision record when the container no longer exists. */
+  private async managedIdentity(
+    bin: string,
+    name: string,
+  ): Promise<ProvisionFailure['identity'] | null> {
+    const failure = this._provisionFailures.get(name)
+    const result = await this.execStatus(bin, ['inspect', name, '--format', '{{json .Config.Labels}}'])
+    if (result.code !== 0) return failure?.identity ?? null
+    let labels: Record<string, string> = {}
+    try { labels = objectStringValues(JSON.parse(result.stdout)) } catch { /* unlabeled */ }
+    if (labels['io.adf.managed'] !== 'true') return null
+    if (labels['io.adf.kind'] === 'shared') return { kind: 'shared' }
+    const agentId = labels['io.adf.agent-id']
+    const agentName = labels['io.adf.agent-name']
+    if (!agentId || !agentName) return null
+    return { kind: 'agent', agentId, agentName }
   }
 
   /**
@@ -1411,10 +1571,12 @@ export class PodmanService extends EventEmitter {
     // Check if container already exists. On timeout (VM wake latency) retry
     // once with a long timeout — falling through to create on a timed-out
     // inspect would fail with "name already in use".
+    const agentId = identity.kind === 'agent' ? identity.agentId : undefined
     const inspectResult = await this.execStatus(bin, ['container', 'inspect', containerName, '--format', '{{.State.Running}}'])
     if (inspectResult.code === 0) {
       if (inspectResult.stdout.trim() === 'true') {
         await this.ensureBrowserCompatibility(bin, containerName, compatibility)
+        this.setPhase(containerName, 'ready', undefined, agentId)
         // Browser bring-up is slow (probe + display daemons) — keep it off the
         // awaited MCP connect path; callers that need it await browserReady().
         if (browserWanted) this.kickBrowserReady(containerName)
@@ -1422,14 +1584,19 @@ export class PodmanService extends EventEmitter {
       } else {
         // Exists but stopped — fast restart
         console.log(`[Compute] Starting existing container ${containerName}...`)
+        this.setPhase(containerName, 'starting', 'Starting container', agentId)
         const startResult = await this.exec0(bin, ['start', containerName], 30_000)
-        if (startResult.code !== 0) throw new Error(startResult.stderr || `Failed to start ${containerName}`)
+        if (startResult.code !== 0) {
+          this.setPhase(containerName, 'stopped', undefined, agentId)
+          throw new Error(startResult.stderr || `Failed to start ${containerName}`)
+        }
         // The display daemons died with the container — restart them lazily.
         // (Clear per-run caches directly; the shared ensureRunning memo stays
         // intact because this very call is what backs it.)
         this.bumpContainerGeneration(containerName)
         this._browserReadyPending.delete(containerName)
         await this.ensureBrowserCompatibility(bin, containerName, compatibility)
+        this.setPhase(containerName, 'ready', undefined, agentId)
         if (browserWanted) {
           this._stackStarted.delete(containerName)
           this._stackStartPending.delete(containerName)
@@ -1446,6 +1613,17 @@ export class PodmanService extends EventEmitter {
     {
       const cfg = this._getSettings()
       const image = cfg.containerImage || DEFAULT_SETTINGS.containerImage
+      const failProvision = async (message: string): Promise<never> => {
+        await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
+        console.error(`[Compute] ${message}`)
+        this._provisionFailures.set(containerName, { message, at: Date.now(), image, identity })
+        this.setPhase(containerName, 'failed', message, agentId)
+        throw new Error(message)
+      }
+      this.setPhase(containerName, 'provisioning', 'Creating container', agentId)
+
+      // apt-get and TLS both trust the VM clock; fix it before they run.
+      await this.syncMachineClock(bin, { force: true })
 
       const imageCheck = await this.exec0(bin, ['image', 'exists', image])
       if (imageCheck.code !== 0) {
@@ -1509,6 +1687,7 @@ export class PodmanService extends EventEmitter {
       runArgs.push(image, 'sh', '-c', 'mkdir -p /workspace && exec sleep infinity')
       const createResult = await this.exec0(bin, runArgs)
       if (createResult.code !== 0) {
+        this._phases.delete(containerName)
         if (/already in use/i.test(createResult.stderr)) {
           // The container exists after all — a concurrent creator won the race,
           // or a timed-out inspect hid it. Re-inspect with a long timeout and
@@ -1527,6 +1706,7 @@ export class PodmanService extends EventEmitter {
             }
             console.log(`[Compute] Container ${containerName} already existed — reusing it`)
             await this.ensureBrowserCompatibility(bin, containerName, compatibility)
+            this.setPhase(containerName, 'ready', undefined, agentId)
             if (browserWanted) this.kickBrowserReady(containerName)
             return
           }
@@ -1538,6 +1718,7 @@ export class PodmanService extends EventEmitter {
       const pkgs = cfg.containerPackages?.length ? cfg.containerPackages : DEFAULT_SETTINGS.containerPackages
       if (pkgs.length > 0) {
         console.log(`[Compute] Installing packages in ${containerName}: ${pkgs.join(', ')}`)
+        this.setPhase(containerName, 'provisioning', 'Installing packages (a minute or two)', agentId)
         // Detect package manager: apt-get for Debian-based, apk for Alpine
         const isAlpine = image.includes('alpine')
         let pkgResult: { stdout: string; stderr: string; code: number }
@@ -1549,24 +1730,25 @@ export class PodmanService extends EventEmitter {
           ], 600_000) // 10 minutes — chromium alone is ~200MB
         }
         if (pkgResult.code !== 0) {
-          await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
-          throw new Error(`Package installation failed in ${containerName}: ${pkgResult.stderr.slice(0, 500)}`)
+          await failProvision(`Package installation failed in ${containerName}: ${describeAptFailure(pkgResult)}`)
         }
       }
 
       // Install uv (Python package manager for uvx-based MCP servers)
       console.log(`[Compute] Installing uv in ${containerName}...`)
+      this.setPhase(containerName, 'provisioning', 'Installing uv', agentId)
       const uvResult = await this.exec0(bin, [
         'exec', containerName, 'sh', '-c',
         'wget -qO- https://astral.sh/uv/install.sh | sh && ln -sf /root/.local/bin/uv /usr/local/bin/uv && ln -sf /root/.local/bin/uvx /usr/local/bin/uvx'
       ], 120_000)
       if (uvResult.code !== 0) {
-        await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
-        throw new Error(`uv installation failed in ${containerName}: ${uvResult.stderr.slice(0, 500)}`)
+        await failProvision(`uv installation failed in ${containerName}: ${uvResult.stderr.slice(-500)}`)
       }
 
+      this._provisionFailures.delete(containerName)
       console.log(`[Compute] Container ${containerName} provisioned successfully`)
       await this.ensureBrowserCompatibility(bin, containerName, compatibility)
+      this.setPhase(containerName, 'ready', undefined, agentId)
     }
     if (browserWanted) this.kickBrowserReady(containerName)
   }
@@ -1942,7 +2124,10 @@ export class PodmanService extends EventEmitter {
     const listTimeout = this._machineListChecked ? QUICK_EXEC_TIMEOUT_MS : LONG_STATUS_TIMEOUT_MS
     const list = await this.exec0(bin, ['machine', 'list', '--format', '{{.Running}}', '--noheading'], listTimeout)
     this._machineListChecked = true
-    if (list.code === 0 && list.stdout.toLowerCase().includes('true')) return
+    if (list.code === 0 && list.stdout.toLowerCase().includes('true')) {
+      await this.syncMachineClock(bin)
+      return
+    }
 
     // Check if a machine exists but is stopped
     const listNames = await this.exec0(bin, ['machine', 'list', '--format', '{{.Name}}', '--noheading'], QUICK_EXEC_TIMEOUT_MS)
@@ -1969,6 +2154,36 @@ export class PodmanService extends EventEmitter {
     if (startRes.code !== 0 && !/already running/i.test(startRes.stderr)) {
       throw new Error(this.explainMachineError('start', startRes.stderr))
     }
+  }
+
+  /**
+   * Step the Podman machine clock to the host's when it has drifted past
+   * CLOCK_SKEW_TOLERANCE_S (see the constant for why it drifts). Throttled
+   * unless `force` — provisioning forces it because apt-get is the first thing
+   * that breaks. Best effort: a failure is logged and the caller's own error
+   * (apt, TLS) stays the visible one.
+   */
+  private async syncMachineClock(bin: string, opts: { force?: boolean } = {}): Promise<void> {
+    const plat = process.platform
+    if (plat !== 'darwin' && plat !== 'win32') return
+    if (!opts.force && Date.now() - this._clockCheckedAt < CLOCK_CHECK_INTERVAL_MS) return
+    this._clockCheckedAt = Date.now()
+
+    const read = await this.exec0(bin, ['machine', 'ssh', 'date +%s'], 15_000)
+    const vmNow = Number(read.stdout.trim())
+    if (read.code !== 0 || !Number.isFinite(vmNow)) return
+    const skew = Math.round(Date.now() / 1000 - vmNow)
+    if (Math.abs(skew) <= CLOCK_SKEW_TOLERANCE_S) return
+
+    const direction = skew > 0 ? 'behind' : 'ahead of'
+    console.warn(`[Compute] Podman machine clock is ${Math.abs(skew)}s ${direction} the host — stepping it to host time`)
+    const hostNow = Math.round(Date.now() / 1000)
+    const step = await this.exec0(bin, ['machine', 'ssh', `sudo date -u -s @${hostNow}`], 15_000)
+    if (step.code !== 0) {
+      console.warn(`[Compute] Could not step the Podman machine clock: ${(step.stderr || step.stdout).slice(0, 200)}`)
+      return
+    }
+    console.log('[Compute] Podman machine clock stepped to host time')
   }
 
   /**
@@ -2151,6 +2366,20 @@ function containerCreatedAt(row: any): string | undefined {
   if (Number.isFinite(seconds) && seconds > 0) return new Date(seconds * 1000).toISOString()
   const raw = typeof row?.CreatedAt === 'string' ? row.CreatedAt.trim() : ''
   return raw || undefined
+}
+
+/** apt-get reports on stderr with `E:` lines at the end; keep those (plus a
+ *  plain hint for the one failure that looks like a network fault but is a
+ *  clock fault) instead of the first 500 bytes of warnings. */
+function describeAptFailure(result: { stdout: string; stderr: string; timedOut: boolean }): string {
+  if (result.timedOut) return 'apt-get did not finish within 10 minutes'
+  const text = result.stderr || result.stdout
+  const errors = text.split('\n').filter((line) => /^E:/.test(line))
+  const detail = (errors.length ? errors.join(' ') : text).slice(-500)
+  if (/not valid yet|not yet valid/i.test(text)) {
+    return `${detail} (the container clock is behind the host — retry the rebuild once the Podman machine clock is stepped)`
+  }
+  return detail
 }
 
 function parseInspect(value: string): any | null {

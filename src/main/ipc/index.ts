@@ -3714,6 +3714,8 @@ export function registerAllIpcHandlers(): void {
       hasHost: !!config.compute?.host_access && computeSettings?.hostAccessEnabled === true,
       ...targetSelection,
       isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
+      agentName: config.name,
+      pipPackages: config.compute?.packages?.pip,
       browserDisplay: config.compute?.browser !== false,
       agentId: config.id,
     }
@@ -8202,6 +8204,11 @@ export function registerAllIpcHandlers(): void {
     catch (err) { return { success: false, error: err instanceof Error ? err.message : String(err) } }
   })
 
+  ipcMain.handle(IPC.COMPUTE_REBUILD_CONTAINER, async (_event, args: { name: string }) => {
+    try { return { success: true, ...(await podmanService.rebuildContainer(args.name)) } }
+    catch (err) { return { success: false, error: err instanceof Error ? err.message : String(err) } }
+  })
+
   ipcMain.handle(IPC.COMPUTE_CONTAINER_DETAIL, async (_event, args: { name: string }) => {
     try {
       const detail = await podmanService.getContainerDetail(args.name)
@@ -8221,13 +8228,23 @@ export function registerAllIpcHandlers(): void {
     getMainWindow()?.webContents.send(IPC.COMPUTE_BROWSER_SESSION, payload)
   })
 
+  podmanService.on('container-phase', (payload) => {
+    getMainWindow()?.webContents.send(IPC.COMPUTE_CONTAINER_PHASE, payload)
+  })
+
   ipcMain.handle(IPC.COMPUTE_BROWSER_INFO, async (_event, args: { agentName: string; agentId: string }) => {
     const containerName = isolatedContainerName(args.agentName, args.agentId)
-    // Browser bring-up is lazy — wait for readiness so the viewer tab never
-    // opens onto connection-refused right after a container restart.
-    await podmanService.browserReady(containerName).catch(() => { /* degrade to whatever port state exists */ })
+    // The Computer tab opens in any phase and shows it; only a ready
+    // container gets the (slow) browser bring-up awaited, so the viewer
+    // never lands on connection-refused right after a restart.
+    const { phase, detail } = await podmanService.containerPhase(containerName)
+    if (phase !== 'ready') return { containerName, hostPort: null, phase, detail }
+    let browserError: string | undefined
+    await podmanService.browserReady(containerName).catch((err) => {
+      browserError = err instanceof Error ? err.message : String(err)
+    })
     const hostPort = await podmanService.getNovncHostPort(containerName)
-    return { containerName, hostPort }
+    return { containerName, hostPort, phase, detail: browserError }
   })
 
   ipcMain.handle(IPC.COMPUTE_TEST_EXECUTION_TARGET, async (_event, target) => {

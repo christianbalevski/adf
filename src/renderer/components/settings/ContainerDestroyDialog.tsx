@@ -32,6 +32,7 @@ export function ContainerDestroyDialog({
   const { container, action, activeAgents, isShared } = request
   const rebuilding = action === 'rebuild'
   const owner = container.agentName || container.agentId
+  const failedRow = container.state === 'failed'
 
   return (
     // Esc dismisses even mid-run: the podman call cannot be aborted, so holding
@@ -43,12 +44,22 @@ export function ContainerDestroyDialog({
       title={rebuilding ? `Rebuild ${container.name}?` : `Remove ${container.name}?`}
     >
       <p className="text-[12px] text-[var(--adf-ui-text-muted)]">
-        {rebuilding
-          ? 'The container is deleted and recreated from the configured base image. Everything inside it is permanently lost:'
-          : 'The container is permanently deleted. Everything inside it is lost:'}
+        {failedRow
+          ? rebuilding
+            ? 'The last setup of this container failed and nothing is left of it. Rebuild creates a fresh container from the configured base image.'
+            : 'The last setup of this container failed and nothing is left of it. Remove clears this entry.'
+          : rebuilding
+            ? 'The container is deleted and recreated from the configured base image. Everything inside it is permanently lost:'
+            : 'The container is permanently deleted. Everything inside it is lost:'}
       </p>
 
-      <ul className="mt-3 space-y-1.5 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-danger-subtle)] p-3 text-[11px] text-[var(--adf-ui-text)]">
+      {failedRow && container.error && (
+        <p className="mt-3 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-danger-subtle)] p-3 font-mono text-[10px] text-[var(--adf-ui-text)] break-words">
+          {container.error}
+        </p>
+      )}
+
+      {!failedRow && <ul className="mt-3 space-y-1.5 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-danger-subtle)] p-3 text-[11px] text-[var(--adf-ui-text)]">
         <li>
           <span className="font-medium">Workspace files</span> — everything under{' '}
           <code className="font-mono text-[10px]">/workspace</code>
@@ -56,12 +67,12 @@ export function ContainerDestroyDialog({
         </li>
         <li><span className="font-medium">Installed packages</span> — apt, pip, and npm installs made since the container was created.</li>
         <li><span className="font-medium">Running processes</span> — anything the agent left running, including browser sessions.</li>
-      </ul>
+      </ul>}
 
       <p className="mt-3 text-[11px] text-[var(--adf-ui-text-muted)]">
         {rebuilding
-          ? isShared
-            ? 'A fresh container is created immediately.'
+          ? isShared || container.scope === 'dedicated'
+            ? 'A fresh container is created and provisioned now; this takes about a minute.'
             : 'A fresh container is created the next time the agent starts.'
           : 'A fresh container is created the next time the agent starts.'}{' '}
         The agent definition, its identity, and the shared npm cache are not affected.

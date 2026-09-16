@@ -431,6 +431,8 @@ export class AgentRuntimeBuilder {
       hasHost: agentHostAllowed && runtimeHostAllowed,
       ...targetSelection,
       isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
+      agentName: config.name,
+      pipPackages: config.compute?.packages?.pip,
       browserDisplay: config.compute?.browser !== false,
       agentId: config.id,
       hostInfo,
@@ -441,7 +443,9 @@ export class AgentRuntimeBuilder {
       const p = this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip, filePath ?? undefined, config.compute?.browser !== false)
         .then(() => this.podmanService?.ensureWorkspace(caps.isolatedContainerName!, '/workspace'))
         .then(() => undefined)
-      p.catch(() => {})
+      p.catch((err) => {
+        console.warn(`[Compute] Isolated container for ${config.name} is not ready:`, err instanceof Error ? err.message : err)
+      })
       startup.push(p)
     }
 

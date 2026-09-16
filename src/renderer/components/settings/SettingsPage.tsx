@@ -2914,22 +2914,29 @@ function ComputeTab({
   // Fetch on mount
   useEffect(() => { refreshAll() }, [])
 
-  /** Both actions run `podman rm -f`; rebuilding the shared container also recreates it. */
+  /** Both actions run `podman rm -f`. Rebuild recreates right away when the
+   *  container's owner is known from its labels (shared, or a dedicated one);
+   *  a legacy container has no owner label, so its agent's next start does it. */
   const runDestroy = useCallback(async ({ container, action, isShared }: ContainerDestroyRequest) => {
     const rebuilding = action === 'rebuild'
     setBusyContainer(container.name)
     setSetupError(null)
     setSetupLog(rebuilding ? `Rebuilding ${container.name}...` : `Removing ${container.name}...`)
     try {
-      const result = isShared ? await window.adfApi.computeDestroy() : await window.adfApi.computeDestroyContainer({ name: container.name })
+      const result = isShared
+        ? await window.adfApi.computeDestroy()
+        : rebuilding
+          ? await window.adfApi.computeRebuildContainer({ name: container.name })
+          : await window.adfApi.computeDestroyContainer({ name: container.name })
       if (!result.success) throw new Error(result.error ?? (rebuilding ? 'Rebuild failed' : 'Remove failed'))
       if (isShared) {
         const init = await window.adfApi.computeInit()
         if (!init.success) throw new Error(init.error ?? 'Recreate failed')
       }
+      const recreated = isShared || ('recreated' in result && result.recreated === true)
       setSetupLog(
-        isShared ? 'Container rebuilt.'
-          : rebuilding ? 'Container removed. It will be recreated when the agent starts.'
+        rebuilding
+          ? recreated ? 'Container rebuilt.' : 'Container removed. It will be recreated when the agent starts.'
           : 'Container deleted.'
       )
       setDestroyRequest(null)
@@ -3018,6 +3025,7 @@ function ComputeTab({
           {containers.filter((container) => containerFilter === 'all' || (containerFilter === 'running' ? container.running : !container.running)).map((c) => {
             const isShared = c.scope === 'shared' || c.name === 'adf-mcp'
             const rowBusy = busyContainer === c.name
+            const failed = c.state === 'failed'
             return (
               <div key={c.id || c.name} className="grid grid-cols-[minmax(180px,1.5fr)_105px_minmax(110px,1fr)_88px] items-center gap-3 border-b border-[var(--adf-ui-separator)] px-3 py-2.5 last:border-b-0">
                 <button className="flex min-w-0 items-center gap-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]" onClick={() => setSelectedContainer(c.name)}>
@@ -3028,7 +3036,13 @@ function ComputeTab({
                   </span>
                 </button>
                 <span>
-                  <span className="flex items-center gap-1.5 text-[11px] text-[var(--adf-ui-text)]"><span className={`size-1.5 rounded-full ${c.running ? 'bg-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-text-subtle)]'}`} />{c.running ? 'Running' : 'Stopped'}</span>
+                  {failed ? (
+                    <Tooltip tip={c.error ?? 'Container setup failed'}>
+                      <span className="flex items-center gap-1.5 text-[11px] text-[var(--adf-ui-danger)]"><span className="size-1.5 rounded-full bg-[var(--adf-ui-danger)]" />Setup failed</span>
+                    </Tooltip>
+                  ) : (
+                    <span className="flex items-center gap-1.5 text-[11px] text-[var(--adf-ui-text)]"><span className={`size-1.5 rounded-full ${c.running ? 'bg-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-text-subtle)]'}`} />{c.running ? 'Running' : 'Stopped'}</span>
+                  )}
                   <span className="mt-0.5 block text-[10px] text-[var(--adf-ui-text-muted)]">{isShared ? 'Shared' : c.scope === 'legacy' ? 'Legacy' : 'Dedicated'}</span>
                   {c.managed && c.outdated && (
                     <Tooltip tip={OUTDATED_CONTAINER_ADVISORY}>
@@ -3040,10 +3054,10 @@ function ComputeTab({
                 </span>
                 <span className="truncate text-[11px] text-[var(--adf-ui-text-muted)]">{isShared ? `${computeEnvStatus.activeAgents.length} active agents` : c.agentName || c.agentId || 'Unassigned'}</span>
                 <div className="relative flex justify-end gap-1">
-                  <Tooltip tip={c.managed ? (c.running ? 'Stop' : 'Start') : 'Legacy container: rebuild to migrate before managing'}>
+                  <Tooltip tip={failed ? 'Setup failed: rebuild to retry' : c.managed ? (c.running ? 'Stop' : 'Start') : 'Legacy container: rebuild to migrate before managing'}>
                     <IconButton
                       aria-label={`${c.running ? 'Stop' : 'Start'} ${c.name}`}
-                      disabled={rowBusy || !c.managed}
+                      disabled={rowBusy || !c.managed || failed}
                       onClick={async () => {
                         setBusyContainer(c.name); setSetupError(null)
                         try {

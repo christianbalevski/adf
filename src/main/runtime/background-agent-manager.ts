@@ -1149,6 +1149,8 @@ export class BackgroundAgentManager extends EventEmitter {
         hasHost: agentHostAllowed && runtimeHostAllowed,
         ...targetSelection,
         isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
+      agentName: config.name,
+      pipPackages: config.compute?.packages?.pip,
         browserDisplay: config.compute?.browser !== false,
         agentId: config.id,
         // Parity with the daemon builder: host-target compute_exec prompts
@@ -1159,7 +1161,9 @@ export class BackgroundAgentManager extends EventEmitter {
       if (bgComputeCaps.hasIsolated && this.podmanService) {
         this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip, filePath, config.compute?.browser !== false)
           .then(() => this.podmanService!.ensureWorkspace(bgComputeCaps.isolatedContainerName!, '/workspace'))
-          .catch(() => {})
+          .catch((err) => {
+            console.warn(`[Compute] Isolated container for ${config.name} is not ready:`, err instanceof Error ? err.message : err)
+          })
       }
 
       agentToolRegistry.register(new FsTransferTool(this.podmanService ?? null, bgComputeCaps))
