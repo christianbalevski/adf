@@ -202,7 +202,13 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
         }
       }
     } else if (entry.role === 'assistant') {
-      // Assistant messages
+      // Assistant messages. `entry.tokens` is the whole call's usage, so it is
+      // stamped on ONE display entry — the row's last displayed block — not on
+      // every block (a thinking row wearing the full output count read as if
+      // that were the thinking size). Thinking blocks get the exact reasoning
+      // count separately when the provider reported one.
+      const firstEntryOfRow = displayEntries.length
+      const reasoningTokens = typeof entry.tokens?.reasoning === 'number' ? entry.tokens.reasoning : undefined
       for (let bi = 0; bi < blocks.length; bi++) {
         const block = blocks[bi]
         if (block.type === 'text' && block.text && block.text.trim()) {
@@ -213,7 +219,7 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
             type: 'text',
             content: block.text,
             timestamp,
-            metadata: { seq: entry.seq, model: entry.model, tokens: entry.tokens }
+            metadata: { seq: entry.seq, model: entry.model }
           })
         } else if (block.type === 'tool_use') {
           // Track tool_use_id -> name for result matching
@@ -242,17 +248,28 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
             metadata: {
               seq: entry.seq,
               model: entry.model,
-              tokens: entry.tokens,
+              ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
               ...(preserved ? { preservedReasoning: true } : {}),
               ...(encrypted ? { encryptedReasoning: true } : {})
             }
           })
         }
       }
+      stampRowTokens(displayEntries, firstEntryOfRow, entry.tokens)
     }
   }
 
   return displayEntries
+}
+
+/**
+ * Put a row's whole-call usage on its last displayed block (and nowhere
+ * else). No-op when the row produced no display entry or carries no usage.
+ */
+function stampRowTokens(displayEntries: DisplayEntry[], firstEntryOfRow: number, tokens: LoopEntry['tokens']): void {
+  if (!tokens || displayEntries.length <= firstEntryOfRow) return
+  const last = displayEntries[displayEntries.length - 1]
+  last.metadata = { ...last.metadata, tokens }
 }
 
 /**
@@ -410,6 +427,10 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
         }
       }
     } else if (entry.role === 'assistant') {
+      // Same token placement as parseLoopToDisplay: whole-call usage on the
+      // row's last block only, exact reasoning count on thinking blocks.
+      const firstEntryOfRow = displayEntries.length
+      const reasoningTokens = typeof entry.tokens?.reasoning === 'number' ? entry.tokens.reasoning : undefined
       for (let bi = 0; bi < blocks.length; bi++) {
         const block = blocks[bi]
         if (block.type === 'text' && block.text && block.text.trim()) {
@@ -420,7 +441,7 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
             type: 'text',
             content: block.text,
             timestamp,
-            metadata: { seq: entry.seq, model: entry.model, tokens: entry.tokens }
+            metadata: { seq: entry.seq, model: entry.model }
           })
         } else if (block.type === 'tool_use' && block.id) {
           const toolEntry: DisplayEntry = {
@@ -447,13 +468,14 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
             metadata: {
               seq: entry.seq,
               model: entry.model,
-              tokens: entry.tokens,
+              ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
               ...(preserved ? { preservedReasoning: true } : {}),
               ...(encrypted ? { encryptedReasoning: true } : {})
             }
           })
         }
       }
+      stampRowTokens(displayEntries, firstEntryOfRow, entry.tokens)
     }
   }
 

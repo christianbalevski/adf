@@ -1087,6 +1087,27 @@ export interface LoopTokenUsage {
   cost_usd?: number
 }
 
+/**
+ * The one number every context-fullness reader trusts: how big the NEXT
+ * request to this loop is expected to be. Persisted in `adf_meta` (key
+ * `context_baseline_tokens`, suffixed `:<loop>` for side loops) so the
+ * status bar on reload, the fleet gauge and the executor's compaction gate
+ * all agree. Written after every completed main-turn call (`estimated:
+ * false`, the API-reported input+output) and after every compaction / clear
+ * (`estimated: true`, char-based estimate of the rebuilt session plus the
+ * fixed system-prompt + tool overhead). Deleted when the loop is wiped.
+ *
+ * Never derived from `adf_loop.tokens`: those rows are the billing record of
+ * the call that PRODUCED them, and after a voluntary compaction the preserved
+ * assistant row still (honestly) carries the pre-compaction context size.
+ */
+export interface ContextBaseline {
+  tokens: number
+  estimated: boolean
+  /** epoch ms of the write */
+  updated_at: number
+}
+
 export interface LoopEntry {
   seq: number
   role: 'user' | 'assistant'

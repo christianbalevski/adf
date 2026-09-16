@@ -6,11 +6,12 @@ import { MAIN_LOOP, selectLoopSlice, useAgentStore } from '../../stores/agent.st
 import { loopColor } from '../../utils/loop-color'
 import type { AgentConfig } from '../../../shared/types/adf-v02.types'
 import type { ContextBreakdown, ContextBreakdownToolGroup } from '../../../shared/types/ipc.types'
+import { formatTokenCount } from '../../utils/token-estimate'
+import { formatUsd } from '../../utils/format-usd'
 
-export function formatTokens(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`
-  return String(n)
-}
+/** Kept under this name for StatusBar; the one renderer token formatter lives in utils/token-estimate. */
+export const formatTokens = formatTokenCount
+export { formatUsd }
 
 /** The host loop's auto-compact trigger point — the executor's own resolution order. */
 export function resolveHostThreshold(config: AgentConfig | null | undefined): number {
@@ -31,11 +32,6 @@ export function resolveLoopThreshold(config: AgentConfig | null | undefined, loo
   if (!declared) return resolveHostThreshold(config)
   if (declared.compact_threshold != null) return declared.compact_threshold
   return config?.context?.compact_threshold ?? (declared.model ?? config?.model)?.compact_threshold ?? 100000
-}
-
-/** `$0.0042`-style: 4 decimals below $1, 2 above (cents resolution is enough there). */
-export function formatUsd(n: number): string {
-  return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`
 }
 
 /** Cycled through for per-{{file}} bar segments — blue-family shades so they
@@ -345,11 +341,14 @@ export function ContextBreakdownModal({
               <p className="text-xs text-[var(--adf-ui-text-muted)]">No completed calls yet.</p>
             ) : (
               <div className="space-y-1.5 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-canvas)] p-3 ring-1 ring-inset ring-[var(--adf-ui-separator)]">
+                {/* Input already counts cache read + write, and output counts
+                    reasoning (AI SDK usage semantics) — the indented rows are
+                    parts of the row above them, not additions to it. */}
                 <Row label="Input" tokens={tokenUsage.input} />
+                {tokenUsage.cache_read != null && <Row label="of which cache read" tokens={tokenUsage.cache_read} indent />}
+                {tokenUsage.cache_write != null && <Row label="of which cache write" tokens={tokenUsage.cache_write} indent />}
                 <Row label="Output" tokens={tokenUsage.output} />
-                {tokenUsage.cache_read != null && <Row label="Cache read" tokens={tokenUsage.cache_read} />}
-                {tokenUsage.cache_write != null && <Row label="Cache write" tokens={tokenUsage.cache_write} />}
-                {tokenUsage.reasoning != null && <Row label="Reasoning" tokens={tokenUsage.reasoning} />}
+                {tokenUsage.reasoning != null && <Row label="of which reasoning" tokens={tokenUsage.reasoning} indent />}
                 {tokenUsage.cost_usd != null && (
                   <div className="flex items-baseline text-xs">
                     <span className="text-[var(--adf-ui-text-muted)]">Cost</span>

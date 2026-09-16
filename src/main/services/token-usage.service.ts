@@ -1,7 +1,8 @@
-import { readFileSync, existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { getUserDataPath } from '../utils/user-data-path'
-import { writeJsonAtomic } from '../utils/atomic-json'
+import { writeJsonAtomic, readJsonOrQuarantine } from '../utils/atomic-json'
+import { localDateKey } from '../../shared/utils/date-key'
 
 /**
  * Token usage data structure:
@@ -44,9 +45,105 @@ export interface TokenUsageData {
   }
 }
 
+type UsageEntry = TokenUsageData[string][string][string]
+
+const EXTRA_KEYS = ['cache_read', 'cache_write', 'reasoning', 'cost_usd'] as const
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/** Non-finite (NaN serialises to `null`, Infinity too) → 0 so sums never poison. */
+function finiteOrZero(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+}
+
+/**
+ * Coerce whatever was on disk into a well-formed ledger. Non-object days,
+ * providers, or models are dropped; numbers that are missing or non-finite
+ * become 0. Optional extras stay absent when absent — files written before
+ * those fields existed keep loading with the same shape.
+ */
+export function sanitizeUsageData(raw: unknown): TokenUsageData {
+  const out: TokenUsageData = {}
+  if (!isRecord(raw)) return out
+  for (const [date, byProvider] of Object.entries(raw)) {
+    if (!isRecord(byProvider)) continue
+    const providers: TokenUsageData[string] = {}
+    for (const [provider, byModel] of Object.entries(byProvider)) {
+      if (!isRecord(byModel)) continue
+      const models: TokenUsageData[string][string] = {}
+      for (const [model, entry] of Object.entries(byModel)) {
+        if (!isRecord(entry)) continue
+        const clean: UsageEntry = { input: finiteOrZero(entry.input), output: finiteOrZero(entry.output) }
+        for (const key of EXTRA_KEYS) {
+          if (key in entry) clean[key] = finiteOrZero(entry[key])
+        }
+        models[model] = clean
+      }
+      providers[provider] = models
+    }
+    out[date] = providers
+  }
+  return out
+}
+
+/** Add one call's counts onto `data[date][provider][model]`, creating the path as needed. */
+function addUsage(
+  data: TokenUsageData,
+  date: string,
+  provider: string,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  extras?: TokenUsageExtras
+): void {
+  const byProvider = (data[date] ??= {})
+  const byModel = (byProvider[provider] ??= {})
+  const entry = (byModel[model] ??= { input: 0, output: 0 })
+  entry.input += inputTokens
+  entry.output += outputTokens
+  if (extras) {
+    for (const key of EXTRA_KEYS) {
+      const v = extras[key]
+      if (v !== undefined) entry[key] = (entry[key] ?? 0) + v
+    }
+  }
+}
+
+/** Fold every entry of `delta` onto `target` (mutates and returns `target`). */
+function mergeUsage(target: TokenUsageData, delta: TokenUsageData): TokenUsageData {
+  for (const [date, byProvider] of Object.entries(delta)) {
+    for (const [provider, byModel] of Object.entries(byProvider)) {
+      for (const [model, e] of Object.entries(byModel)) {
+        const { input, output, ...extras } = e
+        addUsage(target, date, provider, model, input, output, extras)
+      }
+    }
+  }
+  return target
+}
+
+/**
+ * Persistence model: Studio and the daemon both own `token-usage.json` in the
+ * same user-data directory. Each process therefore never writes its in-memory
+ * snapshot — that made the last writer win and let one process's flush undo
+ * the other's clear. Instead every process keeps a `pending` DELTA of what it
+ * recorded since its last flush; a flush re-reads the file fresh, adds the
+ * delta onto it, writes the merged result, and adopts that as its own view.
+ *
+ * Day keys are the user's LOCAL calendar date (see `localDateKey`), matching
+ * what the Usage chart and the home tile display. Rows written by versions
+ * before this were keyed by the UTC date; they carry no time-of-day, so
+ * nothing can re-bucket them — they stay where they are.
+ */
 export class TokenUsageService {
   private filePath: string
   private data: TokenUsageData = {}
+  /** Recorded since the last successful flush; folded onto disk on save. */
+  private pending: TokenUsageData = {}
+  /** A clearAll that has not yet reached disk — the next save writes empty instead of merging. */
+  private pendingClear = false
   private dirty = false
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private static readonly SAVE_DEBOUNCE_MS = 5000
@@ -54,22 +151,25 @@ export class TokenUsageService {
   constructor() {
     const userDataPath = getUserDataPath()
     this.filePath = join(userDataPath, 'token-usage.json')
-    this.load()
+    this.data = this.readDisk() ?? {}
   }
 
   /**
-   * Load token usage data from disk
+   * Fresh read of the ledger on disk, validated. A corrupt file is moved
+   * aside by `readJsonOrQuarantine` and reads as empty. Returns null only in
+   * the one case where the corrupt bytes could NOT be preserved — the caller
+   * must then refuse to overwrite them.
    */
-  private load(): void {
-    try {
-      if (existsSync(this.filePath)) {
-        const raw = readFileSync(this.filePath, 'utf-8')
-        this.data = JSON.parse(raw)
-      }
-    } catch (err) {
-      console.error('[TokenUsage] Failed to load token usage data:', err)
-      this.data = {}
+  private readDisk(): TokenUsageData | null {
+    const result = readJsonOrQuarantine<unknown>(this.filePath)
+    if (result.quarantinedTo) {
+      console.error(`[TokenUsage] token-usage.json was unreadable; moved aside to ${result.quarantinedTo}`)
     }
+    if (result.corruptUnpreserved) {
+      console.error('[TokenUsage] token-usage.json is corrupt and could not be moved aside; leaving it untouched')
+      return null
+    }
+    return sanitizeUsageData(result.data)
   }
 
   /**
@@ -93,8 +193,10 @@ export class TokenUsageService {
   }
 
   /**
-   * Immediately write token usage data to disk. Returns false on failure so
-   * callers can re-mark the data dirty instead of silently dropping it.
+   * Merge the pending delta onto a fresh read of the file and write the
+   * result. Returns false on failure so callers can re-mark the data dirty
+   * instead of silently dropping it; the delta is only discarded once the
+   * merged file is safely on disk.
    */
   private saveNow(): boolean {
     try {
@@ -102,7 +204,19 @@ export class TokenUsageService {
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true })
       }
-      writeJsonAtomic(this.filePath, this.data)
+      let base: TokenUsageData
+      if (this.pendingClear) {
+        base = {}
+      } else {
+        const disk = this.readDisk()
+        if (disk === null) return false
+        base = disk
+      }
+      const merged = mergeUsage(base, this.pending)
+      writeJsonAtomic(this.filePath, merged)
+      this.data = merged
+      this.pending = {}
+      this.pendingClear = false
       return true
     } catch (err) {
       console.error('[TokenUsage] Failed to save token usage data:', err)
@@ -138,30 +252,11 @@ export class TokenUsageService {
     outputTokens: number,
     extras?: TokenUsageExtras
   ): void {
-    // Get current date in YYYY-MM-DD format
-    const date = new Date().toISOString().split('T')[0]
-
-    // Initialize nested structure if needed
-    if (!this.data[date]) {
-      this.data[date] = {}
-    }
-    if (!this.data[date][provider]) {
-      this.data[date][provider] = {}
-    }
-    if (!this.data[date][provider][model]) {
-      this.data[date][provider][model] = { input: 0, output: 0 }
-    }
-
-    // Increment token counts
-    const entry = this.data[date][provider][model]
-    entry.input += inputTokens
-    entry.output += outputTokens
-    if (extras) {
-      if (extras.cache_read !== undefined) entry.cache_read = (entry.cache_read ?? 0) + extras.cache_read
-      if (extras.cache_write !== undefined) entry.cache_write = (entry.cache_write ?? 0) + extras.cache_write
-      if (extras.reasoning !== undefined) entry.reasoning = (entry.reasoning ?? 0) + extras.reasoning
-      if (extras.cost_usd !== undefined) entry.cost_usd = (entry.cost_usd ?? 0) + extras.cost_usd
-    }
+    const date = localDateKey()
+    // Same increment onto the live view (what getUsageData/getSummary read
+    // right now) and onto the delta that the next flush folds into the file.
+    addUsage(this.data, date, provider, model, inputTokens, outputTokens, extras)
+    addUsage(this.pending, date, provider, model, inputTokens, outputTokens, extras)
 
     // Debounced save to disk
     this.scheduleSave()
@@ -185,10 +280,18 @@ export class TokenUsageService {
    * Clear all token usage data
    */
   clearAll(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
+    // Drop the unflushed delta too — a clear means "forget everything so far",
+    // not "forget everything except the last five seconds".
     this.data = {}
-    this.flush() // Clear any pending debounced save
+    this.pending = {}
+    this.pendingClear = true
+    this.dirty = false
     if (!this.saveNow()) {
-      this.scheduleSave() // retry the (now empty) write later
+      this.scheduleSave() // retry the empty write later; pendingClear keeps it empty
     }
   }
 
@@ -203,7 +306,7 @@ export class TokenUsageService {
     allTime: { input: number; output: number }
     topModel: { provider: string; model: string; total: number } | null
   } {
-    const today = new Date().toISOString().split('T')[0]
+    const today = localDateKey()
     const todayTotals = { input: 0, output: 0 }
     const allTimeTotals = { input: 0, output: 0 }
     // model key → { provider, model, total }

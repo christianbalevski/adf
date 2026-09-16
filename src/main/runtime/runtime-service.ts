@@ -1009,7 +1009,7 @@ export class RuntimeService extends EventEmitter {
     return {
       agentId: managed.id,
       source: 'adf_loop',
-      note: 'Includes token usage persisted on loop rows. It does not include model_invoke, compaction, or provider calls that did not create loop rows.',
+      note: 'Sums token usage persisted on loop rows, including compaction summary rows. It does not include model_invoke or other provider calls that did not create loop rows. input already includes cacheRead and cacheWrite; total = input + output.',
       loopRows: entries.length,
       usageRows,
       totals,
@@ -1779,7 +1779,9 @@ function addUsage(target: RuntimeUsageTotals, usage: LoopTokenUsage): void {
   target.output += usage.output ?? 0
   target.cacheRead += usage.cache_read ?? 0
   target.cacheWrite += usage.cache_write ?? 0
-  target.total = target.input + target.output + target.cacheRead + target.cacheWrite
+  // `input` is already cache-inclusive (AI SDK v6 reports inputTokens.total),
+  // so cache buckets are a breakdown of input, not an addition to it.
+  target.total = target.input + target.output
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {

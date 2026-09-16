@@ -9,6 +9,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { TokenUsageService } from '../../../src/main/services/token-usage.service'
+import { localDateKey } from '../../../src/shared/utils/date-key'
 
 const originalDir = process.env.ADF_USER_DATA_DIR
 
@@ -26,7 +27,8 @@ afterEach(() => {
   else process.env.ADF_USER_DATA_DIR = originalDir
 })
 
-const today = new Date().toISOString().split('T')[0]
+// The ledger buckets by LOCAL calendar day — same key the renderer reads.
+const today = localDateKey()
 
 describe('TokenUsageService extras', () => {
   it('loads old-shape files (input/output only) without error', () => {

@@ -1,29 +1,67 @@
 import { encode as gptEncode } from 'gpt-tokenizer'
 import { countTokens as anthropicCountTokens } from '@anthropic-ai/tokenizer'
+import { PROVIDER_TYPES, type ProviderType } from '../../shared/constants/adf-defaults'
+
+export type TokenizerFamily = 'anthropic' | 'gpt'
+
+const PROVIDER_TYPE_SET: ReadonlySet<string> = new Set(PROVIDER_TYPES.map((p) => p.type))
 
 /**
  * Token counting service that supports multiple providers
  */
 export class TokenCounterService {
+  /** Settings key (or display name) → factory family, registered by provider-factory. */
+  private providerTypesByKey = new Map<string, ProviderType>()
+
   /**
-   * Count tokens for a given text and provider
+   * Teach the counter which family a provider settings key belongs to.
+   * Settings keys are opaque (`custom:abc123`), so callers that only hold the
+   * key can still get the right tokenizer once the provider has been built.
+   */
+  registerProviderType(key: string | undefined, type: ProviderType): void {
+    if (key) this.providerTypesByKey.set(key, type)
+  }
+
+  /**
+   * Pick the tokenizer for a provider. `provider` may be a ProviderType
+   * literal, a registered settings key / display name, or anything else (then
+   * the model name decides, defaulting to the GPT tokenizer).
+   */
+  resolveTokenizer(provider: string, model?: string): TokenizerFamily {
+    const type: ProviderType | undefined =
+      this.providerTypesByKey.get(provider) ??
+      (PROVIDER_TYPE_SET.has(provider) ? (provider as ProviderType) : undefined)
+    const modelLooksClaude = !!model && model.toLowerCase().includes('claude')
+    switch (type) {
+      case 'anthropic':
+        return 'anthropic'
+      case 'openai':
+      case 'chatgpt-subscription':
+      case 'grok-subscription':
+        return 'gpt'
+      case 'openrouter':
+      case 'openai-compatible':
+        // Aggregators serve every family; the model name is the only signal.
+        return modelLooksClaude ? 'anthropic' : 'gpt'
+      default:
+        // Unknown key: legacy prefix heuristic, then model name, then GPT.
+        if (provider.startsWith('anthropic') || modelLooksClaude) return 'anthropic'
+        return 'gpt'
+    }
+  }
+
+  /**
+   * Count tokens for a given text. `provider` is a ProviderType, a provider
+   * settings key, or a display name — see resolveTokenizer.
    */
   countTokens(text: string, provider: string, model?: string): number {
     if (!text) return 0
 
     try {
-      if (provider === 'anthropic' || provider.startsWith('anthropic')) {
-        // Use Anthropic's official tokenizer
+      if (this.resolveTokenizer(provider, model) === 'anthropic') {
         return anthropicCountTokens(text)
-      } else if (provider === 'openai' || provider.startsWith('openai') || provider.includes('gpt')) {
-        // Use GPT tokenizer
-        const tokens = gptEncode(text)
-        return tokens.length
-      } else {
-        // Fallback to GPT tokenizer for unknown providers
-        const tokens = gptEncode(text)
-        return tokens.length
       }
+      return gptEncode(text).length
     } catch (err) {
       console.warn(`[TokenCounter] Error counting tokens for provider ${provider}:`, err)
       // Fallback to rough estimate: ~4 characters per token

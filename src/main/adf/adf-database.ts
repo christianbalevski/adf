@@ -3063,17 +3063,30 @@ export class AdfDatabase {
     return rows.map((row) => this.rowToLoopEntry(row))
   }
 
-  private rowToLoopEntry(row: { seq: number; role: string; content_json: string; model: string | null; tokens: string | null; created_at: number; ord: number | null }): LoopEntryRow {
-    let tokens: LoopTokenUsage | undefined
-    if (row.tokens) {
-      try { tokens = JSON.parse(row.tokens) } catch { /* ignore legacy integer values */ }
+  /**
+   * Parse an `adf_loop.tokens` cell. Only a JSON object is a usage record —
+   * legacy rows stored a bare integer, and `JSON.parse('123')` is a perfectly
+   * valid parse that yields a number, so a try/catch alone let those rows
+   * through as a truthy non-object (every field undefined → every sum 0).
+   */
+  private static parseLoopTokens(raw: string | null | undefined): LoopTokenUsage | undefined {
+    if (!raw) return undefined
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as LoopTokenUsage
+      return undefined
+    } catch {
+      return undefined
     }
+  }
+
+  private rowToLoopEntry(row: { seq: number; role: string; content_json: string; model: string | null; tokens: string | null; created_at: number; ord: number | null }): LoopEntryRow {
     return {
       seq: row.seq,
       role: row.role as 'user' | 'assistant',
       content_json: JSON.parse(row.content_json) as ContentBlock[],
       model: row.model ?? undefined,
-      tokens,
+      tokens: AdfDatabase.parseLoopTokens(row.tokens),
       created_at: row.created_at,
       ord: row.ord ?? undefined
     }
@@ -3139,10 +3152,17 @@ export class AdfDatabase {
     return row.count
   }
 
+  /**
+   * Usage record of the newest assistant row that carries one — the billing
+   * figures of the call that produced that row. NOT a context-size baseline:
+   * after a voluntary compaction the preserved row still (honestly) reports
+   * the pre-compaction input. Readers wanting "how full is the window" use the
+   * `context_baseline_tokens` meta key and fall back here only for files that
+   * predate it.
+   */
   getLastAssistantTokens(loop: string): LoopTokenUsage | undefined {
     const row = this.stmts.getLastAssistantTokens!.get(loop) as { tokens: string } | undefined
-    if (!row?.tokens) return undefined
-    try { return JSON.parse(row.tokens) } catch { return undefined }
+    return AdfDatabase.parseLoopTokens(row?.tokens)
   }
 
   /** Loop rows in display order: each row's seq plus its ordering key

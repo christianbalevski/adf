@@ -4,12 +4,7 @@ import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { DashboardTile, type TileStatus } from './DashboardTile'
 import { useDashboardData } from './useDashboardData'
 import { GettingStarted } from './GettingStarted'
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(n)
-}
+import { formatTokenCount as formatTokens } from '../../utils/token-estimate'
 
 /**
  * Compact dashboard tile grid shown on the home screen when no .adf is open.

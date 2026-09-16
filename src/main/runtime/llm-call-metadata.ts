@@ -2,6 +2,7 @@ import type { LLMProvider, CreateMessageOptions } from '../providers/provider.in
 import type { LLMResponse } from '../../shared/types/provider.types'
 import type { LlmCallEventData, LlmCallMetadata } from '../../shared/types/adf-event.types'
 import type { LoopTokenUsage } from '../../shared/types/adf-v02.types'
+import type { ProviderType } from '../../shared/constants/adf-defaults'
 import { estimateLlmCallCostUsd } from './llm-pricing'
 
 export interface LlmCallResult {
@@ -25,6 +26,7 @@ export async function callLlmWithMetadata(
     const durationMs = Date.now() - startMs
     const metadata: LlmCallMetadata = {
       provider: provider.providerId ?? provider.name,
+      ...(provider.providerType ? { provider_type: provider.providerType } : {}),
       model: provider.modelId,
       input_tokens: 0,
       output_tokens: 0,
@@ -75,6 +77,7 @@ export function buildLlmCallMetadata(
   const usageEstimated = readPath(providerMetadata, ['adf', 'usageEstimated']) === true
   const metadata: LlmCallMetadata = {
     provider: provider.providerId ?? provider.name,
+    ...(provider.providerType ? { provider_type: provider.providerType } : {}),
     model: provider.modelId,
     input_tokens: response.usage?.input_tokens ?? 0,
     output_tokens: response.usage?.output_tokens ?? 0,
@@ -87,12 +90,14 @@ export function buildLlmCallMetadata(
   }
   // Cost precedence: exact provider-reported cost (OpenRouter usage accounting)
   // wins over the local pricing-table estimate. Estimated usage gets NO cost at
-  // all — guessed tokens × real prices would produce fake dollars.
+  // all — guessed tokens × real prices would produce fake dollars. Subscription
+  // providers (flat-fee OAuth: ChatGPT, Grok) have no per-token price, so the
+  // table estimate never applies to them either.
   const providerCost = extractProviderCost(providerMetadata)
   if (providerCost !== undefined) {
     metadata.cost_usd = providerCost
     metadata.cost_source = 'provider'
-  } else if (!usageEstimated) {
+  } else if (!usageEstimated && !isSubscriptionProvider(provider.providerType)) {
     const tableCost = estimateLlmCallCostUsd(metadata)
     if (tableCost !== undefined) {
       metadata.cost_usd = tableCost
@@ -100,6 +105,16 @@ export function buildLlmCallMetadata(
     }
   }
   return metadata
+}
+
+const SUBSCRIPTION_PROVIDER_TYPES: ReadonlySet<ProviderType> = new Set<ProviderType>([
+  'chatgpt-subscription',
+  'grok-subscription',
+])
+
+/** Flat-fee providers: tokens are recorded, but no per-token dollar figure exists. */
+export function isSubscriptionProvider(providerType: ProviderType | undefined): boolean {
+  return providerType !== undefined && SUBSCRIPTION_PROVIDER_TYPES.has(providerType)
 }
 
 export function extractProviderCost(providerMetadata?: Record<string, unknown>): number | undefined {

@@ -41,9 +41,27 @@ describe('formatTokenCount', () => {
   })
 
   it('never emits a label wider than four characters plus the unit', () => {
-    for (const n of [0, 1, 999, 1000, 9999, 10_000, 99_999, 999_999, 1_000_000, 9_999_999]) {
-      expect(formatTokenCount(n)).not.toMatch(/^\d{4}[kM]$/)
+    for (const n of [0, 1, 999, 1000, 9999, 10_000, 99_999, 999_999, 1_000_000, 9_999_999, 999_999_999, 2_500_000_000]) {
+      expect(formatTokenCount(n)).not.toMatch(/^\d{4}(\.\d)?[kMB]$/)
     }
+  })
+
+  // Was: eight private copies across the renderer printed "1000.0k" and
+  // "1234.6k" — one shared formatter, so every surface rolls units the same way.
+  it('rolls M into B the same way k rolls into M', () => {
+    expect(formatTokenCount(9_999_999)).toBe('10M')
+    expect(formatTokenCount(137_200_000)).toBe('137M')
+    expect(formatTokenCount(999_999_999)).toBe('1.0B')
+    expect(formatTokenCount(2_500_000_000)).toBe('2.5B')
+  })
+
+  // Fleet burn rates are tokens/min — fractional — and the old fleet copies
+  // rounded them; the shared formatter must not print "812.4".
+  it('rounds fractional sub-1k values and survives non-finite input', () => {
+    expect(formatTokenCount(812.4)).toBe('812')
+    expect(formatTokenCount(0.2)).toBe('0')
+    expect(formatTokenCount(NaN)).toBe('0')
+    expect(formatTokenCount(Infinity)).toBe('0')
   })
 
   it('the 128k-char gate reads as ~32k tokens on the badge', () => {

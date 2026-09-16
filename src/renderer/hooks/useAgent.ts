@@ -293,24 +293,27 @@ export function useAgentEvents() {
           // last call's figures and retires the pre-flight estimate.
           agentStore.setTokenUsage({ ...rmPayload.usage, input: rmPayload.usage.input ?? 0, output: rmPayload.usage.output ?? 0 }, loop)
           agentStore.setTokenEstimate(null, loop)
-          // Patch the entries produced by this response. A pure tool-call turn
-          // has no text entry, so patching only `text` left tool-only turns
-          // without their per-entry token cost — include thinking/tool_call.
+          // Patch the entries produced by this response. `usage` is the
+          // whole call's figures, so it lands on ONE entry — the last block
+          // of the response (a pure tool-call turn has no text entry) — the
+          // same placement parseLoopToDisplay uses on reload. Every thinking
+          // block gets the call's exact reasoning count when the provider
+          // reported one; stamping the full output count there read as if
+          // it were the thinking size.
           const log = slice.log
+          let whole: number | null = null
           for (let i = log.length - 1; i >= 0; i--) {
             const entry = log[i]
             // Stop at any boundary that predates this response
             if (entry.type === 'user' || entry.type === 'system' || entry.type === 'tool_result') break
-            if (entry.type === 'text' || entry.type === 'thinking' || entry.type === 'tool_call') {
-              log[i] = {
-                ...entry,
-                metadata: {
-                  ...entry.metadata,
-                  model: rmPayload.model,
-                  tokens: rmPayload.usage
-                }
-              }
+            if (entry.type !== 'text' && entry.type !== 'thinking' && entry.type !== 'tool_call') continue
+            if (whole === null) whole = i
+            const metadata: Record<string, unknown> = { ...entry.metadata, model: rmPayload.model }
+            if (entry.type === 'thinking' && typeof rmPayload.usage.reasoning === 'number') {
+              metadata.reasoningTokens = rmPayload.usage.reasoning
             }
+            if (i === whole) metadata.tokens = rmPayload.usage
+            log[i] = { ...entry, metadata }
           }
           // Bump version so UI re-renders
           agentStore.setLog([...log], undefined, loop)
@@ -417,8 +420,18 @@ export function useAgentEvents() {
           // This loop was compacted — replace ITS log with the compacted
           // version. Scoped to `loop` so a side loop's compaction never wipes
           // main's view (IMPL-5 / RT-F17).
-          const payload = event.payload as { uiLog: any[] }
+          const payload = event.payload as { uiLog: any[]; contextBaseline?: number }
           agentStore.setLog(payload.uiLog, 0, loop)
+          // A compaction / clear re-measured the context: reset the gauge to
+          // the post-rebuild estimate (shown with the "~" marker) instead of
+          // keeping the pre-compaction figure until the next call. The last
+          // call's breakdown described a context that no longer exists, so
+          // it goes too — the same state a reload lands in. A plain repaint
+          // (no baseline) leaves the figures alone.
+          if (typeof payload.contextBaseline === 'number') {
+            agentStore.setTokenUsage({ input: 0, output: 0 }, loop)
+            agentStore.setTokenEstimate(payload.contextBaseline, loop)
+          }
           break
         }
 

@@ -3025,7 +3025,11 @@ export function registerAllIpcHandlers(): void {
     t1 = performance.now()
     const document = currentWorkspace.readDocument()
     const agentConfig = currentWorkspace.getAgentConfig()
+    // lastTokens is the newest assistant row's billing breakdown (for the
+    // breakdown modal); contextBaseline is what the gauge shows — after a
+    // compaction the two legitimately disagree, and the baseline wins.
     const lastTokens = currentWorkspace.getLastAssistantTokens()
+    const contextBaseline = currentWorkspace.getContextBaseline() ?? null
     const statusText = currentWorkspace.getMeta('status') ?? ''
     console.log(`[PERF] DOC_GET_BATCH.readDocConfig: ${(performance.now() - t1).toFixed(1)}ms`)
 
@@ -3033,6 +3037,7 @@ export function registerAllIpcHandlers(): void {
       document,
       agentConfig,
       lastTokens,
+      contextBaseline,
       statusText,
       chat: {
         version: 1,

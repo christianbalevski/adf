@@ -2,6 +2,7 @@ import { streamText, generateText, jsonSchema, type LanguageModel, type ToolSet 
 import type { LLMProvider, CreateMessageOptions } from './provider.interface'
 import type { LLMResponse, ContentBlock, LLMMessage, ReasoningConfig, ReasoningStyle, ReasoningEffort } from '../../shared/types/provider.types'
 import type { ToolProviderFormat } from '../../shared/types/tool.types'
+import type { ProviderType } from '../../shared/constants/adf-defaults'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { logger } from '../utils/logger'
 
@@ -379,6 +380,8 @@ function wrapModelWithVideo(model: LanguageModel, videoUrls: string[]): Language
 export interface AiSdkProviderOptions {
   /** Stable config provider id, distinct from the user-facing display name. */
   providerId?: string
+  /** Factory family (ProviderConfig.type) — what downstream code branches on. */
+  providerType?: ProviderType
   /** Merged into providerOptions on every call (e.g. { openai: { store: false } }) */
   defaultProviderOptions?: Record<string, Record<string, unknown>>
   /** If set, merges CreateMessageOptions.providerParams into providerOptions[key] */
@@ -402,6 +405,7 @@ export interface AiSdkProviderOptions {
 export class AiSdkProvider implements LLMProvider {
   readonly name: string
   readonly providerId?: string
+  readonly providerType?: ProviderType
   readonly modelId: string
 
   private model: LanguageModel
@@ -412,6 +416,7 @@ export class AiSdkProvider implements LLMProvider {
     this.model = model
     this.name = name
     this.providerId = options?.providerId ?? name
+    this.providerType = options?.providerType
     this.modelId = modelId
     this.requestDelayMs = requestDelayMs
     this.options = options
@@ -991,30 +996,41 @@ function buildResponse(
   // Map finish reason
   const stopReason = mapFinishReason(finishReason)
 
-  // Token usage — fall back to client-side estimation when provider returns 0
+  // Token usage — fall back to client-side estimation per side. A side is
+  // estimated when the provider omitted it, or when both sides came back 0/absent
+  // (the "no usage at all" case). A side the provider did report as a number is
+  // never overwritten, so a partial report keeps its exact half.
   const usageData = usage ?? {}
-  let inputTokens = usageData.promptTokens ?? usageData.inputTokens ?? 0
-  let outputTokens = usageData.completionTokens ?? usageData.outputTokens ?? 0
-  let usageEstimated = false
+  const reportedInput = usageData.promptTokens ?? usageData.inputTokens
+  const reportedOutput = usageData.completionTokens ?? usageData.outputTokens
+  let inputTokens = reportedInput ?? 0
+  let outputTokens = reportedOutput ?? 0
+  const noUsageAtAll = inputTokens === 0 && outputTokens === 0
+  const estimateInput = noUsageAtAll || reportedInput === undefined
+  const estimateOutput = noUsageAtAll || reportedOutput === undefined
+  // Any estimated side taints the pair for cost purposes — estimated tokens ×
+  // real prices would produce fake dollars, so downstream withholds cost_usd.
+  const usageEstimated = estimateInput || estimateOutput
 
-  if (inputTokens === 0 && outputTokens === 0) {
+  if (usageEstimated) {
     // Hot path: use the cheap char-based estimate, never the real BPE tokenizer.
     // This runs on the main-process thread for every LLM call of every agent, and
     // the real tokenizer walks the entire message history each time. Consumers of
     // these numbers (usage analytics, burn rate, the auto-compact gate, cost
-    // display) are all approximation-tolerant — and this branch only fires when
-    // the provider reported no usage at all, so there is no exact figure to lose.
+    // display) are all approximation-tolerant — and this branch only fires for a
+    // side the provider did not report, so there is no exact figure to lose.
     const tokenCounter = getTokenCounterService()
 
-    inputTokens += tokenCounter.estimateMessagesTokens(
-      options.system
-        ? [{ role: 'system', content: options.system }, ...options.messages]
-        : options.messages
-    )
-    outputTokens += tokenCounter.estimateMessagesTokens([{ role: 'assistant', content }])
-    // Flag the substitution so downstream cost attribution can skip these
-    // numbers — estimated tokens × real prices would produce fake dollars.
-    usageEstimated = true
+    if (estimateInput) {
+      inputTokens = tokenCounter.estimateMessagesTokens(
+        options.system
+          ? [{ role: 'system', content: options.system }, ...options.messages]
+          : options.messages
+      )
+    }
+    if (estimateOutput) {
+      outputTokens = tokenCounter.estimateMessagesTokens([{ role: 'assistant', content }])
+    }
   }
 
   const cacheReadTokens = usageData.inputTokenDetails?.cacheReadTokens ?? usageData.cachedInputTokens

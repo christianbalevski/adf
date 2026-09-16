@@ -3,12 +3,7 @@ import { useFleetStore } from '../../stores/fleet.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { isDarkMode, modelHue } from './FleetTerrainNode'
 import { factionHue } from './FleetStationNode'
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return `${Math.round(n)}`
-}
+import { formatTokenCount } from '../../utils/token-estimate'
 
 /** Small hex swatch matching the map's tile shape. */
 function HexSwatch({ fill, stroke, dashed }: { fill: string; stroke: string; dashed?: boolean }) {
@@ -98,7 +93,7 @@ export const FleetLensLegend = memo(function FleetLensLegend({
             </div>
             <div className="flex justify-between text-[9px] text-neutral-400 dark:text-neutral-500">
               <span>cold</span>
-              <span>{maxBurn > 0 ? `${formatTokens(maxBurn)}/m` : 'hottest'}</span>
+              <span>{maxBurn > 0 ? `${formatTokenCount(maxBurn)}/m` : 'hottest'}</span>
             </div>
             <span className="text-[9px] text-neutral-400 dark:text-neutral-500">log scale · hottest tile pulses</span>
           </>

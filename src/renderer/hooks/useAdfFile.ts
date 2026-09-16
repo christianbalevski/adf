@@ -64,12 +64,28 @@ export function useAdfFile() {
         console.log(`[PERF:renderer] loadFileContents.setStores: ${(performance.now() - t1).toFixed(1)}ms (empty log)`)
       }
 
-      // Restore token usage (full breakdown) from the last assistant loop row.
-      // Any live pre-flight estimate belonged to the previous agent — clear it.
-      if (batch.lastTokens) {
-        setTokenUsage({ ...batch.lastTokens, input: batch.lastTokens.input ?? 0, output: batch.lastTokens.output ?? 0 })
+      // Restore the context gauge from the persisted baseline — the same
+      // number the live path settles on, so reload and live agree:
+      //   - exact baseline (last call completed): tokenUsage = the last row's
+      //     full breakdown (same call, keeps cache/cost for the modal),
+      //     estimate cleared → gauge shows the exact percentage;
+      //   - estimated baseline (compaction/clear was the last thing to
+      //     happen): estimate = baseline, usage zeroed → gauge shows "~%";
+      //   - no baseline (file predates it): the pre-baseline behaviour, the
+      //     last assistant row's usage.
+      // Any live pre-flight estimate belonged to the previous agent.
+      const lastTokens = batch.lastTokens
+        ? { ...batch.lastTokens, input: batch.lastTokens.input ?? 0, output: batch.lastTokens.output ?? 0 }
+        : null
+      const baseline = batch.contextBaseline ?? null
+      if (baseline?.estimated) {
+        setTokenUsage({ input: 0, output: 0 })
+        useAgentStore.getState().setTokenEstimate(baseline.tokens)
+      } else {
+        if (baseline) setTokenUsage(lastTokens ?? { input: baseline.tokens, output: 0 })
+        else if (lastTokens) setTokenUsage(lastTokens)
+        useAgentStore.getState().setTokenEstimate(null)
       }
-      useAgentStore.getState().setTokenEstimate(null)
       console.log(`[PERF:renderer] loadFileContents total: ${(performance.now() - t0).toFixed(1)}ms`)
 
       // Restore this agent's previously open editor tabs. Falls back to the

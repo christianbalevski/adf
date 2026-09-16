@@ -1,3 +1,13 @@
+/**
+ * Local pricing table + pure cost estimator for LLM calls.
+ *
+ * `estimateLlmCallCostUsd` is a pure function of LlmCallMetadata: it never
+ * inspects the provider id (an opaque settings key) and applies one universal
+ * formula, because the AI SDK normalizes input_tokens to be cache-inclusive for
+ * every provider. Gating (subscription providers, estimated usage) lives in
+ * llm-call-metadata.ts, not here.
+ */
+
 import type { LlmCallMetadata } from '../../shared/types/adf-event.types'
 
 export interface LlmModelPricing {
@@ -27,31 +37,20 @@ export function estimateLlmCallCostUsd(metadata: LlmCallMetadata): number | unde
 
   const cacheRead = metadata.cache_read_tokens ?? 0
   const cacheWrite = metadata.cache_write_tokens ?? 0
-  const cacheAware =
-    (pricing.cache_read_per_million !== undefined || pricing.cache_write_per_million !== undefined) &&
-    (cacheRead > 0 || cacheWrite > 0)
 
-  let inputCost: number
-  let cacheCost = 0
-  if (cacheAware) {
-    // Cache token semantics differ by provider family (LlmCallMetadata doesn't
-    // carry the convention, so derive it from the provider id):
-    //  - anthropic: input_tokens already INCLUDES cache_read + cache_write, so
-    //    subtract them before applying the base input rate;
-    //  - everyone else (openai-family): cached tokens are a SUBSET of
-    //    input_tokens billed at the read rate, so subtract only cache_read.
-    const anthropicInclusive = metadata.provider.startsWith('anthropic')
-    const baseInputTokens = Math.max(
-      0,
-      metadata.input_tokens - cacheRead - (anthropicInclusive ? cacheWrite : 0)
-    )
-    inputCost = baseInputTokens * pricing.input_per_million / 1_000_000
-    cacheCost =
-      cacheRead * (pricing.cache_read_per_million ?? pricing.input_per_million) / 1_000_000 +
-      cacheWrite * (pricing.cache_write_per_million ?? pricing.input_per_million) / 1_000_000
-  } else {
-    inputCost = metadata.input_tokens * pricing.input_per_million / 1_000_000
-  }
+  // One convention for every provider. AI SDK v6 reports `usage.inputTokens`
+  // as `inputTokens.total`, which already INCLUDES cache tokens everywhere:
+  //  - anthropic:  total = uncached + cache_read + cache_creation
+  //  - openai:     total = prompt_tokens, cache_read is a subset
+  //  - openrouter: total = prompt_tokens, cache_read AND cache_write are subsets
+  // So base (full-rate) input is always input_tokens minus both cache buckets.
+  // Cache buckets bill at their own rate, falling back to the input rate when
+  // the table has no cache pricing for the model.
+  const baseInputTokens = Math.max(0, metadata.input_tokens - cacheRead - cacheWrite)
+  const inputCost = baseInputTokens * pricing.input_per_million / 1_000_000
+  const cacheCost =
+    cacheRead * (pricing.cache_read_per_million ?? pricing.input_per_million) / 1_000_000 +
+    cacheWrite * (pricing.cache_write_per_million ?? pricing.input_per_million) / 1_000_000
   const outputCost = metadata.output_tokens * pricing.output_per_million / 1_000_000
   return Number((inputCost + cacheCost + outputCost).toFixed(8))
 }

@@ -670,19 +670,54 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * Context-window fullness for the fleet map's tile gauge: last API-reported
-   * token count (the same baseline the auto-compact gate trusts) against the
-   * compact threshold. Zero tokens means no turn has run yet.
+   * Context-window fullness for the fleet map's tile gauge: the persisted
+   * context baseline (the same number the auto-compact gate and the status
+   * bar trust) against the compact threshold. Zero tokens means no turn has
+   * run yet.
    */
   getContextGauge(): { tokens: number; threshold: number } | undefined {
     try {
       const threshold = this.config.context?.compact_threshold ?? this.config.model.compact_threshold ?? 100000
-      const last = this.session.getWorkspace().getLastAssistantTokens()
-      const tokens = last ? (last.input ?? 0) + (last.output ?? 0) : 0
-      return { tokens, threshold }
+      return { tokens: this.readContextBaselineTokens() ?? 0, threshold }
     } catch {
       return undefined
     }
+  }
+
+  /**
+   * The persisted context baseline for this loop (see ContextBaseline).
+   * Files written before the baseline existed fall back to the newest
+   * assistant row's API usage — the pre-baseline behaviour, which is right
+   * for a file that has never been compacted under the new code. Undefined
+   * when neither exists (fresh loop): callers then char-estimate the session.
+   */
+  private readContextBaselineTokens(): number | undefined {
+    const workspace = this.session.getWorkspace()
+    const baseline = workspace.getContextBaseline()
+    if (baseline) return baseline.tokens
+    const last = workspace.getLastAssistantTokens()
+    return last ? (last.input ?? 0) + (last.output ?? 0) : undefined
+  }
+
+  /** Persist the baseline; a meta write must never break a turn. */
+  private writeContextBaseline(tokens: number, estimated: boolean): void {
+    try {
+      this.session.getWorkspace().setContextBaseline(tokens, estimated)
+    } catch (error) {
+      console.warn('[AgentExecutor] context baseline write failed:', error)
+    }
+  }
+
+  /**
+   * Size of the next request as rebuilt from the loop: char-estimated
+   * messages plus the fixed system-prompt + tool-schema overhead, i.e. the
+   * same shape as the API-reported input the baseline otherwise carries.
+   * Messages-only would read tens of thousands of tokens low for a
+   * tool-heavy agent and make the post-compaction gauge lie small.
+   */
+  private estimateSessionRequestTokens(): number {
+    const messages = getTokenCounterService().estimateMessagesTokens(this.session.getMessages())
+    return messages + this.getFixedOverheadTokens()
   }
 
   /**
@@ -1068,7 +1103,8 @@ export class AgentExecutor extends EventEmitter {
   /** Provider id fed to the tokenizer selection (real tokenizer when known,
    *  char fallback otherwise). Never throws on a half-initialized executor. */
   private tokenizerProviderId(): string {
-    return this.provider?.providerId || this.config.model?.provider || 'unknown'
+    // Prefer the factory type (exact tokenizer family); the settings key is opaque.
+    return this.provider?.providerType || this.provider?.providerId || this.config.model?.provider || 'unknown'
   }
 
   private countPromptTokens(text: string): number {
@@ -1822,17 +1858,16 @@ export class AgentExecutor extends EventEmitter {
         })
       }
 
-      // Prefer the last API-reported token count (includes system prompt + tool schemas);
-      // fall back to a cheap char-based estimate when no prior turn exists.
-      // The estimate is known to underreport because it ignores system + tools, so it
-      // can let an oversized turn slip past the auto-compact gate. Using the persisted
-      // API count avoids re-tokenizing on every turn (perf) while staying accurate.
+      // Seed from the persisted context baseline (API-reported input+output of
+      // the last call, or the post-compaction/clear estimate — see
+      // ContextBaseline); fall back to a cheap char-based estimate when no
+      // prior turn exists. Reading the newest loop row's usage here was the
+      // bug: after a voluntary compaction that row honestly reports the
+      // pre-compaction context, which re-triggered compaction on a tiny loop.
       const tokenCounter = getTokenCounterService()
       const compactThreshold = this.config.context?.compact_threshold ?? this.config.model.compact_threshold ?? 100000
-      const lastTokens = this.session.getWorkspace().getLastAssistantTokens()
-      let chatTokens = lastTokens
-        ? (lastTokens.input ?? 0) + (lastTokens.output ?? 0)
-        : tokenCounter.estimateMessagesTokens(this.session.getMessages())
+      let chatTokens = this.readContextBaselineTokens()
+        ?? tokenCounter.estimateMessagesTokens(this.session.getMessages())
 
       let continueLoop = true
       let activeTurns = 0
@@ -2149,7 +2184,10 @@ export class AgentExecutor extends EventEmitter {
         } catch { /* non-fatal */ }
 
         // Update token estimate cheaply from API response (avoids re-tokenizing)
+        // and persist it as the loop's context baseline — the number the
+        // status bar on reload, the fleet gauge and the next turn's seed read.
         chatTokens = llmMetadata.input_tokens + llmMetadata.output_tokens
+        this.writeContextBaseline(chatTokens, false)
 
         // Emit response metadata so the renderer can patch streaming entries immediately.
         // Full breakdown (cache read/write, reasoning) feeds the status-bar tooltip.
@@ -2780,6 +2818,10 @@ export class AgentExecutor extends EventEmitter {
               // decided to compact AT this moment — those messages happened
               // after the decision, so they belong on the post-summary timeline.
               // forceCompact resets context dedup / warning tier internally.
+              // preservedFirstMeta is the billing record of THIS call (the one
+              // that produced the preserved batch) for the legacy re-append
+              // path only; the context baseline is written separately from
+              // the post-compaction estimate and never read from that row.
               chatTokens = await this.forceCompact('voluntary loop_compact', {
                 instructions: compactionInstructions,
                 preserveCount: 2,
@@ -2798,20 +2840,24 @@ export class AgentExecutor extends EventEmitter {
               if (chatData?.llmMessages) {
                 this.session.restoreMessages(chatData.llmMessages)
               }
-              // Parse proper display entries instead of sending empty uiLog
+              // Recalculate token count from the cleared session so the context
+              // warning doesn't re-fire with the stale pre-clear value, and
+              // reset context dedup so context blocks are re-injected. The
+              // wipe deleted the persisted baseline; write the fresh estimate
+              // so reload / fleet gauge / next seed all see the post-clear size.
+              this.resetContextState()
+              chatTokens = this.estimateSessionRequestTokens()
+              this.writeContextBaseline(chatTokens, true)
+              // Parse proper display entries instead of sending empty uiLog;
+              // the baseline rides along so the renderer resets its gauge
+              // instead of showing the pre-clear percentage until the next call.
               const loopEntries = workspace.getLoop()
               const displayEntries = parseLoopToDisplay(loopEntries)
               this.emitEvent({
                 type: 'chat_updated',
-                payload: { uiLog: displayEntries },
+                payload: { uiLog: displayEntries, contextBaseline: chatTokens },
                 timestamp: Date.now()
               })
-
-              // Recalculate token count from cleared session so the context
-              // warning doesn't re-fire with the stale pre-clear value, and
-              // reset context dedup so context blocks are re-injected.
-              chatTokens = tokenCounter.estimateMessagesTokens(this.session.getMessages())
-              this.resetContextState()
             }
             console.log('[AgentExecutor] Session reset after loop clear/compact')
           }
@@ -4298,7 +4344,7 @@ export class AgentExecutor extends EventEmitter {
 
     // Borderline or over — count actual tokens
     const tokenCounter = getTokenCounterService()
-    const tokenCount = tokenCounter.countTokens(content, this.provider.name, this.provider.modelId)
+    const tokenCount = tokenCounter.countTokens(content, this.tokenizerProviderId(), this.provider.modelId)
     if (tokenCount <= maxTokens) return result
 
     // Over limit - replace with summary plus configurable head/tail preview.
@@ -4398,10 +4444,11 @@ export class AgentExecutor extends EventEmitter {
    * Taking the max keeps whichever is safer: the accurate baseline right after
    * a call/compaction, and the growing overhead-inclusive estimate once
    * tool_results pile up.
-   * Using the persisted `adf_loop.tokens` directly was rejected here: a
-   * voluntary loop_compact re-appends the preserved assistant turn with its
-   * pre-compaction (huge) input count, which would falsely re-trigger
-   * compaction and destroy the turn it just preserved.
+   * Using the persisted `adf_loop.tokens` directly was rejected here (and is
+   * now rejected everywhere — see ContextBaseline): after a voluntary
+   * loop_compact the preserved assistant row still carries its pre-compaction
+   * (huge) input count, which would falsely re-trigger compaction and destroy
+   * the turn it just preserved.
    */
   private estimatePreflightTokens(baselineTokens: number, dynamicInstructions?: string): number {
     const tc = getTokenCounterService()
@@ -4470,8 +4517,12 @@ export class AgentExecutor extends EventEmitter {
    * @param opts.preserveCount      Trailing messages to keep out of the summary
    *   and re-append after it (voluntary path preserves the current turn = 2).
    * @param opts.preservedFirstMeta Model/token metadata for the first preserved
-   *   message (the assistant batch) so its loop entry keeps its token cost.
-   * @returns New estimated chat-token count after compaction.
+   *   message (the assistant batch) so its loop entry keeps its token cost on
+   *   the legacy clear + re-append path. Billing only — loop rows are summed
+   *   as spend — never a context baseline (that row honestly reports the
+   *   pre-compaction input; the baseline is written from the estimate below).
+   * @returns New estimated request size after compaction (messages + fixed
+   *   overhead), also persisted as the loop's context baseline.
    */
   private async forceCompact(
     reason: string,
@@ -4732,16 +4783,21 @@ export class AgentExecutor extends EventEmitter {
     this.session.restoreMessages(llmMessages)
     for (const injection of undelivered) this.session.queueContextInjection(injection)
 
+    // Reset context dedup so context blocks are re-injected after loop wipe,
+    // then measure the rebuilt session and persist it as the loop's context
+    // baseline. compactLoop keeps the preserved rows in place — their
+    // (honest, pre-compaction) usage must not be what the gauge reads next.
+    this.resetContextState()
+    const newChatTokens = this.estimateSessionRequestTokens()
+    this.writeContextBaseline(newChatTokens, true)
+
     const displayEntries = parseLoopToDisplay(loopEntries)
     this.emitEvent({
       type: 'chat_updated',
-      payload: { uiLog: displayEntries },
+      payload: { uiLog: displayEntries, contextBaseline: newChatTokens },
       timestamp: Date.now()
     })
-
-    // Reset context dedup so context blocks are re-injected after loop wipe
-    this.resetContextState()
-    return getTokenCounterService().estimateMessagesTokens(this.session.getMessages())
+    return newChatTokens
   }
 
   /**
@@ -5373,7 +5429,10 @@ export class AgentExecutor extends EventEmitter {
         if (d.cache_read_tokens !== undefined) parts.push(`Cache read tokens: ${d.cache_read_tokens}`)
         if (d.cache_write_tokens !== undefined) parts.push(`Cache write tokens: ${d.cache_write_tokens}`)
         if (d.reasoning_tokens !== undefined) parts.push(`Reasoning tokens: ${d.reasoning_tokens}`)
-        if (d.cost_usd !== undefined) parts.push(`Estimated cost: $${d.cost_usd.toFixed(6)}`)
+        // Provider-reported cost is exact; only a pricing-table figure is an estimate.
+        if (d.cost_usd !== undefined) {
+          parts.push(`${d.cost_source === 'provider' ? 'Cost' : 'Estimated cost'}: $${d.cost_usd.toFixed(6)}`)
+        }
         return parts.join('\n')
       }
       default:

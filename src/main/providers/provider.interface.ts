@@ -1,5 +1,6 @@
 import type { LLMMessage, LLMResponse, ReasoningConfig } from '../../shared/types/provider.types'
 import type { ToolProviderFormat } from '../../shared/types/tool.types'
+import type { ProviderType } from '../../shared/constants/adf-defaults'
 
 export interface CreateMessageOptions {
   system: string
@@ -27,7 +28,11 @@ export interface CreateMessageOptions {
  */
 export interface LLMProvider {
   readonly name: string
+  /** Settings key of the provider entry (opaque, e.g. `custom:abc123`). */
   readonly providerId?: string
+  /** Which factory family built this provider — the only reliable way to
+   *  branch on provider semantics, since providerId is an opaque key. */
+  readonly providerType?: ProviderType
   readonly modelId: string
 
   createMessage(options: CreateMessageOptions): Promise<LLMResponse>

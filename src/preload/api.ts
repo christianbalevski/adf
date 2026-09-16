@@ -1,5 +1,5 @@
 import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
-import type { AgentConfig, AdfLogEntry, AgentTemplateExtraFile, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
+import type { AgentConfig, AdfLogEntry, AgentTemplateExtraFile, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
@@ -51,6 +51,10 @@ export interface AdfApi {
     agentConfig: AgentConfig | null
     chat: ChatHistory | null
     statusText?: string
+    /** Newest assistant row's billing breakdown (breakdown modal). */
+    lastTokens?: LoopTokenUsage
+    /** Persisted context-size baseline (status-bar gauge); null on files that predate it. */
+    contextBaseline?: ContextBaseline | null
   }>
 
   // Agent runtime

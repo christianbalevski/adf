@@ -1,12 +1,15 @@
 /**
- * Pricing-table cost estimation — pins the cache-aware math and the two
- * cache-token conventions:
- *  - anthropic: input_tokens already INCLUDES cache_read + cache_write
- *  - openai-family: cached tokens are a SUBSET of input_tokens (read-rate)
+ * Pricing-table cost estimation — pins the universal cache-aware formula.
+ * AI SDK v6 reports input_tokens as inputTokens.total, which is cache-inclusive
+ * for EVERY provider, so base input is always input - cache_read - cache_write.
+ * The estimator is pure: it never looks at the (opaque) provider id.
  */
 
 import { describe, expect, it } from 'vitest'
 import { estimateLlmCallCostUsd, LLM_PRICING } from '../../../src/main/runtime/llm-pricing'
+import { buildLlmCallMetadata } from '../../../src/main/runtime/llm-call-metadata'
+import type { LLMProvider } from '../../../src/main/providers/provider.interface'
+import type { LLMResponse } from '../../../src/shared/types/provider.types'
 import type { LlmCallMetadata } from '../../../src/shared/types/adf-event.types'
 
 function meta(overrides: Partial<LlmCallMetadata>): LlmCallMetadata {
@@ -42,32 +45,47 @@ describe('estimateLlmCallCostUsd', () => {
     expect(p.cache_read_per_million).toBeCloseTo(p.input_per_million * 0.1, 8)
   })
 
-  it('anthropic convention: cache tokens are carved OUT of input_tokens', () => {
-    // input_tokens 1M includes 600k cache_read + 200k cache_write → 200k base
+  it('carves BOTH cache buckets out of input_tokens (worked example)', () => {
+    // input_tokens 10000 = 1000 fresh + 8000 cache_read + 1000 cache_write
     const cost = estimateLlmCallCostUsd(meta({
-      provider: 'anthropic',
+      provider: 'custom:a1b2c3', // opaque settings key — must not matter
       model: 'claude-sonnet-4-5-20250929',
-      input_tokens: 1_000_000,
+      input_tokens: 10_000,
       output_tokens: 0,
-      cache_read_tokens: 600_000,
-      cache_write_tokens: 200_000,
+      cache_read_tokens: 8_000,
+      cache_write_tokens: 1_000,
     }))
     const expected =
-      0.2 * 3.00 +   // base input
-      0.6 * 0.30 +   // cache read at 0.1x
-      0.2 * 3.75     // cache write at 1.25x
-    expect(cost).toBeCloseTo(expected, 8)
+      1_000 * 3.00 / 1e6 +   // fresh input
+      8_000 * 0.30 / 1e6 +   // cache read at 0.1x
+      1_000 * 3.75 / 1e6     // cache write at 1.25x
+    expect(expected).toBeCloseTo(0.00915, 10)
+    expect(cost).toBeCloseTo(0.00915, 8)
   })
 
-  it('openai-subset convention: only cache_read is carved out of input_tokens', () => {
-    // Non-anthropic provider (e.g. openrouter serving the model): cached tokens
-    // are a subset of input, cache_write untouched by the base-input carve-out.
+  it('is independent of the provider id', () => {
+    const base = {
+      model: 'claude-sonnet-4-5-20250929',
+      input_tokens: 10_000,
+      output_tokens: 500,
+      cache_read_tokens: 8_000,
+      cache_write_tokens: 1_000,
+    }
+    const viaAnthropic = estimateLlmCallCostUsd(meta({ ...base, provider: 'anthropic' }))
+    const viaOpaqueKey = estimateLlmCallCostUsd(meta({ ...base, provider: 'custom:zz9' }))
+    const viaOpenRouter = estimateLlmCallCostUsd(meta({ ...base, provider: 'openrouter' }))
+    expect(viaOpaqueKey).toBe(viaAnthropic)
+    expect(viaOpenRouter).toBe(viaAnthropic)
+  })
+
+  it('openai-style report: cache_write undefined carves out only cache_read', () => {
     const cost = estimateLlmCallCostUsd(meta({
-      provider: 'openrouter',
+      provider: 'openai',
       model: 'claude-sonnet-4-5-20250929',
       input_tokens: 1_000_000,
       output_tokens: 0,
       cache_read_tokens: 600_000,
+      // cache_write_tokens deliberately absent
     }))
     const expected =
       0.4 * 3.00 +   // input minus cached subset
@@ -87,7 +105,9 @@ describe('estimateLlmCallCostUsd', () => {
     expect(cost).toBeGreaterThanOrEqual(0)
   })
 
-  it('ignores cache fields for models without cache rates', () => {
+  it('bills cache tokens at the input rate for models without cache rates', () => {
+    // No cache pricing in the table → cache buckets fall back to the input
+    // rate, so the carve-out is cost-neutral and the total equals plain input.
     const withCache = estimateLlmCallCostUsd(meta({
       provider: 'openai',
       model: 'gpt-5.4',
@@ -101,6 +121,59 @@ describe('estimateLlmCallCostUsd', () => {
       input_tokens: 1_000_000,
       output_tokens: 0,
     }))
-    expect(withCache).toBe(without)
+    expect(withCache).toBeCloseTo(without!, 8)
+  })
+})
+
+describe('buildLlmCallMetadata cost gating by provider_type', () => {
+  function fakeProvider(overrides: Partial<LLMProvider>): LLMProvider {
+    return {
+      name: 'Fake',
+      providerId: 'custom:fake01',
+      modelId: 'claude-sonnet-4-5-20250929', // priced in the table
+      createMessage: async () => { throw new Error('not used') },
+      validateConfig: async () => ({ valid: true }),
+      ...overrides,
+    }
+  }
+  const response: LLMResponse = {
+    id: 'r1',
+    content: [{ type: 'text', text: 'hi' }],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 10_000, output_tokens: 100 },
+  }
+
+  it('plumbs provider_type into the metadata', () => {
+    const metadata = buildLlmCallMetadata(fakeProvider({ providerType: 'anthropic' }), response, 1)
+    expect(metadata.provider).toBe('custom:fake01')
+    expect(metadata.provider_type).toBe('anthropic')
+    expect(metadata.cost_source).toBe('table')
+  })
+
+  it.each(['chatgpt-subscription', 'grok-subscription'] as const)(
+    'never attaches a table cost for %s',
+    (providerType) => {
+      const metadata = buildLlmCallMetadata(fakeProvider({ providerType }), response, 1)
+      expect(metadata.provider_type).toBe(providerType)
+      expect(metadata.input_tokens).toBe(10_000)
+      expect(metadata.cost_usd).toBeUndefined()
+      expect(metadata.cost_source).toBeUndefined()
+    },
+  )
+
+  it('still honors a provider-reported cost for a subscription provider', () => {
+    const metadata = buildLlmCallMetadata(
+      fakeProvider({ providerType: 'chatgpt-subscription' }),
+      { ...response, providerMetadata: { adf: { costUsd: 0.01 } } },
+      1,
+    )
+    expect(metadata.cost_usd).toBe(0.01)
+    expect(metadata.cost_source).toBe('provider')
+  })
+
+  it('omits provider_type when the provider does not declare one', () => {
+    const metadata = buildLlmCallMetadata(fakeProvider({}), response, 1)
+    expect('provider_type' in metadata).toBe(false)
+    expect(metadata.cost_source).toBe('table')
   })
 })

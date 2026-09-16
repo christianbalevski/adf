@@ -4,6 +4,7 @@ import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.st
 import { useFleetStore } from '../../stores/fleet.store'
 import { ACTIVITY_TYPE_MARKS } from './MeshGraphNode'
 import type { AgentState } from '../../../shared/types/ipc.types'
+import { formatTokenCount as formatTokens } from '../../utils/token-estimate'
 
 /**
  * Hover preview — a screen-space card that stays readable at any zoom, so
@@ -41,12 +42,6 @@ const TOOL_COLORS: Record<string, string> = {
   msg: 'text-purple-500 dark:text-purple-400',
   sys: 'text-orange-500 dark:text-orange-400',
   loop: 'text-neutral-500 dark:text-neutral-400'
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return `${Math.round(n)}`
 }
 
 function formatEta(ms: number): string {

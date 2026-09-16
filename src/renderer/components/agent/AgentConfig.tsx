@@ -5507,6 +5507,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               useDocumentStore.getState().setDocumentContent('')
               useEditorTabsStore.getState().updateTabFromExternal('mind.md', '')
               useAgentStore.getState().clearLog()
+              // Wiping the loop also drops the persisted context baseline, so the
+              // gauge must not keep the pre-clear percentage until the next call.
+              useAgentStore.getState().setTokenUsage({ input: 0, output: 0 })
+              useAgentStore.getState().setTokenEstimate(null)
               useDocumentStore.getState().setDirty(false)
 
               // Clear backend state

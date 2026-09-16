@@ -5,6 +5,7 @@ import { useFleetStore } from '../../stores/fleet.store'
 import { ACTIVITY_TYPE_MARKS } from './MeshGraphNode'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
+import { formatTokenCount as formatBurn } from '../../utils/token-estimate'
 
 const ROW_H = 46
 const MAX_ROWS = 10
@@ -22,12 +23,6 @@ const STATE_DOT: Record<string, string> = {
   error: 'bg-red-400',
   hibernate: 'bg-sky-400',
   suspended: 'bg-orange-400'
-}
-
-function formatBurn(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
-  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`
-  return `${Math.round(tokens)}`
 }
 
 interface RankedAgent {

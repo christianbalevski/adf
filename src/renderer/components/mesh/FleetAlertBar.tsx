@@ -4,12 +4,7 @@ import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { pathBasename } from './fleet-layout'
-
-function formatBurn(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
-  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`
-  return `${Math.round(tokens)}`
-}
+import { formatTokenCount as formatBurn } from '../../utils/token-estimate'
 
 /**
  * Fleet alert layer — the "needs me" queue plus the resource bar
@@ -168,7 +163,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
             <span className="w-px h-3 bg-neutral-200 dark:bg-neutral-700" />
             <span
               className="flex items-center gap-1 text-[11px] text-orange-500 dark:text-orange-400 tabular-nums"
-              title={`Fleet tokens this session: ${fleetBurn.totalTokens.toLocaleString()} · ↑ ${Math.round(fleetBurn.inPerMin ?? 0)} in / ↓ ${Math.round(fleetBurn.outPerMin ?? 0)} out tokens/min (5-min window)`}
+              title={`Fleet tokens, all time: ${fleetBurn.totalTokens.toLocaleString()} · ↑ ${Math.round(fleetBurn.inPerMin ?? 0)} in / ↓ ${Math.round(fleetBurn.outPerMin ?? 0)} out tokens/min (5-min window)`}
             >
               <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />

@@ -553,7 +553,13 @@ const LogEntryRow = memo(({
         const encrypted = entry.metadata?.encryptedReasoning === true
         const preserved = entry.metadata?.preservedReasoning === true
         const hasText = entry.content.trim().length > 0
-        const outTokens = (entry.metadata?.tokens as { output?: number } | undefined)?.output
+        // Exact reasoning count when the provider reported one; otherwise a
+        // chars/4 guess, marked as such. Never the call's whole output count —
+        // that includes the visible answer and every tool call.
+        const reasoningTokens = entry.metadata?.reasoningTokens
+        const thinkingSize = typeof reasoningTokens === 'number'
+          ? `${reasoningTokens.toLocaleString()} tokens`
+          : `~${Math.ceil(entry.content.length / 4).toLocaleString()} tokens`
         return (
         <div className="overflow-hidden">
           <button
@@ -563,8 +569,8 @@ const LogEntryRow = memo(({
             <span className={continuing ? 'adf-shimmer-text adf-shimmer-text--activity' : undefined}>Thinking{encrypted ? ' (encrypted)' : ''}</span>
             <span className="ml-auto flex items-center gap-2 text-neutral-400 dark:text-neutral-500">
               {hasText
-                ? (outTokens ? `${outTokens.toLocaleString()} tokens` : `${Math.ceil(entry.content.length / 4)} tokens`)
-                : (encrypted ? '\uD83D\uDD12 not human-readable' : `${outTokens ?? 0} tokens`)}
+                ? thinkingSize
+                : (encrypted ? '\uD83D\uDD12 not human-readable' : thinkingSize)}
             </span>
           </button>
           {expandedThinking.has(entry.id) && (
@@ -1544,7 +1550,13 @@ function LoopStream({ loop }: { loop: string }) {
         return
       }
       case 'clear': {
-        useAgentStore.getState().clearLog()
+        const agentStore = useAgentStore.getState()
+        agentStore.clearLog()
+        // The wipe also drops the persisted context baseline (nothing measured
+        // remains), so the gauge goes back to "no data" instead of keeping the
+        // pre-clear percentage until the next call.
+        agentStore.setTokenUsage({ input: 0, output: 0 })
+        agentStore.setTokenEstimate(null)
         const result = await window.adfApi?.clearChat()
         if (!result?.success) say('/clear — the loop could not be cleared.')
         return

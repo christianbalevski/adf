@@ -1,18 +1,10 @@
 import { useState, useEffect, useMemo } from 'react'
 import type { TokenUsageData } from '../../../shared/types/ipc.types'
 import { Button, SegmentedControl } from '../ui'
-import { UsageChart, SERIES_COLORS, MAX_NAMED_SERIES, formatTokensAxis, type ChartSeries, type UsageMetric } from './UsageChart'
-
-/** Compact token count for inline cache annotations: 12345 → "12.3k". */
-function formatTokensCompact(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`
-  return String(n)
-}
-
-/** `$0.0042`-style: 4 decimals below $1, 2 above. */
-function formatUsdCompact(n: number): string {
-  return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`
-}
+import { UsageChart, SERIES_COLORS, MAX_NAMED_SERIES, type ChartSeries, type UsageMetric } from './UsageChart'
+import { formatTokenCount } from '../../utils/token-estimate'
+import { formatUsd } from '../../utils/format-usd'
+import { localDateKey } from '../../../shared/utils/date-key'
 
 type TokenUsageEntry = TokenUsageData[string][string][string]
 
@@ -38,13 +30,6 @@ const WINDOW_OPTIONS: { value: WindowDays; label: string }[] = [
 const TICK_EVERY: Record<WindowDays, number> = { '7': 1, '30': 5, '90': 15 }
 
 const OTHER_KEY = '__other__'
-
-function localDateKey(d: Date): string {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
 
 /** Continuous run of N local-date keys ending today (oldest first). */
 function lastNDays(n: number): string[] {
@@ -85,10 +70,11 @@ function SummaryTotals({ t }: { t: Totals }) {
   return (
     <>
       {t.input.toLocaleString()} input + {t.output.toLocaleString()} output = {(t.input + t.output).toLocaleString()} tokens
+      {/* Cache counts are a share of input, not on top of it */}
       {(t.cacheRead > 0 || t.cacheWrite > 0) && (
-        <> · cache {formatTokensCompact(t.cacheRead)} r / {formatTokensCompact(t.cacheWrite)} w</>
+        <> · input incl. cache {formatTokenCount(t.cacheRead)} read / {formatTokenCount(t.cacheWrite)} write</>
       )}
-      {t.cost != null && <> · {formatUsdCompact(t.cost)}</>}
+      {t.cost != null && <> · {formatUsd(t.cost)}</>}
     </>
   )
 }
@@ -168,17 +154,26 @@ export function TokenUsageSection() {
   const windowTotals = useMemo(() => totalsOf(windowEntries), [windowEntries])
 
   // values[day][series] in the active metric; series with zero across the window are dropped from the legend.
-  const { series, values, seriesTotals } = useMemo(() => {
+  // In cost mode an entry without a price contributes nothing — the chart plots
+  // only what was actually priced and says how many models it left out.
+  const { series, values, seriesTotals, unpricedModels } = useMemo(() => {
     const all = seriesIndex.series
     const full = days.map(() => all.map(() => 0))
+    const unpriced = new Set<string>()
     days.forEach((date, di) => {
       const providers = tokenUsage[date]
       if (!providers) return
       for (const [provider, models] of Object.entries(providers)) {
         for (const [model, e] of Object.entries(models)) {
-          const si = seriesIndex.keyToIdx.get(`${provider}/${model}`)
+          const key = `${provider}/${model}`
+          const si = seriesIndex.keyToIdx.get(key)
           if (si == null) continue
-          full[di][si] += metric === 'cost' ? (e.cost_usd ?? 0) : tokensOf(e)
+          if (metric === 'cost') {
+            if (e.cost_usd == null) unpriced.add(key)
+            else full[di][si] += e.cost_usd
+          } else {
+            full[di][si] += tokensOf(e)
+          }
         }
       }
     })
@@ -188,10 +183,11 @@ export function TokenUsageSection() {
       series: all.filter((_, si) => keep[si]),
       values: full.map((row) => row.filter((_, si) => keep[si])),
       seriesTotals: totals.filter((_, si) => keep[si]),
+      unpricedModels: unpriced.size,
     }
   }, [days, tokenUsage, seriesIndex, metric])
 
-  const fmtLegend = metric === 'cost' ? formatUsdCompact : formatTokensAxis
+  const fmtLegend = metric === 'cost' ? formatUsd : formatTokenCount
   const breakdownDates = useMemo(() => allDates.filter((d) => windowDateSet.has(d)).reverse(), [allDates, windowDateSet])
 
   return (
@@ -232,8 +228,8 @@ export function TokenUsageSection() {
           <div className="mb-2 text-xs text-[var(--adf-ui-text-muted)]">
             <strong>Last {windowDays} days:</strong> <SummaryTotals t={windowTotals} />
             <span className="ml-2 text-[var(--adf-ui-text-subtle)]">
-              All time {formatTokensAxis(allTime.input + allTime.output)} tokens
-              {allTime.cost != null && <> · {formatUsdCompact(allTime.cost)}</>}
+              All time {formatTokenCount(allTime.input + allTime.output)} tokens
+              {allTime.cost != null && <> · {formatUsd(allTime.cost)}</>}
             </span>
           </div>
 
@@ -244,6 +240,12 @@ export function TokenUsageSection() {
             metric={metric}
             tickEvery={TICK_EVERY[windowDays]}
           />
+
+          {metric === 'cost' && unpricedModels > 0 && (
+            <p className="mt-1 text-[11px] text-[var(--adf-ui-text-subtle)]">
+              {unpricedModels} {unpricedModels === 1 ? 'model' : 'models'} without pricing excluded from the cost chart.
+            </p>
+          )}
 
           {series.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
@@ -287,7 +289,7 @@ export function TokenUsageSection() {
                     <div key={date} className="border-t border-[var(--adf-ui-separator)] pt-2">
                       <div className="mb-1 text-xs font-semibold text-[var(--adf-ui-text)]">
                         {date}
-                        {dateCost != null && <span className="ml-2 font-normal text-[var(--adf-ui-text-muted)]">{formatUsdCompact(dateCost)}</span>}
+                        {dateCost != null && <span className="ml-2 font-normal text-[var(--adf-ui-text-muted)]">{formatUsd(dateCost)}</span>}
                       </div>
                       {Object.entries(tokenUsage[date]).map(([provider, models]) => {
                         const providerCost = sumCost(Object.values(models))
@@ -295,16 +297,16 @@ export function TokenUsageSection() {
                           <div key={provider} className="ml-3 space-y-1">
                             <div className="text-xs font-medium text-[var(--adf-ui-text-muted)]">
                               {provider}
-                              {providerCost != null && <span className="ml-2 font-normal text-[var(--adf-ui-text-subtle)]">{formatUsdCompact(providerCost)}</span>}
+                              {providerCost != null && <span className="ml-2 font-normal text-[var(--adf-ui-text-subtle)]">{formatUsd(providerCost)}</span>}
                             </div>
                             {Object.entries(models).map(([model, usage]) => (
                               <div key={model} className="ml-3 font-mono text-xs text-[var(--adf-ui-text-subtle)]">
                                 {model}: {usage.input.toLocaleString()} in + {usage.output.toLocaleString()} out
                                 {/* Inline extras keep the table compact — no columns that sit empty for most providers */}
                                 {(usage.cache_read || usage.cache_write) ? (
-                                  <> · cache {formatTokensCompact(usage.cache_read ?? 0)} r / {formatTokensCompact(usage.cache_write ?? 0)} w</>
+                                  <> · in incl. cache {formatTokenCount(usage.cache_read ?? 0)} read / {formatTokenCount(usage.cache_write ?? 0)} write</>
                                 ) : null}
-                                {usage.cost_usd != null && <> · {formatUsdCompact(usage.cost_usd)}</>}
+                                {usage.cost_usd != null && <> · {formatUsd(usage.cost_usd)}</>}
                               </div>
                             ))}
                           </div>

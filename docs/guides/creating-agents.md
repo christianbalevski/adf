@@ -245,9 +245,9 @@ These settings live under `limits.*` in the config (e.g. `limits.max_active_turn
 
 The runtime does not enforce spend limits — providers price differently and subscription providers (e.g. ChatGPT) have no per-token cost at all. Instead, per-call token usage is recorded in existing tables where agents can query it via SQL:
 
-- **Turn calls** — every assistant loop entry carries a `tokens` JSON column (`input`, `output`, `cache_read`, `reasoning`) plus `model` (`adf_loop`).
+- **Turn calls** — every assistant loop entry carries a `tokens` JSON column (`input`, `output`, `cache_read`, `cache_write`, `reasoning`, `cost_usd`) plus `model` (`adf_loop`). `input` already includes the cache buckets; `cost_usd` is present only when a per-token price is known (provider-reported or from the built-in table) and the usage was reported by the provider rather than estimated.
 - **Compaction calls** — the `[Loop Compacted]` marker entry carries the compaction call's `model`/`tokens` the same way.
-- **`sys_model_invoke` calls** — logged to `adf_logs` with `origin = 'model_invoke'`, `event = 'llm_call'`, and a `data` JSON payload (`provider`, `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `reasoning_tokens`).
+- **`sys_model_invoke` calls** — logged to `adf_logs` with `origin = 'model_invoke'`, `event = 'llm_call'`, and a `data` JSON payload (`provider`, `provider_type`, `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `cost_usd`).
 
 A lambda can aggregate these on a timer and flip the agent to `idle`/`hibernate` when a custom threshold is exceeded. Note the loop is cleared on compaction (audited first when loop audit is enabled), so loop-derived usage is a per-window record, not an all-time ledger — `adf_logs` rows persist independently (bounded by `logging.max_rows`).
 

@@ -323,7 +323,7 @@ export interface FleetBurnEntry {
   inPerMin: number
   /** Output (↓ generated) share of tokensPerMin — the cost-heavy direction */
   outPerMin: number
-  /** Total tokens attributed since app start */
+  /** Total tokens attributed, all time (hydrated from persisted per-agent totals on startup) */
   totalTokens: number
 }
 
@@ -393,6 +393,19 @@ export interface ResponseMetadataPayload {
   model: string
   usage: LoopTokenUsage
   estimated?: boolean
+}
+
+/**
+ * Payload of the 'chat_updated' agent event: the loop's display entries were
+ * rebuilt wholesale (compaction, clear, direct append repaint). When the
+ * rebuild changed the context size, `contextBaseline` carries the new
+ * post-rebuild estimate (see ContextBaseline) so the renderer resets its
+ * gauge to it instead of keeping the pre-compaction figure until the next
+ * call. Absent when the rebuild did not re-measure (plain repaint).
+ */
+export interface ChatUpdatedPayload {
+  uiLog: unknown[]
+  contextBaseline?: number
 }
 
 /** Result of messaging a set of fleet agents from the command bar. */

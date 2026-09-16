@@ -29,7 +29,9 @@ export class FleetBurnService {
   private agents = new Map<string, AgentBurn>()
 
   /** Restore persisted lifetime totals (rates start fresh — the rolling
-   *  window is meaningless across a restart, but Σ tokens should survive). */
+   *  window is meaningless across a restart, but Σ tokens should survive).
+   *  After this, `totalTokens` is an ALL-TIME figure, not "since app start" —
+   *  UI labels must say so. */
   hydrate(totals: Record<string, number>): void {
     for (const [filePath, total] of Object.entries(totals)) {
       if (!filePath || !Number.isFinite(total) || total <= 0) continue

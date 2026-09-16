@@ -17,6 +17,7 @@ import type {
   MetaProtectionLevel,
   LoggingConfig,
   LoopTokenUsage,
+  ContextBaseline,
   InboxMessage,
   OutboxMessage,
   Timer,
@@ -124,6 +125,9 @@ const LOOP_REVISION_CHANGED = Symbol('adf:loop-revision-changed')
  * reach for it alongside AdfWorkspace.
  */
 export { MAIN_LOOP }
+
+/** adf_meta key of the main loop's context baseline; side loops append `:<loop>`. */
+export const CONTEXT_BASELINE_META_KEY = 'context_baseline_tokens'
 
 /**
  * Envelope lifecycle state (ADF_IDENTITY_SPEC D10):
@@ -1308,6 +1312,11 @@ export class AdfWorkspace {
               archivedEntries = entries.length
             }
             this.db.clearLoop(this.boundLoop)
+            // Same transaction as the wipe: a baseline measured against rows
+            // that no longer exist must not outlive them (it would show the
+            // pre-clear size on reload and re-trigger compaction on an empty
+            // loop). The executor rewrites it once it has a new estimate.
+            this.db.deleteMeta(this.contextBaselineKey())
           },
           opts?.onCommitted
         )
@@ -1452,8 +1461,64 @@ export class AdfWorkspace {
     return this.db.hasLoopSeq(this.boundLoop, seq)
   }
 
+  /** Billing figures of the newest assistant row — see AdfDatabase.getLastAssistantTokens.
+   *  Context-fullness readers use getContextBaseline() and fall back here only
+   *  for files written before the baseline existed. */
   getLastAssistantTokens(): LoopTokenUsage | undefined {
     return this.db.getLastAssistantTokens(this.boundLoop)
+  }
+
+  /** Meta key of this loop's context baseline: bare for main, `:<loop>`-suffixed
+   *  for side loops (one baseline per cognition stream). */
+  private contextBaselineKey(): string {
+    return this.boundLoop === MAIN_LOOP
+      ? CONTEXT_BASELINE_META_KEY
+      : `${CONTEXT_BASELINE_META_KEY}:${this.boundLoop}`
+  }
+
+  /**
+   * The persisted context baseline for this loop, or undefined when none was
+   * ever written (file predates the key, or the loop was wiped and no turn has
+   * run since). See ContextBaseline for what the number means.
+   */
+  getContextBaseline(): ContextBaseline | undefined {
+    const raw = this.db.getMeta(this.contextBaselineKey())
+    if (!raw) return undefined
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (!parsed || typeof parsed !== 'object') return undefined
+      const p = parsed as Partial<ContextBaseline>
+      if (typeof p.tokens !== 'number' || !Number.isFinite(p.tokens)) return undefined
+      return {
+        tokens: Math.max(0, Math.round(p.tokens)),
+        estimated: p.estimated === true,
+        updated_at: typeof p.updated_at === 'number' ? p.updated_at : 0
+      }
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Record the expected size of this loop's next request. `estimated: false`
+   * is the API-reported input+output of a just-completed call; `estimated:
+   * true` is the executor's char-based estimate after a compaction or clear.
+   * Stored `readonly` so sys_set_meta cannot forge it (runtime writes bypass
+   * tool-layer protection).
+   */
+  setContextBaseline(tokens: number, estimated: boolean): ContextBaseline {
+    const baseline: ContextBaseline = {
+      tokens: Math.max(0, Math.round(Number.isFinite(tokens) ? tokens : 0)),
+      estimated,
+      updated_at: Date.now()
+    }
+    this.db.setMeta(this.contextBaselineKey(), JSON.stringify(baseline), 'readonly')
+    return baseline
+  }
+
+  /** Forget the baseline (the loop was wiped; nothing measured remains). */
+  clearContextBaseline(): void {
+    this.db.deleteMeta(this.contextBaselineKey())
   }
 
   /**

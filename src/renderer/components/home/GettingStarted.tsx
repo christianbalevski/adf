@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
+import { formatTokenCount } from '../../utils/token-estimate'
 import type {
   DashboardQuickStats,
   DashboardProviderTests,
@@ -138,7 +139,7 @@ export function GettingStarted({ quick, providerTests, agentStats }: GettingStar
           label="Run agent"
           hint={
             step3Status === 'done'
-              ? `${formatTokensShort(allTimeTokens)} tokens used`
+              ? `${formatTokenCount(allTimeTokens)} tokens used`
               : hintForStep(step3Status, 'Checking…', '', 'Open an .adf and start it')
           }
           // Step 3 is only actionable once step 2 is done — there has to be
@@ -243,10 +244,4 @@ function StepBadge({ n, status }: { n: number; status: StepStatus }) {
       {n}
     </span>
   )
-}
-
-function formatTokensShort(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(n)
 }

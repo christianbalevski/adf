@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { formatTokenCount } from '../../utils/token-estimate'
+import { formatUsd } from '../../utils/format-usd'
 
 /**
  * Categorical palette (dataviz reference instance, light/dark steps selected
@@ -37,15 +39,6 @@ export interface UsageChartProps {
   /** Draw a date tick every N slots. */
   tickEvery: number
   height?: number
-}
-
-/** Abbreviated axis tick: 950 → "950", 12300 → "12.3k", 1_200_000 → "1.2M". */
-export function formatTokensAxis(n: number): string {
-  const abbr = (v: number, suffix: string) => `${v.toFixed(1).replace(/\.0$/, '')}${suffix}`
-  if (n >= 1e9) return abbr(n / 1e9, 'B')
-  if (n >= 1e6) return abbr(n / 1e6, 'M')
-  if (n >= 1e3) return abbr(n / 1e3, 'k')
-  return String(Math.round(n))
 }
 
 /** `$0.42` on the axis; sub-cent values keep two significant digits. */
@@ -96,10 +89,8 @@ export function UsageChart({ days, series, values, metric, tickEvery, height = 1
     return () => ro.disconnect()
   }, [])
 
-  const fmt = metric === 'cost' ? formatUsdAxis : formatTokensAxis
-  const fmtValue = metric === 'cost'
-    ? (v: number) => (v >= 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(4)}`)
-    : (v: number) => v.toLocaleString()
+  const fmt = metric === 'cost' ? formatUsdAxis : formatTokenCount
+  const fmtValue = metric === 'cost' ? formatUsd : (v: number) => v.toLocaleString()
 
   const dayTotals = values.map((row) => row.reduce((a, b) => a + b, 0))
   const maxTotal = dayTotals.reduce((a, b) => Math.max(a, b), 0)

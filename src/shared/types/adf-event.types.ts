@@ -12,6 +12,7 @@ import type {
   InboxMessage, OutboxMessage, Timer, TaskEntry, AdfLogEntry,
   LoopEntry, FileProtectionLevel, TriggerScopeV3, TriggerTypeV3, LogLevel,
 } from './adf-v02.types'
+import type { ProviderType } from '../constants/adf-defaults'
 
 // =============================================================================
 // Event Types
@@ -118,7 +119,10 @@ export interface LogEntryEventData {
 }
 
 export interface LlmCallMetadata {
+  /** Provider settings key (opaque, e.g. `custom:abc123`) — not a family name. */
   provider: string
+  /** Factory family of the provider; the field to branch on for provider semantics. */
+  provider_type?: ProviderType
   model: string
   input_tokens: number
   output_tokens: number

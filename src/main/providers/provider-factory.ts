@@ -7,6 +7,7 @@ import type { LLMProvider } from './provider.interface'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { ProviderConfig } from '../../shared/types/ipc.types'
 import { AiSdkProvider } from './ai-sdk-provider'
+import { getTokenCounterService } from '../services/token-counter.service'
 import { getChatGptAuthManager } from './chatgpt-subscription/auth-manager'
 import { createChatGPTSubscriptionProvider } from './chatgpt-subscription'
 import { getGrokAuthManager } from './grok-subscription/auth-manager'
@@ -128,6 +129,10 @@ export function createProvider(
   const delayMs = cfg.requestDelayMs ?? 0
   // Use the user-assigned display name for token usage tracking
   const displayName = cfg.name || providerKey
+  // Callers that only hold the opaque settings key (IPC / daemon token-count) still
+  // get the right tokenizer: teach the counter which family this provider is.
+  const tokenCounter = getTokenCounterService()
+  tokenCounter.registerProviderType(providerKey, cfg.type)
 
   // Custom request parameters (model.params, falling back to provider cfg.params).
   // They are injected into the raw request body via a custom fetch — running LAST,
@@ -165,7 +170,7 @@ export function createProvider(
       ? createAnthropic({ apiKey: cfg.apiKey, fetch: createParamInjector(extraParams) })
       : getAnthropicProvider(cfg.apiKey)
     const model = anthropic(modelId) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, reasoningStyle: 'anthropic' })
+    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'anthropic' })
   }
 
   if (cfg.type === 'openai') {
@@ -173,7 +178,7 @@ export function createProvider(
       ? createOpenAI({ apiKey: cfg.apiKey, fetch: createParamInjector(extraParams) })
       : getOpenAIProvider(cfg.apiKey)
     const model = openai(modelId) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, reasoningStyle: 'openai' })
+    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openai' })
   }
 
   if (cfg.type === 'chatgpt-subscription') {
@@ -185,6 +190,7 @@ export function createProvider(
     const model = provider.responses(modelId) as LanguageModel
     return new AiSdkProvider(model, displayName, modelId, delayMs, {
       providerId: providerKey,
+      providerType: cfg.type,
       reasoningStyle: 'openai',
       forwardProviderParams: 'openai',
       onBeforeRequest: (system) => setInstructions(system),
@@ -204,6 +210,7 @@ export function createProvider(
     const model = provider(modelId) as LanguageModel
     return new AiSdkProvider(model, displayName, modelId, delayMs, {
       providerId: providerKey,
+      providerType: cfg.type,
       reasoningStyle: 'xai'
     })
   }
@@ -225,11 +232,11 @@ export function createProvider(
         fetch: createParamInjector(extraParams)
       })
       const model = provider(modelId, openrouterSettings) as LanguageModel
-      return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, reasoningStyle: 'openrouter' })
+      return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openrouter' })
     }
     const provider = getOpenRouterProvider(cfg.apiKey || undefined, cfg.baseUrl || undefined)
     const model = provider(modelId, openrouterSettings) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, reasoningStyle: 'openrouter' })
+    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openrouter' })
   }
 
   // When extra params are needed, create a fresh provider with custom fetch
@@ -244,7 +251,7 @@ export function createProvider(
       fetch: createParamInjector(extraParams)
     })
     const model = provider(modelId) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey })
+    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type })
   }
 
   const provider = getOpenAICompatibleProvider(cfg.baseUrl, cfg.apiKey || undefined)

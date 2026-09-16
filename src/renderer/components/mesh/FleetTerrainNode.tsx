@@ -7,6 +7,7 @@ import { useFleetStore } from '../../stores/fleet.store'
 import { hexCorners, hexBoundaryPath, isUnder, HEX_SIZE, type TerrainNodeData } from './fleet-layout'
 import { resolveLineage } from '../../../shared/utils/lineage'
 import type { AgentState, FleetAgentStatus } from '../../../shared/types/ipc.types'
+import { formatTokenCount } from '../../utils/token-estimate'
 
 /**
  * Territory land — a contiguous cluster of hex cells claimed by one tracked
@@ -50,11 +51,8 @@ export function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + '…' : s
 }
 
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return `${Math.round(n)}`
-}
+/** Re-exported for the fleet readouts/labels; the shared formatter keeps labels at most three digits + unit. */
+export const formatTokens = formatTokenCount
 
 interface CellStyle {
   fill: string
