@@ -166,40 +166,62 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
                 </div>
               </div>
 
-              {/* Agent chips */}
-              <div className="flex flex-wrap items-center gap-1.5 border-t border-[var(--adf-ui-separator)] px-3 py-2">
+              {/* Connected agents: a small table (scrolls past ~4 rows). */}
+              <div className="border-t border-[var(--adf-ui-separator)]">
                 {files.length === 0 ? (
-                  <span className="text-[11px] text-[var(--adf-ui-text-subtle)]">No agents connected.</span>
-                ) : files.map((f) => {
-                  const live = liveFor(f.filePath, reg.type)
-                  const status = live?.status ?? 'disconnected'
-                  // Required keys the agent has not stored. `populatedKeys` is
-                  // the truth here: "has some credentials" is not "has all of
-                  // them" (Slack needs both an app token and a bot token).
-                  const missingKeys = (entry?.requiredEnvKeys ?? []).filter((k) => !f.populatedKeys.includes(k))
-                  const tip = live?.error
-                    ? `${status}: ${live.error}`
-                    : missingKeys.length > 0
-                      ? `Missing credentials: ${missingKeys.join(', ')}. Click to add them.`
-                    : live
-                      ? status
-                      // No live adapter and no way to tell the two causes
-                      // apart from here: the file list does not report whether
-                      // the channel is switched on in the agent's config.
-                      : 'Not running here. Either the agent is stopped, or this channel is switched off in its config. Click to check.'
-                  return (
-                    <Tooltip key={f.filePath} tip={tip}>
-                      <button
-                        type="button"
-                        onClick={() => setSetup({ type: reg.type, filePath: f.filePath })}
-                        className="inline-flex items-center gap-1.5 rounded-full border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] py-0.5 pl-2 pr-2.5 text-[11.5px] text-[var(--adf-ui-text)] transition-colors hover:border-[var(--adf-ui-accent)] hover:bg-[var(--adf-ui-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]"
-                      >
-                        <span className={`inline-block h-2 w-2 rounded-full ${missingKeys.length > 0 ? 'bg-amber-400' : STATUS_DOT[status] ?? 'bg-neutral-400'}`} />
-                        {agentName(f.filePath)}
-                      </button>
-                    </Tooltip>
-                  )
-                })}
+                  <p className="px-3 py-2 text-[11px] text-[var(--adf-ui-text-subtle)]">No agents connected.</p>
+                ) : (
+                  <div className="max-h-40 overflow-y-auto">
+                    <table className="w-full border-collapse text-[11.5px]">
+                      <thead className="sticky top-0 bg-[var(--adf-ui-surface)] text-left text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">
+                        <tr>
+                          <th className="px-3 py-1 font-medium">Agent</th>
+                          <th className="px-2 py-1 font-medium">Status</th>
+                          <th className="px-2 py-1 font-medium">Credentials</th>
+                          <th className="px-3 py-1" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {files.map((f) => {
+                          const live = liveFor(f.filePath, reg.type)
+                          const status = live?.status ?? 'disconnected'
+                          // `populatedKeys` is the truth: "has some credentials" is not
+                          // "has all of them" (Slack needs an app token and a bot token).
+                          const required = entry?.requiredEnvKeys ?? []
+                          const missingKeys = required.filter((k) => !f.populatedKeys.includes(k))
+                          const credText = required.length === 0
+                            ? (f.populatedKeys.length > 0 ? `${f.populatedKeys.length} stored` : 'none needed')
+                            : missingKeys.length > 0
+                              ? `missing ${missingKeys.join(', ')}`
+                              : `${required.length} of ${required.length} stored`
+                          const statusText = live
+                            ? (live.error ? `${status}: ${live.error}` : status)
+                            // No live adapter and no way to tell the two causes apart from
+                            // here: the file list does not report whether the channel is
+                            // switched on in the agent's config.
+                            : 'not running'
+                          return (
+                            <tr
+                              key={f.filePath}
+                              onClick={() => setSetup({ type: reg.type, filePath: f.filePath })}
+                              className="cursor-pointer border-t border-[var(--adf-ui-separator)] transition-colors hover:bg-[var(--adf-ui-surface-hover)]"
+                            >
+                              <td className="px-3 py-1.5">
+                                <span className="flex items-center gap-1.5 text-[var(--adf-ui-text)]">
+                                  <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${missingKeys.length > 0 ? 'bg-amber-400' : STATUS_DOT[status] ?? 'bg-neutral-400'}`} />
+                                  <span className="truncate">{agentName(f.filePath)}</span>
+                                </span>
+                              </td>
+                              <td className={`max-w-[18rem] truncate px-2 py-1.5 ${live?.error ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-text-muted)]'}`} title={statusText}>{statusText}</td>
+                              <td className={`px-2 py-1.5 ${missingKeys.length > 0 ? 'text-[var(--adf-ui-warning)]' : 'text-[var(--adf-ui-text-muted)]'}`}>{credText}</td>
+                              <td className="px-3 py-1.5 text-right text-[var(--adf-ui-text-subtle)]">Edit ›</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
 
               {aggregate?.error && !files.some((f) => liveFor(f.filePath, reg.type)?.error) && (

@@ -43,6 +43,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
   const [agent, setAgent] = useState<string>(filePath ?? '')
   const [values, setValues] = useState<Record<string, string>>({})
   const [loaded, setLoaded] = useState<Record<string, string>>({})
+  const [storedKeys, setStoredKeys] = useState<string[]>([])
   const [extraKeys, setExtraKeys] = useState<string[]>([])
   const [newKey, setNewKey] = useState('')
   const [revealed, setRevealed] = useState<Record<string, boolean>>({})
@@ -72,7 +73,11 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
         if (r?.credentials) {
           setLoaded(r.credentials)
           setValues(r.credentials)
-          setExtraKeys(Object.keys(r.credentials))
+          // Keys that exist on the agent even when they cannot be decrypted
+          // here: shown as "stored", never as an empty field.
+          const stored = r.storedKeys ?? Object.keys(r.credentials)
+          setStoredKeys(stored)
+          setExtraKeys(stored)
         }
       }).catch(() => {})
     }
@@ -87,7 +92,9 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
 
   const connected = editing || !!done
   const available = agents.filter((a) => !connectedPaths.includes(a.filePath))
-  const missingRequired = fields.filter((f) => f.required && !(values[f.key] ?? '').trim())
+  // A key already stored on the agent satisfies "required" even when it
+  // cannot be decrypted here (the field then reads "stored").
+  const missingRequired = fields.filter((f) => f.required && !(values[f.key] ?? '').trim() && !storedKeys.includes(f.key))
   const canSave = !!agent && missingRequired.length === 0 && !saving
   const changedFields = fields.filter((f) => (values[f.key] ?? '').trim() && (values[f.key] ?? '').trim() !== (loaded[f.key] ?? ''))
   const agentLabel = (path: string) => adfDisplayNameForPath(path, agents)
@@ -251,6 +258,9 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
             {fields.map((f) => {
               const custom = customFields.some((c) => c.key === f.key)
               const plain = f.key.toLowerCase().includes('username') || f.key.toLowerCase().endsWith('_id')
+              // Stored on the agent but not readable here (its envelope is
+              // locked for this session): say so instead of showing a blank.
+              const storedUnreadable = storedKeys.includes(f.key) && !(loaded[f.key] ?? '')
               return (
                 <div key={f.key}>
                   <label className="mb-0.5 block text-[11px] text-[var(--adf-ui-text-muted)]">
@@ -261,7 +271,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
                       type={(custom ? !revealed[f.key] : !plain) ? 'password' : 'text'}
                       value={values[f.key] ?? ''}
                       onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-                      placeholder={f.placeholder ?? f.key}
+                      placeholder={storedUnreadable ? '•••••••• stored on the agent' : (f.placeholder ?? f.key)}
                       className="font-mono text-[12px]"
                       aria-label={f.label}
                     />

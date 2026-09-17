@@ -428,7 +428,7 @@ export interface AdfApi {
   setAdapterCredential: (args: { filePath: string; adapterType: string; envKey: string; value: string }) =>
     Promise<{ success: boolean; error?: string }>
   getAdapterCredentials: (args: { filePath: string; adapterType: string }) =>
-    Promise<{ credentials: Record<string, string>; error?: string }>
+    Promise<{ credentials: Record<string, string>; storedKeys?: string[]; error?: string }>
   listAdapterCredentialFiles: (args: { adapterType: string }) =>
     Promise<{ files: AdapterCredentialFileInfo[] }>
   attachAdapter: (args: {

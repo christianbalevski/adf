@@ -7426,24 +7426,44 @@ export function registerAllIpcHandlers(): void {
       filePath: z.string(),
       adapterType: z.string()
     }).parse(rawArgs)
+    // Same workspace resolution as ADAPTER_CREDENTIAL_SET: an already-open
+    // workspace (foreground or background agent) has its envelopes unlocked;
+    // a temp open must run the unlock cascade or every sealed row reads as
+    // absent. `storedKeys` lists what exists even when it cannot be decrypted
+    // here, so the UI can say "stored" instead of showing a blank field.
+    const prefix = `adapter:${args.adapterType}:`
+    const read = (ws: AdfWorkspace, derivedKey: Buffer | null) => {
+      const purposes = ws.listIdentityPurposes(prefix)
+      const credentials: Record<string, string> = {}
+      const storedKeys: string[] = []
+      for (const purpose of purposes) {
+        const key = purpose.slice(prefix.length)
+        storedKeys.push(key)
+        const val = ws.getIdentityDecrypted(purpose, derivedKey)
+        if (val) credentials[key] = val
+      }
+      return { credentials, storedKeys }
+    }
     try {
-      const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)
-      if (!workspace) return { credentials: {} }
+      if (currentWorkspace && args.filePath === currentFilePath) {
+        return read(currentWorkspace, currentDerivedKey ?? derivedKeyCache.get(args.filePath) ?? null)
+      }
+      const backgroundWorkspace = backgroundAgentManager?.hasAgent(args.filePath)
+        ? backgroundAgentManager.getAgent(args.filePath)?.workspace
+        : null
+      if (backgroundWorkspace) {
+        return read(backgroundWorkspace, derivedKeyCache.get(args.filePath) ?? null)
+      }
+      let tempWorkspace: AdfWorkspace | null = null
       try {
-        const derivedKey = derivedKeyCache.get(args.filePath) ?? null
-        const purposes = workspace.listIdentityPurposes(`adapter:${args.adapterType}:`)
-        const credentials: Record<string, string> = {}
-        for (const purpose of purposes) {
-          const key = purpose.replace(`adapter:${args.adapterType}:`, '')
-          const val = workspace.getIdentityDecrypted(purpose, derivedKey)
-          if (val) credentials[key] = val
-        }
-        return { credentials }
+        tempWorkspace = AdfWorkspace.open(args.filePath)
+        unlockWorkspaceEnvelopes(tempWorkspace)
+        return read(tempWorkspace, derivedKeyCache.get(args.filePath) ?? null)
       } finally {
-        if (args.filePath !== currentFilePath) workspace.close()
+        tempWorkspace?.close()
       }
     } catch (error) {
-      return { credentials: {}, error: String(error) }
+      return { credentials: {}, storedKeys: [], error: String(error) }
     }
   })
 
