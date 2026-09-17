@@ -296,11 +296,11 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
 
       {/* Server list */}
       {serverList.length === 0 ? (
-        <p className="text-xs text-neutral-400 dark:text-neutral-500">
+        <p className="rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)] px-4 py-6 text-center text-xs text-[var(--adf-ui-text-muted)] shadow-subtle">
           No MCP servers configured. Use “Add MCP Server” to pick a known server or configure your own.
         </p>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {serverList.map(({ reg, state }) => {
             const regPkg = reg.npmPackage ?? reg.pypiPackage ?? ''
             const isInstalling = installing.has(regPkg)
@@ -321,10 +321,11 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
             const signedIn = oauthSignedIn[reg.id] // boolean | undefined (unknown)
 
             return (
-              <div key={reg.id} className="border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
+              // One flat block per server on the canvas (no card, no border).
+              <div key={reg.id} className="overflow-hidden rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)] shadow-subtle">
                 <div
                   onClick={() => { setEditingId(reg.id); setModalOpen(true) }}
-                  className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
+                  className="flex cursor-pointer items-center justify-between px-4 py-3 transition-colors hover:bg-[var(--adf-ui-surface-hover)]"
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     {/* Status indicator */}
@@ -430,7 +431,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
 
                 {/* Reconnect result */}
                 {reconnect && !reconnect.loading && (
-                  <div className="px-3 pb-1">
+                  <div className="px-4 pb-2">
                     <span className={`text-[10px] ${reconnect.error ? 'text-red-500' : 'text-green-600 dark:text-green-400'}`}>
                       {reconnect.error ? reconnect.error : `${reconnect.count} tools discovered`}
                     </span>
@@ -439,7 +440,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
 
                 {/* Error display */}
                 {(state?.error || installError) && !reconnect && (
-                  <div className="px-3 pb-2">
+                  <div className="px-4 pb-3">
                     <p className="text-[10px] text-red-500">{state?.error || installError}</p>
                   </div>
                 )}

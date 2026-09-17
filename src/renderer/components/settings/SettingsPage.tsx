@@ -1915,8 +1915,8 @@ export function SettingsPage() {
           />}
 
           {/* Providers tab */}
-          {activeTab === 'providers' && <>
-          <SettingsGroup className="p-4">
+          {activeTab === 'providers' && (
+            // No card wrapper: each provider is its own flat block on the canvas.
             <ProvidersPanel
               loaded={settingsLoaded}
               providers={providers}
@@ -1926,12 +1926,11 @@ export function SettingsPage() {
               flushSave={flushSave}
               onOpenTemplate={() => setActiveTab('template')}
             />
-          </SettingsGroup>
-          </>}
+          )}
 
           {/* MCPs tab */}
-          {activeTab === 'mcps' && <>
-          <SettingsGroup className="p-4">
+          {activeTab === 'mcps' && (
+            // No card wrapper: each server is its own flat block on the canvas.
             <McpStatusDashboard
               mcpServers={mcpServers}
               onServersChanged={(next) => {
@@ -1956,8 +1955,7 @@ export function SettingsPage() {
               hostAccessEnabled={computeHostAccessEnabled}
               onEnableHostAccess={() => setComputeHostAccessEnabled(true)}
             />
-          </SettingsGroup>
-          </>}
+          )}
 
           {/* Skills tab */}
           {activeTab === 'skills' && <SkillsTab />}

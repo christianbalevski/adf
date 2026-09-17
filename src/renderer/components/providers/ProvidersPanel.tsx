@@ -253,11 +253,11 @@ export function ProvidersPanel({ loaded, providers, setProviders, defaultProvide
 
       {!loaded ? (
         <div className="space-y-2" aria-busy="true">
-          <div className="h-[3.4rem] animate-pulse rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)]" />
-          <div className="h-[3.4rem] animate-pulse rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)]" />
+          <div className="h-[3.6rem] animate-pulse rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)]" />
+          <div className="h-[3.6rem] animate-pulse rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)]" />
         </div>
       ) : providers.length === 0 ? (
-        <div className="rounded-[var(--adf-ui-container-radius)] border border-dashed border-[var(--adf-ui-border)] px-4 py-6 text-center">
+        <div className="rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)] px-4 py-6 text-center shadow-subtle">
           <p className="text-[13px] font-medium text-[var(--adf-ui-text)]">No providers yet</p>
           <p className="mx-auto mt-1 max-w-md text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
             Sign in with a ChatGPT or Grok subscription, paste an API key, or point at a local server like LM Studio or Ollama.
@@ -265,7 +265,7 @@ export function ProvidersPanel({ loaded, providers, setProviders, defaultProvide
           <Button variant="primary" className="mt-3" onClick={() => { setEditingId(null); setModalOpen(true) }}>Choose a provider</Button>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {providers.map((p) => {
             const entry = catalogEntryForProvider(p)
             const st = status[p.id]
@@ -279,7 +279,7 @@ export function ProvidersPanel({ loaded, providers, setProviders, defaultProvide
                 tabIndex={0}
                 onClick={() => openRow(p.id)}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openRow(p.id) } }}
-                className="flex cursor-pointer items-center justify-between gap-3 rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] px-3 py-2 transition-colors hover:bg-[var(--adf-ui-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]"
+                className="flex cursor-pointer items-center justify-between gap-3 rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)] px-4 py-3 shadow-subtle transition-colors hover:bg-[var(--adf-ui-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]"
               >
                 <div className="flex min-w-0 items-center gap-2.5">
                   <BrandMark iconKey={entry?.iconKey} label={entry?.label ?? p.name} size={26} />
