@@ -66,16 +66,37 @@ function totalsOf(entries: TokenUsageEntry[]): Totals {
   return t
 }
 
+/** Header line: one total (plus cost when every entry is priced). The split lives in the breakdown. */
 function SummaryTotals({ t }: { t: Totals }) {
   return (
     <>
-      {t.input.toLocaleString()} input + {t.output.toLocaleString()} output = {(t.input + t.output).toLocaleString()} tokens
-      {/* Cache counts are a share of input, not on top of it */}
-      {(t.cacheRead > 0 || t.cacheWrite > 0) && (
-        <> · input incl. cache {formatTokenCount(t.cacheRead)} read / {formatTokenCount(t.cacheWrite)} write</>
-      )}
+      {formatTokenCount(t.input + t.output)} tokens
       {t.cost != null && <> · {formatUsd(t.cost)}</>}
     </>
+  )
+}
+
+/** Exact window totals at the top of the breakdown. Cache counts are a share of input, not on top of it. */
+function WindowStats({ t, windowDays }: { t: Totals; windowDays: WindowDays }) {
+  const stats: Array<{ label: string; value: string }> = [
+    { label: 'Input', value: t.input.toLocaleString() },
+    { label: 'Output', value: t.output.toLocaleString() },
+  ]
+  if (t.cacheRead > 0) stats.push({ label: 'Cache read (of input)', value: t.cacheRead.toLocaleString() })
+  if (t.cacheWrite > 0) stats.push({ label: 'Cache write (of input)', value: t.cacheWrite.toLocaleString() })
+  if (t.cost != null) stats.push({ label: 'Cost', value: formatUsd(t.cost) })
+  return (
+    <div className="mb-3">
+      <div className="mb-1 text-xs font-semibold text-[var(--adf-ui-text)]">Last {windowDays} days</div>
+      <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
+        {stats.map((s) => (
+          <div key={s.label} className="flex items-baseline gap-1.5">
+            <dt className="text-[var(--adf-ui-text-subtle)]">{s.label}</dt>
+            <dd className="font-medium tabular-nums text-[var(--adf-ui-text)]">{s.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   )
 }
 
@@ -283,6 +304,9 @@ export function TokenUsageSection() {
               <p className="mt-2 text-xs text-[var(--adf-ui-text-subtle)]">No usage in the last {windowDays} days.</p>
             ) : (
               <div className="mt-2 space-y-3">
+                <div className="border-t border-[var(--adf-ui-separator)] pt-2">
+                  <WindowStats t={windowTotals} windowDays={windowDays} />
+                </div>
                 {breakdownDates.map((date) => {
                   const dateCost = sumCost(Object.values(tokenUsage[date]).flatMap((models) => Object.values(models)))
                   return (
