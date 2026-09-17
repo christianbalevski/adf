@@ -5,13 +5,12 @@ import { MeshTrafficBar } from './MeshTrafficBar'
 import { EditorPanel } from '../editor/EditorPanel'
 import { RightDock, RightDockIconBar } from './RightDock'
 import { SettingsPage } from '../settings/SettingsPage'
-import { HomeDashboard } from '../home/HomeDashboard'
-import { NetworkingPanel } from '../home/NetworkingPanel'
-import { TrackedDirectoriesPanel } from '../home/TrackedDirectoriesPanel'
-import { FleetMapCallout } from '../home/FleetMapCallout'
+import { HomeScreen } from '../home/HomeScreen'
 import { PasswordDialog } from '../common/PasswordDialog'
 import { OwnerMismatchDialog } from '../common/OwnerMismatchDialog'
 import { AgentReviewDialog } from '../common/AgentReviewDialog'
+import { ProviderSetupDialog } from '../common/ProviderSetupDialog'
+import { ShareAgentDialog } from '../common/ShareAgentDialog'
 import { AgentReviewBanner } from '../common/AgentReviewBanner'
 import { ShutdownOverlay } from '../common/ShutdownOverlay'
 import { BottomPanel } from './BottomPanel'
@@ -20,9 +19,7 @@ import { ApprovalToasts } from './ApprovalsMenu'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
-import { useTrackedDirs } from '../../hooks/useTrackedDirs'
 import { useMeshStore } from '../../stores/mesh.store'
-import { useMesh } from '../../hooks/useMesh'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
@@ -166,7 +163,7 @@ export function AppShell() {
               ) : filePath ? (
                 <EditorPanel />
               ) : (
-                <WelcomeScreen />
+                <HomeScreen />
               )}
             </div>
             {showLogsPanel && filePath && !showSettings && <BottomPanel />}
@@ -204,6 +201,8 @@ export function AppShell() {
       <PasswordDialog />
       <OwnerMismatchDialog />
       <AgentReviewDialog />
+      <ProviderSetupDialog />
+      <ShareAgentDialog />
       <ShutdownOverlay />
     </div>
   )
@@ -228,35 +227,3 @@ function StatusDot({ state }: { state: AgentState }) {
   )
 }
 
-function WelcomeScreen() {
-  const { loadDirectories } = useTrackedDirs()
-  const { enableMesh } = useMesh()
-
-  // Auto-enable mesh on launch if the user had it on last session.
-  // Also kick off a tracked-directories load so the Sidebar/dashboard
-  // see the latest list. (Same boot behaviour as the old WelcomeScreen.)
-  useEffect(() => {
-    loadDirectories()
-    window.adfApi?.getSettings().then((s) => {
-      if (s?.meshEnabled) {
-        enableMesh()
-      }
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  return (
-    <div className="flex-1 flex flex-col items-center justify-start gap-4 text-neutral-500 dark:text-neutral-400 overflow-y-auto py-6">
-      <FleetMapCallout />
-
-      {/* Application-state dashboard (incl. Getting Started strip) */}
-      <HomeDashboard />
-
-      {/* Networking */}
-      <NetworkingPanel />
-
-      {/* Tracked directories — file browser + Add Directory */}
-      <TrackedDirectoriesPanel />
-    </div>
-  )
-}

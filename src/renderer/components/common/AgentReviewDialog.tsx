@@ -4,7 +4,7 @@ import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
-import { toDisplayState } from '../../hooks/useAgent'
+import { startForegroundAgent } from '../../utils/start-agent'
 import { migrateOpenTabs } from '../../utils/editor-tab-persistence'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import type { AgentConfigSummary, ReviewIdentitySummary } from '../../../shared/types/ipc.types'
@@ -80,7 +80,30 @@ function CapabilityRow({ label, value, amber }: { label: string; value: string; 
   )
 }
 
+type PickerProvider = { id: string; name: string; defaultModel?: string }
+
+/**
+ * Providers configured in app settings; null until settings answer. Two
+ * places need the count, not just the picker: with no provider at all there
+ * is nothing to pick between, and the review has to say what happens instead.
+ */
+function useConfiguredProviders(): PickerProvider[] | null {
+  const [providers, setProviders] = useState<PickerProvider[] | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    window.adfApi.getSettings()
+      .then((s) => {
+        if (cancelled) return
+        setProviders((s?.providers ?? []).map((p) => ({ id: p.id, name: p.name || p.id, defaultModel: p.defaultModel })))
+      })
+      .catch(() => { if (!cancelled) setProviders([]) })
+    return () => { cancelled = true }
+  }, [])
+  return providers
+}
+
 function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
+  const providers = useConfiguredProviders()
   const tier = TIER_STYLES[summary.computeTier]
   const identity = summary.identity
   const scenario = SCENARIO_STYLES[identity.scenario]
@@ -108,10 +131,20 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
   // Messaging summary
   const messagingSummary = summary.messaging.mode
 
-  // Provider: which runtime credentials the agent's model resolves to here
+  // Provider: which credentials the agent's model resolves to here. With no
+  // provider configured at all there is nothing to fix on this screen, so the
+  // line says what happens next instead of naming a missing key.
   const provider = summary.provider
+  const providerGap = providers && providers.length === 0
+    ? ' — connect a provider when you run it'
+    : ' — no API key on this computer'
+  // A file may name a model with no provider at all (registry agents do):
+  // say so plainly instead of printing an empty id.
+  const configuredLabel = provider
+    ? [provider.configuredId || 'no provider set', provider.modelId].filter(Boolean).join(' · ')
+    : ''
   const providerSummary = provider
-    ? `${provider.configuredId} · ${provider.modelId}${provider.status !== 'ok' ? ' — no API key on this runtime' : ''}`
+    ? `${configuredLabel}${provider.status !== 'ok' ? providerGap : ''}`
     : ''
 
   // Network: WS connections
@@ -251,28 +284,21 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
 }
 
 /**
- * Compact provider + model override for claims arriving on a runtime where the
- * agent's configured provider has no usable credentials. Optional — leaving
- * the provider select on its first option keeps the agent's configured model.
+ * Compact provider + model override for claims arriving on a computer where
+ * the agent's configured provider has no usable credentials. Optional —
+ * leaving the provider select on its first option keeps the agent's
+ * configured model. Rendered only when there is a provider to choose.
  */
-function ModelPicker({ configuredLabel, selected, onSelect }: {
+function ModelPicker({ configuredLabel, providers, selected, onSelect }: {
   configuredLabel: string
+  providers: PickerProvider[]
   selected: ModelChoice | null
   onSelect: (m: ModelChoice | null) => void
 }) {
-  const [providers, setProviders] = useState<{ id: string; name: string; defaultModel?: string }[]>([])
   const [models, setModels] = useState<string[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [loadingModels, setLoadingModels] = useState(false)
   const [custom, setCustom] = useState(false)
-
-  useEffect(() => {
-    window.adfApi.getSettings()
-      .then((s) => {
-        setProviders((s?.providers ?? []).map((p) => ({ id: p.id, name: p.name || p.id, defaultModel: p.defaultModel })))
-      })
-      .catch(() => { /* picker stays provider-less — selection is optional */ })
-  }, [])
 
   const pickProvider = useCallback(async (id: string) => {
     if (!id) {
@@ -305,7 +331,7 @@ function ModelPicker({ configuredLabel, selected, onSelect }: {
       <div>
         <label className="block text-[11px] text-neutral-500 dark:text-neutral-400 mb-0.5">Provider</label>
         <Select
-          aria-label="Provider for this runtime"
+          aria-label="Provider for this computer"
           value={selected?.provider ?? ''}
           onChange={(e) => pickProvider(e.target.value)}
           className="text-xs"
@@ -396,6 +422,7 @@ function ClaimContent({
   const identity = summary.identity
   const showPassword = identity.sharePasswordSet && identity.credentialsLocked
   const provider = summary.provider
+  const providers = useConfiguredProviders()
 
   return (
     <div className="space-y-4">
@@ -491,9 +518,12 @@ function ClaimContent({
         </p>
       )}
 
-      {provider && provider.status !== 'ok' && (
+      {/* Nothing to choose between when no provider is configured — the
+          sheet that opens on the first run connects one. */}
+      {provider && provider.status !== 'ok' && providers && providers.length > 0 && (
         <ModelPicker
-          configuredLabel={`${provider.configuredId} · ${provider.modelId}`}
+          configuredLabel={configuredLabel}
+          providers={providers}
           selected={model}
           onSelect={setModel}
         />
@@ -551,38 +581,9 @@ export function AgentReviewDialog() {
     } catch { /* keep the summary we have */ }
   }, [])
 
-  /** Same wiring as TitleBar's handleStart, minus the pre-start review check (we just accepted). */
+  /** Same path as every Start control, minus the pre-start review check (we just accepted). */
   const startAgentNow = useCallback(async () => {
-    const filePath = useDocumentStore.getState().filePath
-    const appStore = useAppStore.getState()
-    const agentStore = useAgentStore.getState()
-    if (filePath) appStore.addStartingFilePath(filePath)
-    try {
-      const result = await window.adfApi.startAgent()
-      if (result?.success) {
-        agentStore.setState(toDisplayState(result.agentState ?? 'idle'))
-        agentStore.setSessionId(result.sessionId ?? null)
-        agentStore.addLogEntry({
-          id: `system-${Date.now()}`,
-          type: 'system',
-          content: 'Agent started',
-          timestamp: Date.now()
-        })
-      } else {
-        const errorMessage = result?.error ?? 'Unknown error'
-        agentStore.addLogEntry({
-          id: `error-${Date.now()}`,
-          type: 'error',
-          content: errorMessage,
-          timestamp: Date.now()
-        })
-        if (errorMessage.includes('API key')) appStore.setShowSettings(true)
-      }
-    } catch (err) {
-      console.error('[AgentReviewDialog] Start error:', err)
-    } finally {
-      if (filePath) appStore.removeStartingFilePath(filePath)
-    }
+    await startForegroundAgent({ skipReviewGate: true })
   }, [])
 
   const finishAccept = useCallback(async (claim: boolean, startAfter = false) => {

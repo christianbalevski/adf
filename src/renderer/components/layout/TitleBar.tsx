@@ -5,6 +5,7 @@ import { useAppStore } from '../../stores/app.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { toDisplayState } from '../../hooks/useAgent'
+import { startForegroundAgent } from '../../utils/start-agent'
 import { ApprovalsMenu } from './ApprovalsMenu'
 import { Button } from '../ui'
 
@@ -251,7 +252,6 @@ export function TitleBar() {
   const agentState = useAgentStore((s) => s.state)
   const config = useAgentStore((s) => s.config)
   const setState = useAgentStore((s) => s.setState)
-  const setSessionId = useAgentStore((s) => s.setSessionId)
   const addLogEntry = useAgentStore((s) => s.addLogEntry)
   const { closeFile } = useAdfFile()
   const [localStarting, setStarting] = useState(false)
@@ -288,45 +288,13 @@ export function TitleBar() {
   }, [closeFile, filePath, setShowMeshGraph, setShowSettings])
 
   const handleStart = useCallback(async () => {
-    try {
-      const review = await window.adfApi?.checkAgentReview()
-      if (review?.needsReview) {
-        useAppStore.getState().setAgentReviewDialog(true, review.configSummary)
-        return
-      }
-    } catch {
-      // Review failures should not prevent the user from starting the agent.
-    }
-
-    const activeFilePath = useDocumentStore.getState().filePath
     setStarting(true)
-    if (activeFilePath) useAppStore.getState().addStartingFilePath(activeFilePath)
     try {
-      const result = await window.adfApi?.startAgent()
-      if (result?.success) {
-        setState(toDisplayState(result.agentState ?? 'idle'))
-        setSessionId(result.sessionId ?? null)
-        addLogEntry({
-          id: `system-${Date.now()}`,
-          type: 'system',
-          content: 'Agent started',
-          timestamp: Date.now()
-        })
-      } else {
-        const errorMessage = result?.error ?? 'Unknown error'
-        addLogEntry({
-          id: `error-${Date.now()}`,
-          type: 'error',
-          content: errorMessage,
-          timestamp: Date.now()
-        })
-        if (errorMessage.includes('API key')) setShowSettings(true)
-      }
+      await startForegroundAgent()
     } finally {
       setStarting(false)
-      if (activeFilePath) useAppStore.getState().removeStartingFilePath(activeFilePath)
     }
-  }, [addLogEntry, setSessionId, setShowSettings, setState])
+  }, [])
 
   const handleStop = useCallback(async () => {
     await window.adfApi?.stopAgent()

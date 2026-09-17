@@ -1,6 +1,6 @@
 ---
 type: guide
-description: First-run walkthrough — set up a provider, create your first agent, learn the interface, and have a conversation
+description: First run — add an agent from the registry, review and claim it, connect a provider when you first run it, learn the interface, send the file on
 see_also:
   - core-concepts.md — the ideas behind what you just built
   - creating-agents.md — the full per-agent configuration surface
@@ -8,18 +8,34 @@ see_also:
 
 # Getting Started
 
-This guide walks you through creating your first ADF agent and having a conversation with it.
+This guide walks you through your first agent: adding one from the registry, claiming it, running it, and sending it somewhere.
 
 ## Prerequisites
 
-Before you begin, make sure you have:
-
 1. **ADF Studio** installed on your machine
-2. **An LLM provider** — ADF Studio supports Anthropic, OpenAI, OpenAI-compatible, and ChatGPT Subscription providers
+2. Either an LLM API key (Anthropic, OpenAI, OpenRouter, or any OpenAI-compatible endpoint) or a ChatGPT / Grok subscription to sign in with. You are asked for it the first time you run an agent, not before.
+
+## First run
+
+With no agents yet, the home screen shows **Agent registry**: cards for the agent files bundled with the app, plus any the live registry lists. Each card has one button, **Add**.
+
+1. Click **Add** on a card. The file is copied into your agents folder (`Documents/adf-agents` by default) and opened.
+2. The review dialog shows everything inside the file: tools, code execution, triggers, channels, compute tier, and a warning that it has no identity yet. Read it. **Continue**, then **Claim & Run** (or **Claim only**). Claiming mints a fresh identity owned by you.
+3. Running needs a model provider. If none is usable, the **Connect a provider** sheet opens: sign in with ChatGPT or Grok, or pick a provider type and paste an API key. Then the **Model** step, and **Save and start**. The key is saved in app settings, not in this agent's file.
+
+The same review-then-claim flow runs for any `.adf` you open, including one someone sent you.
+
+Under the registry is a **Start** list with the other ways in:
+
+- **New agent** — Create a blank agent file
+- **Open .adf…** — Open an agent file from disk
+- **Add directory…** — Show every agent file in a folder in the sidebar
+
+Once an agent exists, the home screen becomes the dashboard, with a **Getting started** strip of four steps: Add an agent, Connect a provider, Run an agent, Share an agent. You can hide the strip.
 
 ## Setting Up a Provider
 
-Before creating an agent, you need to configure at least one LLM provider.
+Providers can also be managed ahead of time, or changed later, in Settings.
 
 1. Open **Settings** (gear icon in the sidebar, or `Cmd/Ctrl + ,`)
 2. Go to the **Providers** section
@@ -31,11 +47,11 @@ Before creating an agent, you need to configure at least one LLM provider.
 
 ![Settings → Providers with a connected provider entry and a new provider being added: type dropdown, name, credential storage, masked API key field, and default model.](../assets/screenshots/settings-add-provider.png)
 
-## Creating Your First Agent
+## Creating a Blank Agent
 
-1. Click the **New .adf** button in the sidebar
+1. Click the **New agent** button in the sidebar (the `+`), or on the first-run home screen
 2. Choose a name for your agent (e.g., "assistant")
-3. A new `.adf` file is created with default settings
+3. A new `.adf` file is created with default settings and the app's default provider
 
 Your agent is now created and in the **idle** state by default.
 
@@ -86,6 +102,17 @@ Click the **Agent** tab to access configuration. Key settings include:
 - **Triggers** — What events wake the agent
 
 See [Creating and Configuring Agents](creating-agents.md) for full details.
+
+## Sharing an Agent
+
+An agent is one file, so sending it is moving the file. Drag an agent row out of the sidebar onto your desktop, into a message, or onto another computer running ADF Studio. Right-click the row and choose **Share…** for a dialog with the same drag chips and a **Save copy…** button.
+
+The copy the app hands over is a consistent snapshot, taken even while the agent runs, with the identity stripped.
+
+- **In the file:** config and agent instructions; README, memory and files; loop history; lambdas, skills and tool settings; provider names and base URLs (no keys).
+- **Not in the file:** identity keys (the receiver claims a new identity); provider keys and sign-ins, which stay in app settings; credentials sealed to you — unless you set a share password, in which case they travel sealed and open only with it.
+
+Whoever opens the file gets the same review dialog you did.
 
 ## What's Next?
 

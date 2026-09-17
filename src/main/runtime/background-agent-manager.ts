@@ -49,7 +49,7 @@ import { adapterCredentialsLocked, createLockedCredentialsAdapter, describeHostE
 import { createHeadlessMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import type { SettingsService } from '../services/settings.service'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
-import type { AgentState, BackgroundAgentStatus, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration } from '../../shared/types/ipc.types'
+import type { AgentState, BackgroundAgentStatus, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration, ProviderConfig } from '../../shared/types/ipc.types'
 import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
@@ -197,6 +197,31 @@ function safeErrorString(err: unknown): string {
 /** How long (ms) an agent can be idle before we consider it for memory pressure relief. */
 const IDLE_MEMORY_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
 
+/**
+ * Coded start failures the renderer can act on, mirroring the foreground
+ * AGENT_START gate: 'provider_missing' — the agent names a provider this
+ * install does not have; 'provider_unconfigured' — the provider exists but
+ * carries no API key and its type needs one.
+ */
+export type BackgroundStartErrorCode = 'provider_missing' | 'provider_unconfigured'
+
+/** Error carrying a start code, so doStartAgent's catch can classify it. */
+class BackgroundStartError extends Error {
+  constructor(message: string, readonly code: BackgroundStartErrorCode) {
+    super(message)
+    this.name = 'BackgroundStartError'
+  }
+}
+
+/**
+ * Provider types whose requests cannot work without an API key. The
+ * subscription providers authenticate out of band, and openai-compatible
+ * endpoints are routinely keyless (local llama.cpp, Ollama, LM Studio).
+ */
+function providerNeedsApiKey(type: string): boolean {
+  return type !== 'openai-compatible' && type !== 'chatgpt-subscription' && type !== 'grok-subscription'
+}
+
 export class BackgroundAgentManager extends EventEmitter {
   /** Keyed by canonical (realpath) .adf file path — see canonicalPath(). */
   private agents: Map<string, BackgroundManagedAgent> = new Map()
@@ -207,6 +232,14 @@ export class BackgroundAgentManager extends EventEmitter {
    * agent instances for the same file.
    */
   private inFlightStarts: Map<string, Promise<boolean>> = new Map()
+
+  /**
+   * Why the last start of a file failed, keyed by canonical path. startAgent()
+   * still answers a boolean (dozens of call sites), so the reason is parked
+   * here for the caller that shows it — see getLastStartError(). Cleared when
+   * a start succeeds so a stale reason can never be reported for a live agent.
+   */
+  private lastStartErrors: Map<string, { error: string; code?: BackgroundStartErrorCode }> = new Map()
 
   /**
    * True while stopAll() is draining agents. Unlike RuntimeGate.tearingDown
@@ -582,9 +615,14 @@ export class BackgroundAgentManager extends EventEmitter {
         })
       }
 
+      this.lastStartErrors.delete(filePath)
       return true
     } catch (err) {
       console.error(`[BackgroundAgent] Failed to start ${filePath}: ${safeErrorString(err)}`)
+      this.lastStartErrors.set(filePath, {
+        error: err instanceof Error ? err.message : String(err),
+        ...(err instanceof BackgroundStartError ? { code: err.code } : {})
+      })
       this.emitEvent({
         type: 'agent_start_failed',
         payload: { filePath },
@@ -592,6 +630,15 @@ export class BackgroundAgentManager extends EventEmitter {
       })
       return false
     }
+  }
+
+  /**
+   * Why the last start of this file failed, if it did. The caller reads it
+   * right after startAgent() returns false — startAgent keeps its boolean
+   * contract for the many call sites that only branch on success.
+   */
+  getLastStartError(filePath: string): { error: string; code?: BackgroundStartErrorCode } | undefined {
+    return this.lastStartErrors.get(this.canonicalPath(filePath))
   }
 
   /** Transfer a stable assembled handle from foreground to background. */
@@ -1057,6 +1104,25 @@ export class BackgroundAgentManager extends EventEmitter {
     }).catch(err => console.error('[BackgroundAgent][Adapter] reconcile failed:', err))
   }
 
+  /**
+   * Resolve the agent's own provider entry (ADF-stored metadata) plus its key.
+   * The key lives in adf_identity; when the entry carries none — the normal
+   * shape for an agent created from the app default provider, or one that
+   * arrived from elsewhere — the app-level key of the same provider id is
+   * used. Mirrors resolveProviderConfig in ipc/index.ts.
+   */
+  private resolveAdfProvider(
+    config: AgentConfig,
+    workspace: AdfWorkspace,
+    derivedKey: Buffer | null
+  ): ProviderConfig | undefined {
+    const adfProvider = config.providers?.find((p) => p.id === config.model.provider)
+    if (!adfProvider) return undefined
+    const apiKey = workspace.getIdentityDecrypted(`provider:${adfProvider.id}:apiKey`, derivedKey) ?? ''
+    if (apiKey) return { ...adfProvider, apiKey }
+    return { ...adfProvider, apiKey: this.settings.getProvider(adfProvider.id)?.apiKey ?? '' }
+  }
+
   private async setupManagedAgent(
     filePath: string,
     config: AgentConfig,
@@ -1083,12 +1149,27 @@ export class BackgroundAgentManager extends EventEmitter {
     registerBuiltInTools(agentToolRegistry)
 
     // Create provider + executor (check ADF-stored providers first)
-    const adfProvider = config.providers?.find(p => p.id === config.model.provider)
-    const resolvedProvider = adfProvider ? {
-      ...adfProvider,
-      apiKey: workspace.getIdentityDecrypted(`provider:${adfProvider.id}:apiKey`, derivedKey ?? null) ?? ''
-    } : undefined
-    const provider = createProvider(config, this.settings, resolvedProvider)
+    const resolvedProvider = this.resolveAdfProvider(config, workspace, derivedKey ?? null)
+    // A provider this install does not have, or one with no usable key, is a
+    // start failure the renderer can fix — not an anonymous "failed to start".
+    let provider: ReturnType<typeof createProvider>
+    try {
+      provider = createProvider(config, this.settings, resolvedProvider)
+    } catch (err) {
+      throw new BackgroundStartError(err instanceof Error ? err.message : String(err), 'provider_missing')
+    }
+    const localProvider = resolvedProvider ?? this.settings.getProvider(config.model.provider)
+    if (localProvider && !localProvider.apiKey && providerNeedsApiKey(localProvider.type)) {
+      // Same classification the foreground gate applies after validateConfig,
+      // reached without its network preflight: an empty key is forwarded
+      // verbatim by the AI SDK (no environment fallback), so every call would
+      // 401. Background starts must stay preflight-free — one agent's start
+      // must not cost an LLM round trip.
+      throw new BackgroundStartError(
+        `Provider "${localProvider.name || localProvider.id}" has no API key. Add one in Settings → Providers.`,
+        'provider_unconfigured'
+      )
+    }
 
     // Create AdfCallHandler if code execution, sys_lambda, serving API routes, or middleware are declared
     const hasSystemLambda = Object.values(config.triggers ?? {}).some(
@@ -1113,11 +1194,7 @@ export class BackgroundAgentManager extends EventEmitter {
         provider,
         createProviderForModel: (model) => {
           const overrideConfig = { ...config, model }
-          const overrideAdfProvider = overrideConfig.providers?.find(p => p.id === overrideConfig.model.provider)
-          const overrideResolved = overrideAdfProvider ? {
-            ...overrideAdfProvider,
-            apiKey: workspace.getIdentityDecrypted(`provider:${overrideAdfProvider.id}:apiKey`, derivedKey ?? null) ?? ''
-          } : undefined
+          const overrideResolved = this.resolveAdfProvider(overrideConfig, workspace, derivedKey ?? null)
           return createProvider(overrideConfig, this.settings, overrideResolved)
         },
         // ONLY reads from adf_identity — code_access + spec-D13 key-material guard.

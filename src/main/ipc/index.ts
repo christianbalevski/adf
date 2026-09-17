@@ -1,9 +1,10 @@
 import { z } from 'zod'
-import { app, ipcMain, dialog, shell, BrowserWindow, Notification } from 'electron'
-import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, type Dirent } from 'fs'
+import { app, ipcMain, dialog, shell, BrowserWindow, Notification, nativeImage } from 'electron'
+import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, rmSync, type Dirent } from 'fs'
 import { join, dirname, basename, resolve, relative, sep } from 'path'
 import { networkInterfaces, tmpdir } from 'os'
 import { randomUUID } from 'crypto'
+import { nanoid } from 'nanoid'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
 import { initApplicationMenu, recordRecentFile } from '../menu'
 import { verifyCardSignature } from '../services/mesh-server'
@@ -119,7 +120,7 @@ import { stripLoopNameMarker } from '../runtime/loop-pool'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { AdfDatabase } from '../adf/adf-database'
-import { buildStudioCreateOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
+import { buildStudioCreateOptions, resolveDefaultProvider, applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { cloneAdfFile } from '../adf/clone-fixup'
 import { addAgentTemplateFiles, agentTemplateFilesDir, missingAgentTemplateFiles, removeAgentTemplateFile } from '../adf/agent-template-files'
 import { AgentExecutor } from '../runtime/agent-executor'
@@ -156,9 +157,10 @@ import { getOrCreateRuntimeId } from '../utils/runtime-id'
 import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { McpRegistryFetchService } from '../services/mcp-registry-fetch.service'
+import { AgentRegistryService } from '../services/agent-registry.service'
 import { parseSkillsCatalogDocument, MAX_CATALOG_BYTES, MAX_SKILL_PACKAGE_BYTES } from '../../shared/schemas/skills-catalog.schema'
 import { guardedFetch } from '../utils/guarded-fetch'
-import { createScratchDir, removeScratchDir, purgeAllScratchDirs } from '../utils/scratch-dir'
+import { createScratchDir, removeScratchDir, purgeAllScratchDirs, scratchRootPath } from '../utils/scratch-dir'
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES, type CredentialFileTarget } from '../services/mcp-credential-files'
@@ -310,6 +312,56 @@ function getMcpRegistryFetchService(): McpRegistryFetchService {
     mcpRegistryFetchService.startPeriodicRefresh()
   }
   return mcpRegistryFetchService
+}
+
+let agentRegistryService: AgentRegistryService | null = null
+
+/**
+ * Where the bundled registry lives: electron-builder copies `registry/` to
+ * <resources>/registry (extraResources — SQLite cannot open a file inside
+ * the asar); in dev the repo folder is read directly.
+ */
+function bundledRegistryDir(): string {
+  return app.isPackaged ? join(process.resourcesPath, 'registry') : join(app.getAppPath(), 'registry')
+}
+
+function getAgentRegistryService(): AgentRegistryService {
+  if (!agentRegistryService) {
+    agentRegistryService = new AgentRegistryService({
+      bundledDir: bundledRegistryDir(),
+      userDataDir: app.getPath('userData'),
+      appVersion: app.getVersion()
+    })
+  }
+  return agentRegistryService
+}
+
+/**
+ * Snapshots prepared for a native drag-out (FILE_SHARE_PREPARE). Each lives
+ * in its own 0700 dir under this process's scratch root so the dropped file
+ * keeps the agent's own name AND a crash cannot leave copies behind: the next
+ * boot's purgeStaleProcessDirs() deletes the whole root of a dead PID.
+ *
+ * The drop target copies the file DURING the drop and webContents.startDrag()
+ * gives no completion signal, so the file cannot be deleted the moment the
+ * drag starts; it lives until the renderer discards it (FILE_SHARE_DISCARD),
+ * the TTL fires, or the app quits. Tokens are single-use — a consumed one is
+ * kept only so its TTL timer still owns the directory.
+ */
+const SHARE_SNAPSHOT_TTL_MS = 5 * 60 * 1000
+/** Ceiling on simultaneously live snapshots; the oldest is discarded first. */
+const MAX_LIVE_SHARE_SNAPSHOTS = 8
+const shareSnapshots = new Map<
+  string,
+  { path: string; dir: string; icon: Electron.NativeImage; timer: NodeJS.Timeout; used: boolean }
+>()
+
+function discardShareSnapshot(token: string): void {
+  const snap = shareSnapshots.get(token)
+  if (!snap) return
+  shareSnapshots.delete(token)
+  clearTimeout(snap.timer)
+  try { rmSync(snap.dir, { recursive: true, force: true }) } catch { /* best-effort */ }
 }
 
 /**
@@ -700,7 +752,16 @@ function resolveProviderConfig(
   const apiKey = workspace.getIdentityDecrypted(
     `provider:${adfProvider.id}:apiKey`, derivedKey
   ) ?? ''
-  return { ...adfProvider, apiKey }
+  if (apiKey) return { ...adfProvider, apiKey }
+  // No key stored in the ADF. That is the NORMAL shape for an agent created
+  // from the app's default provider (and for one brought home from the
+  // registry): the embedded entry carries the provider's metadata, never its
+  // secret. Fall back to the app-level key of the same provider id — without
+  // it the request goes out with an empty key, which the AI SDK forwards
+  // verbatim (an empty string is a valid key to loadApiKey, so there is no
+  // environment fallback either) and the provider answers 401.
+  const local = settings.getProvider(adfProvider.id)
+  return { ...adfProvider, apiKey: local?.apiKey ?? '' }
 }
 
 /** Sync a derived key to the mesh manager for pipeline signing access. */
@@ -3286,13 +3347,28 @@ export function registerAllIpcHandlers(): void {
     currentStreamBindingManager = null
     currentAdapterManager = null
 
-    // Set up provider
+    // Set up provider. A model that names no provider this install has is
+    // not a crash: the renderer gets a coded failure and offers to connect
+    // one right there, then retries the start.
     const resolved = resolveProviderConfig(config, capturedWorkspace, capturedDerivedKey)
-    const provider = createProvider(config, settings, resolved)
+    let provider: ReturnType<typeof createProvider>
+    try {
+      provider = createProvider(config, settings, resolved)
+    } catch (err) {
+      startingFilePaths.delete(capturedFilePath)
+      return { success: false, error: err instanceof Error ? err.message : String(err), code: 'provider_missing' }
+    }
     const validation = await provider.validateConfig()
     if (!validation.valid) {
       startingFilePaths.delete(capturedFilePath)
-      return { success: false, error: validation.error || 'Provider not configured' }
+      const local = resolved ?? settings.getProvider(config.model.provider)
+      const needsKey = !!local && !local.apiKey && local.type !== 'openai-compatible' &&
+        local.type !== 'chatgpt-subscription' && local.type !== 'grok-subscription'
+      return {
+        success: false,
+        error: validation.error || 'Provider not configured',
+        ...(needsKey ? { code: 'provider_unconfigured' } : {})
+      }
     }
 
     // Create or reuse session
@@ -5829,7 +5905,9 @@ export function registerAllIpcHandlers(): void {
   // Gated background start — the single path for starting an agent from
   // main, shared by the IPC handler and owner-message delivery (messaging an
   // offline agent starts it). All gates apply: review, password, foreground.
-  async function startBackgroundAgentGated(filePath: string): Promise<{ success: boolean; error?: string }> {
+  async function startBackgroundAgentGated(
+    filePath: string
+  ): Promise<{ success: boolean; error?: string; code?: string }> {
     if (!backgroundAgentManager) return { success: false, error: 'Background agent manager not initialized' }
     RuntimeGate.resume()
     rememberAdfDirectory(filePath)
@@ -5863,7 +5941,16 @@ export function registerAllIpcHandlers(): void {
     }
 
     const success = await backgroundAgentManager.startAgent(filePath, cachedKey)
-    if (!success) return { success: false, error: 'Failed to start agent' }
+    if (!success) {
+      // Surface the manager's reason when it has one (a missing or keyless
+      // provider is fixable from the renderer); otherwise the generic message.
+      const reason = backgroundAgentManager.getLastStartError(filePath)
+      return {
+        success: false,
+        error: reason?.error || 'Failed to start agent',
+        ...(reason?.code ? { code: reason.code } : {})
+      }
+    }
 
     if (meshManager?.isEnabled()) {
       const agentRefs = backgroundAgentManager.getAgent(filePath)
@@ -6781,6 +6868,223 @@ export function registerAllIpcHandlers(): void {
   // never rejects, so this always yields a usable entry list.
   ipcMain.handle(IPC.MCP_REGISTRY_GET, async () => {
     return getMcpRegistryFetchService().getRegistry()
+  })
+
+  // --- Agent registry ---
+  //
+  // Bundled .adf files plus the live index. The service never rejects: with
+  // no network the bundled gallery still renders, with remoteError set.
+  ipcMain.handle(IPC.AGENT_REGISTRY_GET, async () => getAgentRegistryService().getRegistry())
+
+  ipcMain.handle(IPC.AGENT_REGISTRY_REFRESH, async () => {
+    const service = getAgentRegistryService()
+    await service.refresh()
+    return service.getRegistry()
+  })
+
+  // "Bring home": copy a registry agent into the user's agents folder and
+  // hand the path back so the renderer opens it through the ordinary open
+  // flow — the review dialog, then Claim & Run. The copy gets a fresh
+  // config.id (the review allowlist is keyed on it, so two copies of the
+  // same registry agent each get reviewed) and the app's default provider
+  // when its model names none. Identity is NOT touched here: a registry file
+  // ships without one, so the review flow classifies it 'unclaimed' and
+  // claiming mints the DID under this owner. Built on a .partial and moved
+  // into place at the end; a failure leaves nothing behind.
+  ipcMain.handle(IPC.AGENT_REGISTRY_BRING_HOME, async (_event, args: { id: string }) => {
+    if (typeof args?.id !== 'string' || args.id === '') return { success: false, error: 'Missing registry id' }
+    let partial: string | null = null
+    try {
+      const { path: src, entry } = await getAgentRegistryService().resolveFile(args.id)
+      const dest = availableAdfPath(defaultAgentsFolder(), basename(entry.file, '.adf'))
+      partial = `${dest}.partial`
+      copyFileSync(src, partial)
+      // Defence in depth: a registry entry is fetched from a remote index, so
+      // it may carry whatever its author's install put in it. Strip identity
+      // (signing keys, identity envelope, attestations, DID meta) exactly as
+      // an outgoing copy does, BEFORE anything reads the file — the review
+      // dialog must classify it 'unclaimed' on the merits, not on trust.
+      AdfDatabase.stripIdentity(partial)
+      const ws = AdfWorkspace.open(partial)
+      try {
+        const config = ws.getAgentConfig()
+        config.id = nanoid(12)
+        config.name = basename(dest, '.adf')
+        const appProviders = (settings.get('providers') as ProviderConfig[]) ?? []
+        const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
+        const patched = applyDefaultProviderToOptions(
+          { name: config.name, model: config.model, providers: config.providers },
+          defaultProvider
+        )
+        const incomingModelId = config.model.model_id
+        config.model = { ...config.model, ...(patched.model as AgentConfig['model']) }
+        // The default provider fills in its own default model; the agent's own
+        // model_id is the author's choice and outranks it whenever it is set.
+        if (incomingModelId) config.model.model_id = incomingModelId
+        if (patched.providers) config.providers = patched.providers
+        ws.setAgentConfig(config)
+      } finally {
+        ws.close()
+      }
+      for (const side of ['-wal', '-shm']) {
+        try { unlinkSync(`${partial}${side}`) } catch { /* none */ }
+      }
+      renameSync(partial, dest)
+      partial = null
+      recordRecentFile(dest)
+      notifyAdfFileCreated(dest)
+      return { success: true, filePath: dest }
+    } catch (error) {
+      if (partial) {
+        // AdfDatabase.open()'s repair path can leave .bak/.corrupt/.repaired
+        // beside the partial — a failed bring-home must leave nothing behind.
+        for (const suffix of ['', '-wal', '-shm', '.bak', '.corrupt', '.repaired']) {
+          try { unlinkSync(`${partial}${suffix}`) } catch { /* none */ }
+        }
+      }
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  ipcMain.handle(IPC.AGENT_MODEL_SET_FOR_FILE, async (_event, args: { filePath: string; model: { provider: string; model_id: string } }) => {
+    const fp = args?.filePath
+    const model = args?.model
+    if (typeof fp !== 'string' || !fp.toLowerCase().endsWith('.adf') || !existsSync(fp)) {
+      return { success: false, error: 'No such file' }
+    }
+    if (!model || typeof model.provider !== 'string' || typeof model.model_id !== 'string') {
+      return { success: false, error: 'Missing model' }
+    }
+    // Both guards run on canonical paths: a symlinked or differently-cased
+    // path to the open (or running) agent must not slip past them and write
+    // the config underneath a live workspace.
+    const canonFp = canonicalizePath(fp)
+    if (currentFilePath && canonFp === canonicalizePath(currentFilePath)) {
+      return { success: false, error: 'This agent is open — save its config instead' }
+    }
+    if (isAgentFileRunning(canonFp)) return { success: false, error: 'Stop the agent before changing its model' }
+    const appProviders = (settings.get('providers') as ProviderConfig[]) ?? []
+    if (!appProviders.some((p) => p.id === model.provider)) {
+      return { success: false, error: `Provider "${model.provider}" is not configured in Settings` }
+    }
+    try {
+      const ws = AdfWorkspace.open(fp)
+      try {
+        const config = ws.getAgentConfig()
+        config.model = { ...config.model, provider: model.provider, model_id: model.model_id }
+        ws.setAgentConfig(config)
+      } finally {
+        ws.close()
+      }
+      // No notifyRendererConfigChanged: it only emits for the FOREGROUND file,
+      // and this handler has already refused that case above — the call could
+      // never fire. The renderer refetches the agent's config on open.
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  // --- Share by drag ---
+  //
+  // The renderer prepares on pointerdown (the snapshot is ready before the
+  // drag threshold is crossed) and sends the token on dragstart. Two calls
+  // because the snapshot is async and a native drag must start inside the
+  // OS drag session the renderer's dragstart opened.
+  ipcMain.handle(IPC.FILE_SHARE_PREPARE, async (_event, args: { filePath: string }) => {
+    const fp = args?.filePath
+    if (typeof fp !== 'string' || !fp.toLowerCase().endsWith('.adf') || !existsSync(fp)) {
+      return { success: false, error: 'Not an .adf file' }
+    }
+    // Oldest-first cap: a renderer that prepares on every pointerdown without
+    // ever dragging must not accumulate copies of the agent on disk.
+    while (shareSnapshots.size >= MAX_LIVE_SHARE_SNAPSHOTS) {
+      const oldest = shareSnapshots.keys().next()
+      if (oldest.done) break
+      discardShareSnapshot(oldest.value)
+    }
+    const dir = join(scratchRootPath(), 'share', randomUUID())
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const snapshot = join(dir, basename(fp))
+      // Identity-free copy: see AdfDatabase.snapshotForSend for exactly what
+      // is stripped. The Share dialog states the same lists to the user.
+      await AdfDatabase.snapshotForSend(fp, snapshot)
+      let icon: Electron.NativeImage
+      try {
+        icon = await app.getFileIcon(snapshot, { size: 'normal' })
+      } catch {
+        icon = nativeImage.createFromPath(join(app.getAppPath(), 'resources', 'icons', 'png', '64x64.png'))
+      }
+      const token = randomUUID()
+      const timer = setTimeout(() => discardShareSnapshot(token), SHARE_SNAPSHOT_TTL_MS)
+      timer.unref?.()
+      shareSnapshots.set(token, { path: snapshot, dir, icon, timer, used: false })
+      return { success: true, token }
+    } catch (error) {
+      try { rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  ipcMain.on(IPC.FILE_SHARE_DRAG_START, (event, args: { token: string }) => {
+    const snap = typeof args?.token === 'string' ? shareSnapshots.get(args.token) : undefined
+    // Single-use: a token that already opened a drag session is spent, so a
+    // replayed one cannot start a second drag of the same file.
+    if (!snap || snap.used) return
+    snap.used = true
+    try {
+      event.sender.startDrag({ file: snap.path, icon: snap.icon })
+    } catch (err) {
+      console.warn('[Share] startDrag failed:', err)
+    }
+  })
+
+  // Renderer-driven cleanup: the drag ended (dragend) or the share sheet was
+  // dismissed without dragging. Best-effort — the TTL covers a renderer that
+  // never gets there.
+  ipcMain.handle(IPC.FILE_SHARE_DISCARD, async (_event, args: { token: string }) => {
+    if (typeof args?.token === 'string') discardShareSnapshot(args.token)
+  })
+
+  // "Save a copy…": the same identity-free snapshot, written straight to a
+  // path the user picks. Built on a .partial so a failure or a cancelled
+  // write never leaves a half-copied .adf where the user asked for an agent.
+  ipcMain.handle(IPC.FILE_SHARE_SAVE_AS, async (_event, args: { filePath: string }) => {
+    const fp = args?.filePath
+    if (typeof fp !== 'string' || !fp.toLowerCase().endsWith('.adf') || !existsSync(fp)) {
+      return { success: false, error: 'Not an .adf file' }
+    }
+    const result = await dialog.showSaveDialog({
+      defaultPath: basename(fp),
+      filters: [{ name: 'Agent Document Format', extensions: ['adf'] }]
+    })
+    if (result.canceled || !result.filePath) return { success: false, error: 'Cancelled' }
+    const dest = result.filePath
+    // Saving over the agent itself would replace it with its own
+    // identity-stripped copy — that is a different operation, not a share.
+    if (canonicalizePath(dest) === canonicalizePath(fp)) {
+      return { success: false, error: 'Choose a different file — a shared copy cannot overwrite the agent it came from' }
+    }
+    const partial = `${dest}.partial`
+    try {
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { unlinkSync(`${partial}${suffix}`) } catch { /* none */ }
+      }
+      await AdfDatabase.snapshotForSend(fp, partial)
+      if (existsSync(dest)) unlinkSync(dest)
+      renameSync(partial, dest)
+      return { success: true, filePath: dest }
+    } catch (error) {
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { unlinkSync(`${partial}${suffix}`) } catch { /* none */ }
+      }
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  app.once('will-quit', () => {
+    for (const token of [...shareSnapshots.keys()]) discardShareSnapshot(token)
   })
 
   // --- Skill catalogs ---

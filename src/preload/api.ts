@@ -1,4 +1,4 @@
-import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
+import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult, FileSharePrepareResult } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, AgentTemplateExtraFile, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
@@ -58,7 +58,8 @@ export interface AdfApi {
   }>
 
   // Agent runtime
-  startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string }>
+  /** `code` names a failure the renderer can resolve in place: 'provider_missing' (the model's provider is not on this install) or 'provider_unconfigured' (it is, but has no key). */
+  startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string; code?: 'provider_missing' | 'provider_unconfigured' }>
   stopAgent: () => Promise<{ success: boolean }>
   /** `loop` routes the turn to that loop's executor; omitted/'main' = the host loop. */
   invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string }>
@@ -186,7 +187,8 @@ export interface AdfApi {
   foundFleetAgent: (dir: string, name: string, newRoot?: boolean) => Promise<{ success: boolean; filePath?: string; error?: string }>
 
   // Background agents
-  startBackgroundAgent: (filePath: string) => Promise<{ success: boolean; error?: string }>
+  /** `code` is set when the failure is fixable from the UI: 'provider_missing' | 'provider_unconfigured'. */
+  startBackgroundAgent: (filePath: string) => Promise<{ success: boolean; error?: string; code?: string }>
   getBackgroundAgentStatus: () => Promise<{ agents: BackgroundAgentStatus[]; starting?: string[] }>
   stopBackgroundAgent: (filePath: string) => Promise<{ success: boolean }>
   /** Batched — the main process coalesces ~50ms of background agent events per send. */
@@ -504,6 +506,22 @@ export interface AdfApi {
   removeSharePassword: () => Promise<{ success: boolean; error?: string }>
   /** adopt: false (pre-accept review flow) unlocks for the session without writing anything; default true re-wraps to the local owner while preserving the share-password slot (multi-route). */
   unlockEnvelopeWithPassword: (password: string, adopt?: boolean) => Promise<{ success: boolean; credentials?: string; adopted?: boolean; warning?: string; error?: string }>
+
+  // Agent registry (bundled .adf files + live index)
+  getAgentRegistry: () => Promise<AgentRegistryGetResult>
+  refreshAgentRegistry: () => Promise<AgentRegistryGetResult>
+  /** Copy a registry agent into the agents folder; open the returned path to review and claim it. */
+  bringHomeRegistryAgent: (id: string) => Promise<AgentRegistryBringHomeResult>
+  /** Set model.provider/model_id on a file that is neither open in the foreground nor running. */
+  setAgentModelForFile: (filePath: string, model: { provider: string; model_id: string }) => Promise<{ success: boolean; error?: string }>
+
+  // Share by drag: prepare a consistent snapshot, then start the native drag with its token.
+  prepareShareFile: (filePath: string) => Promise<FileSharePrepareResult>
+  startShareDrag: (token: string) => void
+  /** Drop a prepared snapshot now (drag ended / sheet dismissed) instead of waiting out its TTL. */
+  discardShareFile: (token: string) => Promise<void>
+  /** Save the same identity-free copy to a path the user picks (no drag). */
+  saveShareCopy: (filePath: string) => Promise<{ success: boolean; filePath?: string; error?: string }>
 
   // Agent review (file open flow)
   checkAgentReview: () => Promise<{ needsReview: boolean; configSummary?: AgentConfigSummary }>

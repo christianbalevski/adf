@@ -4,6 +4,7 @@ import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type Pen
 import { useDocumentStore } from '../../stores/document.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
+import { startForegroundAgent } from '../../utils/start-agent'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
@@ -1481,27 +1482,11 @@ function LoopStream({ loop }: { loop: string }) {
     // If the AGENT (not just this loop) is off, start it first then invoke.
     // Side loops run inside the same process as main, so the gate is agent-level.
     if (agentState === 'off') {
-      // Review gate: check if agent needs review before starting
-      try {
-        const review = await window.adfApi?.checkAgentReview()
-        if (review?.needsReview) {
-          useAppStore.getState().setAgentReviewDialog(true, review.configSummary)
-          return
-        }
-      } catch { /* fall through */ }
-
-      if (targetFilePath) useAppStore.getState().addStartingFilePath(targetFilePath)
-      try {
-        const result = await window.adfApi?.startAgent(targetFilePath ?? undefined, true)
-        // Only update UI if we're still viewing this agent
-        const stillViewing = useDocumentStore.getState().filePath === targetFilePath
-        if (stillViewing && result?.success) {
-          setState(toDisplayState(result.agentState ?? 'idle'))
-          setSessionId(result.sessionId ?? null)
-        }
-      } finally {
-        if (targetFilePath) useAppStore.getState().removeStartingFilePath(targetFilePath)
-      }
+      // Review gate, provider-at-need, store mirroring: one shared path.
+      // A start that did not happen (review pending, provider sheet
+      // cancelled, real error) leaves the message in the log unsent.
+      const outcome = await startForegroundAgent({ hasUserMessage: true, announce: false })
+      if (!outcome.success) return
     }
 
     // Update activity state if still viewing, then always send the invoke

@@ -13,6 +13,12 @@ build/
 .vscode/
 .adf-studio/
 *.adf
+# The agent registry ships its .adf files: they ARE the agents (see registry/README.md).
+!registry/*.adf
+# ...but never their WAL sidecars: they are per-connection scratch, and a
+# committed one would make the file's hash a moving target.
+registry/*.adf-wal
+registry/*.adf-shm
 .claude/
 CLAUDE.md
 .cursor/

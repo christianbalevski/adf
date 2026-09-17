@@ -21,6 +21,15 @@ files:
   - "!node_modules/better-sqlite3/build/Release/test_extension.node"
 asarUnpack:
   - "node_modules/sqlite-vec*/**"
+# The agent registry: bundled .adf files + index.json, copied next to the
+# asar (SQLite opens files by path and cannot read inside the archive).
+# Resolved at runtime as <resources>/registry — see bundledRegistryDir().
+extraResources:
+  - from: registry
+    to: registry
+    filter:
+      - "*.adf"
+      - "index.json"
 mac:
   # No `arch:` override on purpose: local builds stay host-arch. CI passes
   # --arm64 --universal (see .github/workflows/release.yml): the arm64 dmg

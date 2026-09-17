@@ -8,6 +8,8 @@ import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { toDisplayState } from '../../hooks/useAgent'
+import { startForegroundAgent } from '../../utils/start-agent'
+import { useShareDrag } from '../../hooks/useShareDrag'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
 import { CloneDialog } from '../common/CloneDialog'
 import { Dialog } from '../common/Dialog'
@@ -140,15 +142,18 @@ async function toggleAgent(filePath: string, isActive: boolean, isRunning: boole
         await window.adfApi.stopAgent()
         useAgentStore.getState().setState('off')
       } else {
-        const result = await window.adfApi.startAgent()
-        if (result.success) {
-          useAgentStore.getState().setState(toDisplayState(result.agentState ?? 'idle'))
-        }
+        await startForegroundAgent({ skipReviewGate: true })
       }
     } else if (isRunning) {
       await window.adfApi.stopBackgroundAgent(filePath)
     } else {
-      await window.adfApi.startBackgroundAgent(filePath)
+      let result = await window.adfApi.startBackgroundAgent(filePath)
+      // Same provider-at-need as the foreground path: connect one, retry once.
+      if (!result.success && (result.code === 'provider_missing' || result.code === 'provider_unconfigured')) {
+        const connected = await app.requestProviderSetup(result.code, filePath)
+        if (connected) result = await window.adfApi.startBackgroundAgent(filePath)
+      }
+      if (!result.success && result.error) console.warn('[Sidebar] Background start failed:', result.error)
     }
   } finally {
     if (isRunning) app.removeStoppingFilePath(filePath)
@@ -297,6 +302,7 @@ export function Sidebar() {
         }
       },
       { label: 'Clone…', onSelect: () => setCloneTarget({ file, dirPath }) },
+      { label: 'Share…', onSelect: () => useAppStore.getState().openShareDialog(fp) },
       {
         label: REVEAL_IN_FOLDER_LABEL,
         onSelect: () => { window.adfApi.revealInFolder(fp).catch(() => {}) }
@@ -894,6 +900,9 @@ const AgentFileRow = memo(function AgentFileRow({
     : (status?.sendMode ?? file.sendMode)
 
   const showToggle = true
+  // Drag the row out of the app: a consistent snapshot of the .adf lands
+  // wherever it is dropped (Finder, a message, another Studio).
+  const shareDrag = useShareDrag(file.filePath)
 
   const handleToggle = useCallback(
     async (e: React.MouseEvent) => {
@@ -917,6 +926,7 @@ const AgentFileRow = memo(function AgentFileRow({
 
   return (
     <div
+      {...shareDrag}
       onContextMenu={onContextMenu}
       className={`group flex items-center gap-1.5 py-1 text-xs cursor-pointer ${
         isActive
@@ -964,6 +974,10 @@ const AgentFileRow = memo(function AgentFileRow({
           disabled={toggling || isStarting}
           role="switch"
           aria-checked={isRunning}
+          // Pressing and sliding the switch is a toggle gesture, not a share
+          // drag — keep the row draggable but not this control.
+          draggable={false}
+          onDragStart={(e) => { e.preventDefault(); e.stopPropagation() }}
           className={`relative shrink-0 w-7 h-4 rounded-full transition-[background-color,opacity] ${
             isRunning
               ? (isAutonomous ? 'bg-amber-400' : 'bg-green-400')

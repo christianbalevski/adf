@@ -11,12 +11,13 @@ Guides carry YAML frontmatter (`type`, `description`, `see_also`) mirroring the 
 
 ## Getting Oriented
 
-- **getting-started.md** — create your first agent and have a conversation
+- **getting-started.md** — copy an agent from the registry, claim it, run it, send it on
 - **core-concepts.md** — the foundational ideas behind ADF
 - **creating-agents.md** — create an agent and configure its settings
 - **settings.md** — global app settings shared across all agents
 - **agent-states.md** — the agent lifecycle states and how to control them
 - **fleet-map.md** — the RTS-style map for commanding your whole fleet: territories, selection, hotkeys, moving agents, approvals
+- **../../registry/README.md** — the agent files the app ships in its registry: how they are committed, indexed and shipped
 
 ## Execution & Automation
 

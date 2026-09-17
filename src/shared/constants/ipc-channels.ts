@@ -11,6 +11,15 @@ export const IPC = {
   FILE_RENAMED: 'adf:file:renamed',
   FILE_GET_CURRENT: 'adf:file:get-current',
   FILE_REVEAL: 'adf:file:reveal',
+  // Drag an agent out of the app: prepare a consistent snapshot of the .adf
+  // (renderer -> main, invoke), then hand it to the OS drag (renderer -> main, send).
+  FILE_SHARE_PREPARE: 'adf:file:share-prepare',
+  FILE_SHARE_DRAG_START: 'adf:file:share-drag-start',
+  // Discard a prepared snapshot at once (drag ended / sheet dismissed) instead
+  // of waiting out its TTL, and the no-drag route: save the same identity-free
+  // copy to a path the user picks.
+  FILE_SHARE_DISCARD: 'adf:file:share-discard',
+  FILE_SHARE_SAVE_AS: 'adf:file:share-save-as',
 
   // Document content
   DOC_GET_DOCUMENT: 'adf:doc:get-document',
@@ -203,6 +212,17 @@ export const IPC = {
   MCP_UNINSTALL_PYTHON_PACKAGE: 'adf:mcp:uninstall-python-package',
   MCP_ENSURE_PYTHON_RUNTIME: 'adf:mcp:ensure-python-runtime',
   MCP_REGISTRY_GET: 'adf:mcp:registry-get',
+
+  // Agent registry — bundled .adf files (registry/ at the repo root) plus the
+  // live index for additions since this build. "Bring home" copies one into
+  // the user's agents folder and hands it to the normal open/review flow.
+  AGENT_REGISTRY_GET: 'adf:agent-registry:get',
+  AGENT_REGISTRY_REFRESH: 'adf:agent-registry:refresh',
+  AGENT_REGISTRY_BRING_HOME: 'adf:agent-registry:bring-home',
+  // Point a NOT-open, NOT-running agent's model at a provider (provider setup
+  // sheet, when the blocked agent is a background one). The open agent goes
+  // through the ordinary config save.
+  AGENT_MODEL_SET_FOR_FILE: 'adf:agent:model-set-for-file',
   // Phase 4 HTTP OAuth: sign out (clear the stored token) / query signed-in state.
   MCP_OAUTH_SIGNOUT: 'adf:mcp:oauth-signout',
   MCP_OAUTH_STATUS: 'adf:mcp:oauth-status',

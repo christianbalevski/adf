@@ -1,4 +1,5 @@
 import type { AgentConfig, AgentTemplate, LoopTokenUsage, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
+import type { AgentRegistryEntry } from '../schemas/agent-registry.schema'
 import type { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo } from './channel-adapter.types'
 import type { ProviderType } from '../constants/adf-defaults'
 import type { ComputeAppSettings } from './compute.types'
@@ -190,6 +191,12 @@ export interface AppSettings {
   skillCatalogSources?: string[]
   adapters?: AdapterRegistration[]
   compute?: ComputeAppSettings
+  /**
+   * Epoch ms of the first time the user dragged an agent out of the app
+   * (sidebar row or the Share dialog). Drives the "Send it somewhere" step on
+   * the home screen. The drop target is unknowable, so the gesture counts.
+   */
+  onboardingSharedAt?: number
 }
 
 export interface TrackedDirEntry {
@@ -651,6 +658,38 @@ export interface McpRegistryGetResult {
   updatedAt?: string
   /** Epoch ms of the fetch that transferred this document, when remote/cache. */
   fetchedAt?: number
+}
+
+/** One registry agent as the gallery shows it — the index entry plus where it comes from. */
+export interface AgentRegistryAgentView extends AgentRegistryEntry {
+  /** 'bundled' ships inside this app; 'remote' is only in the live index and downloads on demand. */
+  source: 'bundled' | 'remote'
+  /** False when min_app_version is newer than this app — shown, not offered. */
+  supported: boolean
+}
+
+export interface AgentRegistryGetResult {
+  agents: AgentRegistryAgentView[]
+  /** Where the newest index came from. 'bundled' means no live index has been seen this session. */
+  indexSource: 'remote' | 'cache' | 'bundled'
+  updatedAt: string
+  fetchedAt?: number
+  /** Why the live index is unavailable, when it is. The bundled gallery still renders. */
+  remoteError?: string
+}
+
+export interface AgentRegistryBringHomeResult {
+  success: boolean
+  /** Path of the new copy inside the user's agents folder. */
+  filePath?: string
+  error?: string
+}
+
+export interface FileSharePrepareResult {
+  success: boolean
+  /** Opaque handle for FILE_SHARE_DRAG_START; the snapshot behind it lives in a temp dir. */
+  token?: string
+  error?: string
 }
 
 // --- Channel Adapter types (re-export for convenience) ---

@@ -16,6 +16,8 @@ import type {
  *
  * `refresh()` re-fires all four; call it from a manual refresh button.
  */
+export type DashboardData = ReturnType<typeof useDashboardData>
+
 export function useDashboardData() {
   const [quick, setQuick] = useState<DashboardQuickStats | null>(null)
   const [providerTests, setProviderTests] = useState<DashboardProviderTests | null>(null)

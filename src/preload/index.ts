@@ -568,6 +568,27 @@ const api: AdfApi = {
   unlockEnvelopeWithPassword: (password: string, adopt?: boolean) =>
     ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, password, adopt),
 
+  // Agent registry (bundled .adf files + live index)
+  getAgentRegistry: () =>
+    ipcRenderer.invoke(IPC.AGENT_REGISTRY_GET),
+  refreshAgentRegistry: () =>
+    ipcRenderer.invoke(IPC.AGENT_REGISTRY_REFRESH),
+  bringHomeRegistryAgent: (id: string) =>
+    ipcRenderer.invoke(IPC.AGENT_REGISTRY_BRING_HOME, { id }),
+  setAgentModelForFile: (filePath: string, model: { provider: string; model_id: string }) =>
+    ipcRenderer.invoke(IPC.AGENT_MODEL_SET_FOR_FILE, { filePath, model }),
+
+  // Share by drag
+  prepareShareFile: (filePath: string) =>
+    ipcRenderer.invoke(IPC.FILE_SHARE_PREPARE, { filePath }),
+  startShareDrag: (token: string) => {
+    ipcRenderer.send(IPC.FILE_SHARE_DRAG_START, { token })
+  },
+  discardShareFile: (token: string) =>
+    ipcRenderer.invoke(IPC.FILE_SHARE_DISCARD, { token }),
+  saveShareCopy: (filePath: string) =>
+    ipcRenderer.invoke(IPC.FILE_SHARE_SAVE_AS, { filePath }),
+
   // Agent review (file open flow)
   checkAgentReview: () =>
     ipcRenderer.invoke(IPC.FILE_CHECK_REVIEW),

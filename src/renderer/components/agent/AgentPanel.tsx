@@ -3,6 +3,7 @@ import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { toDisplayState } from '../../hooks/useAgent'
+import { startForegroundAgent } from '../../utils/start-agent'
 import { AgentStatus } from './AgentStatus'
 import { Button } from '../ui'
 
@@ -16,9 +17,7 @@ export function AgentPanel() {
   const config = useAgentStore((s) => s.config)
   const statusText = useAgentStore((s) => s.statusText)
   const setState = useAgentStore((s) => s.setState)
-  const setSessionId = useAgentStore((s) => s.setSessionId)
   const addLogEntry = useAgentStore((s) => s.addLogEntry)
-  const setShowSettings = useAppStore((s) => s.setShowSettings)
   const filePath = useDocumentStore((s) => s.filePath)
   const [localStarting, setStarting] = useState(false)
   // Starts driven from elsewhere (openFile's foreground re-attach, sidebar
@@ -61,45 +60,11 @@ export function AgentPanel() {
   }, [config])
 
   const handleStart = async () => {
-    // Review gate: show review dialog if agent not yet reviewed
-    try {
-      const review = await window.adfApi?.checkAgentReview()
-      if (review?.needsReview) {
-        useAppStore.getState().setAgentReviewDialog(true, review.configSummary)
-        return
-      }
-    } catch { /* fall through */ }
-
-    const fp = useDocumentStore.getState().filePath
     setStarting(true)
-    if (fp) useAppStore.getState().addStartingFilePath(fp)
     try {
-      const result = await window.adfApi?.startAgent()
-      if (result?.success) {
-        setState(toDisplayState(result.agentState ?? 'idle'))
-        setSessionId(result.sessionId ?? null)
-        addLogEntry({
-          id: `system-${Date.now()}`,
-          type: 'system',
-          content: 'Agent started',
-          timestamp: Date.now()
-        })
-      } else {
-        const errorMsg = result?.error ?? 'Unknown error'
-        addLogEntry({
-          id: `error-${Date.now()}`,
-          type: 'error',
-          content: errorMsg,
-          timestamp: Date.now()
-        })
-        // If API key is missing, prompt settings
-        if (errorMsg.includes('API key')) {
-          setShowSettings(true)
-        }
-      }
+      await startForegroundAgent()
     } finally {
       setStarting(false)
-      if (fp) useAppStore.getState().removeStartingFilePath(fp)
     }
   }
 

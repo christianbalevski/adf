@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { DashboardTile, type TileStatus } from './DashboardTile'
-import { useDashboardData } from './useDashboardData'
+import type { DashboardData } from './useDashboardData'
 import { GettingStarted } from './GettingStarted'
 import { formatTokenCount as formatTokens } from '../../utils/token-estimate'
 
@@ -21,8 +21,8 @@ import { formatTokenCount as formatTokens } from '../../utils/token-estimate'
  * Clicking most tiles deep-links into the matching Settings tab via
  * `useAppStore.openSettingsAt`.
  */
-export function HomeDashboard() {
-  const { quick, providerTests, containers, agentStats, loading, refresh } = useDashboardData()
+export function HomeDashboard({ data }: { data: DashboardData }) {
+  const { quick, providerTests, containers, agentStats, loading, refresh } = data
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
   const backgroundAgents = useBackgroundAgentsStore((s) => s.agents)
 

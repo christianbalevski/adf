@@ -105,6 +105,15 @@ function saveChatWidth(width: ChatWidth): void {
 /** Settings tab key, kept in sync with SettingsPage's `activeTab` union. */
 export type SettingsSection = 'general' | 'identity' | 'agents' | 'template' | 'providers' | 'packages' | 'mcps' | 'skills' | 'channels' | 'networking' | 'compute' | 'about'
 
+export type ProviderSetupReason = 'provider_missing' | 'provider_unconfigured'
+
+export interface ProviderSetupRequest {
+  reason: ProviderSetupReason
+  /** The agent whose start was blocked (null when unknown). */
+  filePath: string | null
+  resolve: (connected: boolean) => void
+}
+
 export interface AppState {
   showSettings: boolean
   /**
@@ -146,6 +155,14 @@ export interface AppState {
   agentNeedsReview: boolean
   /** Post-accept warning: the .adf couldn't be moved out of a temp folder. */
   fileMoveWarning: string | null
+  /**
+   * A start that failed for want of a provider is parked here while the
+   * provider setup sheet is up. `resolve(true)` means a provider was
+   * connected and applied to the agent — the caller retries the start.
+   */
+  providerSetupRequest: ProviderSetupRequest | null
+  /** Share dialog: null = closed; otherwise the file to feature, or '' for the whole list. */
+  shareDialogFilePath: string | null
   showLogsPanel: boolean
   logsAutoRefresh: boolean
   logsPanelHeight: number
@@ -200,6 +217,11 @@ export interface AppState {
   setFileMoveWarning: (msg: string | null) => void
   /** Clear all review state — call when a file opens or closes. */
   resetAgentReview: () => void
+  /** Open the provider setup sheet; resolves when it closes (true = connected). */
+  requestProviderSetup: (reason: ProviderSetupReason, filePath: string | null) => Promise<boolean>
+  resolveProviderSetup: (connected: boolean) => void
+  openShareDialog: (filePath?: string) => void
+  closeShareDialog: () => void
   toggleLogsPanel: () => void
   setLogsAutoRefresh: (on: boolean) => void
   setLogsPanelHeight: (h: number) => void
@@ -275,6 +297,8 @@ export const useAppStore = create<AppState>((set) => ({
   agentReviewSummary: null,
   agentNeedsReview: false,
   fileMoveWarning: null,
+  providerSetupRequest: null,
+  shareDialogFilePath: null,
   showLogsPanel: false,
   logsAutoRefresh: false,
   logsPanelHeight: 200,
@@ -378,6 +402,22 @@ export const useAppStore = create<AppState>((set) => ({
   setFileMoveWarning: (msg) => set({ fileMoveWarning: msg }),
   resetAgentReview: () =>
     set({ agentReviewDialogOpen: false, agentReviewSummary: null, agentNeedsReview: false, fileMoveWarning: null }),
+  requestProviderSetup: (reason, filePath) =>
+    new Promise<boolean>((resolve) => {
+      set((s) => {
+        // A second request while one is up loses: resolve it as cancelled
+        // rather than stacking two sheets.
+        s.providerSetupRequest?.resolve(false)
+        return { providerSetupRequest: { reason, filePath, resolve } }
+      })
+    }),
+  resolveProviderSetup: (connected) =>
+    set((s) => {
+      s.providerSetupRequest?.resolve(connected)
+      return { providerSetupRequest: null }
+    }),
+  openShareDialog: (filePath) => set({ shareDialogFilePath: filePath ?? '' }),
+  closeShareDialog: () => set({ shareDialogFilePath: null }),
   toggleLogsPanel: () => set((s) => ({ showLogsPanel: !s.showLogsPanel })),
   setLogsAutoRefresh: (on) => set({ logsAutoRefresh: on }),
   setLogsPanelHeight: (h) => set({ logsPanelHeight: h }),
