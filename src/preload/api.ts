@@ -417,10 +417,12 @@ export interface AdfApi {
     Promise<{ packages: McpInstalledPackage[] }>
   getAdapterStatus: () =>
     Promise<{ adapters: AdapterState[]; perAgent?: AdapterAgentStatus[] }>
-  restartAdapter: (args: { type: string }) =>
+  /** `filePath` picks the agent hosting the adapter; omitted = the open agent. */
+  restartAdapter: (args: { type: string; filePath?: string }) =>
     Promise<{ success: boolean; error?: string }>
-  getAdapterLogs: (args: { type: string }) =>
-    Promise<{ logs: AdapterLogEntry[] }>
+  /** `running` is false when that agent has no adapter manager (it is not running). */
+  getAdapterLogs: (args: { type: string; filePath?: string }) =>
+    Promise<{ logs: AdapterLogEntry[]; running?: boolean }>
   onAdapterInstallProgress: (callback: (event: AdapterInstallProgress) => void) => () => void
   onAdapterStatusChanged: (callback: (event: AdapterStatusEvent) => void) => () => void
   setAdapterCredential: (args: { filePath: string; adapterType: string; envKey: string; value: string }) =>

@@ -47,7 +47,8 @@ interface ProviderModalProps {
   onFetchModels: () => void
   chatgpt: SubscriptionAuthState
   grok: SubscriptionAuthState
-  onOverrideCountChange?: (count: number) => void
+  /** Agents whose .adf carries a copy of this provider (keyed or not). */
+  onCarrierCountChange?: (count: number) => void
 }
 
 export function ProviderModal(props: ProviderModalProps) {
@@ -139,14 +140,15 @@ function Field({ label, hint, children }: { label: string; hint?: React.ReactNod
 
 function ProviderForm({
   provider, entry, isDefault, status, onUpdate, onRemove, onMakeDefault, onTest, onClose,
-  models, onFetchModels, chatgpt, grok, onOverrideCountChange,
+  models, onFetchModels, chatgpt, grok, onCarrierCountChange,
 }: ProviderModalProps & { provider: ProviderConfig; entry?: ProviderCatalogEntry }) {
   const subscription = isSubscriptionType(provider.type)
   const auth = provider.type === 'chatgpt-subscription' ? chatgpt : provider.type === 'grok-subscription' ? grok : null
   const [customModel, setCustomModel] = useState(false)
   const modelList = models?.models ?? []
   const listMode = modelList.length > 0 && !customModel
-  const baseUrlNeedsEdit = /YOUR_[A-Z_]+/.test(provider.baseUrl)
+  // Catalog base URLs carry one uppercase placeholder (YOUR_ACCOUNT_ID, YOUR_RESOURCE).
+  const baseUrlPlaceholder = provider.baseUrl.match(/YOUR_[A-Z0-9_]+/)?.[0]
 
   return (
     <div className="space-y-4">
@@ -175,8 +177,8 @@ function ProviderForm({
       {/* App default */}
       <section className="space-y-2.5">
         <div>
-          <div className="text-[13px] font-medium text-[var(--adf-ui-text)]">App default</div>
-          <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">What every agent gets when it picks this provider, unless it has an override below.</p>
+          <div className="text-[13px] font-medium text-[var(--adf-ui-text)]">App values</div>
+          <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">What an agent on this provider uses. An agent carrying its own copy (listed below) uses the copy's fields, and this key if the copy has none.</p>
         </div>
         <Field label="Name">
           <TextInput aria-label="Provider name" type="text" value={provider.name} onChange={(e) => onUpdate({ name: e.target.value })} placeholder={entry?.label} />
@@ -184,7 +186,9 @@ function ProviderForm({
         {provider.type === 'openai-compatible' && (
           <Field
             label="Base URL"
-            hint={baseUrlNeedsEdit ? <span className="text-[var(--adf-ui-warning)]">Replace the placeholder segment with your own value.</span> : 'The root the /chat/completions path is appended to.'}
+            hint={baseUrlPlaceholder
+              ? <span className="text-[var(--adf-ui-warning)]">Replace {baseUrlPlaceholder} with your own value.</span>
+              : 'The root the /chat/completions path is appended to.'}
           >
             <TextInput aria-label="Base URL" type="text" value={provider.baseUrl} onChange={(e) => onUpdate({ baseUrl: e.target.value })} placeholder={entry?.baseUrl ?? 'http://localhost:1234/v1'} className="font-mono text-[12px]" />
           </Field>
@@ -252,15 +256,15 @@ function ProviderForm({
         </details>
       </section>
 
-      {/* Agent overrides */}
+      {/* Agents carrying a copy of this provider */}
       {!subscription && (
         <section className="border-t border-[var(--adf-ui-separator)] pt-3">
-          <ProviderAgentOverrides provider={provider} apiKeyPlaceholder={entry?.keyPlaceholder} onCountChange={onOverrideCountChange} />
+          <ProviderAgentOverrides provider={provider} apiKeyPlaceholder={entry?.keyPlaceholder} onCountChange={onCarrierCountChange} />
         </section>
       )}
       {subscription && (
         <p className="border-t border-[var(--adf-ui-separator)] pt-3 text-[11px] text-[var(--adf-ui-text-subtle)]">
-          Subscription sign-ins are app-wide: every agent on this provider shares the session. No per-agent overrides.
+          Subscription sign-ins are app-wide: every agent on this provider shares the session. Agents cannot carry their own copy.
         </p>
       )}
 

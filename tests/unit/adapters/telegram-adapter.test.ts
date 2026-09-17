@@ -981,7 +981,7 @@ describe('TelegramAdapter', () => {
       expect(result.error).toContain('401 Unauthorized')
       expect(result.error).toContain('TELEGRAM_BOT_TOKEN')
       expect(result.error).toContain('@BotFather')
-      expect(result.error).toContain('Settings > Channel Adapters')
+      expect(result.error).toContain('Settings > Channels')
       expect(result.error).toContain(SETUP_GUIDE)
     })
 
@@ -1098,7 +1098,7 @@ describe('TelegramAdapter', () => {
 
       expect(result.success).toBe(false)
       expect(result.error).toContain('not connected')
-      expect(result.error).toContain('Settings > Channel Adapters')
+      expect(result.error).toContain('Settings > Channels')
       expect(result.error).toContain(SETUP_GUIDE)
     })
 

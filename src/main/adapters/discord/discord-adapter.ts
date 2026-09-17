@@ -145,7 +145,8 @@ export function describeDiscordError(err: unknown, attachments?: SentFileInfo[])
       'was reset, or was pasted with extra characters. Fix: open the Discord Developer Portal ' +
       '(discord.com/developers/applications), select the application, open the Bot page and press ' +
       '"Reset Token" — the new token is shown only once, so copy it immediately — then update ' +
-      'DISCORD_BOT_TOKEN in Settings > Channel Adapters > Discord and restart the adapter.'
+      'DISCORD_BOT_TOKEN for this agent in Settings > Channels > Discord (the token is stored on ' +
+      'the agent, not app-wide) and restart the adapter.'
     )
   }
 
@@ -240,7 +241,8 @@ export class DiscordAdapter implements ChannelAdapter {
       throw new Error(withSetupGuide('discord',
         'Missing DISCORD_BOT_TOKEN credential — the adapter cannot log in without a bot token. ' +
         'Fix: create an application at discord.com/developers/applications, open its Bot page, ' +
-        'copy the bot token, and add it as DISCORD_BOT_TOKEN in Settings > Channel Adapters > Discord.'))
+        'copy the bot token, then connect this agent in Settings > Channels > Discord and add it ' +
+        'there as DISCORD_BOT_TOKEN — adapter tokens are stored on the agent, not app-wide.'))
     }
     const applicationId = ctx.getCredential('DISCORD_APPLICATION_ID')
 
@@ -354,8 +356,8 @@ export class DiscordAdapter implements ChannelAdapter {
         success: false,
         error: withSetupGuide('discord',
           `Discord bot is not connected (adapter status: ${this.currentStatus}) — nothing was delivered. ` +
-          'Fix: open Settings > Channel Adapters > Discord, check the adapter logs for the startup ' +
-          'error, and restart the adapter.')
+          'Fix: open Settings > Channels > Discord for this agent, check the adapter logs for the ' +
+          'startup error, and restart the adapter.')
       }
     }
 

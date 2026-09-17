@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { ProviderConfig, ProviderCredentialFileInfo } from '../../../shared/types/ipc.types'
 import { loadTrackedAdfFiles, adfDisplayName, type TrackedAdfFile } from '../../utils/tracked-adf-files'
+import { Tooltip } from '../common/Tooltip'
 import { Button, IconButton, Select, TextInput } from '../ui'
 
 interface AdfProviderOverride {
@@ -12,18 +13,23 @@ interface AdfProviderOverride {
 interface ProviderAgentOverridesProps {
   provider: ProviderConfig
   apiKeyPlaceholder?: string
-  /** Called after an override is added or removed so the row chip can refresh. */
+  /** Called after a carrier is added or removed so the row chip can refresh. */
   onCountChange?: (count: number) => void
 }
 
 /**
- * Agent overrides for one provider.
+ * Agents that carry a copy of one provider.
  *
- * An override is a copy of this provider stored inside an agent's .adf file
- * (config `providers[]` + the key in `adf_identity`). At runtime the agent's
- * copy replaces the app default entirely, key included: there is no merge and
- * no fallback to the app key. That is why every field here is editable per
- * agent, and why a missing key is called out.
+ * A carrier is an agent whose .adf stores this provider in its config
+ * `providers[]`, optionally with a key in `adf_identity`. At runtime that copy
+ * is used for every field it carries; only a missing key falls back to the
+ * app key for the same provider id (provider-factory.ts
+ * resolveEffectiveProviderConfig).
+ *
+ * Carriers are not all hand-made: Studio copies the default provider into every
+ * agent it creates (config only, never the key), so a brand-new agent shows up
+ * here with no key of its own. The list therefore says "carries a copy", not
+ * "overrides", and calls out the missing key rather than implying it is normal.
  */
 export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountChange }: ProviderAgentOverridesProps) {
   const [files, setFiles] = useState<ProviderCredentialFileInfo[]>([])
@@ -122,13 +128,24 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
   }
 
   const remove = async (filePath: string) => {
-    if (!window.confirm(`Remove this agent's override? It will use the app default for ${provider.name || 'this provider'} again.`)) return
+    if (!window.confirm(`Remove this agent's copy of ${provider.name || 'this provider'}? It goes back to the app values, and its own key for this provider is deleted.`)) return
     await window.adfApi?.detachProvider({ filePath, providerId: provider.id })
     manualPaths.current.delete(filePath)
     const next = files.filter((f) => f.filePath !== filePath)
     setFiles(next)
     onCountChangeRef.current?.(next.length)
     if (editing === filePath) setEditing(null)
+    // Drop the detached row's form state: re-adding the same agent must start
+    // from the app values, not from the key and edits that were just removed.
+    const drop = <T,>(prev: Record<string, T>): Record<string, T> => {
+      if (!(filePath in prev)) return prev
+      const n = { ...prev }
+      delete n[filePath]
+      return n
+    }
+    setKeys(drop)
+    setOverrides(drop)
+    setStatus(drop)
   }
 
   const patchOverride = (filePath: string, patch: AdfProviderOverride) =>
@@ -140,20 +157,22 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
     <div className="space-y-2">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-[13px] font-medium text-[var(--adf-ui-text)]">Agent overrides</div>
+          <div className="text-[13px] font-medium text-[var(--adf-ui-text)]">Agents carrying this provider</div>
           <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            Agents that carry their own copy of this provider. An override replaces the app default for that agent, key included.
+            These agents store their own copy of this provider. The copy is used for every field it carries; only a
+            missing key falls back to the app key above. Studio puts a key-less copy in every agent it creates, so
+            most agents appear here and run on the app key until you give them their own.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button variant="ghost" size="compact" onClick={() => void load()} disabled={loading}>{loading ? 'Scanning…' : 'Refresh'}</Button>
-          <Button variant="secondary" size="compact" onClick={() => setPicking(true)} disabled={picking}>+ Add agent</Button>
+          <Button variant="secondary" size="compact" onClick={() => setPicking(true)} disabled={picking}>+ Give an agent a copy</Button>
         </div>
       </div>
 
       {picking && (
         <div className="flex items-center gap-1.5 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] p-1.5">
-          <Select defaultValue="" onChange={(e) => addAgent(e.target.value)} className="text-[12px]" aria-label="Agent to override">
+          <Select defaultValue="" onChange={(e) => addAgent(e.target.value)} className="text-[12px]" aria-label="Agent to give a copy of this provider">
             <option value="" disabled>{tracked.length === 0 ? 'No agents in tracked folders' : 'Pick an agent…'}</option>
             {available.map((t) => <option key={t.filePath} value={t.filePath}>{adfDisplayName(t)}</option>)}
           </Select>
@@ -163,7 +182,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
 
       {files.length === 0 && !picking ? (
         <p className="rounded-[var(--adf-ui-control-radius)] border border-dashed border-[var(--adf-ui-border)] px-3 py-2.5 text-[12px] text-[var(--adf-ui-text-subtle)]">
-          No overrides. Every agent that picks this provider uses the app default above.
+          No agent carries a copy. Every agent on this provider uses the app values above.
         </p>
       ) : (
         <div className="space-y-1.5">
@@ -182,11 +201,19 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
                     <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">{isEditing ? '▼' : '▶'}</span>
                     <span className="truncate text-[12px] font-medium text-[var(--adf-ui-text)]">{nameFor(file.filePath, file.fileName)}</span>
                     {file.hasCredentials ? (
-                      <span className="rounded bg-[var(--adf-ui-success-subtle)] px-1 py-0.5 text-[9px] font-medium text-[var(--adf-ui-success)]">Key set</span>
+                      <Tooltip tip="This agent uses its own key for this provider.">
+                        <span className="rounded bg-[var(--adf-ui-success-subtle)] px-1 py-0.5 text-[9px] font-medium text-[var(--adf-ui-success)]">Own key</span>
+                      </Tooltip>
                     ) : (
-                      <span className="rounded bg-[var(--adf-ui-warning-subtle)] px-1 py-0.5 text-[9px] font-medium text-[var(--adf-ui-warning)]">No key</span>
+                      <Tooltip tip="This agent's copy has no key, so it runs on the app key above. Give it a key here to use its own.">
+                        <span className="rounded bg-[var(--adf-ui-surface-hover)] px-1 py-0.5 text-[9px] font-medium text-[var(--adf-ui-text-muted)]">App key</span>
+                      </Tooltip>
                     )}
-                    {o.defaultModel && <span className="truncate text-[10px] text-[var(--adf-ui-text-subtle)]">{o.defaultModel}</span>}
+                    {o.defaultModel && o.defaultModel !== provider.defaultModel && (
+                      <Tooltip tip="Model stored on this agent's copy, instead of the app value.">
+                        <span className="truncate text-[10px] text-[var(--adf-ui-text-subtle)]">{o.defaultModel}</span>
+                      </Tooltip>
+                    )}
                   </button>
                   <Button variant="ghost" size="compact" className="mr-1 text-[var(--adf-ui-danger)]" onClick={() => void remove(file.filePath)}>Remove</Button>
                 </div>
@@ -210,7 +237,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
                         type="text"
                         value={o.defaultModel ?? ''}
                         onChange={(e) => patchOverride(file.filePath, { defaultModel: e.target.value })}
-                        placeholder={provider.defaultModel || 'Same as app default'}
+                        placeholder={provider.defaultModel ? `Copied from the app value (${provider.defaultModel})` : 'Copied from the app value'}
                         className="text-[12px]"
                       />
                     </div>
@@ -250,7 +277,11 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
   )
 }
 
-/** Key/value request parameter rows. Blank value = send null (deletes the key). */
+/**
+ * Key/value request parameter rows. Values are parsed as JSON when they parse
+ * (otherwise sent as a string), and a blank value sends null — which deletes
+ * the key the SDK put in the request body.
+ */
 export function ParamsEditor({ params, onChange, compact }: {
   params: { key: string; value: string }[]
   onChange: (params: { key: string; value: string }[]) => void
@@ -269,7 +300,7 @@ export function ParamsEditor({ params, onChange, compact }: {
       </div>
       {params.length === 0 ? (
         <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">
-          {compact ? 'None.' : 'None. Extra JSON fields merged into every request body; a blank value sends null.'}
+          {compact ? 'None.' : 'None. Values are parsed as JSON and merged into every request body; a blank value sends null, which deletes that key.'}
         </p>
       ) : (
         <div className="space-y-1.5">

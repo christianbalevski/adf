@@ -3285,7 +3285,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
         {/* Channels */}
         {adapterRegistrations.length > 0 && (
-          <Section docs={DOCS.channels} hint="Configure channel adapters in Settings. Enable them here to bridge external messages into this agent." title="Channels">
+          <Section docs={DOCS.channels} hint="Connect channels under Settings → Channels. Switch them on here to bring outside messages into this agent." title="Channels">
             <div className="space-y-3">
               {template && (
                 <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Channels are connected per agent from Settings → Channels, or from the agent's own Config tab.</p>

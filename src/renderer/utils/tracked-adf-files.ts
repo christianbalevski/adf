@@ -28,15 +28,16 @@ export function flattenAdfFiles(entries: TrackedDirEntry[]): TrackedAdfFile[] {
 export async function loadTrackedAdfFiles(): Promise<TrackedAdfFile[]> {
   const dirsResult = await window.adfApi?.getTrackedDirectories()
   const dirs = dirsResult?.directories ?? []
-  const all: TrackedAdfFile[] = []
-  for (const dir of dirs) {
+  const scans = await Promise.all(dirs.map(async (dir) => {
     try {
       const scanResult = await window.adfApi?.scanTrackedDirectory(dir)
-      if (scanResult?.files) all.push(...flattenAdfFiles(scanResult.files))
+      return scanResult?.files ? flattenAdfFiles(scanResult.files) : []
     } catch {
       // A missing or unreadable directory just contributes nothing.
+      return []
     }
-  }
+  }))
+  const all: TrackedAdfFile[] = scans.flat()
   const seen = new Set<string>()
   return all.filter((f) => {
     if (seen.has(f.filePath)) return false
@@ -48,4 +49,16 @@ export async function loadTrackedAdfFiles(): Promise<TrackedAdfFile[]> {
 /** Display label for an ADF file: its agent name, else the file name without extension. */
 export function adfDisplayName(f: { fileName: string; agentName?: string }): string {
   return f.agentName?.trim() || f.fileName.replace(/\.adf$/, '')
+}
+
+/**
+ * Display label for a path that may sit outside the tracked directories: the
+ * tracked agent's name when we know it, else the file name without extension.
+ * Never the absolute path — it is long and says nothing useful.
+ */
+export function adfDisplayNameForPath(filePath: string, tracked: TrackedAdfFile[]): string {
+  const known = tracked.find((f) => f.filePath === filePath)
+  if (known) return adfDisplayName(known)
+  const fileName = filePath.split(/[\\/]/).pop() ?? filePath
+  return fileName.replace(/\.adf$/, '')
 }

@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AdapterRegistration, AdapterStatusEvent } from '../../../shared/types/ipc.types'
-import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterCredentialFileInfo } from '../../../shared/types/channel-adapter.types'
+import type { AdapterState, AdapterAgentStatus, AdapterCredentialFileInfo } from '../../../shared/types/channel-adapter.types'
 import { ADAPTER_REGISTRY, findAdapterRegistryEntry, withBuiltInAdapterRegistrations } from '../../../shared/constants/adapter-registry'
-import { loadTrackedAdfFiles, adfDisplayName, type TrackedAdfFile } from '../../utils/tracked-adf-files'
+import { loadTrackedAdfFiles, adfDisplayNameForPath, type TrackedAdfFile } from '../../utils/tracked-adf-files'
 import { BrandMark } from '../common/BrandMark'
 import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
-import { AdapterLogs } from './AdapterLogs'
 import { ChannelSetupModal } from './ChannelSetupModal'
 
 const STATUS_DOT: Record<string, string> = {
@@ -36,8 +35,6 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
   const [filesByType, setFilesByType] = useState<Record<string, AdapterCredentialFileInfo[]>>({})
   const [byType, setByType] = useState<AdapterState[]>([])
   const [perAgent, setPerAgent] = useState<AdapterAgentStatus[]>([])
-  const [logsFor, setLogsFor] = useState<string | null>(null)
-  const [logs, setLogs] = useState<AdapterLogEntry[]>([])
   const [setup, setSetup] = useState<{ type: string; filePath?: string } | null>(null)
 
   const refreshStatus = useCallback(async () => {
@@ -47,15 +44,17 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
   }, [])
 
   const refreshFiles = useCallback(async () => {
-    const next: Record<string, AdapterCredentialFileInfo[]> = {}
-    for (const reg of rows) {
+    const types = rows.map((r) => r.type)
+    const scans = await Promise.all(types.map(async (type) => {
       try {
-        const r = await window.adfApi?.listAdapterCredentialFiles({ adapterType: reg.type })
-        next[reg.type] = r?.files ?? []
+        const r = await window.adfApi?.listAdapterCredentialFiles({ adapterType: type })
+        return r?.files ?? []
       } catch {
-        next[reg.type] = []
+        return [] as AdapterCredentialFileInfo[]
       }
-    }
+    }))
+    const next: Record<string, AdapterCredentialFileInfo[]> = {}
+    types.forEach((type, i) => { next[type] = scans[i] })
     setFilesByType(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows.map((r) => r.type).join('|')])
@@ -70,24 +69,19 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
     return () => { unsub?.() }
   }, [refreshStatus])
 
-  const showLogs = async (type: string) => {
-    if (logsFor === type) { setLogsFor(null); return }
-    const r = await window.adfApi?.getAdapterLogs({ type })
-    setLogs(r?.logs ?? [])
-    setLogsFor(type)
-  }
-
   const removePackage = async (reg: AdapterRegistration) => {
-    if (findAdapterRegistryEntry(reg.type)?.builtIn) return
-    if (!window.confirm(`Remove the ${reg.type} adapter package?`)) return
+    const entry = findAdapterRegistryEntry(reg.type)
+    if (entry?.builtIn) return
+    const label = entry?.displayName ?? reg.type
+    const message = reg.npmPackage && reg.managed
+      ? `Remove ${label} from this list and uninstall ${reg.npmPackage}? Agents keep the credentials stored in their own files.`
+      : `Remove ${label} from this list? Agents keep the credentials stored in their own files.`
+    if (!window.confirm(message)) return
     if (reg.npmPackage && reg.managed) await window.adfApi?.uninstallAdapterPackage({ package: reg.npmPackage })
     onAdaptersChanged(adaptersRef.current.filter((a) => a.id !== reg.id))
   }
 
-  const agentName = (filePath: string, fallback: string): string => {
-    const a = agents.find((x) => x.filePath === filePath)
-    return a ? adfDisplayName(a) : fallback.replace(/\.adf$/, '')
-  }
+  const agentName = (filePath: string): string => adfDisplayNameForPath(filePath, agents)
 
   const liveFor = (filePath: string, type: string) =>
     perAgent.find((p) => p.filePath === filePath)?.adapters.find((a) => a.type === type)
@@ -125,7 +119,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
         <div className="rounded-[var(--adf-ui-container-radius)] border border-dashed border-[var(--adf-ui-border)] p-4">
           <p className="text-[13px] font-medium text-[var(--adf-ui-text)]">Give an agent a place to talk</p>
           <p className="mt-0.5 max-w-xl text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            Pick a channel, choose the agent, paste the token. Most take under five minutes; each tile says where the token comes from.
+            Pick a channel, choose the agent, paste the token. Each tile lists the steps for getting that token.
           </p>
           <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-3">
             {ADAPTER_REGISTRY.map((e) => (
@@ -164,11 +158,10 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
                       <span className="truncate text-[13px] font-medium text-[var(--adf-ui-text)]">{label}</span>
                       {!entry?.builtIn && reg.npmPackage && <span className="truncate font-mono text-[10px] text-[var(--adf-ui-text-subtle)]">{reg.npmPackage}</span>}
                     </div>
-                    <p className="truncate text-[10.5px] text-[var(--adf-ui-text-subtle)]">{entry?.tagline ?? entry?.description ?? 'Channel adapter'}</p>
+                    <p className="truncate text-[10.5px] text-[var(--adf-ui-text-subtle)]">{entry?.tagline ?? entry?.description ?? `Channel type "${reg.type}"`}</p>
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                  <Button variant="ghost" size="compact" onClick={() => void showLogs(reg.type)}>{logsFor === reg.type ? 'Hide logs' : 'Logs'}</Button>
                   {!entry?.builtIn && <Button variant="ghost" size="compact" className="text-[var(--adf-ui-danger)]" onClick={() => void removePackage(reg)}>Remove</Button>}
                   <Button variant="secondary" size="compact" onClick={() => setSetup({ type: reg.type })}>+ Connect an agent</Button>
                 </div>
@@ -181,12 +174,20 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
                 ) : files.map((f) => {
                   const live = liveFor(f.filePath, reg.type)
                   const status = live?.status ?? 'disconnected'
-                  const needsKeys = !f.hasCredentials && (entry?.requiredEnvKeys.length ?? 0) > 0
+                  // Required keys the agent has not stored. `populatedKeys` is
+                  // the truth here: "has some credentials" is not "has all of
+                  // them" (Slack needs both an app token and a bot token).
+                  const missingKeys = (entry?.requiredEnvKeys ?? []).filter((k) => !f.populatedKeys.includes(k))
                   const tip = live?.error
                     ? `${status}: ${live.error}`
-                    : needsKeys ? 'Enabled on this agent but no credentials stored yet.'
-                    : status === 'disconnected' ? 'Not running. Starts with the agent.'
-                    : status
+                    : missingKeys.length > 0
+                      ? `Missing credentials: ${missingKeys.join(', ')}. Click to add them.`
+                    : live
+                      ? status
+                      // No live adapter and no way to tell the two causes
+                      // apart from here: the file list does not report whether
+                      // the channel is switched on in the agent's config.
+                      : 'Not running here. Either the agent is stopped, or this channel is switched off in its config. Click to check.'
                   return (
                     <Tooltip key={f.filePath} tip={tip}>
                       <button
@@ -194,8 +195,8 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
                         onClick={() => setSetup({ type: reg.type, filePath: f.filePath })}
                         className="inline-flex items-center gap-1.5 rounded-full border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] py-0.5 pl-2 pr-2.5 text-[11.5px] text-[var(--adf-ui-text)] transition-colors hover:border-[var(--adf-ui-accent)] hover:bg-[var(--adf-ui-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]"
                       >
-                        <span className={`inline-block h-2 w-2 rounded-full ${needsKeys ? 'bg-amber-400' : STATUS_DOT[status] ?? 'bg-neutral-400'}`} />
-                        {agentName(f.filePath, f.fileName)}
+                        <span className={`inline-block h-2 w-2 rounded-full ${missingKeys.length > 0 ? 'bg-amber-400' : STATUS_DOT[status] ?? 'bg-neutral-400'}`} />
+                        {agentName(f.filePath)}
                       </button>
                     </Tooltip>
                   )
@@ -204,12 +205,6 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
 
               {aggregate?.error && !files.some((f) => liveFor(f.filePath, reg.type)?.error) && (
                 <p className="border-t border-[var(--adf-ui-separator)] px-3 py-1.5 text-[11px] text-[var(--adf-ui-danger)]">{aggregate.error}</p>
-              )}
-
-              {logsFor === reg.type && (
-                <div className="border-t border-[var(--adf-ui-separator)]">
-                  <AdapterLogs logs={logs} onClose={() => setLogsFor(null)} adapterType={reg.type} />
-                </div>
               )}
             </div>
           )

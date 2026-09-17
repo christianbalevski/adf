@@ -191,7 +191,7 @@ If a server is declared by the agent but is not registered in settings and has n
 
 ## Channel Adapters
 
-Daemon channel adapter setup reads adapter registrations from the `adapters` settings key and agent-level adapter config from `config.adapters`. Built-in registrations for Telegram and email are injected automatically, so agents can use those adapter types without an explicit settings registration.
+Daemon channel adapter setup reads adapter registrations from the `adapters` settings key and agent-level adapter config from `config.adapters`. Built-in registrations for Telegram and email are injected automatically, so agents can use those adapter types without an explicit settings registration. Registrations describe *how to load* an adapter; credentials come only from the agent's `adf_identity` rows (`adapter:{type}:{KEY}`) — the registration's `env` and `credentialStorage` fields are deprecated and ignored.
 
 Built-in adapter factories:
 

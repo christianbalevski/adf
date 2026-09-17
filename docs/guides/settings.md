@@ -59,7 +59,7 @@ Every provider row opens the same modal, in two parts:
 | **Default Model** | The model to use when an agent doesn't specify one. **Fetch models** lists what the endpoint offers |
 | **Advanced** | **Request delay** (milliseconds before each call, for rate limits) and **Request parameters** (extra JSON fields merged into every request body) |
 
-**Agent overrides** — agents that carry their own copy of this provider inside their `.adf` file. An override replaces the app default for that agent entirely, key included (there is no merge and no fallback to the app key). Add an agent from the tracked folders, then set its key, model, and advanced fields. The row shows an *N overrides* chip when any exist.
+**Agents carrying this provider** — agents whose `.adf` file holds its own copy of this provider. Studio puts a copy (without the key) into every agent it creates, so most agents appear here. At runtime the agent's copy is used for every field it carries; only a missing key falls back to the app key for the same provider id. Give an agent its own key, model, or advanced fields here, or remove the copy so it follows the app values. The row shows an *N agents carry a copy* chip.
 
 Most tiles are the same OpenAI-compatible runtime with a different base URL and logo; the modal says which API it speaks under the status line. The underlying types are `anthropic`, `openai`, `openai-compatible`, `openrouter`, `chatgpt-subscription`, and `grok-subscription`.
 
@@ -215,7 +215,7 @@ You can also leave Reasoning on and override a single field, or set a key's valu
 
 ### Per-ADF Provider Configurations
 
-Each ADF file can store its own copy of a provider independently of the app-wide settings. This allows agents to ship with embedded API keys, custom models, and provider-specific parameters. At runtime the agent's copy wins outright: when `providers[]` in the agent config contains the selected provider id, that entry (and the key in the agent's `adf_identity`) is used and the app-wide entry is not consulted.
+Each ADF file can store its own copy of a provider independently of the app-wide settings. This allows agents to ship with embedded API keys, custom models, and provider-specific parameters. At runtime, when `providers[]` in the agent config contains the selected provider id, that entry is used for every field it carries, with the key read from the agent's `adf_identity`. If the agent's copy has no key, the app-wide provider with the same id supplies the key (and nothing else). New agents created in Studio get exactly such a key-less copy of the default provider, which is why they work out of the box with the app key.
 
 Per-ADF provider configs are managed from:
 
@@ -255,7 +255,7 @@ From **Settings > MCP Servers**:
 
 ## Channel Adapters
 
-Channel adapters connect external messaging platforms to ADF agents. Manage them from **Settings > Channels**.
+Channel adapters connect external messaging platforms to ADF agents. Manage them from **Settings > Channels** — that is the tab name; "adapter" is the runtime term for the code behind each channel.
 Telegram, email, Discord, Slack, and WhatsApp are built in and always available; each is connected **per agent**.
 
 ### The Channels page
@@ -268,7 +268,7 @@ Each channel is a row listing the agents connected to it, one chip per agent wit
 
 There is no app-wide credential store for channels. Adapters run inside each agent, so one bot token used by two agents would put two pollers on the same bot (Telegram rejects the second outright). One bot, one agent.
 
-![Settings → Channels listing the Telegram, Email, and Discord adapters, each with a status dot and Disconnected label plus Configure, Restart, and Logs actions.](../assets/screenshots/settings-channels.png)
+![Settings → Channels listing the Telegram, Email, and Discord channels, each row showing the brand icon, a one-line description, Logs and Connect an agent actions, and a chip with a status dot per connected agent.](../assets/screenshots/settings-channels.png)
 
 ### Available Adapters
 
@@ -280,7 +280,7 @@ There is no app-wide credential store for channels. Adapters run inside each age
 | **Slack** | Yes | `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN` | Socket Mode — no public endpoint needed |
 | **WhatsApp** | Yes | *(none — QR pairing)* | Personal account via Baileys; scan QR from the agent's files. Unofficial protocol — use a non-critical account |
 
-Per-agent adapter configuration is set in the agent's config panel under `adapters`. See [Messaging > Channel Adapters](messaging.md#channel-adapters) for full details.
+Every connection is per-agent config under `adapters` plus credentials in that agent's `adf_identity`. Connecting an agent from the Channels page writes both; the agent's config panel edits the same `adapters` block. See [Messaging > Channel Adapters](messaging.md#channel-adapters) for full details.
 
 > **Registered ≠ active.** Built-in adapters are always *registered* by the runtime, but that only makes them available — it does not start them for any agent. An adapter runs for an agent only when `adapters[<type>].enabled === true` in that agent's config. And enabling the adapter alone is not enough for inbound messages to wake the agent: that also requires `messaging.receive: true` **and** the `triggers.on_inbox.enabled: true` trigger. Missing either of the latter two is the most common reason a correctly-credentialed adapter connects but the agent never responds.
 

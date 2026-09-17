@@ -906,13 +906,17 @@ describe('daemon HTTP API', () => {
       adapters: expect.arrayContaining([expect.objectContaining({
         id: 'telegram',
         type: 'telegram',
-        env: [{ key: 'BOT_TOKEN', hasValue: true }],
       }), expect.objectContaining({
         id: 'email',
         type: 'email',
       })]),
     }))
-    expect(JSON.stringify(adapters.json())).not.toContain('bot-secret')
+    // Adapter credentials are per agent (adf_identity); the deprecated
+    // app-level env is neither read nor reported, so not even its key names show.
+    const adapterJson = JSON.stringify(adapters.json())
+    expect(adapterJson).not.toContain('bot-secret')
+    expect(adapterJson).not.toContain('BOT_TOKEN')
+    expect(adapterJson).not.toContain('credentialStorage')
 
     const network = await server.inject({ method: 'GET', url: '/runtime/network' })
     expect(network.statusCode).toBe(200)

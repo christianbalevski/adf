@@ -467,9 +467,9 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.ADAPTER_LIST_INSTALLED),
   getAdapterStatus: () =>
     ipcRenderer.invoke(IPC.ADAPTER_GET_STATUS),
-  restartAdapter: (args: { type: string }) =>
+  restartAdapter: (args: { type: string; filePath?: string }) =>
     ipcRenderer.invoke(IPC.ADAPTER_RESTART, args),
-  getAdapterLogs: (args: { type: string }) =>
+  getAdapterLogs: (args: { type: string; filePath?: string }) =>
     ipcRenderer.invoke(IPC.ADAPTER_GET_LOGS, args),
   onAdapterInstallProgress: (callback: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>

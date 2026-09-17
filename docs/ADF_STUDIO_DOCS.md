@@ -27,14 +27,14 @@ You must configure a provider before an agent can run.
 
 1. Open **Settings** (gear icon in the sidebar, or `Cmd/Ctrl + ,`).
 2. Go to the **Providers** section.
-3. Click **Add Provider** and pick a type:
-   - **Anthropic** — Claude models (API key).
-   - **OpenAI** — GPT models (API key).
-   - **OpenAI-compatible** — any endpoint that speaks the OpenAI API (local models, gateways).
-   - **ChatGPT Subscription** — ChatGPT Plus/Pro via **Sign In with ChatGPT** (OAuth, flat-rate, no API key).
-4. Enter the key or complete the OAuth sign-in, optionally set a default model, and **Save**.
+3. Click **Add provider**. A catalog opens with one tile per service, grouped as:
+   - **Subscriptions** — ChatGPT Plus/Pro and SuperGrok/X Premium, via OAuth sign-in (flat-rate, no API key).
+   - **APIs** — Anthropic, OpenAI, OpenRouter, Gemini, xAI, Mistral, Groq and the other hosted endpoints (API key).
+   - **Local** — LM Studio, Ollama, vLLM, llama.cpp and friends, with the usual localhost base URL prefilled.
+   - **Other** — any endpoint that speaks the OpenAI API, with a base URL you enter.
+4. Click a tile. The provider is created and its configure modal opens: enter the key or complete the OAuth sign-in, optionally set a default model, and **Save**.
 
-![Settings → Providers with a connected Anthropic provider at the top and a new provider entry expanded below it, showing the provider type dropdown, name, credential storage toggle, API key field, and default model.](assets/screenshots/settings-add-provider.png)
+![Settings → Providers listing the connected providers, each row with the service logo, name, and default model.](assets/screenshots/settings-add-provider.png)
 
 Provider keys are application-level and are **never** exposed to agent code execution — only server-side model invocation can use them. See [Settings](guides/settings.md) for the full provider reference.
 

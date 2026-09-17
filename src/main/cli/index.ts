@@ -801,12 +801,10 @@ function formatAdapters(value: JsonValue): string {
 function formatGlobalAdapters(value: JsonValue): string {
   const adapters = isRecord(value) && Array.isArray(value.adapters) ? value.adapters.filter(isRecord) : []
   if (adapters.length === 0) return 'No daemon adapters registered.\n'
-  return table(['id', 'type', 'package', 'storage', 'env'], adapters.map(adapter => [
+  return table(['id', 'type', 'package'], adapters.map(adapter => [
     String(adapter.id ?? ''),
     String(adapter.type ?? ''),
     String(adapter.npmPackage ?? ''),
-    String(adapter.credentialStorage ?? ''),
-    Array.isArray(adapter.env) ? String(adapter.env.length) : '0',
   ]))
 }
 

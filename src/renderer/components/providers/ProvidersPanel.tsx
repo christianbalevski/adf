@@ -12,8 +12,11 @@ interface ProvidersPanelProps {
   setProviders: React.Dispatch<React.SetStateAction<ProviderConfig[]>>
   defaultProviderId: string | undefined
   setDefaultProviderId: (id: string | undefined) => void
-  /** Persist pending settings now (the page debounces saves) so Test / Fetch models see fresh values. */
-  flushSave: () => void
+  /**
+   * Persist pending settings now (the page debounces saves) so Test / Fetch
+   * models see fresh values. Resolves once the write has landed.
+   */
+  flushSave: () => Promise<void> | void
   onOpenTemplate: () => void
 }
 
@@ -28,7 +31,8 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
 
   const [status, setStatus] = useState<Record<string, ProviderTestStatus>>({})
   const [models, setModels] = useState<Record<string, ModelListState>>({})
-  const [overrideCounts, setOverrideCounts] = useState<Record<string, number>>({})
+  /** Agents whose .adf carries a copy of this provider (with or without its own key). */
+  const [carrierCounts, setCarrierCounts] = useState<Record<string, number>>({})
   const [modalOpen, setModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
 
@@ -51,7 +55,10 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providers])
 
-  // --- Override counts (row chips) -------------------------------------------
+  // --- Carrier counts (row chips) ---------------------------------------------
+  // The scan returns every agent whose .adf carries this provider in its config,
+  // keyed or not — and Studio copies the default provider into every agent it
+  // creates. So this is a "carries a copy" count, not an "overrides" count.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -65,7 +72,7 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
           next[p.id] = 0
         }
       }
-      if (!cancelled) setOverrideCounts(next)
+      if (!cancelled) setCarrierCounts(next)
     })()
     return () => { cancelled = true }
     // Re-count when the set of provider ids changes, not on every keystroke.
@@ -73,15 +80,17 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
   }, [providers.map((p) => p.id).join('|')])
 
   // --- Models ------------------------------------------------------------------
-  const fetchModels = useCallback((id: string) => {
+  const fetchModels = useCallback(async (id: string) => {
     if (models[id]?.loading) return
-    flushSave()
     setModels((m) => ({ ...m, [id]: { models: [], loading: true } }))
-    window.adfApi?.listModels(id).then((result) => {
-      setModels((m) => ({ ...m, [id]: { models: [...result.models].sort((a, b) => a.localeCompare(b)), error: result.error } }))
-    }).catch((err) => {
+    try {
+      // main reads the provider back from settings, so the write has to land first.
+      await flushSave()
+      const result = await window.adfApi?.listModels(id)
+      setModels((m) => ({ ...m, [id]: { models: [...(result?.models ?? [])].sort((a, b) => a.localeCompare(b)), error: result?.error } }))
+    } catch (err) {
       setModels((m) => ({ ...m, [id]: { models: [], error: String(err) } }))
-    })
+    }
   }, [models, flushSave])
 
   // --- Subscription auth ---------------------------------------------------------
@@ -150,13 +159,13 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
   const editing = editingId ? providers.find((p) => p.id === editingId) ?? null : null
   useEffect(() => {
     if (!editing) return
-    if (editing.type === 'chatgpt-subscription') { refreshChatgpt(); if (!models[editing.id]?.models?.length) fetchModels(editing.id) }
-    if (editing.type === 'grok-subscription') { refreshGrok(); if (!models[editing.id]?.models?.length) fetchModels(editing.id) }
+    if (editing.type === 'chatgpt-subscription') { refreshChatgpt(); if (!models[editing.id]?.models?.length) void fetchModels(editing.id) }
+    if (editing.type === 'grok-subscription') { refreshGrok(); if (!models[editing.id]?.models?.length) void fetchModels(editing.id) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingId])
 
   // --- Mutations -------------------------------------------------------------------
-  const pick = (entry: ProviderCatalogEntry) => {
+  const pick = async (entry: ProviderCatalogEntry) => {
     const current = providersRef.current
     const created: ProviderConfig = {
       id: generateProviderId(),
@@ -168,9 +177,28 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
       defaultModel: '',
       params: [],
     }
-    setProviders([...current, created])
+    const next = [...current, created]
+    const nextDefault = current.length === 0 ? created.id : defaultProviderId
+    // Claim the row's status before the list re-renders: the first-sight test
+    // effect skips ids it already has a status for, so it can't race the save
+    // below and pin a bogus result on a provider main hasn't seen yet. A fresh
+    // provider has no key and no session — "Not configured" is the truth.
+    setStatus((s) => ({ ...s, [created.id]: 'unconfigured' }))
+    setProviders(next)
     if (current.length === 0) setDefaultProviderId(created.id)
+    // Persist before opening the form. The page's debounced save can't be
+    // relied on here: this panel's effects run before the page's save effect,
+    // and the form's open effect immediately asks main for models — main reads
+    // providers from settings on disk, not from renderer state.
+    try {
+      await window.adfApi?.setSettings({ providers: next, defaultProviderId: nextDefault })
+    } catch {
+      // The page's debounced save still lands a moment later.
+    }
     setEditingId(created.id)
+    // Now that main can see it, get its real status (subscription tiles report
+    // an existing session as connected).
+    void runTest(created.id, false)
   }
 
   const update = (id: string, patch: Partial<ProviderConfig>) =>
@@ -195,7 +223,8 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
         <div>
           <label className="block text-[13px] font-medium text-[var(--adf-ui-text)]">Providers</label>
           <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            Model endpoints your agents can use. Each has an app default and optional per-agent overrides.
+            Model endpoints your agents can use. The values here apply to every agent; an agent that carries
+            its own copy of a provider uses the copy's fields, and the key here when the copy has none.
             New agents start on the default provider; change that under{' '}
             <button type="button" onClick={onOpenTemplate} className="rounded underline underline-offset-2 hover:text-[var(--adf-ui-text)] focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]">Agent template</button>.
           </p>
@@ -213,12 +242,12 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
         onUpdate={(patch) => editing && update(editing.id, patch)}
         onRemove={() => editing && remove(editing.id)}
         onMakeDefault={() => editing && setDefaultProviderId(editing.id)}
-        onTest={() => { if (editing) { flushSave(); void runTest(editing.id, true) } }}
+        onTest={() => { if (editing) void (async () => { await flushSave(); await runTest(editing.id, true) })() }}
         models={editing ? models[editing.id] : undefined}
-        onFetchModels={() => editing && fetchModels(editing.id)}
+        onFetchModels={() => { if (editing) void fetchModels(editing.id) }}
         chatgpt={chatgpt}
         grok={grok}
-        onOverrideCountChange={(count) => editing && setOverrideCounts((c) => ({ ...c, [editing.id]: count }))}
+        onCarrierCountChange={(count) => editing && setCarrierCounts((c) => ({ ...c, [editing.id]: count }))}
       />
 
       {providers.length === 0 ? (
@@ -235,7 +264,7 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
             const entry = catalogEntryForProvider(p)
             const st = status[p.id]
             const isDefault = p.id === defaultProviderId
-            const overrides = overrideCounts[p.id] ?? 0
+            const carriers = carrierCounts[p.id] ?? 0
             const detail = p.type === 'openai-compatible' && p.baseUrl ? p.baseUrl : providerTypeHint(p.type)
             return (
               <div
@@ -259,10 +288,10 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
                           <span className="rounded bg-[var(--adf-ui-warning-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-warning)]">Default</span>
                         </Tooltip>
                       )}
-                      {overrides > 0 && (
-                        <Tooltip tip={`${overrides} agent${overrides === 1 ? '' : 's'} carry their own copy of this provider.`}>
+                      {carriers > 0 && (
+                        <Tooltip tip={`${carriers} agent${carriers === 1 ? '' : 's'} store a copy of this provider in their .adf. The copy's fields are used; a copy without a key uses the app key.`}>
                           <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-accent)]">
-                            {overrides} override{overrides === 1 ? '' : 's'}
+                            {carriers === 1 ? '1 agent carries a copy' : `${carriers} agents carry a copy`}
                           </span>
                         </Tooltip>
                       )}

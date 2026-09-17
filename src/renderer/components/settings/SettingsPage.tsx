@@ -1344,7 +1344,7 @@ export function SettingsPage() {
   const consumePendingSettingsSection = useAppStore((s) => s.consumePendingSettingsSection)
   const hasLoaded = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout>>()
-  const pendingSave = useRef<(() => void) | null>(null)
+  const pendingSave = useRef<(() => Promise<unknown> | void) | null>(null)
   const contentScrollRef = useRef<HTMLElement>(null)
   const activeNavItem = SETTINGS_NAV_ITEMS.find((item) => item.id === activeTab) ?? SETTINGS_NAV_ITEMS[0]
   const normalizedSearch = settingsSearch.trim().toLowerCase()
@@ -1436,37 +1436,50 @@ export function SettingsPage() {
     return unsub
   }, [activeTab, meshEnabled])
 
-  // Auto-save on change (debounced) — flushes immediately on unmount
+  // Auto-save on change (debounced) — flushes immediately on unmount.
+  //
+  // `pendingSave` is re-pointed on every render, not only from the effect
+  // below: a child's effect runs before this component's effect, so a child
+  // that adds a provider and flushes right away (ProvidersPanel opening a
+  // freshly picked provider) would otherwise persist the *previous* render's
+  // values and main would not yet know the new provider exists. Returning the
+  // setSettings promise lets callers await the write before asking main to
+  // read it back.
+  const doSave = () => {
+    if (!hasLoaded.current) return
+    const written = window.adfApi?.setSettings({
+      providers,
+      defaultProviderId,
+      mcpServers,
+      adapters: adapterRegistrations,
+      globalSystemPrompt: systemPrompt,
+      compactionPrompt,
+      toolPrompts,
+      sandboxPackages,
+      sandboxMaxWorkers,
+      compute: {
+        hostAccessEnabled: computeHostAccessEnabled,
+        hostApproved: computeHostApproved,
+        hostApprovedSources: computeHostApprovedSources,
+        containerPackages: computeContainerPackages.split(',').map((s: string) => s.trim()).filter(Boolean),
+        machineCpus: computeMachineCpus,
+        machineMemoryMb: computeMachineMemoryMb,
+        containerImage: computeContainerImage,
+      },
+    })
+    invalidateConfigCaches()
+    return written
+  }
+  pendingSave.current = doSave
+
   useEffect(() => {
     if (!hasLoaded.current) return
     clearTimeout(saveTimer.current)
-    const doSave = () => {
-      pendingSave.current = null
-      window.adfApi?.setSettings({
-        providers,
-        defaultProviderId,
-        mcpServers,
-        adapters: adapterRegistrations,
-        globalSystemPrompt: systemPrompt,
-        compactionPrompt,
-        toolPrompts,
-        sandboxPackages,
-        sandboxMaxWorkers,
-        compute: {
-          hostAccessEnabled: computeHostAccessEnabled,
-          hostApproved: computeHostApproved,
-          hostApprovedSources: computeHostApprovedSources,
-          containerPackages: computeContainerPackages.split(',').map((s: string) => s.trim()).filter(Boolean),
-          machineCpus: computeMachineCpus,
-          machineMemoryMb: computeMachineMemoryMb,
-          containerImage: computeContainerImage,
-        }
-      })
-      invalidateConfigCaches()
-    }
-    pendingSave.current = doSave
-    saveTimer.current = setTimeout(doSave, 500)
+    saveTimer.current = setTimeout(() => { void pendingSave.current?.() }, 500)
     return () => clearTimeout(saveTimer.current)
+    // Re-arm the debounce whenever a persisted value changes; the payload itself
+    // is read from pendingSave, which every render refreshes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providers, defaultProviderId, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts, sandboxPackages, sandboxMaxWorkers, computeHostAccessEnabled, computeHostApproved, computeHostApprovedSources, computeContainerPackages, computeMachineCpus, computeMachineMemoryMb, computeContainerImage])
 
   // Flush pending save on unmount so changes aren't lost
@@ -1476,10 +1489,13 @@ export function SettingsPage() {
     }
   }, [])
 
-  /** Persist now instead of on the debounce tick (provider Test / Fetch models read the store). */
-  const flushSave = useCallback(() => {
+  /**
+   * Persist now instead of on the debounce tick, and resolve once the write has
+   * landed — provider Test / Fetch models ask main to read these values back.
+   */
+  const flushSave = useCallback(async (): Promise<void> => {
     clearTimeout(saveTimer.current)
-    if (pendingSave.current) pendingSave.current()
+    await pendingSave.current?.()
   }, [])
 
   const handleThemeChange = async (newTheme: 'light' | 'dark' | 'system') => {

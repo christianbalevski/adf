@@ -603,9 +603,9 @@ The `shared` field lists resolved file paths (not glob patterns) — the runtime
 
 ## Channel Adapters
 
-Channel adapters bridge external messaging platforms into the ADF inbox/outbox system. They convert platform-specific messages into the unified ADF message format, allowing agents to receive and reply to messages from Telegram, Discord, Email, and other platforms.
+Channel adapters bridge external messaging platforms into the ADF inbox/outbox system. They convert platform-specific messages into the unified ADF message format, allowing agents to receive and reply to messages from Telegram, Discord, Email, and other platforms. Each channel is connected per agent, from **Settings > Channels**.
 
-![Settings → Channels showing the Telegram, Email, and Discord adapter rows with connection status and Configure, Restart, and Logs actions for each.](../assets/screenshots/settings-channels.png)
+![Settings → Channels showing the Telegram, Email, and Discord channel rows, each with a brand icon, a one-line description, Logs and Connect an agent actions, and a chip with a status dot per connected agent.](../assets/screenshots/settings-channels.png)
 
 ### Design intent: realtime conversational layer
 
@@ -794,7 +794,6 @@ Custom IMAP/SMTP settings can be provided via the adapter `config` object to ove
 4. Pick the agent and enter two credentials:
    - `adapter:email:EMAIL_USERNAME` — Your full email address (e.g., `agent@gmail.com`)
    - `adapter:email:EMAIL_PASSWORD` — The app-specific password (not your regular password)
-5. Enable Email for the agent in its configuration
 
 **Per-agent configuration:**
 

@@ -15,13 +15,13 @@ Before creating an agent, you need to configure at least one LLM provider.
 
 1. Open **Settings** (gear icon in the sidebar, or `Cmd/Ctrl + ,`)
 2. Go to the **Providers** section
-3. Click **Add Provider**
-4. Select a provider type (Anthropic, OpenAI, or OpenAI-compatible)
+3. Click **Add provider** — a catalog opens, grouped into **Subscriptions**, **APIs**, **Local**, and **Other**
+4. Click the tile for the service you use (Anthropic, OpenAI, or any other OpenAI-compatible endpoint). The provider is created with its base URL prefilled and its configure modal opens
 5. Enter your API key
 6. Optionally set a default model
 7. Save
 
-![Settings → Providers with a connected provider entry and a new provider being added: type dropdown, name, credential storage, masked API key field, and default model.](assets/screenshots/settings-add-provider.png)
+![Settings → Providers listing the connected providers, each row with the service logo, name, and default model.](assets/screenshots/settings-add-provider.png)
 
 ## Creating Your First Agent
 

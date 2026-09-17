@@ -108,8 +108,34 @@ function createParamInjector(extraParams: Record<string, unknown>): typeof globa
 }
 
 /**
+ * Which ProviderConfig actually drives a call.
+ *
+ * An agent's own copy of a provider (`resolvedProvider`, pre-resolved from the
+ * agent's config + adf_identity) wins for every field it carries. The one
+ * exception is a missing key: Studio copies the default provider into every
+ * new agent WITHOUT its key ("sans secrets"), so a key-less copy borrows the
+ * key of the app provider with the same id. Only the key is borrowed; model,
+ * params, base URL, and delay stay the agent's. A copy that has its own key
+ * never sees the app key.
+ */
+export function resolveEffectiveProviderConfig(
+  providerKey: string,
+  settings: ProviderSettingsStore,
+  resolvedProvider?: ProviderConfig
+): ProviderConfig | undefined {
+  const appProvider = settings.getProvider(providerKey)
+  if (!resolvedProvider) return appProvider
+  if (!resolvedProvider.apiKey && appProvider?.apiKey) {
+    return { ...resolvedProvider, apiKey: appProvider.apiKey }
+  }
+  return resolvedProvider
+}
+
+/**
  * Create the appropriate LLM provider based on the agent's config and app settings.
- * If `resolvedProvider` is given (pre-resolved from ADF identity), use it instead of app settings.
+ * If `resolvedProvider` is given (pre-resolved from ADF identity), it is used instead
+ * of app settings, except that a missing key falls back to the app key (see
+ * resolveEffectiveProviderConfig).
  */
 export function createProvider(
   config: AgentConfig,
@@ -117,7 +143,7 @@ export function createProvider(
   resolvedProvider?: ProviderConfig
 ): LLMProvider {
   const providerKey = config.model.provider
-  const cfg = resolvedProvider ?? settings.getProvider(providerKey)
+  const cfg = resolveEffectiveProviderConfig(providerKey, settings, resolvedProvider)
 
   if (!cfg) {
     throw new Error(
