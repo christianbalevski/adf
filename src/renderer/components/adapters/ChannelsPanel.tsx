@@ -95,8 +95,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
       <div>
         <label className="block text-[13px] font-medium text-[var(--adf-ui-text)]">Channels</label>
         <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-          Bring outside conversations to an agent: Telegram, Discord, Slack, email, WhatsApp.
-          Each connection belongs to one agent and its credentials live in that agent's file.
+          One agent per connection; credentials live in that agent's file.
         </p>
       </div>
 
@@ -119,7 +118,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
         <div className="rounded-[var(--adf-ui-container-radius)] border border-dashed border-[var(--adf-ui-border)] p-4">
           <p className="text-[13px] font-medium text-[var(--adf-ui-text)]">Give an agent a place to talk</p>
           <p className="mt-0.5 max-w-xl text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            Pick a channel, choose the agent, paste the token. Each tile lists the steps for getting that token.
+            Pick a channel, choose the agent, paste the token.
           </p>
           <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-3">
             {ADAPTER_REGISTRY.map((e) => (

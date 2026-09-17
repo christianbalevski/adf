@@ -223,8 +223,6 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
         <div>
           <label className="block text-[13px] font-medium text-[var(--adf-ui-text)]">Providers</label>
           <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            Model endpoints your agents can use. The values here apply to every agent; an agent that carries
-            its own copy of a provider uses the copy's fields, and the key here when the copy has none.
             New agents start on the default provider; change that under{' '}
             <button type="button" onClick={onOpenTemplate} className="rounded underline underline-offset-2 hover:text-[var(--adf-ui-text)] focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]">Agent template</button>.
           </p>

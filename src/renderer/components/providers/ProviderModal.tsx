@@ -178,7 +178,7 @@ function ProviderForm({
       <section className="space-y-2.5">
         <div>
           <div className="text-[13px] font-medium text-[var(--adf-ui-text)]">App values</div>
-          <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">What an agent on this provider uses. An agent carrying its own copy (listed below) uses the copy's fields, and this key if the copy has none.</p>
+          <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">Used by every agent on this provider, unless the agent carries its own copy.</p>
         </div>
         <Field label="Name">
           <TextInput aria-label="Provider name" type="text" value={provider.name} onChange={(e) => onUpdate({ name: e.target.value })} placeholder={entry?.label} />
@@ -264,7 +264,7 @@ function ProviderForm({
       )}
       {subscription && (
         <p className="border-t border-[var(--adf-ui-separator)] pt-3 text-[11px] text-[var(--adf-ui-text-subtle)]">
-          Subscription sign-ins are app-wide: every agent on this provider shares the session. Agents cannot carry their own copy.
+          Subscription sign-ins are shared by every agent; no per-agent copies.
         </p>
       )}
 

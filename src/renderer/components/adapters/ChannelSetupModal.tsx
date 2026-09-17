@@ -240,7 +240,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
                   {available.map((a) => <option key={a.filePath} value={a.filePath}>{adfDisplayNameForPath(a.filePath, agents)}</option>)}
                 </Select>
               )}
-              {!connected && <p className="mt-0.5 text-[10.5px] text-[var(--adf-ui-text-subtle)]">Credentials are stored inside this agent's file. One bot per agent.</p>}
+              {!connected && <p className="mt-0.5 text-[10.5px] text-[var(--adf-ui-text-subtle)]">Stored in this agent's file.</p>}
             </div>
 
             {fields.length === 0 && !freeForm && (

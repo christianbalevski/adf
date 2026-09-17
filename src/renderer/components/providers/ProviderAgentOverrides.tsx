@@ -3,6 +3,8 @@ import type { ProviderConfig, ProviderCredentialFileInfo } from '../../../shared
 import { loadTrackedAdfFiles, adfDisplayName, type TrackedAdfFile } from '../../utils/tracked-adf-files'
 import { Tooltip } from '../common/Tooltip'
 import { Button, IconButton, Select, TextInput } from '../ui'
+import { DocsLink } from '../common/DocsLink'
+import { DOCS } from '../../../shared/constants/docs-links'
 
 interface AdfProviderOverride {
   defaultModel?: string
@@ -157,11 +159,12 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
     <div className="space-y-2">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-[13px] font-medium text-[var(--adf-ui-text)]">Agents carrying this provider</div>
+          <div className="flex items-center gap-2 text-[13px] font-medium text-[var(--adf-ui-text)]">
+            Agents carrying this provider
+            <DocsLink href={DOCS.settingsProviderCopies} />
+          </div>
           <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            These agents store their own copy of this provider. The copy is used for every field it carries; only a
-            missing key falls back to the app key above. Studio puts a key-less copy in every agent it creates, so
-            most agents appear here and run on the app key until you give them their own.
+            The agent's copy is used; a copy with no key uses the app key above.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -182,10 +185,10 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
 
       {files.length === 0 && !picking ? (
         <p className="rounded-[var(--adf-ui-control-radius)] border border-dashed border-[var(--adf-ui-border)] px-3 py-2.5 text-[12px] text-[var(--adf-ui-text-subtle)]">
-          No agent carries a copy. Every agent on this provider uses the app values above.
+          No agent carries a copy.
         </p>
       ) : (
-        <div className="space-y-1.5">
+        <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
           {files.map((file) => {
             const isEditing = editing === file.filePath
             const o = overrides[file.filePath] ?? {}
@@ -206,7 +209,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
                       </Tooltip>
                     ) : (
                       <Tooltip tip="This agent's copy has no key, so it runs on the app key above. Give it a key here to use its own.">
-                        <span className="rounded bg-[var(--adf-ui-surface-hover)] px-1 py-0.5 text-[9px] font-medium text-[var(--adf-ui-text-muted)]">App key</span>
+                        <span className="rounded border border-[var(--adf-ui-border)] px-1 py-0.5 text-[9px] font-medium text-[var(--adf-ui-text-muted)]">App key</span>
                       </Tooltip>
                     )}
                     {o.defaultModel && o.defaultModel !== provider.defaultModel && (
