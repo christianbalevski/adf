@@ -581,6 +581,14 @@ body,
 }
 
 /* Fleet map: activity panel fade-in when crossing into detail zoom */
+/* Shared Dialog: the native ::backdrop fades in with the panel (the panel
+   itself reuses meshFadeIn). Opacity only — a blur that also slides would
+   re-sample the whole window every frame. */
+@keyframes dialogBackdropIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @keyframes meshFadeIn {
   from {
     opacity: 0;

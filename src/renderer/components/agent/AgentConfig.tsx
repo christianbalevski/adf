@@ -351,7 +351,7 @@ function McpInstallModal({ open, onClose, serverConfig, onInstalled }: McpInstal
   }
 
   return (
-    <Dialog open={open} onClose={onClose} title={`Install MCP: ${serverConfig?.name ?? ''}`}>
+    <Dialog lightDismiss={false} open={open} onClose={onClose} title={`Install MCP: ${serverConfig?.name ?? ''}`}>
       <div className="space-y-3">
         <div>
           <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">npm Package</label>
@@ -501,7 +501,7 @@ function SandboxInstallModal({ open, onClose, packages }: SandboxInstallModalPro
   const allDone = packages.every((p) => results[p.name]?.status === 'installed' || results[p.name]?.status === 'error')
 
   return (
-    <Dialog open={open} onClose={onClose} title="Install Sandbox Packages">
+    <Dialog lightDismiss={false} open={open} onClose={onClose} title="Install Sandbox Packages">
       <div className="space-y-3">
         <p className="text-xs text-neutral-500 dark:text-neutral-400">
           This agent requires the following packages:
@@ -5711,7 +5711,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       </Dialog>
 
       {/* Add new meta key modal */}
-      <Dialog
+      <Dialog lightDismiss={false}
         open={addingMeta}
         onClose={() => setAddingMeta(false)}
         title="Add Meta Key"

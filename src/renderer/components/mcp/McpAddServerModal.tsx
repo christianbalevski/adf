@@ -499,7 +499,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   ) : null
 
   return (
-    <Dialog open={open} onClose={onClose} title={editing ? `Configure — ${editing.name}` : externallyRemoved && draft ? `Configure — ${draft.name}` : 'Add MCP Server'} wide>
+    <Dialog lightDismiss={false} open={open} onClose={onClose} title={editing ? `Configure — ${editing.name}` : externallyRemoved && draft ? `Configure — ${draft.name}` : 'Add MCP Server'} wide>
       {mode === 'choose' && (
         <div className="space-y-3">
           <p className="text-xs text-neutral-500 dark:text-neutral-400">

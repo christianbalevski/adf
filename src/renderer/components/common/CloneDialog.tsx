@@ -95,7 +95,7 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
   }
 
   return (
-    <Dialog open={open} onClose={onClose} title="Clone ADF">
+    <Dialog lightDismiss={false} open={open} onClose={onClose} title="Clone ADF">
       {loading ? (
         <p className="text-sm text-neutral-500 dark:text-neutral-400">Loading tables...</p>
       ) : error && tables.length === 0 ? (

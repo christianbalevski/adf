@@ -713,7 +713,7 @@ export function AgentReviewDialog() {
   const title = needsClaim ? `${summary?.name ?? 'An agent'} has arrived` : 'Review Agent'
 
   return (
-    <Dialog open={open} onClose={handleDialogClose} title={title} preventClose={loading} wide>
+    <Dialog lightDismiss={false} open={open} onClose={handleDialogClose} title={title} preventClose={loading} wide>
       {summary && (
         step === 'review'
           ? <ReviewContent summary={summary} />

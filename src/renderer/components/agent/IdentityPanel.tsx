@@ -620,7 +620,7 @@ export function IdentityPanel() {
       )}
 
       {/* Add Key Dialog */}
-      <Dialog
+      <Dialog lightDismiss={false}
         open={addKeyOpen}
         onClose={() => setAddKeyOpen(false)}
         title="Add Identity Key"

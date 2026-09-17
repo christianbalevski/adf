@@ -541,7 +541,7 @@ function IdentityTab() {
       </Dialog>
 
       {/* Import identity dialog */}
-      <Dialog open={importOpen} onClose={() => setImportOpen(false)} title="Import Identity">
+      <Dialog lightDismiss={false} open={importOpen} onClose={() => setImportOpen(false)} title="Import Identity">
         <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-3">
           Enter the 12-word seed phrase from another Studio. Your owner DID will change to the imported
           identity, and local agent files you own will be restamped to it.

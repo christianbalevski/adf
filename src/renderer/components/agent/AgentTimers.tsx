@@ -319,7 +319,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
   }
 
   return (
-    <Dialog open={open} onClose={handleClose} title={isEdit ? 'Edit Timer' : 'Add Timer'}>
+    <Dialog lightDismiss={false} open={open} onClose={handleClose} title={isEdit ? 'Edit Timer' : 'Add Timer'}>
       <div className="space-y-4">
         {/* Schedule mode */}
         <div>
