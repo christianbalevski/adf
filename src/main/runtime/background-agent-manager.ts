@@ -1592,10 +1592,10 @@ export class BackgroundAgentManager extends EventEmitter {
         // Envelope-sealed credentials that this process cannot unlock resolve
         // to null — the adapter would fail fast and never recover. Mark it
         // errored with a clear message instead of attempting.
-        if (envelopesLocked && adapterCredentialsLocked(workspace, adapterType, derivedKey ?? null, registration.env)) {
+        if (envelopesLocked && adapterCredentialsLocked(workspace, adapterType, derivedKey ?? null)) {
           console.error(`[BackgroundAgent][Adapter] Skipping "${adapterType}" for ${basename(filePath, '.adf')} — envelope-sealed credentials are locked`)
           try { workspace.insertLog('error', 'adapter', 'credentials_locked', adapterType, 'Envelope-sealed credentials are locked in this process — adapter not started') } catch { /* ignore */ }
-          await adapterMgr.startAdapter(adapterType, () => createLockedCredentialsAdapter(adapterType), adapterConfig, workspace, derivedKey, registration.env)
+          await adapterMgr.startAdapter(adapterType, () => createLockedCredentialsAdapter(adapterType), adapterConfig, workspace, derivedKey)
           return
         }
 
@@ -1622,7 +1622,7 @@ export class BackgroundAgentManager extends EventEmitter {
 
         try {
           const started = await adapterMgr.startAdapter(
-            adapterType, createFn, adapterConfig, workspace, derivedKey, registration.env
+            adapterType, createFn, adapterConfig, workspace, derivedKey
           )
           if (started) {
             console.log(`[BackgroundAgent][Adapter] Started "${adapterType}" for ${basename(filePath, '.adf')}`)

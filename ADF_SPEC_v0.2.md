@@ -1100,7 +1100,7 @@ MCP configurations travel with the file. Installed server binaries, app-wide cre
 }
 ```
 
-Adapters normalize external platform messages into `adf_inbox` and deliver `adf_outbox` rows to platform APIs. There is no `credential_key` config field — each adapter resolves its credentials by fixed identity purpose, `adapter:{type}:{KEY}` (e.g. `adapter:telegram:TELEGRAM_BOT_TOKEN`), looked up in the agent's `adf_identity` store or an app-wide store. See §8.2 for the full purpose convention.
+Adapters normalize external platform messages into `adf_inbox` and deliver `adf_outbox` rows to platform APIs. There is no `credential_key` config field — each adapter resolves its credentials by fixed identity purpose, `adapter:{type}:{KEY}` (e.g. `adapter:telegram:TELEGRAM_BOT_TOKEN`), looked up in the agent's own `adf_identity` store. That is the only store — there is no app-wide credential store for adapters and no fallback; a missing row is an error, not a prompt to look elsewhere. See §8.2 for the full purpose convention.
 
 ### 5.14 Serving Configuration
 
@@ -2137,7 +2137,7 @@ Not guaranteed to transfer:
 
 - Installed MCP packages
 - Runtime app settings
-- App-wide credentials
+- App-level provider keys and app-level MCP environment values (channel adapter credentials are identity-only, so they travel with the file)
 - Container images and host workspaces
 - Active WebSocket connections
 - In-memory unlock keys

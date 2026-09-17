@@ -79,7 +79,7 @@ function describeTelegramError(err: unknown): string {
   const desc = rawDesc.toLowerCase()
 
   if (code === 401 || desc.includes('unauthorized')) {
-    return 'Telegram rejected the request (401 Unauthorized): the TELEGRAM_BOT_TOKEN is invalid or was revoked. Get the current token from @BotFather in Telegram (/mybots > API Token), update it in Settings > Channel Adapters > Telegram, then restart the adapter'
+    return 'Telegram rejected the request (401 Unauthorized): the TELEGRAM_BOT_TOKEN is invalid or was revoked. Get the current token from @BotFather in Telegram (/mybots > API Token), update it for this agent in Settings > Channels > Telegram (the token is stored on the agent, not app-wide), then restart the adapter'
   }
   if (code === 403 || desc.includes('forbidden')) {
     if (desc.includes('blocked by the user')) {
@@ -142,7 +142,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const token = ctx.getCredential('TELEGRAM_BOT_TOKEN')
     if (!token) {
       this.currentStatus = 'error'
-      throw new Error(withSetupGuide('telegram', 'Missing TELEGRAM_BOT_TOKEN credential. Create a bot with @BotFather in Telegram (/newbot), copy its API token, and add it in Settings > Channel Adapters > Telegram.'))
+      throw new Error(withSetupGuide('telegram', 'Missing TELEGRAM_BOT_TOKEN credential. Create a bot with @BotFather in Telegram (/newbot), copy its API token, then connect this agent in Settings > Channels > Telegram and add the token there — adapter tokens are stored on the agent, not app-wide.'))
     }
 
     this.bot = new Bot(token)
@@ -684,7 +684,7 @@ export class TelegramAdapter implements ChannelAdapter {
     if (!this.bot || this.currentStatus !== 'connected') {
       return {
         success: false,
-        error: withSetupGuide('telegram', `Telegram bot is not connected (status: ${this.currentStatus}). Start the Telegram adapter in Settings > Channel Adapters and check its logs — an invalid TELEGRAM_BOT_TOKEN is the most common cause.`)
+        error: withSetupGuide('telegram', `Telegram bot is not connected (status: ${this.currentStatus}). Connect this agent in Settings > Channels > Telegram and check its logs — a missing or invalid TELEGRAM_BOT_TOKEN on the agent is the most common cause.`)
       }
     }
 
@@ -863,7 +863,7 @@ export class TelegramAdapter implements ChannelAdapter {
     if (!this.bot) {
       return {
         success: false,
-        error: withSetupGuide('telegram', 'Telegram bot is not connected. Start the Telegram adapter in Settings > Channel Adapters, then retry.')
+        error: withSetupGuide('telegram', 'Telegram bot is not connected. Connect this agent in Settings > Channels > Telegram, then retry.')
       }
     }
     const renderer = this.validateFormRenderer(form)

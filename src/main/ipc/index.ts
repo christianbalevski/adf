@@ -185,6 +185,7 @@ import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '.
 import { pickFresherConfig } from '../runtime/config-freshness'
 import { buildMcpServerConfigFromRegistration, deriveRegistrationTestPlan, pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
+import type { AdapterAgentStatus } from '../../shared/types/channel-adapter.types'
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { getTokenUsageService } from '../services/token-usage.service'
 import { getFleetBurnService } from '../services/fleet-burn.service'
@@ -4103,7 +4104,7 @@ export function registerAllIpcHandlers(): void {
         }
 
         const started = await adapterMgr.startAdapter(
-          adapterType, createFn, adapterConfig, capturedWorkspace, currentDerivedKey, registration.env
+          adapterType, createFn, adapterConfig, capturedWorkspace, currentDerivedKey
         )
         if (started) {
           console.log(`[AGENT_START][Adapter] Started "${adapterType}"`)
@@ -7304,33 +7305,61 @@ export function registerAllIpcHandlers(): void {
     const rank = (status: string): number =>
       status === 'connected' || status === 'running' ? 2 : status === 'error' ? 1 : 0
     const byType = new Map<string, ReturnType<ChannelAdapterManager['getStates']>[number]>()
-    const fold = (states: ReturnType<ChannelAdapterManager['getStates']>): void => {
+    // Per-agent view for Settings → Channels: which agent hosts which adapter
+    // and how that instance is doing. Logs are dropped (the by-type view
+    // keeps them) to keep the payload small.
+    const perAgent: AdapterAgentStatus[] = []
+    const fold = (filePath: string | null, states: ReturnType<ChannelAdapterManager['getStates']>): void => {
       for (const s of states) {
         const prev = byType.get(s.type)
         if (!prev || rank(s.status) > rank(prev.status)) byType.set(s.type, s)
       }
+      if (filePath && states.length > 0) {
+        perAgent.push({
+          filePath,
+          adapters: states.map((s) => ({ type: s.type, status: s.status, error: s.error, connectedAt: s.connectedAt })),
+        })
+      }
     }
-    if (currentAdapterManager) fold(currentAdapterManager.getStates())
+    if (currentAdapterManager) fold(currentWorkspace?.getFilePath() ?? null, currentAdapterManager.getStates())
     if (backgroundAgentManager) {
       for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
         const refs = backgroundAgentManager.getAgent(fp)
-        if (refs?.adapterManager) fold(refs.adapterManager.getStates())
+        if (refs?.adapterManager) fold(fp, refs.adapterManager.getStates())
       }
     }
-    return { adapters: [...byType.values()] }
+    return { adapters: [...byType.values()], perAgent }
   })
 
+  // Adapters run inside whichever agent hosts them, so logs and restarts must
+  // reach that agent's manager — the foreground one when the path matches (or
+  // when no path is given, for callers that only know about the open agent),
+  // otherwise the background agent's.
+  const resolveAdapterManager = (filePath?: string): ChannelAdapterManager | null => {
+    if (!filePath || currentWorkspace?.getFilePath() === filePath) return currentAdapterManager
+    return backgroundAgentManager?.getAgent(filePath)?.adapterManager ?? null
+  }
+
   ipcMain.handle(IPC.ADAPTER_RESTART, async (_event, rawArgs: unknown) => {
-    const args = z.object({ type: z.string() }).parse(rawArgs)
-    if (!currentAdapterManager) return { success: false, error: 'No adapter manager' }
-    const success = await currentAdapterManager.restart(args.type)
-    return { success }
+    const args = z.object({ type: z.string(), filePath: z.string().optional() }).parse(rawArgs)
+    const manager = resolveAdapterManager(args.filePath)
+    if (!manager) {
+      return {
+        success: false,
+        error: args.filePath
+          ? 'That agent is not running, so its channel has nothing to restart. Start the agent instead.'
+          : 'No agent is open, so there is no channel to restart.',
+      }
+    }
+    const success = await manager.restart(args.type)
+    return { success, error: success ? undefined : `Could not restart the ${args.type} channel.` }
   })
 
   ipcMain.handle(IPC.ADAPTER_GET_LOGS, async (_event, rawArgs: unknown) => {
-    const args = z.object({ type: z.string() }).parse(rawArgs)
-    if (!currentAdapterManager) return { logs: [] }
-    return { logs: currentAdapterManager.getLogs(args.type) }
+    const args = z.object({ type: z.string(), filePath: z.string().optional() }).parse(rawArgs)
+    const manager = resolveAdapterManager(args.filePath)
+    if (!manager) return { logs: [], running: false }
+    return { logs: manager.getLogs(args.type), running: true }
   })
 
   ipcMain.handle(IPC.ADAPTER_CREDENTIAL_SET, async (_event, rawArgs: unknown) => {
@@ -7340,21 +7369,52 @@ export function registerAllIpcHandlers(): void {
       envKey: z.string(),
       value: z.string()
     }).parse(rawArgs)
-    try {
-      const workspace = AdfWorkspace.open(args.filePath)
-      try {
-        const purpose = `adapter:${args.adapterType}:${args.envKey}`
-        const derivedKey = derivedKeyCache.get(args.filePath) ?? null
-        if (derivedKey) {
-          const { ciphertext, iv } = encrypt(Buffer.from(args.value, 'utf-8'), derivedKey)
-          const kdfParamsJson = workspace.getDatabase().getIdentity('crypto:kdf:params')
-          workspace.getDatabase().setIdentityRaw(purpose, ciphertext, 'aes-256-gcm', iv, kdfParamsJson)
-        } else {
-          workspace.setIdentity(purpose, args.value)
-        }
+    const purpose = `adapter:${args.adapterType}:${args.envKey}`
+
+    // Same shape as MCP_CREDENTIAL_SET: reuse an already-open workspace rather
+    // than opening a second handle on the same file, and never let a
+    // credentials envelope that cannot be opened here degrade to a plaintext
+    // identity row. 'absent' (pre-envelope file) keeps its plaintext contract.
+    const writeCredential = (ws: AdfWorkspace, derivedKey: Buffer | null): { success: boolean; error?: string } => {
+      if (derivedKey) {
+        const { ciphertext, iv } = encrypt(Buffer.from(args.value, 'utf-8'), derivedKey)
+        const kdfParamsJson = ws.getDatabase().getIdentity('crypto:kdf:params')
+        ws.getDatabase().setIdentityRaw(purpose, ciphertext, 'aes-256-gcm', iv, kdfParamsJson)
         return { success: true }
+      }
+      const state = ws.getEnvelopeState('credentials')
+      if (state === 'locked' || state === 'foreign') {
+        return {
+          success: false,
+          error: `Credentials envelope is ${state} for this file — refusing to store the adapter token in plaintext. Unlock the agent in ADF Studio (open it once), then retry.`,
+        }
+      }
+      ws.setIdentity(purpose, args.value)
+      return { success: true }
+    }
+
+    try {
+      if (currentWorkspace && args.filePath === currentFilePath) {
+        return writeCredential(currentWorkspace, currentDerivedKey ?? derivedKeyCache.get(args.filePath) ?? null)
+      }
+
+      const backgroundWorkspace = backgroundAgentManager?.hasAgent(args.filePath)
+        ? backgroundAgentManager.getAgent(args.filePath)?.workspace
+        : null
+      if (backgroundWorkspace) {
+        return writeCredential(backgroundWorkspace, derivedKeyCache.get(args.filePath) ?? null)
+      }
+
+      let tempWorkspace: AdfWorkspace | null = null
+      try {
+        tempWorkspace = AdfWorkspace.open(args.filePath)
+        // A temp-open starts locked even in Studio — run the unlock cascade so
+        // the refusal above only fires when the envelope genuinely cannot be
+        // opened by this install.
+        unlockWorkspaceEnvelopes(tempWorkspace)
+        return writeCredential(tempWorkspace, derivedKeyCache.get(args.filePath) ?? null)
       } finally {
-        if (args.filePath !== currentFilePath) workspace.close()
+        tempWorkspace?.close()
       }
     } catch (error) {
       return { success: false, error: String(error) }
@@ -7366,24 +7426,44 @@ export function registerAllIpcHandlers(): void {
       filePath: z.string(),
       adapterType: z.string()
     }).parse(rawArgs)
+    // Same workspace resolution as ADAPTER_CREDENTIAL_SET: an already-open
+    // workspace (foreground or background agent) has its envelopes unlocked;
+    // a temp open must run the unlock cascade or every sealed row reads as
+    // absent. `storedKeys` lists what exists even when it cannot be decrypted
+    // here, so the UI can say "stored" instead of showing a blank field.
+    const prefix = `adapter:${args.adapterType}:`
+    const read = (ws: AdfWorkspace, derivedKey: Buffer | null) => {
+      const purposes = ws.listIdentityPurposes(prefix)
+      const credentials: Record<string, string> = {}
+      const storedKeys: string[] = []
+      for (const purpose of purposes) {
+        const key = purpose.slice(prefix.length)
+        storedKeys.push(key)
+        const val = ws.getIdentityDecrypted(purpose, derivedKey)
+        if (val) credentials[key] = val
+      }
+      return { credentials, storedKeys }
+    }
     try {
-      const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)
-      if (!workspace) return { credentials: {} }
+      if (currentWorkspace && args.filePath === currentFilePath) {
+        return read(currentWorkspace, currentDerivedKey ?? derivedKeyCache.get(args.filePath) ?? null)
+      }
+      const backgroundWorkspace = backgroundAgentManager?.hasAgent(args.filePath)
+        ? backgroundAgentManager.getAgent(args.filePath)?.workspace
+        : null
+      if (backgroundWorkspace) {
+        return read(backgroundWorkspace, derivedKeyCache.get(args.filePath) ?? null)
+      }
+      let tempWorkspace: AdfWorkspace | null = null
       try {
-        const derivedKey = derivedKeyCache.get(args.filePath) ?? null
-        const purposes = workspace.listIdentityPurposes(`adapter:${args.adapterType}:`)
-        const credentials: Record<string, string> = {}
-        for (const purpose of purposes) {
-          const key = purpose.replace(`adapter:${args.adapterType}:`, '')
-          const val = workspace.getIdentityDecrypted(purpose, derivedKey)
-          if (val) credentials[key] = val
-        }
-        return { credentials }
+        tempWorkspace = AdfWorkspace.open(args.filePath)
+        unlockWorkspaceEnvelopes(tempWorkspace)
+        return read(tempWorkspace, derivedKeyCache.get(args.filePath) ?? null)
       } finally {
-        if (args.filePath !== currentFilePath) workspace.close()
+        tempWorkspace?.close()
       }
     } catch (error) {
-      return { credentials: {}, error: String(error) }
+      return { credentials: {}, storedKeys: [], error: String(error) }
     }
   })
 
@@ -7487,13 +7567,22 @@ export function registerAllIpcHandlers(): void {
       try {
         const agentConfig = workspace.getAgentConfig()
         const adapters = agentConfig.adapters ?? {}
-        if (adapters[args.adapterType]) {
-          return { success: true, alreadyAttached: true }
+        const existing = adapters[args.adapterType]
+        if (existing) {
+          // A disabled entry is not "already attached": connecting must turn it
+          // on. Keep the policy/limits the agent already has — only flip enabled.
+          if (existing.enabled === true) {
+            return { success: true, alreadyAttached: true, enabled: true }
+          }
+          adapters[args.adapterType] = { ...existing, enabled: true }
+          agentConfig.adapters = adapters
+          workspace.setAgentConfig(agentConfig)
+          return { success: true, alreadyAttached: true, enabled: true }
         }
         adapters[args.adapterType] = args.config
         agentConfig.adapters = adapters
         workspace.setAgentConfig(agentConfig)
-        return { success: true }
+        return { success: true, enabled: args.config.enabled }
       } finally {
         if (args.filePath !== currentFilePath) workspace.close()
       }
@@ -7600,7 +7689,7 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.PROVIDER_CREDENTIAL_LIST_FILES, async (_event, rawArgs: unknown) => {
     const args = z.object({ providerId: z.string() }).parse(rawArgs)
     const prefix = `provider:${args.providerId}:`
-    const results: { filePath: string; fileName: string; hasCredentials: boolean; populatedKeys: string[] }[] = []
+    const results: import('../../shared/types/ipc.types').ProviderCredentialFileInfo[] = []
     const seen = new Set<string>()
 
     const checkFile = (filePath: string) => {
@@ -7610,25 +7699,33 @@ export function registerAllIpcHandlers(): void {
       try {
         const purposes = AdfDatabase.peekIdentityPurposes(filePath, prefix)
         const populatedKeys = purposes.map((p) => p.slice(prefix.length))
+        // The agent's copy of the provider (no secrets): the renderer compares
+        // it to the app values to tell a real override from Studio's unchanged
+        // copy-on-create.
+        const copy = AdfDatabase.peekProviderConfig(filePath, args.providerId)
+        const providerConfig = copy
+          ? { defaultModel: copy.defaultModel, params: copy.params, requestDelayMs: copy.requestDelayMs }
+          : undefined
 
         if (populatedKeys.length > 0) {
           results.push({
             filePath,
             fileName: basename(filePath),
             hasCredentials: true,
-            populatedKeys
+            populatedKeys,
+            providerConfig
           })
           return
         }
 
         // Also include if the file references this provider in its config
-        const providerIds = AdfDatabase.peekProviderIds(filePath)
-        if (providerIds.includes(args.providerId)) {
+        if (copy) {
           results.push({
             filePath,
             fileName: basename(filePath),
             hasCredentials: false,
-            populatedKeys: []
+            populatedKeys: [],
+            providerConfig
           })
         }
       } catch {
@@ -7680,6 +7777,7 @@ export function registerAllIpcHandlers(): void {
         type: z.enum(['anthropic', 'openai', 'openai-compatible', 'openrouter']),
         name: z.string(),
         baseUrl: z.string(),
+        preset: z.string().optional(),
         defaultModel: z.string().optional(),
         params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
         requestDelayMs: z.number().optional()

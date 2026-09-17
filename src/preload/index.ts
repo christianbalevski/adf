@@ -467,9 +467,9 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.ADAPTER_LIST_INSTALLED),
   getAdapterStatus: () =>
     ipcRenderer.invoke(IPC.ADAPTER_GET_STATUS),
-  restartAdapter: (args: { type: string }) =>
+  restartAdapter: (args: { type: string; filePath?: string }) =>
     ipcRenderer.invoke(IPC.ADAPTER_RESTART, args),
-  getAdapterLogs: (args: { type: string }) =>
+  getAdapterLogs: (args: { type: string; filePath?: string }) =>
     ipcRenderer.invoke(IPC.ADAPTER_GET_LOGS, args),
   onAdapterInstallProgress: (callback: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
@@ -501,7 +501,7 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.PROVIDER_CREDENTIAL_GET, args),
   listProviderCredentialFiles: (args: { providerId: string }) =>
     ipcRenderer.invoke(IPC.PROVIDER_CREDENTIAL_LIST_FILES, args),
-  attachProvider: (args: { filePath: string; provider: { id: string; type: string; name: string; baseUrl: string; defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number } }) =>
+  attachProvider: (args: { filePath: string; provider: { id: string; type: string; name: string; baseUrl: string; preset?: string; defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number } }) =>
     ipcRenderer.invoke(IPC.PROVIDER_ATTACH, args),
   detachProvider: (args: { filePath: string; providerId: string }) =>
     ipcRenderer.invoke(IPC.PROVIDER_DETACH, args),

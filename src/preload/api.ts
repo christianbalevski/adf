@@ -1,6 +1,6 @@
 import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, AgentTemplateExtraFile, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
-import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
+import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
 import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
@@ -416,17 +416,19 @@ export interface AdfApi {
   listAdapterInstalled: () =>
     Promise<{ packages: McpInstalledPackage[] }>
   getAdapterStatus: () =>
-    Promise<{ adapters: AdapterState[] }>
-  restartAdapter: (args: { type: string }) =>
+    Promise<{ adapters: AdapterState[]; perAgent?: AdapterAgentStatus[] }>
+  /** `filePath` picks the agent hosting the adapter; omitted = the open agent. */
+  restartAdapter: (args: { type: string; filePath?: string }) =>
     Promise<{ success: boolean; error?: string }>
-  getAdapterLogs: (args: { type: string }) =>
-    Promise<{ logs: AdapterLogEntry[] }>
+  /** `running` is false when that agent has no adapter manager (it is not running). */
+  getAdapterLogs: (args: { type: string; filePath?: string }) =>
+    Promise<{ logs: AdapterLogEntry[]; running?: boolean }>
   onAdapterInstallProgress: (callback: (event: AdapterInstallProgress) => void) => () => void
   onAdapterStatusChanged: (callback: (event: AdapterStatusEvent) => void) => () => void
   setAdapterCredential: (args: { filePath: string; adapterType: string; envKey: string; value: string }) =>
     Promise<{ success: boolean; error?: string }>
   getAdapterCredentials: (args: { filePath: string; adapterType: string }) =>
-    Promise<{ credentials: Record<string, string>; error?: string }>
+    Promise<{ credentials: Record<string, string>; storedKeys?: string[]; error?: string }>
   listAdapterCredentialFiles: (args: { adapterType: string }) =>
     Promise<{ files: AdapterCredentialFileInfo[] }>
   attachAdapter: (args: {
@@ -450,7 +452,7 @@ export interface AdfApi {
     Promise<{ files: ProviderCredentialFileInfo[] }>
   attachProvider: (args: {
     filePath: string
-    provider: { id: string; type: string; name: string; baseUrl: string; defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number }
+    provider: { id: string; type: string; name: string; baseUrl: string; preset?: string; defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number }
   }) => Promise<{ success: boolean; alreadyAttached?: boolean; error?: string }>
   detachProvider: (args: { filePath: string; providerId: string }) =>
     Promise<{ success: boolean; error?: string }>

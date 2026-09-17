@@ -841,10 +841,10 @@ export class AgentRuntimeBuilder {
       // Envelope-sealed credentials that this process cannot unlock resolve to
       // null — the adapter would fail fast and never recover. Mark it errored
       // with a clear message instead of attempting.
-      if (envelopesLocked && adapterCredentialsLocked(workspace, adapterType, null, registration.env)) {
+      if (envelopesLocked && adapterCredentialsLocked(workspace, adapterType, null)) {
         console.error(`[AgentRuntimeBuilder][Adapter] Skipping "${adapterType}" for ${config.name} — envelope-sealed credentials are locked`)
         try { workspace.insertLog('error', 'adapter', 'credentials_locked', adapterType, 'Envelope-sealed credentials are locked in this process — adapter not started') } catch { /* ignore */ }
-        await manager.startAdapter(adapterType, () => createLockedCredentialsAdapter(adapterType), adapterConfig, workspace, null, registration.env)
+        await manager.startAdapter(adapterType, () => createLockedCredentialsAdapter(adapterType), adapterConfig, workspace, null)
         return
       }
 
@@ -858,7 +858,6 @@ export class AgentRuntimeBuilder {
           adapterConfig,
           workspace,
           null,
-          registration.env,
         )
         if (started) {
           console.log(`[AgentRuntimeBuilder][Adapter] Started "${adapterType}" for ${config.name}`)
@@ -959,17 +958,15 @@ export function detectLockedEnvelopes(workspace: AdfWorkspace): string[] {
 
 /**
  * True when the adapter's per-agent keystore credentials exist but every one
- * of them decrypts to null (envelope-sealed rows this process cannot unlock)
- * and no app-level env fallback covers it. Starting such an adapter would
- * fail fast and never recover.
+ * of them decrypts to null (envelope-sealed rows this process cannot unlock).
+ * Adapter credentials live only in the agent's identity, so there is no
+ * fallback: starting such an adapter would fail fast and never recover.
  */
 export function adapterCredentialsLocked(
   workspace: AdfWorkspace,
   adapterType: string,
   derivedKey: Buffer | null,
-  appEnv?: { key: string; value: string }[],
 ): boolean {
-  if (appEnv?.some(entry => entry.key && entry.value)) return false
   try {
     const purposes = workspace.listIdentityPurposes(`adapter:${adapterType}:`)
     if (purposes.length === 0) return false

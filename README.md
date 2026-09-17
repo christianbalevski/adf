@@ -81,7 +81,7 @@ npm run dev        # launches ADF Studio
 
 Then, in Studio:
 
-1. **Connect a provider** — Settings → Providers → Add Provider, paste an API key (or sign in with ChatGPT or xAI/Grok).
+1. **Connect a provider** — Settings → Providers → **Add provider**, pick a service from the catalog, paste an API key (or sign in, for the ChatGPT and Grok subscription tiles).
 2. **Create an agent** — click **New .adf** in the sidebar and name it.
 3. **Talk to it** — open the Loop tab and send a message.
 
