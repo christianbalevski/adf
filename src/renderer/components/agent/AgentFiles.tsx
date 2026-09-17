@@ -735,28 +735,45 @@ export function AgentFiles() {
       >
         {viewingFile && (
           <>
-            {/* Rename (below title) */}
-            {!CORE_FILES.has(viewingFile.path) && (
-              <div className="mb-3">
-                {editingPath === viewingFile.path ? (
-                  <input
-                    ref={inputRef}
-                    value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
-                    onBlur={commitRename}
-                    onKeyDown={handleRenameKeyDown}
-                    className="w-full text-xs px-2 py-1.5 border border-blue-400 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 outline-none"
-                  />
-                ) : (
+            {/* Open in editor + rename (below title) */}
+            <div className="mb-3 flex items-center gap-3">
+              {editingPath === viewingFile.path ? (
+                <input
+                  ref={inputRef}
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={handleRenameKeyDown}
+                  className="w-full text-xs px-2 py-1.5 border border-blue-400 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 outline-none"
+                />
+              ) : (
+                <>
                   <button
-                    onClick={() => startRename(viewingFile.path)}
-                    className="text-[11px] text-blue-500 dark:text-blue-400 hover:underline cursor-pointer"
-                  >
-                    Rename
-                  </button>
-                )}
-              </div>
-            )}
+                      type="button"
+                      onClick={() => {
+                        handleOpenInEditor(viewingFile.path)
+                        setViewingFile(null)
+                      }}
+                      aria-label="Open in editor"
+                      className="flex items-center gap-1 text-[11px] text-blue-500 dark:text-blue-400 hover:underline cursor-pointer"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M12 20h9" />
+                        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                      </svg>
+                      Open in editor
+                    </button>
+                  {!CORE_FILES.has(viewingFile.path) && (
+                    <button
+                      onClick={() => startRename(viewingFile.path)}
+                      className="text-[11px] text-blue-500 dark:text-blue-400 hover:underline cursor-pointer"
+                    >
+                      Rename
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
 
             {/* Metadata bar */}
             <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-400 mb-3 pb-3 border-b border-neutral-200 dark:border-neutral-700">
