@@ -13,6 +13,7 @@ import { CloneDialog } from '../common/CloneDialog'
 import { Dialog } from '../common/Dialog'
 import { Button } from '../ui'
 import { REVEAL_IN_FOLDER_LABEL } from '../../utils/platform'
+import { collectRunningAgents, type RunningAgentRow } from '../../utils/running-agents'
 import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../../shared/types/ipc.types'
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
 
@@ -155,6 +156,23 @@ async function toggleAgent(filePath: string, isActive: boolean, isRunning: boole
   }
 }
 
+/** Same localStorage idiom as the chat placement pref: best-effort, non-fatal. */
+const RUNNING_COLLAPSED_KEY = 'adf-sidebar-running-collapsed'
+
+function loadRunningCollapsed(): boolean {
+  try {
+    return localStorage.getItem(RUNNING_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function saveRunningCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(RUNNING_COLLAPSED_KEY, collapsed ? '1' : '0')
+  } catch { /* storage full/unavailable — the pref just won't stick */ }
+}
+
 interface RowTarget {
   file: TrackedDirEntry
   dirPath: string
@@ -208,6 +226,17 @@ export function Sidebar() {
   const visibleDirectories = searching
     ? directories.filter((d) => (visibleFilesByDir[d]?.length ?? 0) > 0)
     : directories
+
+  // Pinned "Running" list: every running agent across all roots, flat. Built
+  // from the unfiltered trees so it does not depend on folder state; hidden
+  // while searching because search already flattens the tree.
+  const runningRows = useMemo(() => collectRunningAgents({
+    directories,
+    filesByDir,
+    currentFilePath: filePath,
+    foregroundRunning: foregroundAgentState !== 'off',
+    isBackgroundRunning: (fp) => backgroundAgentMap.has(fp)
+  }), [directories, filesByDir, filePath, foregroundAgentState, backgroundAgentMap])
 
   const handleOpenFile = useCallback((fp: string) => {
     if (showSettings) setShowSettings(false)
@@ -373,6 +402,18 @@ export function Sidebar() {
         </button>
       </div>
 
+      {!searching && runningRows.length > 0 && (
+        <RunningSection
+          rows={runningRows}
+          currentFilePath={filePath}
+          meshEnabled={meshEnabled}
+          agentStatusMap={agentStatusMap}
+          backgroundAgentMap={backgroundAgentMap}
+          onOpenFile={handleOpenFile}
+          onFileContextMenu={handleFileContextMenu}
+        />
+      )}
+
       {/* Only the agent tree scrolls; the title and actions remain visible. */}
       <div ref={dirScrollRef} className="scrollbar-autohide flex-1 min-h-0 overflow-y-auto">
         {directories.length > 0 ? (
@@ -431,6 +472,78 @@ export function Sidebar() {
     </div>
   )
 }
+
+/**
+ * Pinned above the directory tree: a flat list of every running agent, so
+ * finding what is on never depends on which folders happen to be open. Rows
+ * are the same AgentFileRow the tree uses, so open, toggle, and the context
+ * menu behave identically. Capped at about six rows, then scrolls on its own.
+ */
+const RunningSection = memo(function RunningSection({
+  rows,
+  currentFilePath,
+  meshEnabled,
+  agentStatusMap,
+  backgroundAgentMap,
+  onOpenFile,
+  onFileContextMenu
+}: {
+  rows: RunningAgentRow[]
+  currentFilePath: string | null
+  meshEnabled: boolean
+  agentStatusMap: Map<string, MeshAgentStatus>
+  backgroundAgentMap: Map<string, BackgroundAgentStatus>
+  onOpenFile: (filePath: string) => void
+  onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
+}) {
+  const [collapsed, setCollapsed] = useState(loadRunningCollapsed)
+  const toggle = useCallback(() => {
+    setCollapsed((p) => {
+      saveRunningCollapsed(!p)
+      return !p
+    })
+  }, [])
+
+  return (
+    <div className="shrink-0 border-b border-hairline pb-1">
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
+        onClick={toggle}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle() } }}
+        className="w-full px-3 py-1 text-xs text-left flex items-center gap-1.5 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer select-none"
+      >
+        <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+          {collapsed ? '\u25B6' : '\u25BC'}
+        </span>
+        <span className="relative shrink-0 w-2 h-2">
+          <span className="absolute inset-0 rounded-full bg-green-400" />
+        </span>
+        <span className="font-medium flex-1 truncate">Running</span>
+        <span className="text-[10px] text-neutral-400 dark:text-neutral-500">({rows.length})</span>
+      </div>
+      {!collapsed && (
+        <div className="scrollbar-autohide max-h-36 overflow-y-auto">
+          {rows.map(({ file, dirPath, folderHint }) => (
+            <AgentFileRow
+              key={file.filePath}
+              file={file}
+              depth={0}
+              isActive={file.filePath === currentFilePath}
+              meshEnabled={meshEnabled}
+              status={agentStatusMap.get(file.filePath)}
+              backgroundStatus={backgroundAgentMap.get(file.filePath)}
+              folderHint={folderHint}
+              onOpen={() => onOpenFile(file.filePath)}
+              onContextMenu={(e) => onFileContextMenu(e, file, dirPath)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+})
 
 const DirectorySection = memo(function DirectorySection({
   dirPath,
@@ -740,6 +853,7 @@ const AgentFileRow = memo(function AgentFileRow({
   meshEnabled,
   status,
   backgroundStatus,
+  folderHint,
   onOpen,
   onContextMenu
 }: {
@@ -749,6 +863,8 @@ const AgentFileRow = memo(function AgentFileRow({
   meshEnabled: boolean
   status: MeshAgentStatus | undefined
   backgroundStatus: BackgroundAgentStatus | undefined
+  /** Muted parent-folder name shown after the agent name to tell same-named agents apart. */
+  folderHint?: string
   onOpen: () => void
   onContextMenu: (e: React.MouseEvent) => void
 }) {
@@ -827,6 +943,11 @@ const AgentFileRow = memo(function AgentFileRow({
         title={file.filePath}
       >
         {(isActive ? agentConfig?.name : undefined) ?? file.agentName ?? file.fileName}
+        {folderHint && (
+          <span className="ml-1 text-[10px] text-neutral-400 dark:text-neutral-500">
+            {folderHint}
+          </span>
+        )}
         {isAutonomous && (
           <span
             className="ml-1 text-[10px] leading-none text-amber-500"
