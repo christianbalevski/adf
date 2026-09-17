@@ -70,6 +70,8 @@ export interface ProviderConfig {
   defaultModel?: string
   params?: { key: string; value: string }[]
   requestDelayMs?: number                 // delay (ms) before each LLM request
+  /** Provider catalog entry this row was created from (logo + label). Absent = keyed by type. */
+  preset?: string
   /** Where credentials are stored: 'app' (app-wide settings) or 'agent' (per-ADF identity) */
   credentialStorage?: 'app' | 'agent'
 }

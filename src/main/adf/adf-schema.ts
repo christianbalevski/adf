@@ -638,6 +638,7 @@ export const AgentConfigSchema = z.object({
     type: z.enum(['anthropic', 'openai', 'openai-compatible', 'openrouter']),
     name: z.string(),
     baseUrl: z.string(),
+    preset: z.string().optional(),
     defaultModel: z.string().optional(),
     params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
     requestDelayMs: z.number().optional()

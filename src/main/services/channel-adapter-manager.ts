@@ -154,15 +154,13 @@ export class ChannelAdapterManager extends EventEmitter {
    * @param config     Per-agent adapter config
    * @param workspace  The agent's workspace (for inbox writes, file storage, identity)
    * @param derivedKey Optional derived key for encrypted identity entries
-   * @param appEnv     Optional app-level env vars from AdapterRegistration (fallback for credentials)
    */
   async startAdapter(
     type: string,
     createFn: CreateAdapterFn,
     config: AdapterInstanceConfig,
     workspace: AdfWorkspace,
-    derivedKey?: Buffer | null,
-    appEnv?: { key: string; value: string }[]
+    derivedKey?: Buffer | null
   ): Promise<boolean> {
     if (this.adapters.has(type)) {
       console.warn(`[AdapterManager] Adapter "${type}" already running`)
@@ -171,7 +169,7 @@ export class ChannelAdapterManager extends EventEmitter {
 
     const adapter = createFn()
 
-    const ctx = this.createContext(type, config, workspace, derivedKey ?? null, appEnv)
+    const ctx = this.createContext(type, config, workspace, derivedKey ?? null)
 
     const managed: ManagedAdapter = {
       type,
@@ -552,7 +550,7 @@ export class ChannelAdapterManager extends EventEmitter {
 
       const createFn = await resolveFactory(type, registration)
       if (!createFn) continue
-      await this.startAdapter(type, createFn, config, workspace, derivedKey ?? null, registration.env)
+      await this.startAdapter(type, createFn, config, workspace, derivedKey ?? null)
     }
   }
 
@@ -617,8 +615,7 @@ export class ChannelAdapterManager extends EventEmitter {
     type: string,
     config: AdapterInstanceConfig,
     workspace: AdfWorkspace,
-    derivedKey: Buffer | null,
-    appEnv?: { key: string; value: string }[]
+    derivedKey: Buffer | null
   ): AdapterContext {
     return {
       ingest: (msg: InboundMessage): string | null => {
@@ -723,15 +720,10 @@ export class ChannelAdapterManager extends EventEmitter {
       getConfig: () => config,
 
       getCredential: (key: string) => {
-        // Try identity keystore first (per-agent credentials)
-        const identityVal = workspace.getIdentityDecrypted(`adapter:${type}:${key}`, derivedKey)
-        if (identityVal) return identityVal
-        // Fall back to app-level env vars from AdapterRegistration
-        if (appEnv) {
-          const entry = appEnv.find((e) => e.key === key)
-          if (entry) return entry.value
-        }
-        return null
+        // Credentials live only in this agent's identity keystore. Adapters
+        // run per agent, so there is no app-wide fallback: a shared token
+        // would start one poller per agent against the same bot.
+        return workspace.getIdentityDecrypted(`adapter:${type}:${key}`, derivedKey) ?? null
       },
 
       log: (level: 'info' | 'warn' | 'error', message: string) => {

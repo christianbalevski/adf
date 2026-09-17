@@ -1465,15 +1465,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   if (!existingProviders.some(p => p.id === providerId)) {
                     save({ ...local, providers: [...existingProviders, providerWithoutKey] })
                   }
-                  // Update app settings provider to per-agent storage mode
-                  if (appProvider.credentialStorage !== 'agent') {
-                    const updatedProviders = providers.map(p =>
-                      p.id === providerId ? { ...p, credentialStorage: 'agent' as const } : p
-                    )
-                    setProviders(updatedProviders)
-                    _cachedProviders = updatedProviders
-                    await window.adfApi?.setSettings({ providers: updatedProviders })
-                  }
                 } catch {
                   // Ignore errors
                 } finally {
@@ -3297,7 +3288,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           <Section docs={DOCS.channels} hint="Configure channel adapters in Settings. Enable them here to bridge external messages into this agent." title="Channels">
             <div className="space-y-3">
               {template && (
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Credentials are copied into an agent when the channel is enabled from its own Config tab.</p>
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Channels are connected per agent from Settings → Channels, or from the agent's own Config tab.</p>
               )}
               {adapterRegistrations.map((reg) => {
                 const adapterConfig = local.adapters?.[reg.type]
@@ -3305,23 +3296,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 const registryEntry = findAdapterRegistryEntry(reg.type)
                 const hasKeys = adapterWithKeys.has(reg.type)
                 const agentKeys = adapterIdentityKeys[reg.type]
-                const hasEmptyRequiredKeys = (registryEntry?.requiredEnvKeys ?? []).some((rk) => {
-                  // Satisfied if the agent has this key in adf_identity…
-                  if (agentKeys?.has(rk)) return false
-                  // …or the app-level registration carries a non-empty value.
-                  const envEntry = (reg.env ?? []).find((e) => e.key === rk)
-                  return !envEntry || !envEntry.value
-                })
+                // Credentials live only in this agent's adf_identity.
+                const hasEmptyRequiredKeys = (registryEntry?.requiredEnvKeys ?? []).some((rk) => !agentKeys?.has(rk))
 
                 const handleEnable = async () => {
-                  // Copy app-level credentials to identity keystore
-                  const identityPrefix = `adapter:${reg.type}:`
-                  for (const e of template ? [] : reg.env ?? []) {
-                    if (e.key && e.value) {
-                      await window.adfApi?.setIdentity(`${identityPrefix}${e.key}`, e.value)
-                    }
-                  }
-
                   const newConfig: AdapterInstanceConfig = {
                     enabled: true,
                     policy: { dm: 'all', groups: 'mention' }
@@ -3389,7 +3367,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         <div className="flex items-center justify-between text-xs">
                           <span className="text-neutral-500 dark:text-neutral-400">Account</span>
                           <span className="text-neutral-700 dark:text-neutral-200 font-mono text-[10px] truncate ml-2">
-                            {emailAccount || reg.env?.find(e => e.key === 'EMAIL_USERNAME')?.value || '—'}
+                            {emailAccount || '—'}
                           </span>
                         </div>
                       </div>
@@ -3443,7 +3421,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     )}
                     {hasEmptyRequiredKeys && (
                       <p className="text-[10px] text-amber-600 dark:text-amber-400 pl-2">
-                        Missing required credentials — configure in Settings
+                        Missing credentials — connect this agent under Settings → Channels
                       </p>
                     )}
                   </div>

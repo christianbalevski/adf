@@ -677,6 +677,7 @@ export interface AdfProviderConfig {
   type: 'anthropic' | 'openai' | 'openai-compatible' | 'openrouter'
   name: string
   baseUrl: string
+  preset?: string               // provider catalog key (logo + label in the UI)
   defaultModel?: string
   params?: { key: string; value: string }[]
   requestDelayMs?: number

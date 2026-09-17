@@ -646,20 +646,18 @@ Every adapter credential is a row in the agent's `adf_identity` table with
 purpose **`adapter:{type}:{KEY}`** — e.g. `adapter:telegram:TELEGRAM_BOT_TOKEN`.
 The key names are fixed per adapter (listed in each setup section below and
 in the [channels reference](channels.md#credentials-and-self-setup)).
-Resolution order per key:
-
-1. The agent's `adf_identity` row (`adapter:{type}:{KEY}`) — always written by
-   agent code via `set_identity`, and by **Settings > Channel Adapters** only
-   when that adapter's credential storage mode is set to `'agent'`.
-2. App-level env vars from the adapter registration (fallback) — what
-   **Settings > Channel Adapters** writes by default (`'app'` storage mode).
+There is exactly one store: the agent's `adf_identity` row
+(`adapter:{type}:{KEY}`), written by agent code via `set_identity` or by
+**Settings > Channels** when you connect that agent. There is no app-wide
+fallback — adapters run per agent, and one token shared across agents would
+start one poller per agent against the same bot.
 
 Credentials are read when the adapter starts. Enabling an adapter (or any
 adapter config change) restarts it and re-reads the credential; rotating a
 token *without* a config change requires a manual restart or an
 enabled-toggle to take effect.
 
-The **Settings > Channel Adapters** walkthroughs below are for a human doing
+The **Settings > Channels** walkthroughs below are for a human doing
 the setup by hand. When an **agent** sets a channel up with its principal, it
 doesn't route through Settings at all: the principal's direct chat is local
 and private, so the agent takes the token in the conversation and stores it
@@ -709,9 +707,8 @@ The built-in Telegram adapter uses a bot token to connect via long-polling.
 **Setup:**
 
 1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and get a bot token (see Telegram's official [From BotFather to 'Hello World'](https://core.telegram.org/bots/tutorial) guide and [bot FAQ](https://core.telegram.org/bots/faq))
-2. In ADF Studio, go to **Settings > Channel Adapters**
-3. Store the bot token — identity purpose `adapter:telegram:TELEGRAM_BOT_TOKEN` (the Settings credential field writes this row only in `'agent'` storage mode, the default `'app'` mode writes the app-wide store instead; agent code can equivalently `set_identity` it)
-4. Enable Telegram for the agent in its configuration
+2. In ADF Studio, go to **Settings > Channels** and click **Connect an agent** on the Telegram row
+3. Pick the agent and paste the token — it is stored as identity purpose `adapter:telegram:TELEGRAM_BOT_TOKEN` in that agent's file (agent code can equivalently `set_identity` it) and Telegram is enabled in the agent's config
 
 **Inbound features:**
 
@@ -736,8 +733,8 @@ The built-in Discord adapter uses [discord.js](https://discord.js.org) v14 to co
 1. Create a Discord application at [https://discord.com/developers/applications](https://discord.com/developers/applications) (see Discord's official [getting started guide](https://discord.com/developers/docs/quick-start/getting-started)). Copy the **Application ID** from General Information.
 2. On the **Bot** page, click **Reset Token** and copy the token (Discord only shows it once). Then scroll to **Privileged Gateway Intents** and toggle ON the **MESSAGE CONTENT INTENT** — without this, `message.content` will be empty for guild messages that don't mention the bot. Click Save Changes.
 3. Invite the bot to a server using either **Installation** (newer) or **OAuth2 → URL Generator**. Required scopes: `bot` and `applications.commands`. Required permissions: at minimum `View Channels`, `Read Message History`, `Send Messages`, `Use Slash Commands`, and `Attach Files` if you want attachment support.
-4. In ADF Studio, go to **Settings > Channel Adapters**.
-5. In the agent's adapter config, enable Discord and store credentials in `adf_identity`:
+4. In ADF Studio, go to **Settings > Channels** and click **Connect an agent** on the Discord row.
+5. Pick the agent and paste the credentials; they are stored in that agent's `adf_identity`:
    - `adapter:discord:DISCORD_BOT_TOKEN` (required)
    - `adapter:discord:DISCORD_APPLICATION_ID` (optional — only needed if you want the slash command registered)
 
@@ -793,8 +790,8 @@ Custom IMAP/SMTP settings can be provided via the adapter `config` object to ove
 
 1. Enable 2FA on your email account (required for app-specific passwords on most providers)
 2. Generate an app-specific password from your provider's security settings
-3. In ADF Studio, go to **Settings > Channel Adapters**
-4. Add the Email adapter and store two credentials:
+3. In ADF Studio, go to **Settings > Channels** and click **Connect an agent** on the Email row
+4. Pick the agent and enter two credentials:
    - `adapter:email:EMAIL_USERNAME` — Your full email address (e.g., `agent@gmail.com`)
    - `adapter:email:EMAIL_PASSWORD` — The app-specific password (not your regular password)
 5. Enable Email for the agent in its configuration
@@ -926,7 +923,7 @@ Connects via **Socket Mode** — events arrive over an outbound WebSocket, so no
 4. On the **OAuth & Permissions** page, add the remaining bot token scopes beyond the auto-added history ones: `chat:write`, `im:write`, `users:read`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `files:read`, `files:write` (see the [token types overview](https://docs.slack.dev/authentication/tokens)).
 5. On the **App Home** page, under **Show Tabs**, enable the **Messages Tab** and check **"Allow users to send Slash commands and messages from the messages tab"** — without this you cannot DM the bot at all (see the [App Home docs](https://docs.slack.dev/surfaces/app-home)).
 6. On the **Install App** page, install the app to the workspace — or **reinstall** after any scope or event change (changes don't take effect until you reinstall; Slack shows a yellow banner when a reinstall is pending). Copy the **Bot User OAuth Token** (`xoxb-...`) — that's your `SLACK_BOT_TOKEN`.
-7. In ADF Studio, go to **Settings > Channel Adapters > Slack**, fill in the two tokens, and restart the adapter.
+7. In ADF Studio, go to **Settings > Channels**, click **Connect an agent** on the Slack row, pick the agent, and paste the two tokens.
 8. For channel messages, `/invite @<botname>` the bot into each channel it should read.
 
 **Verify**: DM the bot (or post in an invited channel) — the adapter log shows `Inbound from <name> (U…) in im D…` lines when messages arrive.

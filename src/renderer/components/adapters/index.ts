@@ -1,3 +1,3 @@
-export { AdapterStatusDashboard } from './AdapterStatusDashboard'
+export { ChannelsPanel } from './ChannelsPanel'
 export { AdapterLogs } from './AdapterLogs'
-export { AdapterCredentialPanel } from './AdapterCredentialPanel'
+export { ChannelSetupModal } from './ChannelSetupModal'

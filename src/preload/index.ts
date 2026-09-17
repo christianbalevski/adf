@@ -501,7 +501,7 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.PROVIDER_CREDENTIAL_GET, args),
   listProviderCredentialFiles: (args: { providerId: string }) =>
     ipcRenderer.invoke(IPC.PROVIDER_CREDENTIAL_LIST_FILES, args),
-  attachProvider: (args: { filePath: string; provider: { id: string; type: string; name: string; baseUrl: string; defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number } }) =>
+  attachProvider: (args: { filePath: string; provider: { id: string; type: string; name: string; baseUrl: string; preset?: string; defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number } }) =>
     ipcRenderer.invoke(IPC.PROVIDER_ATTACH, args),
   detachProvider: (args: { filePath: string; providerId: string }) =>
     ipcRenderer.invoke(IPC.PROVIDER_DETACH, args),

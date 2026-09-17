@@ -1,6 +1,6 @@
 import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, AgentTemplateExtraFile, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
-import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
+import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
 import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
@@ -416,7 +416,7 @@ export interface AdfApi {
   listAdapterInstalled: () =>
     Promise<{ packages: McpInstalledPackage[] }>
   getAdapterStatus: () =>
-    Promise<{ adapters: AdapterState[] }>
+    Promise<{ adapters: AdapterState[]; perAgent?: AdapterAgentStatus[] }>
   restartAdapter: (args: { type: string }) =>
     Promise<{ success: boolean; error?: string }>
   getAdapterLogs: (args: { type: string }) =>
@@ -450,7 +450,7 @@ export interface AdfApi {
     Promise<{ files: ProviderCredentialFileInfo[] }>
   attachProvider: (args: {
     filePath: string
-    provider: { id: string; type: string; name: string; baseUrl: string; defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number }
+    provider: { id: string; type: string; name: string; baseUrl: string; preset?: string; defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number }
   }) => Promise<{ success: boolean; alreadyAttached?: boolean; error?: string }>
   detachProvider: (args: { filePath: string; providerId: string }) =>
     Promise<{ success: boolean; error?: string }>

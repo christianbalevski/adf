@@ -185,6 +185,7 @@ import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '.
 import { pickFresherConfig } from '../runtime/config-freshness'
 import { buildMcpServerConfigFromRegistration, deriveRegistrationTestPlan, pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
+import type { AdapterAgentStatus } from '../../shared/types/channel-adapter.types'
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { getTokenUsageService } from '../services/token-usage.service'
 import { getFleetBurnService } from '../services/fleet-burn.service'
@@ -7304,20 +7305,30 @@ export function registerAllIpcHandlers(): void {
     const rank = (status: string): number =>
       status === 'connected' || status === 'running' ? 2 : status === 'error' ? 1 : 0
     const byType = new Map<string, ReturnType<ChannelAdapterManager['getStates']>[number]>()
-    const fold = (states: ReturnType<ChannelAdapterManager['getStates']>): void => {
+    // Per-agent view for Settings → Channels: which agent hosts which adapter
+    // and how that instance is doing. Logs are dropped (the by-type view
+    // keeps them) to keep the payload small.
+    const perAgent: AdapterAgentStatus[] = []
+    const fold = (filePath: string | null, states: ReturnType<ChannelAdapterManager['getStates']>): void => {
       for (const s of states) {
         const prev = byType.get(s.type)
         if (!prev || rank(s.status) > rank(prev.status)) byType.set(s.type, s)
       }
+      if (filePath && states.length > 0) {
+        perAgent.push({
+          filePath,
+          adapters: states.map((s) => ({ type: s.type, status: s.status, error: s.error, connectedAt: s.connectedAt })),
+        })
+      }
     }
-    if (currentAdapterManager) fold(currentAdapterManager.getStates())
+    if (currentAdapterManager) fold(currentWorkspace?.getFilePath() ?? null, currentAdapterManager.getStates())
     if (backgroundAgentManager) {
       for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
         const refs = backgroundAgentManager.getAgent(fp)
-        if (refs?.adapterManager) fold(refs.adapterManager.getStates())
+        if (refs?.adapterManager) fold(fp, refs.adapterManager.getStates())
       }
     }
-    return { adapters: [...byType.values()] }
+    return { adapters: [...byType.values()], perAgent }
   })
 
   ipcMain.handle(IPC.ADAPTER_RESTART, async (_event, rawArgs: unknown) => {
@@ -7680,6 +7691,7 @@ export function registerAllIpcHandlers(): void {
         type: z.enum(['anthropic', 'openai', 'openai-compatible', 'openrouter']),
         name: z.string(),
         baseUrl: z.string(),
+        preset: z.string().optional(),
         defaultModel: z.string().optional(),
         params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
         requestDelayMs: z.number().optional()
