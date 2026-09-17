@@ -33,6 +33,9 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
 
   const [agents, setAgents] = useState<TrackedAdfFile[]>([])
   const [filesByType, setFilesByType] = useState<Record<string, AdapterCredentialFileInfo[]>>({})
+  // Which layout to show (hero vs rows) depends on the first scan; until it
+  // lands, render a quiet placeholder rather than the hero-then-rows swap.
+  const [filesLoaded, setFilesLoaded] = useState(false)
   const [byType, setByType] = useState<AdapterState[]>([])
   const [perAgent, setPerAgent] = useState<AdapterAgentStatus[]>([])
   const [setup, setSetup] = useState<{ type: string; filePath?: string } | null>(null)
@@ -56,6 +59,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
     const next: Record<string, AdapterCredentialFileInfo[]> = {}
     types.forEach((type, i) => { next[type] = scans[i] })
     setFilesByType(next)
+    setFilesLoaded(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows.map((r) => r.type).join('|')])
 
@@ -113,8 +117,17 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
         />
       )}
 
+      {/* Placeholder until the first scan decides hero vs rows. */}
+      {!filesLoaded && (
+        <div className="space-y-2" aria-busy="true">
+          {rows.map((reg) => (
+            <div key={reg.id} className="h-[4.5rem] animate-pulse rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)]" />
+          ))}
+        </div>
+      )}
+
       {/* First-run hero: nothing connected anywhere */}
-      {!anyConnected && (
+      {filesLoaded && !anyConnected && (
         <div className="rounded-[var(--adf-ui-container-radius)] border border-dashed border-[var(--adf-ui-border)] p-4">
           <p className="text-[13px] font-medium text-[var(--adf-ui-text)]">Give an agent a place to talk</p>
           <p className="mt-0.5 max-w-xl text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
@@ -141,7 +154,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
 
       {/* Channel rows. Hidden behind the hero until something is connected:
           five rows of "No agents connected" say nothing the tiles don't. */}
-      {anyConnected && <div className="space-y-2">
+      {filesLoaded && anyConnected && <div className="space-y-2">
         {rows.map((reg) => {
           const entry = findAdapterRegistryEntry(reg.type)
           const files = filesByType[reg.type] ?? []

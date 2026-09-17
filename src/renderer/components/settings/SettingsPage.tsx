@@ -1271,6 +1271,9 @@ function ManualPeersEditor() {
 
 export function SettingsPage() {
   const [providers, setProviders] = useState<ProviderConfig[]>([])
+  // Lists that render from settings show a placeholder until the first load
+  // lands, so an empty state never flashes before the real rows.
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [defaultProviderId, setDefaultProviderId] = useState<string | undefined>(undefined)
   const [systemPrompt, setSystemPrompt] = useState('')
   const [compactionPrompt, setCompactionPrompt] = useState('')
@@ -1419,6 +1422,7 @@ export function SettingsPage() {
         setComputeExecutionTargets(compute.executionTargets ?? [])
       }
       hasLoaded.current = true
+      setSettingsLoaded(true)
     })
   }, [])
 
@@ -1914,6 +1918,7 @@ export function SettingsPage() {
           {activeTab === 'providers' && <>
           <SettingsGroup className="p-4">
             <ProvidersPanel
+              loaded={settingsLoaded}
               providers={providers}
               setProviders={setProviders}
               defaultProviderId={defaultProviderId}

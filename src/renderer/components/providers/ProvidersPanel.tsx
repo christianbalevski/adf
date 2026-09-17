@@ -9,6 +9,8 @@ import { generateProviderId, providerDotClass, providerStatusLabel, type Provide
 import { countOverrides } from './override-utils'
 
 interface ProvidersPanelProps {
+  /** False until the settings store has been read; the list shows a placeholder meanwhile. */
+  loaded: boolean
   providers: ProviderConfig[]
   setProviders: React.Dispatch<React.SetStateAction<ProviderConfig[]>>
   defaultProviderId: string | undefined
@@ -26,7 +28,7 @@ interface ProvidersPanelProps {
  * add more, and a modal per row for the app default + agent overrides. Edits
  * apply live (the page's debounced save persists them), matching the MCP tab.
  */
-export function ProvidersPanel({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave, onOpenTemplate }: ProvidersPanelProps) {
+export function ProvidersPanel({ loaded, providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave, onOpenTemplate }: ProvidersPanelProps) {
   const providersRef = useRef(providers)
   providersRef.current = providers
 
@@ -249,7 +251,12 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
         onCarrierCountChange={(count) => editing && setCarrierCounts((c) => ({ ...c, [editing.id]: count }))}
       />
 
-      {providers.length === 0 ? (
+      {!loaded ? (
+        <div className="space-y-2" aria-busy="true">
+          <div className="h-[3.4rem] animate-pulse rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)]" />
+          <div className="h-[3.4rem] animate-pulse rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)]" />
+        </div>
+      ) : providers.length === 0 ? (
         <div className="rounded-[var(--adf-ui-container-radius)] border border-dashed border-[var(--adf-ui-border)] px-4 py-6 text-center">
           <p className="text-[13px] font-medium text-[var(--adf-ui-text)]">No providers yet</p>
           <p className="mx-auto mt-1 max-w-md text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
