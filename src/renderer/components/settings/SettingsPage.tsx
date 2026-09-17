@@ -1963,14 +1963,13 @@ export function SettingsPage() {
           {activeTab === 'skills' && <SkillsTab />}
 
           {/* Channels tab */}
-          {activeTab === 'channels' && <>
-          <SettingsGroup className="p-4">
+          {activeTab === 'channels' && (
+            // No card wrapper: each channel is its own flat block on the canvas.
             <ChannelsPanel
               adapters={adapterRegistrations}
               onAdaptersChanged={setAdapterRegistrations}
             />
-          </SettingsGroup>
-          </>}
+          )}
 
           {/* Networking tab */}
           {activeTab === 'networking' && <>

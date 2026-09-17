@@ -96,12 +96,9 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
 
   return (
     <div className="space-y-3">
-      <div>
-        <label className="block text-[13px] font-medium text-[var(--adf-ui-text)]">Channels</label>
-        <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-          One agent per connection; credentials live in that agent's file.
-        </p>
-      </div>
+      <p className="text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
+        One agent per connection; credentials live in that agent's file.
+      </p>
 
       {setup && (
         <ChannelSetupModal
@@ -121,14 +118,14 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
       {!filesLoaded && (
         <div className="space-y-2" aria-busy="true">
           {rows.map((reg) => (
-            <div key={reg.id} className="h-[4.5rem] animate-pulse rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)]" />
+            <div key={reg.id} className="h-[4.5rem] animate-pulse rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)]" />
           ))}
         </div>
       )}
 
       {/* First-run hero: nothing connected anywhere */}
       {filesLoaded && !anyConnected && (
-        <div className="rounded-[var(--adf-ui-container-radius)] border border-dashed border-[var(--adf-ui-border)] p-4">
+        <div className="rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)] p-4 shadow-subtle">
           <p className="text-[13px] font-medium text-[var(--adf-ui-text)]">Give an agent a place to talk</p>
           <p className="mt-0.5 max-w-xl text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
             Pick a channel, choose the agent, paste the token.
@@ -154,15 +151,17 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
 
       {/* Channel rows. Hidden behind the hero until something is connected:
           five rows of "No agents connected" say nothing the tiles don't. */}
-      {filesLoaded && anyConnected && <div className="space-y-2">
+      {filesLoaded && anyConnected && <div className="space-y-3">
         {rows.map((reg) => {
           const entry = findAdapterRegistryEntry(reg.type)
           const files = filesByType[reg.type] ?? []
           const aggregate = byType.find((s) => s.type === reg.type)
           const label = entry?.displayName ?? reg.type
           return (
-            <div key={reg.id} className="rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)]">
-              <div className="flex items-center justify-between gap-3 px-3 py-2">
+            // One flat block per channel on the canvas: no outer card, no
+            // nested borders; hairlines only between table rows.
+            <div key={reg.id} className="overflow-hidden rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)] shadow-subtle">
+              <div className="flex items-center justify-between gap-3 px-4 py-3">
                 <div className="flex min-w-0 items-center gap-2.5">
                   <BrandMark iconKey={entry?.iconKey} label={label} size={26} />
                   <div className="min-w-0">
@@ -180,18 +179,18 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
               </div>
 
               {/* Connected agents: a small table (scrolls past ~4 rows). */}
-              <div className="border-t border-[var(--adf-ui-separator)]">
+              <div>
                 {files.length === 0 ? (
-                  <p className="px-3 py-2 text-[11px] text-[var(--adf-ui-text-subtle)]">No agents connected.</p>
+                  <p className="px-4 pb-3 text-[11px] text-[var(--adf-ui-text-subtle)]">No agents connected.</p>
                 ) : (
                   <div className="max-h-40 overflow-y-auto">
                     <table className="w-full border-collapse text-[11.5px]">
                       <thead className="sticky top-0 bg-[var(--adf-ui-surface)] text-left text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">
                         <tr>
-                          <th className="px-3 py-1 font-medium">Agent</th>
+                          <th className="px-4 py-1 font-medium">Agent</th>
                           <th className="px-2 py-1 font-medium">Status</th>
                           <th className="px-2 py-1 font-medium">Credentials</th>
-                          <th className="px-3 py-1" />
+                          <th className="px-4 py-1" />
                         </tr>
                       </thead>
                       <tbody>
@@ -219,7 +218,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
                               onClick={() => setSetup({ type: reg.type, filePath: f.filePath })}
                               className="cursor-pointer border-t border-[var(--adf-ui-separator)] transition-colors hover:bg-[var(--adf-ui-surface-hover)]"
                             >
-                              <td className="px-3 py-1.5">
+                              <td className="px-4 py-1.5">
                                 <span className="flex items-center gap-1.5 text-[var(--adf-ui-text)]">
                                   <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${missingKeys.length > 0 ? 'bg-amber-400' : STATUS_DOT[status] ?? 'bg-neutral-400'}`} />
                                   <span className="truncate">{agentName(f.filePath)}</span>
@@ -227,7 +226,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
                               </td>
                               <td className={`max-w-[18rem] truncate px-2 py-1.5 ${live?.error ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-text-muted)]'}`} title={statusText}>{statusText}</td>
                               <td className={`px-2 py-1.5 ${missingKeys.length > 0 ? 'text-[var(--adf-ui-warning)]' : 'text-[var(--adf-ui-text-muted)]'}`}>{credText}</td>
-                              <td className="px-3 py-1.5 text-right text-[var(--adf-ui-text-subtle)]">Edit ›</td>
+                              <td className="px-4 py-1.5 text-right text-[var(--adf-ui-text-subtle)]">Edit ›</td>
                             </tr>
                           )
                         })}
@@ -238,7 +237,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
               </div>
 
               {aggregate?.error && !files.some((f) => liveFor(f.filePath, reg.type)?.error) && (
-                <p className="border-t border-[var(--adf-ui-separator)] px-3 py-1.5 text-[11px] text-[var(--adf-ui-danger)]">{aggregate.error}</p>
+                <p className="border-t border-[var(--adf-ui-separator)] px-4 py-1.5 text-[11px] text-[var(--adf-ui-danger)]">{aggregate.error}</p>
               )}
             </div>
           )
