@@ -59,7 +59,9 @@ Every provider row opens the same modal, in two parts:
 | **Default Model** | The model to use when an agent doesn't specify one. **Fetch models** lists what the endpoint offers |
 | **Advanced** | **Request delay** (milliseconds before each call, for rate limits) and **Request parameters** (extra JSON fields merged into every request body) |
 
-**Agents carrying this provider** — agents whose `.adf` file holds its own copy of this provider. Studio puts a copy (without the key) into every agent it creates, so most agents appear here. At runtime the agent's copy is used for every field it carries; only a missing key falls back to the app key for the same provider id. Give an agent its own key, model, or advanced fields here, or remove the copy so it follows the app values. The row shows an *N agents carry a copy* chip.
+**Agent overrides** — agents that use their own key, model, request parameters, or delay for this provider. **Add agent override** picks an agent from the tracked folders; expand a row to set its fields; **Remove** deletes the agent's copy (and its key) so it follows the app values again. Badges name what differs. The row chip counts these overrides.
+
+Under the hood every override is a copy of the provider inside the agent's `.adf` (see [Per-ADF Provider Configurations](#per-adf-provider-configurations)). Studio also puts an unchanged, key-less copy into every agent it creates; those are not overrides and stay hidden behind a *Show N agents with an unchanged copy* link.
 
 Most tiles are the same OpenAI-compatible runtime with a different base URL and logo; the modal says which API it speaks under the status line. The underlying types are `anthropic`, `openai`, `openai-compatible`, `openrouter`, `chatgpt-subscription`, and `grok-subscription`.
 

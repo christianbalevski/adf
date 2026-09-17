@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { ProviderConfig, ProviderCredentialFileInfo } from '../../../shared/types/ipc.types'
 import { loadTrackedAdfFiles, adfDisplayName, type TrackedAdfFile } from '../../utils/tracked-adf-files'
+import { summarizeOverride, countOverrides } from './override-utils'
 import { Tooltip } from '../common/Tooltip'
 import { Button, IconButton, Select, TextInput } from '../ui'
 import { DocsLink } from '../common/DocsLink'
@@ -43,12 +44,20 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
   const [overrides, setOverrides] = useState<Record<string, AdfProviderOverride>>({})
   const [saving, setSaving] = useState<string | null>(null)
   const [status, setStatus] = useState<Record<string, 'ok' | string>>({})
+  const [showUnchanged, setShowUnchanged] = useState(false)
   // Rows added from the picker but not yet saved: a scan that lands later
   // must not drop them.
   const manualPaths = useRef(new Set<string>())
   // Parent passes an inline callback; keep the loader's identity stable.
   const onCountChangeRef = useRef(onCountChange)
   onCountChangeRef.current = onCountChange
+  // Studio's unchanged copy-on-create is noise here; list it only on request.
+  // A row just added from the picker, or being edited, stays visible even
+  // while it is still "same as app".
+  const isShown = (f: ProviderCredentialFileInfo): boolean =>
+    summarizeOverride(f, provider).isOverride || manualPaths.current.has(f.filePath) || editing === f.filePath
+  const visibleFiles = showUnchanged ? files : files.filter(isShown)
+  const unchangedCount = files.length - files.filter(isShown).length
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -59,7 +68,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
         const keep = prev.filter((f) => manualPaths.current.has(f.filePath) && !scanned.some((s) => s.filePath === f.filePath))
         return [...scanned, ...keep]
       })
-      onCountChangeRef.current?.(scanned.length)
+      onCountChangeRef.current?.(countOverrides(scanned, provider))
     } finally {
       setLoading(false)
     }
@@ -117,11 +126,14 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
         if (r && !r.success) throw new Error(r.error ?? 'Failed to save key')
       }
       setFiles((prev) => prev.map((f) => f.filePath === filePath
-        ? { ...f, hasCredentials: !!apiKey || f.hasCredentials, populatedKeys: apiKey ? ['apiKey'] : f.populatedKeys }
+        ? { ...f, hasCredentials: !!apiKey || f.hasCredentials, populatedKeys: apiKey ? ['apiKey'] : f.populatedKeys, providerConfig: { ...f.providerConfig, ...o } }
         : f))
       setStatus((prev) => ({ ...prev, [filePath]: 'ok' }))
       manualPaths.current.delete(filePath)
-      onCountChangeRef.current?.(files.length)
+      onCountChangeRef.current?.(countOverrides(
+        files.map((f) => (f.filePath === filePath ? { ...f, hasCredentials: !!apiKey || f.hasCredentials, providerConfig: { ...f.providerConfig, ...o } } : f)),
+        provider,
+      ))
     } catch (err) {
       setStatus((prev) => ({ ...prev, [filePath]: err instanceof Error ? err.message : String(err) }))
     } finally {
@@ -135,7 +147,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
     manualPaths.current.delete(filePath)
     const next = files.filter((f) => f.filePath !== filePath)
     setFiles(next)
-    onCountChangeRef.current?.(next.length)
+    onCountChangeRef.current?.(countOverrides(next, provider))
     if (editing === filePath) setEditing(null)
     // Drop the detached row's form state: re-adding the same agent must start
     // from the app values, not from the key and edits that were just removed.
@@ -160,16 +172,16 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 text-[13px] font-medium text-[var(--adf-ui-text)]">
-            Agents carrying this provider
+            Agent overrides
             <DocsLink href={DOCS.settingsProviderCopies} />
           </div>
           <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            The agent's copy is used; a copy with no key uses the app key above.
+            Agents with their own key, model, params, or delay for this provider.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button variant="ghost" size="compact" onClick={() => void load()} disabled={loading}>{loading ? 'Scanning…' : 'Refresh'}</Button>
-          <Button variant="secondary" size="compact" onClick={() => setPicking(true)} disabled={picking}>+ Give an agent a copy</Button>
+          <Button variant="secondary" size="compact" onClick={() => setPicking(true)} disabled={picking}>+ Add agent override</Button>
         </div>
       </div>
 
@@ -183,16 +195,17 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
         </div>
       )}
 
-      {files.length === 0 && !picking ? (
+      {visibleFiles.length === 0 && !picking ? (
         <p className="rounded-[var(--adf-ui-control-radius)] border border-dashed border-[var(--adf-ui-border)] px-3 py-2.5 text-[12px] text-[var(--adf-ui-text-subtle)]">
-          No agent carries a copy.
+          No overrides. Every agent uses the app values above.
         </p>
       ) : (
         <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
-          {files.map((file) => {
+          {visibleFiles.map((file) => {
             const isEditing = editing === file.filePath
             const o = overrides[file.filePath] ?? {}
             const st = status[file.filePath]
+            const summary = summarizeOverride(file, provider)
             return (
               <div key={file.filePath} className="overflow-hidden rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)]">
                 <div className="flex items-center hover:bg-[var(--adf-ui-surface-hover)]">
@@ -203,18 +216,11 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
                   >
                     <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">{isEditing ? '▼' : '▶'}</span>
                     <span className="truncate text-[12px] font-medium text-[var(--adf-ui-text)]">{nameFor(file.filePath, file.fileName)}</span>
-                    {file.hasCredentials ? (
-                      <Tooltip tip="This agent uses its own key for this provider.">
-                        <span className="rounded bg-[var(--adf-ui-success-subtle)] px-1 py-0.5 text-[9px] font-medium text-[var(--adf-ui-success)]">Own key</span>
-                      </Tooltip>
-                    ) : (
-                      <Tooltip tip="This agent's copy has no key, so it runs on the app key above. Give it a key here to use its own.">
-                        <span className="rounded border border-[var(--adf-ui-border)] px-1 py-0.5 text-[9px] font-medium text-[var(--adf-ui-text-muted)]">App key</span>
-                      </Tooltip>
-                    )}
-                    {o.defaultModel && o.defaultModel !== provider.defaultModel && (
-                      <Tooltip tip="Model stored on this agent's copy, instead of the app value.">
-                        <span className="truncate text-[10px] text-[var(--adf-ui-text-subtle)]">{o.defaultModel}</span>
+                    {summary.isOverride ? summary.badges.map((b) => (
+                      <span key={b} className="truncate rounded bg-[var(--adf-ui-accent-subtle)] px-1 py-0.5 text-[9px] font-medium text-[var(--adf-ui-accent)]">{b}</span>
+                    )) : (
+                      <Tooltip tip="Unchanged copy: same values as the app, runs on the app key. Studio adds one to every new agent.">
+                        <span className="rounded border border-[var(--adf-ui-border)] px-1 py-0.5 text-[9px] font-medium text-[var(--adf-ui-text-muted)]">Same as app</span>
                       </Tooltip>
                     )}
                   </button>
@@ -275,6 +281,15 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
             )
           })}
         </div>
+      )}
+      {unchangedCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowUnchanged((v) => !v)}
+          className="text-[11px] text-[var(--adf-ui-text-subtle)] underline-offset-2 hover:text-[var(--adf-ui-text)] hover:underline"
+        >
+          {showUnchanged ? 'Hide' : 'Show'} {unchangedCount} agent{unchangedCount === 1 ? '' : 's'} with an unchanged copy
+        </button>
       )}
     </div>
   )

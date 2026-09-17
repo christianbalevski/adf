@@ -7669,7 +7669,7 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.PROVIDER_CREDENTIAL_LIST_FILES, async (_event, rawArgs: unknown) => {
     const args = z.object({ providerId: z.string() }).parse(rawArgs)
     const prefix = `provider:${args.providerId}:`
-    const results: { filePath: string; fileName: string; hasCredentials: boolean; populatedKeys: string[] }[] = []
+    const results: import('../../shared/types/ipc.types').ProviderCredentialFileInfo[] = []
     const seen = new Set<string>()
 
     const checkFile = (filePath: string) => {
@@ -7679,25 +7679,33 @@ export function registerAllIpcHandlers(): void {
       try {
         const purposes = AdfDatabase.peekIdentityPurposes(filePath, prefix)
         const populatedKeys = purposes.map((p) => p.slice(prefix.length))
+        // The agent's copy of the provider (no secrets): the renderer compares
+        // it to the app values to tell a real override from Studio's unchanged
+        // copy-on-create.
+        const copy = AdfDatabase.peekProviderConfig(filePath, args.providerId)
+        const providerConfig = copy
+          ? { defaultModel: copy.defaultModel, params: copy.params, requestDelayMs: copy.requestDelayMs }
+          : undefined
 
         if (populatedKeys.length > 0) {
           results.push({
             filePath,
             fileName: basename(filePath),
             hasCredentials: true,
-            populatedKeys
+            populatedKeys,
+            providerConfig
           })
           return
         }
 
         // Also include if the file references this provider in its config
-        const providerIds = AdfDatabase.peekProviderIds(filePath)
-        if (providerIds.includes(args.providerId)) {
+        if (copy) {
           results.push({
             filePath,
             fileName: basename(filePath),
             hasCredentials: false,
-            populatedKeys: []
+            populatedKeys: [],
+            providerConfig
           })
         }
       } catch {

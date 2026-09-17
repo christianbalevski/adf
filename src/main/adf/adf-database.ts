@@ -16,6 +16,7 @@ import { brotliDecompressSync } from 'zlib'
 import { join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type {
+  AdfProviderConfig,
   AgentConfig,
   StoredAttachment,
   CreateAgentOptions,
@@ -2394,6 +2395,26 @@ export class AdfDatabase {
       })
     } catch {
       return []
+    }
+  }
+
+  /**
+   * Peek at one provider entry of an agent's config without fully opening.
+   * Settings → Providers uses it to tell a real override (own model/params)
+   * from the unchanged copy Studio puts into every new agent.
+   */
+  static peekProviderConfig(filePath: string, providerId: string): AdfProviderConfig | null {
+    try {
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return null
+        const config = JSON.parse(row.config_json) as AgentConfig
+        return (config.providers ?? []).find((p) => p.id === providerId) ?? null
+      })
+    } catch {
+      return null
     }
   }
 

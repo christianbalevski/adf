@@ -6,6 +6,7 @@ import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
 import { ProviderModal, type ModelListState, type SubscriptionAuthState } from './ProviderModal'
 import { generateProviderId, providerDotClass, providerStatusLabel, type ProviderTestStatus } from './provider-status'
+import { countOverrides } from './override-utils'
 
 interface ProvidersPanelProps {
   providers: ProviderConfig[]
@@ -67,7 +68,7 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
         if (isSubscriptionType(p.type)) continue
         try {
           const r = await window.adfApi?.listProviderCredentialFiles({ providerId: p.id })
-          next[p.id] = r?.files.length ?? 0
+          next[p.id] = countOverrides(r?.files ?? [], p)
         } catch {
           next[p.id] = 0
         }
@@ -287,9 +288,9 @@ export function ProvidersPanel({ providers, setProviders, defaultProviderId, set
                         </Tooltip>
                       )}
                       {carriers > 0 && (
-                        <Tooltip tip={`${carriers} agent${carriers === 1 ? '' : 's'} store a copy of this provider in their .adf. The copy's fields are used; a copy without a key uses the app key.`}>
+                        <Tooltip tip={`${carriers} agent${carriers === 1 ? '' : 's'} use their own key, model, params, or delay for this provider.`}>
                           <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-accent)]">
-                            {carriers === 1 ? '1 agent carries a copy' : `${carriers} agents carry a copy`}
+                            {carriers} override{carriers === 1 ? '' : 's'}
                           </span>
                         </Tooltip>
                       )}

@@ -679,6 +679,8 @@ export interface ProviderCredentialFileInfo {
   hasCredentials: boolean
   /** The keys that have values set (e.g. ['apiKey']) */
   populatedKeys: string[]
+  /** The agent's copy of the provider config (no secrets), when its config carries one */
+  providerConfig?: { defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number }
 }
 
 // --- Agent review (file open flow) ---
