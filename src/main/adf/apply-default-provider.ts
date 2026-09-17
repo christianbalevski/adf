@@ -44,6 +44,7 @@ function toAdfProviderConfig(p: ProviderConfig): AdfProviderConfig {
     baseUrl: p.baseUrl,
   }
   if (p.defaultModel) adf.defaultModel = p.defaultModel
+  if (p.preset) adf.preset = p.preset
   if (p.params) adf.params = p.params
   if (typeof p.requestDelayMs === 'number') adf.requestDelayMs = p.requestDelayMs
   return adf

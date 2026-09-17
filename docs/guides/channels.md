@@ -118,12 +118,9 @@ names — do not invent your own:
 | email | `adapter:email:EMAIL_USERNAME`, `adapter:email:EMAIL_PASSWORD` | |
 | whatsapp | *(none — QR pairing, no stored credential)* | |
 
-Resolution order per key: your `adf_identity` row first, then an app-wide
-value — two distinct stores. Your identity row is written by `set_identity`,
-and by **Settings > Channel Adapters** only when that adapter's storage mode
-is set to `'agent'`; by default (`'app'` mode) the Settings UI instead writes
-the app-wide store. You can only read/write your own identity tier — the
-app-wide store is not visible or writable from agent code.
+Your `adf_identity` row is the only store: there is no app-wide value to
+fall back to. It is written by `set_identity`, or by your principal
+connecting you under **Settings > Channels**.
 
 You set this up **in the conversation**, not by sending your principal to a
 settings screen. Their direct chat is local and private — when they give you

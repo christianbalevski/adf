@@ -78,6 +78,7 @@ export const DOCS = {
   settingsUsage: guideUrl('settings', 'token-usage'),
   settingsIdentity: guideUrl('settings', 'identity'),
   settingsProviders: guideUrl('settings', 'providers'),
+  settingsProviderCopies: guideUrl('settings', 'per-adf-provider-configurations'),
   settingsPackages: guideUrl('code-execution', 'standard-library-packages'),
   settingsMcp: guideUrl('settings', 'mcp-servers'),
   settingsSkills: guideUrl('skills'),

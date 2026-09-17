@@ -20,6 +20,8 @@ interface McpCredentialPanelProps {
   server: McpServerRegistration
   registryEntry?: McpRegistryEntry
   onServerUpdate: (patch: Partial<McpServerRegistration>) => void
+  /** The configure modal shows its own sign-in note; pass false to avoid a second copy. */
+  showOAuthNote?: boolean
 }
 
 /**
@@ -29,7 +31,7 @@ interface McpCredentialPanelProps {
  * - "app": credentials stored in app-wide settings (env vars on the registration)
  * - "agent": credentials stored per-ADF file in adf_identity
  */
-export function McpCredentialPanel({ server, registryEntry, onServerUpdate }: McpCredentialPanelProps) {
+export function McpCredentialPanel({ server, registryEntry, onServerUpdate, showOAuthNote = true }: McpCredentialPanelProps) {
   const storageMode = server.credentialStorage ?? 'app'
 
   // OAuth servers authenticate via browser sign-in (token sealed on attach), so
@@ -342,7 +344,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate }: Mc
   return (
     <div className="space-y-3">
       {/* OAuth status: token comes from browser sign-in, not env keys. */}
-      {isOAuth && (
+      {isOAuth && showOAuthNote && (
         <div className="rounded-md border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20 p-2">
           <div className="flex items-center gap-1.5 mb-0.5">
             <span className="text-[9px] px-1 py-0.5 bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 rounded font-medium">Sign in</span>

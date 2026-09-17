@@ -44,19 +44,26 @@ Providers are the LLM services that power your agents. You need at least one con
 ### Adding a Provider
 
 1. Go to **Settings > Providers**
-2. Click **Add Provider**
-3. Configure:
+2. Click **Add provider**. A picker lists everything you can connect, grouped as **Subscriptions** (ChatGPT, Grok — sign in, no key), **APIs** (Anthropic, OpenAI, OpenRouter, Gemini, xAI, Mistral, DeepSeek, Groq, Cerebras, Together, Fireworks, and other hosted endpoints), **Local** (LM Studio, Ollama, vLLM, llama.cpp, …), and **Other** (any OpenAI-compatible URL).
+3. Pick a tile. The provider is created with its base URL prefilled and a default name (`Groq`, then `Groq 2`, … — rename it freely; you can add the same service more than once for separate accounts) and its configure modal opens.
+
+Every provider row opens the same modal, in two parts:
+
+**App default** — what an agent gets when it selects this provider.
 
 | Field | Description |
 |-------|-------------|
 | **Name** | Display name for this provider configuration |
-| **Type** | `anthropic`, `openai`, `openai-compatible`, `openrouter`, `chatgpt-subscription`, or `grok-subscription` |
-| **API Key** | Your API key for the service (not applicable for the subscription types) |
-| **Base URL** | API endpoint (auto-filled for standard providers, required for openai-compatible) |
-| **Default Model** | The model to use when an agent doesn't specify one |
-| **Request Delay** | Milliseconds between API calls (for rate limiting) |
+| **Base URL** | Only shown for OpenAI-compatible entries; prefilled from the tile |
+| **API Key** / **Account** | Your key for the service, or the sign-in state for subscription providers |
+| **Default Model** | The model to use when an agent doesn't specify one. **Fetch models** lists what the endpoint offers |
+| **Advanced** | **Request delay** (milliseconds before each call, for rate limits) and **Request parameters** (extra JSON fields merged into every request body) |
 
-![An expanded provider entry in Settings → Providers: a connected Anthropic provider marked Default, with provider type, name, App-wide vs Per-agent credential storage toggle, masked API key field, default model set to claude-sonnet-4-5, and request delay.](../assets/screenshots/settings-provider-form.png)
+**Agent overrides** — agents that use their own key, model, request parameters, or delay for this provider. **Add agent override** picks an agent from the tracked folders; expand a row to set its fields; **Remove** deletes the agent's copy (and its key) so it follows the app values again. Badges name what differs. The row chip counts these overrides.
+
+Under the hood every override is a copy of the provider inside the agent's `.adf` (see [Per-ADF Provider Configurations](#per-adf-provider-configurations)). Studio also puts an unchanged, key-less copy into every agent it creates; those are not overrides and stay hidden behind a *Show N agents with an unchanged copy* link.
+
+Most tiles are the same OpenAI-compatible runtime with a different base URL and logo; the modal says which API it speaks under the status line. The underlying types are `anthropic`, `openai`, `openai-compatible`, `openrouter`, `chatgpt-subscription`, and `grok-subscription`.
 
 ### Provider Types
 
@@ -64,20 +71,15 @@ Providers are the LLM services that power your agents. You need at least one con
 
 **OpenAI** — GPT models. Uses the OpenAI API format.
 
-**OpenAI-compatible** — Any service that implements the OpenAI API format. This includes:
-- Local model servers (Ollama, LM Studio, etc.)
-- Third-party providers (Together, Groq, etc.)
-- Custom deployments
-
-For openai-compatible providers, you'll need to set the base URL to your server's endpoint.
+**OpenAI-compatible** — Any service that implements the OpenAI API format. The picker offers named tiles for the common ones (Gemini, xAI, Mistral, DeepSeek, Groq, Cerebras, Together, Fireworks, Perplexity, Cohere, Hugging Face, NVIDIA NIM, Vercel AI Gateway, Cloudflare Workers AI, Azure OpenAI, DeepInfra, SambaNova, Nebius, Hyperbolic, Novita, Baseten, Scaleway, Venice, kluster.ai, Moonshot, Z.ai, Qwen, MiniMax, Inception) and for local servers (LM Studio, Ollama, vLLM, llama.cpp, LiteLLM, Jan, LocalAI, text-generation-webui), each with its base URL prefilled. Anything else goes through the generic **OpenAI-compatible** tile with a base URL you enter.
 
 **OpenRouter** — First-class access to OpenRouter's model catalog (e.g. `anthropic/claude-sonnet-4`, `deepseek/deepseek-r1`). Uses the official OpenRouter provider, so reasoning is normalized natively and full `reasoning_details` are returned and round-tripped across tool calls (see [Reasoning](#reasoning-thinking)). Just add your `sk-or-…` API key; the base URL defaults to OpenRouter.
 
 **ChatGPT Subscription** — Use your existing ChatGPT Plus or Pro subscription to power agents at a flat monthly rate instead of per-token billing. This provider authenticates via OAuth (no API key needed) and uses the ChatGPT Responses API backend.
 
 Setup:
-1. Add a new provider and select **ChatGPT Subscription** as the type
-2. Click **Sign In with ChatGPT** — this opens your browser for OAuth authentication
+1. Add a provider and pick **ChatGPT** under Subscriptions
+2. Click **Sign in with ChatGPT** — this opens your browser for OAuth authentication
 3. After signing in, the provider shows your email and authentication status
 4. Select a model from the dropdown (e.g., `gpt-5.6-sol`, `gpt-5.4-mini`)
 
@@ -95,8 +97,8 @@ Note on gpt-5.6 reasoning traces: the codex backend ships reasoning summaries in
 **Grok Subscription** — Use your SuperGrok or X Premium subscription to power agents with xAI's Grok models, no API key or metered console billing needed. Authenticates via xAI's OAuth device-code flow against `auth.x.ai`; requests go to the standard xAI API (`api.x.ai/v1`) with the OAuth bearer token.
 
 Setup:
-1. Add a new provider and select **Grok Subscription** as the type
-2. Click **Sign In with xAI / Grok** — your browser opens to xAI with a short device code pre-filled
+1. Add a provider and pick **Grok** under Subscriptions
+2. Click **Sign in with Grok** — your browser opens to xAI with a short device code pre-filled
 3. Confirm the code shown in adf matches the one in the browser and approve access
 4. adf detects approval automatically and shows your signed-in status
 5. Select a model from the dropdown (e.g., `grok-4.5`, `grok-4.3`)
@@ -215,12 +217,12 @@ You can also leave Reasoning on and override a single field, or set a key's valu
 
 ### Per-ADF Provider Configurations
 
-Each ADF file can store its own provider configuration independently of the app-wide settings. This allows agents to ship with embedded API keys, custom models, and provider-specific parameters.
+Each ADF file can store its own copy of a provider independently of the app-wide settings. This allows agents to ship with embedded API keys, custom models, and provider-specific parameters. At runtime, when `providers[]` in the agent config contains the selected provider id, that entry is used for every field it carries, with the key read from the agent's `adf_identity`. If the agent's copy has no key, the app-wide provider with the same id supplies the key (and nothing else). New agents created in Studio get exactly such a key-less copy of the default provider, which is why they work out of the box with the app key.
 
 Per-ADF provider configs are managed from:
 
-- **Settings > Providers** — Expand a provider and use the **ADF Files** section to assign credentials to specific ADF files. Each ADF can override the API key, default model, request delay, and custom parameters.
-- **Agent > Config** — The agent's configuration panel shows which provider is being used and whether it has per-ADF overrides.
+- **Settings > Providers** — Open a provider and use **Agent overrides** to add an agent and set its API key, default model, request delay, and custom parameters.
+- **Agent > Config** — The agent's configuration panel shows which provider is being used and whether it has an override.
 
 Credentials are stored in the ADF's `adf_identity` table (encrypted at rest), mirroring the pattern used for MCP server and channel adapter credentials. ADF files with stored provider configurations will continue to work independently, even if the provider is not listed in the app-wide settings.
 
@@ -255,17 +257,20 @@ From **Settings > MCP Servers**:
 
 ## Channel Adapters
 
-Channel adapters connect external messaging platforms to ADF agents. Manage adapters from **Settings > Channel Adapters**.
-Telegram, email, Discord, Slack, and WhatsApp are built in and always registered by the runtime; configure credentials and enable them per agent as needed.
+Channel adapters connect external messaging platforms to ADF agents. Manage them from **Settings > Channels** — that is the tab name; "adapter" is the runtime term for the code behind each channel.
+Telegram, email, Discord, Slack, and WhatsApp are built in and always available; each is connected **per agent**.
 
-### Adapter Status Dashboard
+### The Channels page
 
-- **Connection status** — See which adapters are connected, connecting, or errored
-- **Logs** — View per-adapter logs (up to 500 entries)
-- **Start/Stop/Restart** — Control adapter lifecycle
-- **Credentials** — Store platform tokens (app-wide or per-agent in `adf_identity`)
+Each channel is a row listing the agents connected to it, one chip per agent with a live status dot (connected, connecting, error, or not running). When nothing is connected yet the page opens with a tile per channel.
 
-![Settings → Channels listing the Telegram, Email, and Discord adapters, each with a status dot and Disconnected label plus Configure, Restart, and Logs actions.](../assets/screenshots/settings-channels.png)
+- **Connect an agent** — pick an agent from your tracked folders, paste the credentials the form asks for (a *Where to get this* panel walks through obtaining them), and click **Connect**. Credentials are written to that agent's `adf_identity` and the channel is enabled in the agent's config, which starts the adapter if the agent is running.
+- **Click a chip** — edit that agent's credentials, see the adapter's last error, or **Disconnect** (removes the config and the stored credentials).
+- **Logs** — per-adapter log (up to 500 entries).
+
+There is no app-wide credential store for channels. Adapters run inside each agent, so one bot token used by two agents would put two pollers on the same bot (Telegram rejects the second outright). One bot, one agent.
+
+![Settings → Channels listing the Telegram, Email, and Discord channels, each row showing the brand icon, a one-line description, Logs and Connect an agent actions, and a chip with a status dot per connected agent.](../assets/screenshots/settings-channels.png)
 
 ### Available Adapters
 
@@ -277,7 +282,7 @@ Telegram, email, Discord, Slack, and WhatsApp are built in and always registered
 | **Slack** | Yes | `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN` | Socket Mode — no public endpoint needed |
 | **WhatsApp** | Yes | *(none — QR pairing)* | Personal account via Baileys; scan QR from the agent's files. Unofficial protocol — use a non-critical account |
 
-Per-agent adapter configuration is set in the agent's config panel under `adapters`. See [Messaging > Channel Adapters](messaging.md#channel-adapters) for full details.
+Every connection is per-agent config under `adapters` plus credentials in that agent's `adf_identity`. Connecting an agent from the Channels page writes both; the agent's config panel edits the same `adapters` block. See [Messaging > Channel Adapters](messaging.md#channel-adapters) for full details.
 
 > **Registered ≠ active.** Built-in adapters are always *registered* by the runtime, but that only makes them available — it does not start them for any agent. An adapter runs for an agent only when `adapters[<type>].enabled === true` in that agent's config. And enabling the adapter alone is not enough for inbound messages to wake the agent: that also requires `messaging.receive: true` **and** the `triggers.on_inbox.enabled: true` trigger. Missing either of the latter two is the most common reason a correctly-credentialed adapter connects but the agent never responds.
 

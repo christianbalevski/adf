@@ -2450,8 +2450,8 @@ function buildAdapterSettingsDiagnostics(settingsStore?: DaemonSettingsStore) {
       npmPackage: adapter.npmPackage,
       managed: adapter.managed ?? false,
       version: adapter.version,
-      credentialStorage: adapter.credentialStorage ?? 'app',
-      env: sanitizeEnv(adapter.env),
+      // No app-level credentials: adapters run per agent and read their tokens
+      // from that agent's identity (purpose `adapter:<type>:<KEY>`).
     })),
   }
 }
@@ -2513,6 +2513,7 @@ function sanitizeProvider(provider: ProviderConfig) {
     name: provider.name,
     baseUrl: provider.baseUrl,
     defaultModel: provider.defaultModel,
+    preset: provider.preset,
     requestDelayMs: provider.requestDelayMs ?? 0,
     credentialStorage: provider.credentialStorage ?? 'app',
     hasApiKey: typeof provider.apiKey === 'string' && provider.apiKey.length > 0,

@@ -903,9 +903,13 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
             )}
           </div>
 
-          {/* Per-agent credential storage panel (edit mode: the registration exists) */}
-          {editing && (
-            <McpCredentialPanel server={draft} registryEntry={registryEntry} onServerUpdate={patch} />
+          {/* Per-agent credential storage panel (edit mode: the registration exists).
+              OAuth-only servers have no per-agent keys to fill, and the sign-in
+              note already sits in the HTTP section above, so the panel is
+              skipped for them; dual-mode servers keep it for the token fallback
+              but without a second copy of the note. */}
+          {editing && !(isOAuth && !isDualMode) && (
+            <McpCredentialPanel server={draft} registryEntry={registryEntry} onServerUpdate={patch} showOAuthNote={false} />
           )}
 
           {/* Logs (edit mode: the server has a run history worth showing) */}

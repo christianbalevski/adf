@@ -104,11 +104,7 @@ This example shows the broader shape the daemon understands. It is intentionally
       "id": "adapter-id",
       "type": "telegram",
       "npmPackage": "",
-      "managed": false,
-      "env": [
-        { "key": "TELEGRAM_BOT_TOKEN", "value": "secret-value" }
-      ],
-      "credentialStorage": "app"
+      "managed": false
     }
   ],
   "compute": {
@@ -190,7 +186,9 @@ If an agent declares a server that is not registered and has no source metadata,
 ## Adapter Settings
 
 The daemon reads global channel adapter registrations from `adapters`. Agents still enable adapters from their own `.adf` config under `config.adapters`.
-Built-in adapter registrations for `telegram` and `email` are always available even when they are omitted from settings; settings only need to carry app-level credentials or custom adapter registrations.
+Built-in adapter registrations for `telegram` and `email` are always available even when they are omitted from settings; settings only need to carry custom adapter registrations.
+
+Adapter credentials are **not** settings. Every credential lives in the agent's own `adf_identity` table under the purpose `adapter:{type}:{KEY}` (for example `adapter:telegram:TELEGRAM_BOT_TOKEN`), written by the agent via `set_identity` or by Studio's **Settings > Channels** page when an agent is connected. There is no app-wide credential store and no fallback: an adapter whose identity row is missing fails plainly and stays stopped.
 
 Common adapter registration fields:
 
@@ -200,8 +198,10 @@ Common adapter registration fields:
 | `type` | Adapter type, such as `telegram` or `email` |
 | `npmPackage` | External adapter package, if not built in |
 | `managed` | Whether the package is managed by ADF |
-| `env` | App-level credentials or environment values |
-| `credentialStorage` | `app` or `agent` |
+| `env` | **Deprecated** — kept in the type for old settings files, ignored at runtime |
+| `credentialStorage` | **Deprecated** — kept in the type for old settings files, ignored at runtime |
+
+An adapter token left over in `env` from an older settings file is not migrated and not read. Reconnect the agent from **Settings > Channels** so the credential is stored in its `adf_identity`.
 
 Built-in adapter types currently include `telegram` and `email`.
 

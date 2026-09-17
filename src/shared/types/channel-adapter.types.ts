@@ -191,9 +191,14 @@ export interface AdapterRegistration {
   npmPackage?: string
   managed?: boolean
   version?: string
-  /** App-level credentials (not per-agent) */
+  /**
+   * @deprecated Channel credentials live only in each agent's `adf_identity`
+   * (purpose `adapter:<type>:<KEY>`). Adapters run per agent, so one shared
+   * token would put several pollers on one bot. Never read at runtime; kept
+   * so old settings files still parse.
+   */
   env?: { key: string; value: string }[]
-  /** Where credentials are stored: app-wide settings or per-agent ADF identity */
+  /** @deprecated See `env`. Ignored. */
   credentialStorage?: 'app' | 'agent'
 }
 
@@ -246,6 +251,12 @@ export interface AdapterState {
   connectedAt?: number
   restartCount: number
   logs: AdapterLogEntry[]
+}
+
+/** One agent's live adapter instances (Settings → Channels per-agent chips). */
+export interface AdapterAgentStatus {
+  filePath: string
+  adapters: { type: string; status: AdapterStatus; error?: string; connectedAt?: number }[]
 }
 
 // =============================================================================

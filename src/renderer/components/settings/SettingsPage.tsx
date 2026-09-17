@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore, UI_FONT_PRESETS, UI_SCALE_OPTIONS, type SettingsSection, type UiFont, type UiScale } from '../../stores/app.store'
 import { isFontInstalled } from '../../utils/fonts'
-import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
-import type { ProviderType } from '../../../shared/constants/adf-defaults'
+import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS } from '../../../shared/constants/adf-defaults'
 import { addCatalogSource, normalizeCatalogSources, MAX_CATALOG_SOURCES } from '../../utils/skills-panel'
 import { invalidateConfigCaches } from '../agent/AgentConfig'
 import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAgentStatus } from '../../../shared/types/ipc.types'
 import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
-import { AdapterStatusDashboard } from '../adapters/AdapterStatusDashboard'
-import { ProviderCredentialPanel } from '../providers/ProviderCredentialPanel'
+import { ChannelsPanel } from '../adapters/ChannelsPanel'
+import { ProvidersPanel } from '../providers/ProvidersPanel'
 import { AboutTab } from './AboutTab'
 import { NewAgentTemplateTab } from './NewAgentTemplateTab'
 import { TokenUsageSection } from './UsageSection'
@@ -58,11 +57,11 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
     items: [
       { id: 'agents', label: 'Prompts', description: 'Applies to every agent now.', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
       { id: 'template', label: 'Agent template', description: 'Applies to agents you create from now on.', keywords: 'defaults template model tools limits new agent files readme mind', docs: DOCS.settingsSystemPrompt },
-      { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt grok xai models api keys', docs: DOCS.settingsProviders },
+      { id: 'providers', label: 'Providers', description: 'Models, keys, and subscriptions', keywords: 'anthropic openai chatgpt grok xai openrouter gemini groq ollama lm studio local models api keys', docs: DOCS.settingsProviders },
       { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },
       { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools', docs: DOCS.settingsMcp },
       { id: 'skills', label: 'Skills', description: 'Catalogs the skill browser reads', keywords: 'catalog registry sources install browse', docs: DOCS.settingsSkills },
-      { id: 'channels', label: 'Channels', description: 'Email, Telegram, and Discord', keywords: 'adapters messages integrations', docs: DOCS.settingsChannels },
+      { id: 'channels', label: 'Channels', description: 'Telegram, Discord, Slack, email, WhatsApp', keywords: 'adapters messages integrations bot token', docs: DOCS.settingsChannels },
     ],
   },
   {
@@ -103,36 +102,6 @@ function SettingsNavIcon({ section }: { section: SettingsSection }) {
       {paths[section]}
     </svg>
   )
-}
-
-function getProviderMeta(type: ProviderType) {
-  return PROVIDER_TYPES.find((pt) => pt.type === type) ?? PROVIDER_TYPES[0]
-}
-
-type ProviderTestStatus = 'ok' | 'failed' | 'unconfigured' | 'testing' | 'unknown'
-
-function providerDotClass(status?: ProviderTestStatus): string {
-  switch (status) {
-    case 'ok': return 'bg-green-500'
-    case 'failed': return 'bg-red-500'
-    case 'unconfigured': return 'bg-amber-400'
-    case 'testing': return 'bg-neutral-400 animate-pulse'
-    default: return 'bg-neutral-500/40'
-  }
-}
-
-function providerStatusLabel(status?: ProviderTestStatus): string {
-  switch (status) {
-    case 'ok': return 'Connected'
-    case 'failed': return 'Connection failed'
-    case 'unconfigured': return 'Not configured'
-    case 'testing': return 'Testing…'
-    default: return 'Unknown'
-  }
-}
-
-function generateProviderId(): string {
-  return 'custom:' + Math.random().toString(36).slice(2, 8)
 }
 
 /**
@@ -1302,17 +1271,16 @@ function ManualPeersEditor() {
 
 export function SettingsPage() {
   const [providers, setProviders] = useState<ProviderConfig[]>([])
+  // Lists that render from settings show a placeholder until the first load
+  // lands, so an empty state never flashes before the real rows.
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [defaultProviderId, setDefaultProviderId] = useState<string | undefined>(undefined)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [providerStatus, setProviderStatus] = useState<Record<string, ProviderTestStatus>>({})
   const [systemPrompt, setSystemPrompt] = useState('')
   const [compactionPrompt, setCompactionPrompt] = useState('')
   const [toolPrompts, setToolPrompts] = useState<Record<string, string>>({})
   const [expandedPromptKey, setExpandedPromptKey] = useState<string | null>(null)
   const [mcpServers, setMcpServers] = useState<McpServerRegistration[]>([])
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
-  const [modelOptionsCache, setModelOptionsCache] = useState<Record<string, { models: string[]; error?: string; loading?: boolean }>>({})
-  const [customModelEntry, setCustomModelEntry] = useState<Record<string, boolean>>({})
   const [activeTab, setActiveTab] = useState<SettingsSection>('general')
   const [settingsSearch, setSettingsSearch] = useState('')
   // '' = default (Documents/adf-agents); saved directly, not via the debounced bundle
@@ -1358,16 +1326,10 @@ export function SettingsPage() {
     }
   }
   const meshEnabled = useMeshStore((s) => s.enabled)
-  const [newProviderIds, setNewProviderIds] = useState<Set<string>>(new Set())
   const [sandboxPackages, setSandboxPackages] = useState<Array<{ name: string; version: string }>>([])
   /** 0 = automatic (CPU-derived). The main process applies it to the sandbox
    *  service the moment the debounced save lands — no restart needed. */
   const [sandboxMaxWorkers, setSandboxMaxWorkers] = useState(0)
-  const [chatgptAuth, setChatgptAuth] = useState<{ authenticated: boolean; email?: string; expiresAt?: number }>({ authenticated: false })
-  const [chatgptAuthLoading, setChatgptAuthLoading] = useState(false)
-  const [grokAuth, setGrokAuth] = useState<{ authenticated: boolean; email?: string; expiresAt?: number; flowError?: string }>({ authenticated: false })
-  const [grokAuthLoading, setGrokAuthLoading] = useState(false)
-  const [grokDeviceInfo, setGrokDeviceInfo] = useState<{ userCode: string; verificationUri: string; verificationUriComplete?: string } | null>(null)
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
   const chatWidth = useAppStore((s) => s.chatWidth)
@@ -1385,7 +1347,7 @@ export function SettingsPage() {
   const consumePendingSettingsSection = useAppStore((s) => s.consumePendingSettingsSection)
   const hasLoaded = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout>>()
-  const pendingSave = useRef<(() => void) | null>(null)
+  const pendingSave = useRef<(() => Promise<unknown> | void) | null>(null)
   const contentScrollRef = useRef<HTMLElement>(null)
   const activeNavItem = SETTINGS_NAV_ITEMS.find((item) => item.id === activeTab) ?? SETTINGS_NAV_ITEMS[0]
   const normalizedSearch = settingsSearch.trim().toLowerCase()
@@ -1460,6 +1422,7 @@ export function SettingsPage() {
         setComputeExecutionTargets(compute.executionTargets ?? [])
       }
       hasLoaded.current = true
+      setSettingsLoaded(true)
     })
   }, [])
 
@@ -1477,37 +1440,50 @@ export function SettingsPage() {
     return unsub
   }, [activeTab, meshEnabled])
 
-  // Auto-save on change (debounced) — flushes immediately on unmount
+  // Auto-save on change (debounced) — flushes immediately on unmount.
+  //
+  // `pendingSave` is re-pointed on every render, not only from the effect
+  // below: a child's effect runs before this component's effect, so a child
+  // that adds a provider and flushes right away (ProvidersPanel opening a
+  // freshly picked provider) would otherwise persist the *previous* render's
+  // values and main would not yet know the new provider exists. Returning the
+  // setSettings promise lets callers await the write before asking main to
+  // read it back.
+  const doSave = () => {
+    if (!hasLoaded.current) return
+    const written = window.adfApi?.setSettings({
+      providers,
+      defaultProviderId,
+      mcpServers,
+      adapters: adapterRegistrations,
+      globalSystemPrompt: systemPrompt,
+      compactionPrompt,
+      toolPrompts,
+      sandboxPackages,
+      sandboxMaxWorkers,
+      compute: {
+        hostAccessEnabled: computeHostAccessEnabled,
+        hostApproved: computeHostApproved,
+        hostApprovedSources: computeHostApprovedSources,
+        containerPackages: computeContainerPackages.split(',').map((s: string) => s.trim()).filter(Boolean),
+        machineCpus: computeMachineCpus,
+        machineMemoryMb: computeMachineMemoryMb,
+        containerImage: computeContainerImage,
+      },
+    })
+    invalidateConfigCaches()
+    return written
+  }
+  pendingSave.current = doSave
+
   useEffect(() => {
     if (!hasLoaded.current) return
     clearTimeout(saveTimer.current)
-    const doSave = () => {
-      pendingSave.current = null
-      window.adfApi?.setSettings({
-        providers,
-        defaultProviderId,
-        mcpServers,
-        adapters: adapterRegistrations,
-        globalSystemPrompt: systemPrompt,
-        compactionPrompt,
-        toolPrompts,
-        sandboxPackages,
-        sandboxMaxWorkers,
-        compute: {
-          hostAccessEnabled: computeHostAccessEnabled,
-          hostApproved: computeHostApproved,
-          hostApprovedSources: computeHostApprovedSources,
-          containerPackages: computeContainerPackages.split(',').map((s: string) => s.trim()).filter(Boolean),
-          machineCpus: computeMachineCpus,
-          machineMemoryMb: computeMachineMemoryMb,
-          containerImage: computeContainerImage,
-        }
-      })
-      invalidateConfigCaches()
-    }
-    pendingSave.current = doSave
-    saveTimer.current = setTimeout(doSave, 500)
+    saveTimer.current = setTimeout(() => { void pendingSave.current?.() }, 500)
     return () => clearTimeout(saveTimer.current)
+    // Re-arm the debounce whenever a persisted value changes; the payload itself
+    // is read from pendingSave, which every render refreshes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providers, defaultProviderId, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts, sandboxPackages, sandboxMaxWorkers, computeHostAccessEnabled, computeHostApproved, computeHostApprovedSources, computeContainerPackages, computeMachineCpus, computeMachineMemoryMb, computeContainerImage])
 
   // Flush pending save on unmount so changes aren't lost
@@ -1515,6 +1491,15 @@ export function SettingsPage() {
     return () => {
       if (pendingSave.current) pendingSave.current()
     }
+  }, [])
+
+  /**
+   * Persist now instead of on the debounce tick, and resolve once the write has
+   * landed — provider Test / Fetch models ask main to read these values back.
+   */
+  const flushSave = useCallback(async (): Promise<void> => {
+    clearTimeout(saveTimer.current)
+    await pendingSave.current?.()
   }, [])
 
   const handleThemeChange = async (newTheme: 'light' | 'dark' | 'system') => {
@@ -1572,196 +1557,6 @@ export function SettingsPage() {
     setSystemPrompt(DEFAULT_BASE_PROMPT)
     setCompactionPrompt(DEFAULT_COMPACTION_PROMPT)
     setToolPrompts({ ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS })
-  }
-
-  const fetchModelsForProvider = (providerId: string) => {
-    if (modelOptionsCache[providerId]?.loading) return
-    setModelOptionsCache((prev) => ({ ...prev, [providerId]: { models: [], loading: true } }))
-    window.adfApi?.listModels(providerId).then((result) => {
-      setModelOptionsCache((prev) => ({
-        ...prev,
-        [providerId]: { models: [...result.models].sort((a, b) => a.localeCompare(b)), error: result.error }
-      }))
-    }).catch((err) => {
-      setModelOptionsCache((prev) => ({ ...prev, [providerId]: { models: [], error: String(err) } }))
-    })
-  }
-
-  const refreshChatgptAuth = () => {
-    window.adfApi?.chatgptAuthStatus().then(setChatgptAuth).catch(() => {})
-  }
-
-  const handleChatgptSignIn = async () => {
-    setChatgptAuthLoading(true)
-    try {
-      const result = await window.adfApi?.chatgptAuthStart()
-      if (result && !result.success) {
-        console.warn('[ChatGPT Auth]', result.error)
-      }
-      refreshChatgptAuth()
-    } catch (err) {
-      console.warn('[ChatGPT Auth]', err)
-    } finally {
-      setChatgptAuthLoading(false)
-    }
-  }
-
-  const handleChatgptSignOut = async () => {
-    await window.adfApi?.chatgptAuthLogout()
-    refreshChatgptAuth()
-  }
-
-  const refreshGrokAuth = () => {
-    window.adfApi?.grokAuthStatus().then(setGrokAuth).catch(() => {})
-  }
-
-  const handleGrokSignIn = async () => {
-    setGrokAuthLoading(true)
-    try {
-      const result = await window.adfApi?.grokAuthStart()
-      if (result?.success && result.userCode && result.verificationUri) {
-        // Device-code flow: the browser opened with the code pre-filled; show
-        // the code here so the user can verify it matches, and poll for approval.
-        setGrokDeviceInfo({
-          userCode: result.userCode,
-          verificationUri: result.verificationUri,
-          verificationUriComplete: result.verificationUriComplete
-        })
-      } else if (result && !result.success) {
-        console.warn('[Grok Auth]', result.error)
-        setGrokAuth((prev) => ({ ...prev, flowError: result.error }))
-      }
-    } catch (err) {
-      console.warn('[Grok Auth]', err)
-    } finally {
-      setGrokAuthLoading(false)
-    }
-  }
-
-  const handleGrokSignOut = async () => {
-    await window.adfApi?.grokAuthLogout()
-    setGrokDeviceInfo(null)
-    refreshGrokAuth()
-  }
-
-  // While a Grok device-code flow is pending, poll auth status until the user
-  // approves in the browser (or the flow fails/expires).
-  useEffect(() => {
-    if (!grokDeviceInfo) return
-    const timer = setInterval(() => {
-      window.adfApi?.grokAuthStatus().then((status) => {
-        setGrokAuth(status)
-        if (status.authenticated || status.flowError || status.flowPending === false) {
-          setGrokDeviceInfo(null)
-        }
-      }).catch(() => {})
-    }, 3000)
-    return () => clearInterval(timer)
-  }, [grokDeviceInfo])
-
-  // Refresh OAuth auth status and auto-fetch models when a subscription provider is expanded
-  useEffect(() => {
-    const expandedType = expandedId ? providers.find(p => p.id === expandedId)?.type : undefined
-    if (expandedId && expandedType === 'chatgpt-subscription') {
-      refreshChatgptAuth()
-      if (!modelOptionsCache[expandedId]?.models?.length) {
-        fetchModelsForProvider(expandedId)
-      }
-    }
-    if (expandedId && expandedType === 'grok-subscription') {
-      refreshGrokAuth()
-      if (!modelOptionsCache[expandedId]?.models?.length) {
-        fetchModelsForProvider(expandedId)
-      }
-    }
-  }, [expandedId])
-
-  const addProvider = () => {
-    const defaultType = PROVIDER_TYPES[0]
-    const newProvider: ProviderConfig = {
-      id: generateProviderId(),
-      type: defaultType.type,
-      name: defaultType.label,
-      baseUrl: '',
-      apiKey: '',
-      defaultModel: '',
-      params: []
-    }
-    const wasEmpty = providers.length === 0
-    setProviders([...providers, newProvider])
-    setExpandedId(newProvider.id)
-    setNewProviderIds((prev) => new Set(prev).add(newProvider.id))
-    // Auto-promote: if this is the first provider, make it the default.
-    if (wasEmpty) {
-      setDefaultProviderId(newProvider.id)
-    }
-  }
-
-  const changeProviderType = (id: string, type: ProviderType) => {
-    const meta = getProviderMeta(type)
-    setProviders(providers.map((p) => {
-      if (p.id !== id) return p
-      return { ...p, type, name: meta.label, baseUrl: '', apiKey: '', defaultModel: '', params: [] }
-    }))
-  }
-
-  const updateProvider = (id: string, patch: Partial<ProviderConfig>) => {
-    setProviders(providers.map((p) => (p.id === id ? { ...p, ...patch } : p)))
-  }
-
-  const runProviderTest = async (id: string, force = false) => {
-    setProviderStatus((s) => ({ ...s, [id]: 'testing' }))
-    try {
-      const r = await window.adfApi?.testProvider(id, force)
-      setProviderStatus((s) => ({ ...s, [id]: r?.status ?? 'unknown' }))
-    } catch {
-      setProviderStatus((s) => ({ ...s, [id]: 'failed' }))
-    }
-  }
-
-  // Lazily fetch a connection status for each provider when the tab is open.
-  // Uses the cached (non-force) test so it piggybacks on the home dashboard's
-  // session cache; the per-provider "Test" button forces a live re-check.
-  useEffect(() => {
-    if (activeTab !== 'providers') return
-    for (const p of providers) {
-      if (providerStatus[p.id] === undefined) void runProviderTest(p.id, false)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, providers])
-
-  const removeProvider = (id: string) => {
-    const next = providers.filter((p) => p.id !== id)
-    setProviders(next)
-    if (expandedId === id) setExpandedId(null)
-    // Auto-repromote: if the removed provider was the default, fall back to the
-    // top of the remaining list (or clear if no providers remain).
-    if (defaultProviderId === id) {
-      setDefaultProviderId(next.length > 0 ? next[0].id : undefined)
-    }
-  }
-
-  const addParam = (providerId: string) => {
-    setProviders(providers.map((p) => {
-      if (p.id !== providerId) return p
-      return { ...p, params: [...(p.params ?? []), { key: '', value: '' }] }
-    }))
-  }
-
-  const updateParam = (providerId: string, paramIndex: number, patch: Partial<{ key: string; value: string }>) => {
-    setProviders(providers.map((p) => {
-      if (p.id !== providerId) return p
-      const params = [...(p.params ?? [])]
-      params[paramIndex] = { ...params[paramIndex], ...patch }
-      return { ...p, params }
-    }))
-  }
-
-  const removeParam = (providerId: string, paramIndex: number) => {
-    setProviders(providers.map((p) => {
-      if (p.id !== providerId) return p
-      return { ...p, params: (p.params ?? []).filter((_, j) => j !== paramIndex) }
-    }))
   }
 
   return (
@@ -2120,389 +1915,22 @@ export function SettingsPage() {
           />}
 
           {/* Providers tab */}
-          {activeTab === 'providers' && <>
-          <SettingsGroup className="p-4">
-            <div className="flex items-center justify-between mb-3">
-              <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                Providers
-              </label>
-              <Button
-                onClick={addProvider}
-                variant="ghost"
-                size="compact"
-              >
-                + Add Provider
-              </Button>
-            </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-3">
-              ADF files with stored provider configurations will continue to work independently, even if the provider is not listed here.
-            </p>
-            <p className="text-[11px] text-[var(--adf-ui-text-muted)] mb-3">
-              Default provider for new agents is set under{' '}
-              <button
-                type="button"
-                onClick={() => setActiveTab('template')}
-                className="underline underline-offset-2 hover:text-[var(--adf-ui-text)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)] rounded"
-              >
-                Agent template
-              </button>
-              .
-            </p>
-            {providers.length === 0 ? (
-              <p className="text-xs text-neutral-400 dark:text-neutral-500">
-                No providers configured. Add one to get started.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {providers.map((p) => {
-                  const isExpanded = expandedId === p.id
-                  const meta = getProviderMeta(p.type)
-                  const isDefault = defaultProviderId === p.id
-
-                  return (
-                    <div key={p.id} className="border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
-                      {/* Collapsed header */}
-                      <div className="flex items-center hover:bg-[var(--adf-ui-surface-hover)]">
-                      <button
-                        onClick={() => {
-                          if (isExpanded) {
-                            setNewProviderIds((prev) => {
-                              const next = new Set(prev)
-                              next.delete(p.id)
-                              return next
-                            })
-                            setExpandedId(null)
-                          } else {
-                            setExpandedId(p.id)
-                          }
-                        }}
-                        className="flex min-h-9 min-w-0 flex-1 items-center justify-between px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--adf-ui-focus)]"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                            {isExpanded ? '\u25BC' : '\u25B6'}
-                          </span>
-                          <span
-                            title={providerStatusLabel(providerStatus[p.id])}
-                            className={`w-2 h-2 rounded-full shrink-0 ${providerDotClass(providerStatus[p.id])}`}
-                          />
-                          <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200 truncate">
-                            {p.name || meta.label}
-                          </span>
-                          {isDefault && (
-                            <span
-                              title="Applied to new agents"
-                              className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 shrink-0"
-                            >
-                              Default
-                            </span>
-                          )}
-                          {!isExpanded && (
-                            <span className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate">
-                              {p.baseUrl || meta.label}
-                            </span>
-                          )}
-                        </div>
-                      </button>
-                      <Button
-                        onClick={() => removeProvider(p.id)}
-                        variant="danger"
-                        size="compact"
-                        className="mr-2"
-                      >
-                        Remove
-                      </Button>
-                      </div>
-
-                      {/* Expanded content */}
-                      {isExpanded && (
-                        <div className="px-3 pb-3 space-y-2 border-t border-neutral-100 dark:border-neutral-700">
-                          {/* Connection status + manual re-test */}
-                          <div className="mt-2 flex items-center justify-between">
-                            <span className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
-                              <span className={`w-2 h-2 rounded-full shrink-0 ${providerDotClass(providerStatus[p.id])}`} />
-                              {providerStatusLabel(providerStatus[p.id])}
-                            </span>
-                            <Button
-                              onClick={() => runProviderTest(p.id, true)}
-                              disabled={providerStatus[p.id] === 'testing'}
-                              loading={providerStatus[p.id] === 'testing'}
-                              variant="ghost"
-                              size="compact"
-                            >
-                              {providerStatus[p.id] === 'testing' ? 'Testing…' : 'Test'}
-                            </Button>
-                          </div>
-                          <div>
-                            <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Provider</label>
-                            <Select
-                              aria-label={`${p.name || meta.label} provider type`}
-                              value={p.type}
-                              onChange={(e) => changeProviderType(p.id, e.target.value as ProviderType)}
-                              disabled={!newProviderIds.has(p.id)}
-                              className={`text-sm ${
-                                !newProviderIds.has(p.id) ? 'opacity-60 cursor-not-allowed' : ''
-                              }`}
-                            >
-                              {PROVIDER_TYPES.map((pt) => (
-                                <option key={pt.type} value={pt.type}>{pt.label}</option>
-                              ))}
-                            </Select>
-                          </div>
-                          <div>
-                            <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Name</label>
-                            <TextInput
-                              aria-label={`${p.name || meta.label} name`}
-                              type="text"
-                              value={p.name}
-                              onChange={(e) => updateProvider(p.id, { name: e.target.value })}
-                              placeholder={meta.label}
-                              className="text-sm"
-                            />
-                          </div>
-                          {p.type === 'openai-compatible' && (
-                            <div>
-                              <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Base URL</label>
-                              <TextInput
-                                aria-label={`${p.name || meta.label} base URL`}
-                                type="text"
-                                value={p.baseUrl}
-                                onChange={(e) => updateProvider(p.id, { baseUrl: e.target.value })}
-                                placeholder="http://localhost:1234/v1"
-                                className="text-sm"
-                              />
-                            </div>
-                          )}
-                          {p.type === 'chatgpt-subscription' ? (
-                            <div className="space-y-2 mt-2">
-                              <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Authentication</label>
-                              {chatgptAuth.authenticated ? (
-                                <div className="flex items-center justify-between px-2 py-1.5 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md">
-                                  <span className="text-xs text-green-700 dark:text-green-400">
-                                    Signed in{chatgptAuth.email ? ` as ${chatgptAuth.email}` : ''}
-                                  </span>
-                                  <Button
-                                    onClick={handleChatgptSignOut}
-                                    variant="danger"
-                                    size="compact"
-                                    className="text-[10px]"
-                                  >
-                                    Sign Out
-                                  </Button>
-                                </div>
-                              ) : (
-                                <Button
-                                  onClick={handleChatgptSignIn}
-                                  disabled={chatgptAuthLoading}
-                                  loading={chatgptAuthLoading}
-                                  variant="primary"
-                                  className="w-full"
-                                >
-                                  {chatgptAuthLoading ? 'Signing in...' : 'Sign In with ChatGPT'}
-                                </Button>
-                              )}
-                            </div>
-                          ) : p.type === 'grok-subscription' ? (
-                            <div className="space-y-2 mt-2">
-                              <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Authentication</label>
-                              {grokAuth.authenticated ? (
-                                <div className="flex items-center justify-between px-2 py-1.5 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md">
-                                  <span className="text-xs text-green-700 dark:text-green-400">
-                                    Signed in{grokAuth.email ? ` as ${grokAuth.email}` : ''}
-                                  </span>
-                                  <Button
-                                    onClick={handleGrokSignOut}
-                                    variant="danger"
-                                    size="compact"
-                                    className="text-[10px]"
-                                  >
-                                    Sign Out
-                                  </Button>
-                                </div>
-                              ) : grokDeviceInfo ? (
-                                <div className="px-2 py-2 bg-neutral-50 dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-700 rounded-md space-y-1.5">
-                                  <p className="text-xs text-neutral-600 dark:text-neutral-300">
-                                    A browser window opened to xAI. Confirm this code there:
-                                  </p>
-                                  <div className="text-center font-mono text-lg tracking-widest text-neutral-800 dark:text-neutral-100 select-all">
-                                    {grokDeviceInfo.userCode}
-                                  </div>
-                                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                                    Waiting for approval… If no window opened, visit{' '}
-                                    <span className="select-all break-all">{grokDeviceInfo.verificationUri}</span> and enter the code.
-                                  </p>
-                                </div>
-                              ) : (
-                                <>
-                                  <Button
-                                    onClick={handleGrokSignIn}
-                                    disabled={grokAuthLoading}
-                                    loading={grokAuthLoading}
-                                    variant="primary"
-                                    className="w-full"
-                                  >
-                                    {grokAuthLoading ? 'Starting sign-in...' : 'Sign In with xAI / Grok'}
-                                  </Button>
-                                  {grokAuth.flowError && (
-                                    <p className="text-[10px] text-red-500 dark:text-red-400">{grokAuth.flowError}</p>
-                                  )}
-                                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                                    Requires a SuperGrok or X Premium subscription eligible for OAuth API access.
-                                  </p>
-                                </>
-                              )}
-                            </div>
-                          ) : (
-                            <ProviderCredentialPanel
-                              provider={p}
-                              onProviderUpdate={(patch) => updateProvider(p.id, patch)}
-                              apiKeyPlaceholder={meta.placeholder.apiKey}
-                            />
-                          )}
-                          {(p.credentialStorage ?? 'app') !== 'agent' && <>
-                          <div>
-                            <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Default Model</label>
-                            {(() => {
-                              const cache = modelOptionsCache[p.id]
-                              const isCustom = customModelEntry[p.id] ?? !cache?.models?.length
-                              if (cache?.loading) {
-                                return <div className="px-2 py-1.5 text-sm text-neutral-400 dark:text-neutral-500">Loading models...</div>
-                              }
-                              if (isCustom) {
-                                return (
-                                  <div className="flex gap-1">
-                                    <TextInput
-                                      aria-label={`${p.name || meta.label} default model`}
-                                      type="text"
-                                      value={p.defaultModel ?? ''}
-                                      onChange={(e) => updateProvider(p.id, { defaultModel: e.target.value })}
-                                      placeholder={meta.placeholder.model}
-                                      className="flex-1 text-sm"
-                                    />
-                                    {cache?.models?.length ? (
-                                      <Button
-                                        variant="ghost"
-                                        size="compact"
-                                        className="text-[10px] whitespace-nowrap"
-                                        onClick={() => setCustomModelEntry((prev) => ({ ...prev, [p.id]: false }))}
-                                      >
-                                        Pick from list
-                                      </Button>
-                                    ) : (
-                                      <Button
-                                        variant="ghost"
-                                        size="compact"
-                                        className="text-[10px] whitespace-nowrap"
-                                        onClick={() => fetchModelsForProvider(p.id)}
-                                      >
-                                        Fetch models
-                                      </Button>
-                                    )}
-                                  </div>
-                                )
-                              }
-                              return (
-                                <Select
-                                  aria-label={`${p.name || meta.label} default model`}
-                                  value={cache.models.includes(p.defaultModel ?? '') ? p.defaultModel : '__custom__'}
-                                  onChange={(e) => {
-                                    if (e.target.value === '__custom__') {
-                                      setCustomModelEntry((prev) => ({ ...prev, [p.id]: true }))
-                                    } else {
-                                      updateProvider(p.id, { defaultModel: e.target.value })
-                                    }
-                                  }}
-                                  className="text-sm"
-                                >
-                                  {cache.models.map((m) => (
-                                    <option key={m} value={m}>{m}</option>
-                                  ))}
-                                  {p.defaultModel && !cache.models.includes(p.defaultModel) && (
-                                    <option value={p.defaultModel}>{p.defaultModel} (current)</option>
-                                  )}
-                                  <option value="__custom__">Custom...</option>
-                                </Select>
-                              )
-                            })()}
-                            {modelOptionsCache[p.id]?.error && (
-                              <p className="text-[10px] text-red-400 mt-0.5">{modelOptionsCache[p.id].error}</p>
-                            )}
-                          </div>
-                          <div>
-                            <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Request Delay (ms)</label>
-                            <TextInput
-                              aria-label={`${p.name || meta.label} request delay in milliseconds`}
-                              type="number"
-                              min={0}
-                              step={100}
-                              value={p.requestDelayMs ?? 0}
-                              onChange={(e) => updateProvider(p.id, { requestDelayMs: Math.max(0, parseInt(e.target.value) || 0) })}
-                              placeholder="0"
-                              className="text-sm"
-                            />
-                            <p className="text-[10px] text-neutral-400 mt-0.5">Delay before each LLM request to avoid rate limits (0 = no delay)</p>
-                          </div>
-                          {(p.type === 'openai-compatible' || p.type === 'openrouter') && (
-                            <div>
-                              <div className="flex items-center justify-between mb-1">
-                                <label className="block text-xs text-neutral-500 dark:text-neutral-400">Parameters</label>
-                                <Button
-                                  onClick={() => addParam(p.id)}
-                                  variant="ghost"
-                                  size="compact"
-                                  className="text-[11px]"
-                                >
-                                  + Add
-                                </Button>
-                              </div>
-                              {(p.params ?? []).length > 0 && (
-                                <div className="space-y-1.5">
-                                  {(p.params ?? []).map((param, j) => (
-                                    <div key={j} className="flex gap-1.5 items-center">
-                                      <TextInput
-                                        aria-label={`Parameter ${j + 1} key`}
-                                        type="text"
-                                        value={param.key}
-                                        onChange={(e) => updateParam(p.id, j, { key: e.target.value })}
-                                        placeholder="key"
-                                        className="flex-1 font-mono text-xs"
-                                      />
-                                      <TextInput
-                                        aria-label={`Parameter ${j + 1} value`}
-                                        type="text"
-                                        value={param.value}
-                                        onChange={(e) => updateParam(p.id, j, { value: e.target.value })}
-                                        placeholder="blank = null"
-                                        className="flex-1 font-mono text-xs"
-                                      />
-                                      <IconButton
-                                        onClick={() => removeParam(p.id, j)}
-                                        aria-label={`Remove parameter ${j + 1}`}
-                                        variant="danger"
-                                      >
-                                        &times;
-                                      </IconButton>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                          </>}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </SettingsGroup>
-
-          </>}
+          {activeTab === 'providers' && (
+            // No card wrapper: each provider is its own flat block on the canvas.
+            <ProvidersPanel
+              loaded={settingsLoaded}
+              providers={providers}
+              setProviders={setProviders}
+              defaultProviderId={defaultProviderId}
+              setDefaultProviderId={setDefaultProviderId}
+              flushSave={flushSave}
+              onOpenTemplate={() => setActiveTab('template')}
+            />
+          )}
 
           {/* MCPs tab */}
-          {activeTab === 'mcps' && <>
-          <SettingsGroup className="p-4">
+          {activeTab === 'mcps' && (
+            // No card wrapper: each server is its own flat block on the canvas.
             <McpStatusDashboard
               mcpServers={mcpServers}
               onServersChanged={(next) => {
@@ -2527,21 +1955,19 @@ export function SettingsPage() {
               hostAccessEnabled={computeHostAccessEnabled}
               onEnableHostAccess={() => setComputeHostAccessEnabled(true)}
             />
-          </SettingsGroup>
-          </>}
+          )}
 
           {/* Skills tab */}
           {activeTab === 'skills' && <SkillsTab />}
 
           {/* Channels tab */}
-          {activeTab === 'channels' && <>
-          <SettingsGroup className="p-4">
-            <AdapterStatusDashboard
+          {activeTab === 'channels' && (
+            // No card wrapper: each channel is its own flat block on the canvas.
+            <ChannelsPanel
               adapters={adapterRegistrations}
               onAdaptersChanged={setAdapterRegistrations}
             />
-          </SettingsGroup>
-          </>}
+          )}
 
           {/* Networking tab */}
           {activeTab === 'networking' && <>

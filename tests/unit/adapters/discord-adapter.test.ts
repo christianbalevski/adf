@@ -243,7 +243,7 @@ describe('DiscordAdapter', () => {
     } satisfies OutboundMessage)
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/not connected/i)
-    expect(result.error).toMatch(/Settings > Channel Adapters > Discord/)
+    expect(result.error).toMatch(/Settings > Channels > Discord/)
     expect(result.error).toMatch(SETUP_GUIDE_RE)
   })
 
@@ -364,7 +364,7 @@ describe('DiscordAdapter', () => {
       const startPromise = adapter.start(ctx)
       await expect(startPromise).rejects.toThrow(/DISCORD_BOT_TOKEN/)
       await expect(startPromise).rejects.toThrow(/Reset Token/)
-      await expect(startPromise).rejects.toThrow(/Settings > Channel Adapters > Discord/)
+      await expect(startPromise).rejects.toThrow(/Settings > Channels > Discord/)
       await expect(startPromise).rejects.toThrow(SETUP_GUIDE_RE)
       expect(adapter.status()).toBe('error')
     })
