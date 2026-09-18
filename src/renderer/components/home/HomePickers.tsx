@@ -137,24 +137,18 @@ export function TemplatePickerChip() {
 
   // The template's own note when it has one, else the agent's description,
   // else what picking it does. A warning follows on its own line.
-  const note = current.templateDescription
-    ?? current.description
-    ?? `New agents start from ${current.name}, with a new identity and no history.`
-  const tip = current.warning ? `${note}\n${current.warning}` : note
-
   return (
     <div className="relative">
-      <Tooltip tip={tip}>
+      <Tooltip tip="Select agent template">
         <button
           type="button"
           onClick={() => setMenuOpen((v) => !v)}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
-          aria-label={`Start from: ${current.name}`}
+          aria-label={`Template: ${current.name}`}
           className={chipClass}
         >
           <TemplateIcon />
-          <span className="shrink-0 text-[var(--adf-ui-text-muted)]">Start from</span>
           <span className="min-w-0 truncate">{current.name}</span>
           <Caret />
         </button>

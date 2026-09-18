@@ -328,11 +328,6 @@ export function HomeComposer() {
 
       {error && <p className="mt-2 text-[12px] text-[var(--adf-ui-danger)]">{error}</p>}
       <div className="mt-1.5 flex items-center justify-between">
-        <span className="text-[10.5px] text-[var(--adf-ui-text-subtle)]">
-          {busy
-            ? `Creating ${name || 'the agent'}…`
-            : hint ?? 'Each message here starts a new agent.'}
-        </span>
         <button
           type="button"
           onClick={toggleSuggestions}
@@ -341,6 +336,11 @@ export function HomeComposer() {
         >
           {suggestionsOn ? 'Hide suggestions' : 'Show suggestions'}
         </button>
+        <span className="text-[10.5px] text-[var(--adf-ui-text-subtle)]">
+          {busy
+            ? `Creating ${name || 'the agent'}…`
+            : hint ?? 'Create a new agent'}
+        </span>
       </div>
       </div>
     </div>
