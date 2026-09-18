@@ -75,7 +75,7 @@ export function ConnectProviderCard() {
   const { loaded, providers, openPicker } = useHomeProviders()
   if (!loaded || providers.length > 0) return null
   return (
-    <div className="flex justify-center">
+    <div className="flex w-full justify-center">
       <button
         type="button"
         onClick={openPicker}

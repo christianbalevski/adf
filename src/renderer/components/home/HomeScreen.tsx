@@ -5,6 +5,7 @@ import { useDashboardData } from './useDashboardData'
 import { HomeComposer } from './HomeComposer'
 import { HomeStatusLine } from './HomeStatusLine'
 import { ConnectProviderCard, HomeProvidersProvider } from './HomeProviders'
+import { HomeExplainer } from './HomeExplainer'
 
 /**
  * Home, shown when no .adf is open. One face, first run or not: the status
@@ -48,12 +49,12 @@ export function HomeScreen() {
         <div className="relative mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pb-6 pt-8">
           {hasAgents && <HomeStatusLine data={data} />}
 
-          {/* Until a provider exists, the empty middle asks for one. Gone
+          {/* The middle: three faint beats on what this screen does, and,
+              until a provider exists, the card asking for one. The card goes
               the moment there is one; the chip in the composer takes over. */}
-          <div className="flex flex-1 items-center py-10">
-            <div className="w-full">
-              <ConnectProviderCard />
-            </div>
+          <div className="flex flex-1 flex-col items-center justify-center gap-10 py-10">
+            <HomeExplainer />
+            <ConnectProviderCard />
           </div>
         </div>
       </div>

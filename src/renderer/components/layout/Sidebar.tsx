@@ -192,7 +192,7 @@ export function Sidebar() {
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
   const filePath = useDocumentStore((s) => s.filePath)
   const { openFile, createFile, closeFile } = useAdfFile()
-  const { loadDirectories, rescanDirectory } = useTrackedDirs()
+  const { loadDirectories, rescanDirectory, removeDirectory } = useTrackedDirs()
   const directories = useTrackedDirsStore((s) => s.directories)
   const filesByDir = useTrackedDirsStore((s) => s.filesByDir)
 
@@ -269,6 +269,10 @@ export function Sidebar() {
   // Row context menu + the dialogs it opens. One instance of each lives here,
   // keyed by the target file, instead of one per row.
   const [menu, setMenu] = useState<(RowTarget & { x: number; y: number }) | null>(null)
+  // Right-click on a tracked folder's header row: its own short menu. This
+  // is where a folder stops being tracked; nothing on the home screen lists
+  // the folders any more.
+  const [dirMenu, setDirMenu] = useState<{ dirPath: string; x: number; y: number } | null>(null)
   const [cloneTarget, setCloneTarget] = useState<RowTarget | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<RowTarget | null>(null)
   const startingFilePaths = useAppStore((s) => s.startingFilePaths)
@@ -280,6 +284,31 @@ export function Sidebar() {
     setMenu({ file, dirPath, x: e.clientX, y: e.clientY })
   }, [])
   const closeMenu = useCallback(() => setMenu(null), [])
+  const handleDirContextMenu = useCallback((e: React.MouseEvent, dirPath: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setMenu(null)
+    setDirMenu({ dirPath, x: e.clientX, y: e.clientY })
+  }, [])
+  const closeDirMenu = useCallback(() => setDirMenu(null), [])
+
+  const dirMenuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!dirMenu) return []
+    const { dirPath } = dirMenu
+    return [
+      { label: 'Rescan', onSelect: () => { void rescanDirectory(dirPath) } },
+      { label: REVEAL_IN_FOLDER_LABEL, onSelect: () => { window.adfApi.revealInFolder(dirPath).catch(() => {}) } },
+      {
+        label: 'Untrack folder',
+        separatorBefore: true,
+        onSelect: () => {
+          // Files stay on disk and any running agents keep running; the
+          // folder just leaves the sidebar. The folder button adds it back.
+          removeDirectory(dirPath).catch((err) => console.error('[Sidebar] Untrack failed:', err))
+        }
+      }
+    ]
+  }, [dirMenu, removeDirectory, rescanDirectory])
 
   const menuItems = useMemo<ContextMenuItem[]>(() => {
     if (!menu) return []
@@ -437,6 +466,7 @@ export function Sidebar() {
                   foregroundAgentState={foregroundAgentState}
                   onOpenFile={handleOpenFile}
                   onFileContextMenu={handleFileContextMenu}
+                  onDirContextMenu={handleDirContextMenu}
                   forceExpanded={searching}
                 />
               </div>
@@ -458,6 +488,11 @@ export function Sidebar() {
         position={menu ? { x: menu.x, y: menu.y } : null}
         items={menuItems}
         onClose={closeMenu}
+      />
+      <ContextMenu
+        position={dirMenu ? { x: dirMenu.x, y: dirMenu.y } : null}
+        items={dirMenuItems}
+        onClose={closeDirMenu}
       />
       {cloneTarget && (
         <CloneDialog
@@ -561,6 +596,7 @@ const DirectorySection = memo(function DirectorySection({
   foregroundAgentState,
   onOpenFile,
   onFileContextMenu,
+  onDirContextMenu,
   forceExpanded = false
 }: {
   dirPath: string
@@ -572,6 +608,7 @@ const DirectorySection = memo(function DirectorySection({
   foregroundAgentState: string
   onOpenFile: (filePath: string) => void
   onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
+  onDirContextMenu: (e: React.MouseEvent, dirPath: string) => void
   /** Show children regardless of the user's collapse state (used while searching). */
   forceExpanded?: boolean
 }) {
@@ -628,6 +665,7 @@ const DirectorySection = memo(function DirectorySection({
         tabIndex={0}
         onClick={() => setExpanded((p) => !p)}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((p) => !p) } }}
+        onContextMenu={(e) => onDirContextMenu(e, dirPath)}
         className="group w-full px-3 py-1 text-xs text-left flex items-center gap-1.5 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer select-none"
       >
         <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
