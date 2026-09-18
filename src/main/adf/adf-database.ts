@@ -2149,6 +2149,15 @@ export class AdfDatabase {
   }
 
   /**
+   * peekReadonly for callers outside this class. The templates folder listing
+   * reads config/meta/counts out of every `.adf` it finds on each refresh, and
+   * must not open (or migrate) them or litter sidecars beside them.
+   */
+  static peek<T>(filePath: string, fn: (db: Database.Database) => T): T {
+    return AdfDatabase.peekReadonly(filePath, fn)
+  }
+
+  /**
    * Run `fn` against a short-lived READONLY connection, then reap any WAL
    * sidecars the open itself created. Empirical (better-sqlite3 12.x): a
    * readonly connection to a WAL-mode database CREATES -wal/-shm when they

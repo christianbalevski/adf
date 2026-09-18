@@ -161,8 +161,17 @@ export interface AppSettings {
    * user creates an agent from Studio. Absent/empty = code defaults.
    */
   agentTemplate?: AgentTemplate
-  /** Also apply agentTemplate to children spawned via sys_create_adf. Default off. */
+  /** Also apply the default template to children spawned via sys_create_adf. Default off. */
   agentTemplateForChildren?: boolean
+  /**
+   * Template (id = file basename in <userData>/templates) new agents start
+   * from when the composer's chip shows the default. Absent = 'standard'.
+   */
+  defaultTemplateId?: string
+  /** Epoch ms when the legacy `agentTemplate` snapshot was written out as a template file. */
+  templatesMigratedAt?: number
+  /** The settings tab showed the one-time migration notice. */
+  templatesMigrationSeen?: boolean
   theme?: 'light' | 'dark' | 'system'
   /** Interface typeface preset (UiFont in the renderer's app.store); 'custom' reads uiFontCustom. */
   uiFont?: 'system' | 'segoe' | 'inter' | 'roboto' | 'sf' | 'calibri' | 'verdana' | 'georgia' | 'custom'
@@ -694,8 +703,67 @@ export interface QuickCreateResult {
   /** The generated name ("steady-fern"), also the file's stem. */
   name?: string
   error?: string
-  /** `name_taken`: the proposed name is already a file in that folder; nothing was created. */
-  code?: 'name_taken'
+  /**
+   * `name_taken`: the proposed name is already a file in that folder; nothing was created.
+   * `template_unreviewed`: the chosen template came from someone else and has not been
+   * reviewed yet; the renderer opens the review dialog for the template, then retries.
+   * `template_missing`: the chosen template id is not in the templates folder any more.
+   */
+  code?: 'name_taken' | 'template_unreviewed' | 'template_missing'
+}
+
+// =============================================================================
+// Agent templates (Settings > Agent templates, the composer's "Start from" chip)
+// =============================================================================
+
+/** The three templates Studio ships. Regenerated from code by "Reset to shipped". */
+export type ShippedTemplateId = 'standard' | 'sandboxed' | 'full-access'
+
+/**
+ * One .adf in the templates folder (<userData>/templates). `id` is the file's
+ * basename without `.adf` and is stable; the display `name` is config.name.
+ */
+export interface AgentTemplateSummary {
+  id: string
+  name: string
+  description?: string
+  icon?: string
+  filePath: string
+  /** Set when this file is one of the shipped three (adf_meta key `adf_template_shipped`). */
+  shipped?: ShippedTemplateId
+  /**
+   * false = the file came from someone else (foreign or stripped identity) and
+   * the owner has not accepted it yet. Creating from it is refused until then.
+   */
+  reviewed: boolean
+  /** config.model, so the composer can pre-fill its provider and model chip. */
+  modelProvider?: string
+  modelId?: string
+  modifiedAt: number
+  /** True when the file has run (loop rows exist). Informational; instantiate drops history anyway. */
+  hasHistory: boolean
+}
+
+export interface AgentTemplateListResult {
+  templates: AgentTemplateSummary[]
+  /** Absolute path of the templates folder (for "Reveal in Finder"). */
+  folder: string
+  /** Effective default template id (settings.defaultTemplateId, else 'standard'). */
+  defaultId: string
+  /**
+   * Present once, after the legacy settings.agentTemplate snapshot was turned
+   * into a template file: the id it was saved under. Cleared by
+   * `templatesMigrationSeen`.
+   */
+  migrated?: { id: string }
+}
+
+/** Editable contents of a template: its config plus the seed files. */
+export interface AgentTemplateContents {
+  config: import('./adf-v02.types').AgentConfig
+  files: { readme: string; mind: string; soul: string }
+  /** Every other file in the template's VFS (the "extra files" of the old snapshot). */
+  extra: { path: string; size: number; mime: string }[]
 }
 
 export interface FileSharePrepareResult {

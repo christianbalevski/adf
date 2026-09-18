@@ -385,7 +385,7 @@ export function useAdfFile() {
    * dialog. `firstMessage` is parked in the app store before the file
    * becomes the open one, so the loop panel finds it on mount and sends it.
    */
-  const createQuickAgent = useCallback(async (firstMessage?: string, options?: { providerId?: string; folder?: string; name?: string; files?: File[] }) => {
+  const createQuickAgent = useCallback(async (firstMessage?: string, options?: { providerId?: string; modelId?: string; templateId?: string; folder?: string; name?: string; files?: File[] }) => {
     beginAgentSwitch()
     try {
       const { files, ...createOptions } = options ?? {}

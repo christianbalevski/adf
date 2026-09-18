@@ -4,8 +4,9 @@ import { useAppStore } from '../../stores/app.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { pickSuggestions } from './suggestions'
 import { SuggestionMarquee } from './SuggestionMarquee'
-import { FolderPickerChip, ProviderPickerChip } from './HomePickers'
+import { FolderPickerChip, ProviderPickerChip, TemplatePickerChip } from './HomePickers'
 import { useHomeProviders } from './HomeProviders'
+import { useTemplatesStore } from '../../hooks/useTemplates'
 import { NameChip } from './NameChip'
 import { generateAgentName } from '../../../shared/utils/agent-names'
 
@@ -49,6 +50,14 @@ export function HomeComposer() {
   // The create call gets exactly that, so what the user sees is what the
   // agent starts on (the settings template's provider never wins silently).
   const { selectedId: providerId } = useHomeProviders()
+  // The template the agent is built from, and the model the chip settled on.
+  // Both go to main as chosen here; main resolves a null template to the
+  // default one itself.
+  const homeTemplateId = useAppStore((s) => s.homeTemplateId)
+  const setHomeTemplateId = useAppStore((s) => s.setHomeTemplateId)
+  const homeModelId = useAppStore((s) => s.homeModelId)
+  const openTemplateReview = useAppStore((s) => s.openTemplateReview)
+  const defaultTemplateId = useTemplatesStore((s) => s.defaultId)
   const homeFolder = useAppStore((s) => s.homeFolder)
   const homeName = useAppStore((s) => s.homeName)
   const setHomeName = useAppStore((s) => s.setHomeName)
@@ -147,16 +156,46 @@ export function HomeComposer() {
     el.setSelectionRange(el.value.length, el.value.length)
   }, [])
 
+  // The same send, run again once the owner accepts a template's review. Held
+  // in a ref so the review callback does not pin an old copy of the state.
+  const sendRef = useRef<() => Promise<void>>(async () => {})
+
   const send = useCallback(async () => {
     const message = text.trim()
     if (!message || busy) return
     setBusy(true)
     setError(null)
     try {
-      const result = await createQuickAgent(message, { providerId: providerId ?? undefined, folder: homeFolder ?? undefined, name: homeName ?? undefined, files: files.length > 0 ? files : undefined })
+      const result = await createQuickAgent(message, {
+        providerId: providerId ?? undefined,
+        templateId: homeTemplateId ?? undefined,
+        modelId: homeModelId ?? undefined,
+        folder: homeFolder ?? undefined,
+        name: homeName ?? undefined,
+        files: files.length > 0 ? files : undefined
+      })
       if (!result.success) {
         if (result.code === 'name_taken') refuseName(result.error ?? 'That name is taken.')
-        else setError(result.error ?? 'Could not create the agent')
+        else if (result.code === 'template_unreviewed') {
+          // The template came from someone else. Review it once, then make
+          // the agent; nothing was created on this attempt.
+          const templateId = homeTemplateId ?? defaultTemplateId
+          const fallback = result.error ?? 'That template has not been reviewed yet.'
+          try {
+            const check = await window.adfApi.checkTemplateReview(templateId)
+            if (check.needsReview && check.configSummary) {
+              openTemplateReview(templateId, check.configSummary, (accepted) => {
+                if (accepted) void sendRef.current()
+                else setError('That template has not been reviewed, so no agent was created.')
+              })
+            } else setError(fallback)
+          } catch {
+            setError(fallback)
+          }
+        } else if (result.code === 'template_missing') {
+          setError(result.error ?? 'That template is not in the templates folder any more.')
+          setHomeTemplateId(null)
+        } else setError(result.error ?? 'Could not create the agent')
         return
       }
       setText('')
@@ -175,7 +214,8 @@ export function HomeComposer() {
     } finally {
       setBusy(false)
     }
-  }, [busy, createQuickAgent, files, homeFolder, homeName, providerId, refuseName, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setShowMeshGraph, setText, text])
+  }, [busy, createQuickAgent, defaultTemplateId, files, homeFolder, homeModelId, homeName, homeTemplateId, openTemplateReview, providerId, refuseName, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setHomeTemplateId, setShowMeshGraph, setText, text])
+  sendRef.current = send
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -261,6 +301,7 @@ export function HomeComposer() {
             {/* Bad characters: the chip shakes on its own and keeps the old
                 name; only the reason goes red below. Taken names go red too. */}
             {name && <NameChip name={name} onChange={onNameChange} onSpin={onSpin} onInvalid={setError} refused={refused} />}
+            <TemplatePickerChip />
             <ProviderPickerChip />
             <FolderPickerChip />
           </div>

@@ -93,9 +93,22 @@ export const IPC = {
   SETTINGS_GET: 'adf:settings:get',
   SETTINGS_SET: 'adf:settings:set',
   // Agent template extra files (blob store under <userData>/agent-template-files)
-  AGENT_TEMPLATE_FILES_ADD: 'adf:agent-template:files:add',
-  AGENT_TEMPLATE_FILES_REMOVE: 'adf:agent-template:files:remove',
-  AGENT_TEMPLATE_FILES_STAT: 'adf:agent-template:files:stat',
+  // Agent templates: .adf files in <userData>/templates that new agents start from
+  TEMPLATES_LIST: 'adf:templates:list',
+  TEMPLATES_CHANGED: 'adf:templates:changed',
+  TEMPLATES_MIGRATION_SEEN: 'adf:templates:migration-seen',
+  TEMPLATE_CREATE: 'adf:templates:create',
+  TEMPLATE_DELETE: 'adf:templates:delete',
+  TEMPLATE_RESET_SHIPPED: 'adf:templates:reset-shipped',
+  TEMPLATE_REVEAL: 'adf:templates:reveal',
+  TEMPLATE_SET_DEFAULT: 'adf:templates:set-default',
+  TEMPLATE_GET_CONTENTS: 'adf:templates:get-contents',
+  TEMPLATE_SET_CONFIG: 'adf:templates:set-config',
+  TEMPLATE_SET_FILE: 'adf:templates:set-file',
+  TEMPLATE_ADD_FILES: 'adf:templates:add-files',
+  TEMPLATE_REMOVE_FILE: 'adf:templates:remove-file',
+  TEMPLATE_CHECK_REVIEW: 'adf:templates:check-review',
+  TEMPLATE_REVIEW_ACCEPT: 'adf:templates:review-accept',
 
   // Tracked directories
   TRACKED_DIRS_GET: 'adf:tracked-dirs:get',

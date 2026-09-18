@@ -10,6 +10,7 @@ import { nanoid } from 'nanoid'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { writeFileSync, unlinkSync } from 'fs'
+import { AdfDatabase } from './adf-database'
 import type { AdfWorkspace } from './adf-workspace'
 import type {
   AgentConfig,
@@ -81,95 +82,7 @@ export function readTemplate(
   writeFileSync(tempPath, blob)
 
   try {
-    const db = new Database(tempPath, { readonly: true })
-    try {
-      // Read config
-      const configRow = db
-        .prepare('SELECT config_json FROM adf_config WHERE id = 1')
-        .get() as { config_json: string } | undefined
-      if (!configRow) {
-        throw new Error('Template is not a valid .adf file')
-      }
-      const config = JSON.parse(configRow.config_json) as AgentConfig
-
-      // Read files
-      const fileRows = db
-        .prepare(
-          'SELECT path, content, mime_type, protection FROM adf_files'
-        )
-        .all() as Array<{
-        path: string
-        content: Buffer
-        mime_type: string | null
-        protection: string
-      }>
-      const files: TemplateFile[] = fileRows.map((r) => ({
-        path: r.path,
-        content: r.content,
-        mime_type: r.mime_type,
-        protection: r.protection as FileProtectionLevel
-      }))
-
-      // Read identity rows — exclude signing keys and KDF params
-      const identityRows = db
-        .prepare(
-          'SELECT purpose, value, encryption_algo, salt, kdf_params, code_access FROM adf_identity'
-        )
-        .all() as Array<{
-        purpose: string
-        value: Buffer
-        encryption_algo: string
-        salt: Buffer | null
-        kdf_params: string | null
-        code_access: number
-      }>
-
-      const filteredIdentity: TemplateIdentityRow[] = identityRows
-        .filter(
-          (r) =>
-            !r.purpose.startsWith('crypto:signing:') &&
-            !r.purpose.startsWith('crypto:kdf:') &&
-            r.encryption_algo === 'plain'
-        )
-        .map((r) => ({
-          purpose: r.purpose,
-          value: r.value,
-          encryption_algo: r.encryption_algo,
-          salt: r.salt,
-          kdf_params: r.kdf_params,
-          code_access: !!r.code_access
-        }))
-
-      // Read custom tables (non-adf_, non-sqlite_ tables)
-      const tableRows = db
-        .prepare(
-          "SELECT name, sql FROM sqlite_master WHERE type='table' " +
-          "AND name NOT LIKE 'adf_%' AND name NOT LIKE 'sqlite_%'"
-        )
-        .all() as Array<{ name: string; sql: string }>
-
-      const customTables: TemplateCustomTable[] = tableRows.map((t) => {
-        const rows = db
-          .prepare(`SELECT * FROM "${t.name}"`)
-          .all() as Record<string, unknown>[]
-        return { name: t.name, ddl: t.sql, rows }
-      })
-
-      // Also grab indexes for custom tables
-      const indexRows = db
-        .prepare(
-          "SELECT sql FROM sqlite_master WHERE type='index' " +
-          "AND tbl_name NOT LIKE 'adf_%' AND tbl_name NOT LIKE 'sqlite_%' " +
-          "AND sql IS NOT NULL"
-        )
-        .all() as Array<{ sql: string }>
-
-      db.close()
-      return { config, files, identityRows: filteredIdentity, customTables, customIndexes: indexRows.map((r) => r.sql) }
-    } catch (e) {
-      db.close()
-      throw e
-    }
+    return readTemplateDatabase(tempPath)
   } finally {
     try {
       unlinkSync(tempPath)
@@ -187,6 +100,122 @@ export function readTemplate(
       /* ignore */
     }
   }
+}
+
+/**
+ * Read a template straight from a HOST `.adf` — the Studio agent-templates
+ * folder, which the host hands the tool as a path (`getStudioTemplate`).
+ *
+ * `includeIdentityRows: false` drops the template's stored credentials. A
+ * Studio template is the owner's file and may hold API keys; a child an agent
+ * spawns must not gain credentials it was never granted, so the host passes
+ * false and only config, files and `local_*` tables travel.
+ */
+export function readTemplateFile(
+  hostPath: string,
+  opts: { includeIdentityRows?: boolean } = {}
+): TemplateData {
+  // peek, not a bare readonly open: a readonly connection to a WAL database
+  // creates -wal/-shm it cannot remove, and the templates folder must not
+  // collect sidecars every time a child is spawned.
+  const data = AdfDatabase.peek(hostPath, readTemplateFromDb)
+  if (opts.includeIdentityRows === false) data.identityRows = []
+  return data
+}
+
+/** Shared reader over an already-open readonly connection to a template database. */
+function readTemplateDatabase(dbPath: string): TemplateData {
+  const db = new Database(dbPath, { readonly: true })
+  try {
+    return readTemplateFromDb(db)
+  } finally {
+    try { db.close() } catch { /* ignore */ }
+  }
+}
+
+function readTemplateFromDb(db: Database.Database): TemplateData {
+  // Read config
+  const configRow = db
+    .prepare('SELECT config_json FROM adf_config WHERE id = 1')
+    .get() as { config_json: string } | undefined
+  if (!configRow) {
+    throw new Error('Template is not a valid .adf file')
+  }
+  const config = JSON.parse(configRow.config_json) as AgentConfig
+
+  // Read files
+  const fileRows = db
+    .prepare(
+      'SELECT path, content, mime_type, protection FROM adf_files'
+    )
+    .all() as Array<{
+    path: string
+    content: Buffer
+    mime_type: string | null
+    protection: string
+  }>
+  const files: TemplateFile[] = fileRows.map((r) => ({
+    path: r.path,
+    content: r.content,
+    mime_type: r.mime_type,
+    protection: r.protection as FileProtectionLevel
+  }))
+
+  // Read identity rows — exclude signing keys and KDF params
+  const identityRows = db
+    .prepare(
+      'SELECT purpose, value, encryption_algo, salt, kdf_params, code_access FROM adf_identity'
+    )
+    .all() as Array<{
+    purpose: string
+    value: Buffer
+    encryption_algo: string
+    salt: Buffer | null
+    kdf_params: string | null
+    code_access: number
+  }>
+
+  const filteredIdentity: TemplateIdentityRow[] = identityRows
+    .filter(
+      (r) =>
+        !r.purpose.startsWith('crypto:signing:') &&
+        !r.purpose.startsWith('crypto:kdf:') &&
+        r.encryption_algo === 'plain'
+    )
+    .map((r) => ({
+      purpose: r.purpose,
+      value: r.value,
+      encryption_algo: r.encryption_algo,
+      salt: r.salt,
+      kdf_params: r.kdf_params,
+      code_access: !!r.code_access
+    }))
+
+  // Read custom tables (non-adf_, non-sqlite_ tables)
+  const tableRows = db
+    .prepare(
+      "SELECT name, sql FROM sqlite_master WHERE type='table' " +
+      "AND name NOT LIKE 'adf_%' AND name NOT LIKE 'sqlite_%'"
+    )
+    .all() as Array<{ name: string; sql: string }>
+
+  const customTables: TemplateCustomTable[] = tableRows.map((t) => {
+    const rows = db
+      .prepare(`SELECT * FROM "${t.name}"`)
+      .all() as Record<string, unknown>[]
+    return { name: t.name, ddl: t.sql, rows }
+  })
+
+  // Also grab indexes for custom tables
+  const indexRows = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='index' " +
+      "AND tbl_name NOT LIKE 'adf_%' AND tbl_name NOT LIKE 'sqlite_%' " +
+      "AND sql IS NOT NULL"
+    )
+  .all() as Array<{ sql: string }>
+
+  return { config, files, identityRows: filteredIdentity, customTables, customIndexes: indexRows.map((r) => r.sql) }
 }
 
 // ---------------------------------------------------------------------------

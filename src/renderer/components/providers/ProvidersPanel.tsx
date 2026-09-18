@@ -39,7 +39,7 @@ export function ProvidersPanel({ loaded, providers, setProviders, defaultProvide
           <label className="block text-[13px] font-medium text-[var(--adf-ui-text)]">Providers</label>
           <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
             New agents start on the default provider; change that under{' '}
-            <button type="button" onClick={onOpenTemplate} className="rounded underline underline-offset-2 hover:text-[var(--adf-ui-text)] focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]">Agent template</button>.
+            <button type="button" onClick={onOpenTemplate} className="rounded underline underline-offset-2 hover:text-[var(--adf-ui-text)] focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]">Agent templates</button>.
           </p>
         </div>
         <Button variant="primary" size="compact" className="shrink-0" onClick={m.openPicker}>+ Add provider</Button>

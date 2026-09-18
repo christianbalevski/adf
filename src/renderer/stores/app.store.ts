@@ -180,6 +180,16 @@ export interface AppState {
   homeFiles: File[]
   /** Name the next new agent will get; null until the composer draws one. Session only. */
   homeName: string | null
+  /** Template chip on the home composer; null = the default template (settings.defaultTemplateId). Session only. */
+  homeTemplateId: string | null
+  /** Model chosen in the provider chip; null = the provider's default model. Session only. */
+  homeModelId: string | null
+  /**
+   * A template awaiting the owner's review (foreign or stripped file dropped into the
+   * templates folder). AgentReviewDialog renders it in template mode; `onDone` gets
+   * true when the owner accepted, false on cancel.
+   */
+  templateReview: { id: string; summary: AgentConfigSummary; onDone?: (accepted: boolean) => void } | null
   showLogsPanel: boolean
   logsAutoRefresh: boolean
   logsPanelHeight: number
@@ -238,7 +248,7 @@ export interface AppState {
   requestProviderSetup: (reason: ProviderSetupReason, filePath: string | null) => Promise<boolean>
   resolveProviderSetup: (connected: boolean) => void
   openShareDialog: (filePath?: string) => void
-  setPendingFirstMessage: (pending: { filePath: string; text: string } | null) => void
+  setPendingFirstMessage: (pending: { filePath: string; text: string; files?: File[] } | null) => void
   /** Claim the pending message for this file; null if it belongs to another file or was taken. */
   takePendingFirstMessage: (filePath: string) => { filePath: string; text: string } | null
   setHomeProviderId: (id: string | null) => void
@@ -246,6 +256,10 @@ export interface AppState {
   setHomeDraft: (text: string) => void
   setHomeFiles: (files: File[]) => void
   setHomeName: (name: string | null) => void
+  setHomeTemplateId: (id: string | null) => void
+  setHomeModelId: (id: string | null) => void
+  openTemplateReview: (id: string, summary: AgentConfigSummary, onDone?: (accepted: boolean) => void) => void
+  closeTemplateReview: (accepted: boolean) => void
   closeShareDialog: () => void
   toggleLogsPanel: () => void
   setLogsAutoRefresh: (on: boolean) => void
@@ -330,6 +344,9 @@ export const useAppStore = create<AppState>((set) => ({
   homeDraft: '',
   homeFiles: [],
   homeName: null,
+  homeTemplateId: null,
+  homeModelId: null,
+  templateReview: null,
   showLogsPanel: false,
   logsAutoRefresh: false,
   logsPanelHeight: 200,
@@ -455,6 +472,14 @@ export const useAppStore = create<AppState>((set) => ({
   setHomeDraft: (text) => set({ homeDraft: text }),
   setHomeFiles: (files) => set({ homeFiles: files }),
   setHomeName: (name) => set({ homeName: name }),
+  setHomeTemplateId: (id) => set({ homeTemplateId: id }),
+  setHomeModelId: (id) => set({ homeModelId: id }),
+  openTemplateReview: (id, summary, onDone) => set({ templateReview: { id, summary, onDone } }),
+  closeTemplateReview: (accepted) => {
+    const current = useAppStore.getState().templateReview
+    set({ templateReview: null })
+    current?.onDone?.(accepted)
+  },
   takePendingFirstMessage: (filePath) => {
     const pending = useAppStore.getState().pendingFirstMessage
     if (!pending || pending.filePath !== filePath) return null

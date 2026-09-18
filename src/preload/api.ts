@@ -1,6 +1,10 @@
 import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
-  QuickCreateResult, FileSharePrepareResult } from '../shared/types/ipc.types'
-import type { AgentConfig, AdfLogEntry, AgentTemplateExtraFile, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
+  QuickCreateResult, FileSharePrepareResult,
+  AgentTemplateListResult,
+  AgentTemplateContents,
+  ShippedTemplateId
+} from '../shared/types/ipc.types'
+import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
@@ -18,7 +22,7 @@ export interface AdfApi {
   saveFile: () => Promise<FileOperationResult>
   createFile: (name: string) => Promise<FileOperationResult>
   /** New agent in the agents folder under a generated name; no dialog. Opens it like createFile. `providerId` picks its provider (else the app default). */
-  createQuickAgent: (options?: { providerId?: string; folder?: string; name?: string }) => Promise<QuickCreateResult>
+  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string }) => Promise<QuickCreateResult>
   /** The default folder for new agents (agentsFolder setting, else Documents/adf-agents). */
   getDefaultAgentsFolder: () => Promise<{ path: string }>
   closeFile: () => Promise<FileOperationResult>
@@ -102,16 +106,30 @@ export interface AdfApi {
   // Settings
   getSettings: () => Promise<AppSettings>
   setSettings: (settings: Record<string, unknown>) => Promise<{ success: boolean }>
-  /**
-   * Agent template extra files. `add` opens a multi-select picker and copies
-   * the chosen files into the blob store, returning their metadata; the
-   * renderer merges that into settings.agentTemplate.files.extra itself.
-   * `remove` deletes the stored blob (the renderer drops the settings entry).
-   */
-  agentTemplateFilesAdd: () => Promise<{ success: boolean; added?: AgentTemplateExtraFile[]; error?: string }>
-  agentTemplateFilesRemove: (id: string) => Promise<{ success: boolean }>
-  /** Which of these blob ids are absent from the store (shown as "missing" in the template UI). */
-  agentTemplateFilesStat: (ids: string[]) => Promise<{ missing: string[] }>
+  // Agent templates (.adf files in <userData>/templates)
+  /** Every template, the folder path and the effective default. Seeds the shipped three on first call. */
+  listTemplates: () => Promise<AgentTemplateListResult>
+  /** Fires after the folder changes on disk (drop-in, delete, edit); re-list on it. */
+  onTemplatesChanged: (callback: () => void) => () => void
+  templatesMigrationSeen: () => Promise<void>
+  /** New template: blank from the code defaults, or a duplicate of `fromId`. `name` becomes the file stem. */
+  createTemplate: (args: { name: string; fromId?: string }) => Promise<{ success: boolean; id?: string; error?: string }>
+  /** Moves the file to the trash. A shipped template comes back with `resetShippedTemplate`. */
+  deleteTemplate: (id: string) => Promise<{ success: boolean; error?: string }>
+  resetShippedTemplate: (id: ShippedTemplateId) => Promise<{ success: boolean; error?: string }>
+  revealTemplate: (id: string) => Promise<void>
+  setDefaultTemplate: (id: string) => Promise<{ success: boolean; error?: string }>
+  getTemplateContents: (id: string) => Promise<{ success: boolean; contents?: AgentTemplateContents; error?: string }>
+  setTemplateConfig: (args: { id: string; config: AgentConfig }) => Promise<{ success: boolean; error?: string }>
+  /** Writes one seed file (README.md, mind.md, soul.md) or any other VFS text file. */
+  setTemplateFile: (args: { id: string; path: string; content: string }) => Promise<{ success: boolean; error?: string }>
+  /** Native picker; copies the chosen host files into the template's VFS at their basenames. */
+  addTemplateFiles: (id: string) => Promise<{ success: boolean; added?: string[]; error?: string }>
+  removeTemplateFile: (args: { id: string; path: string }) => Promise<{ success: boolean; error?: string }>
+  /** Same summary shape as `checkAgentReview`, computed for the template file without opening it as the current agent. */
+  checkTemplateReview: (id: string) => Promise<{ needsReview: boolean; configSummary?: AgentConfigSummary }>
+  /** Claims the template file for the owner (fresh identity, credentials adopted or dropped). Instances need no claim. */
+  acceptTemplateReview: (args: { id: string; password?: string }) => Promise<{ success: boolean; error?: string }>
   /** Whole-window zoom (1 = 100%). Menu zoomIn/zoomOut layer on top of it. */
   setZoomFactor: (factor: number) => void
 

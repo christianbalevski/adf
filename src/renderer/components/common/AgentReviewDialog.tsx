@@ -407,6 +407,7 @@ function ClaimContent({
   onSubmit,
   model,
   setModel,
+  templateMode = false,
 }: {
   summary: AgentConfigSummary
   password: string
@@ -418,6 +419,8 @@ function ClaimContent({
   onSubmit: () => void
   model: ModelChoice | null
   setModel: (m: ModelChoice | null) => void
+  /** Claiming a template: no model is chosen here, the composer picks one per agent. */
+  templateMode?: boolean
 }) {
   const identity = summary.identity
   const showPassword = identity.sharePasswordSet && identity.credentialsLocked
@@ -441,11 +444,13 @@ function ClaimContent({
           Make {summary.name} yours
         </h3>
         <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1 max-w-sm">
-          {identity.scenario === 'unclaimed'
-            ? 'Claiming mints a brand-new identity for this agent under your ownership. Its files and memory come along as they are.'
-            : 'Claiming gives this agent a fresh identity under your ownership. Its files, memory, and history are kept, and its previous identity is recorded as provenance.'}
+          {templateMode
+            ? 'Claiming gives this template a fresh identity under your ownership. Agents you create from it never carry its identity or history.'
+            : identity.scenario === 'unclaimed'
+              ? 'Claiming mints a brand-new identity for this agent under your ownership. Its files and memory come along as they are.'
+              : 'Claiming gives this agent a fresh identity under your ownership. Its files, memory, and history are kept, and its previous identity is recorded as provenance.'}
         </p>
-        {summary.willRelocate && (
+        {!templateMode && summary.willRelocate && (
           <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-1">
             It will be saved to {summary.relocateTo ?? 'Documents/adf-agents'}.
           </p>
@@ -529,8 +534,9 @@ function ClaimContent({
 
       {/* Which provider and model this agent runs on here. Shown whenever
           there is something to pick between; with no provider configured the
-          sheet that opens on the first run connects one instead. */}
-      {providers && providers.length > 0 && (
+          sheet that opens on the first run connects one instead. A template
+          picks nothing: the composer's chip decides per agent. */}
+      {!templateMode && providers && providers.length > 0 && (
         <ModelPicker
           configuredLabel={configuredLabel}
           providers={providers}
@@ -543,8 +549,15 @@ function ClaimContent({
 }
 
 export function AgentReviewDialog() {
-  const open = useAppStore((s) => s.agentReviewDialogOpen)
-  const summary = useAppStore((s) => s.agentReviewSummary)
+  const agentOpen = useAppStore((s) => s.agentReviewDialogOpen)
+  const agentSummary = useAppStore((s) => s.agentReviewSummary)
+  // Reviewing a template file (Settings > Agent templates, or a send blocked
+  // by `template_unreviewed`). While one is set it owns the dialog: the agent
+  // file mode stays behind it and comes back when it closes.
+  const templateReview = useAppStore((s) => s.templateReview)
+  const templateMode = templateReview !== null
+  const open = templateMode || agentOpen
+  const summary = templateMode ? templateReview.summary : agentSummary
   const setDialog = useAppStore((s) => s.setAgentReviewDialog)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
   const { closeFile, loadFileContents } = useAdfFile()
@@ -563,10 +576,11 @@ export function AgentReviewDialog() {
   const reviewedPathRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (open) reviewedPathRef.current = useDocumentStore.getState().filePath
-  }, [open])
+    if (agentOpen) reviewedPathRef.current = useDocumentStore.getState().filePath
+  }, [agentOpen])
 
-  const needsClaim = summary?.identity.needsClaim ?? false
+  // A template is always claimed: accepting it is what makes it usable.
+  const needsClaim = templateMode || (summary?.identity.needsClaim ?? false)
   // Share password is required when shown — unless the user takes the explicit
   // "Lost the password?" path, which claims with credentials left locked
   // (main keeps the recoverable password slot for later unlock).
@@ -580,6 +594,12 @@ export function AgentReviewDialog() {
     setModel(null)
     setAcceptError(null)
   }, [])
+
+  // A template review opens on its own review step, whatever the last flow left behind.
+  const templateReviewId = templateReview?.id ?? null
+  useEffect(() => {
+    if (templateReviewId) resetSteps()
+  }, [templateReviewId, resetSteps])
 
   /** Re-pull the summary after a failed accept/claim so the retry reflects main's current view. */
   const refreshSummary = useCallback(async () => {
@@ -656,6 +676,34 @@ export function AgentReviewDialog() {
 
   const handleAccept = useCallback(() => finishAccept(false), [finishAccept])
 
+  /** Template mode's only accept path: claim the template file, then hand the result back. */
+  const handleClaimTemplate = useCallback(async () => {
+    const review = useAppStore.getState().templateReview
+    if (!review) return
+    const pw = password.trim()
+    if (requiresPassword && !skipPassword && !pw) {
+      setPasswordError('Enter the password to claim.')
+      return
+    }
+    setLoading(true)
+    setAcceptError(null)
+    try {
+      const result = await window.adfApi.acceptTemplateReview({ id: review.id, password: pw || undefined })
+      if (!result.success) {
+        setAcceptError(result.error || 'Claim failed.')
+        return
+      }
+      successRef.current = true
+      resetSteps()
+      useAppStore.getState().closeTemplateReview(true)
+    } catch (err) {
+      console.error('[AgentReviewDialog] Template claim error:', err)
+      setAcceptError(err instanceof Error ? err.message : 'Claim failed.')
+    } finally {
+      setLoading(false)
+    }
+  }, [password, requiresPassword, skipPassword, resetSteps])
+
   const handleClaim = useCallback(async (startAfter: boolean) => {
     const pw = password.trim()
     if (requiresPassword && !skipPassword && !pw) {
@@ -707,9 +755,16 @@ export function AgentReviewDialog() {
     await closeFile()
   }, [setDialog, closeFile, resetSteps])
 
+  /** Template mode's cancel: leave the file as it is and tell the caller nothing was accepted. */
+  const handleCancelTemplate = useCallback(() => {
+    successRef.current = true
+    resetSteps()
+    useAppStore.getState().closeTemplateReview(false)
+  }, [resetSteps])
+
   const handleDialogClose = useCallback(() => {
     // Programmatic closes (accept, dismiss, cancel, review-config) mark
-    // successRef before setDialog(false); consume the mark here.
+    // successRef before the store close; consume the mark here.
     if (successRef.current) {
       successRef.current = false
       return
@@ -717,11 +772,18 @@ export function AgentReviewDialog() {
     // Native close (Escape) or Dialog's own close button: the element is
     // closing on its own — just sync the store. Don't mark successRef; there
     // is no second close event coming to consume it (M3).
+    if (useAppStore.getState().templateReview) {
+      resetSteps()
+      useAppStore.getState().closeTemplateReview(false)
+      return
+    }
     setDialog(false)
     resetSteps()
   }, [setDialog, resetSteps])
 
-  const title = needsClaim ? `${summary?.name ?? 'An agent'} has arrived` : 'Review Agent'
+  const title = templateMode
+    ? `${summary?.name ?? 'This'} template`
+    : needsClaim ? `${summary?.name ?? 'An agent'} has arrived` : 'Review Agent'
 
   return (
     <Dialog lightDismiss={false} open={open} onClose={handleDialogClose} title={title} preventClose={loading} wide>
@@ -742,9 +804,10 @@ export function AgentReviewDialog() {
                 if (skip) setPassword('')
                 setPasswordError(null)
               }}
-              onSubmit={() => { if (!loading) handleClaim(true) }}
+              onSubmit={() => { if (loading) return; if (templateMode) void handleClaimTemplate(); else void handleClaim(true) }}
               model={model}
               setModel={setModel}
+              templateMode={templateMode}
             />
       )}
 
@@ -757,10 +820,11 @@ export function AgentReviewDialog() {
       <div className={`flex justify-between items-center ${acceptError ? 'mt-2' : 'mt-5'}`}>
         {step === 'review' ? (
           <Button
-            onClick={handleCancel}
-            variant="danger"
+            onClick={templateMode ? handleCancelTemplate : handleCancel}
+            variant={templateMode ? 'ghost' : 'danger'}
+            disabled={loading}
           >
-            Reject & Close
+            {templateMode ? 'Cancel' : 'Reject & Close'}
           </Button>
         ) : (
           <Button
@@ -772,7 +836,7 @@ export function AgentReviewDialog() {
           </Button>
         )}
         <div className="flex gap-2">
-          {step === 'review' && (
+          {step === 'review' && !templateMode && (
             <Button
               onClick={handleReviewConfig}
               disabled={loading}
@@ -780,7 +844,16 @@ export function AgentReviewDialog() {
               Review Config
             </Button>
           )}
-          {step === 'review' && needsClaim ? (
+          {step === 'claim' && templateMode ? (
+            <Button
+              onClick={() => void handleClaimTemplate()}
+              disabled={loading}
+              loading={loading}
+              variant="primary"
+            >
+              {loading ? 'Claiming...' : 'Claim'}
+            </Button>
+          ) : step === 'review' && needsClaim ? (
             <Button
               onClick={() => { setAcceptError(null); setStep('claim') }}
               variant="primary"

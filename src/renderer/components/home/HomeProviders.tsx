@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
 import { ProviderModal } from '../providers/ProviderModal'
@@ -14,7 +14,12 @@ export interface HomeProviders {
   /** The provider the next new agent starts on: the session pick, else the default. */
   selectedId: string | null
   selected: ProviderConfig | undefined
+  /** Picks the provider for the next new agent. A different provider drops the model pick with it. */
   setHomeProviderId: (id: string | null) => void
+  /** Model lists by provider id, filled on demand by `fetchModels`. */
+  models: Manager['models']
+  /** Asks main for one provider's model list; the chip calls it once per provider. */
+  fetchModels: (id: string) => Promise<void>
   /** Opens the Settings catalog picker in place. */
   openPicker: () => void
 }
@@ -30,6 +35,7 @@ const Ctx = createContext<HomeProviders | null>(null)
 export function HomeProvidersProvider({ children }: { children: React.ReactNode }) {
   const homeProviderId = useAppStore((s) => s.homeProviderId)
   const setHomeProviderId = useAppStore((s) => s.setHomeProviderId)
+  const setHomeModelId = useAppStore((s) => s.setHomeModelId)
   const list = useOwnedProviderList()
   const { providers, setProviders, defaultProviderId, setDefaultProviderId, loaded, load, flushSave } = list
   const m = useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave })
@@ -52,8 +58,26 @@ export function HomeProvidersProvider({ children }: { children: React.ReactNode 
     if (homeProviderId && loaded && !providers.some((p) => p.id === homeProviderId)) setHomeProviderId(null)
   }, [homeProviderId, loaded, providers, setHomeProviderId])
 
+  // A model id only means anything next to the provider it came from, so any
+  // move to a different provider drops it. `undefined` = the list has not
+  // settled yet, so the first resolved provider is not treated as a change.
+  const modelProviderRef = useRef<string | null | undefined>(undefined)
+  const pickProvider = useCallback((id: string | null) => {
+    const next = id ?? defaultProviderId ?? null
+    if (modelProviderRef.current !== undefined && modelProviderRef.current !== next) setHomeModelId(null)
+    modelProviderRef.current = next
+    setHomeProviderId(id)
+  }, [defaultProviderId, setHomeModelId, setHomeProviderId])
+  useEffect(() => {
+    if (!loaded) return
+    if (modelProviderRef.current === undefined) { modelProviderRef.current = selectedId; return }
+    if (modelProviderRef.current === selectedId) return
+    modelProviderRef.current = selectedId
+    setHomeModelId(null)
+  }, [loaded, selectedId, setHomeModelId])
+
   return (
-    <Ctx.Provider value={{ providers, loaded, status, selectedId, selected, setHomeProviderId, openPicker }}>
+    <Ctx.Provider value={{ providers, loaded, status, selectedId, selected, setHomeProviderId: pickProvider, models: m.models, fetchModels: m.fetchModels, openPicker }}>
       {children}
       <ProviderModal {...m.modalProps} open={modalOpen} onClose={() => { void flushSave(); closeModal() }} />
     </Ctx.Provider>

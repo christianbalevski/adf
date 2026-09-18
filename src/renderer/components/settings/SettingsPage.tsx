@@ -9,7 +9,7 @@ import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { ChannelsPanel } from '../adapters/ChannelsPanel'
 import { ProvidersPanel } from '../providers/ProvidersPanel'
 import { AboutTab } from './AboutTab'
-import { NewAgentTemplateTab } from './NewAgentTemplateTab'
+import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
 import { ContainerDestroyDialog, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
@@ -56,7 +56,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
     label: 'Agent runtime',
     items: [
       { id: 'agents', label: 'Prompts', description: 'Applies to every agent now.', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
-      { id: 'template', label: 'Agent template', description: 'Applies to agents you create from now on.', keywords: 'defaults template model tools limits new agent files readme mind', docs: DOCS.settingsSystemPrompt },
+      { id: 'template', label: 'Agent templates', description: 'What new agents start from.', keywords: 'defaults template templates model tools limits new agent files readme mind sandboxed full access', docs: DOCS.settingsSystemPrompt },
       { id: 'providers', label: 'Providers', description: 'Models, keys, and subscriptions', keywords: 'anthropic openai chatgpt grok xai openrouter gemini groq ollama lm studio local models api keys', docs: DOCS.settingsProviders },
       { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },
       { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools', docs: DOCS.settingsMcp },
@@ -1891,9 +1891,9 @@ export function SettingsPage() {
           </SettingsGroup>
           </>}
 
-          {/* Agent template tab */}
+          {/* Agent templates tab */}
           {activeTab === 'template' && (
-            <NewAgentTemplateTab
+            <AgentTemplatesTab
               providers={providers}
               defaultProviderId={defaultProviderId}
               onDefaultProviderChange={setDefaultProviderId}

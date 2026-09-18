@@ -120,10 +120,10 @@ import { stripLoopNameMarker } from '../runtime/loop-pool'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { AdfDatabase } from '../adf/adf-database'
-import { buildStudioCreateOptions, resolveDefaultProvider, applyDefaultProviderToOptions } from '../adf/apply-default-provider'
+import { resolveDefaultProvider, applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { generateAgentName } from '../../shared/utils/agent-names'
 import { cloneAdfFile } from '../adf/clone-fixup'
-import { addAgentTemplateFiles, agentTemplateFilesDir, missingAgentTemplateFiles, removeAgentTemplateFile } from '../adf/agent-template-files'
+import { AgentTemplatesService, templateFilePath } from '../adf/agent-templates'
 import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
@@ -279,6 +279,8 @@ let currentUmbilicalAgentId: string | null = null
 let currentSession: AgentSession | null = null
 let toolRegistry: ToolRegistry
 let settings: SettingsService
+/** The <userData>/templates folder: every agent Studio creates starts from one of these. */
+let templatesService: AgentTemplatesService
 let nativeNotifier: NativeNotifier | null = null
 let meshManager: MeshManager | null = null
 let backgroundAgentManager: BackgroundAgentManager | null = null
@@ -1638,6 +1640,21 @@ export function registerAllIpcHandlers(): void {
     unlockEnvelopes: (ws) => settings.getOwnerIdentity().unlockWorkspaceEnvelopes(ws)
   })
 
+  // Agent templates. Constructed after the identity hooks above, because
+  // writing a missing shipped template provisions its identity. The folder
+  // watcher is deliberately NOT the tracked-directory watcher: templates are
+  // neither tracked nor autostarted.
+  templatesService = new AgentTemplatesService({
+    settings: {
+      get: (key) => settings.get(key),
+      set: (key, value) => settings.set(key, value),
+      delete: (key) => settings.delete(key)
+    },
+    getOwnerDid: () => settings.getOwnerIdentity().getOwnerDid(),
+    notifyChanged: () => { getMainWindow()?.webContents.send(IPC.TEMPLATES_CHANGED) }
+  })
+  templatesService.startWatcher()
+
   // Children spawned via sys_create_adf are trusted regardless of which host
   // (foreground / background) assembled the parent — see child-trust.ts.
   setChildTrustRegistrar((childConfig) => {
@@ -2109,37 +2126,35 @@ export function registerAllIpcHandlers(): void {
    * Shared by FILE_CREATE (path from a save dialog) and FILE_CREATE_QUICK
    * (path generated in the agents folder).
    */
-  const createStudioAgentAt = async (filePath: string, providerId?: string): Promise<void> => {
+  const createStudioAgentAt = async (
+    filePath: string,
+    opts: { providerId?: string; modelId?: string; templateId?: string } = {}
+  ): Promise<{ success: boolean; error?: string; code?: 'template_missing' | 'template_unreviewed' }> => {
+    const agentName = basename(filePath, '.adf')
+
+    // The file is written FIRST, from the template, and only then does the
+    // open agent get closed: a refused template (missing, or someone else's
+    // and unreviewed) must leave the current workspace exactly as it was.
+    const made = await templatesService.instantiate({
+      templateId: opts.templateId,
+      destPath: filePath,
+      name: agentName,
+      providerId: opts.providerId,
+      modelId: opts.modelId
+    })
+    if (!made.success) return made
+
     rememberAdfDirectory(filePath)
     recordRecentFile(filePath)
     await cleanupCurrentFile()
 
-    const agentName = basename(filePath, '.adf')
-    const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
-    const chosen = providerId ? appProviders.find((p) => p.id === providerId) : undefined
-    const defaultProvider = chosen ?? resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
-    // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
-    let agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
-    // The template's model slot is cleared, so the fallback fills it from
-    // `defaultProvider`, in two cases: an explicit choice that is not the
-    // template's provider (the choice outranks the template), and a template
-    // provider that no longer exists (a removed provider left a dangling
-    // model id, e.g. a local server the user deleted: without this the new
-    // agent starts on it and fails). When the choice IS the template's
-    // provider, the template's model id is the one the user set and stays.
-    const templateProviderId = agentTemplate?.model?.provider
-    const templateProviderGone = !!templateProviderId && !appProviders.some((p) => p.id === templateProviderId)
-    const choiceOverrides = !!chosen && !!templateProviderId && templateProviderId !== chosen.id
-    if (agentTemplate?.model && (choiceOverrides || templateProviderGone)) {
-      agentTemplate = { ...agentTemplate, model: { ...agentTemplate.model, provider: undefined, model_id: undefined } }
-    }
-    const createOptions = buildStudioCreateOptions(agentName, agentTemplate, defaultProvider)
-    createOptions.templateFilesDir = agentTemplateFilesDir()
-    currentWorkspace = AdfWorkspace.create(filePath, createOptions)
+    currentWorkspace = AdfWorkspace.open(filePath)
     currentFilePath = filePath
     attachWorkspaceDataForwarder(currentWorkspace)
 
     // D1: every new file gets identity keys, sealed in owner/runtime envelopes.
+    // An instance is CREATED, not received: it gets a fresh identity here and
+    // is reviewed below, so there is no claim step.
     try {
       settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
     } catch (err) {
@@ -2152,6 +2167,7 @@ export function registerAllIpcHandlers(): void {
     // Auto-register as reviewed (user created it)
     const newConfig = currentWorkspace.getAgentConfig()
     settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), newConfig))
+    return { success: true }
   }
 
   ipcMain.handle(IPC.FILE_CREATE, async (_event, args: { name: string }) => {
@@ -2166,7 +2182,8 @@ export function registerAllIpcHandlers(): void {
       }
 
       console.log('[IPC] FILE_CREATE: Creating file at:', result.filePath)
-      await createStudioAgentAt(result.filePath)
+      const made = await createStudioAgentAt(result.filePath)
+      if (!made.success) return { success: false, error: made.error }
       console.log('[IPC] FILE_CREATE: Success')
 
       return { success: true, filePath: result.filePath }
@@ -2183,7 +2200,10 @@ export function registerAllIpcHandlers(): void {
   // the save dialog.
   ipcMain.handle(IPC.AGENTS_FOLDER_DEFAULT_GET, async () => ({ path: resolveAgentsFolderPath() }))
 
-  ipcMain.handle(IPC.FILE_CREATE_QUICK, async (_event, args?: { providerId?: string; folder?: string; name?: string }) => {
+  ipcMain.handle(IPC.FILE_CREATE_QUICK, async (
+    _event,
+    args?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string }
+  ) => {
     try {
       let folder = defaultAgentsFolder()
       if (typeof args?.folder === 'string' && args.folder.trim() !== '') {
@@ -2209,7 +2229,10 @@ export function registerAllIpcHandlers(): void {
       const name = proposed ?? generateAgentName({ taken: (n) => existsSync(join(folder, `${n}.adf`)) })
       const filePath = availableAdfPath(folder, name)
       const providerId = typeof args?.providerId === 'string' && args.providerId !== '' ? args.providerId : undefined
-      await createStudioAgentAt(filePath, providerId)
+      const modelId = typeof args?.modelId === 'string' && args.modelId !== '' ? args.modelId : undefined
+      const templateId = typeof args?.templateId === 'string' && args.templateId !== '' ? args.templateId : undefined
+      const made = await createStudioAgentAt(filePath, { providerId, modelId, templateId })
+      if (!made.success) return { success: false, code: made.code, error: made.error }
       return { success: true, filePath, name: basename(filePath, '.adf') }
     } catch (error) {
       console.error('[IPC] FILE_CREATE_QUICK error:', error)
@@ -2347,6 +2370,65 @@ export function registerAllIpcHandlers(): void {
 
   // --- Agent review (file open flow) ---
 
+  /**
+   * The review dialog's payload for ONE workspace. Factored out of
+   * FILE_CHECK_REVIEW so the same summary can be built for a template opened
+   * as a temporary workspace (TEMPLATE_CHECK_REVIEW) without it becoming the
+   * current agent. `filePath` is the file the dialog is bound to; a template
+   * is never relocated on accept, so it passes relocatable: false.
+   */
+  const buildReviewSummaryFor = async (
+    workspace: AdfWorkspace,
+    filePath: string,
+    opts: { relocatable: boolean }
+  ): Promise<AgentConfigSummary> => {
+    const config = workspace.getAgentConfig()
+    const svc = settings.getOwnerIdentity()
+    const agentDid = workspace.getDid()
+    // Owner shown in review: verified attestation first (proof), meta
+    // fallback (fact) — never the agent's own DID.
+    const ownerAtt = readAdfAttestations(workspace)
+      .filter((a) => a.role === 'owner')
+      .find((a) => verifyAttestation(a, agentDid ? { expectedSubject: agentDid } : undefined))
+    const credentialSlots = workspace.readEnvelopeSlots('credentials') ?? []
+    const identity = deriveReviewIdentity({
+      agentDid,
+      fileOwnerDid: ownerAtt?.issuer ?? workspace.getMeta('adf_owner_did') ?? null,
+      fileRuntimeDid: workspace.getMeta('adf_runtime_did') ?? null,
+      localOwnerDid: svc.getOwnerDid(),
+      localRuntimeDid: svc.getRuntimeDid(),
+      identityEnvelope: workspace.getEnvelopeState('identity'),
+      credentialsEnvelope: workspace.getEnvelopeState('credentials'),
+      sharePasswordSet: credentialSlots.some((s) => s.type === 'password'),
+      filePasswordProtected: workspace.isPasswordProtected(),
+      ownerKeyAvailable: svc.getOwnerEncPrivateKey() !== null
+    })
+    // Provider usability: can this install actually run the agent's model?
+    // Resolve the configured provider id against local settings, falling
+    // back to a local provider of the same type as the embedded entry.
+    const appProviders = (settings.get('providers') as ProviderConfig[]) ?? []
+    const embedded = config.providers?.find((p) => p.id === config.model.provider)
+    const localProvider =
+      appProviders.find((p) => p.id === config.model.provider) ??
+      (embedded ? appProviders.find((p) => p.type === embedded.type) : undefined)
+    const provider: AgentConfigSummary['provider'] = {
+      configuredId: config.model.provider,
+      configuredType: embedded?.type,
+      modelId: config.model.model_id,
+      status: localProvider ? await testProviderCredentialsForDashboard(localProvider) : 'missing',
+      ...(localProvider ? { resolvedLocalId: localProvider.id } : {})
+    }
+    // Accept/claim moves untracked files into the managed agents folder;
+    // the dialog's "will be saved to…" line must reflect the real outcome.
+    const willRelocate = opts.relocatable && willRelocateOnAccept(filePath)
+    return {
+      ...buildConfigSummary(config, identity),
+      provider,
+      willRelocate,
+      ...(willRelocate ? { relocateTo: displayPath(resolveAgentsFolderPath()) } : {})
+    }
+  }
+
   ipcMain.handle(IPC.FILE_CHECK_REVIEW, async () => {
     if (!currentWorkspace || !currentFilePath) {
       return { needsReview: false }
@@ -2356,50 +2438,7 @@ export function registerAllIpcHandlers(): void {
       if (isConfigReviewed(settings.get('reviewedAgents'), config)) {
         return { needsReview: false }
       }
-      const svc = settings.getOwnerIdentity()
-      const agentDid = currentWorkspace.getDid()
-      // Owner shown in review: verified attestation first (proof), meta
-      // fallback (fact) — never the agent's own DID.
-      const ownerAtt = readAdfAttestations(currentWorkspace)
-        .filter((a) => a.role === 'owner')
-        .find((a) => verifyAttestation(a, agentDid ? { expectedSubject: agentDid } : undefined))
-      const credentialSlots = currentWorkspace.readEnvelopeSlots('credentials') ?? []
-      const identity = deriveReviewIdentity({
-        agentDid,
-        fileOwnerDid: ownerAtt?.issuer ?? currentWorkspace.getMeta('adf_owner_did') ?? null,
-        fileRuntimeDid: currentWorkspace.getMeta('adf_runtime_did') ?? null,
-        localOwnerDid: svc.getOwnerDid(),
-        localRuntimeDid: svc.getRuntimeDid(),
-        identityEnvelope: currentWorkspace.getEnvelopeState('identity'),
-        credentialsEnvelope: currentWorkspace.getEnvelopeState('credentials'),
-        sharePasswordSet: credentialSlots.some((s) => s.type === 'password'),
-        filePasswordProtected: currentWorkspace.isPasswordProtected(),
-        ownerKeyAvailable: svc.getOwnerEncPrivateKey() !== null
-      })
-      // Provider usability: can this install actually run the agent's model?
-      // Resolve the configured provider id against local settings, falling
-      // back to a local provider of the same type as the embedded entry.
-      const appProviders = (settings.get('providers') as ProviderConfig[]) ?? []
-      const embedded = config.providers?.find((p) => p.id === config.model.provider)
-      const localProvider =
-        appProviders.find((p) => p.id === config.model.provider) ??
-        (embedded ? appProviders.find((p) => p.type === embedded.type) : undefined)
-      const provider: AgentConfigSummary['provider'] = {
-        configuredId: config.model.provider,
-        configuredType: embedded?.type,
-        modelId: config.model.model_id,
-        status: localProvider ? await testProviderCredentialsForDashboard(localProvider) : 'missing',
-        ...(localProvider ? { resolvedLocalId: localProvider.id } : {})
-      }
-      // Accept/claim moves untracked files into the managed agents folder;
-      // the dialog's "will be saved to…" line must reflect the real outcome.
-      const willRelocate = willRelocateOnAccept(currentFilePath)
-      const configSummary: AgentConfigSummary = {
-        ...buildConfigSummary(config, identity),
-        provider,
-        willRelocate,
-        ...(willRelocate ? { relocateTo: displayPath(resolveAgentsFolderPath()) } : {})
-      }
+      const configSummary = await buildReviewSummaryFor(currentWorkspace, currentFilePath, { relocatable: true })
       return { needsReview: true, configSummary }
     } catch (err) {
       console.warn('[IPC] FILE_CHECK_REVIEW error:', err)
@@ -2444,7 +2483,7 @@ export function registerAllIpcHandlers(): void {
         if (!settings.getOwnerIdentity().getEnvelopeRecipients()) {
           // Fail plainly: claiming without envelope recipients would mint an
           // identity with no envelopes (plaintext keys, no credential sealing).
-          return { success: false, error: 'Owner/runtime encryption keys are unavailable (keystore locked?) — cannot claim securely' }
+          return { success: false, error: 'Owner and runtime encryption keys are unavailable (keystore locked?), so the template cannot be claimed securely.' }
         }
         if (currentWorkspace.isPasswordProtected() && currentDerivedKey) {
           currentWorkspace.removePassword(currentDerivedKey)
@@ -2486,6 +2525,117 @@ export function registerAllIpcHandlers(): void {
     } catch (err) {
       console.warn('[IPC] FILE_REVIEW_ACCEPT error:', err)
       return { success: false, error: String(err) }
+    }
+  })
+
+  // --- Agent templates (<userData>/templates) ---
+  //
+  // Every agent Studio creates is an instance of a template. The args each
+  // handler receives are exactly what preload sends (single-id calls arrive
+  // as `{ id }`).
+
+  ipcMain.handle(IPC.TEMPLATES_LIST, async () => templatesService.list())
+
+  ipcMain.handle(IPC.TEMPLATES_MIGRATION_SEEN, async () => {
+    templatesService.markMigrationSeen()
+  })
+
+  ipcMain.handle(IPC.TEMPLATE_CREATE, async (_event, args: { name: string; fromId?: string }) =>
+    templatesService.create(args ?? { name: '' })
+  )
+
+  ipcMain.handle(IPC.TEMPLATE_DELETE, async (_event, args: { id: string }) =>
+    templatesService.delete(args?.id)
+  )
+
+  ipcMain.handle(IPC.TEMPLATE_RESET_SHIPPED, async (_event, args: { id: string }) =>
+    templatesService.resetShipped(args?.id)
+  )
+
+  ipcMain.handle(IPC.TEMPLATE_REVEAL, async (_event, args: { id: string }) => {
+    templatesService.reveal(args?.id)
+  })
+
+  ipcMain.handle(IPC.TEMPLATE_SET_DEFAULT, async (_event, args: { id: string }) =>
+    templatesService.setDefault(args?.id)
+  )
+
+  ipcMain.handle(IPC.TEMPLATE_GET_CONTENTS, async (_event, args: { id: string }) =>
+    templatesService.getContents(args?.id)
+  )
+
+  ipcMain.handle(IPC.TEMPLATE_SET_CONFIG, async (_event, args: { id: string; config: AgentConfig }) =>
+    templatesService.setConfig(args)
+  )
+
+  ipcMain.handle(IPC.TEMPLATE_SET_FILE, async (_event, args: { id: string; path: string; content: string }) =>
+    templatesService.setFile(args)
+  )
+
+  ipcMain.handle(IPC.TEMPLATE_ADD_FILES, async (_event, args: { id: string }) =>
+    templatesService.addFiles(args?.id)
+  )
+
+  ipcMain.handle(IPC.TEMPLATE_REMOVE_FILE, async (_event, args: { id: string; path: string }) =>
+    templatesService.removeFile(args)
+  )
+
+  // Review is per TEMPLATE, once — instances are created, not received, so
+  // they never need one. The template is opened as a temporary workspace; it
+  // does not become the current agent.
+  ipcMain.handle(IPC.TEMPLATE_CHECK_REVIEW, async (_event, args: { id: string }) => {
+    const file = templateFilePath(String(args?.id ?? ''))
+    if (!args?.id || !existsSync(file)) return { needsReview: false }
+    let workspace: AdfWorkspace | null = null
+    try {
+      workspace = AdfWorkspace.open(file)
+      const config = workspace.getAgentConfig()
+      if (isConfigReviewed(settings.get('reviewedAgents'), config)) return { needsReview: false }
+      const configSummary = await buildReviewSummaryFor(workspace, file, { relocatable: false })
+      return { needsReview: true, configSummary }
+    } catch (err) {
+      console.warn('[IPC] TEMPLATE_CHECK_REVIEW error:', err)
+      return { needsReview: false }
+    } finally {
+      try { workspace?.close() } catch { /* ignore */ }
+    }
+  })
+
+  ipcMain.handle(IPC.TEMPLATE_REVIEW_ACCEPT, async (_event, args: { id: string; password?: string }) => {
+    const file = templateFilePath(String(args?.id ?? ''))
+    if (!args?.id || !existsSync(file)) return { success: false, error: 'That template is not in the templates folder any more.' }
+    let workspace: AdfWorkspace | null = null
+    try {
+      workspace = AdfWorkspace.open(file)
+      if (!settings.getOwnerIdentity().getEnvelopeRecipients()) {
+        return { success: false, error: 'Owner and runtime encryption keys are unavailable (keystore locked?), so the template cannot be claimed securely.' }
+      }
+      if (workspace.isPasswordProtected()) {
+        if (!args.password) return { success: false, error: 'This template is password-protected. Enter its password to accept it.' }
+        let derivedKey: Buffer
+        try {
+          derivedKey = workspace.unlockWithPassword(args.password)
+        } catch {
+          return { success: false, error: 'Wrong password' }
+        }
+        workspace.removePassword(derivedKey)
+      }
+      // Accepting a template claims the FILE: a fresh identity under this
+      // owner. Every instance made from it afterwards needs nothing.
+      settings.getOwnerIdentity().claimWorkspace(workspace)
+      const config = workspace.getAgentConfig()
+      const locked = new Set(config.locked_fields ?? [])
+      for (const field of autoLockFields(config)) locked.add(field)
+      config.locked_fields = [...locked]
+      workspace.setAgentConfig(config)
+      settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), config))
+      return { success: true }
+    } catch (err) {
+      console.warn('[IPC] TEMPLATE_REVIEW_ACCEPT error:', err)
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    } finally {
+      try { workspace?.close() } catch { /* ignore */ }
+      templatesService.pushChanged()
     }
   })
 
@@ -4531,10 +4681,11 @@ export function registerAllIpcHandlers(): void {
         const appProviders = (settings.get('providers') as ProviderConfig[] | undefined) ?? []
         return resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
       }
+      // Children get the DEFAULT template's config, files and local tables —
+      // never its credentials or identity rows (see readTemplateFile).
       createAdfTool.getStudioTemplate = () => {
-        if (settings.get('agentTemplateForChildren') !== true) return undefined
-        const template = (settings.get('agentTemplate') as AgentTemplate | undefined) ?? {}
-        return { template, filesDir: agentTemplateFilesDir() }
+        const filePath = templatesService.childTemplatePath()
+        return filePath ? { filePath } : undefined
       }
     }
 
@@ -4913,36 +5064,6 @@ export function registerAllIpcHandlers(): void {
       codeSandboxService.setMaxWorkers(newSettings.sandboxMaxWorkers as number | undefined)
     }
     return { success: true }
-  })
-
-  // --- Agent template extra files ---
-  // Blobs only: the renderer merges the returned metadata into
-  // settings.agentTemplate.files.extra and writes it via SETTINGS_SET, so the
-  // settings store stays the single source of truth for the list.
-
-  ipcMain.handle(IPC.AGENT_TEMPLATE_FILES_ADD, async () => {
-    const win = BrowserWindow.getFocusedWindow() ?? undefined
-    const result = win
-      ? await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] })
-      : await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'] })
-    if (result.canceled || result.filePaths.length === 0) return { success: false, error: 'Cancelled' }
-    const template = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
-    const taken = (template?.files?.extra ?? []).map((f) => f.path)
-    try {
-      return addAgentTemplateFiles(result.filePaths, taken)
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  })
-
-  ipcMain.handle(IPC.AGENT_TEMPLATE_FILES_REMOVE, async (_event, id: string) => {
-    if (typeof id !== 'string') return { success: false }
-    return removeAgentTemplateFile(id)
-  })
-
-  ipcMain.handle(IPC.AGENT_TEMPLATE_FILES_STAT, async (_event, ids: string[]) => {
-    if (!Array.isArray(ids)) return { missing: [] }
-    return { missing: missingAgentTemplateFiles(ids.filter((id): id is string => typeof id === 'string')) }
   })
 
   // --- Tracked directories ---
@@ -5707,13 +5828,11 @@ export function registerAllIpcHandlers(): void {
       const filePath = join(dir, `${fileName}.adf`)
       if (existsSync(filePath)) return { success: false, error: `${fileName}.adf already exists here` }
 
-      const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
-      const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
-      // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
-      const agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
-      const createOptions = buildStudioCreateOptions(name, agentTemplate, defaultProvider)
-      createOptions.templateFilesDir = agentTemplateFilesDir()
-      const workspace = AdfWorkspace.create(filePath, createOptions)
+      // User-created from Studio: the default agent template applies (never to
+      // agent-spawned children, which go through sys_create_adf's own path).
+      const made = await templatesService.instantiate({ destPath: filePath, name })
+      if (!made.success) return { success: false, error: made.error }
+      const workspace = AdfWorkspace.open(filePath)
       try {
         try {
           settings.getOwnerIdentity().ensureWorkspaceIdentity(workspace)
@@ -8406,7 +8525,7 @@ export function registerAllIpcHandlers(): void {
       if (!settings.getOwnerIdentity().getEnvelopeRecipients()) {
         // Fail plainly: claiming without envelope recipients would mint an
         // identity with no envelopes (plaintext keys, no credential sealing).
-        return { success: false, error: 'Owner/runtime encryption keys are unavailable (keystore locked?) — cannot claim securely' }
+        return { success: false, error: 'Owner and runtime encryption keys are unavailable (keystore locked?), so the template cannot be claimed securely.' }
       }
       // If password-protected, decrypt everything first, then remove password
       if (currentWorkspace.isPasswordProtected() && currentDerivedKey) {
