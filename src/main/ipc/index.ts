@@ -121,6 +121,7 @@ import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { AdfDatabase } from '../adf/adf-database'
 import { buildStudioCreateOptions, resolveDefaultProvider, applyDefaultProviderToOptions } from '../adf/apply-default-provider'
+import { generateAgentName } from '../../shared/utils/agent-names'
 import { cloneAdfFile } from '../adf/clone-fixup'
 import { addAgentTemplateFiles, agentTemplateFilesDir, missingAgentTemplateFiles, removeAgentTemplateFile } from '../adf/agent-template-files'
 import { AgentExecutor } from '../runtime/agent-executor'
@@ -1302,11 +1303,26 @@ function performAdfRename(filePath: string, newName: string): { success: boolean
  * under the OS temp dir is ignored (a temp destination defeats the whole
  * point of the move).
  */
+/**
+ * Is `p` inside a temporary directory? Compared on canonical paths, so the
+ * macOS `/tmp` → `/private/tmp` symlink and the per-user `/var/folders` temp
+ * both count. A temp destination defeats the point of keeping an agent.
+ */
+function isTempLocation(p: string): boolean {
+  const candidate = canonicalizePath(resolve(p))
+  const roots = new Set<string>()
+  for (const t of [app.getPath('temp'), tmpdir(), '/tmp']) {
+    try { roots.add(canonicalizePath(t)) } catch { /* not on this OS */ }
+  }
+  for (const r of roots) if (isSameOrSubPath(r, candidate)) return true
+  return false
+}
+
 function resolveAgentsFolderPath(): string {
   const configured = settings.get('agentsFolder')
   if (typeof configured === 'string' && configured.trim() !== '') {
     const candidate = resolve(configured.trim())
-    if (isSameOrSubPath(app.getPath('temp'), candidate) || isSameOrSubPath(tmpdir(), candidate)) {
+    if (isTempLocation(candidate)) {
       console.warn(`[Review] agentsFolder setting points into the OS temp dir — ignoring: ${candidate}`)
     } else {
       return candidate
@@ -2081,6 +2097,52 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
+  /**
+   * Create a Studio-made agent at `filePath` and make it the open workspace:
+   * agent template + default provider, identity keys, directory tracking,
+   * and the reviewed mark (the user made it, there is nothing to review).
+   * Shared by FILE_CREATE (path from a save dialog) and FILE_CREATE_QUICK
+   * (path generated in the agents folder).
+   */
+  const createStudioAgentAt = async (filePath: string, providerId?: string): Promise<void> => {
+    rememberAdfDirectory(filePath)
+    recordRecentFile(filePath)
+    await cleanupCurrentFile()
+
+    const agentName = basename(filePath, '.adf')
+    const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
+    const chosen = providerId ? appProviders.find((p) => p.id === providerId) : undefined
+    const defaultProvider = chosen ?? resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
+    // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
+    let agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
+    // An explicit choice outranks the template's provider: the template's
+    // model slot is cleared so the fallback fills it from the chosen one.
+    // Unless the choice IS the template's provider, in which case the
+    // template's model id is the one the user set and stays.
+    if (chosen && agentTemplate?.model && agentTemplate.model.provider !== chosen.id) {
+      agentTemplate = { ...agentTemplate, model: { ...agentTemplate.model, provider: undefined, model_id: undefined } }
+    }
+    const createOptions = buildStudioCreateOptions(agentName, agentTemplate, defaultProvider)
+    createOptions.templateFilesDir = agentTemplateFilesDir()
+    currentWorkspace = AdfWorkspace.create(filePath, createOptions)
+    currentFilePath = filePath
+    attachWorkspaceDataForwarder(currentWorkspace)
+
+    // D1: every new file gets identity keys, sealed in owner/runtime envelopes.
+    try {
+      settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
+    } catch (err) {
+      console.warn('[OwnerIdentity] Identity provisioning on create failed:', err)
+    }
+
+    // Auto-track the parent directory (or refresh existing parent) + notify renderer
+    notifyAdfFileCreated(filePath)
+
+    // Auto-register as reviewed (user created it)
+    const newConfig = currentWorkspace.getAgentConfig()
+    settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), newConfig))
+  }
+
   ipcMain.handle(IPC.FILE_CREATE, async (_event, args: { name: string }) => {
     try {
       console.log('[IPC] FILE_CREATE called with name:', args.name)
@@ -2093,42 +2155,47 @@ export function registerAllIpcHandlers(): void {
       }
 
       console.log('[IPC] FILE_CREATE: Creating file at:', result.filePath)
-      rememberAdfDirectory(result.filePath)
-      recordRecentFile(result.filePath)
-      await cleanupCurrentFile()
-
-      const agentName = basename(result.filePath, '.adf')
-      console.log('[IPC] FILE_CREATE: Creating workspace for agent:', agentName)
-      const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
-      const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
-      // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
-      const agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
-      const createOptions = buildStudioCreateOptions(agentName, agentTemplate, defaultProvider)
-      createOptions.templateFilesDir = agentTemplateFilesDir()
-      currentWorkspace = AdfWorkspace.create(result.filePath, createOptions)
-      currentFilePath = result.filePath
-      attachWorkspaceDataForwarder(currentWorkspace)
-
-      // D1: every new file gets identity keys, sealed in owner/runtime envelopes.
-      try {
-        settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
-      } catch (err) {
-        console.warn('[OwnerIdentity] Identity provisioning on create failed:', err)
-      }
-
-      // Auto-track the parent directory (or refresh existing parent) + notify renderer
-      notifyAdfFileCreated(result.filePath)
-
-      // Auto-register as reviewed (user created it)
-      const newConfig = currentWorkspace.getAgentConfig()
-      settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), newConfig))
-
+      await createStudioAgentAt(result.filePath)
       console.log('[IPC] FILE_CREATE: Success')
 
       return { success: true, filePath: result.filePath }
     } catch (error) {
       console.error('[IPC] FILE_CREATE error:', error)
       return { success: false, error: String(error) }
+    }
+  })
+
+  // The home composer's create: a generated "adjective-plant" name in the
+  // agents folder, no dialog. Same create routine as FILE_CREATE, so the
+  // result is an ordinary Studio-made agent that the sidebar, the review
+  // allowlist, and the default provider all treat exactly like one made via
+  // the save dialog.
+  ipcMain.handle(IPC.AGENTS_FOLDER_DEFAULT_GET, async () => ({ path: resolveAgentsFolderPath() }))
+
+  ipcMain.handle(IPC.FILE_CREATE_QUICK, async (_event, args?: { providerId?: string; folder?: string; name?: string }) => {
+    try {
+      let folder = defaultAgentsFolder()
+      if (typeof args?.folder === 'string' && args.folder.trim() !== '') {
+        const wanted = resolve(args.folder.trim())
+        if (!existsSync(wanted) || !statSync(wanted).isDirectory()) {
+          return { success: false, error: 'That folder does not exist' }
+        }
+        if (isTempLocation(wanted)) {
+          return { success: false, error: 'Pick a folder outside the temporary directory' }
+        }
+        folder = wanted
+      }
+      // The home chip proposes a name; anything else falls back to a fresh
+      // one. Same shape the generator makes, so a file name is always safe.
+      const proposed = typeof args?.name === 'string' && /^[a-z]+-[a-z]+$/.test(args.name) ? args.name : null
+      const name = proposed ?? generateAgentName({ taken: (n) => existsSync(join(folder, `${n}.adf`)) })
+      const filePath = availableAdfPath(folder, name)
+      const providerId = typeof args?.providerId === 'string' && args.providerId !== '' ? args.providerId : undefined
+      await createStudioAgentAt(filePath, providerId)
+      return { success: true, filePath, name: basename(filePath, '.adf') }
+    } catch (error) {
+      console.error('[IPC] FILE_CREATE_QUICK error:', error)
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
 
@@ -6919,9 +6986,11 @@ export function registerAllIpcHandlers(): void {
         )
         const incomingModelId = config.model.model_id
         config.model = { ...config.model, ...(patched.model as AgentConfig['model']) }
-        // The default provider fills in its own default model; the agent's own
-        // model_id is the author's choice and outranks it whenever it is set.
-        if (incomingModelId) config.model.model_id = incomingModelId
+        // The default provider fills in its own default model. The author's
+        // model_id only means something on the provider the author had, so
+        // it is kept only when the provider we just applied has no default
+        // model of its own to offer (the claim step lets the user change it).
+        if (incomingModelId && !config.model.model_id) config.model.model_id = incomingModelId
         if (patched.providers) config.providers = patched.providers
         ws.setAgentConfig(config)
       } finally {

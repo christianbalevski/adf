@@ -423,6 +423,15 @@ function ClaimContent({
   const showPassword = identity.sharePasswordSet && identity.credentialsLocked
   const provider = summary.provider
   const providers = useConfiguredProviders()
+  // What the file says it runs on, as the picker's first option: the
+  // provider's name when this computer knows it, its id otherwise. A file
+  // may name a model with no provider at all (registry agents do).
+  const configuredName = provider?.configuredId
+    ? providers?.find((p) => p.id === provider.configuredId)?.name ?? provider.configuredId
+    : 'no provider set'
+  const configuredLabel = provider
+    ? [configuredName, provider.modelId].filter(Boolean).join(' · ')
+    : 'nothing set'
 
   return (
     <div className="space-y-4">
@@ -518,9 +527,10 @@ function ClaimContent({
         </p>
       )}
 
-      {/* Nothing to choose between when no provider is configured — the
-          sheet that opens on the first run connects one. */}
-      {provider && provider.status !== 'ok' && providers && providers.length > 0 && (
+      {/* Which provider and model this agent runs on here. Shown whenever
+          there is something to pick between; with no provider configured the
+          sheet that opens on the first run connects one instead. */}
+      {providers && providers.length > 0 && (
         <ModelPicker
           configuredLabel={configuredLabel}
           providers={providers}

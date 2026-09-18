@@ -652,10 +652,12 @@ textarea:focus-visible {
   border-color: rgba(59, 130, 246, 0.6);
 }
 
-/* AgentLoop gives the whole rounded composer an accessible focus ring. Avoid
-   drawing the global rectangular textarea outline inside that container. */
+/* AgentLoop and the home composer give the whole rounded container the focus
+   state. Avoid drawing the global rectangular textarea outline inside it. */
 textarea.loop-composer-input:focus,
-textarea.loop-composer-input:focus-visible {
+textarea.loop-composer-input:focus-visible,
+textarea.home-composer-input:focus,
+textarea.home-composer-input:focus-visible {
   border-color: transparent;
   box-shadow: none;
   outline: none;
@@ -770,6 +772,9 @@ body.panel-resizing webview {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.registry-blurb-short {
+  -webkit-line-clamp: 3;
+}
 .registry-add {
   color: rgb(var(--h));
   border: 1px solid rgb(var(--h) / 0.35);
@@ -830,4 +835,60 @@ body.panel-resizing webview {
 }
 .registry-carousel::-webkit-scrollbar {
   display: none;
+}
+
+/* --- Home suggestion marquee ------------------------------------------
+   Each row is a track of the same chips twice; SuggestionMarquee moves it
+   by one copy's width and wraps, so the loop is seamless and the wheel can
+   scroll it by hand. */
+.home-marquee {
+  overflow: hidden;
+  mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent);
+}
+.home-marquee-track {
+  display: flex;
+  width: max-content;
+  will-change: transform;
+}
+.home-marquee-group {
+  display: flex;
+  gap: 0.5rem;
+  padding-right: 0.5rem;
+}
+
+/* Carousel edge fades: only on a side that has more cards behind it, so
+   the first and last card keep a clean edge when the row is at rest. */
+.registry-carousel.registry-fade-l {
+  mask-image: linear-gradient(to right, transparent, #000 7%);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 7%);
+}
+.registry-carousel.registry-fade-r {
+  mask-image: linear-gradient(to right, #000 93%, transparent);
+  -webkit-mask-image: linear-gradient(to right, #000 93%, transparent);
+}
+.registry-carousel.registry-fade-l.registry-fade-r {
+  mask-image: linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
+}
+
+/* --- Name chip roll -----------------------------------------------------
+   Two word strips: the adjective strip rolls up (current word at the top,
+   new word at the bottom), the plant strip rolls down (new word at the top,
+   current at the bottom). Keyframes, not transitions, so each strip starts
+   from its declared position no matter what was painted before. */
+.name-spin {
+  animation-duration: var(--name-spin-ms, 700ms);
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation-fill-mode: forwards;
+}
+.name-spin-up { animation-name: nameSpinUp; }
+.name-spin-down { animation-name: nameSpinDown; }
+@keyframes nameSpinUp {
+  from { transform: translateY(0); }
+  to { transform: translateY(calc(-1 * var(--name-spin-travel, 112px))); }
+}
+@keyframes nameSpinDown {
+  from { transform: translateY(calc(-1 * var(--name-spin-travel, 112px))); }
+  to { transform: translateY(0); }
 }

@@ -687,6 +687,15 @@ export interface AgentRegistryBringHomeResult {
   error?: string
 }
 
+export interface QuickCreateResult {
+  success: boolean
+  /** Path of the new file inside the user's agents folder. */
+  filePath?: string
+  /** The generated name ("steady-fern"), also the file's stem. */
+  name?: string
+  error?: string
+}
+
 export interface FileSharePrepareResult {
   success: boolean
   /** Opaque handle for FILE_SHARE_DRAG_START; the snapshot behind it lives in a temp dir. */

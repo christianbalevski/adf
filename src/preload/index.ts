@@ -14,6 +14,9 @@ const api: AdfApi = {
   saveFile: () => ipcRenderer.invoke(IPC.FILE_SAVE),
   createFile: (name: string) =>
     ipcRenderer.invoke(IPC.FILE_CREATE, { name }),
+  createQuickAgent: (options?: { providerId?: string; folder?: string; name?: string }) =>
+    ipcRenderer.invoke(IPC.FILE_CREATE_QUICK, options ?? {}),
+  getDefaultAgentsFolder: () => ipcRenderer.invoke(IPC.AGENTS_FOLDER_DEFAULT_GET),
   closeFile: () => ipcRenderer.invoke(IPC.FILE_CLOSE),
   deleteFile: (filePath: string) =>
     ipcRenderer.invoke(IPC.FILE_DELETE, { filePath }),

@@ -2,24 +2,16 @@ import { useEffect } from 'react'
 import { useTrackedDirs } from '../../hooks/useTrackedDirs'
 import { useMesh } from '../../hooks/useMesh'
 import { useDashboardData } from './useDashboardData'
-import { OnboardingCanvas } from './OnboardingCanvas'
-import { FleetMapCallout } from './FleetMapCallout'
-import { HomeDashboard } from './HomeDashboard'
-import { NetworkingPanel } from './NetworkingPanel'
-import { TrackedDirectoriesPanel } from './TrackedDirectoriesPanel'
+import { HomeComposer } from './HomeComposer'
+import { HomeStatusLine } from './HomeStatusLine'
 import { RegistryGallery } from './RegistryGallery'
 
 /**
- * Home, shown when no .adf is open. Two faces on one data source:
- *
- *  - no agent anywhere yet → the onboarding canvas (one idea, one action);
- *  - otherwise → the operator dashboard, with the registry kept one row
- *    away so more agents are always a click from home.
- *
- * The dashboard is the default face: it owns the per-tile skeletons, so it
- * renders while the agent count is still unknown and stays put if that slice
- * never resolves (`useDashboardData` leaves a failed slice null). Only a
- * resolved count of zero swaps in the canvas.
+ * Home, shown when no .adf is open. One face, first run or not: ready-made
+ * agents at the top, the status line once there is anything to count, and
+ * the composer pinned at the bottom like any chat, carrying its own
+ * provider and folder chips. A message sent from the composer is a new
+ * agent.
  */
 export function HomeScreen() {
   const { loadDirectories } = useTrackedDirs()
@@ -27,7 +19,7 @@ export function HomeScreen() {
   const data = useDashboardData()
 
   // Auto-enable mesh on launch if the user had it on last session, and
-  // load the tracked directories so the sidebar/dashboard see the list.
+  // load the tracked directories so the sidebar sees the list.
   useEffect(() => {
     loadDirectories()
     window.adfApi?.getSettings().then((s) => {
@@ -36,39 +28,53 @@ export function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const firstRun = data.agentStats !== null && data.agentStats.total === 0
+  const hasAgents = (data.agentStats?.total ?? 0) > 0
 
   return (
-    <div className="relative flex-1 flex flex-col items-center justify-start gap-4 text-neutral-500 dark:text-neutral-400 overflow-y-auto py-6">
-      {firstRun ? (
-        <>
-          {/* Ambient wash across the whole pane behind the hero — the accent
-              at a whisper, so the screen has a top and a bottom instead of
-              one flat sheet. */}
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 top-0 h-80"
-            style={{
-              background:
-                'radial-gradient(80% 70% at 50% 0%, color-mix(in srgb, var(--adf-ui-accent) 16%, transparent), transparent 100%)'
-            }}
-          />
-          <OnboardingCanvas />
-        </>
-      ) : (
-        <>
-          <FleetMapCallout />
-          <HomeDashboard data={data} />
-          <div className="w-full max-w-3xl px-4">
-            <h3 className="mb-2 text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400 font-medium">
-              Agent registry
-            </h3>
-            <RegistryGallery mode="carousel" />
-          </div>
-          <NetworkingPanel />
-          <TrackedDirectoriesPanel />
-        </>
-      )}
+    <div className="relative flex flex-1 flex-col overflow-hidden">
+      <div className="relative flex-1 overflow-y-auto">
+        {/* Ambient wash across the whole pane: the accent at a whisper, so the
+            screen has a top and a bottom instead of one flat sheet. */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-0 h-80"
+          style={{
+            background:
+              'radial-gradient(80% 70% at 50% 0%, color-mix(in srgb, var(--adf-ui-accent) 16%, transparent), transparent 100%)'
+          }}
+        />
+
+        <div className="relative mx-auto w-full max-w-3xl px-4 pb-6 pt-8">
+          <section>
+            <div className="mb-3 flex items-baseline justify-between">
+              <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--adf-ui-text-subtle)]">
+                Ready-made agents
+              </span>
+              <span className="text-[11.5px] text-[var(--adf-ui-text-subtle)]">
+                Runs locally. No account, no subscription. Add your own model, cloud or local.
+              </span>
+            </div>
+            <RegistryGallery mode="carousel" compact />
+          </section>
+
+          {hasAgents && (
+            <div className="mt-8 border-t border-[var(--adf-ui-separator)] pt-4">
+              <HomeStatusLine data={data} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* The composer, pinned. No divider: the content above fades out
+          under the suggestion rows instead. */}
+      <div className="relative shrink-0 pb-5 pt-3">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -top-10 h-10"
+          style={{ background: 'linear-gradient(to bottom, transparent, var(--adf-ui-canvas))' }}
+        />
+        <HomeComposer />
+      </div>
     </div>
   )
 }

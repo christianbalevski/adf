@@ -1498,6 +1498,20 @@ function LoopStream({ loop }: { loop: string }) {
     window.adfApi?.invokeAgent(message, targetFilePath ?? undefined, content, loop)
   }
 
+  // A message typed into the home composer arrives here once the agent it
+  // created is the open one and its config has loaded. It goes through
+  // sendUserMessage like anything typed into this box: review gate, provider
+  // sheet, the lot. Main loop only, taken exactly once per file.
+  const pendingFirstMessage = useAppStore((s) => s.pendingFirstMessage)
+  useEffect(() => {
+    if (!isMainLoop || !filePath || !config || starting) return
+    if (!pendingFirstMessage || pendingFirstMessage.filePath !== filePath) return
+    const pending = useAppStore.getState().takePendingFirstMessage(filePath)
+    if (!pending) return
+    void sendUserMessage(pending.text, buildSubmitContent(pending.text), [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMainLoop, filePath, config, starting, pendingFirstMessage])
+
   /**
    * Run one palette row.
    *

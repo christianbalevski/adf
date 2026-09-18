@@ -3,6 +3,12 @@ export const IPC = {
   FILE_OPEN: 'adf:file:open',
   FILE_SAVE: 'adf:file:save',
   FILE_CREATE: 'adf:file:create',
+  // Create in the agents folder under a generated name, no save dialog.
+  // The home composer: a message typed there becomes a new agent.
+  FILE_CREATE_QUICK: 'adf:file:create-quick',
+  // Where quick-created and claimed agents go by default (the agentsFolder
+  // setting, else Documents/adf-agents); for the home folder chip.
+  AGENTS_FOLDER_DEFAULT_GET: 'adf:agents-folder:default-get',
   FILE_CLOSE: 'adf:file:close',
   FILE_DELETE: 'adf:file:delete',
   FILE_CLONE: 'adf:file:clone',

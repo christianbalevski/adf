@@ -163,6 +163,21 @@ export interface AppState {
   providerSetupRequest: ProviderSetupRequest | null
   /** Share dialog: null = closed; otherwise the file to feature, or '' for the whole list. */
   shareDialogFilePath: string | null
+  /**
+   * A message typed into the home composer, waiting for the agent it created
+   * to mount. The loop panel takes it (once, by file path) and sends it
+   * through its ordinary send path, so the first message goes through the
+   * same start gates as any other.
+   */
+  pendingFirstMessage: { filePath: string; text: string } | null
+  /** Provider chip picked on the home strip for the next new agent; null = the app default. Session only. */
+  homeProviderId: string | null
+  /** Folder chip picked on the home composer for the next new agent; null = the agents folder. Session only. */
+  homeFolder: string | null
+  /** Unsent text in the home composer, kept across navigation. Session only. */
+  homeDraft: string
+  /** Name the next new agent will get; null until the composer draws one. Session only. */
+  homeName: string | null
   showLogsPanel: boolean
   logsAutoRefresh: boolean
   logsPanelHeight: number
@@ -221,6 +236,13 @@ export interface AppState {
   requestProviderSetup: (reason: ProviderSetupReason, filePath: string | null) => Promise<boolean>
   resolveProviderSetup: (connected: boolean) => void
   openShareDialog: (filePath?: string) => void
+  setPendingFirstMessage: (pending: { filePath: string; text: string } | null) => void
+  /** Claim the pending message for this file; null if it belongs to another file or was taken. */
+  takePendingFirstMessage: (filePath: string) => { filePath: string; text: string } | null
+  setHomeProviderId: (id: string | null) => void
+  setHomeFolder: (folder: string | null) => void
+  setHomeDraft: (text: string) => void
+  setHomeName: (name: string | null) => void
   closeShareDialog: () => void
   toggleLogsPanel: () => void
   setLogsAutoRefresh: (on: boolean) => void
@@ -299,6 +321,11 @@ export const useAppStore = create<AppState>((set) => ({
   fileMoveWarning: null,
   providerSetupRequest: null,
   shareDialogFilePath: null,
+  pendingFirstMessage: null,
+  homeProviderId: null,
+  homeFolder: null,
+  homeDraft: '',
+  homeName: null,
   showLogsPanel: false,
   logsAutoRefresh: false,
   logsPanelHeight: 200,
@@ -418,6 +445,17 @@ export const useAppStore = create<AppState>((set) => ({
     }),
   openShareDialog: (filePath) => set({ shareDialogFilePath: filePath ?? '' }),
   closeShareDialog: () => set({ shareDialogFilePath: null }),
+  setPendingFirstMessage: (pending) => set({ pendingFirstMessage: pending }),
+  setHomeProviderId: (id) => set({ homeProviderId: id }),
+  setHomeFolder: (folder) => set({ homeFolder: folder }),
+  setHomeDraft: (text) => set({ homeDraft: text }),
+  setHomeName: (name) => set({ homeName: name }),
+  takePendingFirstMessage: (filePath) => {
+    const pending = useAppStore.getState().pendingFirstMessage
+    if (!pending || pending.filePath !== filePath) return null
+    set({ pendingFirstMessage: null })
+    return pending
+  },
   toggleLogsPanel: () => set((s) => ({ showLogsPanel: !s.showLogsPanel })),
   setLogsAutoRefresh: (on) => set({ logsAutoRefresh: on }),
   setLogsPanelHeight: (h) => set({ logsPanelHeight: h }),

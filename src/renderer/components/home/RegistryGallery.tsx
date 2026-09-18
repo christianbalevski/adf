@@ -30,8 +30,15 @@ const HUES = [
  * row with snap points and chevrons, so the registry keeps its detail while
  * taking one row of the dashboard.
  */
-export function RegistryGallery({ mode = 'grid', limit, onCount }: { mode?: 'grid' | 'carousel'; limit?: number; onCount?: (n: number) => void }) {
+export function RegistryGallery({ mode = 'grid', compact = false, limit, onCount }: {
+  mode?: 'grid' | 'carousel'
+  /** Narrower cards with a two-line blurb: the carousel under the home composer. */
+  compact?: boolean
+  limit?: number
+  onCount?: (n: number) => void
+}) {
   const carousel = mode === 'carousel'
+  const cardWidth = compact ? 'w-[212px]' : 'w-[250px]'
   const scrollerRef = useRef<HTMLDivElement>(null)
   const [canScroll, setCanScroll] = useState({ left: false, right: false })
 
@@ -114,8 +121,11 @@ export function RegistryGallery({ mode = 'grid', limit, onCount }: { mode?: 'gri
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [carousel, registry])
 
+  const fadeClass = carousel
+    ? `${canScroll.left ? 'registry-fade-l' : ''} ${canScroll.right ? 'registry-fade-r' : ''}`
+    : ''
   const gridClass = carousel
-    ? 'registry-carousel flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1'
+    ? `registry-carousel flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 ${fadeClass}`
     : 'grid gap-3 grid-cols-1 sm:grid-cols-2 md:grid-cols-3'
 
   if (loadError) {
@@ -125,7 +135,7 @@ export function RegistryGallery({ mode = 'grid', limit, onCount }: { mode?: 'gri
     return (
       <div className={gridClass}>
         {[0, 1, 2].map((i) => (
-          <div key={i} className={`${carousel ? 'w-[250px] shrink-0' : ''} h-44 animate-pulse rounded-2xl border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)]`} />
+          <div key={i} className={`${carousel ? `${cardWidth} shrink-0` : ''} ${compact ? 'h-36' : 'h-44'} animate-pulse rounded-2xl border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)]`} />
         ))}
       </div>
     )
@@ -148,6 +158,7 @@ export function RegistryGallery({ mode = 'grid', limit, onCount }: { mode?: 'gri
               index={i}
               hue={HUES[i % HUES.length]}
               carousel={carousel}
+              compact={compact}
               busy={busyId === agent.id}
               disabled={busyId !== null}
               onCopy={() => copyToAgents(agent)}
@@ -184,16 +195,17 @@ export function RegistryGallery({ mode = 'grid', limit, onCount }: { mode?: 'gri
   )
 }
 
-function capabilityChips(agent: AgentRegistryAgentView): string[] {
+function capabilityChips(agent: AgentRegistryAgentView, compact: boolean): string[] {
   const c = agent.capabilities
   if (!c) return []
   // Most distinctive first: channels and skills differ between agents, the
-  // tool count barely does, so it is the one that fades if the row is tight.
+  // tool count barely does, so it is the one that fades if the row is tight
+  // and the one a compact card leaves out.
   const chips: string[] = []
   for (const ch of c.channels) chips.push(ch)
   if (c.skills > 0) chips.push(`${c.skills} skill${c.skills === 1 ? '' : 's'}`)
   if (c.code) chips.push('code')
-  if (c.tools > 0) chips.push(`${c.tools} tools`)
+  if (c.tools > 0 && !compact) chips.push(`${c.tools} tools`)
   return chips
 }
 
@@ -212,34 +224,35 @@ function CarouselChevron({ side, onClick }: { side: 'left' | 'right'; onClick: (
   )
 }
 
-function RegistryCard({ agent, index, hue, carousel, busy, disabled, onCopy }: {
+function RegistryCard({ agent, index, hue, carousel, compact, busy, disabled, onCopy }: {
   agent: AgentRegistryAgentView
   index: number
   hue: string
   carousel: boolean
+  compact: boolean
   busy: boolean
   disabled: boolean
   onCopy: () => void
 }) {
   const style = { '--h': hue, '--i': index } as React.CSSProperties
   const addLabel = busy ? 'Adding…' : 'Add'
-  const chips = capabilityChips(agent)
+  const chips = capabilityChips(agent, compact)
 
   return (
-    <div style={style} className={`registry-card group relative flex flex-col rounded-2xl p-4 ${carousel ? 'w-[250px] shrink-0 snap-start' : ''}`}>
+    <div style={style} className={`registry-card group relative flex flex-col rounded-2xl ${compact ? 'p-3.5' : 'p-4'} ${carousel ? `${compact ? 'w-[212px]' : 'w-[250px]'} shrink-0 snap-start` : ''}`}>
       <div className="registry-glow pointer-events-none absolute inset-0 rounded-2xl" aria-hidden />
       <div className="relative flex items-start gap-3">
-        <span className="registry-icon flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-[26px] leading-none" aria-hidden>
+        <span className={`registry-icon flex shrink-0 items-center justify-center rounded-xl leading-none ${compact ? 'h-10 w-10 text-[22px]' : 'h-12 w-12 text-[26px]'}`} aria-hidden>
           {agent.icon ?? '📄'}
         </span>
         <div className="min-w-0 flex-1 pt-0.5">
-          <div className="truncate text-[15px] font-semibold tracking-tight text-[var(--adf-ui-text)]">{agent.name}</div>
+          <div className={`truncate font-semibold tracking-tight text-[var(--adf-ui-text)] ${compact ? 'text-[14px]' : 'text-[15px]'}`}>{agent.name}</div>
           {agent.tags.length > 0 && (
             <div className="mt-0.5 truncate text-[11px] text-[var(--adf-ui-text-subtle)]">{agent.tags.join(' · ')}</div>
           )}
         </div>
       </div>
-      <p className="registry-blurb relative mt-3 text-[12.5px] leading-relaxed text-[var(--adf-ui-text-muted)]">{agent.blurb}</p>
+      <p className={`registry-blurb relative mt-3 text-[12.5px] leading-relaxed text-[var(--adf-ui-text-muted)] ${compact ? 'registry-blurb-short' : ''}`}>{agent.blurb}</p>
       {chips.length > 0 && (
         <div className="registry-chips relative mt-3 flex flex-nowrap gap-1 overflow-hidden">
           {chips.map((chip) => (

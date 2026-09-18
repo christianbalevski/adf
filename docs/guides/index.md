@@ -11,7 +11,7 @@ Guides carry YAML frontmatter (`type`, `description`, `see_also`) mirroring the 
 
 ## Getting Oriented
 
-- **getting-started.md** — copy an agent from the registry, claim it, run it, send it on
+- **getting-started.md** — type a message to make your first agent, connect a provider when it first runs, add a ready-made agent, send it on
 - **core-concepts.md** — the foundational ideas behind ADF
 - **creating-agents.md** — create an agent and configure its settings
 - **settings.md** — global app settings shared across all agents

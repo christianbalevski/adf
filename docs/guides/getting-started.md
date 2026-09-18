@@ -1,6 +1,6 @@
 ---
 type: guide
-description: First run — add an agent from the registry, review and claim it, connect a provider when you first run it, learn the interface, send the file on
+description: First run — type a message to make your first agent, connect a provider when it first runs, add a ready-made agent, learn the interface, send the file on
 see_also:
   - core-concepts.md — the ideas behind what you just built
   - creating-agents.md — the full per-agent configuration surface
@@ -8,7 +8,7 @@ see_also:
 
 # Getting Started
 
-This guide walks you through your first agent: adding one from the registry, claiming it, running it, and sending it somewhere.
+This guide walks you through your first agent: making one from a message, running it, adding a ready-made one, and sending it somewhere.
 
 ## Prerequisites
 
@@ -17,21 +17,21 @@ This guide walks you through your first agent: adding one from the registry, cla
 
 ## First run
 
-With no agents yet, the home screen shows **Agent registry**: cards for the agent files bundled with the app, plus any the live registry lists. Each card has one button, **Add**.
+The home screen is a message box. Type what you want an agent to do and press Enter.
 
-1. Click **Add** on a card. The file is copied into your agents folder (`Documents/adf-agents` by default) and opened.
-2. The review dialog shows everything inside the file: tools, code execution, triggers, channels, compute tier, and a warning that it has no identity yet. Read it. **Continue**, then **Claim & Run** (or **Claim only**). Claiming mints a fresh identity owned by you.
-3. Running needs a model provider. If none is usable, the **Connect a provider** sheet opens: sign in with ChatGPT or Grok, or pick a provider type and paste an API key. Then the **Model** step, and **Save and start**. The key is saved in app settings, not in this agent's file.
+1. A new agent file is created in your agents folder (`Documents/adf-agents` by default) under a generated name like `steady-fern`, and opens with its loop in the center.
+2. Your message is the agent's first message. It goes through the normal start: if no model provider is connected yet, the **Connect a provider** sheet opens first. Sign in with ChatGPT or Grok, or pick a provider and paste an API key, choose a model, and **Save and start**. The key is saved in app settings, not in the agent's file.
+3. The agent answers in the loop. Keep talking to it there; it configures itself from the conversation.
 
-The same review-then-claim flow runs for any `.adf` you open, including one someone sent you.
+Every message sent from the home screen makes a new agent. To continue with one you already have, open it from the sidebar.
 
-Under the registry is a **Start** list with the other ways in:
+Along the top of the home screen are your providers, one chip each with its connection status, and **Add provider**. Both open Settings → Providers.
 
-- **New agent** — Create a blank agent file
-- **Open .adf…** — Open an agent file from disk
-- **Add directory…** — Show every agent file in a folder in the sidebar
+Under the message box, **Ready-made agents** lists the agent files bundled with the app plus any the live registry adds. **Add** copies one into your agents folder and opens it through the review dialog: it shows everything inside the file (tools, code execution, triggers, channels, compute tier) and that it has no identity yet. **Continue**, then **Claim & Run**. Claiming mints a fresh identity owned by you. The same review-then-claim flow runs for any `.adf` you open, including one someone sent you.
 
-Once an agent exists, the home screen becomes the dashboard, with a **Getting started** strip of four steps: Add an agent, Connect a provider, Run an agent, Share an agent. You can hide the strip.
+Once agents exist, a status line under the box shows how many there are, how many are running, tokens used today, and a link to the fleet map.
+
+The sidebar's `+` creates a blank agent under a name you choose, and its folder button adds a directory of agent files.
 
 ## Setting Up a Provider
 
@@ -49,7 +49,7 @@ Providers can also be managed ahead of time, or changed later, in Settings.
 
 ## Creating a Blank Agent
 
-1. Click the **New agent** button in the sidebar (the `+`), or on the first-run home screen
+1. Click the **New agent** button in the sidebar (the `+`)
 2. Choose a name for your agent (e.g., "assistant")
 3. A new `.adf` file is created with default settings and the app's default provider
 
