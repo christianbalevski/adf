@@ -4,6 +4,7 @@ import { useMesh } from '../../hooks/useMesh'
 import { useDashboardData } from './useDashboardData'
 import { HomeComposer } from './HomeComposer'
 import { HomeStatusLine } from './HomeStatusLine'
+import { ConnectProviderCard, HomeProvidersProvider } from './HomeProviders'
 import { RegistryGallery } from './RegistryGallery'
 
 /**
@@ -31,6 +32,7 @@ export function HomeScreen() {
   const hasAgents = (data.agentStats?.total ?? 0) > 0
 
   return (
+    <HomeProvidersProvider>
     <div className="relative flex flex-1 flex-col overflow-hidden">
       <div className="relative flex-1 overflow-y-auto">
         {/* Ambient wash across the whole pane: the accent at a whisper, so the
@@ -44,7 +46,7 @@ export function HomeScreen() {
           }}
         />
 
-        <div className="relative mx-auto w-full max-w-3xl px-4 pb-6 pt-8">
+        <div className="relative mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pb-6 pt-8">
           <section>
             <div className="mb-3 flex items-baseline justify-between">
               <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--adf-ui-text-subtle)]">
@@ -62,6 +64,14 @@ export function HomeScreen() {
               <HomeStatusLine data={data} />
             </div>
           )}
+
+          {/* Until a provider exists, the empty middle asks for one. Gone
+              the moment there is one; the chip in the composer takes over. */}
+          <div className="flex flex-1 items-center py-10">
+            <div className="w-full">
+              <ConnectProviderCard />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -76,5 +86,6 @@ export function HomeScreen() {
         <HomeComposer />
       </div>
     </div>
+    </HomeProvidersProvider>
   )
 }

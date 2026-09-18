@@ -59,8 +59,12 @@ export function HomeStatusLine({ data }: { data: DashboardData }) {
         <strong className="font-semibold text-[var(--adf-ui-text)]">{total}</strong> {total === 1 ? 'agent' : 'agents'}
       </Segment>
       <Dot />
+      {/* "5 agents · 0 running" reads as five running at a glance; spell
+          the zero out so the two numbers cannot blur together. */}
       <Segment>
-        <strong className="font-semibold text-[var(--adf-ui-text)]">{running}</strong> running
+        {running === 0
+          ? 'none running'
+          : <><strong className="font-semibold text-[var(--adf-ui-text)]">{running}</strong> running</>}
       </Segment>
       {failing > 0 && (
         <>

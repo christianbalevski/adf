@@ -4,10 +4,8 @@ import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { catalogEntryForProvider } from '../../../shared/constants/provider-catalog'
 import { BrandMark } from '../common/BrandMark'
 import { Tooltip } from '../common/Tooltip'
-import { ProviderModal } from '../providers/ProviderModal'
 import { providerDotClass, providerStatusLabel } from '../providers/provider-status'
-import { useProviderManager } from '../providers/useProviderManager'
-import { useOwnedProviderList } from '../providers/useOwnedProviderList'
+import { useHomeProviders } from './HomeProviders'
 
 /* ------------------------------------------------------------------------ */
 /* Popover                                                                   */
@@ -91,37 +89,15 @@ function Caret() {
  * The provider the next new agent starts on, as a chip in the composer
  * footer. The menu lists the configured providers with their status, then
  * "Add provider…" (the Settings picker, in place) and a gear that opens
- * Settings → Providers. Same modal and manager as Settings, over a copy of
- * the list this chip persists itself. With nothing configured the chip
- * reads "Connect a provider" and opens the picker straight away.
+ * Settings → Providers. The list and the modal belong to HomeProvidersProvider,
+ * shared with the connect card. With nothing configured the chip reads
+ * "Connect a provider" and opens the picker straight away.
  */
 export function ProviderPickerChip() {
-  const homeProviderId = useAppStore((s) => s.homeProviderId)
-  const setHomeProviderId = useAppStore((s) => s.setHomeProviderId)
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
-  const list = useOwnedProviderList()
-  const { providers, setProviders, defaultProviderId, setDefaultProviderId, loaded, load, flushSave } = list
-  const m = useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave })
-  const { openPicker, closeModal, status, modalOpen } = m
+  const { providers, loaded, status, selectedId, selected, setHomeProviderId, openPicker } = useHomeProviders()
   const [menuOpen, setMenuOpen] = useState(false)
   const closeMenu = useCallback(() => setMenuOpen(false), [])
-
-  const modalOpenRef = useRef(modalOpen)
-  modalOpenRef.current = modalOpen
-  useEffect(() => {
-    const reload = () => { if (!modalOpenRef.current) void load().catch(() => {}) }
-    reload()
-    window.addEventListener('focus', reload)
-    return () => window.removeEventListener('focus', reload)
-  }, [load])
-
-  const selectedId = homeProviderId && providers.some((p) => p.id === homeProviderId) ? homeProviderId : defaultProviderId
-  const selected = providers.find((p) => p.id === selectedId)
-  useEffect(() => {
-    if (homeProviderId && loaded && !providers.some((p) => p.id === homeProviderId)) setHomeProviderId(null)
-  }, [homeProviderId, loaded, providers, setHomeProviderId])
-
-  const modal = <ProviderModal {...m.modalProps} open={modalOpen} onClose={() => { void flushSave(); closeModal() }} />
 
   if (!loaded) {
     return <span className="inline-block h-7 w-28 animate-pulse rounded-full bg-[var(--adf-ui-surface-raised)]" aria-busy="true" />
@@ -138,7 +114,6 @@ export function ProviderPickerChip() {
           <PlusIcon />
           Connect a provider
         </button>
-        {modal}
       </>
     )
   }
@@ -197,7 +172,6 @@ export function ProviderPickerChip() {
           </Tooltip>
         </div>
       </Popover>
-      {modal}
     </div>
   )
 }
