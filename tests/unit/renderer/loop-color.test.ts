@@ -52,11 +52,13 @@ describe('loopColor', () => {
   it('ships light and dark class pairs for every slot', () => {
     for (const color of [...LOOP_PALETTE, MAIN_LOOP_COLOR]) {
       expect(Object.keys(color).sort()).toEqual(
-        ['accent', 'badge', 'focus', 'label', 'rail', 'underline', 'underlineMuted']
+        ['accent', 'badge', 'focus', 'label', 'rail', 'underline', 'underlineMuted', 'wash']
       )
       expect(color.accent).toMatch(/dark:/)
       expect(color.rail).toMatch(/dark:/)
       expect(color.badge).toMatch(/dark:/)
+      // `wash` is a plain CSS colour that feeds a gradient, not a class pair.
+      expect(color.wash).toMatch(/^(#[0-9a-f]{6}|var\(--[a-z-]+\))$/)
     }
   })
 
