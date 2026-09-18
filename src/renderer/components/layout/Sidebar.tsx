@@ -192,7 +192,7 @@ export function Sidebar() {
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
   const filePath = useDocumentStore((s) => s.filePath)
   const { openFile, createFile, closeFile } = useAdfFile()
-  const { loadDirectories, rescanDirectory, removeDirectory } = useTrackedDirs()
+  const { loadDirectories, rescanDirectory, removeDirectory, addDirectory } = useTrackedDirs()
   const directories = useTrackedDirsStore((s) => s.directories)
   const filesByDir = useTrackedDirsStore((s) => s.filesByDir)
 
@@ -266,6 +266,19 @@ export function Sidebar() {
     if (result?.success) setShowMeshGraph(false)
   }, [openFile, setShowMeshGraph])
 
+  // The folder button: open one agent file, or track a whole folder. A
+  // small menu under the button; the File menu carries the same two.
+  const [folderMenu, setFolderMenu] = useState<{ x: number; y: number } | null>(null)
+  const openFolderMenu = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    setFolderMenu({ x: r.left, y: r.bottom + 4 })
+  }, [])
+  const closeFolderMenu = useCallback(() => setFolderMenu(null), [])
+  const folderMenuItems = useMemo<ContextMenuItem[]>(() => [
+    { label: 'Open agent…', onSelect: () => { void handleOpenFromPicker() } },
+    { label: 'Track folder…', onSelect: () => { addDirectory().catch((err) => console.error('[Sidebar] Track folder failed:', err)) } },
+  ], [addDirectory, handleOpenFromPicker])
+
   // Row context menu + the dialogs it opens. One instance of each lives here,
   // keyed by the target file, instead of one per row.
   const [menu, setMenu] = useState<(RowTarget & { x: number; y: number }) | null>(null)
@@ -273,6 +286,7 @@ export function Sidebar() {
   // is where a folder stops being tracked; nothing on the home screen lists
   // the folders any more.
   const [dirMenu, setDirMenu] = useState<{ dirPath: string; x: number; y: number } | null>(null)
+  const [untrackTarget, setUntrackTarget] = useState<string | null>(null)
   const [cloneTarget, setCloneTarget] = useState<RowTarget | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<RowTarget | null>(null)
   const startingFilePaths = useAppStore((s) => s.startingFilePaths)
@@ -298,17 +312,9 @@ export function Sidebar() {
     return [
       { label: 'Rescan', onSelect: () => { void rescanDirectory(dirPath) } },
       { label: REVEAL_IN_FOLDER_LABEL, onSelect: () => { window.adfApi.revealInFolder(dirPath).catch(() => {}) } },
-      {
-        label: 'Untrack folder',
-        separatorBefore: true,
-        onSelect: () => {
-          // Files stay on disk and any running agents keep running; the
-          // folder just leaves the sidebar. The folder button adds it back.
-          removeDirectory(dirPath).catch((err) => console.error('[Sidebar] Untrack failed:', err))
-        }
-      }
+      { label: 'Untrack folder…', separatorBefore: true, onSelect: () => setUntrackTarget(dirPath) }
     ]
-  }, [dirMenu, removeDirectory, rescanDirectory])
+  }, [dirMenu, rescanDirectory])
 
   const menuItems = useMemo<ContextMenuItem[]>(() => {
     if (!menu) return []
@@ -416,9 +422,11 @@ export function Sidebar() {
           </svg>
         </button>
         <button
-          onClick={handleOpenFromPicker}
-          title="Open agent"
-          aria-label="Open agent"
+          onClick={openFolderMenu}
+          title="Open agent or track folder"
+          aria-label="Open agent or track folder"
+          aria-haspopup="menu"
+          aria-expanded={folderMenu !== null}
           className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -494,6 +502,17 @@ export function Sidebar() {
         items={dirMenuItems}
         onClose={closeDirMenu}
       />
+      <ContextMenu position={folderMenu} items={folderMenuItems} onClose={closeFolderMenu} />
+      {untrackTarget && (
+        <UntrackFolderDialog
+          dirPath={untrackTarget}
+          onClose={() => setUntrackTarget(null)}
+          onConfirm={async () => {
+            await removeDirectory(untrackTarget)
+            setUntrackTarget(null)
+          }}
+        />
+      )}
       {cloneTarget && (
         <CloneDialog
           open
@@ -1087,6 +1106,54 @@ const StatusDot = memo(function StatusDot({ state, starting, stopping }: { state
  * or background) and unlinks the file plus its WAL; a failure is shown inline
  * and the dialog stays open.
  */
+/**
+ * Untracking is reversible and touches no files, but it empties part of the
+ * sidebar in one click, so it asks. The copy says what does and does not
+ * happen, so the person is not left guessing about running agents.
+ */
+function UntrackFolderDialog({ dirPath, onClose, onConfirm }: {
+  dirPath: string
+  onClose: () => void
+  onConfirm: () => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const name = dirPath.split('/').pop() ?? dirPath
+
+  const handleConfirm = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await onConfirm()
+    } catch (err) {
+      setError(String(err))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open onClose={onClose} title="Untrack folder?" preventClose={busy}>
+      <p className="text-sm text-[var(--adf-ui-text-muted)]">
+        <span className="font-medium text-[var(--adf-ui-text)]">{name}</span> leaves the sidebar. The files stay
+        where they are, and any agents running from it keep running. Track it again from the folder button.
+      </p>
+      {error && (
+        <p className="mt-3 text-xs text-[var(--adf-ui-danger)]" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="mt-5 flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={handleConfirm} loading={busy} autoFocus>
+          Untrack
+        </Button>
+      </div>
+    </Dialog>
+  )
+}
+
 function DeleteAgentDialog({
   target,
   onClose,

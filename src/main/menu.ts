@@ -113,7 +113,7 @@ export function buildApplicationMenu(): void {
         { label: 'Open Recent', submenu: openRecentSubmenu },
         { type: 'separator' },
         {
-          label: 'Add Directory…',
+          label: 'Track Folder…',
           accelerator: 'CmdOrCtrl+Shift+O',
           click: () => sendMenuAction('add-directory')
         },

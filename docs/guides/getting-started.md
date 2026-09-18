@@ -29,7 +29,7 @@ The chips under the message box set up the agent before it exists. The leaf chip
 
 Once agents exist, a status line at the top shows how many there are, how many are running, tokens used today, and a link to the fleet map.
 
-The sidebar's `+` creates a blank agent under a name you choose, and its folder button adds a directory of agent files. Right-click a folder's row to rescan it, reveal it on disk, or **Untrack folder**, which removes it from the sidebar and leaves the files where they are.
+The sidebar's `+` creates a blank agent under a name you choose. Its folder button opens a menu: **Open agent…** for one file, **Track folder…** for a whole folder of them. Right-click a folder's row to rescan it, reveal it on disk, or **Untrack folder…**, which asks, then removes it from the sidebar and leaves the files where they are.
 
 ## Setting Up a Provider
 
