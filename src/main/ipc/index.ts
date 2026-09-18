@@ -2560,6 +2560,14 @@ export function registerAllIpcHandlers(): void {
     templatesService.setDefault(args?.id)
   )
 
+  ipcMain.handle(IPC.TEMPLATE_RENAME, async (_event, args: { id: string; name: string }) =>
+    templatesService.rename(args)
+  )
+
+  ipcMain.handle(IPC.TEMPLATE_SET_META, async (_event, args: { id: string; description?: string; warning?: string }) =>
+    templatesService.setMeta(args)
+  )
+
   ipcMain.handle(IPC.TEMPLATE_GET_CONTENTS, async (_event, args: { id: string }) =>
     templatesService.getContents(args?.id)
   )

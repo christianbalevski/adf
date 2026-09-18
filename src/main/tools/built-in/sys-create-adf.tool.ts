@@ -359,10 +359,9 @@ export class CreateAdfTool implements Tool {
   /** Injected by runtime — returns the currently configured app-level default provider, if any. */
   getDefaultProvider?: () => ProviderConfig | undefined
   /**
-   * Injected by runtime — the host path of the default agent template
-   * (`<userData>/templates/<id>.adf`), but only when the owner switched on
-   * "also apply to agents created by other agents". Undefined otherwise, so
-   * children get plain code defaults.
+   * Injected by runtime — the host path of the template children start from
+   * (`<userData>/templates/<id>.adf`, named by settings.childTemplateId).
+   * Undefined when the owner named none, so children get plain code defaults.
    *
    * Config, files and `local_*` tables travel; credentials and identity rows
    * never do (readTemplateFile is called with includeIdentityRows: false), so
@@ -398,7 +397,7 @@ export class CreateAdfTool implements Tool {
         // Template-based creation
         templateData = readTemplate(workspace, template)
       } else {
-        // The owner's default agent template, when children were opted in.
+        // The template the owner picked for children, when they picked one.
         // Skipped when the parent named a template agent: that is an explicit
         // choice, and the parent's file outranks the host's preference.
         const studio = this.getStudioTemplate?.()

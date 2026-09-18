@@ -4,7 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import BetterSqlite3 from 'better-sqlite3'
 import { AdfDatabase } from '../../src/main/adf/adf-database'
-import { instantiateTemplateFile } from '../../src/main/adf/agent-templates'
+import { AgentTemplatesService, instantiateTemplateFile } from '../../src/main/adf/agent-templates'
 import type { ProviderConfig } from '../../src/shared/types/ipc.types'
 
 /**
@@ -30,6 +30,11 @@ function buildTemplate(path: string): void {
     // A spent one-shot: history, not a setting.
     const spentId = db.addTimer({ mode: 'once', at: Date.now() - 2 * HOUR }, Date.now() - 2 * HOUR)
     db.executeSQL('UPDATE adf_timers SET expired = 1 WHERE id = ?', [spentId])
+    // --- template notes, which must NOT carry: they describe the TEMPLATE ---
+    db.setMeta('adf_template_shipped', 'standard', 'readonly')
+    db.setMeta('adf_template_description', 'What this template is for.', 'readonly')
+    db.setMeta('adf_template_warning', 'Runs code without asking.', 'readonly')
+
     // A stored credential, sealed under the owner's credentials envelope in
     // real life; the row itself is what has to survive.
     db.setIdentityRaw('provider:acme:apiKey', Buffer.from('secret-value'), 'plain', null, null)
@@ -146,6 +151,11 @@ describe('instantiateTemplateFile', () => {
         expect(n, table).toBe(0)
       }
 
+      // Template notes: gone. An instance is an agent, not a template.
+      for (const key of ['adf_template_shipped', 'adf_template_description', 'adf_template_warning']) {
+        expect(db.prepare('SELECT 1 FROM adf_meta WHERE key = ?').get(key), key).toBeUndefined()
+      }
+
       // Lineage and naming
       const parent = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_parent_did'").get() as { value: string }
       expect(parent.value).toBe('did:key:zTemplateParent')
@@ -242,6 +252,76 @@ describe('instantiateTemplateFile', () => {
     const orphanedConfig = readConfig(orphaned)
     expect(orphanedConfig.model.provider).toBe('other')
     expect(orphanedConfig.model.model_id).toBe('other-small')
+  })
+})
+
+describe('AgentTemplatesService', () => {
+  const dirs: string[] = []
+  const previousUserData = process.env.ADF_USER_DATA_DIR
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    if (previousUserData === undefined) delete process.env.ADF_USER_DATA_DIR
+    else process.env.ADF_USER_DATA_DIR = previousUserData
+  })
+
+  /** A service pointed at a throwaway userData dir, over a Map of settings. */
+  function makeService(settings: Map<string, unknown>): { service: AgentTemplatesService; folder: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-templates-svc-'))
+    dirs.push(dir)
+    process.env.ADF_USER_DATA_DIR = dir
+    const service = new AgentTemplatesService({
+      settings: {
+        get: (key) => settings.get(key),
+        set: (key, value) => { settings.set(key, value) },
+        delete: (key) => { settings.delete(key) }
+      },
+      getOwnerDid: () => '',
+      notifyChanged: () => { /* no renderer here */ }
+    })
+    return { service, folder: join(dir, 'templates') }
+  }
+
+  it('renames the file, the agent inside it, and the settings that named it', async () => {
+    const settings = new Map<string, unknown>()
+    const { service, folder } = makeService(settings)
+
+    const created = await service.create({ name: 'My Notes' })
+    expect(created).toMatchObject({ success: true, id: 'my-notes' })
+    settings.set('defaultTemplateId', 'my-notes')
+    settings.set('childTemplateId', 'my-notes')
+
+    expect(service.rename({ id: 'my-notes', name: 'Field Notes' })).toEqual({ success: true, id: 'field-notes' })
+    expect(existsSync(join(folder, 'my-notes.adf'))).toBe(false)
+    expect(existsSync(join(folder, 'field-notes.adf'))).toBe(true)
+    expect(existsSync(join(folder, 'my-notes.adf-wal'))).toBe(false)
+    expect(readConfig(join(folder, 'field-notes.adf')).name).toBe('Field Notes')
+    expect(settings.get('defaultTemplateId')).toBe('field-notes')
+    expect(settings.get('childTemplateId')).toBe('field-notes')
+
+    // A stem another template already holds is refused rather than overwritten.
+    const second = await service.create({ name: 'Field Notes' })
+    expect(second).toMatchObject({ success: true, id: 'field-notes-2' })
+    const clash = service.rename({ id: 'field-notes-2', name: 'Field Notes' })
+    expect(clash.success).toBe(false)
+    expect(existsSync(join(folder, 'field-notes-2.adf'))).toBe(true)
+  })
+
+  it('migrates the children boolean to a named template, once', () => {
+    const optedIn = new Map<string, unknown>([['agentTemplateForChildren', true], ['defaultTemplateId', 'sandboxed']])
+    makeService(optedIn)
+    expect(optedIn.get('childTemplateId')).toBe('sandboxed')
+    expect(optedIn.has('agentTemplateForChildren')).toBe(false)
+
+    const optedOut = new Map<string, unknown>([['agentTemplateForChildren', false], ['childTemplateId', 'standard']])
+    makeService(optedOut)
+    expect(optedOut.has('childTemplateId')).toBe(false)
+    expect(optedOut.has('agentTemplateForChildren')).toBe(false)
+
+    // Nothing left to migrate: a later choice is never undone.
+    const chosen = new Map<string, unknown>([['childTemplateId', 'full-access']])
+    makeService(chosen)
+    expect(chosen.get('childTemplateId')).toBe('full-access')
   })
 })
 

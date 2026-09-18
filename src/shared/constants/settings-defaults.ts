@@ -15,7 +15,9 @@ export function createSettingsDefaults(): Record<string, unknown> {
     // "Agent template": overrides only; empty = code defaults
     // (DEFAULT_AGENT_CONFIG). See src/shared/utils/agent-template.ts.
     agentTemplate: {},
-  agentTemplateForChildren: false,
+    // No `childTemplateId` default on purpose: absent means children get the
+    // code defaults, and its absence is also what tells AgentTemplatesService
+    // the one-time `agentTemplateForChildren` migration has already run.
     theme: 'light',
     // Interface typeface preset + free-text family for 'custom'; see
     // UI_FONT_STACKS in the renderer's app.store.

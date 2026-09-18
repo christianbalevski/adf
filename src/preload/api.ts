@@ -119,6 +119,13 @@ export interface AdfApi {
   resetShippedTemplate: (id: ShippedTemplateId) => Promise<{ success: boolean; error?: string }>
   revealTemplate: (id: string) => Promise<void>
   setDefaultTemplate: (id: string) => Promise<{ success: boolean; error?: string }>
+  /**
+   * Renames the file stem AND the agent name inside it; returns the new id.
+   * Settings that pointed at the old id (default, child template) follow it.
+   */
+  renameTemplate: (args: { id: string; name: string }) => Promise<{ success: boolean; id?: string; error?: string }>
+  /** Template-level notes (not the agent's description); an empty string clears a field. */
+  setTemplateMeta: (args: { id: string; description?: string; warning?: string }) => Promise<{ success: boolean; error?: string }>
   getTemplateContents: (id: string) => Promise<{ success: boolean; contents?: AgentTemplateContents; error?: string }>
   setTemplateConfig: (args: { id: string; config: AgentConfig }) => Promise<{ success: boolean; error?: string }>
   /** Writes one seed file (README.md, mind.md, soul.md) or any other VFS text file. */

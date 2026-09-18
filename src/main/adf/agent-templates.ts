@@ -49,6 +49,9 @@ import {
   DEFAULT_SHIPPED_TEMPLATE_ID,
   SHIPPED_TEMPLATES,
   SHIPPED_TEMPLATE_META_KEY,
+  TEMPLATE_DESCRIPTION_META_KEY,
+  TEMPLATE_NOTE_MAX_LENGTH,
+  TEMPLATE_WARNING_META_KEY,
   getShippedTemplate,
   isShippedTemplateId,
   type ShippedTemplateId
@@ -72,6 +75,17 @@ const HISTORY_TABLES = ['adf_loop', 'adf_inbox', 'adf_outbox', 'adf_tasks', 'adf
 
 /** adf_meta keys that describe a PAST run, not a configuration. */
 const HISTORY_META_PREFIXES = ['context_baseline_tokens'] as const
+
+/**
+ * adf_meta keys that describe the TEMPLATE rather than the agent: the shipped
+ * marker and the owner's notes. An instance is an agent, not a template, so it
+ * gets none of them.
+ */
+const TEMPLATE_META_KEYS = [
+  SHIPPED_TEMPLATE_META_KEY,
+  TEMPLATE_DESCRIPTION_META_KEY,
+  TEMPLATE_WARNING_META_KEY
+] as const
 
 /**
  * Files the template contents editor owns (the seeds) or the runtime derives
@@ -228,8 +242,10 @@ export async function instantiateTemplateFile(args: InstantiateFileArgs): Promis
       // An instance is a brand new file nobody has opened: it closed cleanly by
       // construction, so the next open can skip the full integrity check.
       setMeta.run('adf_clean_close', nowIso, 'none')
-      // Not a shipped template any more, it is an agent.
-      db.prepare('DELETE FROM adf_meta WHERE key = ?').run(SHIPPED_TEMPLATE_META_KEY)
+      // Not a template any more, it is an agent: the shipped marker and the
+      // template's notes are the template's, not its instances'.
+      const dropMeta = db.prepare('DELETE FROM adf_meta WHERE key = ?')
+      for (const key of TEMPLATE_META_KEYS) dropMeta.run(key)
     } finally {
       try { db.close() } catch { /* ignore */ }
     }
@@ -377,7 +393,9 @@ export class AgentTemplatesService {
   private notifyTimer: NodeJS.Timeout | null = null
   private shippedEnsured = false
 
-  constructor(private readonly deps: AgentTemplatesDeps) {}
+  constructor(private readonly deps: AgentTemplatesDeps) {
+    this.migrateChildTemplateSetting()
+  }
 
   /** settings.defaultTemplateId, else 'standard'. */
   defaultTemplateId(): string {
@@ -396,8 +414,20 @@ export class AgentTemplatesService {
   ensureShipped(): void {
     mkdirSync(templatesDir(), { recursive: true })
     for (const shipped of SHIPPED_TEMPLATES) {
-      const path = templateFilePath(shipped.id)
-      if (existsSync(path)) continue
+      const direct = templateFilePath(shipped.id)
+      if (existsSync(direct)) {
+        // A same-named file that is not ours stays untouched.
+        if (this.shippedMarker(direct) === shipped.id) this.repairShippedNotes(shipped.id, direct)
+        continue
+      }
+      // The stem being free does not mean the template is gone: a renamed one
+      // still carries its marker, and writing the stem again would give the
+      // owner two copies of the same thing.
+      const marked = this.findShipped(shipped.id)
+      if (marked) {
+        this.repairShippedNotes(shipped.id, marked)
+        continue
+      }
       try {
         this.writeShipped(shipped.id)
       } catch (err) {
@@ -414,12 +444,15 @@ export class AgentTemplatesService {
    */
   resetShipped(id: string): { success: boolean; error?: string } {
     if (!isShippedTemplateId(id)) return { success: false, error: `"${id}" is not a shipped template.` }
-    const path = templateFilePath(id)
-    if (existsSync(path) && this.shippedMarker(path) !== id) {
+    // The marker, not the stem, says which file this is: a renamed shipped
+    // template is still the one Reset rewrites, in place.
+    const marked = this.findShipped(id)
+    const path = marked ?? templateFilePath(id)
+    if (!marked && existsSync(path)) {
       return { success: false, error: `${id}.adf in the templates folder is not the shipped template. Rename or remove it first.` }
     }
     try {
-      this.writeShipped(id)
+      this.writeShipped(id, path)
       this.pushChanged()
       return { success: true }
     } catch (err) {
@@ -441,13 +474,65 @@ export class AgentTemplatesService {
     }
   }
 
-  private writeShipped(id: ShippedTemplateId): void {
+  /**
+   * Path of the file carrying the shipped marker for `id`, wherever it sits.
+   * The canonical stem is tried first so the common case costs one peek; the
+   * folder scan only runs for a template that was renamed or removed.
+   */
+  private findShipped(id: string): string | null {
+    const direct = templateFilePath(id)
+    if (existsSync(direct)) return this.shippedMarker(direct) === id ? direct : null
+    for (const file of listAdfFiles(templatesDir())) {
+      if (this.shippedMarker(file) === id) return file
+    }
+    return null
+  }
+
+  /**
+   * Shipped files generated before the template notes existed carry the
+   * template's sentence in `config.description`, which every agent made from
+   * them then inherited as its OWN description. Move it to the notes once.
+   *
+   * Narrow on purpose: the sentence is cleared from the config only while it is
+   * still the shipped one verbatim, so an owner who wrote their own keeps it,
+   * and a file that already has notes is left alone.
+   */
+  private repairShippedNotes(id: ShippedTemplateId, path: string): void {
     const shipped = getShippedTemplate(id)!
-    const path = templateFilePath(id)
+    try {
+      const alreadyNoted = AdfDatabase.peek(path, (db) => {
+        const row = db.prepare('SELECT value FROM adf_meta WHERE key = ?').get(TEMPLATE_DESCRIPTION_META_KEY) as
+          | { value: string }
+          | undefined
+        return !!row?.value
+      })
+      if (alreadyNoted) return
+      const workspace = AdfWorkspace.open(path)
+      try {
+        workspace.setMeta(TEMPLATE_DESCRIPTION_META_KEY, shipped.description, 'readonly')
+        if (shipped.warning) workspace.setMeta(TEMPLATE_WARNING_META_KEY, shipped.warning, 'readonly')
+        const config = workspace.getAgentConfig()
+        if (config.description === shipped.description) {
+          config.description = ''
+          workspace.setAgentConfig(config)
+        }
+      } finally {
+        workspace.close()
+      }
+    } catch (err) {
+      console.warn(`[Templates] Could not move the "${id}" template's description into its notes:`, err)
+    }
+  }
+
+  private writeShipped(id: ShippedTemplateId, atPath?: string): void {
+    const shipped = getShippedTemplate(id)!
+    const path = atPath ?? templateFilePath(id)
     mkdirSync(templatesDir(), { recursive: true })
+    // No `description`: that field is the AGENT's, and every agent made from
+    // this template would inherit it as its own. What the template is for goes
+    // in the template notes below.
     const workspace = AdfWorkspace.create(path, {
       name: shipped.name,
-      description: shipped.description,
       template: { ...shipped.template, files: { readme: shipped.readme } }
     })
     try {
@@ -455,6 +540,9 @@ export class AgentTemplatesService {
       // have a parent DID to record, and it is reviewed by construction.
       ensureWorkspaceIdentity(workspace)
       workspace.setMeta(SHIPPED_TEMPLATE_META_KEY, id, 'readonly')
+      workspace.setMeta(TEMPLATE_DESCRIPTION_META_KEY, shipped.description, 'readonly')
+      if (shipped.warning) workspace.setMeta(TEMPLATE_WARNING_META_KEY, shipped.warning, 'readonly')
+      else workspace.deleteMeta(TEMPLATE_WARNING_META_KEY)
       this.markReviewed(workspace.getAgentConfig())
     } finally {
       workspace.close()
@@ -507,8 +595,12 @@ export class AgentTemplatesService {
           | undefined
         if (!configRow) return null
         const metaRows = db
-          .prepare("SELECT key, value FROM adf_meta WHERE key IN ('adf_did', 'adf_owner_did', ?)")
-          .all(SHIPPED_TEMPLATE_META_KEY) as Array<{ key: string; value: string }>
+          .prepare("SELECT key, value FROM adf_meta WHERE key IN ('adf_did', 'adf_owner_did', ?, ?, ?)")
+          .all(
+            SHIPPED_TEMPLATE_META_KEY,
+            TEMPLATE_DESCRIPTION_META_KEY,
+            TEMPLATE_WARNING_META_KEY
+          ) as Array<{ key: string; value: string }>
         const meta = new Map(metaRows.map((r) => [r.key, r.value]))
         // Informational only, and an ancient file may not have the table.
         let hasHistory = false
@@ -520,6 +612,8 @@ export class AgentTemplatesService {
           agentDid: meta.get('adf_did') || null,
           ownerDid: meta.get('adf_owner_did') || null,
           shipped: meta.get(SHIPPED_TEMPLATE_META_KEY) || undefined,
+          templateDescription: meta.get(TEMPLATE_DESCRIPTION_META_KEY)?.trim() || undefined,
+          warning: meta.get(TEMPLATE_WARNING_META_KEY)?.trim() || undefined,
           hasHistory
         }
       })
@@ -551,6 +645,10 @@ export class AgentTemplatesService {
         icon: peeked.config.icon,
         filePath,
         ...(isShippedTemplateId(peeked.shipped ?? '') ? { shipped: peeked.shipped as ShippedTemplateId } : {}),
+        // Absent notes stay absent: the renderer then shows the agent's own
+        // description instead.
+        templateDescription: peeked.templateDescription,
+        warning: peeked.warning,
         reviewed,
         modelProvider: peeked.config.model?.provider || undefined,
         modelId: peeked.config.model?.model_id || undefined,
@@ -572,8 +670,8 @@ export class AgentTemplatesService {
    */
   async create(args: { name: string; fromId?: string }): Promise<{ success: boolean; id?: string; error?: string }> {
     const name = (args?.name ?? '').trim()
-    if (!name) return { success: false, error: 'Name is required.' }
-    if (name.length > 64) return { success: false, error: 'Name is longer than 64 characters.' }
+    const invalid = validateTemplateName(name)
+    if (invalid) return { success: false, error: invalid }
 
     let source: string | null = null
     if (args.fromId !== undefined) {
@@ -595,9 +693,14 @@ export class AgentTemplatesService {
           appProviders,
           defaultProvider: this.defaultProvider(appProviders)
         })
+        // instantiate strips the template notes, because an INSTANCE is an
+        // agent. A duplicate is another template, so they are put back.
+        const notes = readTemplateNotes(source)
         const workspace = AdfWorkspace.open(path)
         try {
           ensureWorkspaceIdentity(workspace)
+          if (notes.description) workspace.setMeta(TEMPLATE_DESCRIPTION_META_KEY, notes.description, 'readonly')
+          if (notes.warning) workspace.setMeta(TEMPLATE_WARNING_META_KEY, notes.warning, 'readonly')
           this.markReviewed(workspace.getAgentConfig())
         } finally {
           workspace.close()
@@ -648,6 +751,93 @@ export class AgentTemplatesService {
     this.deps.settings.set('defaultTemplateId', id)
     this.pushChanged()
     return { success: true }
+  }
+
+  /**
+   * Rename a template: the name inside the file and, unless the stem is
+   * unchanged, the file itself. A shipped template may be renamed like any
+   * other; it keeps its marker, so "Reset to shipped" still finds it.
+   */
+  rename(args: { id: string; name: string }): { success: boolean; id?: string; error?: string } {
+    if (!isSafeId(args?.id)) return { success: false, error: 'Unknown template.' }
+    const name = (args?.name ?? '').trim()
+    const invalid = validateTemplateName(name)
+    if (invalid) return { success: false, error: invalid }
+    const path = templateFilePath(args.id)
+    if (!existsSync(path)) return { success: false, error: `${args.id}.adf is not in the templates folder.` }
+
+    const newId = slugifyTemplateId(name)
+    const movesFile = newId !== args.id
+    if (movesFile && existsSync(templateFilePath(newId))) {
+      return { success: false, error: `${newId}.adf is already in the templates folder.` }
+    }
+
+    try {
+      const workspace = AdfWorkspace.open(path)
+      try {
+        const config = workspace.getAgentConfig()
+        config.name = name
+        workspace.setAgentConfig(config)
+        workspace.setMeta('adf_name', name, 'readonly')
+        workspace.setMeta('adf_handle', config.handle || newId, 'readonly')
+      } finally {
+        // Checkpoints the WAL, so the sidecars below hold nothing the file
+        // needs and the renamed .adf is self-contained.
+        workspace.close()
+      }
+      if (movesFile) {
+        for (const side of ['-wal', '-shm']) {
+          try { if (existsSync(`${path}${side}`)) unlinkSync(`${path}${side}`) } catch { /* none */ }
+        }
+        renameSync(path, templateFilePath(newId))
+        // Settings name templates by id, so a rename must carry them along or
+        // they silently point at nothing.
+        for (const key of ['defaultTemplateId', 'childTemplateId']) {
+          if (this.deps.settings.get(key) === args.id) this.deps.settings.set(key, newId)
+        }
+      }
+      this.pushChanged()
+      return { success: true, id: newId }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /**
+   * The template's own notes: what it is for, and a caution shown wherever it
+   * is offered. Neither is the agent's description, and neither reaches an
+   * instance. An empty string clears a field; an absent one leaves it alone.
+   */
+  setMeta(args: { id: string; description?: string; warning?: string }): { success: boolean; error?: string } {
+    if (!isSafeId(args?.id)) return { success: false, error: 'Unknown template.' }
+    const fields: Array<[string, string | undefined]> = [
+      [TEMPLATE_DESCRIPTION_META_KEY, args?.description],
+      [TEMPLATE_WARNING_META_KEY, args?.warning]
+    ]
+    for (const [, value] of fields) {
+      if (typeof value === 'string' && value.trim().length > TEMPLATE_NOTE_MAX_LENGTH) {
+        return { success: false, error: `Template notes are limited to ${TEMPLATE_NOTE_MAX_LENGTH} characters.` }
+      }
+    }
+    const path = templateFilePath(args.id)
+    if (!existsSync(path)) return { success: false, error: `${args.id}.adf is not in the templates folder.` }
+    try {
+      const workspace = AdfWorkspace.open(path)
+      try {
+        for (const [key, value] of fields) {
+          if (value === undefined) continue
+          const text = value.trim()
+          if (text) workspace.setMeta(key, text, 'readonly')
+          else workspace.deleteMeta(key)
+        }
+      } finally {
+        workspace.close()
+      }
+      this.pushChanged()
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
   }
 
   // --- contents ---
@@ -815,12 +1005,18 @@ export class AgentTemplatesService {
       // A shipped template is code, so a missing one is regenerated rather
       // than refused. A user template that is gone is gone.
       if (isShippedTemplateId(requestedId)) {
-        try {
-          this.writeShipped(requestedId)
-        } catch (err) {
-          return { success: false, code: 'template_missing', error: `Could not regenerate the "${requestedId}" template: ${err instanceof Error ? err.message : String(err)}` }
+        // Renamed rather than missing: the marker still points at a real file.
+        const marked = this.findShipped(requestedId)
+        if (marked) {
+          file = marked
+        } else {
+          try {
+            this.writeShipped(requestedId)
+          } catch (err) {
+            return { success: false, code: 'template_missing', error: `Could not regenerate the "${requestedId}" template: ${err instanceof Error ? err.message : String(err)}` }
+          }
+          file = templateFilePath(requestedId)
         }
-        file = templateFilePath(requestedId)
       } else {
         return { success: false, code: 'template_missing', error: `${requestedId}.adf is not in the templates folder any more.` }
       }
@@ -849,21 +1045,42 @@ export class AgentTemplatesService {
 
   /**
    * Host path of the template children get (`sys_create_adf`), or undefined
-   * when the owner has not opted children in. Children get config + files +
-   * local tables, never credentials or identity rows.
+   * when the owner named none, which means the code defaults. Children get
+   * config + files + local tables, never credentials or identity rows.
+   *
+   * A parent that names a template `.adf` of its own outranks this.
    */
   childTemplatePath(): string | undefined {
-    if (this.deps.settings.get('agentTemplateForChildren') !== true) return undefined
-    const id = this.defaultTemplateId()
+    const id = this.deps.settings.get('childTemplateId')
+    if (!isSafeId(id)) return undefined
     const file = templateFilePath(id)
     if (existsSync(file)) return file
+    // A shipped template is code, so a missing file is regenerated rather than
+    // quietly demoted to the defaults. A user template that is gone is gone.
     if (!isShippedTemplateId(id)) return undefined
+    const marked = this.findShipped(id)
+    if (marked) return marked
     try {
       this.writeShipped(id)
       return templateFilePath(id)
     } catch {
       return undefined
     }
+  }
+
+  /**
+   * One-time move off the boolean `agentTemplateForChildren` onto a named
+   * template. `true` meant "the default template", so that is the id it
+   * becomes; anything else meant none. The key is deleted either way and
+   * carries no settings default any more, so this never runs a second time and
+   * cannot undo a later choice.
+   */
+  private migrateChildTemplateSetting(): void {
+    const legacy = this.deps.settings.get('agentTemplateForChildren')
+    if (legacy === undefined) return
+    if (legacy === true) this.deps.settings.set('childTemplateId', this.defaultTemplateId())
+    else this.deps.settings.delete('childTemplateId')
+    this.deps.settings.delete('agentTemplateForChildren')
   }
 
   // --- legacy migration ---
@@ -981,6 +1198,38 @@ function listAdfFiles(folder: string): string[] {
       .map((f: string) => join(folder, f))
   } catch {
     return []
+  }
+}
+
+/**
+ * Name rules for a template, shared by create and rename. The name is also
+ * slugified into the file stem, so it stays to characters a filename can hold
+ * plainly.
+ */
+function validateTemplateName(name: string): string | null {
+  if (!name) return 'Name is required.'
+  if (name.length > 64) return 'Name is longer than 64 characters.'
+  if (!/^[A-Za-z0-9 _-]+$/.test(name)) {
+    return 'A template name can hold letters, digits, spaces, dashes and underscores.'
+  }
+  return null
+}
+
+/** The template's own notes, read without opening the file for writing. */
+function readTemplateNotes(filePath: string): { description?: string; warning?: string } {
+  try {
+    return AdfDatabase.peek(filePath, (db) => {
+      const rows = db
+        .prepare('SELECT key, value FROM adf_meta WHERE key IN (?, ?)')
+        .all(TEMPLATE_DESCRIPTION_META_KEY, TEMPLATE_WARNING_META_KEY) as Array<{ key: string; value: string }>
+      const meta = new Map(rows.map((r) => [r.key, r.value]))
+      return {
+        description: meta.get(TEMPLATE_DESCRIPTION_META_KEY)?.trim() || undefined,
+        warning: meta.get(TEMPLATE_WARNING_META_KEY)?.trim() || undefined
+      }
+    })
+  } catch {
+    return {}
   }
 }
 

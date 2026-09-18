@@ -10,7 +10,8 @@ import { useTemplates, useTemplatesStore } from '../../hooks/useTemplates'
 import { useAppStore } from '../../stores/app.store'
 import { AgentConfig } from '../agent/AgentConfig'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
-import { Button, IconButton, Select, SettingsGroup, SettingsRow, Textarea } from '../ui'
+import { Dialog } from '../common/Dialog'
+import { Button, IconButton, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
 
 /**
  * Settings > Agent templates.
@@ -78,6 +79,16 @@ function Tag({ tone = 'neutral', children }: { tone?: 'neutral' | 'accent' | 'wa
   )
 }
 
+/** Amber caution mark, shown beside a template's warning. */
+function WarningTriangle() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0" aria-hidden="true">
+      <path d="M12 4 2.5 20h19L12 4z" />
+      <path d="M12 10v4M12 17.2v.01" />
+    </svg>
+  )
+}
+
 function TemplateGlyph({ name, icon }: { name: string; icon?: string }) {
   return (
     <span className="flex size-7 shrink-0 items-center justify-center rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[13px]">
@@ -108,19 +119,25 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
   const [menu, setMenu] = useState<{ x: number; y: number; template: AgentTemplateSummary } | null>(null)
   const [newName, setNewName] = useState<string | null>(null)
   const [newNameError, setNewNameError] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState<{ id: string; name: string; was: string } | null>(null)
+  const [renameError, setRenameError] = useState<string | null>(null)
+  const [notes, setNotes] = useState<{ description: string; warning: string }>({ description: '', warning: '' })
+  const [metaError, setMetaError] = useState<string | null>(null)
+  const notesRef = useRef(notes)
+  const notesFor = useRef<string | null>(null)
 
-  // settings.agentTemplateForChildren — written immediately, not debounced.
-  const [forChildren, setForChildren] = useState(false)
+  // settings.childTemplateId ('' = none) — written immediately, not debounced.
+  const [childTemplateId, setChildTemplateId] = useState('')
   useEffect(() => {
     let cancelled = false
     void window.adfApi.getSettings().then((settings) => {
-      if (!cancelled) setForChildren(settings?.agentTemplateForChildren === true)
-    }).catch(() => { /* leave the checkbox off */ })
+      if (!cancelled) setChildTemplateId(settings?.childTemplateId ?? '')
+    }).catch(() => { /* leave it on None */ })
     return () => { cancelled = true }
   }, [])
-  const toggleForChildren = (enabled: boolean) => {
-    setForChildren(enabled)
-    void window.adfApi.setSettings({ agentTemplateForChildren: enabled })
+  const pickChildTemplate = (id: string) => {
+    setChildTemplateId(id)
+    void window.adfApi.setSettings({ childTemplateId: id })
   }
 
   // --- debounced writes -----------------------------------------------------
@@ -250,6 +267,24 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
     })
   }
 
+  // Template notes live in the file's meta, not in its contents, so they are
+  // written on their own and their errors are reported on their own row.
+  const setMeta = (id: string, patch: Partial<{ description: string; warning: string }>) => {
+    const next = { ...notesRef.current, ...patch }
+    notesRef.current = next
+    setNotes(next)
+    schedule('meta', () => {
+      void (async () => {
+        try {
+          const res = await window.adfApi.setTemplateMeta({ id, description: next.description, warning: next.warning })
+          setMetaError(res?.success ? null : res?.error || 'The notes could not be saved.')
+        } catch (err) {
+          setMetaError(err instanceof Error ? err.message : 'The notes could not be saved.')
+        }
+      })()
+    })
+  }
+
   const setConfig = (id: string, next: AgentConfigType) => {
     dirty.current = true
     setContents((prev) => (prev ? { ...prev, config: next } : prev))
@@ -347,8 +382,49 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
     }
   }
 
+  const submitRename = async () => {
+    if (!renaming) return
+    const name = renaming.name.trim()
+    if (!name) {
+      setRenameError('Give the template a name.')
+      return
+    }
+    if (!NAME_RULE.test(name)) {
+      setRenameError(NAME_HINT)
+      return
+    }
+    if (name === renaming.was) {
+      setRenaming(null)
+      return
+    }
+    setRenameError(null)
+    // A rename moves the file, so anything queued against the old id has to
+    // land first.
+    flushPending()
+    setBusy(true)
+    try {
+      const res = await window.adfApi.renameTemplate({ id: renaming.id, name })
+      if (!res.success) {
+        setRenameError(res.error || 'The template could not be renamed.')
+        return
+      }
+      setRenaming(null)
+      await refreshList()
+      // The id is the file stem, so a rename moves it: follow the new one.
+      if (res.id) select(res.id)
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : 'The template could not be renamed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const menuItems = (t: AgentTemplateSummary): ContextMenuItem[] => {
     const items: ContextMenuItem[] = [
+      {
+        label: 'Rename…',
+        onSelect: () => { setRenameError(null); setRenaming({ id: t.id, name: t.name, was: t.name }) },
+      },
       {
         label: 'Make default',
         disabled: t.id === defaultId,
@@ -392,6 +468,18 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
   }
 
   const selected = selectedId ? sorted.find((t) => t.id === selectedId) ?? null : null
+
+  // Notes come from the list summary, not from the contents read. Seeded once
+  // per selection, so a list refresh never overwrites what is being typed.
+  useEffect(() => {
+    const id = selected?.id ?? null
+    if (notesFor.current === id) return
+    notesFor.current = id
+    const next = { description: selected?.templateDescription ?? '', warning: selected?.warning ?? '' }
+    notesRef.current = next
+    setNotes(next)
+    setMetaError(null)
+  }, [selected])
 
   return (
     <>
@@ -440,9 +528,15 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
                         {t.id === defaultId && <Tag tone="accent">Default</Tag>}
                         {!t.reviewed && <Tag tone="warning">Not reviewed</Tag>}
                       </span>
-                      {t.description && (
+                      {(t.templateDescription ?? t.description) && (
                         <span className="mt-0.5 block truncate text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-                          {t.description}
+                          {t.templateDescription ?? t.description}
+                        </span>
+                      )}
+                      {t.warning && (
+                        <span className="mt-0.5 flex items-center gap-1 text-[12px] leading-5 text-[var(--adf-ui-warning)]">
+                          <WarningTriangle />
+                          <span className="min-w-0 truncate">{t.warning}</span>
                         </span>
                       )}
                     </span>
@@ -584,6 +678,30 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
             )}
           </SettingsGroup>
 
+          <SettingsGroup
+            title="Template notes"
+            description="Shown wherever this template is offered. Neither line is copied into agents made from it."
+          >
+            <SettingsRow label="Description" stacked>
+              <TextInput
+                aria-label="Template description"
+                spellCheck={false}
+                placeholder="What this template is for. Shown in the list and the composer chip."
+                value={notes.description}
+                onChange={(e) => setMeta(selected.id, { description: e.target.value })}
+              />
+            </SettingsRow>
+            <SettingsRow label="Warning" stacked separator error={metaError}>
+              <TextInput
+                aria-label="Template warning"
+                spellCheck={false}
+                placeholder="A caution shown in amber wherever this template is offered."
+                value={notes.warning}
+                onChange={(e) => setMeta(selected.id, { warning: e.target.value })}
+              />
+            </SettingsRow>
+          </SettingsGroup>
+
           {contents && (
             <AgentConfig
               key={selected.id}
@@ -595,18 +713,24 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
 
       <SettingsGroup title="Applies to" description="Agents you create in Studio always start from a template.">
         <SettingsRow
-          label="Agents created by other agents"
-          description="Children made with sys_create_adf start from the default template, without its credentials or identity. Off when the parent names a template agent."
+          label="Template for agents created by agents"
+          description="Agents made with sys_create_adf start from this template, without its credentials or identity. A parent that names a template .adf of its own uses that instead."
         >
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={forChildren}
-              onChange={(e) => toggleForChildren(e.target.checked)}
-              className="rounded text-blue-500"
-            />
-            <span className="text-[12px] text-[var(--adf-ui-text-muted)]">{forChildren ? 'On' : 'Off'}</span>
-          </label>
+          <Select
+            aria-label="Template for agents created by agents"
+            className="w-64"
+            value={childTemplateId}
+            onChange={(e) => pickChildTemplate(e.target.value)}
+          >
+            <option value="">None (code defaults)</option>
+            {sorted.map((t) => (
+              <option key={t.id} value={t.id}>{t.name}</option>
+            ))}
+            {/* A template that left the folder still shows, so the setting is not read as None. */}
+            {childTemplateId && !sorted.some((t) => t.id === childTemplateId) && (
+              <option value={childTemplateId}>{childTemplateId} (not in the folder)</option>
+            )}
+          </Select>
         </SettingsRow>
       </SettingsGroup>
 
@@ -634,6 +758,46 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
         items={menu ? menuItems(menu.template) : []}
         onClose={() => setMenu(null)}
       />
+
+      <Dialog
+        open={!!renaming}
+        onClose={() => { setRenaming(null); setRenameError(null) }}
+        title="Rename template"
+        lightDismiss={false}
+      >
+        <div className="space-y-3">
+          <TextInput
+            aria-label="Template name"
+            autoFocus
+            spellCheck={false}
+            placeholder="Template name"
+            value={renaming?.name ?? ''}
+            onChange={(e) => {
+              const value = e.target.value
+              setRenaming((prev) => (prev ? { ...prev, name: value } : prev))
+              setRenameError(null)
+            }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void submitRename() } }}
+          />
+          <p className="text-[11px] leading-5 text-[var(--adf-ui-text-subtle)]">
+            {NAME_HINT} This renames the file and the agent name inside it.
+          </p>
+          {renameError && <p className="text-[11px] text-[var(--adf-ui-danger)]" role="alert">{renameError}</p>}
+          <div className="flex justify-end gap-2">
+            <Button
+              onClick={() => { setRenaming(null); setRenameError(null) }}
+              variant="ghost"
+              size="compact"
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+            <Button onClick={() => void submitRename()} variant="primary" size="compact" disabled={busy}>
+              Rename
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </>
   )
 }

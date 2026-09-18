@@ -102,6 +102,8 @@ export const IPC = {
   TEMPLATE_RESET_SHIPPED: 'adf:templates:reset-shipped',
   TEMPLATE_REVEAL: 'adf:templates:reveal',
   TEMPLATE_SET_DEFAULT: 'adf:templates:set-default',
+  TEMPLATE_RENAME: 'adf:templates:rename',
+  TEMPLATE_SET_META: 'adf:templates:set-meta',
   TEMPLATE_GET_CONTENTS: 'adf:templates:get-contents',
   TEMPLATE_SET_CONFIG: 'adf:templates:set-config',
   TEMPLATE_SET_FILE: 'adf:templates:set-file',

@@ -135,9 +135,16 @@ export function TemplatePickerChip() {
 
   const ordered = [...templates].sort((a, b) => templateRank(a) - templateRank(b) || a.name.localeCompare(b.name))
 
+  // The template's own note when it has one, else the agent's description,
+  // else what picking it does. A warning follows on its own line.
+  const note = current.templateDescription
+    ?? current.description
+    ?? `New agents start from ${current.name}, with a new identity and no history.`
+  const tip = current.warning ? `${note}\n${current.warning}` : note
+
   return (
     <div className="relative">
-      <Tooltip tip={current.description ?? `New agents start from ${current.name}, with a new identity and no history.`}>
+      <Tooltip tip={tip}>
         <button
           type="button"
           onClick={() => setMenuOpen((v) => !v)}
@@ -156,7 +163,13 @@ export function TemplatePickerChip() {
         {ordered.map((t) => (
           <MenuItem key={t.id} selected={t.id === current.id} onClick={() => pick(t)}>
             <TemplateIcon />
-            <span className="min-w-0 flex-1 truncate">{t.name}</span>
+            <span className="min-w-0 truncate">{t.name}</span>
+            {t.warning && (
+              <Tooltip tip={t.warning} className="flex shrink-0 items-center">
+                <WarningTriangle />
+              </Tooltip>
+            )}
+            <span className="flex-1" />
             {t.reviewed === false && <span className="shrink-0 text-[11px] text-[var(--adf-ui-text-subtle)]">Not reviewed</span>}
             {t.id === defaultId && <span className="shrink-0 text-[11px] text-[var(--adf-ui-text-subtle)]">default</span>}
           </MenuItem>
@@ -433,6 +446,16 @@ function TemplateIcon() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-[var(--adf-ui-text-muted)]" aria-hidden>
       <rect x="3" y="3" width="18" height="18" rx="2" />
       <path d="M3 9h18M9 21V9" />
+    </svg>
+  )
+}
+
+/** Amber caution mark, shown beside a template that carries a warning. */
+function WarningTriangle() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-[var(--adf-ui-warning)]" aria-hidden>
+      <path d="M12 4 2.5 20h19L12 4z" />
+      <path d="M12 10v4M12 17.2v.01" />
     </svg>
   )
 }

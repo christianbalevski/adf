@@ -5,7 +5,6 @@ import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { resolveDefaultProvider } from '../adf/apply-default-provider'
 import { templateFilePath } from '../adf/agent-templates'
-import { DEFAULT_SHIPPED_TEMPLATE_ID } from '../../shared/constants/shipped-templates'
 import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { encrypt } from '../crypto/identity-crypto'
 import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
@@ -1540,14 +1539,13 @@ export class RuntimeService extends EventEmitter {
       return resolveDefaultProvider(providers, this.settings?.get('defaultProviderId') as string | undefined)
     }
     createAdfTool.getStudioTemplate = () => {
-      if (this.settings?.get('agentTemplateForChildren') !== true) return undefined
-      // The owner's default template is a file in <userData>/templates. The
-      // daemon never generates the shipped ones (Studio does); a missing file
-      // simply means children get the code defaults.
-      const id = this.settings.get('defaultTemplateId')
-      const file = typeof id === 'string' && id !== ''
-        ? templateFilePath(id)
-        : templateFilePath(DEFAULT_SHIPPED_TEMPLATE_ID)
+      // The template children start from is a file in <userData>/templates,
+      // named by settings.childTemplateId. No id means the code defaults. The
+      // daemon never generates the shipped ones (Studio does), so a missing
+      // file means the code defaults too.
+      const id = this.settings?.get('childTemplateId')
+      if (typeof id !== 'string' || id === '') return undefined
+      const file = templateFilePath(id)
       return existsSync(file) ? { filePath: file } : undefined
     }
   }

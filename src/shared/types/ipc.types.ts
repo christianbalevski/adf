@@ -161,8 +161,18 @@ export interface AppSettings {
    * user creates an agent from Studio. Absent/empty = code defaults.
    */
   agentTemplate?: AgentTemplate
-  /** Also apply the default template to children spawned via sys_create_adf. Default off. */
+  /**
+   * @deprecated Replaced by `childTemplateId` (migrated once: true became the
+   * default template's id, false or absent became none). Kept so old settings
+   * files still parse.
+   */
   agentTemplateForChildren?: boolean
+  /**
+   * Template agents start from when another agent creates them with
+   * sys_create_adf and does not name a template .adf of its own. Absent or
+   * '' = none (code defaults). A parent naming its own template always wins.
+   */
+  childTemplateId?: string
   /**
    * Template (id = file basename in <userData>/templates) new agents start
    * from when the composer's chip shows the default. Absent = 'standard'.
@@ -731,6 +741,15 @@ export interface AgentTemplateSummary {
   filePath: string
   /** Set when this file is one of the shipped three (adf_meta key `adf_template_shipped`). */
   shipped?: ShippedTemplateId
+  /**
+   * Template-level notes, separate from the agent's own description: what
+   * this template is for (adf_meta `adf_template_description`) and a caution
+   * shown in amber wherever the template is offered (adf_meta
+   * `adf_template_warning`), e.g. "Runs code and reaches your host without asking."
+   * Neither is copied into agents made from the template.
+   */
+  templateDescription?: string
+  warning?: string
   /**
    * false = the file came from someone else (foreign or stripped identity) and
    * the owner has not accepted it yet. Creating from it is refused until then.

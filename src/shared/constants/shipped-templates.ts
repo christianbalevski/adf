@@ -24,8 +24,17 @@ export interface ShippedTemplate {
   id: ShippedTemplateId
   /** config.name of the generated file, and what the UI shows. */
   name: string
-  /** One literal sentence; becomes config.description. */
+  /**
+   * One literal sentence about the TEMPLATE, written to adf_meta
+   * `adf_template_description`. It never becomes the agent's own description:
+   * an agent made from a template describes itself.
+   */
   description: string
+  /**
+   * A caution shown wherever the template is offered (adf_meta
+   * `adf_template_warning`). Absent for a template that grants nothing unusual.
+   */
+  warning?: string
   /** Seed README.md of the template file. States what the template grants. */
   readme: string
   /** Overrides over DEFAULT_AGENT_CONFIG. `{}` means the code defaults. */
@@ -128,6 +137,7 @@ const FULL_ACCESS: ShippedTemplate = {
   id: 'full-access',
   name: 'Full access',
   description: 'Code execution, web fetch, compute, host access, package and MCP installs and config changes, with no approval prompt.',
+  warning: 'Runs code, reaches the network and your host, and changes its own settings without asking.',
   readme: FULL_ACCESS_README,
   template: {
     tools: toolsWith(
@@ -162,3 +172,15 @@ export const DEFAULT_SHIPPED_TEMPLATE_ID: ShippedTemplateId = 'standard'
 
 /** adf_meta key stamped on a generated shipped template file; its value is the id. */
 export const SHIPPED_TEMPLATE_META_KEY = 'adf_template_shipped'
+
+/**
+ * adf_meta keys holding a template's own notes: what the template is for, and
+ * a caution shown wherever it is offered. They describe the TEMPLATE, so
+ * instantiate drops them exactly as it drops the shipped marker; a duplicate
+ * keeps them.
+ */
+export const TEMPLATE_DESCRIPTION_META_KEY = 'adf_template_description'
+export const TEMPLATE_WARNING_META_KEY = 'adf_template_warning'
+
+/** Longest either note may be. */
+export const TEMPLATE_NOTE_MAX_LENGTH = 500
