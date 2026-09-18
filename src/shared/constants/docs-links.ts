@@ -75,6 +75,7 @@ export const DOCS = {
   settings: guideUrl('settings'),
   settingsGeneral: guideUrl('settings', 'application-settings'),
   settingsSystemPrompt: guideUrl('settings', 'system-prompt'),
+  agentTemplates: guideUrl('agent-templates'),
   settingsUsage: guideUrl('settings', 'token-usage'),
   settingsIdentity: guideUrl('settings', 'identity'),
   settingsProviders: guideUrl('settings', 'providers'),

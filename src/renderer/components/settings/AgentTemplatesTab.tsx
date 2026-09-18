@@ -398,7 +398,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
       {migrated && (
         <div className="flex items-start justify-between gap-3 rounded-[var(--adf-ui-container-radius)] border border-hairline bg-[var(--adf-ui-surface)] px-4 py-3">
           <p className="text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            Your previous template was saved as {migrated.id}.
+            Your previous template was saved as {templates.find((t) => t.id === migrated.id)?.name ?? migrated.id}.
           </p>
           <Button onClick={() => void dismissMigration()} variant="ghost" size="compact" className="shrink-0">
             Dismiss

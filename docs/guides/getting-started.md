@@ -25,7 +25,7 @@ The home screen is a message box. Type what you want an agent to do and press En
 
 Every message sent from the home screen makes a new agent. To continue with one you already have, open it from the sidebar.
 
-The chips under the message box set up the agent before it exists. The leaf chip is its name: click the name to type one, or the shuffle icon for another rolled one. Any name that works as a file name is accepted. The provider chip is the model provider it starts on, listing the ones you have connected, with **Add provider…** to connect another in place. The folder chip is where its file goes. With no provider connected yet, a **Connect a provider** card sits in the middle of the screen and the provider chip reads the same; either opens the provider picker.
+The chips under the message box set up the agent before it exists. The leaf chip is its name: click the name to type one, or the shuffle icon for another rolled one. Any name that works as a file name is accepted. The **Start from** chip is the template the agent is built from, **Standard** until you pick another or make a different one the default; see [Agent Templates](agent-templates.md). The provider chip is the model provider and model it starts on, listing the ones you have connected with each one's models underneath, and **Add provider…** to connect another in place. Picking a template pre-fills the provider chip with that template's provider and model when you have that provider connected, and what the chips show when you send is what the agent starts on. The folder chip is where its file goes. With no provider connected yet, a **Connect a provider** card sits in the middle of the screen and the provider chip reads the same; either opens the provider picker.
 
 Once agents exist, a status line at the top shows how many there are, how many are running, tokens used today, and a link to the fleet map. Each part is a link: the agent count opens the fleet map, **running** (and **failing**, when it appears) unfolds a list of those agents with a **Stop** on each row, tokens opens usage in Settings, and a failing provider opens Settings → Providers.
 
@@ -49,7 +49,7 @@ Providers can also be managed ahead of time, or changed later, in Settings.
 
 1. Click the **New agent** button in the sidebar (the `+`)
 2. Choose a name for your agent (e.g., "assistant")
-3. A new `.adf` file is created with default settings and the app's default provider
+3. A new `.adf` file is created from the default template, with the app's default provider
 
 Your agent is now created and in the **idle** state by default.
 

@@ -56,7 +56,7 @@ The template new agents start from unless you pick another one.
 
 It is the code default, with nothing changed. Code execution and web fetch are
 on, container compute and host access are off, and every escalation, such as a
-config change or a shell, still asks you first.
+config change or a package install, still asks you first.
 
 Edit this file to change what every new agent starts with, or use "Reset to
 shipped" to put it back.
