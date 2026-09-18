@@ -60,6 +60,19 @@ export function useApprovalEvents() {
   // the pull's result is stale and must not overwrite it (B12).
   const hasAppliedPush = useRef(false)
 
+  // The Dock icon shows the bell's number: the pending count, nothing else.
+  // Pushed once on mount so a badge left by a previous run is corrected, then
+  // on every change of that count.
+  useEffect(() => {
+    const setBadge = approvalsBridge()?.setBadgeCount
+    if (!setBadge) return
+    const push = (count: number): void => { setBadge(count).catch(() => { /* no dock to badge */ }) }
+    push(useApprovalsStore.getState().approvals.length)
+    return useApprovalsStore.subscribe((state, prev) => {
+      if (state.approvals.length !== prev.approvals.length) push(state.approvals.length)
+    })
+  }, [])
+
   useEffect(() => {
     const api = approvalsBridge()
     if (!api?.onPendingNotificationsChanged) return

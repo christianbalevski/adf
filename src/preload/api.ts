@@ -10,6 +10,8 @@ import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 export interface AdfApi {
   // App
   getAppVersion: () => Promise<string>
+  /** Put `count` on the Dock icon; 0 clears it. Nothing is shown on Windows. */
+  setBadgeCount: (count: number) => Promise<void>
 
   // File operations
   openFile: (filePath?: string) => Promise<FileOperationResult>

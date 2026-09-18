@@ -1882,6 +1882,11 @@ export function registerAllIpcHandlers(): void {
   // by `npm version`; see RELEASING.md); in dev it's package.json directly.
   ipcMain.handle(IPC.APP_GET_VERSION, () => app.getVersion())
 
+  // Dock badge. Anything that is not a positive integer clears it.
+  ipcMain.handle(IPC.APP_SET_BADGE_COUNT, (_event, count: unknown) => {
+    app.setBadgeCount(Number.isInteger(count) && (count as number) > 0 ? (count as number) : 0)
+  })
+
   // --- File operations ---
 
   // Session resync for a fresh renderer (window reload / recreation). Main

@@ -7,6 +7,7 @@ import type { AdfApi } from './api'
 const api: AdfApi = {
   // App
   getAppVersion: () => ipcRenderer.invoke(IPC.APP_GET_VERSION),
+  setBadgeCount: (count: number) => ipcRenderer.invoke(IPC.APP_SET_BADGE_COUNT, count),
 
   // File operations
   openFile: (filePath?: string) =>

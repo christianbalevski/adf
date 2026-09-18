@@ -360,6 +360,9 @@ export const IPC = {
   APP_GET_VERSION: 'adf:app:get-version',
   APP_GET_FULLSCREEN: 'adf:app:get-fullscreen',
   APP_SET_FULLSCREEN: 'adf:app:set-fullscreen',
+  // Number on the Dock icon (macOS, Linux; no-op elsewhere). Mirrors the
+  // bell's pending count; 0 clears it.
+  APP_SET_BADGE_COUNT: 'adf:app:set-badge-count',
   APP_FULLSCREEN_CHANGED: 'adf:app:fullscreen-changed',
 
   // In-app updates (electron-updater). State is pushed main -> renderer;
