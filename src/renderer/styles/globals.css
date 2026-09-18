@@ -794,3 +794,19 @@ body.panel-resizing webview {
   from { transform: translateY(calc(-1 * var(--name-spin-travel, 112px))); }
   to { transform: translateY(0); }
 }
+
+/* --- Name chip refusal --------------------------------------------------
+   A taken or bad name shakes the chip once. Remounted per refusal (keyed),
+   so a second refusal shakes again. */
+@keyframes nameShake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px); }
+  30%, 50%, 70% { transform: translateX(-3px); }
+  40%, 60% { transform: translateX(3px); }
+}
+.name-shake {
+  animation: nameShake 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .name-shake { animation: none; }
+}

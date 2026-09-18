@@ -694,6 +694,8 @@ export interface QuickCreateResult {
   /** The generated name ("steady-fern"), also the file's stem. */
   name?: string
   error?: string
+  /** `name_taken`: the proposed name is already a file in that folder; nothing was created. */
+  code?: 'name_taken'
 }
 
 export interface FileSharePrepareResult {

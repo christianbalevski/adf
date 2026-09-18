@@ -2196,6 +2196,11 @@ export function registerAllIpcHandlers(): void {
       // rolled one. Collisions still get the " (2)" suffix below.
       const typed = typeof args?.name === 'string' ? args.name.trim() : ''
       const proposed = typed && typed.length <= 64 && isValidAgentFileName(typed) ? typed : null
+      // A proposed name that is already a file is refused, not suffixed: the
+      // person chose it, so they get to choose again.
+      if (proposed && existsSync(join(folder, `${proposed}.adf`))) {
+        return { success: false, code: 'name_taken', error: `An agent named "${proposed}" already exists in ${basename(folder)}.` }
+      }
       const name = proposed ?? generateAgentName({ taken: (n) => existsSync(join(folder, `${n}.adf`)) })
       const filePath = availableAdfPath(folder, name)
       const providerId = typeof args?.providerId === 'string' && args.providerId !== '' ? args.providerId : undefined

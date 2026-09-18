@@ -36,11 +36,13 @@ function pickOthers(list: readonly string[], avoid: string, n: number): string[]
  * is told about every roll so the composer can react after a few, and
  * `onInvalid` gets the reason a typed name was refused.
  */
-export function NameChip({ name, onChange, onSpin, onInvalid }: {
+export function NameChip({ name, onChange, onSpin, onInvalid, refused = 0 }: {
   name: string
   onChange: (name: string) => void
   onSpin: () => void
   onInvalid?: (reason: string) => void
+  /** Bumped by the owner each time this name is refused (taken, bad); the chip turns red and shakes once per bump. */
+  refused?: number
 }) {
   const dash = name.indexOf('-')
   const [adj, plant] = dash > 0 ? [name.slice(0, dash), name.slice(dash + 1)] : [name, '']
@@ -90,17 +92,24 @@ export function NameChip({ name, onChange, onSpin, onInvalid }: {
     if (!typed) { onChange(generateAgentName()); return }
     if (typed === name) return
     const problem = nameProblem(typed)
-    if (problem) { onInvalid?.(problem); return }
+    if (problem) { setBadTyped((n) => n + 1); onInvalid?.(problem); return }
     onChange(typed)
   }
 
   const travel = (SPIN_STEPS + 1) * LINE_PX
   const spinStyle = { '--name-spin-travel': `${travel}px`, '--name-spin-ms': `${SPIN_MS}ms` } as React.CSSProperties
   const shell = 'inline-flex h-6 items-center gap-0.5 rounded-full border bg-[var(--adf-ui-canvas)] pl-0.5 pr-2 text-[11.5px] font-medium text-[var(--adf-ui-text)] transition-colors'
+  // The refusal look lasts until the name changes; the shake plays once per bump.
+  const [refusedFor, setRefusedFor] = useState<{ n: number; name: string } | null>(null)
+  useEffect(() => { if (refused > 0) setRefusedFor({ n: refused, name }) }, [refused]) // eslint-disable-line react-hooks/exhaustive-deps
+  const isRefused = !!refusedFor && refusedFor.name === name
+  const [badTyped, setBadTyped] = useState(0)
+  const shakeKey = (refusedFor?.n ?? 0) * 1000 + badTyped
+  const shake = isRefused || badTyped > 0 ? 'name-shake' : ''
 
   if (editing !== null) {
     return (
-      <span className={`${shell} border-[var(--adf-ui-accent)]`}>
+      <span key={`edit-${shakeKey}`} className={`${shell} ${shake} ${isRefused ? 'border-[var(--adf-ui-danger)]' : 'border-[var(--adf-ui-accent)]'}`}>
         <ShuffleButton onClick={roll} />
         <input
           ref={inputRef}
@@ -121,7 +130,7 @@ export function NameChip({ name, onChange, onSpin, onInvalid }: {
   }
 
   return (
-    <span className={`${shell} border-[var(--adf-ui-border)] hover:border-[var(--adf-ui-accent)]`}>
+    <span key={`show-${shakeKey}`} className={`${shell} ${shake} ${isRefused ? 'border-[var(--adf-ui-danger)] text-[var(--adf-ui-danger)]' : 'border-[var(--adf-ui-border)] hover:border-[var(--adf-ui-accent)]'}`}>
       <ShuffleButton onClick={roll} />
       <button
         type="button"

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { useAppStore } from '../../stores/app.store'
+import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { pickSuggestions } from './suggestions'
 import { SuggestionMarquee } from './SuggestionMarquee'
 import { FolderPickerChip, ProviderPickerChip } from './HomePickers'
@@ -72,12 +73,36 @@ export function HomeComposer() {
     }
     for (const [at, line] of SPIN_LINES) say(at, line)
   }, [])
-  // A typed name that is not a file name is refused; the caption says why.
-  const onInvalidName = useCallback((reason: string) => {
-    setHint(reason)
-    if (hintTimer.current) clearTimeout(hintTimer.current)
-    hintTimer.current = setTimeout(() => setHint(null), 5000)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // A refused name (bad characters, or already a file in the folder) turns
+  // the chip red, shakes it, and puts the reason in red under the box. The
+  // count bumps per refusal so a repeat refusal shakes again.
+  const [refused, setRefused] = useState(0)
+  const refuseName = useCallback((reason: string) => {
+    setError(reason)
+    setRefused((n) => n + 1)
   }, [])
+  // The folder the file will land in, for the taken-name check on commit.
+  // Only tracked folders can be checked here; main checks again on send.
+  const filesByDir = useTrackedDirsStore((s) => s.filesByDir)
+  const [defaultFolder, setDefaultFolder] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    window.adfApi.getDefaultAgentsFolder().then((r) => { if (!cancelled) setDefaultFolder(r.path) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+  const targetFolder = homeFolder ?? defaultFolder
+  const nameTaken = useCallback((candidate: string): boolean => {
+    if (!targetFolder) return false
+    const want = `${candidate}.adf`.toLowerCase()
+    return (filesByDir[targetFolder] ?? []).some((e) => !e.isDirectory && e.fileName.toLowerCase() === want)
+  }, [filesByDir, targetFolder])
+  const onNameChange = useCallback((next: string) => {
+    setHomeName(next)
+    setError(null)
+    if (nameTaken(next)) refuseName(`An agent named "${next}" already exists in ${targetFolder?.split('/').pop() ?? 'that folder'}.`)
+  }, [nameTaken, refuseName, setHomeName, targetFolder])
   // The draft lives in the store so leaving home and coming back keeps it.
   const text = useAppStore((s) => s.homeDraft)
   const setText = useAppStore((s) => s.setHomeDraft)
@@ -92,8 +117,6 @@ export function HomeComposer() {
     if (next.length > 0) setFiles([...files, ...next])
   }
   const removeFile = (i: number) => setFiles(files.filter((_, j) => j !== i))
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [suggestionsOn, setSuggestionsOn] = useState(loadSuggestionsOn)
   const toggleSuggestions = () => {
     const next = !suggestionsOn
@@ -132,7 +155,8 @@ export function HomeComposer() {
     try {
       const result = await createQuickAgent(message, { providerId: providerId ?? undefined, folder: homeFolder ?? undefined, name: homeName ?? undefined, files: files.length > 0 ? files : undefined })
       if (!result.success) {
-        setError(result.error ?? 'Could not create the agent')
+        if (result.code === 'name_taken') refuseName(result.error ?? 'That name is taken.')
+        else setError(result.error ?? 'Could not create the agent')
         return
       }
       setText('')
@@ -151,7 +175,7 @@ export function HomeComposer() {
     } finally {
       setBusy(false)
     }
-  }, [busy, createQuickAgent, files, homeFolder, homeName, providerId, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setShowMeshGraph, setText, text])
+  }, [busy, createQuickAgent, files, homeFolder, homeName, providerId, refuseName, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setShowMeshGraph, setText, text])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -234,7 +258,9 @@ export function HomeComposer() {
                 <path d="M9 3.25v11.5M3.25 9h11.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
               </svg>
             </button>
-            {name && <NameChip name={name} onChange={setHomeName} onSpin={onSpin} onInvalid={onInvalidName} />}
+            {/* Bad characters: the chip shakes on its own and keeps the old
+                name; only the reason goes red below. Taken names go red too. */}
+            {name && <NameChip name={name} onChange={onNameChange} onSpin={onSpin} onInvalid={setError} refused={refused} />}
             <ProviderPickerChip />
             <FolderPickerChip />
           </div>
