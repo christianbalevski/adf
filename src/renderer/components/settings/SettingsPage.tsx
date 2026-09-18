@@ -1369,6 +1369,15 @@ export function SettingsPage() {
 
   useEffect(() => {
     contentScrollRef.current?.scrollTo({ top: 0 })
+    // A deep link may name a group inside the tab (e.g. home's token count
+    // → Usage). Scroll there once the tab's content has painted.
+    const anchor = useAppStore.getState().consumePendingSettingsAnchor()
+    if (!anchor) return
+    const frame = requestAnimationFrame(() => {
+      const target = contentScrollRef.current?.querySelector<HTMLElement>(`[data-settings-anchor="${anchor}"]`)
+      target?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    })
+    return () => cancelAnimationFrame(frame)
   }, [activeTab])
 
   useEffect(() => {
@@ -1774,9 +1783,11 @@ export function SettingsPage() {
           </SettingsGroup>
 
           {/* Token Usage */}
-          <SettingsGroup title="Usage" description="Review token totals recorded by this Studio." docs={DOCS.settingsUsage}>
-            <div className="px-4 pb-4"><TokenUsageSection /></div>
-          </SettingsGroup>
+          <div data-settings-anchor="usage" className="scroll-mt-4">
+            <SettingsGroup title="Usage" description="Review token totals recorded by this Studio." docs={DOCS.settingsUsage}>
+              <div className="px-4 pb-4"><TokenUsageSection /></div>
+            </SettingsGroup>
+          </div>
 
           <div className="flex justify-center pb-4">
             <Button

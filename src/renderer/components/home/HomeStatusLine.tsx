@@ -110,7 +110,7 @@ export function HomeStatusLine({ data }: { data: DashboardData }) {
         )}
         <Dot />
         <Segment loading={loading.quick}>
-          <Link onClick={() => openSettingsAt('general')} label="Open usage in Settings">
+          <Link onClick={() => openSettingsAt('general', 'usage')} label="Open usage in Settings">
             <strong className="font-semibold text-[var(--adf-ui-text)]">{formatTokens(todayTokens)}</strong> tokens today
           </Link>
         </Segment>

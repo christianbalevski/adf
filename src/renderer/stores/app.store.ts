@@ -122,6 +122,8 @@ export interface AppState {
    * once on mount and clears it.
    */
   pendingSettingsSection: SettingsSection | null
+  /** Optional `data-settings-anchor` inside that section to scroll into view once it renders. */
+  pendingSettingsAnchor: string | null
   rightPanel: RightPanel
   agentSubTab: AgentSubTab
   /** Global, persisted: which slot the Loops chat panel is mounted in. */
@@ -201,9 +203,10 @@ export interface AppState {
    * Open SettingsPage and jump to a specific tab on mount.
    * Used by home dashboard tile clicks.
    */
-  openSettingsAt: (section: SettingsSection) => void
+  openSettingsAt: (section: SettingsSection, anchor?: string) => void
   /** Cleared by SettingsPage after it consumes the pending section. */
   consumePendingSettingsSection: () => SettingsSection | null
+  consumePendingSettingsAnchor: () => string | null
   setRightPanel: (panel: RightPanel) => void
   setAgentSubTab: (tab: AgentSubTab) => void
   /**
@@ -314,6 +317,7 @@ export const selectCanPromoteChat = (s: AppState): boolean =>
 export const useAppStore = create<AppState>((set) => ({
   showSettings: false,
   pendingSettingsSection: null,
+  pendingSettingsAnchor: null,
   rightPanel: 'loop',
   agentSubTab: 'timers',
   chatPlacement: loadChatPlacement(),
@@ -357,8 +361,13 @@ export const useAppStore = create<AppState>((set) => ({
     showSettings: show,
     ...(show ? { showMeshGraph: false } : {})
   }),
-  openSettingsAt: (section) =>
-    set({ showSettings: true, showMeshGraph: false, pendingSettingsSection: section }),
+  openSettingsAt: (section, anchor) =>
+    set({ showSettings: true, showMeshGraph: false, pendingSettingsSection: section, pendingSettingsAnchor: anchor ?? null }),
+  consumePendingSettingsAnchor: () => {
+    const current = useAppStore.getState().pendingSettingsAnchor
+    if (current) set({ pendingSettingsAnchor: null })
+    return current
+  },
   consumePendingSettingsSection: () => {
     const current = useAppStore.getState().pendingSettingsSection
     if (current) set({ pendingSettingsSection: null })
