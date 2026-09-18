@@ -88,11 +88,9 @@ export function HomeStatusLine({ data }: { data: DashboardData }) {
           </Link>
         </Segment>
         <Dot />
-        {/* "5 agents · 0 running" reads as five running at a glance; spell
-            the zero out so the two numbers cannot blur together. */}
         <Segment>
           {running === 0
-            ? 'none running'
+            ? <><strong className="font-semibold text-[var(--adf-ui-text)]">0</strong> running</>
             : (
               <Link onClick={() => toggle('running')} pressed={detail === 'running'} label="Show the running agents">
                 <strong className="font-semibold text-[var(--adf-ui-text)]">{running}</strong> running
