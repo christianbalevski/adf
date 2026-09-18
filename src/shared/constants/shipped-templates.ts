@@ -88,12 +88,13 @@ you to turn any of the above back on.
 const FULL_ACCESS_README = `# Full access
 
 An agent that runs code, fetches the web, uses a container and the host machine,
-installs packages and MCP servers, and changes its own config, without asking
-you first.
+installs packages and MCP servers, changes its own config and creates other
+agents, without asking you first.
 
 On in this template, with no approval prompt: \`sys_code\`, \`sys_lambda\`,
-\`sys_fetch\`, \`compute_exec\`, \`npm_install\`, \`mcp_install\` and
-\`sys_update_config\`. Container compute is enabled and host access is granted.
+\`sys_fetch\`, \`compute_exec\`, \`npm_install\`, \`mcp_install\`,
+\`sys_update_config\` and \`sys_create_adf\`. Container compute is enabled and
+host access is granted.
 
 The guard block is unchanged: \`security.allow_local_fetch\` and stream binding
 are locked in code for every agent, so this template does not grant them.
@@ -136,7 +137,7 @@ const SANDBOXED: ShippedTemplate = {
 const FULL_ACCESS: ShippedTemplate = {
   id: 'full-access',
   name: 'Full access',
-  description: 'Code execution, web fetch, compute, host access, package and MCP installs and config changes, with no approval prompt.',
+  description: 'Code execution, web fetch, compute, host access, package and MCP installs, config changes and creating agents, with no approval prompt.',
   warning: 'Runs code, reaches the network and your host, and changes its own settings without asking.',
   readme: FULL_ACCESS_README,
   template: {
@@ -147,7 +148,8 @@ const FULL_ACCESS: ShippedTemplate = {
         sys_fetch: { enabled: true, visible: true, restricted: false },
         compute_exec: { enabled: true, visible: true, restricted: false },
         mcp_install: { enabled: true, visible: true, restricted: false },
-        sys_update_config: { enabled: true, visible: true, restricted: false }
+        sys_update_config: { enabled: true, visible: true, restricted: false },
+        sys_create_adf: { enabled: true, visible: true, restricted: false }
       },
       [{ name: 'npm_install', enabled: true, visible: true, restricted: false }]
     ),

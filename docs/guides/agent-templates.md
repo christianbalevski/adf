@@ -22,7 +22,7 @@ Studio writes these three files the first time it lists the folder, and writes b
 
 **Sandboxed** is an agent that can read and write its own files, talk to you, and message other agents, and nothing else. Off in this template: code execution (`sys_code`, `sys_lambda`), web fetch (`sys_fetch`), package installs (`npm_install`), MCP server installs (`mcp_install`), container execution (`compute_exec`), container compute and host access. The escalations that stay on still ask you first, and the agent can still ask you to turn any of the above back on.
 
-**Full access** is an agent that runs code, fetches the web, uses a container and the host machine, installs packages and MCP servers, and changes its own config, without asking you first. On with no approval prompt: `sys_code`, `sys_lambda`, `sys_fetch`, `compute_exec`, `npm_install`, `mcp_install` and `sys_update_config`. Container compute is enabled and host access is granted. Start agents from this template only for work you would run yourself.
+**Full access** is an agent that runs code, fetches the web, uses a container and the host machine, installs packages and MCP servers, changes its own config and creates other agents, without asking you first. On with no approval prompt: `sys_code`, `sys_lambda`, `sys_fetch`, `compute_exec`, `npm_install`, `mcp_install`, `sys_update_config` and `sys_create_adf`. Container compute is enabled and host access is granted. Start agents from this template only for work you would run yourself.
 
 The guard block is unchanged in all three. `security.allow_local_fetch` and stream binding are locked in code for every agent, so no template can pre-grant them. See [Settings > Security Guard & Locked Fields](settings.md#security-guard--locked-fields).
 
@@ -87,7 +87,7 @@ Sending from the home screen with an unreviewed template creates nothing and ope
 
 ## Agents created by other agents
 
-Settings > Agent templates has one toggle, **Agents created by other agents**. With it on, children made with `sys_create_adf` start from the default template. They get its config, its files and its local tables, and never its credentials or identity rows, so an agent cannot gain credentials by making a child. The toggle does not apply when the parent names a template file of its own in the `template` parameter, described in [Tools > sys_create_adf](tools.md#sys_create_adf).
+Settings > Agent templates has a dropdown, **Template for agents created by agents**, with a **None (code defaults)** option. With a template chosen, children made with `sys_create_adf` start from it. They get its config, its files and its local tables, and never its credentials or identity rows, so an agent cannot gain credentials by making a child. The choice does not apply when the parent names a template file of its own in the `template` parameter, described in [Tools > sys_create_adf](tools.md#sys_create_adf).
 
 ## The old Settings template
 
