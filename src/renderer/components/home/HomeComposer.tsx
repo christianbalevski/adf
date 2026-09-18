@@ -72,6 +72,12 @@ export function HomeComposer() {
     }
     for (const [at, line] of SPIN_LINES) say(at, line)
   }, [])
+  // A typed name that is not a file name is refused; the caption says why.
+  const onInvalidName = useCallback((reason: string) => {
+    setHint(reason)
+    if (hintTimer.current) clearTimeout(hintTimer.current)
+    hintTimer.current = setTimeout(() => setHint(null), 5000)
+  }, [])
   // The draft lives in the store so leaving home and coming back keeps it.
   const text = useAppStore((s) => s.homeDraft)
   const setText = useAppStore((s) => s.setHomeDraft)
@@ -228,7 +234,7 @@ export function HomeComposer() {
                 <path d="M9 3.25v11.5M3.25 9h11.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
               </svg>
             </button>
-            {name && <NameChip name={name} onChange={setHomeName} onSpin={onSpin} />}
+            {name && <NameChip name={name} onChange={setHomeName} onSpin={onSpin} onInvalid={onInvalidName} />}
             <ProviderPickerChip />
             <FolderPickerChip />
           </div>

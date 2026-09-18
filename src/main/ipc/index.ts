@@ -2191,9 +2191,11 @@ export function registerAllIpcHandlers(): void {
         }
         folder = wanted
       }
-      // The home chip proposes a name; anything else falls back to a fresh
-      // one. Same shape the generator makes, so a file name is always safe.
-      const proposed = typeof args?.name === 'string' && /^[a-z]+-[a-z]+$/.test(args.name) ? args.name : null
+      // The home chip proposes a name, rolled or typed; it only has to be a
+      // file name (same rule as rename). Anything else falls back to a fresh
+      // rolled one. Collisions still get the " (2)" suffix below.
+      const typed = typeof args?.name === 'string' ? args.name.trim() : ''
+      const proposed = typed && typed.length <= 64 && isValidAgentFileName(typed) ? typed : null
       const name = proposed ?? generateAgentName({ taken: (n) => existsSync(join(folder, `${n}.adf`)) })
       const filePath = availableAdfPath(folder, name)
       const providerId = typeof args?.providerId === 'string' && args.providerId !== '' ? args.providerId : undefined

@@ -25,9 +25,9 @@ The home screen is a message box. Type what you want an agent to do and press En
 
 Every message sent from the home screen makes a new agent. To continue with one you already have, open it from the sidebar.
 
-The chips under the message box set up the agent before it exists. The leaf chip is its name; click it for another. The provider chip is the model provider it starts on, listing the ones you have connected, with **Add provider…** to connect another in place. The folder chip is where its file goes. With no provider connected yet, a **Connect a provider** card sits in the middle of the screen and the provider chip reads the same; either opens the provider picker.
+The chips under the message box set up the agent before it exists. The leaf chip is its name: click the name to type one, or the shuffle icon for another rolled one. Any name that works as a file name is accepted. The provider chip is the model provider it starts on, listing the ones you have connected, with **Add provider…** to connect another in place. The folder chip is where its file goes. With no provider connected yet, a **Connect a provider** card sits in the middle of the screen and the provider chip reads the same; either opens the provider picker.
 
-Once agents exist, a status line at the top shows how many there are, how many are running, tokens used today, and a link to the fleet map.
+Once agents exist, a status line at the top shows how many there are, how many are running, tokens used today, and a link to the fleet map. Each part is a link: the agent count opens the fleet map, **running** (and **failing**, when it appears) unfolds a list of those agents with a **Stop** on each row, tokens opens usage in Settings, and a failing provider opens Settings → Providers.
 
 The sidebar's `+` creates a blank agent under a name you choose. Its folder button opens a menu: **Open agent…** for one file, **Track folder…** for a whole folder of them. Right-click an agent's row for **Rename…**, which renames the agent and its file together. Right-click a folder's row to rescan it, reveal it on disk, or **Untrack folder…**: after you confirm, every agent running from that folder is stopped, then the folder and its subfolders leave the sidebar. Nothing is deleted from disk.
 
