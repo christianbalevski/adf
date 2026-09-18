@@ -25,6 +25,9 @@
     "bench": "RUN_BENCH=1 NODE_ENV=production node scripts/rebuild-for-node.mjs && RUN_BENCH=1 NODE_ENV=production vitest run tests/perf/stress-harness.test.ts --reporter=verbose",
     "daemon": "node scripts/rebuild-for-node.mjs && tsx src/main/daemon/index.ts",
     "adf": "tsx src/main/cli/index.ts",
+    "registry:index": "node scripts/rebuild-for-node.mjs && node scripts/registry-index.mjs",
+    "registry:check": "node scripts/rebuild-for-node.mjs && node scripts/registry-index.mjs --check",
+    "registry:new": "node scripts/rebuild-for-node.mjs && npx tsx scripts/registry-new-agent.ts",
     "stress:runtime": "node scripts/stress-runtime.mjs",
     "postinstall": "electron-rebuild -f -o better-sqlite3"
   },

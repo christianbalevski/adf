@@ -4,6 +4,7 @@ import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type Pen
 import { useDocumentStore } from '../../stores/document.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
+import { startForegroundAgent } from '../../utils/start-agent'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
@@ -64,6 +65,18 @@ interface PendingAttachment {
   native: boolean
   referenceText?: string
   contentBlock?: ContentBlock
+}
+
+/** The blocks one send carries: the text, then every attachment the model can take natively. */
+function buildContentBlocks(message: string, items: PendingAttachment[]): ContentBlock[] {
+  const nativeAttachments = items.filter((item) => item.native && item.contentBlock)
+  const blocks: ContentBlock[] = []
+  if (message) blocks.push({ type: 'text', text: message })
+  else if (nativeAttachments.length > 0) blocks.push({ type: 'text', text: ATTACHMENT_ONLY_TEXT })
+  for (const item of nativeAttachments) {
+    if (item.contentBlock) blocks.push(item.contentBlock)
+  }
+  return blocks
 }
 
 /** Copy-to-clipboard button for the error inspector modal header. */
@@ -1430,16 +1443,10 @@ function LoopStream({ loop }: { loop: string }) {
     window.adfApi?.invokeAgent(msg.text, filePath ?? undefined, msg.content, loop)
   }, [messageQueue, removeFromQueue, addLogEntry, filePath, loop])
 
-  const buildSubmitContent = useCallback((message: string): ContentBlock[] => {
-    const nativeAttachments = attachments.filter((item) => item.native && item.contentBlock)
-    const blocks: ContentBlock[] = []
-    if (message) blocks.push({ type: 'text', text: message })
-    else if (nativeAttachments.length > 0) blocks.push({ type: 'text', text: ATTACHMENT_ONLY_TEXT })
-    for (const item of nativeAttachments) {
-      if (item.contentBlock) blocks.push(item.contentBlock)
-    }
-    return blocks
-  }, [attachments])
+  const buildSubmitContent = useCallback(
+    (message: string, items: PendingAttachment[] = attachments): ContentBlock[] => buildContentBlocks(message, items),
+    [attachments]
+  )
 
   const imagePreviewUrls = useMemo(
     () => attachments
@@ -1481,27 +1488,11 @@ function LoopStream({ loop }: { loop: string }) {
     // If the AGENT (not just this loop) is off, start it first then invoke.
     // Side loops run inside the same process as main, so the gate is agent-level.
     if (agentState === 'off') {
-      // Review gate: check if agent needs review before starting
-      try {
-        const review = await window.adfApi?.checkAgentReview()
-        if (review?.needsReview) {
-          useAppStore.getState().setAgentReviewDialog(true, review.configSummary)
-          return
-        }
-      } catch { /* fall through */ }
-
-      if (targetFilePath) useAppStore.getState().addStartingFilePath(targetFilePath)
-      try {
-        const result = await window.adfApi?.startAgent(targetFilePath ?? undefined, true)
-        // Only update UI if we're still viewing this agent
-        const stillViewing = useDocumentStore.getState().filePath === targetFilePath
-        if (stillViewing && result?.success) {
-          setState(toDisplayState(result.agentState ?? 'idle'))
-          setSessionId(result.sessionId ?? null)
-        }
-      } finally {
-        if (targetFilePath) useAppStore.getState().removeStartingFilePath(targetFilePath)
-      }
+      // Review gate, provider-at-need, store mirroring: one shared path.
+      // A start that did not happen (review pending, provider sheet
+      // cancelled, real error) leaves the message in the log unsent.
+      const outcome = await startForegroundAgent({ hasUserMessage: true, announce: false })
+      if (!outcome.success) return
     }
 
     // Update activity state if still viewing, then always send the invoke
@@ -1512,6 +1503,39 @@ function LoopStream({ loop }: { loop: string }) {
 
     window.adfApi?.invokeAgent(message, targetFilePath ?? undefined, content, loop)
   }
+
+  // A message typed into the home composer arrives here once the agent it
+  // created is the open one and its config has loaded. It goes through
+  // sendUserMessage like anything typed into this box: review gate, provider
+  // sheet, the lot. Main loop only, taken exactly once per file.
+  const pendingFirstMessage = useAppStore((s) => s.pendingFirstMessage)
+  useEffect(() => {
+    if (!isMainLoop || !filePath || !config || starting) return
+    if (!pendingFirstMessage || pendingFirstMessage.filePath !== filePath) return
+    const pending = useAppStore.getState().takePendingFirstMessage(filePath)
+    if (!pending) return
+    // Files attached on the home screen are uploaded into this agent now that
+    // it exists, exactly as if they had been dropped on this composer, then
+    // the message goes out with them.
+    void (async () => {
+      const files = pending.files ?? []
+      let text = pending.text
+      let items: PendingAttachment[] = []
+      if (files.length > 0) {
+        setUploadingFiles(true)
+        try {
+          items = (await Promise.all(files.map((f) => buildAttachment(f)))).filter((i): i is PendingAttachment => i != null)
+        } finally {
+          setUploadingFiles(false)
+        }
+        const references = items.map((i) => i.referenceText).filter((r): r is string => !!r)
+        if (references.length > 0) text = text ? `${text}\n\n${references.join('\n')}` : references.join('\n')
+      }
+      const previews = items.filter((i) => i.kind === 'image').map((i) => adfFileUrl(i.path))
+      await sendUserMessage(text, buildContentBlocks(text, items), previews)
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMainLoop, filePath, config, starting, pendingFirstMessage])
 
   /**
    * Run one palette row.
@@ -1856,6 +1880,15 @@ function LoopStream({ loop }: { loop: string }) {
 
       {/* Log */}
       <div className="relative flex-1 min-h-0">
+      {/* Same ambient wash as the home screen, in this loop's colour: the pane
+          reads as a continuation of home, and an inner loop's tab tints it. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-80"
+        style={{
+          background: `radial-gradient(80% 70% at 50% 0%, color-mix(in srgb, ${loopStyle.wash} 16%, transparent), transparent 100%)`
+        }}
+      />
       <div ref={scrollRef} onScroll={handleScroll} className="absolute inset-0 overflow-y-auto">
       <div className={columnClass}>
         {displayItems.length === 0 && !isActive && !starting && (

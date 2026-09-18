@@ -380,6 +380,30 @@ export function useAdfFile() {
     }
   }, [setShowSettings, resetAgent, resetDocument, loadFileContents, setFilePath])
 
+  /**
+   * The home composer's create: a generated name in the agents folder, no
+   * dialog. `firstMessage` is parked in the app store before the file
+   * becomes the open one, so the loop panel finds it on mount and sends it.
+   */
+  const createQuickAgent = useCallback(async (firstMessage?: string, options?: { providerId?: string; modelId?: string; templateId?: string; folder?: string; name?: string; files?: File[] }) => {
+    beginAgentSwitch()
+    try {
+      const { files, ...createOptions } = options ?? {}
+      const result = await window.adfApi.createQuickAgent(createOptions)
+      if (result.success && result.filePath) {
+        setShowSettings(false)
+        resetAgent()
+        if (firstMessage) useAppStore.getState().setPendingFirstMessage({ filePath: result.filePath, text: firstMessage, files })
+        setFilePath(result.filePath)
+        useAppStore.getState().resetAgentReview()
+        await loadFileContents()
+      }
+      return result
+    } finally {
+      endAgentSwitch()
+    }
+  }, [setShowSettings, resetAgent, setFilePath, loadFileContents])
+
   const createFile = useCallback(async (name: string) => {
     // Swaps main's workspace exactly like openFile does — same guard.
     beginAgentSwitch()
@@ -416,5 +440,5 @@ export function useAdfFile() {
     useEditorTabsStore.getState().reset()
   }, [resetDocument, resetAgent])
 
-  return { openFile, createFile, saveFile, closeFile, loadFileContents, completeFileOpen }
+  return { openFile, createFile, createQuickAgent, saveFile, closeFile, loadFileContents, completeFileOpen }
 }

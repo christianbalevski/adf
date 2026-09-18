@@ -9,7 +9,7 @@ import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { ChannelsPanel } from '../adapters/ChannelsPanel'
 import { ProvidersPanel } from '../providers/ProvidersPanel'
 import { AboutTab } from './AboutTab'
-import { NewAgentTemplateTab } from './NewAgentTemplateTab'
+import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
 import { ContainerDestroyDialog, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
@@ -56,7 +56,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
     label: 'Agent runtime',
     items: [
       { id: 'agents', label: 'Prompts', description: 'Applies to every agent now.', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
-      { id: 'template', label: 'Agent template', description: 'Applies to agents you create from now on.', keywords: 'defaults template model tools limits new agent files readme mind', docs: DOCS.settingsSystemPrompt },
+      { id: 'template', label: 'Agent templates', description: 'What new agents start from.', keywords: 'defaults template templates model tools limits new agent files readme mind sandboxed full access', docs: DOCS.agentTemplates },
       { id: 'providers', label: 'Providers', description: 'Models, keys, and subscriptions', keywords: 'anthropic openai chatgpt grok xai openrouter gemini groq ollama lm studio local models api keys', docs: DOCS.settingsProviders },
       { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },
       { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools', docs: DOCS.settingsMcp },
@@ -1371,6 +1371,64 @@ export function SettingsPage() {
     contentScrollRef.current?.scrollTo({ top: 0 })
   }, [activeTab])
 
+  // A deep link may name a group inside the tab (home's token count opens
+  // Usage). The group may not exist until the tab has painted, and sections
+  // above it can grow as their data arrives, so try across frames and settle
+  // once more shortly after.
+  const pendingAnchor = useAppStore((s) => s.pendingSettingsAnchor)
+  useEffect(() => {
+    if (!pendingAnchor) return
+    const scrollTo = (): boolean => {
+      const main = contentScrollRef.current
+      const target = main?.querySelector<HTMLElement>(`[data-settings-anchor="${pendingAnchor}"]`)
+      if (!main || !target) return false
+      const top = target.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop - 12
+      main.scrollTo({ top: Math.max(0, top) })
+      return true
+    }
+    let tries = 0
+    let frame = 0
+    let observer: ResizeObserver | undefined
+    let stop: ReturnType<typeof setTimeout> | undefined
+    const main = contentScrollRef.current
+    // Consuming the anchor re-runs this effect (it is a dependency), so it
+    // happens only in release(): consuming earlier would tear the observer
+    // down the moment it was attached.
+    const release = () => {
+      observer?.disconnect()
+      observer = undefined
+      if (stop) clearTimeout(stop)
+      main?.removeEventListener('wheel', release)
+      main?.removeEventListener('touchstart', release)
+      useAppStore.getState().consumePendingSettingsAnchor()
+    }
+    const attempt = () => {
+      if (scrollTo()) {
+        // Groups above the target grow as their data arrives, which drags the
+        // target away or leaves the first scroll clamped short. Follow the
+        // content for a moment, unless the user takes over the scroll.
+        const content = main?.firstElementChild
+        if (main && content && typeof ResizeObserver !== 'undefined') {
+          observer = new ResizeObserver(() => { scrollTo() })
+          observer.observe(content)
+          main.addEventListener('wheel', release, { passive: true })
+          main.addEventListener('touchstart', release, { passive: true })
+          stop = setTimeout(release, 2500)
+        } else {
+          release()
+        }
+        return
+      }
+      if (++tries < 30) frame = requestAnimationFrame(attempt)
+      else release()
+    }
+    frame = requestAnimationFrame(attempt)
+    return () => {
+      cancelAnimationFrame(frame)
+      if (observer || stop) release()
+    }
+  }, [pendingAnchor, activeTab])
+
   useEffect(() => {
     window.adfApi?.getSettings().then((settings) => {
       const loadedProviders = (settings.providers as ProviderConfig[]) ?? []
@@ -1774,9 +1832,11 @@ export function SettingsPage() {
           </SettingsGroup>
 
           {/* Token Usage */}
-          <SettingsGroup title="Usage" description="Review token totals recorded by this Studio." docs={DOCS.settingsUsage}>
-            <div className="px-4 pb-4"><TokenUsageSection /></div>
-          </SettingsGroup>
+          <div data-settings-anchor="usage" className="scroll-mt-4">
+            <SettingsGroup title="Usage" description="Review token totals recorded by this Studio." docs={DOCS.settingsUsage}>
+              <div className="px-4 pb-4"><TokenUsageSection /></div>
+            </SettingsGroup>
+          </div>
 
           <div className="flex justify-center pb-4">
             <Button
@@ -1891,9 +1951,9 @@ export function SettingsPage() {
           </SettingsGroup>
           </>}
 
-          {/* Agent template tab */}
+          {/* Agent templates tab */}
           {activeTab === 'template' && (
-            <NewAgentTemplateTab
+            <AgentTemplatesTab
               providers={providers}
               defaultProviderId={defaultProviderId}
               onDefaultProviderChange={setDefaultProviderId}

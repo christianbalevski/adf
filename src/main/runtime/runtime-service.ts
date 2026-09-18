@@ -4,7 +4,7 @@ import { basename, join } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { resolveDefaultProvider } from '../adf/apply-default-provider'
-import { agentTemplateFilesDir } from '../adf/agent-template-files'
+import { templateFilePath } from '../adf/agent-templates'
 import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { encrypt } from '../crypto/identity-crypto'
 import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
@@ -31,7 +31,6 @@ import type {
   TimerSchedule,
   TriggerConfig,
 } from '../../shared/types/adf-v02.types'
-import type { AgentTemplate } from '../../shared/types/adf-v02.types'
 import type { AdapterInstanceConfig, AdapterState } from '../../shared/types/channel-adapter.types'
 import type { AgentConfigSummary, AgentExecutionEvent, ProviderConfig } from '../../shared/types/ipc.types'
 import type { AgentState } from './agent-executor'
@@ -1526,7 +1525,7 @@ export class RuntimeService extends EventEmitter {
       onAutostartChild?: (filePath: string) => Promise<boolean>
       onChildCreated?: (filePath: string, config: AgentConfig) => void
       getDefaultProvider?: () => ProviderConfig | undefined
-      getStudioTemplate?: () => { template: AgentTemplate; filesDir: string } | undefined
+      getStudioTemplate?: () => { filePath: string } | undefined
     } | undefined
     if (!createAdfTool) return
 
@@ -1540,13 +1539,14 @@ export class RuntimeService extends EventEmitter {
       return resolveDefaultProvider(providers, this.settings?.get('defaultProviderId') as string | undefined)
     }
     createAdfTool.getStudioTemplate = () => {
-      if (this.settings?.get('agentTemplateForChildren') !== true) return undefined
-      const template = (this.settings.get('agentTemplate') as AgentTemplate | undefined) ?? {}
-      // Headless (Electron-as-Node) has no `app`; without a files dir the
-      // config template still applies, only uploaded files are skipped.
-      let filesDir = ''
-      try { filesDir = agentTemplateFilesDir() } catch { /* no electron app */ }
-      return { template, filesDir }
+      // The template children start from is a file in <userData>/templates,
+      // named by settings.childTemplateId. No id means the code defaults. The
+      // daemon never generates the shipped ones (Studio does), so a missing
+      // file means the code defaults too.
+      const id = this.settings?.get('childTemplateId')
+      if (typeof id !== 'string' || id === '') return undefined
+      const file = templateFilePath(id)
+      return existsSync(file) ? { filePath: file } : undefined
     }
   }
 

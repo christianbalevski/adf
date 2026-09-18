@@ -8,6 +8,8 @@ import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { toDisplayState } from '../../hooks/useAgent'
+import { startForegroundAgent } from '../../utils/start-agent'
+import { useShareDrag } from '../../hooks/useShareDrag'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
 import { CloneDialog } from '../common/CloneDialog'
 import { Dialog } from '../common/Dialog'
@@ -140,15 +142,18 @@ async function toggleAgent(filePath: string, isActive: boolean, isRunning: boole
         await window.adfApi.stopAgent()
         useAgentStore.getState().setState('off')
       } else {
-        const result = await window.adfApi.startAgent()
-        if (result.success) {
-          useAgentStore.getState().setState(toDisplayState(result.agentState ?? 'idle'))
-        }
+        await startForegroundAgent({ skipReviewGate: true })
       }
     } else if (isRunning) {
       await window.adfApi.stopBackgroundAgent(filePath)
     } else {
-      await window.adfApi.startBackgroundAgent(filePath)
+      let result = await window.adfApi.startBackgroundAgent(filePath)
+      // Same provider-at-need as the foreground path: connect one, retry once.
+      if (!result.success && (result.code === 'provider_missing' || result.code === 'provider_unconfigured')) {
+        const connected = await app.requestProviderSetup(result.code, filePath)
+        if (connected) result = await window.adfApi.startBackgroundAgent(filePath)
+      }
+      if (!result.success && result.error) console.warn('[Sidebar] Background start failed:', result.error)
     }
   } finally {
     if (isRunning) app.removeStoppingFilePath(filePath)
@@ -187,7 +192,7 @@ export function Sidebar() {
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
   const filePath = useDocumentStore((s) => s.filePath)
   const { openFile, createFile, closeFile } = useAdfFile()
-  const { loadDirectories, rescanDirectory } = useTrackedDirs()
+  const { loadDirectories, rescanDirectory, removeDirectory, addDirectory } = useTrackedDirs()
   const directories = useTrackedDirsStore((s) => s.directories)
   const filesByDir = useTrackedDirsStore((s) => s.filesByDir)
 
@@ -261,9 +266,77 @@ export function Sidebar() {
     if (result?.success) setShowMeshGraph(false)
   }, [openFile, setShowMeshGraph])
 
+  // The folder button: open one agent file, or track a whole folder. A
+  // small menu under the button; the File menu carries the same two.
+  const [folderMenu, setFolderMenu] = useState<{ x: number; y: number } | null>(null)
+  const openFolderMenu = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    setFolderMenu({ x: r.left, y: r.bottom + 4 })
+  }, [])
+  const closeFolderMenu = useCallback(() => setFolderMenu(null), [])
+  const folderMenuItems = useMemo<ContextMenuItem[]>(() => [
+    { label: 'Open agent…', onSelect: () => { void handleOpenFromPicker() } },
+    { label: 'Track folder…', onSelect: () => { addDirectory().catch((err) => console.error('[Sidebar] Track folder failed:', err)) } },
+  ], [addDirectory, handleOpenFromPicker])
+
   // Row context menu + the dialogs it opens. One instance of each lives here,
   // keyed by the target file, instead of one per row.
   const [menu, setMenu] = useState<(RowTarget & { x: number; y: number }) | null>(null)
+  // Right-click on a tracked folder's header row: its own short menu. This
+  // is where a folder stops being tracked; nothing on the home screen lists
+  // the folders any more.
+  const [dirMenu, setDirMenu] = useState<{ dirPath: string; x: number; y: number } | null>(null)
+  const [untrackTarget, setUntrackTarget] = useState<string | null>(null)
+  const [renameTarget, setRenameTarget] = useState<RowTarget | null>(null)
+  const updateFileEntry = useTrackedDirsStore((s) => s.updateFileEntry)
+
+  // Every agent file under the folder about to be untracked, and which of
+  // them run. An untracked folder has no rows, so nothing may keep running
+  // from it: the confirm stops them all before the folder goes.
+  const untrackFiles = useMemo(() => {
+    if (!untrackTarget) return [] as TrackedDirEntry[]
+    const out: TrackedDirEntry[] = []
+    const walk = (entries: TrackedDirEntry[]) => {
+      for (const e of entries) {
+        if (e.isDirectory) walk(e.children ?? [])
+        else out.push(e)
+      }
+    }
+    for (const d of directories) {
+      if (d === untrackTarget || d.startsWith(`${untrackTarget}/`)) walk(filesByDir[d] ?? [])
+    }
+    return out
+  }, [untrackTarget, directories, filesByDir])
+  const untrackRunning = useMemo(
+    () => untrackFiles.filter((f) => (f.filePath === filePath ? foregroundAgentState !== 'off' : backgroundAgentMap.has(f.filePath))),
+    [untrackFiles, filePath, foregroundAgentState, backgroundAgentMap]
+  )
+  const handleUntrack = useCallback(async () => {
+    const root = untrackTarget
+    if (!root) return
+    await stopAgentsSequentially(untrackFiles, filePath, backgroundAgentMap)
+    // The open file is one of the rows about to vanish; close it so the
+    // editor cannot start it again from a folder the sidebar no longer shows.
+    if (filePath && (filePath === root || filePath.startsWith(`${root}/`))) await closeFile()
+    // Tracked roots nested inside this one go with it.
+    for (const d of directories) {
+      if (d === root || d.startsWith(`${root}/`)) await removeDirectory(d)
+    }
+    setUntrackTarget(null)
+  }, [untrackTarget, untrackFiles, filePath, backgroundAgentMap, closeFile, directories, removeDirectory])
+
+  const handleRenamed = useCallback(async (target: RowTarget, newPath: string, name: string) => {
+    setRenameTarget(null)
+    if (target.file.filePath === filePath) {
+      useDocumentStore.getState().setFilePath(newPath)
+      const cfg = useAgentStore.getState().config
+      if (cfg) useAgentStore.getState().setConfig({ ...cfg, name })
+    }
+    // A running agent keeps its old path until it stops (deferred rename);
+    // the row shows the new name meanwhile.
+    updateFileEntry(newPath, { agentName: name })
+    await rescanDirectory(target.dirPath)
+  }, [filePath, rescanDirectory, updateFileEntry])
   const [cloneTarget, setCloneTarget] = useState<RowTarget | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<RowTarget | null>(null)
   const startingFilePaths = useAppStore((s) => s.startingFilePaths)
@@ -275,6 +348,23 @@ export function Sidebar() {
     setMenu({ file, dirPath, x: e.clientX, y: e.clientY })
   }, [])
   const closeMenu = useCallback(() => setMenu(null), [])
+  const handleDirContextMenu = useCallback((e: React.MouseEvent, dirPath: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setMenu(null)
+    setDirMenu({ dirPath, x: e.clientX, y: e.clientY })
+  }, [])
+  const closeDirMenu = useCallback(() => setDirMenu(null), [])
+
+  const dirMenuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!dirMenu) return []
+    const { dirPath } = dirMenu
+    return [
+      { label: 'Rescan', onSelect: () => { void rescanDirectory(dirPath) } },
+      { label: REVEAL_IN_FOLDER_LABEL, onSelect: () => { window.adfApi.revealInFolder(dirPath).catch(() => {}) } },
+      { label: 'Untrack folder…', separatorBefore: true, onSelect: () => setUntrackTarget(dirPath) }
+    ]
+  }, [dirMenu, rescanDirectory])
 
   const menuItems = useMemo<ContextMenuItem[]>(() => {
     if (!menu) return []
@@ -296,7 +386,9 @@ export function Sidebar() {
           }
         }
       },
+      { label: 'Rename…', onSelect: () => setRenameTarget({ file, dirPath }) },
       { label: 'Clone…', onSelect: () => setCloneTarget({ file, dirPath }) },
+      { label: 'Share…', onSelect: () => useAppStore.getState().openShareDialog(fp) },
       {
         label: REVEAL_IN_FOLDER_LABEL,
         onSelect: () => { window.adfApi.revealInFolder(fp).catch(() => {}) }
@@ -381,9 +473,11 @@ export function Sidebar() {
           </svg>
         </button>
         <button
-          onClick={handleOpenFromPicker}
-          title="Open agent"
-          aria-label="Open agent"
+          onClick={openFolderMenu}
+          title="Open agent or track folder"
+          aria-label="Open agent or track folder"
+          aria-haspopup="menu"
+          aria-expanded={folderMenu !== null}
           className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -431,6 +525,7 @@ export function Sidebar() {
                   foregroundAgentState={foregroundAgentState}
                   onOpenFile={handleOpenFile}
                   onFileContextMenu={handleFileContextMenu}
+                  onDirContextMenu={handleDirContextMenu}
                   forceExpanded={searching}
                 />
               </div>
@@ -453,6 +548,27 @@ export function Sidebar() {
         items={menuItems}
         onClose={closeMenu}
       />
+      <ContextMenu
+        position={dirMenu ? { x: dirMenu.x, y: dirMenu.y } : null}
+        items={dirMenuItems}
+        onClose={closeDirMenu}
+      />
+      <ContextMenu position={folderMenu} items={folderMenuItems} onClose={closeFolderMenu} />
+      {untrackTarget && (
+        <UntrackFolderDialog
+          dirPath={untrackTarget}
+          runningCount={untrackRunning.length}
+          onClose={() => setUntrackTarget(null)}
+          onConfirm={handleUntrack}
+        />
+      )}
+      {renameTarget && (
+        <RenameAgentDialog
+          target={renameTarget}
+          onClose={() => setRenameTarget(null)}
+          onRenamed={handleRenamed}
+        />
+      )}
       {cloneTarget && (
         <CloneDialog
           open
@@ -555,6 +671,7 @@ const DirectorySection = memo(function DirectorySection({
   foregroundAgentState,
   onOpenFile,
   onFileContextMenu,
+  onDirContextMenu,
   forceExpanded = false
 }: {
   dirPath: string
@@ -566,6 +683,7 @@ const DirectorySection = memo(function DirectorySection({
   foregroundAgentState: string
   onOpenFile: (filePath: string) => void
   onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
+  onDirContextMenu: (e: React.MouseEvent, dirPath: string) => void
   /** Show children regardless of the user's collapse state (used while searching). */
   forceExpanded?: boolean
 }) {
@@ -622,6 +740,7 @@ const DirectorySection = memo(function DirectorySection({
         tabIndex={0}
         onClick={() => setExpanded((p) => !p)}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((p) => !p) } }}
+        onContextMenu={(e) => onDirContextMenu(e, dirPath)}
         className="group w-full px-3 py-1 text-xs text-left flex items-center gap-1.5 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer select-none"
       >
         <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
@@ -894,6 +1013,9 @@ const AgentFileRow = memo(function AgentFileRow({
     : (status?.sendMode ?? file.sendMode)
 
   const showToggle = true
+  // Drag the row out of the app: a consistent snapshot of the .adf lands
+  // wherever it is dropped (Finder, a message, another Studio).
+  const shareDrag = useShareDrag(file.filePath)
 
   const handleToggle = useCallback(
     async (e: React.MouseEvent) => {
@@ -917,6 +1039,7 @@ const AgentFileRow = memo(function AgentFileRow({
 
   return (
     <div
+      {...shareDrag}
       onContextMenu={onContextMenu}
       className={`group flex items-center gap-1.5 py-1 text-xs cursor-pointer ${
         isActive
@@ -964,6 +1087,10 @@ const AgentFileRow = memo(function AgentFileRow({
           disabled={toggling || isStarting}
           role="switch"
           aria-checked={isRunning}
+          // Pressing and sliding the switch is a toggle gesture, not a share
+          // drag — keep the row draggable but not this control.
+          draggable={false}
+          onDragStart={(e) => { e.preventDefault(); e.stopPropagation() }}
           className={`relative shrink-0 w-7 h-4 rounded-full transition-[background-color,opacity] ${
             isRunning
               ? (isAutonomous ? 'bg-amber-400' : 'bg-green-400')
@@ -1035,6 +1162,130 @@ const StatusDot = memo(function StatusDot({ state, starting, stopping }: { state
  * or background) and unlinks the file plus its WAL; a failure is shown inline
  * and the dialog stays open.
  */
+/**
+ * Untracking a folder stops every agent running from it first: a folder
+ * with no rows has no Stop toggle, so nothing may keep running out of one.
+ * The dialog says exactly that, and that nothing on disk changes.
+ */
+function UntrackFolderDialog({ dirPath, runningCount, onClose, onConfirm }: {
+  dirPath: string
+  runningCount: number
+  onClose: () => void
+  onConfirm: () => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const name = dirPath.split('/').pop() ?? dirPath
+
+  const handleConfirm = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await onConfirm()
+    } catch (err) {
+      setError(String(err))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open onClose={onClose} title="Untrack folder?" preventClose={busy}>
+      <p className="text-sm text-[var(--adf-ui-text-muted)]">
+        {runningCount > 0 ? (
+          <>
+            Stops the <span className="font-medium text-[var(--adf-ui-text)]">{runningCount}</span> {runningCount === 1 ? 'agent' : 'agents'} running
+            in <span className="font-medium text-[var(--adf-ui-text)]">{name}</span>, then removes the folder and its subfolders from the sidebar.
+          </>
+        ) : (
+          <>
+            Removes <span className="font-medium text-[var(--adf-ui-text)]">{name}</span> and its subfolders from the sidebar.
+          </>
+        )}{' '}
+        Nothing is deleted from disk. Track it again from the folder button.
+      </p>
+      {error && (
+        <p className="mt-3 text-xs text-[var(--adf-ui-danger)]" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="mt-5 flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button variant={runningCount > 0 ? 'danger' : 'primary'} onClick={handleConfirm} loading={busy} autoFocus>
+          {runningCount > 0 ? 'Stop and untrack' : 'Untrack'}
+        </Button>
+      </div>
+    </Dialog>
+  )
+}
+
+/**
+ * Rename from the row: the agent's name and its file name move together,
+ * through the same IPC the Agent tab uses. A running agent keeps its file
+ * name until it stops; the row shows the new name right away.
+ */
+function RenameAgentDialog({ target, onClose, onRenamed }: {
+  target: RowTarget
+  onClose: () => void
+  onRenamed: (target: RowTarget, newPath: string, name: string) => void
+}) {
+  const initial = target.file.agentName ?? target.file.fileName.replace(/\.adf$/i, '')
+  const [name, setName] = useState(initial)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const trimmed = name.trim()
+    if (!trimmed || trimmed === initial) { onClose(); return }
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await window.adfApi.renameFile(target.file.filePath, trimmed)
+      if (result.success && result.filePath) {
+        onRenamed(target, result.filePath, trimmed)
+        return
+      }
+      setError(result.error ?? 'Rename failed')
+    } catch (err) {
+      setError(String(err))
+    }
+    setBusy(false)
+  }
+
+  return (
+    <Dialog open onClose={onClose} title="Rename agent" preventClose={busy} lightDismiss={false}>
+      <form onSubmit={submit}>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          autoFocus
+          onFocus={(e) => e.currentTarget.select()}
+          aria-label="Agent name"
+          className="w-full rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-2.5 py-1.5 text-sm text-[var(--adf-ui-text)] outline-none focus:border-[var(--adf-ui-accent)]"
+        />
+        <p className="mt-2 text-xs text-[var(--adf-ui-text-muted)]">
+          The file is renamed to match. If the agent is running, the file keeps its old name until it stops.
+        </p>
+        {error && (
+          <p className="mt-3 text-xs text-[var(--adf-ui-danger)]" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="secondary" type="button" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" loading={busy}>
+            Rename
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  )
+}
+
 function DeleteAgentDialog({
   target,
   onClose,

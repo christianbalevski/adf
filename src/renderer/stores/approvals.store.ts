@@ -18,6 +18,7 @@ interface NotificationsBridge {
     feedback?: string
   ) => Promise<{ success: boolean; error?: string }>
   onPendingNotificationsChanged?: (callback: (snapshot: NotificationsSnapshot) => void) => () => void
+  setBadgeCount?: (count: number) => Promise<void>
 }
 
 export function approvalsBridge(): NotificationsBridge | undefined {

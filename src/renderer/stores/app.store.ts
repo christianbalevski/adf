@@ -105,6 +105,15 @@ function saveChatWidth(width: ChatWidth): void {
 /** Settings tab key, kept in sync with SettingsPage's `activeTab` union. */
 export type SettingsSection = 'general' | 'identity' | 'agents' | 'template' | 'providers' | 'packages' | 'mcps' | 'skills' | 'channels' | 'networking' | 'compute' | 'about'
 
+export type ProviderSetupReason = 'provider_missing' | 'provider_unconfigured'
+
+export interface ProviderSetupRequest {
+  reason: ProviderSetupReason
+  /** The agent whose start was blocked (null when unknown). */
+  filePath: string | null
+  resolve: (connected: boolean) => void
+}
+
 export interface AppState {
   showSettings: boolean
   /**
@@ -113,6 +122,8 @@ export interface AppState {
    * once on mount and clears it.
    */
   pendingSettingsSection: SettingsSection | null
+  /** Optional `data-settings-anchor` inside that section to scroll into view once it renders. */
+  pendingSettingsAnchor: string | null
   rightPanel: RightPanel
   agentSubTab: AgentSubTab
   /** Global, persisted: which slot the Loops chat panel is mounted in. */
@@ -146,6 +157,41 @@ export interface AppState {
   agentNeedsReview: boolean
   /** Post-accept warning: the .adf couldn't be moved out of a temp folder. */
   fileMoveWarning: string | null
+  /**
+   * A start that failed for want of a provider is parked here while the
+   * provider setup sheet is up. `resolve(true)` means a provider was
+   * connected and applied to the agent — the caller retries the start.
+   */
+  providerSetupRequest: ProviderSetupRequest | null
+  /** Share dialog: null = closed; otherwise the file to feature, or '' for the whole list. */
+  shareDialogFilePath: string | null
+  /**
+   * A message typed into the home composer, waiting for the agent it created
+   * to mount. The loop panel takes it (once, by file path) and sends it
+   * through its ordinary send path, so the first message goes through the
+   * same start gates as any other.
+   */
+  pendingFirstMessage: { filePath: string; text: string; files?: File[] } | null
+  /** Provider chip picked on the home strip for the next new agent; null = the app default. Session only. */
+  homeProviderId: string | null
+  /** Folder chip picked on the home composer for the next new agent; null = the agents folder. Session only. */
+  homeFolder: string | null
+  /** Unsent text in the home composer, kept across navigation. Session only. */
+  homeDraft: string
+  /** Files attached in the home composer, waiting for the agent that will receive them. Session only. */
+  homeFiles: File[]
+  /** Name the next new agent will get; null until the composer draws one. Session only. */
+  homeName: string | null
+  /** Template chip on the home composer; null = the default template (settings.defaultTemplateId). Session only. */
+  homeTemplateId: string | null
+  /** Model chosen in the provider chip; null = the provider's default model. Session only. */
+  homeModelId: string | null
+  /**
+   * A template awaiting the owner's review (foreign or stripped file dropped into the
+   * templates folder). AgentReviewDialog renders it in template mode; `onDone` gets
+   * true when the owner accepted, false on cancel.
+   */
+  templateReview: { id: string; summary: AgentConfigSummary; onDone?: (accepted: boolean) => void } | null
   showLogsPanel: boolean
   logsAutoRefresh: boolean
   logsPanelHeight: number
@@ -157,9 +203,10 @@ export interface AppState {
    * Open SettingsPage and jump to a specific tab on mount.
    * Used by home dashboard tile clicks.
    */
-  openSettingsAt: (section: SettingsSection) => void
+  openSettingsAt: (section: SettingsSection, anchor?: string) => void
   /** Cleared by SettingsPage after it consumes the pending section. */
   consumePendingSettingsSection: () => SettingsSection | null
+  consumePendingSettingsAnchor: () => string | null
   setRightPanel: (panel: RightPanel) => void
   setAgentSubTab: (tab: AgentSubTab) => void
   /**
@@ -200,6 +247,23 @@ export interface AppState {
   setFileMoveWarning: (msg: string | null) => void
   /** Clear all review state — call when a file opens or closes. */
   resetAgentReview: () => void
+  /** Open the provider setup sheet; resolves when it closes (true = connected). */
+  requestProviderSetup: (reason: ProviderSetupReason, filePath: string | null) => Promise<boolean>
+  resolveProviderSetup: (connected: boolean) => void
+  openShareDialog: (filePath?: string) => void
+  setPendingFirstMessage: (pending: { filePath: string; text: string; files?: File[] } | null) => void
+  /** Claim the pending message for this file; null if it belongs to another file or was taken. */
+  takePendingFirstMessage: (filePath: string) => { filePath: string; text: string } | null
+  setHomeProviderId: (id: string | null) => void
+  setHomeFolder: (folder: string | null) => void
+  setHomeDraft: (text: string) => void
+  setHomeFiles: (files: File[]) => void
+  setHomeName: (name: string | null) => void
+  setHomeTemplateId: (id: string | null) => void
+  setHomeModelId: (id: string | null) => void
+  openTemplateReview: (id: string, summary: AgentConfigSummary, onDone?: (accepted: boolean) => void) => void
+  closeTemplateReview: (accepted: boolean) => void
+  closeShareDialog: () => void
   toggleLogsPanel: () => void
   setLogsAutoRefresh: (on: boolean) => void
   setLogsPanelHeight: (h: number) => void
@@ -253,6 +317,7 @@ export const selectCanPromoteChat = (s: AppState): boolean =>
 export const useAppStore = create<AppState>((set) => ({
   showSettings: false,
   pendingSettingsSection: null,
+  pendingSettingsAnchor: null,
   rightPanel: 'loop',
   agentSubTab: 'timers',
   chatPlacement: loadChatPlacement(),
@@ -275,6 +340,17 @@ export const useAppStore = create<AppState>((set) => ({
   agentReviewSummary: null,
   agentNeedsReview: false,
   fileMoveWarning: null,
+  providerSetupRequest: null,
+  shareDialogFilePath: null,
+  pendingFirstMessage: null,
+  homeProviderId: null,
+  homeFolder: null,
+  homeDraft: '',
+  homeFiles: [],
+  homeName: null,
+  homeTemplateId: null,
+  homeModelId: null,
+  templateReview: null,
   showLogsPanel: false,
   logsAutoRefresh: false,
   logsPanelHeight: 200,
@@ -285,8 +361,13 @@ export const useAppStore = create<AppState>((set) => ({
     showSettings: show,
     ...(show ? { showMeshGraph: false } : {})
   }),
-  openSettingsAt: (section) =>
-    set({ showSettings: true, showMeshGraph: false, pendingSettingsSection: section }),
+  openSettingsAt: (section, anchor) =>
+    set({ showSettings: true, showMeshGraph: false, pendingSettingsSection: section, pendingSettingsAnchor: anchor ?? null }),
+  consumePendingSettingsAnchor: () => {
+    const current = useAppStore.getState().pendingSettingsAnchor
+    if (current) set({ pendingSettingsAnchor: null })
+    return current
+  },
   consumePendingSettingsSection: () => {
     const current = useAppStore.getState().pendingSettingsSection
     if (current) set({ pendingSettingsSection: null })
@@ -378,6 +459,42 @@ export const useAppStore = create<AppState>((set) => ({
   setFileMoveWarning: (msg) => set({ fileMoveWarning: msg }),
   resetAgentReview: () =>
     set({ agentReviewDialogOpen: false, agentReviewSummary: null, agentNeedsReview: false, fileMoveWarning: null }),
+  requestProviderSetup: (reason, filePath) =>
+    new Promise<boolean>((resolve) => {
+      set((s) => {
+        // A second request while one is up loses: resolve it as cancelled
+        // rather than stacking two sheets.
+        s.providerSetupRequest?.resolve(false)
+        return { providerSetupRequest: { reason, filePath, resolve } }
+      })
+    }),
+  resolveProviderSetup: (connected) =>
+    set((s) => {
+      s.providerSetupRequest?.resolve(connected)
+      return { providerSetupRequest: null }
+    }),
+  openShareDialog: (filePath) => set({ shareDialogFilePath: filePath ?? '' }),
+  closeShareDialog: () => set({ shareDialogFilePath: null }),
+  setPendingFirstMessage: (pending) => set({ pendingFirstMessage: pending }),
+  setHomeProviderId: (id) => set({ homeProviderId: id }),
+  setHomeFolder: (folder) => set({ homeFolder: folder }),
+  setHomeDraft: (text) => set({ homeDraft: text }),
+  setHomeFiles: (files) => set({ homeFiles: files }),
+  setHomeName: (name) => set({ homeName: name }),
+  setHomeTemplateId: (id) => set({ homeTemplateId: id }),
+  setHomeModelId: (id) => set({ homeModelId: id }),
+  openTemplateReview: (id, summary, onDone) => set({ templateReview: { id, summary, onDone } }),
+  closeTemplateReview: (accepted) => {
+    const current = useAppStore.getState().templateReview
+    set({ templateReview: null })
+    current?.onDone?.(accepted)
+  },
+  takePendingFirstMessage: (filePath) => {
+    const pending = useAppStore.getState().pendingFirstMessage
+    if (!pending || pending.filePath !== filePath) return null
+    set({ pendingFirstMessage: null })
+    return pending
+  },
   toggleLogsPanel: () => set((s) => ({ showLogsPanel: !s.showLogsPanel })),
   setLogsAutoRefresh: (on) => set({ logsAutoRefresh: on }),
   setLogsPanelHeight: (h) => set({ logsPanelHeight: h }),

@@ -1,6 +1,6 @@
 ---
 type: guide
-description: First-run walkthrough — set up a provider, create your first agent, learn the interface, and have a conversation
+description: First run — type a message to make your first agent, connect a provider when it first runs, learn the interface, send the file on
 see_also:
   - core-concepts.md — the ideas behind what you just built
   - creating-agents.md — the full per-agent configuration surface
@@ -8,18 +8,32 @@ see_also:
 
 # Getting Started
 
-This guide walks you through creating your first ADF agent and having a conversation with it.
+This guide walks you through your first agent: making one from a message, running it, and sending it somewhere.
 
 ## Prerequisites
 
-Before you begin, make sure you have:
-
 1. **ADF Studio** installed on your machine
-2. **An LLM provider** — ADF Studio supports Anthropic, OpenAI, OpenAI-compatible, and ChatGPT Subscription providers
+2. Either an LLM API key (Anthropic, OpenAI, OpenRouter, or any OpenAI-compatible endpoint) or a ChatGPT / Grok subscription to sign in with. You are asked for it the first time you run an agent, not before.
+
+## First run
+
+The home screen is a message box. Type what you want an agent to do and press Enter. The `+` on the left, or a drop onto the box, attaches files; they are uploaded into the new agent with your first message.
+
+1. A new agent file is created in your agents folder (`Documents/adf-agents` by default) under a generated name like `steady-fern`, and opens with its loop in the center.
+2. Your message is the agent's first message. It goes through the normal start: if no model provider is connected yet, the **Connect a provider** sheet opens first. Sign in with ChatGPT or Grok, or pick a provider and paste an API key, choose a model, and **Save and start**. The key is saved in app settings, not in the agent's file.
+3. The agent answers in the loop. Keep talking to it there; it configures itself from the conversation.
+
+Every message sent from the home screen makes a new agent. To continue with one you already have, open it from the sidebar.
+
+The chips under the message box set up the agent before it exists. The leaf chip is its name: click the name to type one, or the shuffle icon for another rolled one. Any name that works as a file name is accepted. The **Start from** chip is the template the agent is built from, **Standard** until you pick another or make a different one the default; see [Agent Templates](agent-templates.md). The provider chip is the model provider and model it starts on, listing the ones you have connected with each one's models underneath, and **Add provider…** to connect another in place. Picking a template pre-fills the provider chip with that template's provider and model when you have that provider connected, and what the chips show when you send is what the agent starts on. The folder chip is where its file goes. With no provider connected yet, a **Connect a provider** card sits in the middle of the screen and the provider chip reads the same; either opens the provider picker.
+
+Once agents exist, a status line at the top shows how many there are, how many are running, tokens used today, and a link to the fleet map. Each part is a link: the agent count opens the fleet map, **running** (and **failing**, when it appears) unfolds a list of those agents with a **Stop** on each row, tokens opens usage in Settings, and a failing provider opens Settings → Providers.
+
+The sidebar's `+` creates a blank agent under a name you choose. Its folder button opens a menu: **Open agent…** for one file, **Track folder…** for a whole folder of them. Right-click an agent's row for **Rename…**, which renames the agent and its file together. Right-click a folder's row to rescan it, reveal it on disk, or **Untrack folder…**: after you confirm, every agent running from that folder is stopped, then the folder and its subfolders leave the sidebar. Nothing is deleted from disk.
 
 ## Setting Up a Provider
 
-Before creating an agent, you need to configure at least one LLM provider.
+Providers can also be managed ahead of time, or changed later, in Settings.
 
 1. Open **Settings** (gear icon in the sidebar, or `Cmd/Ctrl + ,`)
 2. Go to the **Providers** section
@@ -31,11 +45,11 @@ Before creating an agent, you need to configure at least one LLM provider.
 
 ![Settings → Providers listing the connected providers, each row with the service logo, name, and default model.](../assets/screenshots/settings-add-provider.png)
 
-## Creating Your First Agent
+## Creating a Blank Agent
 
-1. Click the **New .adf** button in the sidebar
+1. Click the **New agent** button in the sidebar (the `+`)
 2. Choose a name for your agent (e.g., "assistant")
-3. A new `.adf` file is created with default settings
+3. A new `.adf` file is created from the default template, with the app's default provider
 
 Your agent is now created and in the **idle** state by default.
 
@@ -86,6 +100,17 @@ Click the **Agent** tab to access configuration. Key settings include:
 - **Triggers** — What events wake the agent
 
 See [Creating and Configuring Agents](creating-agents.md) for full details.
+
+## Sharing an Agent
+
+An agent is one file, so sending it is moving the file. Drag an agent row out of the sidebar onto your desktop, into a message, or onto another computer running ADF Studio. Right-click the row and choose **Share…** for a dialog with the same drag chips and a **Save copy…** button.
+
+The copy the app hands over is a consistent snapshot, taken even while the agent runs, with the identity stripped.
+
+- **In the file:** config and agent instructions; README, memory and files; loop history; lambdas, skills and tool settings; provider names and base URLs (no keys).
+- **Not in the file:** identity keys (the receiver claims a new identity); provider keys and sign-ins, which stay in app settings; credentials sealed to you — unless you set a share password, in which case they travel sealed and open only with it.
+
+Whoever opens the file gets the same review dialog you did.
 
 ## What's Next?
 

@@ -379,6 +379,10 @@ When the adf_shell tool is enabled, the **Tool Best Practices** section is repla
 
 Most individual tools (fs_read, fs_list, db_query, etc.) are self-explanatory from their schema descriptions and do not need additional system prompt guidance. The tool instruction sections focus on cross-cutting concerns that cannot be conveyed through tool schemas alone.
 
+## Agent Templates
+
+**Settings > Agent templates** lists the `.adf` files new agents are made from, edits the selected one in place, and sets which of them is the default. See [Agent Templates](agent-templates.md) for the three templates Studio ships, what a new agent carries over from one, and how to use a template someone else sent you.
+
 ## Auto-Save
 
 All settings changes are automatically saved with a debounced delay. There is no manual Save/Cancel workflow — changes take effect shortly after you stop editing. A close button dismisses the settings panel.

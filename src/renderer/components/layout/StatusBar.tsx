@@ -87,6 +87,10 @@ export function StatusBar() {
 
   return (
     <div className="h-7 bg-surface-0 border-t border-hairline flex items-center px-3 gap-4 text-xs text-neutral-500 dark:text-neutral-400">
+      {/* Everything left of the version describes the open agent. Home has none,
+          so the group is absent there rather than a row of blank labels. */}
+      {filePath && (
+        <>
       {config && (
         <>
           <span className="flex items-center gap-1.5 min-w-0 max-w-44" title="The open agent — everything left of the version number describes it">
@@ -159,6 +163,8 @@ export function StatusBar() {
         </svg>
         Tasks
       </button>
+        </>
+      )}
       <span className="ml-auto" />
       <UpdateBadge />
       <span

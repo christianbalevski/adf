@@ -116,6 +116,14 @@ export const ADF_LATEST_SCHEMA_VERSION = 30
  */
 const CLEAN_CLOSE_META_KEY = 'adf_clean_close'
 
+/**
+ * Wall-clock ceiling for one online backup (AdfDatabase.snapshotTo). SQLite
+ * restarts the page transfer whenever a foreign writer commits, so a busy
+ * agent could keep a backup running indefinitely; the deadline turns that
+ * into a plain, actionable error instead of a hang.
+ */
+const SNAPSHOT_DEADLINE_MS = 30_000
+
 /** Render a meta counter value: integers stay integral (a token total must not
  *  become "32834693.0"), fractions lose float noise (0.1+0.2 → "0.3"). */
 function formatMetaNumber(n: number): string {
@@ -2141,6 +2149,15 @@ export class AdfDatabase {
   }
 
   /**
+   * peekReadonly for callers outside this class. The templates folder listing
+   * reads config/meta/counts out of every `.adf` it finds on each refresh, and
+   * must not open (or migrate) them or litter sidecars beside them.
+   */
+  static peek<T>(filePath: string, fn: (db: Database.Database) => T): T {
+    return AdfDatabase.peekReadonly(filePath, fn)
+  }
+
+  /**
    * Run `fn` against a short-lived READONLY connection, then reap any WAL
    * sidecars the open itself created. Empirical (better-sqlite3 12.x): a
    * readonly connection to a WAL-mode database CREATES -wal/-shm when they
@@ -2164,6 +2181,173 @@ export class AdfDatabase {
         // probe makes this a no-op if someone opened the file meanwhile.
         try { AdfDatabase.reapSidecars(filePath) } catch { /* best-effort */ }
       }
+    }
+  }
+
+  /**
+   * Write a consistent, self-contained copy of `filePath` to `destPath` —
+   * the file may be open and being written by this process (or another)
+   * at the time. Uses the online backup API from a short-lived READONLY
+   * connection: a WAL reader sees one snapshot, and SQLite restarts the
+   * transfer if a writer lands mid-copy, so the result is never torn the
+   * way a plain fs.copyFile of a live .adf can be. The copy is then switched
+   * to rollback-journal mode: the backup preserves the source's WAL header,
+   * and a WAL-mode file grows -wal/-shm the moment anyone so much as peeks
+   * at it read-only — a dropped file must stay one file. The receiving app
+   * puts it back in WAL mode on open. Sidecars the readonly open of the
+   * SOURCE itself created are reaped, as peekReadonly does.
+   */
+  static async snapshotTo(filePath: string, destPath: string, deadlineMs = SNAPSHOT_DEADLINE_MS): Promise<void> {
+    const hadSidecars = existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)
+    const deadline = Date.now() + deadlineMs
+    let db: Database.Database | null = null
+    try {
+      db = new Database(filePath, { readonly: true, fileMustExist: true })
+      // SQLite RESTARTS the transfer every time a writer lands mid-copy, so a
+      // continuously-written agent would loop forever. The progress callback
+      // runs once per transfer step while pages remain; throwing from it
+      // closes the backup handle and rejects the promise.
+      await db.backup(destPath, {
+        progress: () => {
+          if (Date.now() > deadline) {
+            throw new Error(
+              'Snapshot timed out: the agent is being written to continuously — stop it and try again'
+            )
+          }
+          return undefined // keep the default transfer rate
+        }
+      })
+    } finally {
+      try { db?.close() } catch { /* ignore */ }
+      if (!hadSidecars) {
+        try { AdfDatabase.reapSidecars(filePath) } catch { /* best-effort */ }
+      }
+    }
+    AdfDatabase.makeSelfContained(destPath)
+  }
+
+  /**
+   * Put a freshly written copy into rollback-journal mode so it travels as a
+   * single file. Leaving WAL mode drops the sidecars SQLite made for this
+   * connection; nothing else has the copy open.
+   */
+  private static makeSelfContained(destPath: string): void {
+    const copy = new Database(destPath, { fileMustExist: true })
+    try {
+      copy.pragma('journal_mode = DELETE')
+    } finally {
+      try { copy.close() } catch { /* ignore */ }
+    }
+    for (const side of ['-wal', '-shm']) {
+      try { if (existsSync(`${destPath}${side}`)) unlinkSync(`${destPath}${side}`) } catch { /* best-effort */ }
+    }
+  }
+
+  /**
+   * Remove an agent's IDENTITY from an .adf file in place, via a short-lived
+   * plain connection (no migrations, no indexer, no timers — this runs on
+   * files that may predate the current schema, so every table is probed).
+   *
+   * Deleted:
+   *   - adf_identity `crypto:signing:private_key`, `crypto:signing:public_key`,
+   *     `crypto:envelope:identity` — the agent's signing keypair and the
+   *     envelope that seals it. On a file with no envelope recipients and no
+   *     password these rows are stored PLAIN (AdfWorkspace.generateIdentityKeys),
+   *     so a byte copy would hand the private key to whoever receives it.
+   *   - every adf_attestations row — owner/runtime attestations name the
+   *     sender's DIDs and only prove things about the sender's install.
+   *   - adf_meta `adf_did`, `adf_owner_did`, `adf_runtime_did`,
+   *     `adf_did_history`. `adf_parent_did` is KEPT: lineage, not identity.
+   *
+   * The result is an "unclaimed" agent: the review flow mints a fresh DID
+   * under the receiving owner. Used for both directions of transfer — the
+   * copy this install sends out, and a registry file it brings home.
+   */
+  static stripIdentity(filePath: string): void {
+    const db = new Database(filePath, { fileMustExist: true })
+    try {
+      db.pragma('busy_timeout = 5000')
+      AdfDatabase.stripIdentityRows(db)
+      try { db.pragma('wal_checkpoint(TRUNCATE)') } catch { /* best-effort */ }
+    } finally {
+      try { db.close() } catch { /* ignore */ }
+    }
+    try { AdfDatabase.reapSidecars(filePath) } catch { /* best-effort */ }
+  }
+
+  /** Identity deletions against an already-open connection. See stripIdentity(). */
+  private static stripIdentityRows(db: Database.Database): void {
+    const hasTable = (name: string): boolean =>
+      !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)
+    if (hasTable('adf_identity')) {
+      db.prepare(
+        "DELETE FROM adf_identity WHERE purpose IN ('crypto:signing:private_key', 'crypto:signing:public_key', 'crypto:envelope:identity')"
+      ).run()
+    }
+    if (hasTable('adf_attestations')) db.prepare('DELETE FROM adf_attestations').run()
+    // DID history lives in adf_meta today; older/newer layouts may add a table.
+    if (hasTable('adf_did_history')) db.prepare('DELETE FROM adf_did_history').run()
+    if (hasTable('adf_meta')) {
+      db.prepare(
+        "DELETE FROM adf_meta WHERE key IN ('adf_did', 'adf_owner_did', 'adf_runtime_did', 'adf_did_history')"
+      ).run()
+    }
+  }
+
+  /**
+   * Snapshot `filePath` to `destPath` as a copy fit to SEND to someone else:
+   * "send an agent, not its identity".
+   *
+   * On top of stripIdentity()'s deletions (signing keys, identity envelope,
+   * attestations, DID meta), the remaining adf_identity rows — the credentials
+   * envelope plus everything it protects (`provider:*:apiKey`, `mcp:*`,
+   * `credential_files`, KDF params) — survive ONLY when the credentials
+   * envelope carries a password slot. That slot exists exactly when the owner
+   * set a share password, which is the one route by which a receiver can open
+   * those secrets. Without it every remaining row is deleted: owner-sealed
+   * rows are unusable to a receiver (and cleared on claim anyway), and plain
+   * rows must never leave this machine.
+   *
+   * The copy is in rollback-journal mode (snapshotTo), so the edit leaves no
+   * -wal/-shm sidecar beside it. adf_clean_close is left as the backup found
+   * it — a missing marker only makes the receiver run integrity_check on open.
+   */
+  static async snapshotForSend(filePath: string, destPath: string): Promise<void> {
+    await AdfDatabase.snapshotTo(filePath, destPath)
+    const db = new Database(destPath, { fileMustExist: true })
+    try {
+      db.pragma('busy_timeout = 5000')
+      AdfDatabase.stripIdentityRows(db)
+      if (!AdfDatabase.hasSharePasswordSlot(db)) {
+        db.prepare('DELETE FROM adf_identity').run()
+      }
+    } finally {
+      try { db.close() } catch { /* ignore */ }
+    }
+    AdfDatabase.makeSelfContained(destPath)
+  }
+
+  /**
+   * True when the credentials envelope descriptor carries a password slot.
+   * Descriptors are stored PLAIN by design (they hold only wrapped material),
+   * so a raw connection can read them without unlocking anything.
+   */
+  private static hasSharePasswordSlot(db: Database.Database): boolean {
+    let row: { value: Buffer | string } | undefined
+    try {
+      row = db
+        .prepare("SELECT value FROM adf_identity WHERE purpose = 'crypto:envelope:credentials'")
+        .get() as { value: Buffer | string } | undefined
+    } catch {
+      return false
+    }
+    if (!row) return false
+    try {
+      const text = Buffer.isBuffer(row.value) ? row.value.toString('utf-8') : String(row.value)
+      const parsed = JSON.parse(text) as { slots?: Array<{ type?: string }> }
+      return Array.isArray(parsed.slots) && parsed.slots.some((s) => s?.type === 'password')
+    } catch {
+      return false
     }
   }
 

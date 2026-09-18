@@ -7,6 +7,7 @@ import type { AdfApi } from './api'
 const api: AdfApi = {
   // App
   getAppVersion: () => ipcRenderer.invoke(IPC.APP_GET_VERSION),
+  setBadgeCount: (count: number) => ipcRenderer.invoke(IPC.APP_SET_BADGE_COUNT, count),
 
   // File operations
   openFile: (filePath?: string) =>
@@ -14,6 +15,9 @@ const api: AdfApi = {
   saveFile: () => ipcRenderer.invoke(IPC.FILE_SAVE),
   createFile: (name: string) =>
     ipcRenderer.invoke(IPC.FILE_CREATE, { name }),
+  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string }) =>
+    ipcRenderer.invoke(IPC.FILE_CREATE_QUICK, options ?? {}),
+  getDefaultAgentsFolder: () => ipcRenderer.invoke(IPC.AGENTS_FOLDER_DEFAULT_GET),
   closeFile: () => ipcRenderer.invoke(IPC.FILE_CLOSE),
   deleteFile: (filePath: string) =>
     ipcRenderer.invoke(IPC.FILE_DELETE, { filePath }),
@@ -118,12 +122,27 @@ const api: AdfApi = {
   getSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET),
   setSettings: (settings: Record<string, unknown>) =>
     ipcRenderer.invoke(IPC.SETTINGS_SET, settings),
-  agentTemplateFilesAdd: () =>
-    ipcRenderer.invoke(IPC.AGENT_TEMPLATE_FILES_ADD),
-  agentTemplateFilesRemove: (id: string) =>
-    ipcRenderer.invoke(IPC.AGENT_TEMPLATE_FILES_REMOVE, id),
-  agentTemplateFilesStat: (ids: string[]) =>
-    ipcRenderer.invoke(IPC.AGENT_TEMPLATE_FILES_STAT, ids),
+  listTemplates: () => ipcRenderer.invoke(IPC.TEMPLATES_LIST),
+  onTemplatesChanged: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on(IPC.TEMPLATES_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.TEMPLATES_CHANGED, handler)
+  },
+  templatesMigrationSeen: () => ipcRenderer.invoke(IPC.TEMPLATES_MIGRATION_SEEN),
+  createTemplate: (args) => ipcRenderer.invoke(IPC.TEMPLATE_CREATE, args),
+  deleteTemplate: (id) => ipcRenderer.invoke(IPC.TEMPLATE_DELETE, { id }),
+  resetShippedTemplate: (id) => ipcRenderer.invoke(IPC.TEMPLATE_RESET_SHIPPED, { id }),
+  revealTemplate: (id) => ipcRenderer.invoke(IPC.TEMPLATE_REVEAL, { id }),
+  setDefaultTemplate: (id) => ipcRenderer.invoke(IPC.TEMPLATE_SET_DEFAULT, { id }),
+  renameTemplate: (args) => ipcRenderer.invoke(IPC.TEMPLATE_RENAME, args),
+  setTemplateMeta: (args) => ipcRenderer.invoke(IPC.TEMPLATE_SET_META, args),
+  getTemplateContents: (id) => ipcRenderer.invoke(IPC.TEMPLATE_GET_CONTENTS, { id }),
+  setTemplateConfig: (args) => ipcRenderer.invoke(IPC.TEMPLATE_SET_CONFIG, args),
+  setTemplateFile: (args) => ipcRenderer.invoke(IPC.TEMPLATE_SET_FILE, args),
+  addTemplateFiles: (id) => ipcRenderer.invoke(IPC.TEMPLATE_ADD_FILES, { id }),
+  removeTemplateFile: (args) => ipcRenderer.invoke(IPC.TEMPLATE_REMOVE_FILE, args),
+  checkTemplateReview: (id) => ipcRenderer.invoke(IPC.TEMPLATE_CHECK_REVIEW, { id }),
+  acceptTemplateReview: (args) => ipcRenderer.invoke(IPC.TEMPLATE_REVIEW_ACCEPT, args),
   setZoomFactor: (factor: number) => {
     if (Number.isFinite(factor) && factor > 0) webFrame.setZoomFactor(factor)
   },
@@ -567,6 +586,27 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD),
   unlockEnvelopeWithPassword: (password: string, adopt?: boolean) =>
     ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, password, adopt),
+
+  // Agent registry (bundled .adf files + live index)
+  getAgentRegistry: () =>
+    ipcRenderer.invoke(IPC.AGENT_REGISTRY_GET),
+  refreshAgentRegistry: () =>
+    ipcRenderer.invoke(IPC.AGENT_REGISTRY_REFRESH),
+  bringHomeRegistryAgent: (id: string) =>
+    ipcRenderer.invoke(IPC.AGENT_REGISTRY_BRING_HOME, { id }),
+  setAgentModelForFile: (filePath: string, model: { provider: string; model_id: string }) =>
+    ipcRenderer.invoke(IPC.AGENT_MODEL_SET_FOR_FILE, { filePath, model }),
+
+  // Share by drag
+  prepareShareFile: (filePath: string) =>
+    ipcRenderer.invoke(IPC.FILE_SHARE_PREPARE, { filePath }),
+  startShareDrag: (token: string) => {
+    ipcRenderer.send(IPC.FILE_SHARE_DRAG_START, { token })
+  },
+  discardShareFile: (token: string) =>
+    ipcRenderer.invoke(IPC.FILE_SHARE_DISCARD, { token }),
+  saveShareCopy: (filePath: string) =>
+    ipcRenderer.invoke(IPC.FILE_SHARE_SAVE_AS, { filePath }),
 
   // Agent review (file open flow)
   checkAgentReview: () =>

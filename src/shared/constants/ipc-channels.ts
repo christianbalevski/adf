@@ -3,6 +3,12 @@ export const IPC = {
   FILE_OPEN: 'adf:file:open',
   FILE_SAVE: 'adf:file:save',
   FILE_CREATE: 'adf:file:create',
+  // Create in the agents folder under a generated name, no save dialog.
+  // The home composer: a message typed there becomes a new agent.
+  FILE_CREATE_QUICK: 'adf:file:create-quick',
+  // Where quick-created and claimed agents go by default (the agentsFolder
+  // setting, else Documents/adf-agents); for the home folder chip.
+  AGENTS_FOLDER_DEFAULT_GET: 'adf:agents-folder:default-get',
   FILE_CLOSE: 'adf:file:close',
   FILE_DELETE: 'adf:file:delete',
   FILE_CLONE: 'adf:file:clone',
@@ -11,6 +17,15 @@ export const IPC = {
   FILE_RENAMED: 'adf:file:renamed',
   FILE_GET_CURRENT: 'adf:file:get-current',
   FILE_REVEAL: 'adf:file:reveal',
+  // Drag an agent out of the app: prepare a consistent snapshot of the .adf
+  // (renderer -> main, invoke), then hand it to the OS drag (renderer -> main, send).
+  FILE_SHARE_PREPARE: 'adf:file:share-prepare',
+  FILE_SHARE_DRAG_START: 'adf:file:share-drag-start',
+  // Discard a prepared snapshot at once (drag ended / sheet dismissed) instead
+  // of waiting out its TTL, and the no-drag route: save the same identity-free
+  // copy to a path the user picks.
+  FILE_SHARE_DISCARD: 'adf:file:share-discard',
+  FILE_SHARE_SAVE_AS: 'adf:file:share-save-as',
 
   // Document content
   DOC_GET_DOCUMENT: 'adf:doc:get-document',
@@ -78,9 +93,24 @@ export const IPC = {
   SETTINGS_GET: 'adf:settings:get',
   SETTINGS_SET: 'adf:settings:set',
   // Agent template extra files (blob store under <userData>/agent-template-files)
-  AGENT_TEMPLATE_FILES_ADD: 'adf:agent-template:files:add',
-  AGENT_TEMPLATE_FILES_REMOVE: 'adf:agent-template:files:remove',
-  AGENT_TEMPLATE_FILES_STAT: 'adf:agent-template:files:stat',
+  // Agent templates: .adf files in <userData>/templates that new agents start from
+  TEMPLATES_LIST: 'adf:templates:list',
+  TEMPLATES_CHANGED: 'adf:templates:changed',
+  TEMPLATES_MIGRATION_SEEN: 'adf:templates:migration-seen',
+  TEMPLATE_CREATE: 'adf:templates:create',
+  TEMPLATE_DELETE: 'adf:templates:delete',
+  TEMPLATE_RESET_SHIPPED: 'adf:templates:reset-shipped',
+  TEMPLATE_REVEAL: 'adf:templates:reveal',
+  TEMPLATE_SET_DEFAULT: 'adf:templates:set-default',
+  TEMPLATE_RENAME: 'adf:templates:rename',
+  TEMPLATE_SET_META: 'adf:templates:set-meta',
+  TEMPLATE_GET_CONTENTS: 'adf:templates:get-contents',
+  TEMPLATE_SET_CONFIG: 'adf:templates:set-config',
+  TEMPLATE_SET_FILE: 'adf:templates:set-file',
+  TEMPLATE_ADD_FILES: 'adf:templates:add-files',
+  TEMPLATE_REMOVE_FILE: 'adf:templates:remove-file',
+  TEMPLATE_CHECK_REVIEW: 'adf:templates:check-review',
+  TEMPLATE_REVIEW_ACCEPT: 'adf:templates:review-accept',
 
   // Tracked directories
   TRACKED_DIRS_GET: 'adf:tracked-dirs:get',
@@ -203,6 +233,17 @@ export const IPC = {
   MCP_UNINSTALL_PYTHON_PACKAGE: 'adf:mcp:uninstall-python-package',
   MCP_ENSURE_PYTHON_RUNTIME: 'adf:mcp:ensure-python-runtime',
   MCP_REGISTRY_GET: 'adf:mcp:registry-get',
+
+  // Agent registry — bundled .adf files (registry/ at the repo root) plus the
+  // live index for additions since this build. "Bring home" copies one into
+  // the user's agents folder and hands it to the normal open/review flow.
+  AGENT_REGISTRY_GET: 'adf:agent-registry:get',
+  AGENT_REGISTRY_REFRESH: 'adf:agent-registry:refresh',
+  AGENT_REGISTRY_BRING_HOME: 'adf:agent-registry:bring-home',
+  // Point a NOT-open, NOT-running agent's model at a provider (provider setup
+  // sheet, when the blocked agent is a background one). The open agent goes
+  // through the ordinary config save.
+  AGENT_MODEL_SET_FOR_FILE: 'adf:agent:model-set-for-file',
   // Phase 4 HTTP OAuth: sign out (clear the stored token) / query signed-in state.
   MCP_OAUTH_SIGNOUT: 'adf:mcp:oauth-signout',
   MCP_OAUTH_STATUS: 'adf:mcp:oauth-status',
@@ -334,6 +375,9 @@ export const IPC = {
   APP_GET_VERSION: 'adf:app:get-version',
   APP_GET_FULLSCREEN: 'adf:app:get-fullscreen',
   APP_SET_FULLSCREEN: 'adf:app:set-fullscreen',
+  // Number on the Dock icon (macOS, Linux; no-op elsewhere). Mirrors the
+  // bell's pending count; 0 clears it.
+  APP_SET_BADGE_COUNT: 'adf:app:set-badge-count',
   APP_FULLSCREEN_CHANGED: 'adf:app:fullscreen-changed',
 
   // In-app updates (electron-updater). State is pushed main -> renderer;

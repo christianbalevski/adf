@@ -1,5 +1,10 @@
-import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
-import type { AgentConfig, AdfLogEntry, AgentTemplateExtraFile, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
+import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
+  QuickCreateResult, FileSharePrepareResult,
+  AgentTemplateListResult,
+  AgentTemplateContents,
+  ShippedTemplateId
+} from '../shared/types/ipc.types'
+import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
@@ -9,11 +14,17 @@ import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 export interface AdfApi {
   // App
   getAppVersion: () => Promise<string>
+  /** Put `count` on the Dock icon; 0 clears it. Nothing is shown on Windows. */
+  setBadgeCount: (count: number) => Promise<void>
 
   // File operations
   openFile: (filePath?: string) => Promise<FileOperationResult>
   saveFile: () => Promise<FileOperationResult>
   createFile: (name: string) => Promise<FileOperationResult>
+  /** New agent in the agents folder under a generated name; no dialog. Opens it like createFile. `providerId` picks its provider (else the app default). */
+  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string }) => Promise<QuickCreateResult>
+  /** The default folder for new agents (agentsFolder setting, else Documents/adf-agents). */
+  getDefaultAgentsFolder: () => Promise<{ path: string }>
   closeFile: () => Promise<FileOperationResult>
   deleteFile: (filePath: string) => Promise<FileOperationResult>
   listTables: (filePath: string) => Promise<{ tables: Array<{ name: string; row_count: number }>; error?: string }>
@@ -58,7 +69,8 @@ export interface AdfApi {
   }>
 
   // Agent runtime
-  startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string }>
+  /** `code` names a failure the renderer can resolve in place: 'provider_missing' (the model's provider is not on this install) or 'provider_unconfigured' (it is, but has no key). */
+  startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string; code?: 'provider_missing' | 'provider_unconfigured' }>
   stopAgent: () => Promise<{ success: boolean }>
   /** `loop` routes the turn to that loop's executor; omitted/'main' = the host loop. */
   invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string }>
@@ -94,16 +106,37 @@ export interface AdfApi {
   // Settings
   getSettings: () => Promise<AppSettings>
   setSettings: (settings: Record<string, unknown>) => Promise<{ success: boolean }>
+  // Agent templates (.adf files in <userData>/templates)
+  /** Every template, the folder path and the effective default. Seeds the shipped three on first call. */
+  listTemplates: () => Promise<AgentTemplateListResult>
+  /** Fires after the folder changes on disk (drop-in, delete, edit); re-list on it. */
+  onTemplatesChanged: (callback: () => void) => () => void
+  templatesMigrationSeen: () => Promise<void>
+  /** New template: blank from the code defaults, or a duplicate of `fromId`. `name` becomes the file stem. */
+  createTemplate: (args: { name: string; fromId?: string }) => Promise<{ success: boolean; id?: string; error?: string }>
+  /** Moves the file to the trash. A shipped template comes back with `resetShippedTemplate`. */
+  deleteTemplate: (id: string) => Promise<{ success: boolean; error?: string }>
+  resetShippedTemplate: (id: ShippedTemplateId) => Promise<{ success: boolean; error?: string }>
+  revealTemplate: (id: string) => Promise<void>
+  setDefaultTemplate: (id: string) => Promise<{ success: boolean; error?: string }>
   /**
-   * Agent template extra files. `add` opens a multi-select picker and copies
-   * the chosen files into the blob store, returning their metadata; the
-   * renderer merges that into settings.agentTemplate.files.extra itself.
-   * `remove` deletes the stored blob (the renderer drops the settings entry).
+   * Renames the file stem AND the agent name inside it; returns the new id.
+   * Settings that pointed at the old id (default, child template) follow it.
    */
-  agentTemplateFilesAdd: () => Promise<{ success: boolean; added?: AgentTemplateExtraFile[]; error?: string }>
-  agentTemplateFilesRemove: (id: string) => Promise<{ success: boolean }>
-  /** Which of these blob ids are absent from the store (shown as "missing" in the template UI). */
-  agentTemplateFilesStat: (ids: string[]) => Promise<{ missing: string[] }>
+  renameTemplate: (args: { id: string; name: string }) => Promise<{ success: boolean; id?: string; error?: string }>
+  /** Template-level notes (not the agent's description); an empty string clears a field. */
+  setTemplateMeta: (args: { id: string; description?: string; warning?: string }) => Promise<{ success: boolean; error?: string }>
+  getTemplateContents: (id: string) => Promise<{ success: boolean; contents?: AgentTemplateContents; error?: string }>
+  setTemplateConfig: (args: { id: string; config: AgentConfig }) => Promise<{ success: boolean; error?: string }>
+  /** Writes one seed file (README.md, mind.md, soul.md) or any other VFS text file. */
+  setTemplateFile: (args: { id: string; path: string; content: string }) => Promise<{ success: boolean; error?: string }>
+  /** Native picker; copies the chosen host files into the template's VFS at their basenames. */
+  addTemplateFiles: (id: string) => Promise<{ success: boolean; added?: string[]; error?: string }>
+  removeTemplateFile: (args: { id: string; path: string }) => Promise<{ success: boolean; error?: string }>
+  /** Same summary shape as `checkAgentReview`, computed for the template file without opening it as the current agent. */
+  checkTemplateReview: (id: string) => Promise<{ needsReview: boolean; configSummary?: AgentConfigSummary }>
+  /** Claims the template file for the owner (fresh identity, credentials adopted or dropped). Instances need no claim. */
+  acceptTemplateReview: (args: { id: string; password?: string }) => Promise<{ success: boolean; error?: string }>
   /** Whole-window zoom (1 = 100%). Menu zoomIn/zoomOut layer on top of it. */
   setZoomFactor: (factor: number) => void
 
@@ -186,7 +219,8 @@ export interface AdfApi {
   foundFleetAgent: (dir: string, name: string, newRoot?: boolean) => Promise<{ success: boolean; filePath?: string; error?: string }>
 
   // Background agents
-  startBackgroundAgent: (filePath: string) => Promise<{ success: boolean; error?: string }>
+  /** `code` is set when the failure is fixable from the UI: 'provider_missing' | 'provider_unconfigured'. */
+  startBackgroundAgent: (filePath: string) => Promise<{ success: boolean; error?: string; code?: string }>
   getBackgroundAgentStatus: () => Promise<{ agents: BackgroundAgentStatus[]; starting?: string[] }>
   stopBackgroundAgent: (filePath: string) => Promise<{ success: boolean }>
   /** Batched — the main process coalesces ~50ms of background agent events per send. */
@@ -506,6 +540,22 @@ export interface AdfApi {
   removeSharePassword: () => Promise<{ success: boolean; error?: string }>
   /** adopt: false (pre-accept review flow) unlocks for the session without writing anything; default true re-wraps to the local owner while preserving the share-password slot (multi-route). */
   unlockEnvelopeWithPassword: (password: string, adopt?: boolean) => Promise<{ success: boolean; credentials?: string; adopted?: boolean; warning?: string; error?: string }>
+
+  // Agent registry (bundled .adf files + live index)
+  getAgentRegistry: () => Promise<AgentRegistryGetResult>
+  refreshAgentRegistry: () => Promise<AgentRegistryGetResult>
+  /** Copy a registry agent into the agents folder; open the returned path to review and claim it. */
+  bringHomeRegistryAgent: (id: string) => Promise<AgentRegistryBringHomeResult>
+  /** Set model.provider/model_id on a file that is neither open in the foreground nor running. */
+  setAgentModelForFile: (filePath: string, model: { provider: string; model_id: string }) => Promise<{ success: boolean; error?: string }>
+
+  // Share by drag: prepare a consistent snapshot, then start the native drag with its token.
+  prepareShareFile: (filePath: string) => Promise<FileSharePrepareResult>
+  startShareDrag: (token: string) => void
+  /** Drop a prepared snapshot now (drag ended / sheet dismissed) instead of waiting out its TTL. */
+  discardShareFile: (token: string) => Promise<void>
+  /** Save the same identity-free copy to a path the user picks (no drag). */
+  saveShareCopy: (filePath: string) => Promise<{ success: boolean; filePath?: string; error?: string }>
 
   // Agent review (file open flow)
   checkAgentReview: () => Promise<{ needsReview: boolean; configSummary?: AgentConfigSummary }>

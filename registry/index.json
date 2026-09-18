@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "updated_at": "2026-09-17",
+  "agents": [
+    {
+      "id": "ash",
+      "file": "ash.adf",
+      "name": "ash",
+      "icon": "🗒️",
+      "blurb": "A personal assistant that lives in this file: writes, organizes, reads files, tracks open threads, and automates what you repeat.",
+      "tags": [],
+      "sha256": "6af05d76f39616d5a94916ef18c0850ba2b8b0ef2ecd94cd30c95952ea913128",
+      "size": 167936,
+      "version": 1,
+      "capabilities": {
+        "tools": 32,
+        "code": true,
+        "channels": [
+          "telegram"
+        ],
+        "skills": 0
+      }
+    },
+    {
+      "id": "aspen",
+      "file": "aspen.adf",
+      "name": "aspen",
+      "icon": "🎯",
+      "blurb": "A personal-development agent: goals into milestones and a next action, a scoreboard, and check-ins on your schedule.",
+      "tags": [],
+      "sha256": "18dc261a74e37860ffa2cb4fd1297eecd3eb60e7b72ddb0fd39a6b27b2aca5f2",
+      "size": 176128,
+      "version": 1,
+      "capabilities": {
+        "tools": 32,
+        "code": true,
+        "channels": [
+          "telegram"
+        ],
+        "skills": 2
+      }
+    },
+    {
+      "id": "cedar",
+      "file": "cedar.adf",
+      "name": "cedar",
+      "icon": "📊",
+      "blurb": "A business-operations agent that triages work, keeps a verified ledger, and staffs itself with specialist agents you approve.",
+      "tags": [],
+      "sha256": "0a4b6e8792d40e3a0c5f868d30bfdfc5d199b1c5168459b01c4d2d23141f5474",
+      "size": 184320,
+      "version": 1,
+      "capabilities": {
+        "tools": 33,
+        "code": true,
+        "channels": [
+          "telegram"
+        ],
+        "skills": 2
+      }
+    },
+    {
+      "id": "ivy",
+      "file": "ivy.adf",
+      "name": "ivy",
+      "icon": "🔭",
+      "blurb": "A research agent that watches your sources and delivers briefings where every claim carries its source.",
+      "tags": [],
+      "sha256": "6a3df0b6fa55e929b822b9525e12f560eae8596e7f3515366412a610a8f413da",
+      "size": 176128,
+      "version": 1,
+      "capabilities": {
+        "tools": 32,
+        "code": true,
+        "channels": [
+          "telegram"
+        ],
+        "skills": 1
+      }
+    },
+    {
+      "id": "oak",
+      "file": "oak.adf",
+      "name": "oak",
+      "icon": "🏋️",
+      "blurb": "A training coach that runs an intake, writes your program, logs your sessions, and adjusts from the log.",
+      "tags": [],
+      "sha256": "bfa2f13bbb47b7716031746bc1f3f1cce13c0a03d73690fcd6fb09b699bd92fc",
+      "size": 180224,
+      "version": 1,
+      "capabilities": {
+        "tools": 32,
+        "code": true,
+        "channels": [
+          "telegram"
+        ],
+        "skills": 1
+      }
+    },
+    {
+      "id": "sage",
+      "file": "sage.adf",
+      "name": "sage",
+      "icon": "🧙",
+      "blurb": "A guide to ADF and ADF Studio. Ask how anything works and it answers from the cached public docs, with the path it read.",
+      "tags": [],
+      "sha256": "0b3873c6f06b65529b39a02fc0693d70b354457a2abe5c6f0b5f2775c5942424",
+      "size": 1044480,
+      "version": 1,
+      "capabilities": {
+        "tools": 31,
+        "code": true,
+        "channels": [],
+        "skills": 0
+      }
+    }
+  ]
+}

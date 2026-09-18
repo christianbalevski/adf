@@ -49,6 +49,18 @@ interface ProviderModalProps {
   grok: SubscriptionAuthState
   /** Agents whose .adf carries a copy of this provider (keyed or not). */
   onCarrierCountChange?: (count: number) => void
+  /** One line above the picker and the form: why the modal opened (the at-need sheet). */
+  intro?: React.ReactNode
+  /**
+   * Done on the form. Defaults to onClose; the at-need sheet passes its own
+   * so "Done" (apply and start) and Escape/X (cancel) can differ.
+   */
+  onDone?: () => void
+  /**
+   * Done stays disabled until a default model is set, with this text as the
+   * reason. The at-need sheet needs a model to hand the blocked agent.
+   */
+  requireDefaultModel?: string
 }
 
 export function ProviderModal(props: ProviderModalProps) {
@@ -58,6 +70,7 @@ export function ProviderModal(props: ProviderModalProps) {
 
   return (
     <Dialog open={open} onClose={onClose} title={title} wide lightDismiss={!provider}>
+      {props.intro && <p className="mb-3 text-[12px] text-[var(--adf-ui-text-muted)]">{props.intro}</p>}
       {provider ? <ProviderForm key={provider.id} {...props} provider={provider} entry={entry} /> : <ProviderPicker onPick={props.onPick} />}
     </Dialog>
   )
@@ -140,8 +153,9 @@ function Field({ label, hint, children }: { label: string; hint?: React.ReactNod
 
 function ProviderForm({
   provider, entry, isDefault, status, onUpdate, onRemove, onMakeDefault, onTest, onClose,
-  models, onFetchModels, chatgpt, grok, onCarrierCountChange,
+  models, onFetchModels, chatgpt, grok, onCarrierCountChange, onDone, requireDefaultModel,
 }: ProviderModalProps & { provider: ProviderConfig; entry?: ProviderCatalogEntry }) {
+  const doneBlocked = !!requireDefaultModel && !(provider.defaultModel ?? '').trim()
   const subscription = isSubscriptionType(provider.type)
   const auth = provider.type === 'chatgpt-subscription' ? chatgpt : provider.type === 'grok-subscription' ? grok : null
   const [customModel, setCustomModel] = useState(false)
@@ -212,7 +226,7 @@ function ProviderForm({
           </Field>
         )}
 
-        <Field label="Default model" hint={models?.error ? <span className="text-[var(--adf-ui-danger)]">{models.error}</span> : 'Agents can pick another model; this is the starting point.'}>
+        <Field label="Default model" hint={models?.error ? <span className="text-[var(--adf-ui-danger)]">{models.error}</span> : requireDefaultModel ?? 'Agents can pick another model; this is the starting point.'}>
           {models?.loading ? (
             <div className="px-1 py-1.5 text-[12px] text-[var(--adf-ui-text-subtle)]">Loading models…</div>
           ) : listMode ? (
@@ -271,7 +285,7 @@ function ProviderForm({
       {/* Footer */}
       <div className="flex items-center justify-between border-t border-[var(--adf-ui-separator)] pt-3">
         <Button variant="ghost" size="compact" className="text-[var(--adf-ui-danger)]" onClick={onRemove}>Remove provider</Button>
-        <Button variant="primary" onClick={onClose}>Done</Button>
+        <Button variant="primary" onClick={onDone ?? onClose} disabled={doneBlocked}>Done</Button>
       </div>
     </div>
   )

@@ -6,9 +6,9 @@ import { AdfWorkspace } from '../../adf/adf-workspace'
 import { ensureWorkspaceIdentity } from '../../runtime/identity-provisioner'
 import { markChildTrusted } from '../../runtime/child-trust'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
-import type { CreateAgentOptions, AgentTemplate, ModelConfig } from '../../../shared/types/adf-v02.types'
+import type { CreateAgentOptions } from '../../../shared/types/adf-v02.types'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
-import { readTemplate, mergeTemplateWithOverrides } from '../../adf/adf-template'
+import { readTemplate, readTemplateFile, mergeTemplateWithOverrides, type TemplateData } from '../../adf/adf-template'
 import { applyDefaultProviderToOptions } from '../../adf/apply-default-provider'
 
 // ---------------------------------------------------------------------------
@@ -359,11 +359,15 @@ export class CreateAdfTool implements Tool {
   /** Injected by runtime — returns the currently configured app-level default provider, if any. */
   getDefaultProvider?: () => ProviderConfig | undefined
   /**
-   * Injected by runtime — the Studio "Agent template" plus its uploaded-files
-   * dir, but only when the user has switched on "also apply to agents created
-   * by other agents". Undefined otherwise, so children get plain code defaults.
+   * Injected by runtime — the host path of the template children start from
+   * (`<userData>/templates/<id>.adf`, named by settings.childTemplateId).
+   * Undefined when the owner named none, so children get plain code defaults.
+   *
+   * Config, files and `local_*` tables travel; credentials and identity rows
+   * never do (readTemplateFile is called with includeIdentityRows: false), so
+   * an agent cannot gain the owner's keys by spawning a child.
    */
-  getStudioTemplate?: () => { template: AgentTemplate; filesDir: string } | undefined
+  getStudioTemplate?: () => { filePath: string } | undefined
   readonly requireApproval = true
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
@@ -383,12 +387,34 @@ export class CreateAdfTool implements Tool {
       const newPath = join(targetDir, `${safeName}.adf`)
 
       let options: CreateAgentOptions
-      let templateData: ReturnType<typeof readTemplate> | null = null
+      let templateData: TemplateData | null = null
+      // True when the template came from the Studio templates folder rather
+      // than the parent's own VFS: those files keep the identity the host
+      // provisions below instead of minting a second one.
+      let templateFromStudio = false
 
       if (template) {
         // Template-based creation
         templateData = readTemplate(workspace, template)
+      } else {
+        // The template the owner picked for children, when they picked one.
+        // Skipped when the parent named a template agent: that is an explicit
+        // choice, and the parent's file outranks the host's preference.
+        const studio = this.getStudioTemplate?.()
+        if (studio) {
+          try {
+            templateData = readTemplateFile(studio.filePath, { includeIdentityRows: false })
+            templateFromStudio = true
+          } catch (err) {
+            return {
+              content: `The default agent template could not be read (${studio.filePath}): ${err instanceof Error ? err.message : String(err)}`,
+              isError: true
+            }
+          }
+        }
+      }
 
+      if (templateData) {
         // Unified validate + merge — checks locks at every merge point
         const mergeResult = mergeTemplateWithOverrides(
           templateData.config,
@@ -400,19 +426,6 @@ export class CreateAdfTool implements Tool {
         options = mergeResult.options
       } else {
         options = { name, ...configOverrides }
-      }
-
-      // Studio's Agent template, when the user opted children in. Skipped when
-      // the parent named a template agent: that is an explicit choice. The
-      // parent's own overrides still win — AdfDatabase.create layers explicit
-      // options over the template, which sits over code defaults.
-      if (!template) {
-        const studio = this.getStudioTemplate?.()
-        if (studio) {
-          options.template = studio.template
-          options.templateFilesDir = studio.filesDir
-          if (!options.model && studio.template.model) options.model = { ...studio.template.model } as Partial<ModelConfig>
-        }
       }
 
       // If the caller did not specify a model provider, fall back to the
@@ -474,8 +487,12 @@ export class CreateAdfTool implements Tool {
             db.executeSQL(indexSql)
           }
 
-          // Generate fresh identity keys (new DID, public/private keypair)
-          newWorkspace.generateIdentityKeys(null)
+          // Generate fresh identity keys (new DID, public/private keypair).
+          // Only for a parent-supplied template, whose copied identity rows
+          // belong to someone else. A Studio template contributed no identity
+          // rows, and the child already has the one ensureWorkspaceIdentity
+          // minted above — minting a second would retire it into DID history.
+          if (!templateFromStudio) newWorkspace.generateIdentityKeys(null)
         }
 
         // Inject parent files
