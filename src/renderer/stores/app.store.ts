@@ -169,13 +169,15 @@ export interface AppState {
    * through its ordinary send path, so the first message goes through the
    * same start gates as any other.
    */
-  pendingFirstMessage: { filePath: string; text: string } | null
+  pendingFirstMessage: { filePath: string; text: string; files?: File[] } | null
   /** Provider chip picked on the home strip for the next new agent; null = the app default. Session only. */
   homeProviderId: string | null
   /** Folder chip picked on the home composer for the next new agent; null = the agents folder. Session only. */
   homeFolder: string | null
   /** Unsent text in the home composer, kept across navigation. Session only. */
   homeDraft: string
+  /** Files attached in the home composer, waiting for the agent that will receive them. Session only. */
+  homeFiles: File[]
   /** Name the next new agent will get; null until the composer draws one. Session only. */
   homeName: string | null
   showLogsPanel: boolean
@@ -242,6 +244,7 @@ export interface AppState {
   setHomeProviderId: (id: string | null) => void
   setHomeFolder: (folder: string | null) => void
   setHomeDraft: (text: string) => void
+  setHomeFiles: (files: File[]) => void
   setHomeName: (name: string | null) => void
   closeShareDialog: () => void
   toggleLogsPanel: () => void
@@ -325,6 +328,7 @@ export const useAppStore = create<AppState>((set) => ({
   homeProviderId: null,
   homeFolder: null,
   homeDraft: '',
+  homeFiles: [],
   homeName: null,
   showLogsPanel: false,
   logsAutoRefresh: false,
@@ -449,6 +453,7 @@ export const useAppStore = create<AppState>((set) => ({
   setHomeProviderId: (id) => set({ homeProviderId: id }),
   setHomeFolder: (folder) => set({ homeFolder: folder }),
   setHomeDraft: (text) => set({ homeDraft: text }),
+  setHomeFiles: (files) => set({ homeFiles: files }),
   setHomeName: (name) => set({ homeName: name }),
   takePendingFirstMessage: (filePath) => {
     const pending = useAppStore.getState().pendingFirstMessage

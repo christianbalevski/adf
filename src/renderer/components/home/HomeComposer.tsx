@@ -75,6 +75,17 @@ export function HomeComposer() {
   // The draft lives in the store so leaving home and coming back keeps it.
   const text = useAppStore((s) => s.homeDraft)
   const setText = useAppStore((s) => s.setHomeDraft)
+  // Files to hand the agent with its first message. Held here (the agent
+  // does not exist yet) and uploaded into it right after it is created.
+  const files = useAppStore((s) => s.homeFiles)
+  const setFiles = useAppStore((s) => s.setHomeFiles)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [dragOver, setDragOver] = useState(false)
+  const addFiles = (list: FileList | File[]) => {
+    const next = Array.from(list)
+    if (next.length > 0) setFiles([...files, ...next])
+  }
+  const removeFile = (i: number) => setFiles(files.filter((_, j) => j !== i))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [suggestionsOn, setSuggestionsOn] = useState(loadSuggestionsOn)
@@ -113,12 +124,13 @@ export function HomeComposer() {
     setBusy(true)
     setError(null)
     try {
-      const result = await createQuickAgent(message, { providerId: providerId ?? undefined, folder: homeFolder ?? undefined, name: homeName ?? undefined })
+      const result = await createQuickAgent(message, { providerId: providerId ?? undefined, folder: homeFolder ?? undefined, name: homeName ?? undefined, files: files.length > 0 ? files : undefined })
       if (!result.success) {
         setError(result.error ?? 'Could not create the agent')
         return
       }
       setText('')
+      setFiles([])
       // The next agent gets its own name.
       setHomeName(generateAgentName())
       spins.current = 0
@@ -133,7 +145,7 @@ export function HomeComposer() {
     } finally {
       setBusy(false)
     }
-  }, [busy, createQuickAgent, homeFolder, homeName, providerId, setCenterChatTabActive, setChatPlacement, setHomeName, setShowMeshGraph, setText, text])
+  }, [busy, createQuickAgent, files, homeFolder, homeName, providerId, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setShowMeshGraph, setText, text])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -162,7 +174,27 @@ export function HomeComposer() {
       {suggestionsOn && <SuggestionMarquee rows={rows} onPick={fill} disabled={busy} />}
 
       <div className="mx-auto w-full max-w-3xl px-4">
-      <div className="home-composer relative rounded-2xl border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] shadow-sm transition-colors focus-within:border-[var(--adf-ui-accent)]">
+      <div
+        className={`home-composer relative rounded-2xl border bg-[var(--adf-ui-surface)] shadow-sm transition-colors focus-within:border-[var(--adf-ui-accent)] ${dragOver ? 'border-[var(--adf-ui-accent)]' : 'border-[var(--adf-ui-border)]'}`}
+        onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDragOver(true) } }}
+        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false) }}
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); if (!busy) addFiles(e.dataTransfer.files) }}
+      >
+        {dragOver && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--adf-ui-accent-subtle)] text-sm font-medium text-[var(--adf-ui-accent)]">
+            Drop to attach
+          </div>
+        )}
+        {files.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
+            {files.map((f, i) => (
+              <span key={`${f.name}-${i}`} className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-2 py-1 text-[11px] text-[var(--adf-ui-text-muted)]">
+                <span className="max-w-[12rem] truncate">{f.name}</span>
+                <button type="button" onClick={() => removeFile(i)} aria-label={`Remove ${f.name}`} className="shrink-0 text-[var(--adf-ui-text-subtle)] hover:text-[var(--adf-ui-danger)]">&times;</button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           value={text}
@@ -178,6 +210,24 @@ export function HomeComposer() {
             above and can never run underneath the chips. */}
         <div className="flex items-center justify-between gap-3 px-2.5 pb-2 pt-1">
           <div className="flex min-w-0 items-center gap-1.5">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => { addFiles(e.target.files ?? []); e.currentTarget.value = '' }}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={busy}
+              aria-label="Attach files"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--adf-ui-text-muted)] transition-colors hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)] disabled:opacity-40"
+            >
+              <svg width="14" height="14" viewBox="0 0 18 18" fill="none" aria-hidden>
+                <path d="M9 3.25v11.5M3.25 9h11.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+              </svg>
+            </button>
             {name && <NameChip name={name} onChange={setHomeName} onSpin={onSpin} />}
             <ProviderPickerChip />
             <FolderPickerChip />

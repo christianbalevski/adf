@@ -385,14 +385,15 @@ export function useAdfFile() {
    * dialog. `firstMessage` is parked in the app store before the file
    * becomes the open one, so the loop panel finds it on mount and sends it.
    */
-  const createQuickAgent = useCallback(async (firstMessage?: string, options?: { providerId?: string; folder?: string; name?: string }) => {
+  const createQuickAgent = useCallback(async (firstMessage?: string, options?: { providerId?: string; folder?: string; name?: string; files?: File[] }) => {
     beginAgentSwitch()
     try {
-      const result = await window.adfApi.createQuickAgent(options)
+      const { files, ...createOptions } = options ?? {}
+      const result = await window.adfApi.createQuickAgent(createOptions)
       if (result.success && result.filePath) {
         setShowSettings(false)
         resetAgent()
-        if (firstMessage) useAppStore.getState().setPendingFirstMessage({ filePath: result.filePath, text: firstMessage })
+        if (firstMessage) useAppStore.getState().setPendingFirstMessage({ filePath: result.filePath, text: firstMessage, files })
         setFilePath(result.filePath)
         useAppStore.getState().resetAgentReview()
         await loadFileContents()

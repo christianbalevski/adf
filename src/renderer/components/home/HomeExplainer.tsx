@@ -1,5 +1,3 @@
-import { useAppStore } from '../../stores/app.store'
-
 /**
  * Three beats in the empty middle of home, drawn faint: what typing below
  * does, what comes out, and that the result is a file the person owns. Line
@@ -7,25 +5,11 @@ import { useAppStore } from '../../stores/app.store'
  * part of the background, not a card.
  */
 export function HomeExplainer() {
-  const homeName = useAppStore((s) => s.homeName)
-  const fileName = `${homeName ?? 'your-agent'}.adf`
   return (
     <div className="mx-auto grid w-full max-w-2xl grid-cols-1 gap-8 px-2 text-[var(--adf-ui-text-subtle)] sm:grid-cols-3 sm:gap-6" aria-label="How this works">
-      <Beat
-        icon={<SendGlyph />}
-        title="Send a message"
-        line="Say what you want done, in the bar below."
-      />
-      <Beat
-        icon={<FileGlyph label=".adf" />}
-        title="Get an agent"
-        line={<>It becomes a file, <span className="font-mono text-[11px]">{fileName}</span>, in your agents folder.</>}
-      />
-      <Beat
-        icon={<YoursGlyph />}
-        title="It is yours"
-        line="Copy it, move it, share it. It runs wherever you put it."
-      />
+      <Beat icon={<SendGlyph />} title="Send a message" line="Describe your goal." />
+      <Beat icon={<FileGlyph label=".adf" />} title="Get an agent" line={<>Your prompt becomes a <span className="font-mono text-[11px]">.adf</span> file.</>} />
+      <Beat icon={<YoursGlyph />} title="Your file, your agent" line="It's yours to keep, move or share." />
     </div>
   )
 }

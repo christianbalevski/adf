@@ -67,6 +67,18 @@ interface PendingAttachment {
   contentBlock?: ContentBlock
 }
 
+/** The blocks one send carries: the text, then every attachment the model can take natively. */
+function buildContentBlocks(message: string, items: PendingAttachment[]): ContentBlock[] {
+  const nativeAttachments = items.filter((item) => item.native && item.contentBlock)
+  const blocks: ContentBlock[] = []
+  if (message) blocks.push({ type: 'text', text: message })
+  else if (nativeAttachments.length > 0) blocks.push({ type: 'text', text: ATTACHMENT_ONLY_TEXT })
+  for (const item of nativeAttachments) {
+    if (item.contentBlock) blocks.push(item.contentBlock)
+  }
+  return blocks
+}
+
 /** Copy-to-clipboard button for the error inspector modal header. */
 function CopyErrorButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -1431,16 +1443,10 @@ function LoopStream({ loop }: { loop: string }) {
     window.adfApi?.invokeAgent(msg.text, filePath ?? undefined, msg.content, loop)
   }, [messageQueue, removeFromQueue, addLogEntry, filePath, loop])
 
-  const buildSubmitContent = useCallback((message: string): ContentBlock[] => {
-    const nativeAttachments = attachments.filter((item) => item.native && item.contentBlock)
-    const blocks: ContentBlock[] = []
-    if (message) blocks.push({ type: 'text', text: message })
-    else if (nativeAttachments.length > 0) blocks.push({ type: 'text', text: ATTACHMENT_ONLY_TEXT })
-    for (const item of nativeAttachments) {
-      if (item.contentBlock) blocks.push(item.contentBlock)
-    }
-    return blocks
-  }, [attachments])
+  const buildSubmitContent = useCallback(
+    (message: string, items: PendingAttachment[] = attachments): ContentBlock[] => buildContentBlocks(message, items),
+    [attachments]
+  )
 
   const imagePreviewUrls = useMemo(
     () => attachments
@@ -1508,7 +1514,26 @@ function LoopStream({ loop }: { loop: string }) {
     if (!pendingFirstMessage || pendingFirstMessage.filePath !== filePath) return
     const pending = useAppStore.getState().takePendingFirstMessage(filePath)
     if (!pending) return
-    void sendUserMessage(pending.text, buildSubmitContent(pending.text), [])
+    // Files attached on the home screen are uploaded into this agent now that
+    // it exists, exactly as if they had been dropped on this composer, then
+    // the message goes out with them.
+    void (async () => {
+      const files = pending.files ?? []
+      let text = pending.text
+      let items: PendingAttachment[] = []
+      if (files.length > 0) {
+        setUploadingFiles(true)
+        try {
+          items = (await Promise.all(files.map((f) => buildAttachment(f)))).filter((i): i is PendingAttachment => i != null)
+        } finally {
+          setUploadingFiles(false)
+        }
+        const references = items.map((i) => i.referenceText).filter((r): r is string => !!r)
+        if (references.length > 0) text = text ? `${text}\n\n${references.join('\n')}` : references.join('\n')
+      }
+      const previews = items.filter((i) => i.kind === 'image').map((i) => adfFileUrl(i.path))
+      await sendUserMessage(text, buildContentBlocks(text, items), previews)
+    })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMainLoop, filePath, config, starting, pendingFirstMessage])
 

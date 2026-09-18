@@ -287,6 +287,56 @@ export function Sidebar() {
   // the folders any more.
   const [dirMenu, setDirMenu] = useState<{ dirPath: string; x: number; y: number } | null>(null)
   const [untrackTarget, setUntrackTarget] = useState<string | null>(null)
+  const [renameTarget, setRenameTarget] = useState<RowTarget | null>(null)
+  const updateFileEntry = useTrackedDirsStore((s) => s.updateFileEntry)
+
+  // Every agent file under the folder about to be untracked, and which of
+  // them run. An untracked folder has no rows, so nothing may keep running
+  // from it: the confirm stops them all before the folder goes.
+  const untrackFiles = useMemo(() => {
+    if (!untrackTarget) return [] as TrackedDirEntry[]
+    const out: TrackedDirEntry[] = []
+    const walk = (entries: TrackedDirEntry[]) => {
+      for (const e of entries) {
+        if (e.isDirectory) walk(e.children ?? [])
+        else out.push(e)
+      }
+    }
+    for (const d of directories) {
+      if (d === untrackTarget || d.startsWith(`${untrackTarget}/`)) walk(filesByDir[d] ?? [])
+    }
+    return out
+  }, [untrackTarget, directories, filesByDir])
+  const untrackRunning = useMemo(
+    () => untrackFiles.filter((f) => (f.filePath === filePath ? foregroundAgentState !== 'off' : backgroundAgentMap.has(f.filePath))),
+    [untrackFiles, filePath, foregroundAgentState, backgroundAgentMap]
+  )
+  const handleUntrack = useCallback(async () => {
+    const root = untrackTarget
+    if (!root) return
+    await stopAgentsSequentially(untrackFiles, filePath, backgroundAgentMap)
+    // The open file is one of the rows about to vanish; close it so the
+    // editor cannot start it again from a folder the sidebar no longer shows.
+    if (filePath && (filePath === root || filePath.startsWith(`${root}/`))) await closeFile()
+    // Tracked roots nested inside this one go with it.
+    for (const d of directories) {
+      if (d === root || d.startsWith(`${root}/`)) await removeDirectory(d)
+    }
+    setUntrackTarget(null)
+  }, [untrackTarget, untrackFiles, filePath, backgroundAgentMap, closeFile, directories, removeDirectory])
+
+  const handleRenamed = useCallback(async (target: RowTarget, newPath: string, name: string) => {
+    setRenameTarget(null)
+    if (target.file.filePath === filePath) {
+      useDocumentStore.getState().setFilePath(newPath)
+      const cfg = useAgentStore.getState().config
+      if (cfg) useAgentStore.getState().setConfig({ ...cfg, name })
+    }
+    // A running agent keeps its old path until it stops (deferred rename);
+    // the row shows the new name meanwhile.
+    updateFileEntry(newPath, { agentName: name })
+    await rescanDirectory(target.dirPath)
+  }, [filePath, rescanDirectory, updateFileEntry])
   const [cloneTarget, setCloneTarget] = useState<RowTarget | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<RowTarget | null>(null)
   const startingFilePaths = useAppStore((s) => s.startingFilePaths)
@@ -336,6 +386,7 @@ export function Sidebar() {
           }
         }
       },
+      { label: 'Rename…', onSelect: () => setRenameTarget({ file, dirPath }) },
       { label: 'Clone…', onSelect: () => setCloneTarget({ file, dirPath }) },
       { label: 'Share…', onSelect: () => useAppStore.getState().openShareDialog(fp) },
       {
@@ -506,11 +557,16 @@ export function Sidebar() {
       {untrackTarget && (
         <UntrackFolderDialog
           dirPath={untrackTarget}
+          runningCount={untrackRunning.length}
           onClose={() => setUntrackTarget(null)}
-          onConfirm={async () => {
-            await removeDirectory(untrackTarget)
-            setUntrackTarget(null)
-          }}
+          onConfirm={handleUntrack}
+        />
+      )}
+      {renameTarget && (
+        <RenameAgentDialog
+          target={renameTarget}
+          onClose={() => setRenameTarget(null)}
+          onRenamed={handleRenamed}
         />
       )}
       {cloneTarget && (
@@ -1107,12 +1163,13 @@ const StatusDot = memo(function StatusDot({ state, starting, stopping }: { state
  * and the dialog stays open.
  */
 /**
- * Untracking is reversible and touches no files, but it empties part of the
- * sidebar in one click, so it asks. The copy says what does and does not
- * happen, so the person is not left guessing about running agents.
+ * Untracking a folder stops every agent running from it first: a folder
+ * with no rows has no Stop toggle, so nothing may keep running out of one.
+ * The dialog says exactly that, and that nothing on disk changes.
  */
-function UntrackFolderDialog({ dirPath, onClose, onConfirm }: {
+function UntrackFolderDialog({ dirPath, runningCount, onClose, onConfirm }: {
   dirPath: string
+  runningCount: number
   onClose: () => void
   onConfirm: () => Promise<void>
 }) {
@@ -1134,8 +1191,17 @@ function UntrackFolderDialog({ dirPath, onClose, onConfirm }: {
   return (
     <Dialog open onClose={onClose} title="Untrack folder?" preventClose={busy}>
       <p className="text-sm text-[var(--adf-ui-text-muted)]">
-        <span className="font-medium text-[var(--adf-ui-text)]">{name}</span> leaves the sidebar. The files stay
-        where they are, and any agents running from it keep running. Track it again from the folder button.
+        {runningCount > 0 ? (
+          <>
+            Stops the <span className="font-medium text-[var(--adf-ui-text)]">{runningCount}</span> {runningCount === 1 ? 'agent' : 'agents'} running
+            in <span className="font-medium text-[var(--adf-ui-text)]">{name}</span>, then removes the folder and its subfolders from the sidebar.
+          </>
+        ) : (
+          <>
+            Removes <span className="font-medium text-[var(--adf-ui-text)]">{name}</span> and its subfolders from the sidebar.
+          </>
+        )}{' '}
+        Nothing is deleted from disk. Track it again from the folder button.
       </p>
       {error && (
         <p className="mt-3 text-xs text-[var(--adf-ui-danger)]" role="alert">
@@ -1146,10 +1212,76 @@ function UntrackFolderDialog({ dirPath, onClose, onConfirm }: {
         <Button variant="secondary" onClick={onClose} disabled={busy}>
           Cancel
         </Button>
-        <Button variant="primary" onClick={handleConfirm} loading={busy} autoFocus>
-          Untrack
+        <Button variant={runningCount > 0 ? 'danger' : 'primary'} onClick={handleConfirm} loading={busy} autoFocus>
+          {runningCount > 0 ? 'Stop and untrack' : 'Untrack'}
         </Button>
       </div>
+    </Dialog>
+  )
+}
+
+/**
+ * Rename from the row: the agent's name and its file name move together,
+ * through the same IPC the Agent tab uses. A running agent keeps its file
+ * name until it stops; the row shows the new name right away.
+ */
+function RenameAgentDialog({ target, onClose, onRenamed }: {
+  target: RowTarget
+  onClose: () => void
+  onRenamed: (target: RowTarget, newPath: string, name: string) => void
+}) {
+  const initial = target.file.agentName ?? target.file.fileName.replace(/\.adf$/i, '')
+  const [name, setName] = useState(initial)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const trimmed = name.trim()
+    if (!trimmed || trimmed === initial) { onClose(); return }
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await window.adfApi.renameFile(target.file.filePath, trimmed)
+      if (result.success && result.filePath) {
+        onRenamed(target, result.filePath, trimmed)
+        return
+      }
+      setError(result.error ?? 'Rename failed')
+    } catch (err) {
+      setError(String(err))
+    }
+    setBusy(false)
+  }
+
+  return (
+    <Dialog open onClose={onClose} title="Rename agent" preventClose={busy} lightDismiss={false}>
+      <form onSubmit={submit}>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          autoFocus
+          onFocus={(e) => e.currentTarget.select()}
+          aria-label="Agent name"
+          className="w-full rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-2.5 py-1.5 text-sm text-[var(--adf-ui-text)] outline-none focus:border-[var(--adf-ui-accent)]"
+        />
+        <p className="mt-2 text-xs text-[var(--adf-ui-text-muted)]">
+          The file is renamed to match. If the agent is running, the file keeps its old name until it stops.
+        </p>
+        {error && (
+          <p className="mt-3 text-xs text-[var(--adf-ui-danger)]" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="secondary" type="button" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" loading={busy}>
+            Rename
+          </Button>
+        </div>
+      </form>
     </Dialog>
   )
 }

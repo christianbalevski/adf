@@ -17,7 +17,7 @@ This guide walks you through your first agent: making one from a message, runnin
 
 ## First run
 
-The home screen is a message box. Type what you want an agent to do and press Enter.
+The home screen is a message box. Type what you want an agent to do and press Enter. The `+` on the left, or a drop onto the box, attaches files; they are uploaded into the new agent with your first message.
 
 1. A new agent file is created in your agents folder (`Documents/adf-agents` by default) under a generated name like `steady-fern`, and opens with its loop in the center.
 2. Your message is the agent's first message. It goes through the normal start: if no model provider is connected yet, the **Connect a provider** sheet opens first. Sign in with ChatGPT or Grok, or pick a provider and paste an API key, choose a model, and **Save and start**. The key is saved in app settings, not in the agent's file.
@@ -29,7 +29,7 @@ The chips under the message box set up the agent before it exists. The leaf chip
 
 Once agents exist, a status line at the top shows how many there are, how many are running, tokens used today, and a link to the fleet map.
 
-The sidebar's `+` creates a blank agent under a name you choose. Its folder button opens a menu: **Open agent…** for one file, **Track folder…** for a whole folder of them. Right-click a folder's row to rescan it, reveal it on disk, or **Untrack folder…**, which asks, then removes it from the sidebar and leaves the files where they are.
+The sidebar's `+` creates a blank agent under a name you choose. Its folder button opens a menu: **Open agent…** for one file, **Track folder…** for a whole folder of them. Right-click an agent's row for **Rename…**, which renames the agent and its file together. Right-click a folder's row to rescan it, reveal it on disk, or **Untrack folder…**: after you confirm, every agent running from that folder is stopped, then the folder and its subfolders leave the sidebar. Nothing is deleted from disk.
 
 ## Setting Up a Provider
 
