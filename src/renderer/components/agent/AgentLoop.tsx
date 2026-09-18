@@ -1880,6 +1880,15 @@ function LoopStream({ loop }: { loop: string }) {
 
       {/* Log */}
       <div className="relative flex-1 min-h-0">
+      {/* Same ambient wash as the home screen, in this loop's colour: the pane
+          reads as a continuation of home, and an inner loop's tab tints it. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-80"
+        style={{
+          background: `radial-gradient(80% 70% at 50% 0%, color-mix(in srgb, ${loopStyle.wash} 16%, transparent), transparent 100%)`
+        }}
+      />
       <div ref={scrollRef} onScroll={handleScroll} className="absolute inset-0 overflow-y-auto">
       <div className={columnClass}>
         {displayItems.length === 0 && !isActive && !starting && (

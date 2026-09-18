@@ -28,6 +28,12 @@ const MAIN_LOOP_NAME = 'main'
 export interface LoopColor {
   /** Text accent for the active tab's label. */
   accent: string
+  /**
+   * A plain CSS colour for the ambient wash at the top of the loop pane (the
+   * same radial accent the home screen wears), so switching tabs tints the
+   * pane with the loop's identity. Tailwind classes cannot feed a gradient.
+   */
+  wash: string
   /** Active-tab underline colour (pairs with `border-b-2`). */
   underline: string
   /**
@@ -56,6 +62,7 @@ export interface LoopColor {
 export const LOOP_PALETTE: readonly LoopColor[] = [
   {
     accent: 'text-indigo-700 dark:text-indigo-300',
+    wash: '#6366f1',
     underline: 'border-indigo-500 dark:border-indigo-400',
     underlineMuted: 'border-indigo-500/40 dark:border-indigo-400/40',
     rail: 'border-l-indigo-500 dark:border-l-indigo-400',
@@ -65,6 +72,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   },
   {
     accent: 'text-orange-700 dark:text-orange-300',
+    wash: '#f97316',
     underline: 'border-orange-500 dark:border-orange-400',
     underlineMuted: 'border-orange-500/40 dark:border-orange-400/40',
     rail: 'border-l-orange-500 dark:border-l-orange-400',
@@ -74,6 +82,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   },
   {
     accent: 'text-teal-700 dark:text-teal-300',
+    wash: '#14b8a6',
     underline: 'border-teal-500 dark:border-teal-400',
     underlineMuted: 'border-teal-500/40 dark:border-teal-400/40',
     rail: 'border-l-teal-500 dark:border-l-teal-400',
@@ -83,6 +92,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   },
   {
     accent: 'text-pink-700 dark:text-pink-300',
+    wash: '#ec4899',
     underline: 'border-pink-500 dark:border-pink-400',
     underlineMuted: 'border-pink-500/40 dark:border-pink-400/40',
     rail: 'border-l-pink-500 dark:border-l-pink-400',
@@ -92,6 +102,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   },
   {
     accent: 'text-sky-700 dark:text-sky-300',
+    wash: '#0ea5e9',
     underline: 'border-sky-500 dark:border-sky-400',
     underlineMuted: 'border-sky-500/40 dark:border-sky-400/40',
     rail: 'border-l-sky-500 dark:border-l-sky-400',
@@ -101,6 +112,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   },
   {
     accent: 'text-rose-700 dark:text-rose-300',
+    wash: '#f43f5e',
     underline: 'border-rose-500 dark:border-rose-400',
     underlineMuted: 'border-rose-500/40 dark:border-rose-400/40',
     rail: 'border-l-rose-500 dark:border-l-rose-400',
@@ -110,6 +122,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   },
   {
     accent: 'text-emerald-700 dark:text-emerald-300',
+    wash: '#10b981',
     underline: 'border-emerald-500 dark:border-emerald-400',
     underlineMuted: 'border-emerald-500/40 dark:border-emerald-400/40',
     rail: 'border-l-emerald-500 dark:border-l-emerald-400',
@@ -119,6 +132,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   },
   {
     accent: 'text-fuchsia-700 dark:text-fuchsia-300',
+    wash: '#d946ef',
     underline: 'border-fuchsia-500 dark:border-fuchsia-400',
     underlineMuted: 'border-fuchsia-500/40 dark:border-fuchsia-400/40',
     rail: 'border-l-fuchsia-500 dark:border-l-fuchsia-400',
@@ -128,6 +142,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   },
   {
     accent: 'text-cyan-700 dark:text-cyan-300',
+    wash: '#06b6d4',
     underline: 'border-cyan-500 dark:border-cyan-400',
     underlineMuted: 'border-cyan-500/40 dark:border-cyan-400/40',
     rail: 'border-l-cyan-500 dark:border-l-cyan-400',
@@ -137,6 +152,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   },
   {
     accent: 'text-violet-700 dark:text-violet-300',
+    wash: '#8b5cf6',
     underline: 'border-violet-500 dark:border-violet-400',
     underlineMuted: 'border-violet-500/40 dark:border-violet-400/40',
     rail: 'border-l-violet-500 dark:border-l-violet-400',
@@ -152,6 +168,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
  */
 export const MAIN_LOOP_COLOR: LoopColor = {
   accent: 'text-neutral-800 dark:text-neutral-100',
+  wash: 'var(--adf-ui-accent)',
   underline: 'border-[var(--adf-ui-accent)]',
   // Main is the host loop, not an identity in the legend — an inactive `main`
   // tab keeps the bare strip it has always had. Nothing to trace back to it.
