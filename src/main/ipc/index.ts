@@ -2115,11 +2115,17 @@ export function registerAllIpcHandlers(): void {
     const defaultProvider = chosen ?? resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
     // User-created from Studio: the "Agent template" applies (never to agent-spawned children).
     let agentTemplate = settings.get('agentTemplate') as import('../../shared/types/adf-v02.types').AgentTemplate | undefined
-    // An explicit choice outranks the template's provider: the template's
-    // model slot is cleared so the fallback fills it from the chosen one.
-    // Unless the choice IS the template's provider, in which case the
-    // template's model id is the one the user set and stays.
-    if (chosen && agentTemplate?.model && agentTemplate.model.provider !== chosen.id) {
+    // The template's model slot is cleared, so the fallback fills it from
+    // `defaultProvider`, in two cases: an explicit choice that is not the
+    // template's provider (the choice outranks the template), and a template
+    // provider that no longer exists (a removed provider left a dangling
+    // model id, e.g. a local server the user deleted: without this the new
+    // agent starts on it and fails). When the choice IS the template's
+    // provider, the template's model id is the one the user set and stays.
+    const templateProviderId = agentTemplate?.model?.provider
+    const templateProviderGone = !!templateProviderId && !appProviders.some((p) => p.id === templateProviderId)
+    const choiceOverrides = !!chosen && !!templateProviderId && templateProviderId !== chosen.id
+    if (agentTemplate?.model && (choiceOverrides || templateProviderGone)) {
       agentTemplate = { ...agentTemplate, model: { ...agentTemplate.model, provider: undefined, model_id: undefined } }
     }
     const createOptions = buildStudioCreateOptions(agentName, agentTemplate, defaultProvider)

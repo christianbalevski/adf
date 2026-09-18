@@ -5,14 +5,13 @@ import { useDashboardData } from './useDashboardData'
 import { HomeComposer } from './HomeComposer'
 import { HomeStatusLine } from './HomeStatusLine'
 import { ConnectProviderCard, HomeProvidersProvider } from './HomeProviders'
-import { RegistryGallery } from './RegistryGallery'
 
 /**
- * Home, shown when no .adf is open. One face, first run or not: ready-made
- * agents at the top, the status line once there is anything to count, and
- * the composer pinned at the bottom like any chat, carrying its own
- * provider and folder chips. A message sent from the composer is a new
- * agent.
+ * Home, shown when no .adf is open. One face, first run or not: the status
+ * line once there is anything to count, a connect-provider card in the
+ * middle until one exists, and the composer pinned at the bottom like any
+ * chat, carrying its own name, provider and folder chips. A message sent
+ * from the composer is a new agent.
  */
 export function HomeScreen() {
   const { loadDirectories } = useTrackedDirs()
@@ -47,23 +46,7 @@ export function HomeScreen() {
         />
 
         <div className="relative mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pb-6 pt-8">
-          <section>
-            <div className="mb-3 flex items-baseline justify-between">
-              <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--adf-ui-text-subtle)]">
-                Ready-made agents
-              </span>
-              <span className="text-[11.5px] text-[var(--adf-ui-text-subtle)]">
-                Runs locally. No account, no subscription. Add your own model, cloud or local.
-              </span>
-            </div>
-            <RegistryGallery mode="carousel" compact />
-          </section>
-
-          {hasAgents && (
-            <div className="mt-8 border-t border-[var(--adf-ui-separator)] pt-4">
-              <HomeStatusLine data={data} />
-            </div>
-          )}
+          {hasAgents && <HomeStatusLine data={data} />}
 
           {/* Until a provider exists, the empty middle asks for one. Gone
               the moment there is one; the chip in the composer takes over. */}

@@ -4,6 +4,7 @@ import { useAppStore } from '../../stores/app.store'
 import { pickSuggestions } from './suggestions'
 import { SuggestionMarquee } from './SuggestionMarquee'
 import { FolderPickerChip, ProviderPickerChip } from './HomePickers'
+import { useHomeProviders } from './HomeProviders'
 import { NameChip } from './NameChip'
 import { generateAgentName } from '../../../shared/utils/agent-names'
 
@@ -43,7 +44,10 @@ export function HomeComposer() {
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
   const setChatPlacement = useAppStore((s) => s.setChatPlacement)
   const setCenterChatTabActive = useAppStore((s) => s.setCenterChatTabActive)
-  const homeProviderId = useAppStore((s) => s.homeProviderId)
+  // The provider the chip shows: an explicit pick, else the app default.
+  // The create call gets exactly that, so what the user sees is what the
+  // agent starts on (the settings template's provider never wins silently).
+  const { selectedId: providerId } = useHomeProviders()
   const homeFolder = useAppStore((s) => s.homeFolder)
   const homeName = useAppStore((s) => s.homeName)
   const setHomeName = useAppStore((s) => s.setHomeName)
@@ -109,7 +113,7 @@ export function HomeComposer() {
     setBusy(true)
     setError(null)
     try {
-      const result = await createQuickAgent(message, { providerId: homeProviderId ?? undefined, folder: homeFolder ?? undefined, name: homeName ?? undefined })
+      const result = await createQuickAgent(message, { providerId: providerId ?? undefined, folder: homeFolder ?? undefined, name: homeName ?? undefined })
       if (!result.success) {
         setError(result.error ?? 'Could not create the agent')
         return
@@ -129,7 +133,7 @@ export function HomeComposer() {
     } finally {
       setBusy(false)
     }
-  }, [busy, createQuickAgent, homeFolder, homeName, homeProviderId, setCenterChatTabActive, setChatPlacement, setHomeName, setShowMeshGraph, setText, text])
+  }, [busy, createQuickAgent, homeFolder, homeName, providerId, setCenterChatTabActive, setChatPlacement, setHomeName, setShowMeshGraph, setText, text])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {

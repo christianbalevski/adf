@@ -1,6 +1,6 @@
 ---
 type: guide
-description: First run — type a message to make your first agent, connect a provider when it first runs, add a ready-made agent, learn the interface, send the file on
+description: First run — type a message to make your first agent, connect a provider when it first runs, learn the interface, send the file on
 see_also:
   - core-concepts.md — the ideas behind what you just built
   - creating-agents.md — the full per-agent configuration surface
@@ -8,7 +8,7 @@ see_also:
 
 # Getting Started
 
-This guide walks you through your first agent: making one from a message, running it, adding a ready-made one, and sending it somewhere.
+This guide walks you through your first agent: making one from a message, running it, and sending it somewhere.
 
 ## Prerequisites
 
@@ -25,11 +25,9 @@ The home screen is a message box. Type what you want an agent to do and press En
 
 Every message sent from the home screen makes a new agent. To continue with one you already have, open it from the sidebar.
 
-Along the top of the home screen are your providers, one chip each with its connection status, and **Add provider**. Both open Settings → Providers.
+The chips under the message box set up the agent before it exists. The leaf chip is its name; click it for another. The provider chip is the model provider it starts on, listing the ones you have connected, with **Add provider…** to connect another in place. The folder chip is where its file goes. With no provider connected yet, a **Connect a provider** card sits in the middle of the screen and the provider chip reads the same; either opens the provider picker.
 
-Under the message box, **Ready-made agents** lists the agent files bundled with the app plus any the live registry adds. **Add** copies one into your agents folder and opens it through the review dialog: it shows everything inside the file (tools, code execution, triggers, channels, compute tier) and that it has no identity yet. **Continue**, then **Claim & Run**. Claiming mints a fresh identity owned by you. The same review-then-claim flow runs for any `.adf` you open, including one someone sent you.
-
-Once agents exist, a status line under the box shows how many there are, how many are running, tokens used today, and a link to the fleet map.
+Once agents exist, a status line at the top shows how many there are, how many are running, tokens used today, and a link to the fleet map.
 
 The sidebar's `+` creates a blank agent under a name you choose, and its folder button adds a directory of agent files.
 
