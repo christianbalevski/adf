@@ -73,8 +73,12 @@ const HISTORY_TABLES = ['adf_loop', 'adf_inbox', 'adf_outbox', 'adf_tasks', 'adf
 /** adf_meta keys that describe a PAST run, not a configuration. */
 const HISTORY_META_PREFIXES = ['context_baseline_tokens'] as const
 
-/** Seed files the template contents editor owns; everything else is `extra`. */
-const SEED_PATHS: readonly string[] = RESERVED_SEED_FILE_PATHS
+/**
+ * Files the template contents editor owns (the seeds) or the runtime derives
+ * on open (`skills-registry.json`, rebuilt from skills/*, never user-edited);
+ * everything else in the VFS is `extra`.
+ */
+const SEED_PATHS: readonly string[] = [...RESERVED_SEED_FILE_PATHS, 'skills-registry.json']
 
 export type { ShippedTemplateId }
 
