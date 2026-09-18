@@ -94,6 +94,9 @@ const TEMPLATE_META_KEYS = [
  */
 const SEED_PATHS: readonly string[] = [...RESERVED_SEED_FILE_PATHS, 'skills-registry.json']
 
+/** Template note written on the migrated legacy snapshot ("My defaults"). */
+const MIGRATED_TEMPLATE_NOTE = 'Your previous Settings agent template, saved as a template file.'
+
 export type { ShippedTemplateId }
 
 // ---------------------------------------------------------------------------
@@ -1092,7 +1095,10 @@ export class AgentTemplatesService {
    * setting is deleted either way, so nothing reads it again.
    */
   migrateLegacySnapshot(): void {
-    if (this.deps.settings.get('templatesMigratedAt')) return
+    if (this.deps.settings.get('templatesMigratedAt')) {
+      this.repairMigratedNote()
+      return
+    }
     const snapshot = this.deps.settings.get('agentTemplate') as AgentTemplate | undefined
     const isEmpty = !snapshot || Object.keys(snapshot).length === 0
     if (isEmpty) {
@@ -1106,11 +1112,13 @@ export class AgentTemplatesService {
       const id = availableTemplateId('my-defaults')
       const workspace = AdfWorkspace.create(templateFilePath(id), {
         name: 'My defaults',
-        description: 'Your previous Settings agent template, saved as a template file.',
         template: snapshot,
         templateFilesDir: agentTemplateFilesDir()
       })
       try {
+        // A template note, not the agent's description: agents made from it
+        // must not describe themselves as a migrated settings snapshot.
+        workspace.setMeta(TEMPLATE_DESCRIPTION_META_KEY, MIGRATED_TEMPLATE_NOTE, 'readonly')
         ensureWorkspaceIdentity(workspace)
         this.markReviewed(workspace.getAgentConfig())
       } finally {
@@ -1123,6 +1131,43 @@ export class AgentTemplatesService {
       console.warn('[Templates] Legacy agent template migration failed:', err)
       // Leave templatesMigratedAt unset so the next list retries; the old
       // setting stays put meanwhile.
+    }
+  }
+
+  /**
+   * Earlier builds wrote the migration note into the agent's own description.
+   * Move it into the template note once, so agents made from "My defaults"
+   * stop inheriting it. Matches the sentence verbatim and nothing else.
+   */
+  private repairMigratedNote(): void {
+    let files: string[] = []
+    try {
+      files = readdirSync(templatesDir()).filter((f) => f.endsWith('.adf'))
+    } catch {
+      return
+    }
+    for (const file of files) {
+      const path = join(templatesDir(), file)
+      try {
+        const needsRepair = AdfDatabase.peek(path, (db) => {
+          const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
+          if (!row) return false
+          const config = JSON.parse(row.config_json) as { description?: string }
+          return config.description === MIGRATED_TEMPLATE_NOTE
+        })
+        if (!needsRepair) continue
+        const workspace = AdfWorkspace.open(path)
+        try {
+          const config = workspace.getAgentConfig()
+          config.description = ''
+          workspace.setAgentConfig(config)
+          workspace.setMeta(TEMPLATE_DESCRIPTION_META_KEY, MIGRATED_TEMPLATE_NOTE, 'readonly')
+        } finally {
+          workspace.close()
+        }
+      } catch (err) {
+        console.warn(`[Templates] Could not repair the migrated note in ${file}:`, err)
+      }
     }
   }
 
