@@ -323,6 +323,29 @@ describe('AgentTemplatesService', () => {
     makeService(chosen)
     expect(chosen.get('childTemplateId')).toBe('full-access')
   })
+
+  it('resets a shipped template in place, over the file that is already there', () => {
+    const { service, folder } = makeService(new Map<string, unknown>())
+    service.list()
+    const path = join(folder, 'standard.adf')
+    expect(existsSync(path)).toBe(true)
+    const shippedName = readConfig(path).name
+
+    // The owner edited the shipped file; Reset puts the code version back.
+    const db = new BetterSqlite3(path)
+    try {
+      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string }
+      db.prepare('UPDATE adf_config SET config_json = ? WHERE id = 1')
+        .run(JSON.stringify({ ...JSON.parse(row.config_json), name: 'Edited' }))
+    } finally {
+      db.close()
+    }
+    expect(readConfig(path).name).toBe('Edited')
+
+    expect(service.resetShipped('standard')).toEqual({ success: true })
+    expect(readConfig(path).name).toBe(shippedName)
+    expect(existsSync(`${path}.partial`)).toBe(false)
+  })
 })
 
 function readConfig(path: string): import('../../src/shared/types/adf-v02.types').AgentConfig {
