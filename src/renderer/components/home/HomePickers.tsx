@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { resolveTemplate, useTemplates } from '../../hooks/useTemplates'
@@ -43,7 +43,7 @@ function Popover({ open, onClose, children, align = 'left' }: {
     <div
       ref={ref}
       role="menu"
-      className={`absolute bottom-full z-20 mb-1.5 min-w-[220px] max-w-[340px] rounded-lg border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] p-1 shadow-lg ${align === 'right' ? 'right-0' : 'left-0'}`}
+      className={`absolute bottom-full z-20 mb-1.5 min-w-[220px] max-w-[340px] max-h-[min(70vh,520px)] overflow-y-auto rounded-lg border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] p-1 shadow-lg ${align === 'right' ? 'right-0' : 'left-0'}`}
     >
       {children}
     </div>
@@ -184,14 +184,17 @@ export function TemplatePickerChip() {
 
 /**
  * The provider and model the next new agent starts on, as a chip in the
- * composer footer. The menu groups the configured providers with their
- * status and lists each one's models underneath, then "Add provider…" (the
- * Settings picker, in place) and a gear that opens Settings → Providers.
- * Model lists are fetched the first time the menu opens; until one arrives
- * the group offers the provider's default model alone. The list and the
- * modal belong to HomeProvidersProvider, shared with the connect card. With
- * nothing configured the chip reads "Connect a provider" and opens the
- * picker straight away.
+ * composer footer. The menu lists the configured providers as rows with
+ * their status; only the selected provider is expanded, showing its models
+ * in a scrolling list with a filter box once the list is long (some
+ * providers list hundreds). Clicking another provider selects it on its
+ * default model and expands it in place; clicking the expanded one folds it.
+ * Then "Add provider…" (the Settings picker, in place) and a gear that opens
+ * Settings → Providers. A provider's models are fetched the first time it is
+ * expanded; until they arrive the group offers the default model alone. The
+ * list and the modal belong to HomeProvidersProvider, shared with the
+ * connect card. With nothing configured the chip reads "Connect a provider"
+ * and opens the picker straight away.
  */
 export function ProviderPickerChip() {
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
@@ -201,18 +204,28 @@ export function ProviderPickerChip() {
   const [menuOpen, setMenuOpen] = useState(false)
   const closeMenu = useCallback(() => setMenuOpen(false), [])
 
-  // One fetch per provider per session: opening the menu asks for whatever is
-  // still missing, and a provider that failed keeps its error rather than
-  // retrying on every open.
+  // Only the expanded provider is asked for its models, once per session: a
+  // provider that failed keeps its error rather than retrying on every open.
+  const [folded, setFolded] = useState(false)
+  const [filter, setFilter] = useState('')
+  const expandedId = menuOpen && !folded ? selectedId : null
   const asked = useRef<Set<string>>(new Set())
   useEffect(() => {
-    if (!menuOpen) return
-    for (const p of providers) {
-      if (models[p.id] || asked.current.has(p.id)) continue
-      asked.current.add(p.id)
-      void fetchModels(p.id)
-    }
-  }, [menuOpen, providers, models, fetchModels])
+    if (!expandedId || models[expandedId] || asked.current.has(expandedId)) return
+    asked.current.add(expandedId)
+    void fetchModels(expandedId)
+  }, [expandedId, models, fetchModels])
+  useEffect(() => {
+    if (!menuOpen) { setFolded(false); setFilter('') }
+  }, [menuOpen])
+
+  const pickProvider = useCallback((p: { id: string }) => {
+    if (p.id === selectedId) { setFolded((v) => !v); return }
+    setHomeProviderId(p.id)
+    setHomeModelId(null)
+    setFolded(false)
+    setFilter('')
+  }, [selectedId, setHomeModelId, setHomeProviderId])
 
   const pickModel = useCallback((p: { id: string; defaultModel?: string }, model: string | null) => {
     setHomeProviderId(p.id)
@@ -271,42 +284,37 @@ export function ProviderPickerChip() {
         {providers.map((p) => {
           const e = catalogEntryForProvider(p)
           const name = p.name || e?.label || p.type
-          const state = models[p.id]
-          const current = p.id === selectedId ? homeModelId ?? p.defaultModel ?? null : null
-          // A model the provider no longer lists (a template's pick, say) is
-          // still shown, so the chip's model always has a row to match.
-          const fetched = state?.models ?? []
-          const list = current && fetched.length > 0 && !fetched.includes(current) ? [current, ...fetched] : fetched
+          const isSelected = p.id === selectedId
+          const expanded = p.id === expandedId
+          const current = isSelected ? homeModelId ?? p.defaultModel ?? null : null
           return (
             <div key={p.id}>
-              <div className="flex items-center gap-2 px-2 pb-0.5 pt-1.5 text-[11px] font-medium text-[var(--adf-ui-text-muted)]">
+              <button
+                type="button"
+                role="menuitem"
+                aria-expanded={expanded}
+                onClick={() => pickProvider(p)}
+                className={`flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] transition-colors hover:bg-[var(--adf-ui-surface-hover)] ${isSelected && !expanded ? 'bg-[var(--adf-ui-accent-subtle)]' : ''}`}
+              >
                 <BrandMark iconKey={e?.iconKey} label={name} size={16} />
-                <span className="min-w-0 flex-1 truncate">{name}</span>
+                <span className={`min-w-0 truncate ${expanded ? 'font-medium' : ''}`}>{name}</span>
+                {isSelected && !expanded && current && (
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--adf-ui-text-muted)]">· {current}</span>
+                )}
+                {!(isSelected && !expanded && current) && <span className="flex-1" />}
                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${providerDotClass(status[p.id])}`} aria-hidden />
-              </div>
-              {list.length > 0 ? (
-                list.map((mo) => (
-                  <MenuItem key={mo} selected={current === mo} onClick={() => pickModel(p, mo)}>
-                    <span className="min-w-0 flex-1 truncate pl-6">{mo}</span>
-                    {mo === p.defaultModel && <span className="shrink-0 text-[11px] text-[var(--adf-ui-text-subtle)]">default</span>}
-                  </MenuItem>
-                ))
-              ) : (
-                <Tooltip
-                  className="block"
-                  tip={state?.error
-                    ? `Could not list models: ${state.error}`
-                    : state?.loading
-                      ? 'Loading the model list.'
-                      : p.defaultModel
-                        ? `Uses ${p.defaultModel}, the provider's default model.`
-                        : "Uses the provider's default model."}
-                >
-                  <MenuItem selected={p.id === selectedId && !homeModelId} onClick={() => pickModel(p, null)}>
-                    <span className="min-w-0 flex-1 truncate pl-6">Default model</span>
-                    {state?.loading && <span className="shrink-0 text-[11px] text-[var(--adf-ui-text-subtle)]">loading…</span>}
-                  </MenuItem>
-                </Tooltip>
+                <span className={`transition-transform ${expanded ? '' : 'rotate-180'}`}><Caret /></span>
+              </button>
+              {expanded && (
+                <ModelList
+                  provider={p}
+                  state={models[p.id]}
+                  current={current}
+                  usingDefault={isSelected && !homeModelId}
+                  filter={filter}
+                  onFilter={setFilter}
+                  onPick={(mo) => pickModel(p, mo)}
+                />
               )}
             </div>
           )
@@ -331,6 +339,88 @@ export function ProviderPickerChip() {
           </Tooltip>
         </div>
       </Popover>
+    </div>
+  )
+}
+
+/** How many models a provider may list before the group gains a filter box. */
+const MODEL_FILTER_THRESHOLD = 12
+
+/**
+ * The expanded provider's models: a filter box when the list is long, then a
+ * scrolling list capped in height so the other providers stay in reach. The
+ * current model is kept in the list even when the provider no longer reports
+ * it (a template's pick, say) and scrolled into view on open. With no list
+ * yet, a single "Default model" row carries the loading or error state.
+ */
+function ModelList({ provider, state, current, usingDefault, filter, onFilter, onPick }: {
+  provider: { id: string; defaultModel?: string }
+  state: { models?: string[]; loading?: boolean; error?: string } | undefined
+  current: string | null
+  usingDefault: boolean
+  filter: string
+  onFilter: (v: string) => void
+  onPick: (model: string | null) => void
+}) {
+  const fetched = state?.models ?? []
+  const all = useMemo(
+    () => (current && fetched.length > 0 && !fetched.includes(current) ? [current, ...fetched] : fetched),
+    [current, fetched]
+  )
+  const needle = filter.trim().toLowerCase()
+  const shown = needle ? all.filter((m) => m.toLowerCase().includes(needle)) : all
+  const listRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = listRef.current?.querySelector<HTMLElement>('[aria-checked="true"]')
+    el?.scrollIntoView({ block: 'nearest' })
+  }, [provider.id, all.length])
+
+  if (all.length === 0) {
+    return (
+      <Tooltip
+        className="block"
+        tip={state?.error
+          ? `Could not list models: ${state.error}`
+          : state?.loading
+            ? 'Loading the model list.'
+            : provider.defaultModel
+              ? `Uses ${provider.defaultModel}, the provider's default model.`
+              : "Uses the provider's default model."}
+      >
+        <MenuItem selected={usingDefault} onClick={() => onPick(null)}>
+          <span className="min-w-0 flex-1 truncate pl-6">Default model</span>
+          {state?.loading && <span className="shrink-0 text-[11px] text-[var(--adf-ui-text-subtle)]">loading…</span>}
+        </MenuItem>
+      </Tooltip>
+    )
+  }
+
+  return (
+    <div className="pb-1">
+      {all.length > MODEL_FILTER_THRESHOLD && (
+        <div className="px-2 pb-1 pt-0.5">
+          <input
+            autoFocus
+            value={filter}
+            onChange={(e) => onFilter(e.target.value)}
+            placeholder={`Filter ${all.length} models`}
+            aria-label="Filter models"
+            className="h-6 w-full rounded-md border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-2 text-[11.5px] text-[var(--adf-ui-text)] placeholder:text-[var(--adf-ui-text-subtle)] focus:border-[var(--adf-ui-accent)] focus:outline-none"
+          />
+        </div>
+      )}
+      <div ref={listRef} className="max-h-[240px] overflow-y-auto">
+        {shown.length === 0 ? (
+          <div className="px-2 py-1 pl-8 text-[12px] text-[var(--adf-ui-text-muted)]">No models match.</div>
+        ) : (
+          shown.map((mo) => (
+            <MenuItem key={mo} selected={current === mo} onClick={() => onPick(mo)}>
+              <span className="min-w-0 flex-1 truncate pl-6">{mo}</span>
+              {mo === provider.defaultModel && <span className="shrink-0 text-[11px] text-[var(--adf-ui-text-subtle)]">default</span>}
+            </MenuItem>
+          ))
+        )}
+      </div>
     </div>
   )
 }
