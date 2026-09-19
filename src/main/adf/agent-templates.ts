@@ -534,21 +534,43 @@ export class AgentTemplatesService {
     // No `description`: that field is the AGENT's, and every agent made from
     // this template would inherit it as its own. What the template is for goes
     // in the template notes below.
-    const workspace = AdfWorkspace.create(path, {
-      name: shipped.name,
-      template: { ...shipped.template, files: { readme: shipped.readme } }
-    })
+    //
+    // Built on a `.partial` and renamed into place: `create` refuses a path
+    // that exists, and Reset rewrites a shipped file that is already there.
+    const partial = `${path}.partial`
+    const sidecars = ['-wal', '-shm']
+    for (const suffix of ['', ...sidecars]) {
+      try { if (existsSync(`${partial}${suffix}`)) unlinkSync(`${partial}${suffix}`) } catch { /* none */ }
+    }
     try {
-      // A template is the owner's own file: it gets an identity so instances
-      // have a parent DID to record, and it is reviewed by construction.
-      ensureWorkspaceIdentity(workspace)
-      workspace.setMeta(SHIPPED_TEMPLATE_META_KEY, id, 'readonly')
-      workspace.setMeta(TEMPLATE_DESCRIPTION_META_KEY, shipped.description, 'readonly')
-      if (shipped.warning) workspace.setMeta(TEMPLATE_WARNING_META_KEY, shipped.warning, 'readonly')
-      else workspace.deleteMeta(TEMPLATE_WARNING_META_KEY)
-      this.markReviewed(workspace.getAgentConfig())
-    } finally {
-      workspace.close()
+      const workspace = AdfWorkspace.create(partial, {
+        name: shipped.name,
+        template: { ...shipped.template, files: { readme: shipped.readme } }
+      })
+      try {
+        // A template is the owner's own file: it gets an identity so instances
+        // have a parent DID to record, and it is reviewed by construction.
+        ensureWorkspaceIdentity(workspace)
+        workspace.setMeta(SHIPPED_TEMPLATE_META_KEY, id, 'readonly')
+        workspace.setMeta(TEMPLATE_DESCRIPTION_META_KEY, shipped.description, 'readonly')
+        if (shipped.warning) workspace.setMeta(TEMPLATE_WARNING_META_KEY, shipped.warning, 'readonly')
+        else workspace.deleteMeta(TEMPLATE_WARNING_META_KEY)
+        this.markReviewed(workspace.getAgentConfig())
+      } finally {
+        workspace.close()
+      }
+      // The replaced file's sidecars describe the OLD database; left beside
+      // the new one they would be read as its WAL.
+      for (const suffix of sidecars) {
+        try { if (existsSync(`${partial}${suffix}`)) unlinkSync(`${partial}${suffix}`) } catch { /* none */ }
+        if (existsSync(`${path}${suffix}`)) unlinkSync(`${path}${suffix}`)
+      }
+      renameSync(partial, path)
+    } catch (error) {
+      for (const suffix of ['', ...sidecars]) {
+        try { if (existsSync(`${partial}${suffix}`)) unlinkSync(`${partial}${suffix}`) } catch { /* none */ }
+      }
+      throw error
     }
   }
 

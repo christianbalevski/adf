@@ -10,6 +10,8 @@ import { initApplicationMenu, recordRecentFile } from '../menu'
 import { verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
 import { BackgroundEventBatcher } from './background-event-batch'
+import { FileCreateRefusedError, makeFileCreateHandler, runFileCreateTransition, type FileCreateTransitionDeps } from './file-create-handler'
+import { recoverFileCreateCleanupFailure } from './file-create-recovery'
 
 /**
  * Delete an ADF file and its associated SQLite WAL files (-shm, -wal).
@@ -1032,6 +1034,52 @@ function stopDirWatcher(): void {
 /**
  * Clean up the currently open file, agent, and session.
  */
+/**
+ * Synchronize main after FILE_CREATE cleanup rejects. This is state exposure
+ * recovery, not rollback: background/start ownership stays with its owner.
+ */
+function recoverAfterFileCreateCleanupFailure() {
+  const filePath = currentFilePath
+  const workspace = currentWorkspace
+  const retainedByBackground = !!(filePath && backgroundAgentManager?.hasAgent(filePath))
+  const startInFlight = !!(filePath && startingFilePaths.has(filePath))
+
+  return recoverFileCreateCleanupFailure({
+    retainedByBackground,
+    startInFlight,
+    unregisterMesh: () => {
+      if (filePath && meshManager?.isEnabled()) meshManager.unregisterAgent(filePath)
+    },
+    closeWorkspace: () => {
+      if (workspace) workspace.close()
+    },
+    clearForeground: () => {
+      currentWorkspace = null
+      currentFilePath = null
+      currentSession = null
+      try { currentHostAttachment?.detach() } catch (error) {
+        console.error('[IPC] FILE_CREATE recovery host detach failed:', error)
+      }
+      currentHostAttachment = null
+      currentAssembledAgent = null
+      currentDerivedKey = null
+      currentTapManager = null
+      currentUmbilicalAgentId = null
+      currentStreamBindingManager = null
+      currentAdapterManager = null
+      currentMcpManager = null
+      currentMcpReconcile = null
+      currentScratchDir = null
+      currentAgentToolRegistry = null
+      currentAdfCallHandler = null
+      agentExecutor = null
+      triggerEvaluator = null
+    },
+    onRecoveryError: (error) => {
+      console.error('[IPC] FILE_CREATE recovery cleanup failed:', error)
+    },
+  })
+}
 async function cleanupCurrentFile(): Promise<void> {
   const t0 = performance.now()
   const filePath = currentFilePath
@@ -2120,78 +2168,74 @@ export function registerAllIpcHandlers(): void {
   })
 
   /**
-   * Create a Studio-made agent at `filePath` and make it the open workspace:
+   * Create a Studio-made agent at a path and make it the open workspace:
    * agent template + default provider, identity keys, directory tracking,
    * and the reviewed mark (the user made it, there is nothing to review).
    * Shared by FILE_CREATE (path from a save dialog) and FILE_CREATE_QUICK
-   * (path generated in the agents folder).
+   * (path generated in the agents folder); the transition itself, and what a
+   * failure at each step leaves behind, lives in file-create-handler.
    */
-  const createStudioAgentAt = async (
-    filePath: string,
+  const studioCreateDeps = (
     opts: { providerId?: string; modelId?: string; templateId?: string } = {}
-  ): Promise<{ success: boolean; error?: string; code?: 'template_missing' | 'template_unreviewed' }> => {
-    const agentName = basename(filePath, '.adf')
-
-    // The file is written FIRST, from the template, and only then does the
-    // open agent get closed: a refused template (missing, or someone else's
-    // and unreviewed) must leave the current workspace exactly as it was.
-    const made = await templatesService.instantiate({
-      templateId: opts.templateId,
-      destPath: filePath,
-      name: agentName,
-      providerId: opts.providerId,
-      modelId: opts.modelId
-    })
-    if (!made.success) return made
-
-    rememberAdfDirectory(filePath)
-    recordRecentFile(filePath)
-    await cleanupCurrentFile()
-
-    currentWorkspace = AdfWorkspace.open(filePath)
-    currentFilePath = filePath
-    attachWorkspaceDataForwarder(currentWorkspace)
-
-    // D1: every new file gets identity keys, sealed in owner/runtime envelopes.
-    // An instance is CREATED, not received: it gets a fresh identity here and
-    // is reviewed below, so there is no claim step.
-    try {
-      settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
-    } catch (err) {
-      console.warn('[OwnerIdentity] Identity provisioning on create failed:', err)
-    }
-
-    // Auto-track the parent directory (or refresh existing parent) + notify renderer
-    notifyAdfFileCreated(filePath)
-
-    // Auto-register as reviewed (user created it)
-    const newConfig = currentWorkspace.getAgentConfig()
-    settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), newConfig))
-    return { success: true }
-  }
-
-  ipcMain.handle(IPC.FILE_CREATE, async (_event, args: { name: string }) => {
-    try {
-      console.log('[IPC] FILE_CREATE called with name:', args.name)
-      const result = await dialog.showSaveDialog({
-        defaultPath: `${args.name}.adf`,
-        filters: [{ name: 'Agent Document Format', extensions: ['adf'] }]
+  ): FileCreateTransitionDeps<AdfWorkspace> => ({
+    createWorkspace: async (filePath, agentName) => {
+      // The file is written FIRST, from the template, and only then does the
+      // open agent get closed: a refused template (missing, or someone else's
+      // and unreviewed) must leave the current workspace exactly as it was.
+      const made = await templatesService.instantiate({
+        templateId: opts.templateId,
+        destPath: filePath,
+        name: agentName,
+        providerId: opts.providerId,
+        modelId: opts.modelId
       })
-      if (result.canceled || !result.filePath) {
-        return { success: false, error: 'Cancelled' }
+      if (!made.success) throw new FileCreateRefusedError(made.error ?? 'The template was refused', made.code)
+
+      const workspace = AdfWorkspace.open(filePath)
+      // D1: every new file gets identity keys, sealed in owner/runtime envelopes.
+      // An instance is CREATED, not received: it gets a fresh identity here and
+      // is reviewed below, so there is no claim step.
+      try {
+        settings.getOwnerIdentity().ensureWorkspaceIdentity(workspace)
+      } catch (err) {
+        console.warn('[OwnerIdentity] Identity provisioning on create failed:', err)
       }
-
-      console.log('[IPC] FILE_CREATE: Creating file at:', result.filePath)
-      const made = await createStudioAgentAt(result.filePath)
-      if (!made.success) return { success: false, error: made.error }
-      console.log('[IPC] FILE_CREATE: Success')
-
-      return { success: true, filePath: result.filePath }
-    } catch (error) {
-      console.error('[IPC] FILE_CREATE error:', error)
-      return { success: false, error: String(error) }
+      return workspace
+    },
+    closeWorkspace: (workspace) => workspace.close(),
+    cleanupCurrentFile,
+    recoverAfterCleanupFailure: recoverAfterFileCreateCleanupFailure,
+    prepareWorkspace: (workspace) => {
+      // Attach while detached. If callback preparation fails, the old
+      // foreground has not been cleaned up and remains authoritative.
+      attachWorkspaceDataForwarder(workspace)
+    },
+    installWorkspace: (workspace, filePath) => {
+      // Preparation is complete; this commit is assignment-only.
+      currentWorkspace = workspace
+      currentFilePath = filePath
+    },
+    onInstalled: (workspace, filePath) => {
+      // The switch is committed before these side effects. If any of them
+      // throws, the transition logs it without reporting a false create
+      // failure after the new workspace is already foreground.
+      rememberAdfDirectory(filePath)
+      recordRecentFile(filePath)
+      // Auto-track the parent directory (or refresh existing parent) + notify renderer
+      notifyAdfFileCreated(filePath)
+      // Auto-register as reviewed (user created it)
+      const newConfig = workspace.getAgentConfig()
+      settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), newConfig))
+    },
+    onPostInstallError: (error) => {
+      console.error('[IPC] File create post-install bookkeeping error:', error)
     }
   })
+
+  ipcMain.handle(IPC.FILE_CREATE, makeFileCreateHandler({
+    showSaveDialog: (options) => dialog.showSaveDialog(options),
+    ...studioCreateDeps()
+  }))
 
   // The home composer's create: a generated "adjective-plant" name in the
   // agents folder, no dialog. Same create routine as FILE_CREATE, so the
@@ -2231,8 +2275,8 @@ export function registerAllIpcHandlers(): void {
       const providerId = typeof args?.providerId === 'string' && args.providerId !== '' ? args.providerId : undefined
       const modelId = typeof args?.modelId === 'string' && args.modelId !== '' ? args.modelId : undefined
       const templateId = typeof args?.templateId === 'string' && args.templateId !== '' ? args.templateId : undefined
-      const made = await createStudioAgentAt(filePath, { providerId, modelId, templateId })
-      if (!made.success) return { success: false, code: made.code, error: made.error }
+      const made = await runFileCreateTransition(studioCreateDeps({ providerId, modelId, templateId }), filePath, basename(filePath, '.adf'))
+      if (!made.success) return made
       return { success: true, filePath, name: basename(filePath, '.adf') }
     } catch (error) {
       console.error('[IPC] FILE_CREATE_QUICK error:', error)
