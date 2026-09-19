@@ -7,7 +7,14 @@ import { createPortal } from 'react-dom'
  * Rendered into a body portal with fixed positioning so it never gets
  * clipped by overflow containers.
  */
-export function Tooltip({ tip, children, className, style }: { tip: string; children?: ReactNode; className?: string; style?: CSSProperties }) {
+export function Tooltip({ tip, children, className, style, delay = 500 }: {
+  tip: string
+  children?: ReactNode
+  className?: string
+  style?: CSSProperties
+  /** Hover delay in ms. Raise it for hints the pointer crosses constantly (list rows). */
+  delay?: number
+}) {
   const [pos, setPos] = useState<{ x: number; y: number; below: boolean } | null>(null)
   const anchorRef = useRef<HTMLSpanElement>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -20,8 +27,8 @@ export function Tooltip({ tip, children, className, style }: { tip: string; chil
       const halfWidth = 132 // matches max-w below
       const x = Math.min(Math.max(r.left + r.width / 2, halfWidth + 8), window.innerWidth - halfWidth - 8)
       setPos({ x, y: below ? r.bottom + 6 : r.top - 6, below })
-    }, 250)
-  }, [])
+    }, delay)
+  }, [delay])
 
   const hide = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current)
@@ -37,7 +44,7 @@ export function Tooltip({ tip, children, className, style }: { tip: string; chil
       {pos &&
         createPortal(
           <div
-            className="fixed z-[1000] max-w-[264px] px-2 py-1.5 text-[10px] leading-snug whitespace-pre-line rounded-md shadow-lg pointer-events-none bg-neutral-800 text-neutral-100 dark:bg-neutral-700 dark:text-neutral-100 border border-neutral-700 dark:border-neutral-600"
+            className="fixed z-[1000] max-w-[264px] px-2 py-1.5 text-[10px] leading-snug whitespace-pre-line [overflow-wrap:anywhere] rounded-md shadow-lg pointer-events-none bg-neutral-800 text-neutral-100 dark:bg-neutral-700 dark:text-neutral-100 border border-neutral-700 dark:border-neutral-600"
             style={{ left: pos.x, top: pos.y, transform: `translate(-50%, ${pos.below ? '0' : '-100%'})` }}
           >
             {tip}

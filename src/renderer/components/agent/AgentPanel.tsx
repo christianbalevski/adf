@@ -6,6 +6,7 @@ import { toDisplayState } from '../../hooks/useAgent'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { AgentStatus } from './AgentStatus'
 import { Button } from '../ui'
+import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 function firstGrapheme(str: string): string {
@@ -84,7 +85,7 @@ export function AgentPanel() {
       <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-2 space-y-1.5">
         {/* Header: icon + name + model */}
         <div className="flex items-center gap-2">
-          <span className="text-lg shrink-0">{firstGrapheme(config?.icon ?? '🤖')}</span>
+          <span className="text-lg shrink-0">{firstGrapheme(config?.icon || pickAgentIcon(config?.id ?? ''))}</span>
           <div className="min-w-0 flex-1">
             <h3
               className="text-sm font-semibold text-neutral-800 dark:text-neutral-100 truncate cursor-default"

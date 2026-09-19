@@ -106,7 +106,7 @@ export interface AdfOpenOptions {
 }
 
 /** Latest ADF schema version. Files at this version skip the migration ladder on open. */
-export const ADF_LATEST_SCHEMA_VERSION = 30
+export const ADF_LATEST_SCHEMA_VERSION = 31
 
 /**
  * adf_meta key written by close() as the final write before the connection
@@ -1917,6 +1917,27 @@ export class AdfDatabase {
         console.log('[AdfDatabase] Migrated schema v29 → v30 (bare_prompt no longer gates dynamic instructions)')
       }
 
+      // Migrate schema v30 → v31: every agent owns its avatar. Files created
+      // before `create()` seeded one showed a robot in the header and an
+      // id-picked emoji in the tree and on the fleet map; storing the same
+      // pick in `config.icon` makes every surface read one value, and the
+      // owner can change it from the config panel like any other icon.
+      const sv31 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
+      if (sv31?.value === '30') {
+        db.transaction(() => {
+          const cfgRow31 = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
+          if (cfgRow31) {
+            const cfg31 = JSON.parse(cfgRow31.config_json)
+            if (!cfg31?.icon && typeof cfg31?.id === 'string' && cfg31.id) {
+              cfg31.icon = pickAgentIcon(cfg31.id)
+              db.prepare('UPDATE adf_config SET config_json = ? WHERE id = 1').run(JSON.stringify(cfg31))
+            }
+          }
+          db.prepare("UPDATE adf_meta SET value = '31' WHERE key = 'adf_schema_version'").run()
+        })()
+        console.log('[AdfDatabase] Migrated schema v30 → v31 (icon seed)')
+      }
+
       // Ensure the per-loop stream index exists regardless of version history:
       // files migrated to v29 by an earlier build of this branch (before the
       // index was added) skip the v28→v29 step, so a version-gated create can't
@@ -2357,7 +2378,7 @@ export class AdfDatabase {
    */
   static peekMessagingConfig(
     filePath: string
-  ): { id: string; name: string; receive: boolean; mode: string; autonomous: boolean } | null {
+  ): { id: string; name: string; receive: boolean; mode: string; autonomous: boolean; icon?: string } | null {
     try {
       return AdfDatabase.peekReadonly(filePath, (db) => {
         const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
@@ -2371,7 +2392,8 @@ export class AdfDatabase {
           name: config.name,
           receive: config.messaging?.receive ?? false,
           mode: config.messaging?.mode || 'proactive',
-          autonomous: config.autonomous ?? false
+          autonomous: config.autonomous ?? false,
+          icon: config.icon || undefined
         }
       })
     } catch {

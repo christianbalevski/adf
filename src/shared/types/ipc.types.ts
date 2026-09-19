@@ -229,6 +229,10 @@ export interface TrackedDirEntry {
   canReceive?: boolean
   sendMode?: 'proactive' | 'respond_only' | 'listen_only'
   autonomous?: boolean
+  /** config.id — seeds the fallback avatar when the file sets no icon. */
+  agentId?: string
+  /** Emoji avatar from config; the tree and the fleet map draw the same one. */
+  icon?: string
   isDirectory?: boolean
   children?: TrackedDirEntry[]
 }
