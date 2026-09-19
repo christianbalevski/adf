@@ -10,7 +10,7 @@ export function fileOperationErrorMessage(
 }
 
 /** Whether a failed create crossed cleanup and detached the foreground. */
-export function fileOperationDetachedForeground(result: FileOperationResult): boolean {
+export function fileOperationDetachedForeground(result: Pick<FileOperationResult, 'success' | 'foregroundDetached'>): boolean {
   return !result.success && result.foregroundDetached === true
 }
 

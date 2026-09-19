@@ -382,6 +382,18 @@ export function useAdfFile() {
   }, [setShowSettings, resetAgent, resetDocument, loadFileContents, setFilePath])
 
   /**
+   * Main cleared its foreground aliases after a create's cleanup rejected.
+   * Clear the renderer too, rather than leaving the old agent looking usable.
+   */
+  const clearDetachedForeground = useCallback(() => {
+    resetDocument()
+    resetAgent()
+    useAppStore.getState().resetAgentReview()
+    useEditorTabsStore.getState().reset()
+    setStatusText('No file is open in the foreground after an incomplete file transition.')
+  }, [resetDocument, resetAgent, setStatusText])
+
+  /**
    * The home composer's create: a generated name in the agents folder, no
    * dialog. `firstMessage` is parked in the app store before the file
    * becomes the open one, so the loop panel finds it on mount and sends it.
@@ -398,12 +410,15 @@ export function useAdfFile() {
         setFilePath(result.filePath)
         useAppStore.getState().resetAgentReview()
         await loadFileContents()
+      } else if (fileOperationDetachedForeground(result)) {
+        // The composer shows result.error; the stale agent still has to go.
+        clearDetachedForeground()
       }
       return result
     } finally {
       endAgentSwitch()
     }
-  }, [setShowSettings, resetAgent, setFilePath, loadFileContents])
+  }, [setShowSettings, resetAgent, setFilePath, loadFileContents, clearDetachedForeground])
 
   const createFile = useCallback(async (name: string) => {
     // Swaps main's workspace exactly like openFile does — same guard.
@@ -420,13 +435,7 @@ export function useAdfFile() {
         await loadFileContents()
       } else {
         if (fileOperationDetachedForeground(result)) {
-          // Main cleared its foreground aliases after cleanup rejected. Clear
-          // the renderer too, rather than leaving the old agent looking usable.
-          resetDocument()
-          resetAgent()
-          useAppStore.getState().resetAgentReview()
-          useEditorTabsStore.getState().reset()
-          setStatusText('No file is open in the foreground after an incomplete file transition.')
+          clearDetachedForeground()
           reportFileOperationError('create', result, alert)
         } else {
           // Collision/I/O failures occur before old cleanup and preserve the
@@ -438,7 +447,7 @@ export function useAdfFile() {
     } finally {
       endAgentSwitch()
     }
-  }, [setShowSettings, setFilePath, loadFileContents, resetDocument, resetAgent, setStatusText])
+  }, [setShowSettings, setFilePath, loadFileContents, clearDetachedForeground])
 
   const saveFile = useCallback(async () => {
     const result = await window.adfApi.saveFile()

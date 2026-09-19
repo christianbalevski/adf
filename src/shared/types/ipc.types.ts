@@ -719,6 +719,8 @@ export interface QuickCreateResult {
   /** The generated name ("steady-fern"), also the file's stem. */
   name?: string
   error?: string
+  /** Create failed after old cleanup began; renderer must show detached/no-file state. */
+  foregroundDetached?: boolean
   /**
    * `name_taken`: the proposed name is already a file in that folder; nothing was created.
    * `template_unreviewed`: the chosen template came from someone else and has not been

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { AdfDatabase } from '../../../src/main/adf/adf-database'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
-import { makeFileCreateHandler } from '../../../src/main/ipc/file-create-handler'
+import { FileCreateRefusedError, makeFileCreateHandler, runFileCreateTransition } from '../../../src/main/ipc/file-create-handler'
 
 describe('FILE_CREATE transaction boundary', () => {
   const dirs: string[] = []
@@ -34,8 +34,7 @@ describe('FILE_CREATE transaction boundary', () => {
     const onInstalled = vi.fn((_, filePath: string) => recentFiles.unshift(filePath))
     const handler = makeFileCreateHandler<AdfWorkspace>({
       showSaveDialog: async () => ({ canceled: false, filePath: collisionPath }),
-      buildCreateOptions: (name) => ({ name }),
-      createWorkspace: (filePath, options) => AdfWorkspace.create(filePath, options),
+      createWorkspace: (filePath, name) => AdfWorkspace.create(filePath, { name }),
       closeWorkspace: (workspace) => workspace.close(),
       cleanupCurrentFile,
       prepareWorkspace: () => {},
@@ -101,8 +100,7 @@ describe('FILE_CREATE transaction boundary', () => {
     })
     const handler = makeFileCreateHandler<AdfWorkspace>({
       showSaveDialog: async () => ({ canceled: false, filePath: candidatePath }),
-      buildCreateOptions: (name) => ({ name }),
-      createWorkspace: (filePath, options) => AdfWorkspace.create(filePath, options),
+      createWorkspace: (filePath, name) => AdfWorkspace.create(filePath, { name }),
       closeWorkspace: (workspace) => workspace.close(),
       prepareWorkspace: () => {},
       // Model cleanupCurrentFile's no-transition partial failure: it detaches
@@ -164,7 +162,6 @@ describe('FILE_CREATE transaction boundary', () => {
     const closeWorkspace = vi.fn((workspace: typeof candidate) => { workspace.closed = true })
     const handler = makeFileCreateHandler<typeof candidate>({
       showSaveDialog: async () => ({ canceled: false, filePath: '/tmp/preparation-fails.adf' }),
-      buildCreateOptions: (name) => ({ name }),
       createWorkspace: () => candidate,
       closeWorkspace,
       cleanupCurrentFile,
@@ -189,7 +186,6 @@ describe('FILE_CREATE transaction boundary', () => {
     const postInstallErrors: unknown[] = []
     const handler = makeFileCreateHandler<typeof candidate>({
       showSaveDialog: async () => ({ canceled: false, filePath: '/tmp/new-agent.adf' }),
-      buildCreateOptions: (name) => ({ name }),
       createWorkspace: () => candidate,
       closeWorkspace: (workspace) => { workspace.closed = true },
       cleanupCurrentFile: async () => {},
@@ -204,5 +200,22 @@ describe('FILE_CREATE transaction boundary', () => {
     expect(installed).toEqual([candidate])
     expect(candidate.closed).toBe(false)
     expect(postInstallErrors).toHaveLength(1)
+  })
+
+  it('carries a refusal code out of the dialog-free transition and leaves the foreground alone', async () => {
+    const cleanupCurrentFile = vi.fn(async () => {})
+    const installWorkspace = vi.fn()
+    const result = await runFileCreateTransition<object>({
+      createWorkspace: async () => { throw new FileCreateRefusedError('Review the template first.', 'template_unreviewed') },
+      closeWorkspace: () => {},
+      cleanupCurrentFile,
+      prepareWorkspace: () => {},
+      installWorkspace,
+      onInstalled: () => {},
+    }, '/tmp/refused.adf', 'refused')
+
+    expect(result).toEqual({ success: false, code: 'template_unreviewed', error: 'Review the template first.' })
+    expect(cleanupCurrentFile).not.toHaveBeenCalled()
+    expect(installWorkspace).not.toHaveBeenCalled()
   })
 })
