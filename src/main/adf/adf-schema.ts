@@ -691,7 +691,8 @@ export const AgentConfigSchema = z.object({
         required: z.boolean().optional(),
         write_back: z.boolean().optional()
       })).optional()
-    }))
+    })),
+    new_tools_restricted: z.boolean().optional()
   }).optional(),
   metadata: z.object({
     created_at: z.string(),

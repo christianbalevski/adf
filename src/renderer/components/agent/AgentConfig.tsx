@@ -2999,6 +2999,19 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 HIL gate
                 <InfoHint tip="Enabled tools behind the HIL gate require human approval before they run. Server headers bulk-toggle HIL, visibility, and enabled state for everything under them." />
               </p>
+              <label className="mb-2 flex items-center gap-1.5 cursor-pointer text-[11px] text-neutral-600 dark:text-neutral-300">
+                <input
+                  type="checkbox"
+                  checked={local.mcp?.new_tools_restricted !== false}
+                  onChange={(e) => save({
+                    ...local,
+                    mcp: { ...(local.mcp ?? { servers: [] }), new_tools_restricted: e.target.checked ? undefined : false }
+                  })}
+                  className="rounded text-blue-500"
+                />
+                New tools need approval
+                <InfoHint tip="Tools discovered on a newly attached server start behind the HIL gate. Off, they run without approval as soon as the server connects. Tools already listed keep their setting. A tool whose schema changes is always disabled and gated until reviewed." />
+              </label>
               <div className="space-y-3">
                 {/* My Servers — from config.mcp.servers */}
                 {myServers.map((srv) => {

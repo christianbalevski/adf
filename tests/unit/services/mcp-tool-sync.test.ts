@@ -182,3 +182,41 @@ describe('syncDiscoveredMcpTools', () => {
     })
   })
 })
+
+describe('syncDiscoveredMcpTools with mcp.new_tools_restricted: false', () => {
+  function unrestrictedConfig(tools: AgentConfig['tools']): AgentConfig {
+    const config = configWithTools(tools)
+    config.mcp = { servers: [], new_tools_restricted: false }
+    return config
+  }
+
+  it('adds new MCP tools without the HIL gate', () => {
+    const config = unrestrictedConfig([])
+    const server: McpServerConfig = { name: 'docs', transport: 'stdio' }
+    syncDiscoveredMcpTools(config, server, [{ name: 'search', input_schema: { type: 'object' } }], new ToolRegistry(), {} as McpClientManager)
+    expect(config.tools[0]).toMatchObject({ name: 'mcp_docs_search', enabled: true, visible: true, restricted: false, mcp_tool_status: 'new' })
+  })
+
+  it('re-adds a removed tool without the HIL gate', () => {
+    const tool = { name: 'search', input_schema: { type: 'object' } }
+    const config = unrestrictedConfig([{ name: 'mcp_docs_search', enabled: false, visible: false, restricted: true, mcp_tool_hash: hashMcpToolInfo(tool), mcp_tool_status: 'removed' }])
+    const server: McpServerConfig = { name: 'docs', transport: 'stdio' }
+    syncDiscoveredMcpTools(config, server, [tool], new ToolRegistry(), {} as McpClientManager)
+    expect(config.tools[0]).toMatchObject({ enabled: true, visible: true, restricted: false, mcp_tool_status: 'new' })
+  })
+
+  it('still disables and HIL-gates a tool whose schema changed', () => {
+    const config = unrestrictedConfig([{ name: 'mcp_docs_search', enabled: true, visible: true, restricted: false, mcp_tool_hash: 'old' }])
+    const server: McpServerConfig = { name: 'docs', transport: 'stdio' }
+    syncDiscoveredMcpTools(config, server, [{ name: 'search', description: 'new', input_schema: { type: 'object' } }], new ToolRegistry(), {} as McpClientManager)
+    expect(config.tools[0]).toMatchObject({ enabled: false, visible: false, restricted: true, mcp_tool_status: 'changed' })
+  })
+
+  it('leaves already declared tools alone when the flag flips', () => {
+    const tool = { name: 'search', input_schema: { type: 'object' } }
+    const config = unrestrictedConfig([{ name: 'mcp_docs_search', enabled: true, visible: true, restricted: true, mcp_tool_hash: hashMcpToolInfo(tool) }])
+    const server: McpServerConfig = { name: 'docs', transport: 'stdio' }
+    syncDiscoveredMcpTools(config, server, [tool], new ToolRegistry(), {} as McpClientManager)
+    expect(config.tools[0]).toMatchObject({ restricted: true })
+  })
+})

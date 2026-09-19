@@ -318,9 +318,23 @@ For example, a filesystem server might expose:
 
 When a server is (re)discovered, each `mcp_<server>_<tool>` declaration is reconciled against a stored hash of its schema:
 
-- **New** tools are added **enabled, visible, and restricted** (HIL-gated) — usable immediately but never silently trusted.
+- **New** tools are added **enabled, visible, and restricted** (HIL-gated) — usable immediately but never silently trusted. Set `mcp.new_tools_restricted: false` to have them start unrestricted instead (see [Approval for new tools](#approval-for-new-tools)).
 - **Changed** tools (schema or description differs from the last reviewed hash) are set **disabled and restricted** until reviewed, so a server can't silently alter a tool the agent already trusts.
 - **Removed** tools are disabled, hidden, and marked accordingly.
+
+### Approval for new tools
+
+`mcp.new_tools_restricted` (default `true`) decides whether tools discovered on a newly attached server start behind the HIL gate. With it `false`, an agent that can run `mcp_install` uses a new server's tools as soon as it connects, without anyone approving each call. The Full access template ships with it off; Standard and Sandboxed leave the default.
+
+```json
+{ "mcp": { "servers": [], "new_tools_restricted": false } }
+```
+
+- Forward-only: flipping it never rewrites tools already declared. Use the shield on a server header to change those in bulk.
+- A tool whose schema changed since it was last reviewed is still disabled and restricted, whatever this is set to.
+- It is an ordinary config field. An agent with `sys_update_config` changes it under that tool's own gate; lock `mcp.new_tools_restricted` (or the whole `mcp` section) to keep it in the owner's hands.
+
+In Studio it is the **New tools need approval** checkbox at the top of the agent's MCP Servers section.
 
 ### Viewing MCP Tool Schemas
 
