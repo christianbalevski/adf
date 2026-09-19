@@ -7,8 +7,8 @@ const ROW_SPEEDS = [16, 12, 14]
  * Rows of suggestion chips drifting sideways, alternating direction. The
  * same chips twice per row and a position wrapped to one copy's width make
  * the loop seamless. Hovering pauses the drift; the wheel (or a trackpad
- * swipe) scrolls the hovered row by hand. Reduced motion: no drift, the
- * wheel still works.
+ * swipe) scrolls the hovered row by hand. Not gated on reduced motion: RDP
+ * sessions report it by default, and "Hide suggestions" is the opt-out.
  */
 export function SuggestionMarquee({ rows, onPick, disabled }: {
   rows: string[][]
@@ -51,8 +51,6 @@ function MarqueeRow({ chips, speed, onPick, disabled }: {
     const track = trackRef.current
     const group = groupRef.current
     if (!track || !group) return
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
     const width = () => group.getBoundingClientRect().width
     const apply = () => {
       const w = width()
@@ -68,7 +66,7 @@ function MarqueeRow({ chips, speed, onPick, disabled }: {
     const tick = (now: number) => {
       const dt = Math.min(0.1, (now - last) / 1000)
       last = now
-      if (!hoveredRef.current && !reduceMotion && pos.current !== null) {
+      if (!hoveredRef.current && pos.current !== null) {
         pos.current -= speed * dt
       }
       apply()
