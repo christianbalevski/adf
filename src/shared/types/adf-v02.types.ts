@@ -492,6 +492,15 @@ export interface McpServerConfig {
 
 export interface McpConfig {
   servers: McpServerConfig[]
+  /**
+   * Whether tools discovered on a newly attached server start behind the HIL
+   * gate (`restricted: true`). Default true. False lets an agent that can
+   * install servers use their tools without approval. Forward-only: flipping
+   * it never rewrites tools already declared. A tool whose schema changed is
+   * always disabled and restricted regardless. Owner-lockable like any other
+   * field (`mcp.new_tools_restricted` or the whole `mcp` section).
+   */
+  new_tools_restricted?: boolean
 }
 
 // =============================================================================

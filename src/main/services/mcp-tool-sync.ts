@@ -38,7 +38,17 @@ export function hashMcpToolInfo(tool: McpToolInfo): string {
   })
 }
 
-function markToolDeclarationForDiscoveredTool(declaration: ToolDeclaration | undefined, hash: string): { changed: boolean; declaration: ToolDeclaration } {
+/**
+ * Decide the declaration for a tool a server just reported.
+ *
+ * `restrictNew` is the agent's `mcp.new_tools_restricted` (default true): a
+ * tool seen for the first time, or one coming back after being removed, starts
+ * behind the HIL gate only when it is set. A tool whose schema changed since
+ * it was last reviewed is disabled and restricted no matter what: that guards
+ * against a server altering a tool the agent already trusts, which is a
+ * different question from whether new tools are trusted.
+ */
+function markToolDeclarationForDiscoveredTool(declaration: ToolDeclaration | undefined, hash: string, restrictNew: boolean): { changed: boolean; declaration: ToolDeclaration } {
   if (!declaration) {
     return {
       changed: true,
@@ -46,7 +56,7 @@ function markToolDeclarationForDiscoveredTool(declaration: ToolDeclaration | und
         name: '',
         enabled: true,
         visible: true,
-        restricted: true,
+        restricted: restrictNew,
         mcp_tool_hash: hash,
         mcp_tool_status: 'new'
       }
@@ -74,7 +84,7 @@ function markToolDeclarationForDiscoveredTool(declaration: ToolDeclaration | und
         ...declaration,
         enabled: true,
         visible: true,
-        restricted: true,
+        restricted: restrictNew,
         mcp_tool_hash: hash,
         mcp_tool_status: 'new'
       }
@@ -139,6 +149,7 @@ export function syncDiscoveredMcpTools(
   manager: McpClientManager
 ): boolean {
   let configChanged = false
+  const restrictNew = config.mcp?.new_tools_restricted !== false
   const toolPrefix = `mcp_${serverCfg.name}_`
   const discoveredNames = new Set<string>()
   const previousToolsHash = stableStringify(serverCfg.available_tools ?? [])
@@ -155,7 +166,7 @@ export function syncDiscoveredMcpTools(
     const hash = hashMcpToolInfo(toolInfo)
     const existingIndex = config.tools.findIndex((t) => t.name === mcpTool.name)
     const existing = existingIndex >= 0 ? config.tools[existingIndex] : undefined
-    const result = markToolDeclarationForDiscoveredTool(existing, hash)
+    const result = markToolDeclarationForDiscoveredTool(existing, hash, restrictNew)
     result.declaration.name = mcpTool.name
 
     if (existingIndex >= 0) {

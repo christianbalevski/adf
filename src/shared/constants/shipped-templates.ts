@@ -94,7 +94,8 @@ agents, without asking you first.
 On in this template, with no approval prompt: \`sys_code\`, \`sys_lambda\`,
 \`sys_fetch\`, \`compute_exec\`, \`npm_install\`, \`mcp_install\`,
 \`sys_update_config\` and \`sys_create_adf\`. Container compute is enabled and
-host access is granted.
+host access is granted. Tools from MCP servers this agent installs start
+without the approval gate (\`mcp.new_tools_restricted: false\`).
 
 The guard block is unchanged: \`security.allow_local_fetch\` and stream binding
 are locked in code for every agent, so this template does not grant them.
@@ -137,7 +138,7 @@ const SANDBOXED: ShippedTemplate = {
 const FULL_ACCESS: ShippedTemplate = {
   id: 'full-access',
   name: 'Full access',
-  description: 'Code execution, web fetch, compute, host access, package and MCP installs, config changes and creating agents, with no approval prompt.',
+  description: 'Code execution, web fetch, compute, host access, package and MCP installs and their tools, config changes and creating agents, with no approval prompt.',
   warning: 'Runs code, reaches the network and your host, and changes its own settings without asking.',
   readme: FULL_ACCESS_README,
   template: {
@@ -153,7 +154,8 @@ const FULL_ACCESS: ShippedTemplate = {
       },
       [{ name: 'npm_install', enabled: true, visible: true, restricted: false }]
     ),
-    compute: { enabled: true, host_access: true }
+    compute: { enabled: true, host_access: true },
+    mcp: { servers: [], new_tools_restricted: false }
   }
 }
 
