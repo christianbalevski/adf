@@ -5181,6 +5181,8 @@ export function registerAllIpcHandlers(): void {
         canReceive: msgConfig ? msgConfig.receive : undefined,
         sendMode: msgConfig?.mode,
         autonomous: msgConfig?.autonomous,
+        agentId: msgConfig?.id,
+        icon: msgConfig?.icon,
         isDirectory: false
       })
     }

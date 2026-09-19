@@ -198,6 +198,22 @@ body,
   height: 0;
 }
 
+/* Sidebar tree: one continuous indent guide per open folder, drawn on the
+   children container so it never gaps between rows. The guide of the
+   innermost hovered folder (or the one holding the open agent) brightens. */
+.tree-children { position: relative; }
+.tree-children > .tree-guide {
+  position: absolute; top: 0; bottom: 0; width: 1px; z-index: 1;
+  background: var(--adf-ui-separator); pointer-events: none;
+}
+.tree-children:hover > .tree-guide,
+.tree-children:has(> [data-active]) > .tree-guide { background: var(--adf-ui-text-subtle); }
+/* Only the innermost hovered folder stays bright — except when this folder is
+   the one holding the open agent, which outranks a nested hover. */
+.tree-children:hover:has(.tree-children:hover):not(:has(> [data-active])) > .tree-guide {
+  background: var(--adf-ui-separator);
+}
+
 /* Keep dense navigation panes visually quiet until the user interacts with them. */
 .scrollbar-autohide {
   scrollbar-color: transparent transparent;

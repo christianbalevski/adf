@@ -9,6 +9,8 @@ import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, T
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
+import { IconPicker } from '../common/IconPicker'
+import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import { loopColor } from '../../utils/loop-color'
 import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
@@ -1318,15 +1320,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             />
           </Field>
           </>)}
-          <Field label="Icon">
-            <input
-              type="text"
-              value={local.icon ?? ''}
-              onChange={(e) =>
-                save({ ...local, icon: e.target.value || undefined })
-              }
-              placeholder="e.g. \u{1F916}"
-              className="field-input w-16"
+          <Field label="Icon" hint="Shown in the sidebar, the header and on the fleet map.">
+            <IconPicker
+              value={local.icon || pickAgentIcon(local.id)}
+              onChange={(icon) => save({ ...local, icon })}
             />
           </Field>
           <Field label="Start in state" hint="State the agent boots into on startup. Runtime state is not persisted.">

@@ -9,6 +9,7 @@ import { Tooltip } from '../common/Tooltip'
 import { loopColor } from '../../utils/loop-color'
 import { ContextBreakdownModal, formatTokens, resolveLoopThreshold } from './ContextBreakdownModal'
 import type { AppUpdateState } from '../../../shared/types/ipc.types'
+import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 
 function contextGaugeTooltip(u: TokenUsage, estimate: number | null, threshold: number): string {
   // The full breakdown lives in the click-through modal — keep the hover terse.
@@ -94,7 +95,7 @@ export function StatusBar() {
       {config && (
         <>
           <span className="flex items-center gap-1.5 min-w-0 max-w-44" title="The open agent — everything left of the version number describes it">
-            <span className="text-sm leading-none">{config.icon ?? '🤖'}</span>
+            <span className="text-sm leading-none">{config.icon || pickAgentIcon(config.id)}</span>
             <span className="font-medium text-neutral-700 dark:text-neutral-200 truncate">{config.name}</span>
           </span>
           <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />

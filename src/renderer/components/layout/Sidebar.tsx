@@ -11,11 +11,13 @@ import { toDisplayState } from '../../hooks/useAgent'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { useShareDrag } from '../../hooks/useShareDrag'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
+import { Tooltip } from '../common/Tooltip'
 import { CloneDialog } from '../common/CloneDialog'
 import { Dialog } from '../common/Dialog'
 import { Button } from '../ui'
 import { REVEAL_IN_FOLDER_LABEL } from '../../utils/platform'
 import { collectRunningAgents, type RunningAgentRow } from '../../utils/running-agents'
+import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../../shared/types/ipc.types'
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
 
@@ -176,6 +178,44 @@ function saveRunningCollapsed(collapsed: boolean): void {
   try {
     localStorage.setItem(RUNNING_COLLAPSED_KEY, collapsed ? '1' : '0')
   } catch { /* storage full/unavailable — the pref just won't stick */ }
+}
+
+/**
+ * Folder open/closed state survives restarts the same way. Stored as the set
+ * of COLLAPSED paths: a newly tracked folder opens without needing an entry,
+ * and the set stays as small as the number of folders the user closed.
+ */
+const COLLAPSED_FOLDERS_KEY = 'adf-sidebar-collapsed-folders'
+
+function loadCollapsedFolders(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_FOLDERS_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : []
+    return new Set(Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function saveFolderCollapsed(path: string, collapsed: boolean): void {
+  try {
+    const set = loadCollapsedFolders()
+    if (collapsed) set.add(path)
+    else set.delete(path)
+    localStorage.setItem(COLLAPSED_FOLDERS_KEY, JSON.stringify([...set]))
+  } catch { /* storage full/unavailable — the pref just won't stick */ }
+}
+
+/** Expanded flag for one folder row, read once on mount and written on toggle. */
+function useFolderExpanded(path: string): [boolean, () => void] {
+  const [expanded, setExpanded] = useState(() => !loadCollapsedFolders().has(path))
+  const toggle = useCallback(() => {
+    setExpanded((p) => {
+      saveFolderCollapsed(path, p)
+      return !p
+    })
+  }, [path])
+  return [expanded, toggle]
 }
 
 interface RowTarget {
@@ -458,7 +498,7 @@ export function Sidebar() {
             disabled={directories.length === 0}
             placeholder="Search agents…"
             aria-label="Search agents"
-            className="w-full h-6 text-xs pl-6 pr-2 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 outline-none focus:border-blue-400 min-w-0 disabled:opacity-50 disabled:bg-transparent"
+            className="w-full h-6 text-[11px] pl-6 pr-2 border border-[var(--adf-ui-border)] rounded bg-[var(--adf-ui-surface)] text-[var(--adf-ui-text)] placeholder:text-[var(--adf-ui-text-subtle)] outline-none focus:border-[var(--adf-ui-accent)] min-w-0 disabled:opacity-50 disabled:bg-transparent"
           />
         </div>
         <button
@@ -531,13 +571,13 @@ export function Sidebar() {
               </div>
             ))}
             {searching && visibleDirectories.length === 0 && (
-              <p className="px-3 py-4 text-xs text-neutral-400 dark:text-neutral-600">
+              <p className="px-3 py-4 text-[11px] leading-4 text-[var(--adf-ui-text-subtle)]">
                 No agents match "{agentSearch.trim()}".
               </p>
             )}
           </div>
         ) : (
-          <p className="px-3 py-4 text-xs text-neutral-400 dark:text-neutral-600">
+          <p className="px-3 py-4 text-[11px] leading-4 text-[var(--adf-ui-text-subtle)]">
             Open an agent to get started.
           </p>
         )}
@@ -590,6 +630,68 @@ export function Sidebar() {
 }
 
 /**
+ * One disclosure chevron for the whole tree, rotated instead of swapped for a
+ * second glyph, so open and closed rows keep identical metrics. The fixed 12px
+ * box is what the indent guides line up on (see `.tree-children` in globals).
+ */
+function Chevron({ expanded }: { expanded: boolean }) {
+  return (
+    <span className="w-3 h-3 shrink-0 flex items-center justify-center text-[var(--adf-ui-text-subtle)]">
+      <svg
+        width="10"
+        height="10"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
+      >
+        <polyline points="9 18 15 12 9 6" />
+      </svg>
+    </span>
+  )
+}
+
+/**
+ * Run control shared by agent and folder rows. Hover-only on purpose: the
+ * status dot is the single running indicator, so a row at rest carries no
+ * chrome at all and the tree reads as names.
+ */
+function runButtonClass(stop: boolean): string {
+  // Tinted at reveal, full strength under the pointer: stop leans red, play
+  // takes the app's running green. `[&>svg]` opacity keeps the row-hover reveal
+  // (opacity on the button) and the tint (opacity on the glyph) independent.
+  const tone = stop
+    ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
+    : 'text-[var(--adf-ui-success)] hover:bg-[var(--adf-ui-success-subtle)]'
+  return (
+    'w-4 h-4 shrink-0 rounded flex items-center justify-center transition-opacity outline-none ' +
+    '[&>svg]:opacity-70 hover:[&>svg]:opacity-100 ' +
+    'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 ' +
+    'focus-visible:ring-1 focus-visible:ring-[var(--adf-ui-focus)] ' +
+    tone
+  )
+}
+
+function StopIcon() {
+  return (
+    <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="4" y="4" width="16" height="16" rx="3" />
+    </svg>
+  )
+}
+
+function PlayIcon() {
+  return (
+    <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M7 4l13 8-13 8z" />
+    </svg>
+  )
+}
+
+/**
  * Pinned above the directory tree: a flat list of every running agent, so
  * finding what is on never depends on which folders happen to be open. Rows
  * are the same AgentFileRow the tree uses, so open, toggle, and the context
@@ -628,16 +730,14 @@ const RunningSection = memo(function RunningSection({
         aria-expanded={!collapsed}
         onClick={toggle}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle() } }}
-        className="w-full px-3 py-1 text-xs text-left flex items-center gap-1.5 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer select-none"
+        className="w-full px-3 py-[3px] text-[11px] leading-4 text-left flex items-center gap-1.5 text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] cursor-pointer select-none"
       >
-        <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-          {collapsed ? '\u25B6' : '\u25BC'}
-        </span>
+        <Chevron expanded={!collapsed} />
         <span className="relative shrink-0 w-2 h-2">
           <span className="absolute inset-0 rounded-full bg-green-400" />
         </span>
         <span className="font-medium flex-1 truncate">Running</span>
-        <span className="text-[10px] text-neutral-400 dark:text-neutral-500">({rows.length})</span>
+        <span className="text-[10px] tabular-nums text-[var(--adf-ui-text-subtle)]">{rows.length}</span>
       </div>
       {!collapsed && (
         <div className="scrollbar-autohide max-h-36 overflow-y-auto">
@@ -687,10 +787,12 @@ const DirectorySection = memo(function DirectorySection({
   /** Show children regardless of the user's collapse state (used while searching). */
   forceExpanded?: boolean
 }) {
-  const [userExpanded, setExpanded] = useState(true)
+  const [userExpanded, toggleExpanded] = useFolderExpanded(dirPath)
   const expanded = forceExpanded || userExpanded
   const [toggling, setToggling] = useState(false)
-  const dirName = dirPath.split('/').pop() ?? dirPath
+  // Split on both separators: a Windows path has no forward slashes, so a
+  // '/'-only split would print the whole C:\... path as the folder name.
+  const dirName = dirPath.split(/[\\/]/).filter(Boolean).pop() ?? dirPath
 
   const allFiles = useMemo(() => {
     const collectFiles = (entries: TrackedDirEntry[]): TrackedDirEntry[] => {
@@ -738,54 +840,58 @@ const DirectorySection = memo(function DirectorySection({
       <div
         role="button"
         tabIndex={0}
-        onClick={() => setExpanded((p) => !p)}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((p) => !p) } }}
+        onClick={toggleExpanded}
+        onKeyDown={(e) => {
+          // Only the row itself: the run button is a focusable child, and
+          // preventDefault here would bubble-cancel its own Enter/Space
+          // activation while still toggling the folder.
+          if (e.target !== e.currentTarget) return
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded() }
+        }}
         onContextMenu={(e) => onDirContextMenu(e, dirPath)}
-        className="group w-full px-3 py-1 text-xs text-left flex items-center gap-1.5 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer select-none"
+        className="group w-full pl-3 pr-1.5 py-[3px] text-[11px] leading-4 text-left flex items-center gap-1.5 text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] cursor-pointer select-none"
       >
-        <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-          {expanded ? '\u25BC' : '\u25B6'}
-        </span>
+        <Chevron expanded={expanded} />
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
-        <span className="font-medium flex-1 truncate" title={dirPath}>
-          {dirName}
-        </span>
+        {/* The full path is the hint here; a native title never renders in
+            this window, so it hangs off the portal tooltip instead. */}
+        <Tooltip tip={dirPath} className="flex-1 min-w-0">
+          <span className="block font-medium truncate">{dirName}</span>
+        </Tooltip>
         <span className="flex items-center gap-1.5">
-          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-            ({activeCount}/{totalCount})
+          <span className="text-[10px] tabular-nums text-[var(--adf-ui-text-subtle)]">
+            {activeCount > 0 ? `${activeCount}/${totalCount}` : totalCount}
           </span>
-          {totalCount > 0 && (
-            <button
-              onClick={handleDirToggle}
-              disabled={toggling}
-              role="switch"
-              aria-checked={allActive}
-              className={`relative shrink-0 w-7 h-4 rounded-full transition-[background-color,opacity] ${
-                allActive
-                  ? 'bg-green-400'
-                  : 'bg-neutral-300 dark:bg-neutral-600'
-              } ${
-                activeCount > 0 || toggling
-                  ? ''
-                  : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
-              } ${toggling ? 'opacity-50' : ''}`}
-              title={allActive ? 'All running — click to stop all' : 'Click to start all agents'}
-            >
-              <span
-                className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${
-                  allActive ? 'translate-x-3' : 'translate-x-0'
-                }`}
-              />
-            </button>
-          )}
+          {/* Same empty box as the agent row: the button steps aside while
+              the folder is mid-flip, the slot keeps the count from shifting. */}
+          {totalCount > 0 && (toggling ? (
+            <span className="w-4 h-4 shrink-0" />
+          ) : (
+            <Tooltip tip={allActive ? 'Stop all' : 'Start all'} className="flex shrink-0">
+              <button
+                onClick={handleDirToggle}
+                aria-label={allActive ? 'Stop all agents in folder' : 'Start all agents in folder'}
+                className={runButtonClass(allActive)}
+              >
+                {allActive ? <StopIcon /> : <PlayIcon />}
+              </button>
+            </Tooltip>
+          ))}
         </span>
       </div>
       {expanded && (
-        <div>
+        // The indent guide lives on the children container, not on each row,
+        // so it draws as one unbroken line instead of gapping between rows.
+        // x = the centre of this folder's own 12px chevron box.
+        <div className="tree-children">
+          <span className="tree-guide" aria-hidden="true" style={{ left: '18px' }} />
           {files.length === 0 && (
-            <div className="px-3 py-1 text-[10px] text-neutral-300 dark:text-neutral-600 italic">
+            <div
+              className="py-[3px] pr-3 text-[11px] leading-4 italic text-[var(--adf-ui-text-subtle)]"
+              style={{ paddingLeft: '28px' }}
+            >
               No .adf files
             </div>
           )}
@@ -793,7 +899,7 @@ const DirectorySection = memo(function DirectorySection({
             <TreeNode
               key={entry.filePath}
               entry={entry}
-              depth={0}
+              depth={1}
               dirPath={dirPath}
               currentFilePath={currentFilePath}
               meshEnabled={meshEnabled}
@@ -837,7 +943,7 @@ const TreeNode = memo(function TreeNode({
   onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
   forceExpanded?: boolean
 }) {
-  const [userExpanded, setExpanded] = useState(true)
+  const [userExpanded, toggleExpanded] = useFolderExpanded(entry.filePath)
   const expanded = forceExpanded || userExpanded
   const [toggling, setToggling] = useState(false)
 
@@ -880,51 +986,48 @@ const TreeNode = memo(function TreeNode({
         <div
           role="button"
           tabIndex={0}
-          onClick={() => setExpanded((p) => !p)}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((p) => !p) } }}
-          className="group flex items-center gap-1.5 py-1 text-xs cursor-pointer text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-          style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: '12px' }}
+          onClick={toggleExpanded}
+          onKeyDown={(e) => {
+            // Only the row itself: the run button is a focusable child, and
+            // preventDefault here would bubble-cancel its own Enter/Space
+            // activation while still toggling the folder.
+            if (e.target !== e.currentTarget) return
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded() }
+          }}
+          className="group flex items-center gap-1.5 py-[3px] text-[11px] leading-4 cursor-pointer text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)]"
+          style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: '6px' }}
         >
-          <span className="text-[10px]">
-            {expanded ? '\u25BC' : '\u25B6'}
-          </span>
+          <Chevron expanded={expanded} />
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
           </svg>
           <span className="font-medium flex-1 truncate">{entry.fileName}</span>
 
           <span className="flex items-center gap-1.5">
-            <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-              ({activeCount}/{totalCount})
+            <span className="text-[10px] tabular-nums text-[var(--adf-ui-text-subtle)]">
+              {activeCount > 0 ? `${activeCount}/${totalCount}` : totalCount}
             </span>
-            {totalCount > 0 && (
-              <button
-                onClick={handleDirToggle}
-                disabled={toggling}
-                role="switch"
-                aria-checked={allActive}
-                className={`relative shrink-0 w-7 h-4 rounded-full transition-[background-color,opacity] ${
-                  allActive
-                    ? 'bg-green-400'
-                    : 'bg-neutral-300 dark:bg-neutral-600'
-                } ${
-                  activeCount > 0 || toggling
-                    ? ''
-                    : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
-                } ${toggling ? 'opacity-50' : ''}`}
-                title={allActive ? 'All running — click to stop all' : 'Click to start all agents'}
-              >
-                <span
-                  className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${
-                    allActive ? 'translate-x-3' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            )}
+            {/* Same empty box as the agent row: the button steps aside while
+                the folder is mid-flip, the slot keeps the count from shifting. */}
+            {totalCount > 0 && (toggling ? (
+              <span className="w-4 h-4 shrink-0" />
+            ) : (
+              <Tooltip tip={allActive ? 'Stop all' : 'Start all'} className="flex shrink-0">
+                <button
+                  onClick={handleDirToggle}
+                  aria-label={allActive ? 'Stop all agents in folder' : 'Start all agents in folder'}
+                  className={runButtonClass(allActive)}
+                >
+                  {allActive ? <StopIcon /> : <PlayIcon />}
+                </button>
+              </Tooltip>
+            ))}
           </span>
         </div>
         {expanded && entry.children && (
-          <div>
+          // Guide on the container, at the centre of this folder's chevron box.
+          <div className="tree-children">
+            <span className="tree-guide" aria-hidden="true" style={{ left: `${18 + depth * 16}px` }} />
             {entry.children.map((child) => (
               <TreeNode
                 key={child.filePath}
@@ -1005,6 +1108,12 @@ const AgentFileRow = memo(function AgentFileRow({
     ? (agentConfig?.autonomous ?? false)
     : (file.autonomous ?? false)
 
+  // Same avatar the fleet map draws: the file's icon, else a stable pick
+  // seeded by the agent id so the two surfaces never disagree.
+  const icon = isActive
+    ? (agentConfig?.icon || pickAgentIcon(agentConfig?.id || file.filePath))
+    : (file.icon || pickAgentIcon(file.agentId || file.filePath))
+
   const canReceive = isActive
     ? (agentConfig?.messaging?.receive ?? false)
     : (status?.canReceive ?? file.canReceive ?? false)
@@ -1012,7 +1121,6 @@ const AgentFileRow = memo(function AgentFileRow({
     ? agentConfig?.messaging?.mode
     : (status?.sendMode ?? file.sendMode)
 
-  const showToggle = true
   // Drag the row out of the app: a consistent snapshot of the .adf lands
   // wherever it is dropped (Finder, a message, another Studio).
   const shareDrag = useShareDrag(file.filePath)
@@ -1037,79 +1145,139 @@ const AgentFileRow = memo(function AgentFileRow({
     [file.filePath, isActive, isRunning, toggling]
   )
 
+  // Direction reads as a hover detail, not a permanent column: a leading glyph
+  // slot pushed every name right even when the agent talks to no one.
+  const direction =
+    canReceive && sendMode === 'proactive' ? '\u21C5' :
+    canReceive ? '\u2193' :
+    sendMode === 'proactive' ? '\u2191' : ''
+  const directionTip =
+    direction === '\u21C5' ? 'Sends and receives messages' :
+    direction === '\u2193' ? 'Receives messages' : 'Sends messages'
+
+  // While the agent is mid-flip the dot carries a spinner, so the run button
+  // steps aside; the empty box keeps the row from shifting under the cursor.
+  const busy = toggling || isStarting || isStopping
+
   return (
     <div
       {...shareDrag}
       onContextMenu={onContextMenu}
-      className={`group flex items-center gap-1.5 py-1 text-xs cursor-pointer ${
+      data-active={isActive || undefined}
+      className={`group flex items-center gap-1.5 py-[3px] text-[11px] leading-4 cursor-pointer ${
         isActive
-          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300'
-          : 'text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800'
+          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-accent)] [--row-bg:var(--adf-ui-accent-subtle)]'
+          : `${isRunning ? 'text-[var(--adf-ui-text)]' : 'text-[var(--adf-ui-text-muted)]'} hover:bg-[var(--adf-ui-surface-hover)] [--row-bg:var(--adf-surface-2)] hover:[--row-bg:var(--adf-ui-surface-hover)]`
       }`}
-      style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: '12px' }}
+      style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: '6px' }}
     >
-      <span className="shrink-0 w-3 text-center text-[11px] leading-none text-neutral-500 dark:text-neutral-400 font-bold">
-        {canReceive && sendMode === 'proactive' ? '\u21C5' :
-         canReceive ? '\u2193' :
-         sendMode === 'proactive' ? '\u2191' : ''}
-      </span>
-
-      <StatusDot
+      <AgentAvatar
+        icon={icon}
+        running={isRunning}
         state={dotState}
         starting={(toggling && !isRunning) || isStarting}
         stopping={(toggling && isRunning) || isStopping}
       />
 
-      <button
-        onClick={onOpen}
-        className="flex-1 min-w-0 text-left truncate"
-        title={file.filePath}
-      >
-        {(isActive ? agentConfig?.name : undefined) ?? file.agentName ?? file.fileName}
-        {folderHint && (
-          <span className="ml-1 text-[10px] text-neutral-400 dark:text-neutral-500">
-            {folderHint}
-          </span>
-        )}
-        {isAutonomous && (
-          <span
-            className="ml-1 text-[10px] leading-none text-amber-500"
-            title="Autonomous — starts automatically"
-          >
-            {'⚡'}
-          </span>
-        )}
-      </button>
-
-      {showToggle && (
-        <button
-          onClick={handleToggle}
-          disabled={toggling || isStarting}
-          role="switch"
-          aria-checked={isRunning}
-          // Pressing and sliding the switch is a toggle gesture, not a share
-          // drag — keep the row draggable but not this control.
-          draggable={false}
-          onDragStart={(e) => { e.preventDefault(); e.stopPropagation() }}
-          className={`relative shrink-0 w-7 h-4 rounded-full transition-[background-color,opacity] ${
-            isRunning
-              ? (isAutonomous ? 'bg-amber-400' : 'bg-green-400')
-              : 'bg-neutral-300 dark:bg-neutral-600'
-          } ${
-            isRunning || toggling || isStarting
-              ? ''
-              : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
-          } ${toggling || isStarting ? 'cursor-wait' : ''}`}
-          title={isStarting ? 'Starting…' : isRunning ? 'Running — click to stop' : 'Stopped — click to start'}
-        >
-          <span
-            className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${
-              isRunning ? 'translate-x-3' : 'translate-x-0'
-            } ${toggling || isStarting ? 'animate-pulse' : ''}`}
-          />
+      {/* The full path is the hint; a native title never renders in this
+          window, so the portal tooltip carries it instead. */}
+      <Tooltip tip={file.filePath} delay={1000} className="flex-1 min-w-0">
+        <button onClick={onOpen} className="block w-full min-w-0 text-left truncate">
+          {(isActive ? agentConfig?.name : undefined) ?? file.agentName ?? file.fileName}
+          {folderHint && (
+            <span className="ml-1 text-[10px] text-[var(--adf-ui-text-subtle)]">
+              {folderHint}
+            </span>
+          )}
         </button>
-      )}
+      </Tooltip>
+
+      {/* A sibling of the name, never a child of it: nesting one tooltip
+          anchor inside another leaves the outer one open while the inner
+          shows, so the bolt would raise two tips at once. */}
+      {/* Trailing markers sit tighter than the row's own gap so the name
+          keeps as much width as the sidebar allows. */}
+      <span className="flex items-center gap-1 shrink-0">
+        {isAutonomous && (
+          <Tooltip
+            tip="Autonomous — keeps working until it sets itself idle"
+            className="flex shrink-0 text-[var(--adf-ui-warning)] opacity-80"
+          >
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" />
+            </svg>
+          </Tooltip>
+        )}
+
+        {direction && (
+          <Tooltip
+            tip={directionTip}
+            className="flex shrink-0 text-[10px] leading-none text-[var(--adf-ui-text-subtle)] opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            {direction}
+          </Tooltip>
+        )}
+
+        {busy ? (
+          <span className="w-4 h-4 shrink-0" />
+        ) : (
+          <Tooltip tip={isRunning ? 'Stop' : 'Start'} className="flex shrink-0">
+            <button
+              onClick={handleToggle}
+              aria-label={isRunning ? 'Stop agent' : 'Start agent'}
+              // Pressing the run button is a start/stop gesture, not a share
+              // drag — keep the row draggable but not this control.
+              draggable={false}
+              onDragStart={(e) => { e.preventDefault(); e.stopPropagation() }}
+              className={runButtonClass(isRunning)}
+            >
+              {isRunning ? <StopIcon /> : <PlayIcon />}
+            </button>
+          </Tooltip>
+        )}
+      </span>
     </div>
+  )
+})
+
+/**
+ * Emoji avatar with the status dot as a corner badge. A stopped agent is
+ * drawn desaturated with no badge, so a quiet tree stays grey and only the
+ * running agents carry colour; the badge then adds the finer state.
+ */
+const AgentAvatar = memo(function AgentAvatar({
+  icon,
+  running,
+  state,
+  starting,
+  stopping
+}: {
+  icon: string
+  running: boolean
+  state: AgentState
+  starting?: boolean
+  stopping?: boolean
+}) {
+  const busy = starting || stopping
+  const showBadge = busy || state !== 'not_participating'
+  return (
+    <span className="relative shrink-0 w-4 h-4 flex items-center justify-center">
+      <span
+        aria-hidden="true"
+        className={`text-[12px] leading-none select-none transition-[filter,opacity] ${
+          running || busy ? '' : 'grayscale opacity-70'
+        }`}
+      >
+        {icon}
+      </span>
+      {showBadge && (
+        // A ring in the row's own colour lifts the badge off the glyph beneath
+        // it; the row sets --row-bg for rest, hover and selected.
+        <span className="absolute -bottom-0.5 -right-0.5 flex rounded-full shadow-[0_0_0_1.5px_var(--row-bg,var(--adf-surface-2))]">
+          <StatusDot state={state} starting={starting} stopping={stopping} />
+        </span>
+      )}
+    </span>
   )
 })
 
@@ -1125,24 +1293,27 @@ const StatusDot = memo(function StatusDot({ state, starting, stopping }: { state
   }
   const { color, label, pulse, ring } = config[state] ?? config.off
 
+  // The dot is the row's only permanent running indicator, so its hint has to
+  // actually render: a native title never does in this window. The children
+  // are all `absolute`, so the flex wrapper leaves the 8px box unchanged.
   if (starting) {
     return (
-      <span className="relative shrink-0 w-2 h-2" title="Starting">
+      <Tooltip tip="Starting" className="relative shrink-0 w-2 h-2 flex">
         <span className="absolute inset-[-1px] rounded-full border border-yellow-400 border-t-transparent animate-spin" />
-      </span>
+      </Tooltip>
     )
   }
 
   if (stopping) {
     return (
-      <span className="relative shrink-0 w-2 h-2" title="Stopping">
+      <Tooltip tip="Stopping" className="relative shrink-0 w-2 h-2 flex">
         <span className="absolute inset-[-1px] rounded-full border border-neutral-400 dark:border-neutral-500 border-t-transparent animate-spin" />
-      </span>
+      </Tooltip>
     )
   }
 
   return (
-    <span className="relative shrink-0 w-2 h-2" title={label}>
+    <Tooltip tip={label} className="relative shrink-0 w-2 h-2 flex">
       {pulse && (
         <span
           className={`absolute inset-0 rounded-full ${color} animate-ping opacity-75`}
@@ -1153,7 +1324,7 @@ const StatusDot = memo(function StatusDot({ state, starting, stopping }: { state
       ) : (
         <span className={`absolute inset-0 rounded-full ${color}`} />
       )}
-    </span>
+    </Tooltip>
   )
 })
 

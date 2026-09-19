@@ -8,6 +8,7 @@ import { toDisplayState } from '../../hooks/useAgent'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { ApprovalsMenu } from './ApprovalsMenu'
 import { Button } from '../ui'
+import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
@@ -146,7 +147,7 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
       title={onActivate ? 'The open agent — click to fly to its tile' : undefined}
     >
       <span className="text-sm shrink-0" title={config.description || undefined}>
-        {firstGrapheme(config.icon ?? '🤖')}
+        {firstGrapheme(config.icon || pickAgentIcon(config.id))}
       </span>
       <span
         className="shrink-0 max-w-56 font-medium text-neutral-700 dark:text-neutral-200 truncate"
