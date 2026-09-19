@@ -5458,15 +5458,24 @@ export function registerAllIpcHandlers(): void {
   function getLiveMeshAgents() {
     if (!meshManager || !meshManager.isEnabled()) return []
     const liveStates = new Map<string, AgentState>()
+    // Inner-loop counts ride along with the state overlay. Nothing in the fleet
+    // map reads them yet; the sidebar count comes from the background status.
+    // They are here so the map can pick them up without another IPC change.
+    const liveLoops = new Map<string, number>()
     if (backgroundAgentManager) {
-      for (const s of backgroundAgentManager.getStatuses()) liveStates.set(s.filePath, s.state)
+      for (const s of backgroundAgentManager.getStatuses()) {
+        liveStates.set(s.filePath, s.state)
+        liveLoops.set(s.filePath, s.activeLoops ?? 0)
+      }
     }
     if (currentFilePath && agentExecutor) {
       liveStates.set(currentFilePath, toDisplayState(agentExecutor.getState()))
     }
     return meshManager.getAgentStatuses().map((a) => {
       const live = liveStates.get(a.filePath)
-      return live ? { ...a, state: live } : a
+      if (!live) return a
+      const activeLoops = liveLoops.get(a.filePath)
+      return activeLoops === undefined ? { ...a, state: live } : { ...a, state: live, activeLoops }
     })
   }
 

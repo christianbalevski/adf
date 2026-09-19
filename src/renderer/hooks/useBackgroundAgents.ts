@@ -2,13 +2,8 @@ import { useEffect } from 'react'
 import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useAppStore } from '../stores/app.store'
 import { useDocumentStore } from '../stores/document.store'
-import type { RendererBackgroundAgentEvent, BackgroundAgentStatus } from '../../shared/types/ipc.types'
-
-function handleFromPayload(payload: RendererBackgroundAgentEvent['payload']): string {
-  return (payload as Record<string, unknown>).handle as string
-    ?? payload.filePath.split('/').pop()?.replace('.adf', '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-    ?? 'agent'
-}
+import { foldAgentStatuses } from '../utils/background-agent-statuses'
+import type { RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 
 /**
  * Subscribes to the batched BACKGROUND_AGENT_EVENT_BATCH IPC and updates the
@@ -30,9 +25,11 @@ export function useBackgroundAgentEvents() {
 
     const unsubscribe = window.adfApi.onBackgroundAgentEvents((events: RendererBackgroundAgentEvent[]) => {
       // Fold the whole batch over local drafts and commit at most one set()
-      // per store — a batch of 40 events was 40 synchronous re-renders.
-      let agents: BackgroundAgentStatus[] = useBackgroundAgentsStore.getState().agents
-      let agentsChanged = false
+      // per store — a batch of 40 events was 40 synchronous re-renders. The
+      // status list folds in its own pure pass; only the spinner sets, which
+      // need the open file, are folded here.
+      const previousAgents = useBackgroundAgentsStore.getState().agents
+      const agents = foldAgentStatuses(previousAgents, events)
       const app = useAppStore.getState()
       let starting = app.startingFilePaths
       let stopping = app.stoppingFilePaths
@@ -71,13 +68,6 @@ export function useBackgroundAgentEvents() {
           }
           case 'agent_started': {
             dropStarting(filePath)
-            const entry: BackgroundAgentStatus = {
-              filePath,
-              handle: handleFromPayload(event.payload),
-              state: event.payload.state ?? 'idle'
-            }
-            agents = [...agents.filter((a) => a.filePath !== filePath), entry]
-            agentsChanged = true
             break
           }
           case 'agent_stopped': {
@@ -87,27 +77,12 @@ export function useBackgroundAgentEvents() {
             // re-attach and blank the indicator for the whole rebuild window.
             if (filePath !== useDocumentStore.getState().filePath) dropStarting(filePath)
             dropStopping(filePath)
-            if (agents.some((a) => a.filePath === filePath)) {
-              agents = agents.filter((a) => a.filePath !== filePath)
-              agentsChanged = true
-            }
-            break
-          }
-          case 'agent_state_changed': {
-            const state = event.payload.state
-            if (!state) break
-            const idx = agents.findIndex((a) => a.filePath === filePath)
-            // Bail when already current — a fresh array re-renders every subscriber
-            if (idx === -1 || agents[idx].state === state) break
-            agents = [...agents]
-            agents[idx] = { ...agents[idx], state }
-            agentsChanged = true
             break
           }
         }
       }
 
-      if (agentsChanged) useBackgroundAgentsStore.setState({ agents })
+      if (agents !== previousAgents) useBackgroundAgentsStore.setState({ agents })
       if (startingChanged || stoppingChanged) {
         useAppStore.setState({
           ...(startingChanged ? { startingFilePaths: starting } : {}),
