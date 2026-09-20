@@ -48,6 +48,8 @@ export const IPC = {
   DOC_CLEAR_INBOX: 'adf:doc:clear-inbox',
   DOC_GET_OUTBOX: 'adf:doc:get-outbox',
   DOC_GET_BATCH: 'adf:doc:get-batch',
+  /** Document + config + status only — the batch without the parsed loop rows. */
+  DOC_GET_HEADER: 'adf:doc:get-header',
 
   // Agent runtime
   AGENT_START: 'adf:agent:start',
@@ -129,6 +131,8 @@ export const IPC = {
   MESH_PENDING_INTERACTIONS: 'adf:mesh:pending-interactions',
   MESH_FLEET_STATUS: 'adf:mesh:fleet-status',
   MESH_TOKEN_BURN: 'adf:mesh:token-burn',
+  /** One round-trip for the fleet map's 5s poll: debug + fleet + burn + adapters + peers. */
+  MESH_MAP_POLL: 'adf:mesh:map-poll',
   MESH_MESSAGE_AGENTS: 'adf:mesh:message-agents',
   MESH_SET_AGENT_STATE: 'adf:mesh:set-agent-state',
   MESH_FOUND_AGENT: 'adf:mesh:found-agent',

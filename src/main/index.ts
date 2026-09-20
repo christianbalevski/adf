@@ -410,8 +410,14 @@ async function createWindow(): Promise<void> {
     console.warn(`[App] Blocked navigation to: ${url}`)
   })
 
-  // Log renderer console messages to main process stdout
+  // Log renderer console messages to main process stdout. Every renderer log
+  // line otherwise crosses the bridge and is re-formatted into the main log —
+  // in a packaged run that is pure overhead, so only warnings and errors get
+  // through. Dev keeps everything, and ADF_RENDERER_LOG=1 forces it back on.
+  const verboseRendererLog = isDev || process.env.ADF_RENDERER_LOG === '1'
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    // Chromium levels: 0 verbose, 1 info, 2 warning, 3 error
+    if (!verboseRendererLog && level < 2) return
     const levelStr = ['VERBOSE', 'INFO', 'WARNING', 'ERROR'][level] ?? 'LOG'
     console.log(`[Renderer ${levelStr}] ${message} (${sourceId}:${line})`)
   })

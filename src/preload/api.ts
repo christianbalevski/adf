@@ -67,6 +67,16 @@ export interface AdfApi {
     /** Persisted context-size baseline (status-bar gauge); null on files that predate it. */
     contextBaseline?: ContextBaseline | null
   }>
+  /**
+   * The batch minus the loop — document, config and status text only. For
+   * callers that refresh the header after a turn or a meta write and would
+   * otherwise pay for 200 parsed loop rows they discard.
+   */
+  getHeader: () => Promise<{
+    document: string
+    agentConfig: AgentConfig | null
+    statusText: string
+  }>
 
   // Agent runtime
   /** `code` names a failure the renderer can resolve in place: 'provider_missing' (the model's provider is not on this install) or 'provider_unconfigured' (it is, but has no key). */
@@ -173,6 +183,23 @@ export interface AdfApi {
   getMeshTokenBurn: () => Promise<FleetBurnResult>
   onMeshEvent: (callback: (event: MeshEvent) => void) => () => void
   getMeshDebug: () => Promise<MeshDebugInfo>
+  /**
+   * The fleet map's whole 5s poll in one round-trip: mesh debug, fleet status,
+   * token burn, adapter status and discovered peers. Each slice is produced by
+   * the same handler body the individual channels use.
+   *
+   * `sinceSeq` is the mesh message-log cursor — pass back the previous
+   * response's `debug.logSeq` and only newer bus entries come down (the
+   * response then carries `logIncremental: true`). Omit it (or pass 0) for the
+   * full log.
+   */
+  getMeshMapPoll: (sinceSeq?: number) => Promise<{
+    debug: MeshDebugInfo | null
+    fleet: FleetStatusResult
+    burn: FleetBurnResult | null
+    adapters: { adapters: AdapterState[]; perAgent?: AdapterAgentStatus[] }
+    peers: unknown[]
+  }>
   getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string }>
   restartMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   startMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>

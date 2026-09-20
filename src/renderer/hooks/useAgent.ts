@@ -54,6 +54,26 @@ export function toDisplayState(executorState: string): AgentState {
 }
 
 /**
+ * Apply a re-read document/config only when it actually differs. The turn-end
+ * and meta refreshes re-read the same bytes most of the time, and handing the
+ * store a fresh identity for unchanged content costs a structuredClone of the
+ * whole AgentConfig plus a re-render of every panel derived from it — and, for
+ * the document, marks a file the agent never touched dirty.
+ */
+export function applyDocument(content: string): void {
+  const store = useDocumentStore.getState()
+  if (store.documentContent === content) return
+  store.setDocumentContent(content)
+}
+
+export function applyConfig(config: AgentConfig | null): void {
+  const store = useAgentStore.getState()
+  if (store.config === config) return
+  if (store.config && config && JSON.stringify(store.config) === JSON.stringify(config)) return
+  store.setConfig(config)
+}
+
+/**
  * Hook that listens to agent events from the main process
  * and updates the Zustand stores accordingly.
  *
@@ -249,11 +269,15 @@ export function useAgentEvents() {
             metadata: { name: payload.name, isError: payload.result.isError, ...(payload.id ? { tool_use_id: payload.id } : {}), ...(payload.imageUrl ? { imageUrl: payload.imageUrl } : {}) }
           }, loop)
 
-          // If a file tool was used, refresh the document. Other files refresh
-          // their open tabs via `file_updated`.
-          if (['fs_read', 'fs_write'].includes(payload.name)) {
+          // A write may have changed the displayed document — re-read it. Reads
+          // cannot, so they no longer trigger an IPC round-trip. The result
+          // event doesn't carry the target path, so every write refreshes:
+          // README.md/document.md also arrive via `document_updated`, but an
+          // agent whose document path is neither still has to be covered here.
+          // Other files refresh their open tabs via `file_updated`.
+          if (payload.name === 'fs_write') {
             window.adfApi.getDocument().then((r) => {
-              useDocumentStore.getState().setDocumentContent(r.content)
+              applyDocument(r.content)
             })
           }
           // If agent changed its own config, refresh it
@@ -264,8 +288,8 @@ export function useAgentEvents() {
           }
           // If agent updated meta, refresh status text
           if (payload.name === 'sys_set_meta' || payload.name === 'sys_delete_meta') {
-            window.adfApi.getBatch().then((batch) => {
-              useAgentStore.getState().setStatusText(batch.statusText ?? '')
+            window.adfApi.getHeader().then((header) => {
+              useAgentStore.getState().setStatusText(header.statusText ?? '')
             })
           }
           break
@@ -371,18 +395,21 @@ export function useAgentEvents() {
             }
           }
 
-          // Final sync: batch fetch document and config in one IPC call to
-          // ensure UI reflects everything the agent wrote during this turn.
+          // Final sync: fetch document, config and status text in one IPC call
+          // to ensure UI reflects everything the agent wrote during this turn.
+          // The header, not the full batch: the loop is already live in the
+          // store, so the 200 parsed rows the batch carries were serialized,
+          // cloned across the bridge and dropped on every single turn end.
           // Nothing in the batch is per-loop (document, agent-level config,
           // status text are all main's), so scope it to main (B11): a side
           // loop's turn firing this fanned setConfig's fresh identity into the
           // status/title/tab-strip ~6x AND, via setDocumentContent, marked the
           // open document dirty on a turn that never touched it.
           if (loop === MAIN_LOOP) {
-            window.adfApi?.getBatch().then((batch) => {
-              useDocumentStore.getState().setDocumentContent(batch.document)
-              useAgentStore.getState().setConfig(batch.agentConfig)
-              useAgentStore.getState().setStatusText(batch.statusText ?? '')
+            window.adfApi?.getHeader().then((header) => {
+              applyDocument(header.document)
+              applyConfig(header.agentConfig)
+              useAgentStore.getState().setStatusText(header.statusText ?? '')
             })
           }
 

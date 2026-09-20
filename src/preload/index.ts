@@ -65,6 +65,7 @@ const api: AdfApi = {
   clearInbox: () => ipcRenderer.invoke(IPC.DOC_CLEAR_INBOX),
   getOutbox: () => ipcRenderer.invoke(IPC.DOC_GET_OUTBOX),
   getBatch: () => ipcRenderer.invoke(IPC.DOC_GET_BATCH),
+  getHeader: () => ipcRenderer.invoke(IPC.DOC_GET_HEADER),
 
   // Agent
   startAgent: (filePath?: string, hasUserMessage?: boolean) => ipcRenderer.invoke(IPC.AGENT_START, { filePath, hasUserMessage }),
@@ -175,6 +176,8 @@ const api: AdfApi = {
   },
   getMeshDebug: () =>
     ipcRenderer.invoke(IPC.MESH_STATUS, { debug: true }),
+  getMeshMapPoll: (sinceSeq?: number) =>
+    ipcRenderer.invoke(IPC.MESH_MAP_POLL, { sinceSeq }),
   getMeshServerStatus: () =>
     ipcRenderer.invoke(IPC.MESH_SERVER_STATUS),
   restartMeshServer: () =>

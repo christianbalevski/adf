@@ -582,6 +582,8 @@ export type MeshEvent =
     }
 
 export interface MessageBusLogEntry {
+  /** Monotonic append sequence, stamped by the bus. The mesh poll's cursor. */
+  seq?: number
   timestamp: number
   messageId: string
   from: string
@@ -658,6 +660,10 @@ export interface MeshDebugInfo {
     hasMessaging: boolean
   }[]
   messageLog: MessageBusLogEntry[]
+  /** Newest sequence the bus holds — the cursor to send back next poll. */
+  logSeq?: number
+  /** True when `messageLog` holds only the entries after the requested cursor. */
+  logIncremental?: boolean
 }
 
 // --- MCP Server Manager ---
