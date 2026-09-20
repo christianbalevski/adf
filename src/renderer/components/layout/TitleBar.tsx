@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAgentStore } from '../../stores/agent.store'
-import { useAppStore } from '../../stores/app.store'
+import { useAppStore, SIDEBAR_MAX_VW } from '../../stores/app.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { toDisplayState } from '../../hooks/useAgent'
@@ -264,7 +264,10 @@ export function TitleBar() {
   const starting = localStarting || startingElsewhere
 
   const isMac = window.adfApi?.platform === 'darwin'
-  const leftPaneWidth = sidebarCollapsed && !showSettings ? null : 240
+  const sidebarWidth = useAppStore((s) => s.sidebarWidth)
+  // Continues the pane below it: Settings' nav is a fixed w-60, the agent
+  // sidebar is whatever the user dragged it to.
+  const leftPaneWidth = showSettings ? 240 : sidebarCollapsed ? null : sidebarWidth
 
   useEffect(() => {
     let mounted = true
@@ -319,7 +322,7 @@ export function TitleBar() {
             ? 'bg-surface-2'
             : 'bg-surface-0'
         }`}
-        style={leftPaneWidth ? { width: leftPaneWidth } : undefined}
+        style={leftPaneWidth ? { width: leftPaneWidth, maxWidth: showSettings ? undefined : `${SIDEBAR_MAX_VW}vw` } : undefined}
       >
         <div
           className={!isFullscreen && isMac ? 'w-20 shrink-0' : 'shrink-0'}

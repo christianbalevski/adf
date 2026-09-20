@@ -1,5 +1,6 @@
 import { TitleBar } from './TitleBar'
 import { Sidebar } from './Sidebar'
+import { SidebarFrame } from './SidebarFrame'
 import { StatusBar } from './StatusBar'
 import { MeshTrafficBar } from './MeshTrafficBar'
 import { EditorPanel } from '../editor/EditorPanel'
@@ -20,7 +21,9 @@ import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
 import { useMeshStore } from '../../stores/mesh.store'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useDragResize } from '../../hooks/useDragResize'
+import { RIGHT_PANEL_WIDTH_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
+import { useEffect, useState, useCallback } from 'react'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 const RIGHT_PANEL_MIN = 260
@@ -32,33 +35,23 @@ export function AppShell() {
   const showSettings = useAppStore((s) => s.showSettings)
   const showMeshGraph = useAppStore((s) => s.showMeshGraph)
   const filePath = useDocumentStore((s) => s.filePath)
-  const [rightPanelWidth, setRightPanelWidth] = useState(RIGHT_PANEL_DEFAULT)
-  const isDragging = useRef(false)
+  const [rightPanelWidth, setRightPanelWidth] = useState(() =>
+    loadStoredSize(RIGHT_PANEL_WIDTH_KEY, RIGHT_PANEL_DEFAULT, RIGHT_PANEL_MIN, RIGHT_PANEL_MAX)
+  )
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    isDragging.current = true
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-    document.body.classList.add('panel-resizing')
+  const handleMouseDown = useDragResize({
+    axis: 'x',
+    grow: -1,
+    min: RIGHT_PANEL_MIN,
+    max: RIGHT_PANEL_MAX,
+    getStart: () => rightPanelWidth,
+    onChange: setRightPanelWidth,
+    onCommit: (w) => saveStoredSize(RIGHT_PANEL_WIDTH_KEY, w)
+  })
 
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!isDragging.current) return
-      const newWidth = window.innerWidth - ev.clientX
-      setRightPanelWidth(Math.max(RIGHT_PANEL_MIN, Math.min(RIGHT_PANEL_MAX, newWidth)))
-    }
-
-    const onMouseUp = () => {
-      isDragging.current = false
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      document.body.classList.remove('panel-resizing')
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-    }
-
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
+  const resetRightPanelWidth = useCallback(() => {
+    setRightPanelWidth(RIGHT_PANEL_DEFAULT)
+    saveStoredSize(RIGHT_PANEL_WIDTH_KEY, RIGHT_PANEL_DEFAULT)
   }, [])
 
   // Inbox + outbox updates: event-driven push + fallback poll
@@ -144,7 +137,7 @@ export function AppShell() {
         {/* Settings has its own navigation; the workspace tree stays out of
             the way. The fleet map hides it too — opening a file from the tree
             leaves the map anyway, so the tree is dead weight there. */}
-        {!showSettings && !showMeshGraph && <Sidebar />}
+        {!showSettings && !showMeshGraph && <SidebarFrame><Sidebar /></SidebarFrame>}
 
         {showMeshGraph ? (
           <div className="flex-1 flex flex-col overflow-hidden bg-surface-1">
@@ -181,6 +174,7 @@ export function AppShell() {
             {/* Resize handle */}
             <div
               onMouseDown={handleMouseDown}
+              onDoubleClick={resetRightPanelWidth}
               className="shrink-0 w-1 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors bg-transparent"
             />
             <div
