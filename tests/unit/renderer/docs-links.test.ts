@@ -23,7 +23,10 @@ function slugify(heading: string): string {
 function anchorsFor(guide: string): Set<string> {
   const md = readFileSync(join(GUIDES_DIR, `${guide}.md`), 'utf8')
   const anchors = new Set<string>()
-  for (const line of md.split('\n')) {
+  // Split on CRLF too: the guides are checked out with CRLF on Windows, and a
+  // trailing \r makes `(.*)$` (no /m, and `.` never matches \r) fail to match
+  // EVERY heading — which silently turned this check into a no-op.
+  for (const line of md.split(/\r?\n/)) {
     const m = line.match(/^#{1,6}\s+(.*)$/)
     if (m) anchors.add(slugify(m[1].replace(/`/g, '')))
   }

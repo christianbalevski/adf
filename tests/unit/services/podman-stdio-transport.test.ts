@@ -59,8 +59,10 @@ describe('PodmanStdioTransport env-file', () => {
     const args = (transport as any).buildExecArgs() as string[]
     const envFilePath = args[args.indexOf('--env-file') + 1]
 
-    // Mode 0600 (owner read/write only)
-    expect(statSync(envFilePath).mode & 0o777).toBe(0o600)
+    // Mode 0600 (owner read/write only). POSIX-only: NTFS has no rwx bits and
+    // Node reports 0666 whatever mode writeFileSync was given, so the check
+    // runs (and still demands 0600) on every POSIX platform, incl. CI.
+    if (process.platform !== 'win32') expect(statSync(envFilePath).mode & 0o777).toBe(0o600)
 
     const body = readFileSync(envFilePath, 'utf8')
     expect(body).toContain('HOME=/workspace/agent-1/home')
