@@ -4,6 +4,7 @@ import type { ToolResult } from '../../shared/types/tool.types'
 import type { ToolDeclaration } from '../../shared/types/adf-v02.types'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
+import { markActivity } from '../utils/stall-monitor'
 
 /** Cross-cutting flags injected by the runtime — never surfaced in tool.* payloads. */
 const INTERNAL_INPUT_FLAGS = ['_authorized', '_protection_override', '_full', '_async'] as const
@@ -117,6 +118,9 @@ export class ToolRegistry {
     workspace: AdfWorkspace,
     context?: ToolExecutionContext
   ): Promise<ToolResult> {
+    // Breadcrumb for the dev stall monitor: if the main thread freezes inside a
+    // tool, this is what the stall report names. No-op when the monitor is off.
+    markActivity('tool', name)
     const agentId = context?.agentId
     const base: Record<string, unknown> = {
       ...(ToolRegistry.safeFilePath(workspace) ? { filePath: ToolRegistry.safeFilePath(workspace) } : {}),

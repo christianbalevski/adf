@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { useMeshStore } from './mesh.store'
 import type { ApprovalReason } from '../../shared/types/ipc.types'
 import type { ProtectionDenial } from '../../shared/types/tool.types'
 
@@ -71,26 +72,28 @@ const PEER_PING_TTL_MS = 30_000
  * ranking), so the few stale entries kept below the half-way mark are
  * invisible to them — identical observed values. The fleet-wide rates read
  * the precomputed activityInWindow/messageInWindow counters instead.
+ *
+ * MUTATES the array in place: the pulse arrays are ring buffers, not
+ * reactive state. Nothing selects activityPulse/messagePulse/agentPulse —
+ * they feed the pulseCountInWindow counters below, and FleetLeaderboard
+ * reads agentPulse imperatively via getState() — so a copy per mesh event
+ * (thousands of entries, several per second) bought nothing.
  */
-const pushPulse = (pulse: number[], t: number): number[] => {
+const pushPulse = (pulse: number[], t: number): void => {
   const cutoff = t - PULSE_WINDOW_MS
   const n = pulse.length
-  if (n === 0 || pulse[0] >= cutoff || pulse[n >> 1] >= cutoff) {
-    const next = pulse.slice()
-    next.push(t)
-    return next
+  if (n > 0 && pulse[0] < cutoff && pulse[n >> 1] < cutoff) {
+    // ≥ half stale: binary search the first in-window entry, drop the rest
+    let lo = 0
+    let hi = n
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (pulse[mid] < cutoff) lo = mid + 1
+      else hi = mid
+    }
+    pulse.splice(0, lo)
   }
-  // ≥ half stale: binary search the first in-window entry, drop the rest
-  let lo = 0
-  let hi = n
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (pulse[mid] < cutoff) lo = mid + 1
-    else hi = mid
-  }
-  const next = pulse.slice(lo)
-  next.push(t)
-  return next
+  pulse.push(t)
 }
 
 /**
@@ -291,18 +294,22 @@ export function applyActivity(
   if (activity.type === 'state' && last?.type === 'state' && last.args === activity.args) {
     return null
   }
-  const activityPulse =
-    activity.type === 'tool_start' ? pushPulse(s.activityPulse, activity.timestamp) : s.activityPulse
+  // Ring buffers, mutated in place — see pushPulse. A state transition isn't
+  // work, so it never counts toward the per-agent pulse.
+  const counted = activity.type === 'tool_start'
+  if (counted) pushPulse(s.activityPulse, activity.timestamp)
+  if (activity.type !== 'state') {
+    let agentRing = s.agentPulse[filePath]
+    if (!agentRing) {
+      agentRing = []
+      s.agentPulse[filePath] = agentRing
+    }
+    pushPulse(agentRing, activity.timestamp)
+  }
   return {
     nodeActivities: { ...s.nodeActivities, [filePath]: [...existing, activity].slice(-MAX_ACTIVITIES) },
     lastActivityAt: { ...s.lastActivityAt, [filePath]: activity.timestamp },
-    activityPulse,
-    ...(activityPulse !== s.activityPulse
-      ? { activityInWindow: pulseCountInWindow(activityPulse, activity.timestamp) }
-      : {}),
-    agentPulse: activity.type === 'state'
-      ? s.agentPulse
-      : { ...s.agentPulse, [filePath]: pushPulse(s.agentPulse[filePath] ?? [], activity.timestamp) }
+    ...(counted ? { activityInWindow: pulseCountInWindow(s.activityPulse, activity.timestamp) } : {})
   }
 }
 
@@ -374,14 +381,13 @@ export function applyEdgeAnimation(
   }
   const stationHeat =
     touchedStations.size > 0 ? updatedStationHeat(s.stationHeat, heat, touchedStations, now) : null
-  const messagePulse = pushPulse(s.messagePulse, now)
+  pushPulse(s.messagePulse, now)
   return {
     activeAnimations: allAnimations,
     activeAnimationIndex: index,
     liveRoutes: routes,
     edgeHeat: heat,
-    messagePulse,
-    messageInWindow: pulseCountInWindow(messagePulse, now),
+    messageInWindow: pulseCountInWindow(s.messagePulse, now),
     ...(stationHeat ? { stationHeat } : {})
   }
 }
@@ -515,6 +521,40 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
           prunedPings = pings
         }
       }
+      // Departed agents — an agent that left the fleet (file deleted, folder
+      // untracked) kept its feed, recency stamp, routes and pulse ring for the
+      // life of the session. An empty roster means the fleet view has no data
+      // yet, not that every agent vanished, so the sweep waits for one.
+      let prunedActivities: typeof s.nodeActivities | null = null
+      let prunedLastAt: typeof s.lastActivityAt | null = null
+      let prunedRoutes: typeof s.liveRoutes | null = null
+      const roster = useMeshStore.getState().agents
+      if (roster.length > 0) {
+        const known = new Set(roster.map((a) => a.filePath))
+        // Station endpoints are peer runtimes, not local agents — they have no
+        // row in the roster and must survive the sweep.
+        const lives = (id: string) => known.has(id) || id.startsWith('station:')
+        for (const k of Object.keys(s.nodeActivities)) {
+          if (known.has(k)) continue
+          if (!prunedActivities) prunedActivities = { ...s.nodeActivities }
+          delete prunedActivities[k]
+        }
+        for (const k of Object.keys(s.lastActivityAt)) {
+          if (known.has(k)) continue
+          if (!prunedLastAt) prunedLastAt = { ...s.lastActivityAt }
+          delete prunedLastAt[k]
+        }
+        for (const [k, route] of Object.entries(s.liveRoutes)) {
+          if (lives(route.from) && lives(route.to)) continue
+          if (!prunedRoutes) prunedRoutes = { ...s.liveRoutes }
+          delete prunedRoutes[k]
+        }
+        // agentPulse is a ring-buffer record nothing subscribes to (see
+        // pushPulse) — evict in place.
+        for (const k of Object.keys(s.agentPulse)) {
+          if (!known.has(k)) delete s.agentPulse[k]
+        }
+      }
       // Station annex decay — quantized values only move when a threshold is
       // crossed, so this all-stations pass is identity-stable almost always.
       const stationHeat = updatedStationHeat(s.stationHeat, prunedHeat ?? s.edgeHeat, null, now)
@@ -532,6 +572,9 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
         !prunedHeat &&
         !prunedStreets &&
         !prunedPings &&
+        !prunedActivities &&
+        !prunedLastAt &&
+        !prunedRoutes &&
         !stationHeat &&
         !ratesMoved
       ) {
@@ -547,6 +590,9 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
         ...(prunedHeat ? { edgeHeat: prunedHeat } : {}),
         ...(prunedStreets ? { peerStreetHeat: prunedStreets } : {}),
         ...(prunedPings ? { peerAgentPings: prunedPings } : {}),
+        ...(prunedActivities ? { nodeActivities: prunedActivities } : {}),
+        ...(prunedLastAt ? { lastActivityAt: prunedLastAt } : {}),
+        ...(prunedRoutes ? { liveRoutes: prunedRoutes } : {}),
         ...(stationHeat ? { stationHeat } : {}),
         ...(ratesMoved ? { activityInWindow, messageInWindow } : {})
       }

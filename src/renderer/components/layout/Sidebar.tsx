@@ -223,6 +223,46 @@ interface RowTarget {
   dirPath: string
 }
 
+/** Shared empty list so a leaf TreeNode's memo stays identity-stable. */
+const EMPTY_ENTRIES: TrackedDirEntry[] = []
+
+/** Every non-directory entry under one node, depth-first. */
+function collectSubtreeFiles(node: TrackedDirEntry): TrackedDirEntry[] {
+  if (!node.isDirectory) return [node]
+  const out: TrackedDirEntry[] = []
+  const walk = (entries: TrackedDirEntry[]) => {
+    for (const e of entries) {
+      if (e.isDirectory) walk(e.children || [])
+      else out.push(e)
+    }
+  }
+  walk(node.children || [])
+  return out
+}
+
+/**
+ * Keeps a derived Map referentially stable while its contents are unchanged.
+ * The mesh and background stores hand out a fresh agent array on every event;
+ * a new Map per event would invalidate every memo'd tree row for nothing.
+ */
+function useStableMap<V>(entries: [string, V][]): Map<string, V> {
+  const mapRef = useRef<Map<string, V> | undefined>(undefined)
+  const srcRef = useRef<[string, V][] | undefined>(undefined)
+  if (!mapRef.current || srcRef.current !== entries) {
+    srcRef.current = entries
+    const next = new Map(entries)
+    const prev = mapRef.current
+    let same = prev !== undefined && prev.size === next.size
+    if (same && prev) {
+      for (const [k, v] of next) {
+        if (prev.get(k) !== v) { same = false; break }
+      }
+    }
+    if (!same) mapRef.current = next
+  }
+  return mapRef.current!
+}
+
 export function Sidebar() {
   const collapsed = useAppStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useAppStore((s) => s.toggleSidebar)
@@ -246,14 +286,15 @@ export function Sidebar() {
 
   const meshEnabled = useMeshStore((s) => s.enabled)
   const meshAgents = useMeshStore((s) => s.agents)
-  const agentStatusMap = useMemo(
-    () => new Map(meshAgents.map((a) => [a.filePath, a])),
-    [meshAgents]
+  const agentStatusMap = useStableMap(
+    useMemo(() => meshAgents.map((a) => [a.filePath, a] as [string, MeshAgentStatus]), [meshAgents])
   )
   const backgroundAgents = useBackgroundAgentsStore((s) => s.agents)
-  const backgroundAgentMap = useMemo(
-    () => new Map(backgroundAgents.map((a) => [a.filePath, a])),
-    [backgroundAgents]
+  const backgroundAgentMap = useStableMap(
+    useMemo(
+      () => backgroundAgents.map((a) => [a.filePath, a] as [string, BackgroundAgentStatus]),
+      [backgroundAgents]
+    )
   )
   const dirScrollRef = useRef<HTMLDivElement>(null)
 
@@ -751,8 +792,9 @@ const RunningSection = memo(function RunningSection({
               status={agentStatusMap.get(file.filePath)}
               backgroundStatus={backgroundAgentMap.get(file.filePath)}
               folderHint={folderHint}
-              onOpen={() => onOpenFile(file.filePath)}
-              onContextMenu={(e) => onFileContextMenu(e, file, dirPath)}
+              dirPath={dirPath}
+              onOpenFile={onOpenFile}
+              onFileContextMenu={onFileContextMenu}
             />
           ))}
         </div>
@@ -947,40 +989,49 @@ const TreeNode = memo(function TreeNode({
   const expanded = forceExpanded || userExpanded
   const [toggling, setToggling] = useState(false)
 
-  if (entry.isDirectory) {
-    const collectFiles = (node: TrackedDirEntry): TrackedDirEntry[] => {
-      if (!node.isDirectory) return [node]
-      return (node.children || []).flatMap(collectFiles)
+  // Hooks stay unconditional — the directory branch below used to call
+  // useCallback inside its `if`, which breaks the Rules of Hooks the moment a
+  // rescan flips a node between file and folder.
+  const allFiles = useMemo(
+    () => (entry.isDirectory ? collectSubtreeFiles(entry) : EMPTY_ENTRIES),
+    [entry]
+  )
+  // One pass for the three counts the folder row needs, instead of a
+  // some/filter/filter chain per folder per render.
+  const counts = useMemo(() => {
+    let foregroundInSubtree = false
+    let backgroundActive = 0
+    for (const f of allFiles) {
+      if (f.filePath === currentFilePath) foregroundInSubtree = true
+      else if (backgroundAgentMap.has(f.filePath)) backgroundActive++
     }
-    const allFiles = collectFiles(entry)
-    const totalCount = allFiles.length
+    return { foregroundInSubtree, backgroundActive }
+  }, [allFiles, currentFilePath, backgroundAgentMap])
 
-    const foregroundInSubtree = currentFilePath !== null && allFiles.some((f) => f.filePath === currentFilePath)
-    const foregroundRunning = foregroundInSubtree && foregroundAgentState !== 'off'
+  const totalCount = allFiles.length
+  const foregroundInSubtree = counts.foregroundInSubtree
+  const foregroundRunning = foregroundInSubtree && foregroundAgentState !== 'off'
+  const activeCount = counts.backgroundActive + (foregroundRunning ? 1 : 0)
+  const allActive = totalCount > 0 && activeCount === totalCount
 
-    const nonForegroundFiles = allFiles.filter((f) => f.filePath !== currentFilePath)
-    const nonForegroundActiveCount = nonForegroundFiles.filter((f) => backgroundAgentMap.has(f.filePath)).length
-    const activeCount = nonForegroundActiveCount + (foregroundInSubtree && foregroundRunning ? 1 : 0)
-
-    const allActive = totalCount > 0 && activeCount === totalCount
-
-    const handleDirToggle = useCallback(async (e: React.MouseEvent) => {
-      e.stopPropagation()
-      if (toggling) return
-      setToggling(true)
-      try {
-        if (allActive) {
-          await stopAgentsSequentially(allFiles, currentFilePath, backgroundAgentMap)
-        } else {
-          await startAgentsSequentially(allFiles, currentFilePath, foregroundRunning, backgroundAgentMap)
-        }
-      } catch (err) {
-        console.error('[Sidebar] Subdirectory toggle failed:', err)
-      } finally {
-        setToggling(false)
+  const handleDirToggle = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (toggling) return
+    setToggling(true)
+    try {
+      if (allActive) {
+        await stopAgentsSequentially(allFiles, currentFilePath, backgroundAgentMap)
+      } else {
+        await startAgentsSequentially(allFiles, currentFilePath, foregroundRunning, backgroundAgentMap)
       }
-    }, [allActive, toggling, allFiles, currentFilePath, foregroundInSubtree, foregroundRunning, backgroundAgentMap])
+    } catch (err) {
+      console.error('[Sidebar] Subdirectory toggle failed:', err)
+    } finally {
+      setToggling(false)
+    }
+  }, [allActive, toggling, allFiles, currentFilePath, foregroundRunning, backgroundAgentMap])
 
+  if (entry.isDirectory) {
     return (
       <div>
         <div
@@ -1062,8 +1113,9 @@ const TreeNode = memo(function TreeNode({
       meshEnabled={meshEnabled}
       status={status}
       backgroundStatus={backgroundStatus}
-      onOpen={() => onOpenFile(entry.filePath)}
-      onContextMenu={(e) => onFileContextMenu(e, entry, dirPath)}
+      dirPath={dirPath}
+      onOpenFile={onOpenFile}
+      onFileContextMenu={onFileContextMenu}
     />
   )
 })
@@ -1076,8 +1128,9 @@ const AgentFileRow = memo(function AgentFileRow({
   status,
   backgroundStatus,
   folderHint,
-  onOpen,
-  onContextMenu
+  dirPath,
+  onOpenFile,
+  onFileContextMenu
 }: {
   file: TrackedDirEntry
   depth: number
@@ -1087,10 +1140,19 @@ const AgentFileRow = memo(function AgentFileRow({
   backgroundStatus: BackgroundAgentStatus | undefined
   /** Muted parent-folder name shown after the agent name to tell same-named agents apart. */
   folderHint?: string
-  onOpen: () => void
-  onContextMenu: (e: React.MouseEvent) => void
+  /** Tracked root this row belongs to (what the context menu's rescan targets). */
+  dirPath: string
+  // The row binds these itself: fresh per-row closures from the parent would
+  // make every render a new prop object and the memo would never hit.
+  onOpenFile: (filePath: string) => void
+  onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
 }) {
   const [toggling, setToggling] = useState(false)
+  const handleOpen = useCallback(() => onOpenFile(file.filePath), [onOpenFile, file.filePath])
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => onFileContextMenu(e, file, dirPath),
+    [onFileContextMenu, file, dirPath]
+  )
   const agentState = useAgentStore((s) => isActive ? s.state : 'off')
   // Inner loops only — main is the dot. A primitive selector, so a streaming
   // side loop re-renders the row on the count, not on every delta.
@@ -1171,7 +1233,7 @@ const AgentFileRow = memo(function AgentFileRow({
   return (
     <div
       {...shareDrag}
-      onContextMenu={onContextMenu}
+      onContextMenu={handleContextMenu}
       data-active={isActive || undefined}
       className={`group flex items-center gap-1.5 py-[3px] text-[11px] leading-4 cursor-pointer ${
         isActive
@@ -1191,7 +1253,7 @@ const AgentFileRow = memo(function AgentFileRow({
       {/* The full path is the hint; a native title never renders in this
           window, so the portal tooltip carries it instead. */}
       <Tooltip tip={file.filePath} delay={1000} className="flex min-w-0 shrink">
-        <button onClick={onOpen} className="block w-full min-w-0 text-left truncate">
+        <button onClick={handleOpen} className="block w-full min-w-0 text-left truncate">
           {(isActive ? agentConfig?.name : undefined) ?? file.agentName ?? file.fileName}
           {folderHint && (
             <span className="ml-1 text-[10px] text-[var(--adf-ui-text-subtle)]">

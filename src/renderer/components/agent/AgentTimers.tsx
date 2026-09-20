@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Dialog } from '../common/Dialog'
+import { usePollWhenVisible } from '../../hooks/usePollWhenVisible'
 import { useAgentStore } from '../../stores/agent.store'
 import { loopColor } from '../../utils/loop-color'
 import { DocsLink } from '../common/DocsLink'
@@ -599,17 +600,17 @@ export function AgentTimers() {
   const [editingTimer, setEditingTimer] = useState<Timer | undefined>()
   const [showExpired, setShowExpired] = useState(false)
 
+  const rootRef = useRef<HTMLDivElement>(null)
+
   const fetchTimers = useCallback(() => {
     window.adfApi?.getTimers().then((result) => {
       setTimers(result?.timers ?? [])
     })
   }, [])
 
-  useEffect(() => {
-    fetchTimers()
-    const interval = setInterval(fetchTimers, 5000)
-    return () => clearInterval(interval)
-  }, [fetchTimers])
+  // Gated on visibility: the panel stays mounted behind other dock tabs and in
+  // a backgrounded window, where a 5s IPC round-trip buys nothing.
+  usePollWhenVisible(fetchTimers, 5000, { ref: rootRef })
 
   const handleDelete = async (id: number) => {
     await window.adfApi?.deleteTimer(id)
@@ -642,7 +643,7 @@ export function AgentTimers() {
   const expiredTimers = timers.filter((t) => t.expired)
 
   return (
-    <div className="flex flex-col h-full">
+    <div ref={rootRef} className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-3 pb-1">
         <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">

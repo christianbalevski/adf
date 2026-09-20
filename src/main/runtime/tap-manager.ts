@@ -12,8 +12,12 @@
  *      filter mistakes. Overruns are dropped and logged.
  *   3. allow_wildcard gate — validated at config load (adf-schema).
  *
- * Dispatch: minimum viable single-event path. Phase 8 measures throughput
- * and decides whether batching or a dedicated worker is needed.
+ * Dispatch: one event at a time per tap, with the rest held in a bounded queue.
+ * The bus publishes synchronously from hot paths (db writes, tool calls), so an
+ * unbounded fire-and-forget dispatch let one burst fan out a sandbox execution
+ * per event. Serializing also matches the warm sandbox: every dispatch for a tap
+ * shares one context and its module-level state. Overflow is dropped loudly —
+ * same policy as SystemDispatchQueue (see system-dispatch-limits.ts).
  */
 
 import type { AdfWorkspace } from '../adf/adf-workspace'
@@ -26,12 +30,19 @@ import { withAuthorization } from './authorization-context'
 import { loadLambdaSource } from './ts-transpiler'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { compileUmbilicalFilter, type UmbilicalEventFilter } from './umbilical-filter'
+import { MAX_QUEUE_DEPTH } from './system-dispatch-limits'
 
 interface ActiveTap {
   config: UmbilicalTapConfig
   filePath: string
   fnName: string
   code: string
+  /** True while a dispatch is in the sandbox — one at a time per tap. */
+  running: boolean
+  /** Events waiting for the in-flight dispatch, capped at MAX_QUEUE_DEPTH. */
+  queue: UmbilicalEvent[]
+  /** Cumulative overflow drops, reported in each drop's log line. */
+  dropped: number
   /**
    * Compiled filter — event_types matching, `when` predicate, own-origin
    * exclusion, and the rate-limit token bucket all live here. Shared with
@@ -119,6 +130,9 @@ export class TapManager {
       filePath,
       fnName,
       code,
+      running: false,
+      queue: [],
+      dropped: 0,
       filter,
       unsubscribe: () => {},
     }
@@ -130,16 +144,54 @@ export class TapManager {
         console.log(`[Umbilical:tap] agent=${this.agentId} tap=${tap.config.name} type=${event.event_type} matched=${matches}`)
       }
       if (!matches) return
-      this.dispatch(tap, event).catch(err => {
-        this.safeLog('warn', 'dispatch_error', tap.config.name,
-          `Tap ${tap.config.name} handler threw: ${err}`)
-      })
+      this.enqueue(tap, event)
     })
 
     this.taps.push(tap)
     this.safeLog('info', 'registered', cfg.name,
       `Tap ${cfg.name} subscribed (lambda=${cfg.lambda}, event_types=${cfg.filter.event_types.join(',')})`)
     console.log(`[Umbilical] Tap registered: agent=${this.agentId} name=${cfg.name} lambda=${cfg.lambda} types=${cfg.filter.event_types.join(',')}`)
+  }
+
+  /**
+   * Hand a matched event to the tap's lane. Runs it now when the lane is idle
+   * (same synchronous entry as before), otherwise queues it. A full queue drops
+   * the arriving event and says so at `error` — an agent with
+   * `logging.default_level: 'error'` still needs to hear about a lost dispatch.
+   */
+  private enqueue(tap: ActiveTap, event: UmbilicalEvent): void {
+    if (tap.running) {
+      if (tap.queue.length >= MAX_QUEUE_DEPTH) {
+        tap.dropped++
+        this.safeLog('error', 'dispatch_dropped', tap.config.name,
+          `Backpressure: dropped ${event.event_type} for tap ${tap.config.name} — ` +
+          `${tap.queue.length} already queued (max_queue_depth=${MAX_QUEUE_DEPTH}, ${tap.dropped} dropped so far)`)
+        return
+      }
+      tap.queue.push(event)
+      return
+    }
+    tap.running = true
+    void this.drain(tap, event)
+  }
+
+  /** Run `event`, then everything queued behind it, one at a time. */
+  private async drain(tap: ActiveTap, event: UmbilicalEvent): Promise<void> {
+    let next: UmbilicalEvent | undefined = event
+    try {
+      while (next) {
+        try {
+          await this.dispatch(tap, next)
+        } catch (err) {
+          this.safeLog('warn', 'dispatch_error', tap.config.name,
+            `Tap ${tap.config.name} handler threw: ${err}`)
+        }
+        if (this.disposed) break
+        next = tap.queue.shift()
+      }
+    } finally {
+      tap.running = false
+    }
   }
 
   private async dispatch(tap: ActiveTap, event: UmbilicalEvent): Promise<void> {
@@ -186,6 +238,8 @@ if (typeof ${tap.fnName} === "function") {
     this.disposed = true
     for (const tap of this.taps) {
       try { tap.unsubscribe() } catch { /* best-effort */ }
+      // A queued event must never outlive the agent that matched it.
+      tap.queue = []
     }
     this.taps = []
   }

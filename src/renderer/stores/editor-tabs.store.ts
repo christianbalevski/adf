@@ -209,7 +209,25 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
  */
 let agentSwitchDepth = 0
 
+/**
+ * Debounced writers that carry no agent identity (AgentConfig's save) register
+ * here so their pending edit is delivered while the outgoing agent's workspace
+ * is still the open one — a switch that never blurs the field (keyboard nav)
+ * would otherwise drop the last debounce window of typing.
+ */
+const preSwitchFlushers = new Set<() => void>()
+
+export function registerPreSwitchFlush(flush: () => void): () => void {
+  preSwitchFlushers.add(flush)
+  return () => { preSwitchFlushers.delete(flush) }
+}
+
 export function beginAgentSwitch(): void {
+  if (agentSwitchDepth === 0) {
+    for (const flush of preSwitchFlushers) {
+      try { flush() } catch { /* a failed flush must not block the switch */ }
+    }
+  }
   agentSwitchDepth++
 }
 

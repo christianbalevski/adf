@@ -379,30 +379,19 @@ export class TriggerEvaluator extends EventEmitter {
 
   private buildInboxSummary(): string {
     if (!this.workspace) return '{ "error": "workspace unavailable" }'
-    const unread = this.workspace.getInbox('unread')
-    const read = this.workspace.getInbox('read')
-    const archived = this.workspace.getInbox('archived')
-
-    const unreadBySender: Record<string, number> = {}
-    const unreadBySource: Record<string, number> = {}
-    let oldestUnread: number | undefined
-    for (const msg of unread) {
-      unreadBySender[msg.from] = (unreadBySender[msg.from] ?? 0) + 1
-      const src = msg.source ?? 'mesh'
-      unreadBySource[src] = (unreadBySource[src] ?? 0) + 1
-      if (oldestUnread === undefined || msg.received_at < oldestUnread) {
-        oldestUnread = msg.received_at
-      }
-    }
+    // Counts and groupings come from SQL: the summary never needs a body or an
+    // attachment, and this runs on every inbox trigger.
+    const counts = this.workspace.getInboxCounts()
+    const { bySender, bySource, oldest } = this.workspace.getUnreadInboxSummary()
 
     return JSON.stringify({
-      total: unread.length + read.length + archived.length,
-      unread: unread.length,
-      read: read.length,
-      archived: archived.length,
-      unread_by_sender: unreadBySender,
-      unread_by_source: unreadBySource,
-      oldest_unread_timestamp: oldestUnread ?? null
+      total: counts.unread + counts.read + counts.archived,
+      unread: counts.unread,
+      read: counts.read,
+      archived: counts.archived,
+      unread_by_sender: bySender,
+      unread_by_source: bySource,
+      oldest_unread_timestamp: oldest ?? null
     }, null, 2)
   }
 

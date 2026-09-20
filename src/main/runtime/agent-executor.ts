@@ -4,8 +4,9 @@ import type { ToolRegistry } from '../tools/tool-registry'
 import { stripInternalToolFlags } from '../tools/tool-registry'
 import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
-import type { ContentBlock } from '../../shared/types/provider.types'
-import type { AgentExecutionEvent, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts } from '../../shared/types/ipc.types'
+import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
+import type { AgentExecutionEvent, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts, ToolCallResultTargets } from '../../shared/types/ipc.types'
+import { deriveToolTargetPaths } from '../../shared/utils/document-target'
 import type { ToolProviderFormat, ToolResult, ProtectionDenial } from '../../shared/types/tool.types'
 import type { SystemScopeHandler } from './system-scope-handler'
 import {
@@ -127,6 +128,23 @@ const MEMORY_FLUSH_EMERGENCY_FACTOR = 1.3
 // is emitted.
 const COMPACTION_TEXT_BUDGET = 8_192
 const COMPACTION_REASONING_HEADROOM = 20_000
+
+/**
+ * A tool result's JSON body, parsed once and shared by every media extractor
+ * and filter that would otherwise re-parse it (an fs_read of a 5 MB image was
+ * parsed four times before reaching the model). `null` means "not a JSON
+ * object" — the same thing each helper's own catch used to mean.
+ */
+type ParsedToolResult = Record<string, unknown> | null
+
+function parseToolResultJson(result: ToolResult): ParsedToolResult {
+  try {
+    const value = JSON.parse(result.content)
+    return value !== null && typeof value === 'object' ? value as Record<string, unknown> : null
+  } catch {
+    return null
+  }
+}
 
 interface TurnCheckpointRecord {
   id: string
@@ -609,14 +627,29 @@ export class AgentExecutor extends EventEmitter {
   } | null = null
   private toolSnapshotCache: CachedToolSnapshot | null = null
 
+  /** Per-turn short-circuit for buildSystemPrompt — see the guard there. Holds
+   *  the systemPromptCache entry it was derived from, so anything that drops
+   *  that cache (resetContextState, updateConfig) invalidates this too. */
+  private systemPromptMemo: {
+    promptCache: object | null
+    updatedAt: string | undefined
+    snapshots: Map<string, string> | null
+    snapshotSize: number
+    prompt: string
+  } | null = null
+
   // Session snapshot of files injected via {{<path>}} placeholders (incl. mind.md).
   // Read once and reused across turns; cleared on session reset so edits are
   // picked up at the next reset (compaction / loop_clear) — never mid-session.
   // null = needs (re)snapshotting.
   private injectedFileSnapshots: Map<string, string> | null = null
 
-  // Mesh topology tracking for delta-based dynamic instructions
-  private lastMeshSnapshot: string = ''
+  // Mesh topology tracking for delta-based dynamic instructions.
+  // undefined until the first build, so an empty roster still emits once.
+  private lastMeshSnapshot: string | undefined = undefined
+
+  // Compiled on_tool_call glob patterns, keyed by the pattern string.
+  private toolTriggerPatterns = new Map<string, RegExp>()
 
   // Cross-turn deduplication for "No Secrets" context injection.
   // Instance-scoped so the hash survives across executeTurn() calls.
@@ -1811,6 +1844,10 @@ export class AgentExecutor extends EventEmitter {
       // a wake whose pre-appended row the session ALREADY holds (review M6).
       const skipTriggerMessage = opts?.skipTriggerMessage === true
         || this.preAppendedRowAlreadyInSession(dispatch)
+      // adf_loop seq of the row this trigger was persisted as. Carried on the
+      // trigger_message event so the entry the chat panel appends live wears
+      // the same `metadata.seq` the reloaded row does.
+      let triggerRowSeq: number | undefined
       if (!skipTriggerMessage) {
         // Owner messages were already appended to the loop at delivery time
         // (deliverOwnerMessage) so they're visible immediately — inline them
@@ -1818,8 +1855,9 @@ export class AgentExecutor extends EventEmitter {
         // The delivery-time row's seq rides the dispatch (loop_seq) so the
         // inlined message still gets its [S<seq>] marker.
         const preAppended = isPreAppendedDispatch(dispatch)
+        const triggerMsg: LLMMessage = { role: 'user', content: triggerContent }
         this.session.addMessage(
-          { role: 'user', content: triggerContent },
+          triggerMsg,
           undefined,
           { skipLoop: preAppended, seq: preAppendedLoopSeq(dispatch) }
         )
@@ -1827,21 +1865,29 @@ export class AgentExecutor extends EventEmitter {
         // it is on disk the moment the turn starts. This retry-flush only
         // re-attempts the insert if it failed (DB busy).
         this.session.flushToLoop()
+        // Read AFTER the retry-flush: a first insert that failed gets its seq
+        // stamped onto the same message object when the flush succeeds.
+        triggerRowSeq = triggerMsg.seq
       }
       // Provider-recovery retry: tell the model what failed and how long has
       // passed, mirroring the crash-recovery checkpoint notice. Added here —
       // after the re-entrant rehydrate — so an idle-swept session can't lose
       // the history the notice rides on.
       if (opts?.recoveryNotice) {
-        this.session.addMessage({
+        const noticeMsg: LLMMessage = {
           role: 'user',
           content: [{ type: 'text', text: opts.recoveryNotice }]
-        })
+        }
+        this.session.addMessage(noticeMsg)
         // The chat panel renders live from events, not the loop — without this
         // the notice only appears after a transcript reload.
         this.emitEvent({
           type: 'context_injected',
-          payload: { category: 'System', content: opts.recoveryNotice },
+          payload: {
+            category: 'System',
+            content: opts.recoveryNotice,
+            ...(noticeMsg.seq !== undefined ? { seq: noticeMsg.seq } : {})
+          },
           timestamp: Date.now()
         })
       }
@@ -1853,7 +1899,11 @@ export class AgentExecutor extends EventEmitter {
       } else if (eventType !== 'chat' || !isEchoedChat(dispatch)) {
         this.emitEvent({
           type: 'trigger_message',
-          payload: { content: triggerMessage, triggerType: eventType ?? 'unknown' },
+          payload: {
+            content: triggerMessage,
+            triggerType: eventType ?? 'unknown',
+            ...(triggerRowSeq !== undefined ? { seq: triggerRowSeq } : {})
+          },
           timestamp: Date.now()
         })
       }
@@ -1964,19 +2014,27 @@ export class AgentExecutor extends EventEmitter {
           ? `${this.systemPromptCache.injectedFilesHash}|${this.systemPromptCache.configHash}`
           : this.hashString(systemPrompt)
         if (currentSPHash !== this.lastSystemPromptHash) {
-          this.session.appendContextEntry('system_prompt', systemPrompt)
+          const spSeq = this.session.appendContextEntry('system_prompt', systemPrompt)
           this.emitEvent({
             type: 'context_injected',
-            payload: { category: 'system_prompt', content: systemPrompt },
+            payload: {
+              category: 'system_prompt',
+              content: systemPrompt,
+              ...(spSeq !== undefined ? { seq: spSeq } : {})
+            },
             timestamp: Date.now()
           })
           this.lastSystemPromptHash = currentSPHash
         }
         if (dynamicInstructions && dynamicInstructions !== this.lastDynamicInstructions) {
-          this.session.appendContextEntry('dynamic_instructions', dynamicInstructions)
+          const diSeq = this.session.appendContextEntry('dynamic_instructions', dynamicInstructions)
           this.emitEvent({
             type: 'context_injected',
-            payload: { category: 'dynamic_instructions', content: dynamicInstructions },
+            payload: {
+              category: 'dynamic_instructions',
+              content: dynamicInstructions,
+              ...(diSeq !== undefined ? { seq: diSeq } : {})
+            },
             timestamp: Date.now()
           })
           this.lastDynamicInstructions = dynamicInstructions
@@ -2209,10 +2267,15 @@ export class AgentExecutor extends EventEmitter {
           consecutiveTextOnly = 0
           this.setState('tool_use')
 
+          // One assistant ROW, several display entries (parseLoopToDisplay
+          // splits its content blocks): every thinking/text/tool_call entry
+          // this row produces shares this seq, live exactly as on reload.
+          const assistantMsg: LLMMessage = { role: 'assistant', content: response.content }
           this.session.addMessage(
-            { role: 'assistant', content: response.content },
+            assistantMsg,
             { model: llmMetadata.model, tokens: loopTokensFromLlmMetadata(llmMetadata) }
           )
+          const assistantSeq = assistantMsg.seq
 
           const toolResults: ContentBlock[] = []
           let needsLoopReset = false
@@ -2223,7 +2286,12 @@ export class AgentExecutor extends EventEmitter {
 
             this.emitEvent({
               type: 'tool_call_start',
-              payload: { name: toolBlock.name, input: toolBlock.input, id: toolBlock.id },
+              payload: {
+                name: toolBlock.name,
+                input: toolBlock.input,
+                id: toolBlock.id,
+                ...(assistantSeq !== undefined ? { seq: assistantSeq } : {})
+              },
               timestamp: Date.now()
             })
 
@@ -2594,19 +2662,27 @@ export class AgentExecutor extends EventEmitter {
               }
             }
 
-            // Extract multimodal blocks — from fs_read binary content or MCP media responses
+            // Extract multimodal blocks — from fs_read binary content or MCP media responses.
+            // Every extractor and filter below reads the same JSON body, so it is
+            // parsed once here and handed over (a 5 MB base64 payload used to be
+            // parsed up to four times per tool call).
             const isMcpTool = toolBlock.name.startsWith('mcp_')
+            let sharedParse: ParsedToolResult | undefined
+            const parsedResult = (): ParsedToolResult => {
+              if (sharedParse === undefined) sharedParse = parseToolResultJson(rawResult)
+              return sharedParse
+            }
             const mediaBlocks: ContentBlock[] = []
             if (toolBlock.name === 'fs_read') {
-              const img = this.maybeExtractImageBlock(rawResult)
-              const aud = this.maybeExtractAudioBlock(rawResult)
-              const vid = this.maybeExtractVideoBlock(rawResult)
+              const img = this.maybeExtractImageBlock(rawResult, parsedResult())
+              const aud = this.maybeExtractAudioBlock(rawResult, parsedResult())
+              const vid = this.maybeExtractVideoBlock(rawResult, parsedResult())
               if (img) mediaBlocks.push(img)
               if (aud) mediaBlocks.push(aud)
               if (vid) mediaBlocks.push(vid)
             } else if (isMcpTool) {
-              const img = this.maybeExtractMcpImageBlock(rawResult)
-              const aud = this.maybeExtractMcpAudioBlock(rawResult)
+              const img = this.maybeExtractMcpImageBlock(rawResult, parsedResult())
+              const aud = this.maybeExtractMcpAudioBlock(rawResult, parsedResult())
               if (img) mediaBlocks.push(img)
               if (aud) mediaBlocks.push(aud)
             } else if (toolBlock.name === 'adf_shell') {
@@ -2616,10 +2692,10 @@ export class AgentExecutor extends EventEmitter {
             let filteredResult: ToolResult
             let savedFiles: Array<{ path: string; mimeType: string; type: 'image' | 'audio' | 'resource' }> | undefined
             if (toolBlock.name === 'fs_read') {
-              filteredResult = this.filterFsReadResult(rawResult)
+              filteredResult = this.filterFsReadResult(rawResult, parsedResult())
             } else if (isMcpTool) {
-              savedFiles = this.persistMcpMedia(rawResult, toolBlock.name!)
-              filteredResult = this.filterMcpMediaResult(rawResult, savedFiles)
+              savedFiles = this.persistMcpMedia(rawResult, toolBlock.name!, parsedResult())
+              filteredResult = this.filterMcpMediaResult(rawResult, savedFiles, parsedResult())
             } else {
               filteredResult = rawResult
             }
@@ -2645,11 +2721,9 @@ export class AgentExecutor extends EventEmitter {
             } else if ((toolBlock.name === 'fs_read' || toolBlock.name === 'adf_shell') && mediaBlocks.some(b => b.type === 'image_url')) {
               // File already in adf_files — use its path (fs_read: row.path;
               // adf_shell: first entry of the media manifest)
-              try {
-                const row = JSON.parse(rawResult.content)
-                const path = row.path ?? row.media?.[0]?.path
-                if (path) eventImageUrl = `adf-file://${path}`
-              } catch { /* ignore */ }
+              const row = parsedResult() as { path?: string; media?: Array<{ path?: string }> } | null
+              const path = row?.path ?? row?.media?.[0]?.path
+              if (path) eventImageUrl = `adf-file://${path}`
             }
             if (!eventImageUrl) {
               const imageBlock = mediaBlocks.find(b => b.type === 'image_url')
@@ -2662,7 +2736,8 @@ export class AgentExecutor extends EventEmitter {
                 name: toolBlock.name,
                 id: toolBlock.id,
                 result,
-                ...(eventImageUrl ? { imageUrl: eventImageUrl } : {})
+                ...(eventImageUrl ? { imageUrl: eventImageUrl } : {}),
+                ...this.documentTargets(toolBlock.name!, toolBlock.input)
               },
               timestamp: Date.now()
             })
@@ -2789,10 +2864,11 @@ export class AgentExecutor extends EventEmitter {
             }
           }
 
-          this.session.addMessage({
+          const toolResultsMsg: LLMMessage = {
             role: 'user',
             content: toolResults
-          })
+          }
+          this.session.addMessage(toolResultsMsg)
 
           // addMessage writes every entry through to the loop synchronously,
           // so the completed model step (assistant tool_use batch + results)
@@ -2801,6 +2877,11 @@ export class AgentExecutor extends EventEmitter {
           // forceCompact paths below wipe the table, so a retried row is
           // wiped with its peers instead of resurrected afterwards.
           this.session.flushToLoop()
+          // The tool_result entries were shown one at a time as each tool
+          // returned; they all live in the row that was just written. Hand the
+          // renderer that row's seq now (metadata only — nothing on screen
+          // changes) so a live transcript can still name a pagination cursor.
+          this.emitToolResultSeq(toolResultsMsg, toolResults)
 
           // Drop base64 media from older messages to prevent heap growth.
           // Media blocks are ephemeral (not persisted to DB) and only needed
@@ -2868,14 +2949,19 @@ export class AgentExecutor extends EventEmitter {
             this.flushDeltaBuffer()
             this.emitEvent({
               type: 'turn_complete',
-              payload: { content: response.content, ...(targetState ? { targetState } : {}) },
+              payload: {
+                content: response.content,
+                ...(targetState ? { targetState } : {}),
+                ...(assistantSeq !== undefined ? { seq: assistantSeq } : {})
+              },
               timestamp: Date.now()
             })
           }
         } else {
           // No tool use — raw text response
+          const textOnlyMsg: LLMMessage = { role: 'assistant', content: response.content }
           this.session.addMessage(
-            { role: 'assistant', content: response.content },
+            textOnlyMsg,
             { model: llmMetadata.model, tokens: loopTokensFromLlmMetadata(llmMetadata) }
           )
           // Write-through already persisted this step; retry-flush any failed
@@ -2888,7 +2974,13 @@ export class AgentExecutor extends EventEmitter {
           this.flushDeltaBuffer()
           this.emitEvent({
             type: 'turn_complete',
-            payload: { content: response.content },
+            payload: {
+              content: response.content,
+              // The row for the text/thinking blocks the renderer streamed into
+              // place BEFORE it existed. No tool call closed this row, so this
+              // is where those entries get their seq.
+              ...(textOnlyMsg.seq !== undefined ? { seq: textOnlyMsg.seq } : {})
+            },
             timestamp: Date.now()
           })
 
@@ -3775,11 +3867,21 @@ export class AgentExecutor extends EventEmitter {
     for (const target of targets) {
       if (!target.filter?.tools) continue
       for (const pattern of target.filter.tools) {
-        const regex = new RegExp('^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$')
-        if (regex.test(toolName)) return true
+        if (this.toolTriggerPattern(pattern).test(toolName)) return true
       }
     }
     return false
+  }
+
+  /** Compiled `on_tool_call` glob, memoized — this runs up to three times per
+   *  tool call and the pattern set is tiny and settings-static. */
+  private toolTriggerPattern(pattern: string): RegExp {
+    let regex = this.toolTriggerPatterns.get(pattern)
+    if (!regex) {
+      regex = new RegExp('^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$')
+      this.toolTriggerPatterns.set(pattern, regex)
+    }
+    return regex
   }
 
   /**
@@ -4022,16 +4124,12 @@ export class AgentExecutor extends EventEmitter {
     return blocks
   }
 
-  private maybeExtractImageBlock(result: ToolResult): ContentBlock | null {
+  private maybeExtractImageBlock(result: ToolResult, parsed?: ParsedToolResult): ContentBlock | null {
     if (!this.isMultimodalEnabled('image')) return null
     if (result.isError) return null
 
-    let row: Record<string, unknown>
-    try {
-      row = JSON.parse(result.content)
-    } catch {
-      return null
-    }
+    const row = parsed !== undefined ? parsed : parseToolResultJson(result)
+    if (!row) return null
 
     if (!isVisionMime(row.mime_type as string | undefined)) return null
 
@@ -4051,12 +4149,12 @@ export class AgentExecutor extends EventEmitter {
    * If audio modality is enabled and the fs_read result contains a supported audio file,
    * return an input_audio ContentBlock.
    */
-  private maybeExtractAudioBlock(result: ToolResult): ContentBlock | null {
+  private maybeExtractAudioBlock(result: ToolResult, parsed?: ParsedToolResult): ContentBlock | null {
     if (!this.isMultimodalEnabled('audio')) return null
     if (result.isError) return null
 
-    let row: Record<string, unknown>
-    try { row = JSON.parse(result.content) } catch { return null }
+    const row = parsed !== undefined ? parsed : parseToolResultJson(result)
+    if (!row) return null
 
     if (!isAudioInputMime(row.mime_type as string | undefined)) return null
 
@@ -4076,12 +4174,12 @@ export class AgentExecutor extends EventEmitter {
    * If video modality is enabled and the fs_read result contains a supported video file,
    * return a video_url ContentBlock with the base64 data URI.
    */
-  private maybeExtractVideoBlock(result: ToolResult): ContentBlock | null {
+  private maybeExtractVideoBlock(result: ToolResult, parsed?: ParsedToolResult): ContentBlock | null {
     if (!this.isMultimodalEnabled('video')) return null
     if (result.isError) return null
 
-    let row: Record<string, unknown>
-    try { row = JSON.parse(result.content) } catch { return null }
+    const row = parsed !== undefined ? parsed : parseToolResultJson(result)
+    if (!row) return null
 
     if (!isVideoInputMime(row.mime_type as string | undefined)) return null
 
@@ -4101,17 +4199,13 @@ export class AgentExecutor extends EventEmitter {
    * If image modality is enabled and the MCP tool result contains images,
    * return the first image as an image_url ContentBlock.
    */
-  private maybeExtractMcpImageBlock(result: ToolResult): ContentBlock | null {
+  private maybeExtractMcpImageBlock(result: ToolResult, shared?: ParsedToolResult): ContentBlock | null {
     if (!this.isMultimodalEnabled('image')) return null
     if (result.isError) return null
 
-    let parsed: { images?: Array<{ data: string; mimeType: string }> }
-    try {
-      parsed = JSON.parse(result.content)
-    } catch {
-      return null
-    }
-    if (!parsed.images?.length) return null
+    const parsed = (shared !== undefined ? shared : parseToolResultJson(result)) as
+      { images?: Array<{ data: string; mimeType: string }> } | null
+    if (!parsed?.images?.length) return null
 
     const img = parsed.images[0]
     const maxSize = this.config.limits?.max_image_size_bytes ?? 5_242_880
@@ -4127,13 +4221,13 @@ export class AgentExecutor extends EventEmitter {
    * If audio modality is enabled and the MCP tool result contains audio,
    * return the first audio item as an input_audio ContentBlock.
    */
-  private maybeExtractMcpAudioBlock(result: ToolResult): ContentBlock | null {
+  private maybeExtractMcpAudioBlock(result: ToolResult, shared?: ParsedToolResult): ContentBlock | null {
     if (!this.isMultimodalEnabled('audio')) return null
     if (result.isError) return null
 
-    let parsed: { audio?: Array<{ data: string; mimeType: string }> }
-    try { parsed = JSON.parse(result.content) } catch { return null }
-    if (!parsed.audio?.length) return null
+    const parsed = (shared !== undefined ? shared : parseToolResultJson(result)) as
+      { audio?: Array<{ data: string; mimeType: string }> } | null
+    if (!parsed?.audio?.length) return null
 
     const aud = parsed.audio[0]
     const maxSize = this.config.limits?.max_audio_size_bytes ?? 10_485_760
@@ -4151,16 +4245,17 @@ export class AgentExecutor extends EventEmitter {
    */
   private persistMcpMedia(
     rawResult: ToolResult,
-    toolName: string
+    toolName: string,
+    shared?: ParsedToolResult
   ): Array<{ path: string; mimeType: string; type: 'image' | 'audio' | 'resource' }> {
     if (rawResult.isError) return []
 
-    let parsed: {
+    const parsed = (shared !== undefined ? shared : parseToolResultJson(rawResult)) as {
       images?: Array<{ data: string; mimeType: string }>
       audio?: Array<{ data: string; mimeType: string }>
       resources?: Array<{ data: string; mimeType: string; uri: string }>
-    }
-    try { parsed = JSON.parse(rawResult.content) } catch { return [] }
+    } | null
+    if (!parsed) return []
 
     const hasMedia = parsed.images?.length || parsed.audio?.length || parsed.resources?.length
     if (!hasMedia) return []
@@ -4208,21 +4303,18 @@ export class AgentExecutor extends EventEmitter {
    */
   private filterMcpMediaResult(
     result: ToolResult,
-    savedFiles?: Array<{ path: string; mimeType: string; type: 'image' | 'audio' | 'resource' }>
+    savedFiles?: Array<{ path: string; mimeType: string; type: 'image' | 'audio' | 'resource' }>,
+    shared?: ParsedToolResult
   ): ToolResult {
     if (result.isError) return result
 
-    let parsed: {
+    const parsed = (shared !== undefined ? shared : parseToolResultJson(result)) as {
       text?: string
       images?: Array<{ data: string; mimeType: string }>
       audio?: Array<{ data: string; mimeType: string }>
       resources?: Array<{ data: string; mimeType: string; uri: string }>
-    }
-    try {
-      parsed = JSON.parse(result.content)
-    } catch {
-      return result  // not structured JSON — return as-is
-    }
+    } | null
+    if (!parsed) return result  // not structured JSON — return as-is
 
     const hasMedia = parsed.images?.length || parsed.audio?.length || parsed.resources?.length
     if (!hasMedia) return result
@@ -4266,15 +4358,15 @@ export class AgentExecutor extends EventEmitter {
     return { content: parts.join('\n'), isError: false }
   }
 
-  private filterFsReadResult(result: ToolResult): ToolResult {
+  private filterFsReadResult(result: ToolResult, shared?: ParsedToolResult): ToolResult {
     if (result.isError) return result
 
-    let row: Record<string, unknown>
-    try {
-      row = JSON.parse(result.content)
-    } catch {
-      return result
-    }
+    // Copied when shared: the branches below rewrite `content` in place, and a
+    // caller that handed us its own parse must not see that mutation.
+    const row: Record<string, unknown> | null = shared !== undefined
+      ? (shared && { ...shared })
+      : parseToolResultJson(result)
+    if (!row) return result
 
     // Binary files: tombstone content for LLM — raw data accessible via code execution.
     // Use [type: path (mime)] format for media so loop-parser can extract adf-file:// URLs.
@@ -4342,10 +4434,20 @@ export class AgentExecutor extends EventEmitter {
     // Fast path: if chars/4 is well under limit, definitely safe
     if (content.length <= maxTokens * 3) return result
 
-    // Borderline or over — count actual tokens
-    const tokenCounter = getTokenCounterService()
-    const tokenCount = tokenCounter.countTokens(content, this.tokenizerProviderId(), this.provider.modelId)
-    if (tokenCount <= maxTokens) return result
+    // Far path: 20 chars/token is far past what any BPE tokenizer averages even
+    // on its most compressible input (long whitespace runs), so content this
+    // large is over the limit whatever the exact count is. Confirming it by
+    // running a multi-megabyte tool result through the real tokenizer costs
+    // seconds on the main thread; the estimate only feeds the "~N tokens" note.
+    let tokenCount: number
+    if (content.length > maxTokens * 20) {
+      tokenCount = Math.ceil(content.length / 4)
+    } else {
+      // Borderline — count actual tokens
+      const tokenCounter = getTokenCounterService()
+      tokenCount = tokenCounter.countTokens(content, this.tokenizerProviderId(), this.provider.modelId)
+      if (tokenCount <= maxTokens) return result
+    }
 
     // Over limit - replace with summary plus configurable head/tail preview.
     const previewChars = this.config.limits?.max_tool_result_preview_chars ?? 5000
@@ -4501,7 +4603,9 @@ export class AgentExecutor extends EventEmitter {
         })
       }
     }
-    this.session.addMessage({ role: 'user', content: toolResults })
+    const msg: LLMMessage = { role: 'user', content: toolResults }
+    this.session.addMessage(msg)
+    this.emitToolResultSeq(msg, toolResults)
   }
 
   /**
@@ -4888,6 +4992,45 @@ export class AgentExecutor extends EventEmitter {
     } catch { /* observability must never break the loop */ }
   }
 
+  /**
+   * Hand the renderer the `adf_loop` seq of the row that now holds this batch's
+   * tool results. Pure metadata: nothing on screen changes, and nothing is
+   * emitted when the insert was buffered for retry (no seq exists yet) or when
+   * the batch produced no tool_result blocks.
+   */
+  private emitToolResultSeq(msg: LLMMessage, blocks: ContentBlock[]): void {
+    if (typeof msg.seq !== 'number') return
+    const toolUseIds = blocks
+      .filter((b): b is ContentBlock & { type: 'tool_result'; tool_use_id: string } =>
+        b.type === 'tool_result' && typeof b.tool_use_id === 'string')
+      .map((b) => b.tool_use_id)
+    if (toolUseIds.length === 0) return
+    this.emitEvent({
+      type: 'loop_seq',
+      payload: { seq: msg.seq, toolUseIds },
+      timestamp: Date.now()
+    })
+  }
+
+  /**
+   * Write targets for a `tool_call_result` payload, plus this agent's document
+   * path, so the chat panel can skip the document re-read for writes that did
+   * not touch it. Returns `{}` when the target is not determinable — the
+   * renderer then refreshes exactly as it always did. Paths only: the write's
+   * `content` must never ride across IPC.
+   */
+  private documentTargets(name: string, input: unknown): ToolCallResultTargets {
+    const targetPaths = deriveToolTargetPaths(name, input)
+    if (!targetPaths) return {}
+    try {
+      return { targetPaths, documentPath: this.session.getWorkspace().getDocumentPath() }
+    } catch {
+      // Workspace gone mid-turn — "target known, document unknown" already
+      // means "refresh anyway" on the renderer side.
+      return { targetPaths }
+    }
+  }
+
   /** Umbilical emission from executor state transitions — never fatal. */
   private emitRuntimeEvent(eventType: string, payload: Record<string, unknown>): void {
     try {
@@ -4958,6 +5101,9 @@ export class AgentExecutor extends EventEmitter {
         //    (this executor type is UI-only and emitted from ipc/index.ts, not here).
         //  - trigger_message: the turn it initiates is observable via
         //    turn.completed; message-driven triggers are covered by message.received.
+        //  - loop_seq: a renderer bookkeeping stamp (which adf_loop row already
+        //    holds entries the chat panel showed before the row existed). It
+        //    carries no content and no state transition.
         //  - chat_updated, autosaved, response_metadata: UI-only. Model-call
         //    metadata is already carried by llm.completed. text/thinking delta
         //    batches are opt-in via turn.delta.
@@ -4985,7 +5131,7 @@ export class AgentExecutor extends EventEmitter {
     const snap = this.injectedFileSnapshots
     const ws = this.session.getWorkspace()
     const referenced = collectInjectedFiles(sources, (p) => ws.readFile(p), snap)
-    const hash = this.hashString(referenced.map(p => `${p}${snap.get(p)}`).join(''))
+    const hash = this.hashString(referenced.map(p => `${p}\x02${snap.get(p)}`).join('\x01'))
     return { hash, referenced }
   }
 
@@ -5004,6 +5150,37 @@ export class AgentExecutor extends EventEmitter {
   }
 
   private buildSystemPrompt(): string {
+    // Short-circuit for the steady state: nothing that feeds the prompt has
+    // moved since the last build, so re-deriving the cache key (assemblePrompt,
+    // a placeholder scan, a char-loop hash over every injected file and a
+    // JSON.stringify of the config projection) would only prove that again.
+    // `updated_at` is the same config-change signal buildToolSnapshot keys on;
+    // the snapshot map identity+size covers injected files, which are read once
+    // per session and cleared (map → null) on reset/compaction; and the cached
+    // entry itself is dropped by resetContextState/updateConfig.
+    const memo = this.systemPromptMemo
+    if (
+      memo &&
+      memo.promptCache === this.systemPromptCache &&
+      memo.updatedAt === this.config.metadata?.updated_at &&
+      memo.snapshots === this.injectedFileSnapshots &&
+      memo.snapshotSize === (this.injectedFileSnapshots?.size ?? -1)
+    ) {
+      return memo.prompt
+    }
+
+    const prompt = this.assembleSystemPrompt()
+    this.systemPromptMemo = {
+      promptCache: this.systemPromptCache,
+      updatedAt: this.config.metadata?.updated_at,
+      snapshots: this.injectedFileSnapshots,
+      snapshotSize: this.injectedFileSnapshots?.size ?? -1,
+      prompt,
+    }
+    return prompt
+  }
+
+  private assembleSystemPrompt(): string {
     const enabledToolNames = this.config.tools
       .filter(t => t.enabled)
       .map(t => t.name)
@@ -5258,7 +5435,11 @@ export class AgentExecutor extends EventEmitter {
     // Only emits when the topology changes (agent joins/leaves/updates).
     if (di?.mesh_updates !== false && this.meshContextFn && this.config.messaging?.receive) {
       const agents = this.meshContextFn()
-      const currentSnapshot = JSON.stringify(agents)
+      // Snapshot ONLY what is rendered below. It used to stringify whatever the
+      // provider returned — full signed agent cards, whose `signed_at` moves on
+      // every build — so the comparison never matched and this block shipped
+      // with every request instead of on topology change.
+      const currentSnapshot = JSON.stringify(agents.map(a => [a.handle, a.description]))
       if (currentSnapshot !== this.lastMeshSnapshot) {
         this.lastMeshSnapshot = currentSnapshot
         if (agents.length > 0) {
@@ -5462,18 +5643,15 @@ export class AgentExecutor extends EventEmitter {
   /** Build inbox summary for agent-scope inbox triggers. */
   private buildInboxSummaryMessage(): string {
     const workspace = this.session.getWorkspace()
-    const unread = workspace.getInbox('unread')
-    const read = workspace.getInbox('read')
-
-    const unreadBySender: Record<string, number> = {}
-    for (const msg of unread) {
-      unreadBySender[msg.from] = (unreadBySender[msg.from] ?? 0) + 1
-    }
+    // Counts and the per-sender grouping come from SQL — the summary never
+    // reads a body, so it must not pull every row (and attachment) into JS.
+    const counts = workspace.getInboxCounts()
+    const { bySender } = workspace.getUnreadInboxSummary()
 
     const summary = JSON.stringify({
-      unread: unread.length,
-      read: read.length,
-      unread_by_sender: unreadBySender,
+      unread: counts.unread,
+      read: counts.read,
+      unread_by_sender: bySender,
     }, null, 2)
 
     return `[Inbox notification] New messages.\n\n${summary}\n\nRead with msg_read; reply with msg_send(parent_id: <inbox id>).`

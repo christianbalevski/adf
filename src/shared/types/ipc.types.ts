@@ -29,6 +29,7 @@ export interface AgentExecutionEvent {
     | 'file_updated'
     | 'context_injected'
     | 'response_metadata'
+    | 'loop_seq'
   payload: unknown
   timestamp: number
   /**
@@ -40,6 +41,38 @@ export interface AgentExecutionEvent {
    * never truncate main's view (IMPL-5 / RT-F17).
    */
   loop?: string
+}
+
+/**
+ * Late `adf_loop` seq assignment for entries the renderer ALREADY appended.
+ *
+ * Most entries can be stamped on the event that finalizes them, because the row
+ * is written through to SQLite before the event is emitted (see
+ * `AgentSession.addMessage`). Tool results are the exception: they are shown one
+ * by one as each tool returns, but the whole batch lands in ONE user row that is
+ * only written after the last tool in the batch. This event closes that gap —
+ * it carries no content and changes nothing on screen.
+ */
+export interface LoopSeqPayload {
+  /** `adf_loop.seq` of the row that now holds those entries. */
+  seq: number
+  /** The `tool_use_id`s whose `tool_result` entries belong to that row. */
+  toolUseIds: string[]
+}
+
+/**
+ * The normalized write targets of a tool call, carried on `tool_call_result` so
+ * the renderer can tell whether the write touched the document it is showing
+ * instead of re-reading the document after every single write.
+ *
+ * ABSENT means "not determinable" (unknown tool shape, shell redirection,
+ * sys_code / sys_lambda writes) — the renderer must then refresh as before.
+ * Paths ONLY: the write's `content` must never cross IPC again.
+ */
+export interface ToolCallResultTargets {
+  targetPaths?: string[]
+  /** Normalized path of the agent's document, for the comparison. */
+  documentPath?: string
 }
 
 export interface FileOperationResult {
@@ -191,6 +224,14 @@ export interface AppSettings {
   /** Electron zoom factor for the whole window (1 = 100%). */
   uiScale?: number
   globalSystemPrompt?: string
+  /** Override for the loop-compaction prompt. Absent = DEFAULT_COMPACTION_PROMPT. */
+  compactionPrompt?: string
+  /** Per-tool and dynamic prompt overrides, keyed by prompt id. Absent = code defaults. */
+  toolPrompts?: Record<string, string>
+  /** OS notifications for agent events. Absent = enabled. */
+  nativeNotificationsEnabled?: boolean
+  /** npm packages installed into the code-execution sandbox at runtime level. */
+  sandboxPackages?: Array<{ name: string; version: string }>
   trackedDirectories?: string[]
   /** Destination folder for accepted/claimed agents. Empty = built-in default (Documents/adf-agents). */
   agentsFolder?: string
@@ -584,6 +625,8 @@ export type MeshEvent =
     }
 
 export interface MessageBusLogEntry {
+  /** Monotonic append sequence, stamped by the bus. The mesh poll's cursor. */
+  seq?: number
   timestamp: number
   messageId: string
   from: string
@@ -663,6 +706,10 @@ export interface MeshDebugInfo {
     hasMessaging: boolean
   }[]
   messageLog: MessageBusLogEntry[]
+  /** Newest sequence the bus holds — the cursor to send back next poll. */
+  logSeq?: number
+  /** True when `messageLog` holds only the entries after the requested cursor. */
+  logIncremental?: boolean
 }
 
 // --- MCP Server Manager ---

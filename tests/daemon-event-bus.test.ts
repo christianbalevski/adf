@@ -59,6 +59,20 @@ describe('DaemonEventBus', () => {
     expect(bus.getSince(0).map(e => e.event.event_type)).toEqual(['two', 'three'])
   })
 
+  it('keeps replay order and the agent filter across repeated ring wraparounds', () => {
+    const bus = new DaemonEventBus(3)
+    const agent = '00000000-0000-0000-0000-000000000001'
+    for (let i = 1; i <= 10; i++) {
+      bus.publish(event({ event_type: `e${i}`, agent_id: i % 2 === 0 ? agent : null }))
+    }
+
+    const replayed = bus.getSince(0)
+    expect(replayed.map(e => e.event.event_type)).toEqual(['e8', 'e9', 'e10'])
+    expect(replayed.map(e => e.cursor)).toEqual([8, 9, 10])
+    expect(bus.getSince(8).map(e => e.cursor)).toEqual([9, 10])
+    expect(bus.getSince(0, agent).map(e => e.event.event_type)).toEqual(['e8', 'e10'])
+  })
+
   it('notifies subscribers and supports unsubscribe', () => {
     const bus = new DaemonEventBus()
     const seen: string[] = []

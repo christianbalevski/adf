@@ -79,6 +79,8 @@ interface ActiveBinding {
   bytes_b_to_a: number
   drops: DropCounter
   last_flow_at: number
+  /** Counters as of the last flow_summary, so an idle tick emits nothing. */
+  last_summary?: { bytes_a_to_b: number; bytes_b_to_a: number; frames_dropped: number; status: string }
   options: Required<BindOptions>
   summaryTimer?: ReturnType<typeof setInterval>
   terminating: boolean
@@ -436,7 +438,7 @@ export class StreamBindingManager {
     if (binding.summaryTimer) clearInterval(binding.summaryTimer)
     if (reason.startsWith('source_') && binding.options.close_b_on_a_close) binding.b.close('peer_closed')
     if (reason.startsWith('target_') && binding.options.close_a_on_b_close) binding.a.close('peer_closed')
-    this.emitFlowSummary(binding)
+    this.emitFlowSummary(binding, true)
     // A source that backpressure paused must be un-paused before we let go of
     // it. dispose() for a `ws` endpoint only detaches listeners — the underlying
     // net.Socket stays OPEN for reuse/reconnect, and reasons like 'manual',
@@ -887,14 +889,38 @@ export class StreamBindingManager {
     })
   }
 
-  private emitFlowSummary(binding: ActiveBinding): void {
-    this.emit('binding.flow_summary', {
-      binding_id: binding.binding_id,
+  /**
+   * Flow summary for one tick. On the timer an unchanged binding emits nothing:
+   * a summary identical to the previous one carries no information, and an idle
+   * binding otherwise pushed one event per second per binding through the whole
+   * bus (taps, stream binds, replay) forever. `force` is the termination
+   * summary, which always fires.
+   */
+  private emitFlowSummary(binding: ActiveBinding, force = false): void {
+    const summary = {
       bytes_a_to_b: binding.bytes_a_to_b,
       bytes_b_to_a: binding.bytes_b_to_a,
       frames_dropped: binding.drops.count,
-      interval_ms: binding.options.flow_summary_interval_ms,
       status: binding.status,
+    }
+    if (!force) {
+      const previous = binding.last_summary
+      if (
+        previous &&
+        previous.bytes_a_to_b === summary.bytes_a_to_b &&
+        previous.bytes_b_to_a === summary.bytes_b_to_a &&
+        previous.frames_dropped === summary.frames_dropped &&
+        previous.status === summary.status
+      ) return
+    }
+    binding.last_summary = summary
+    this.emit('binding.flow_summary', {
+      binding_id: binding.binding_id,
+      bytes_a_to_b: summary.bytes_a_to_b,
+      bytes_b_to_a: summary.bytes_b_to_a,
+      frames_dropped: summary.frames_dropped,
+      interval_ms: binding.options.flow_summary_interval_ms,
+      status: summary.status,
     })
   }
 

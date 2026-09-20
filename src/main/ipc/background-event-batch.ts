@@ -26,6 +26,11 @@ const IMMEDIATE_TYPES: ReadonlySet<string> = new Set([
  * carries up to ~64KB of tool output that no renderer consumer looks at
  * (useMeshGraph reads name + result.isError; useBackgroundAgents drops tool
  * events entirely), and structured-cloning it across IPC is pure cost.
+ *
+ * `targetPaths` / `documentPath` are dropped here for the same reason: they
+ * exist so the FOREGROUND chat panel can skip a document re-read, and no
+ * background-agent consumer shows a document. The transcript is fed by the
+ * foreground AGENT_EVENT channel, which forwards the payload verbatim.
  */
 export function stripForRenderer(event: BackgroundAgentEvent): RendererBackgroundAgentEvent {
   if (event.type !== 'tool_call_result') {

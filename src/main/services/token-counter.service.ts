@@ -1,10 +1,33 @@
-import { encode as gptEncode } from 'gpt-tokenizer'
-import { countTokens as anthropicCountTokens } from '@anthropic-ai/tokenizer'
+import { createRequire } from 'node:module'
 import { PROVIDER_TYPES, type ProviderType } from '../../shared/constants/adf-defaults'
 
 export type TokenizerFamily = 'anthropic' | 'gpt'
 
 const PROVIDER_TYPE_SET: ReadonlySet<string> = new Set(PROVIDER_TYPES.map((p) => p.type))
+
+// Both tokenizers load a multi-MB BPE table (and WASM) at import time — ~100ms
+// on the main thread before the first window paints, for a service most
+// sessions only reach after the first model call. Loaded on first use instead.
+// countTokens is sync and called from hot paths, so this is a sync require
+// rather than a dynamic import (main is bundled CJS with deps externalized).
+const _require = createRequire(import.meta.url)
+
+let gptEncodeFn: ((text: string) => unknown[]) | null = null
+let anthropicCountFn: ((text: string) => number) | null = null
+
+function gptEncode(text: string): unknown[] {
+  if (!gptEncodeFn) {
+    gptEncodeFn = (_require('gpt-tokenizer') as typeof import('gpt-tokenizer')).encode
+  }
+  return gptEncodeFn(text)
+}
+
+function anthropicCountTokens(text: string): number {
+  if (!anthropicCountFn) {
+    anthropicCountFn = (_require('@anthropic-ai/tokenizer') as typeof import('@anthropic-ai/tokenizer')).countTokens
+  }
+  return anthropicCountFn(text)
+}
 
 /**
  * Token counting service that supports multiple providers

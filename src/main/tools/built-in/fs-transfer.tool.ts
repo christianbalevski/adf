@@ -8,10 +8,13 @@
 
 import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
+// fs/promises throughout: transfers copy whole directory trees, and the sync
+// calls ran on the Electron main thread — a large tree froze the UI for the
+// duration of the copy.
 import {
-  writeFileSync, readFileSync, mkdirSync, mkdtempSync,
-  rmSync, cpSync, readdirSync, statSync,
-} from 'fs'
+  writeFile, readFile, mkdir, mkdtemp,
+  rm, cp, readdir, stat,
+} from 'fs/promises'
 import { join, dirname, relative, resolve, isAbsolute, posix, sep } from 'path'
 import { tmpdir } from 'os'
 import type { Tool } from '../tool.interface'
@@ -64,7 +67,7 @@ export class FsTransferTool implements Tool {
     if (err) return { content: err, isError: true }
 
     try {
-      const tmpDir = mkdtempSync(join(tmpdir(), 'adf-transfer-'))
+      const tmpDir = await mkdtemp(join(tmpdir(), 'adf-transfer-'))
       try {
         // Materialize source into tmpDir
         await this.pull(from, sourcePath, tmpDir, workspace)
@@ -76,7 +79,7 @@ export class FsTransferTool implements Tool {
           isError: false,
         }
       } finally {
-        rmSync(tmpDir, { recursive: true, force: true })
+        await rm(tmpDir, { recursive: true, force: true })
       }
     } catch (err) {
       return {
@@ -109,13 +112,13 @@ export class FsTransferTool implements Tool {
     const staging = join(tmpDir, 'payload')
 
     if (ep === 'vfs') {
-      this.pullVfs(path, staging, workspace)
+      await this.pullVfs(path, staging, workspace)
       return
     }
 
     if (ep === 'host') {
       const hostPath = containedHostPath(ensureHostWorkspace(this.capabilities.agentId), path)
-      cpSync(hostPath, staging, { recursive: true })
+      await cp(hostPath, staging, { recursive: true })
       return
     }
 
@@ -140,14 +143,14 @@ export class FsTransferTool implements Tool {
     const staging = join(tmpDir, 'payload')
 
     if (ep === 'vfs') {
-      this.pushVfs(destPath, staging, workspace)
+      await this.pushVfs(destPath, staging, workspace)
       return
     }
 
     if (ep === 'host') {
       const hostDest = containedHostPath(ensureHostWorkspace(this.capabilities.agentId), destPath)
-      mkdirSync(dirname(hostDest), { recursive: true })
-      cpSync(staging, hostDest, { recursive: true })
+      await mkdir(dirname(hostDest), { recursive: true })
+      await cp(staging, hostDest, { recursive: true })
       return
     }
 
@@ -157,7 +160,7 @@ export class FsTransferTool implements Tool {
     // nest as containerDest/payload/... when the destination directory exists.
     const containerName = this.containerName(ep)
     const containerDest = posix.join(this.containerWorkspaceRoot(ep), destPath)
-    const source = statSync(staging).isDirectory() ? `${staging}${sep}.` : staging
+    const source = (await stat(staging)).isDirectory() ? `${staging}${sep}.` : staging
     await this.podmanService!.copyToContainer(
       source, containerDest, containerName
     )
@@ -167,12 +170,12 @@ export class FsTransferTool implements Tool {
   // VFS helpers (handle both files and "directories" via path prefix)
   // ---------------------------------------------------------------------------
 
-  private pullVfs(path: string, staging: string, workspace: AdfWorkspace): void {
+  private async pullVfs(path: string, staging: string, workspace: AdfWorkspace): Promise<void> {
     // Try single file first
     const data = workspace.readFileBuffer(path)
     if (data) {
-      mkdirSync(dirname(staging), { recursive: true })
-      writeFileSync(staging, data)
+      await mkdir(dirname(staging), { recursive: true })
+      await writeFile(staging, data)
       return
     }
 
@@ -184,44 +187,46 @@ export class FsTransferTool implements Tool {
       throw new Error(`No file or directory found in VFS at "${path}"`)
     }
 
-    mkdirSync(staging, { recursive: true })
+    await mkdir(staging, { recursive: true })
     for (const f of matched) {
       const relPath = f.path.slice(prefix.length)
       const buf = workspace.readFileBuffer(f.path)
       if (buf) {
         const dest = join(staging, relPath)
-        mkdirSync(dirname(dest), { recursive: true })
-        writeFileSync(dest, buf)
+        await mkdir(dirname(dest), { recursive: true })
+        await writeFile(dest, buf)
       }
     }
   }
 
-  private pushVfs(destPath: string, staging: string, workspace: AdfWorkspace): void {
-    const stat = statSync(staging)
+  private async pushVfs(destPath: string, staging: string, workspace: AdfWorkspace): Promise<void> {
+    const info = await stat(staging)
 
-    if (stat.isFile()) {
-      const data = readFileSync(staging)
+    if (info.isFile()) {
+      const data = await readFile(staging)
       workspace.writeFileBuffer(destPath, data, workspace.getMimeType(destPath))
       return
     }
 
     // Directory — walk and write each file
     const prefix = destPath.endsWith('/') ? destPath : destPath + '/'
-    this.walkDir(staging, (filePath) => {
+    await this.walkDir(staging, async (filePath) => {
       const relPath = relative(staging, filePath)
       const vfsPath = prefix + relPath
-      const data = readFileSync(filePath)
+      const data = await readFile(filePath)
       workspace.writeFileBuffer(vfsPath, data, workspace.getMimeType(vfsPath))
     })
   }
 
-  private walkDir(dir: string, callback: (filePath: string) => void): void {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  /** Sequential on purpose: preserves readdir order (and the resulting VFS
+   *  write order) exactly as the sync walk did. */
+  private async walkDir(dir: string, callback: (filePath: string) => Promise<void>): Promise<void> {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name)
       if (entry.isDirectory()) {
-        this.walkDir(full, callback)
+        await this.walkDir(full, callback)
       } else {
-        callback(full)
+        await callback(full)
       }
     }
   }

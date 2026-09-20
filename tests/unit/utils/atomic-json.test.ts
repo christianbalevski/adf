@@ -41,10 +41,19 @@ vi.mock('fs', async (importOriginal) => {
       if (ctl.copyFail) throw errnoError('EPERM')
       return real.copyFileSync(from, to)
     },
+    promises: {
+      ...real.promises,
+      rename: async (from: string, to: string) => {
+        ctl.renameCalls++
+        const code = ctl.renameFailAlways ?? ctl.renameFailCodes.shift()
+        if (code) throw errnoError(code)
+        return real.promises.rename(from, to)
+      },
+    },
   }
 })
 
-import { writeJsonAtomic, readJsonOrQuarantine } from '../../../src/main/utils/atomic-json'
+import { writeJsonAtomic, writeJsonAtomicAsync, readJsonOrQuarantine } from '../../../src/main/utils/atomic-json'
 
 let dir: string
 let file: string
@@ -127,6 +136,68 @@ describe('writeJsonAtomic', () => {
     const open = join(dir, 'open.json')
     writeFileSync(open, '{}', { mode: 0o644 })
     writeJsonAtomic(open, { v: 2 })
+    expect(statSync(open).mode & 0o777).toBe(0o644)
+  })
+})
+
+describe('writeJsonAtomicAsync', () => {
+  it('round-trips JSON and leaves no temp files behind', async () => {
+    await writeJsonAtomicAsync(file, { a: 1, nested: { b: 'x' } })
+    expect(JSON.parse(readFileSync(file, 'utf-8'))).toEqual({ a: 1, nested: { b: 'x' } })
+    expect(tmpFilesIn(dir)).toEqual([])
+  })
+
+  it('retries the rename on EPERM without blocking the thread', async () => {
+    writeFileSync(file, JSON.stringify({ old: true }), 'utf-8')
+    ctl.renameFailCodes = ['EPERM', 'EBUSY']
+    // The retry waits on a timer, so the event loop stays free meanwhile.
+    let ticked = false
+    setTimeout(() => { ticked = true }, 0)
+    await writeJsonAtomicAsync(file, { fresh: true })
+    expect(ticked).toBe(true)
+    expect(ctl.renameCalls).toBe(3)
+    expect(JSON.parse(readFileSync(file, 'utf-8'))).toEqual({ fresh: true })
+    expect(tmpFilesIn(dir)).toEqual([])
+  })
+
+  it('falls back to a direct write when the destination stays locked', async () => {
+    writeFileSync(file, JSON.stringify({ old: true }), 'utf-8')
+    ctl.renameFailAlways = 'EPERM'
+    await writeJsonAtomicAsync(file, { fresh: true })
+    expect(JSON.parse(readFileSync(file, 'utf-8'))).toEqual({ fresh: true })
+    expect(tmpFilesIn(dir)).toEqual([])
+  })
+
+  it('rejects on non-retryable rename errors and removes its temp file', async () => {
+    ctl.renameFailCodes = ['ENOSPC']
+    await expect(writeJsonAtomicAsync(file, { a: 1 })).rejects.toThrow()
+    expect(existsSync(file)).toBe(false)
+    expect(tmpFilesIn(dir)).toEqual([])
+  })
+
+  it('serializes overlapping writes to the same path — last call wins, no interleaving', async () => {
+    const writes = [1, 2, 3, 4, 5].map((v) => writeJsonAtomicAsync(file, { v }))
+    await Promise.all(writes)
+    expect(JSON.parse(readFileSync(file, 'utf-8'))).toEqual({ v: 5 })
+    expect(tmpFilesIn(dir)).toEqual([])
+  })
+
+  it('a failed write does not poison later writes to the same path', async () => {
+    ctl.renameFailCodes = ['ENOSPC']
+    const failing = writeJsonAtomicAsync(file, { bad: true })
+    const following = writeJsonAtomicAsync(file, { good: true })
+    await expect(failing).rejects.toThrow()
+    await following
+    expect(JSON.parse(readFileSync(file, 'utf-8'))).toEqual({ good: true })
+    expect(tmpFilesIn(dir)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('creates new files with mode 0600 and preserves an existing mode', async () => {
+    await writeJsonAtomicAsync(file, { secret: true })
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    const open = join(dir, 'open.json')
+    writeFileSync(open, '{}', { mode: 0o644 })
+    await writeJsonAtomicAsync(open, { v: 2 })
     expect(statSync(open).mode & 0o777).toBe(0o644)
   })
 })

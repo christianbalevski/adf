@@ -63,10 +63,14 @@ const jqHandler: CommandHandler = {
     const text = ctx.stdin || ''
     if (!text && !nullInput) return err('jq: no input')
 
-    // jq execution is synchronous CPU work inside the wasm; the shell's
-    // AbortController cannot interrupt it mid-filter (same as the previous
-    // hand-rolled evaluator).
-    const { stdout, stderr, exitCode } = await runJq(text, expression, dedupedFlags)
+    // jq runs in a worker thread (see jq-wasm-adapter): the filter is
+    // synchronous CPU work inside the wasm, so on the main thread neither the
+    // shell timeout nor a cancel could preempt it. Both are forwarded here and
+    // enforced by terminating the worker.
+    const { stdout, stderr, exitCode } = await runJq(text, expression, dedupedFlags, {
+      timeoutMs: ctx.config.limits?.execution_timeout_ms,
+      signal: ctx.signal,
+    })
     // Real jq can emit output AND a nonzero exit (e.g. `-e` yielding false/null
     // → exit 1). Preserve stdout instead of discarding it as the old code did.
     if (exitCode !== 0) {

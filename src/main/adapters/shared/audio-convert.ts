@@ -1,5 +1,5 @@
 import { execFile } from 'child_process'
-import { writeFileSync, readFileSync, unlinkSync } from 'fs'
+import { promises as fsp } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { nanoid } from 'nanoid'
@@ -13,9 +13,8 @@ export async function convertToOggOpus(input: Buffer): Promise<Buffer> {
   const inPath = join(tmpdir(), `adf_audio_in_${id}`)
   const outPath = join(tmpdir(), `adf_audio_out_${id}.ogg`)
 
-  writeFileSync(inPath, input)
-
   try {
+    await fsp.writeFile(inPath, input)
     await new Promise<void>((resolve, reject) => {
       execFile('ffmpeg', [
         '-i', inPath,
@@ -29,9 +28,11 @@ export async function convertToOggOpus(input: Buffer): Promise<Buffer> {
         else resolve()
       })
     })
-    return readFileSync(outPath)
+    return await fsp.readFile(outPath)
   } finally {
-    try { unlinkSync(inPath) } catch { /* ignore */ }
-    try { unlinkSync(outPath) } catch { /* ignore */ }
+    // ffmpeg may never have created outPath (conversion failed) — both unlinks
+    // are best effort so neither temp file can outlive the call.
+    await fsp.unlink(inPath).catch(() => {})
+    await fsp.unlink(outPath).catch(() => {})
   }
 }

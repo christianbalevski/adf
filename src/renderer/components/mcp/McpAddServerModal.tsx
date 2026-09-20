@@ -244,7 +244,18 @@ const inputCls = 'w-full px-2 py-1.5 text-xs font-mono border border-neutral-300
 const inputAmberCls = inputCls.replace('border-neutral-300 dark:border-neutral-600', 'border-amber-400 dark:border-amber-500')
 const labelCls = 'block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5'
 
-export function McpAddServerModal({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove, onOAuthChanged }: McpAddServerModalProps) {
+/**
+ * The body below is a ~1000-line form with a dozen effects and a registry
+ * subscription. Mounting it only while the dialog is open keeps it out of
+ * every Settings re-render; the <dialog> has no close animation, so the
+ * unmount is visually identical to the old `el.close()`.
+ */
+export function McpAddServerModal(props: McpAddServerModalProps) {
+  if (!props.open) return null
+  return <McpAddServerModalBody {...props} />
+}
+
+function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove, onOAuthChanged }: McpAddServerModalProps) {
   const [mode, setMode] = useState<'choose' | 'form'>('choose')
   const [draft, setDraft] = useState<McpServerRegistration | null>(null)
   const [filePayloads, setFilePayloads] = useState<Record<string, FilePayload>>({})
@@ -343,9 +354,18 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
       : draft.url ? findEntryIn(registryEntries, { url: draft.url }) : undefined
   }, [draft, registryEntries])
 
-  const availableEntries = availableRegistryEntries(registryEntries, existingServers)
-  const availableCategories = REGISTRY_CATEGORIES.filter((c) => availableEntries.some((e) => e.category === c))
-  const visibleEntries = filterRegistryEntries(availableEntries, chooseQuery, chooseCategory)
+  const availableEntries = useMemo(
+    () => availableRegistryEntries(registryEntries, existingServers),
+    [registryEntries, existingServers]
+  )
+  const availableCategories = useMemo(
+    () => REGISTRY_CATEGORIES.filter((c) => availableEntries.some((e) => e.category === c)),
+    [availableEntries]
+  )
+  const visibleEntries = useMemo(
+    () => filterRegistryEntries(availableEntries, chooseQuery, chooseCategory),
+    [availableEntries, chooseQuery, chooseCategory]
+  )
 
   const isHttp = draft ? (draft.type === 'http' || !!draft.url) : false
   // OAuth-ness comes from the draft (a saved registration) or the registry

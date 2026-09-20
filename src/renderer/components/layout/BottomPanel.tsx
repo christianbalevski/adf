@@ -14,6 +14,11 @@ export function BottomPanel() {
   const setActiveTab = useAppStore((s) => s.setBottomPanelTab)
 
   const isDragging = useRef(false)
+  // The drag writes the height straight to the panel element (rAF-throttled)
+  // and only commits to the store on mouseup — a store write per mousemove
+  // re-filters and re-renders the logs list (up to 2000 rows) at pointer rate.
+  const panelRef = useRef<HTMLDivElement>(null)
+  const dragHeight = useRef(panelHeight)
 
   const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -24,21 +29,30 @@ export function BottomPanel() {
 
     const startY = e.clientY
     const startHeight = panelHeight
+    dragHeight.current = startHeight
+
+    let frame = 0
+    const paint = () => {
+      frame = 0
+      if (panelRef.current) panelRef.current.style.height = `${dragHeight.current}px`
+    }
 
     const onMouseMove = (ev: MouseEvent) => {
       if (!isDragging.current) return
       const delta = startY - ev.clientY
-      const newHeight = Math.max(PANEL_MIN, Math.min(PANEL_MAX, startHeight + delta))
-      setPanelHeight(newHeight)
+      dragHeight.current = Math.max(PANEL_MIN, Math.min(PANEL_MAX, startHeight + delta))
+      if (!frame) frame = requestAnimationFrame(paint)
     }
 
     const onMouseUp = () => {
       isDragging.current = false
+      if (frame) { cancelAnimationFrame(frame); frame = 0 }
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       document.body.classList.remove('panel-resizing')
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
+      setPanelHeight(dragHeight.current)
     }
 
     document.addEventListener('mousemove', onMouseMove)
@@ -46,7 +60,7 @@ export function BottomPanel() {
   }, [panelHeight, setPanelHeight])
 
   return (
-    <div style={{ height: panelHeight }} className="flex flex-col border-t border-hairline bg-neutral-950 shrink-0">
+    <div ref={panelRef} style={{ height: panelHeight }} className="flex flex-col border-t border-hairline bg-neutral-950 shrink-0">
       {/* Resize handle */}
       <div
         onMouseDown={handleResizeMouseDown}

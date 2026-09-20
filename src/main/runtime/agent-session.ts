@@ -38,6 +38,13 @@ export class AgentSession {
   // before a model request.
   private pendingContextInjections: QueuedContextInjection[] = []
 
+  // True once a media block has entered `messages`. Most sessions never carry
+  // any, and stripOldMedia runs on every model iteration — without this flag it
+  // walks the whole history (every block of every message) each time to find
+  // nothing. Sticky: recent media is deliberately retained, so a strip does not
+  // clear it.
+  private hasMediaBlocks = false
+
   constructor(workspace: AdfWorkspace) {
     this.workspace = workspace
     this.sessionId = `session-${Date.now()}`
@@ -51,6 +58,9 @@ export class AgentSession {
     const now = Date.now()
     msg.created_at = now
     this.messages.push(msg)
+    if (!this.hasMediaBlocks && Array.isArray(msg.content) && msg.content.some(isMediaBlock)) {
+      this.hasMediaBlocks = true
+    }
 
     // Callers that already persisted this exact content to the loop (e.g. an
     // owner message appended at delivery time) skip the buffered write —
@@ -64,7 +74,7 @@ export class AgentSession {
 
     const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text' as const, text: msg.content }]
     // Strip multimodal blocks — they're ephemeral (for current context only), not persisted
-    const persistContent = content.filter(b => b.type !== 'image_url' && b.type !== 'input_audio' && b.type !== 'video_url')
+    const persistContent = content.filter(b => !isMediaBlock(b))
     this.persistLoopEntry({
       role: msg.role as 'user' | 'assistant',
       content: persistContent,
@@ -80,8 +90,14 @@ export class AgentSession {
    *  (DB busy/closed) fall back to buffering so flushToLoop retries later —
    *  a write error must never crash the turn or lose the entry silently.
    *  On success the insert's seq is stamped onto the live message (backref)
-   *  so provider conversion can inject its [S<seq>] marker. */
-  private persistLoopEntry(entry: { role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt: number; backref?: LLMMessage }): void {
+   *  so provider conversion can inject its [S<seq>] marker.
+   *
+   *  Returns the inserted row's seq, or `undefined` when the insert failed and
+   *  the entry was buffered for retry (the seq only exists after a successful
+   *  INSERT). Callers use it to stamp the live event that renders the same row,
+   *  so the chat panel's entries carry the same `seq` live as they do after a
+   *  reload through `parseLoopToDisplay`. */
+  private persistLoopEntry(entry: { role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt: number; backref?: LLMMessage }): number | undefined {
     // If earlier entries are already queued behind a failed insert, queue this
     // one too — writing it now would leapfrog the failed entry in seq order,
     // and a retried row landing at the tail puts tool_result before its
@@ -89,14 +105,16 @@ export class AgentSession {
     // successful flush drains everything in original order.
     if (this.pendingLoopWrites.length > 0) {
       this.pendingLoopWrites.push(entry)
-      return
+      return undefined
     }
     try {
       const seq = this.workspace.appendToLoop(entry.role, entry.content, entry.model, entry.tokens, entry.createdAt)
       if (entry.backref) entry.backref.seq = seq
+      return seq
     } catch (error) {
       console.error('[AgentSession] Immediate loop write failed — buffering for retry:', error)
       this.pendingLoopWrites.push(entry)
+      return undefined
     }
   }
 
@@ -172,10 +190,13 @@ export class AgentSession {
    *  through the request itself (system prompt via the `system` param, dynamic
    *  instructions as a per-call trailing user message), so including it in
    *  `messages` would send it twice — a ~30k+ token duplication per request
-   *  when large files are injected into the system prompt. */
-  appendContextEntry(category: string, content: string): void {
+   *  when large files are injected into the system prompt.
+   *
+   *  Returns the persisted row's seq (undefined if the insert was buffered for
+   *  retry) so the caller can stamp the matching `context_injected` event. */
+  appendContextEntry(category: string, content: string): number | undefined {
     const block: ContentBlock = { type: 'text', text: `[Context: ${category}] ${content}` }
-    this.persistLoopEntry({
+    return this.persistLoopEntry({
       role: 'user',
       content: [block],
       createdAt: Date.now()
@@ -250,12 +271,16 @@ export class AgentSession {
     const undelivered = this.pendingContextInjections
     this.messages = []
     this.pendingContextInjections = []
+    this.hasMediaBlocks = false
     for (const message of messages) {
       const injection = parseContextInjection(message)
       if (injection) {
         this.queueContextInjection(injection)
       } else if (!isContextEntry(message)) {
         this.messages.push(message)
+        if (!this.hasMediaBlocks && Array.isArray(message.content) && message.content.some(isMediaBlock)) {
+          this.hasMediaBlocks = true
+        }
       }
     }
     for (const injection of undelivered) this.queueContextInjection(injection)
@@ -401,6 +426,7 @@ export class AgentSession {
     this.messages = []
     this.pendingLoopWrites = []
     this.pendingContextInjections = []
+    this.hasMediaBlocks = false
   }
 
   /**
@@ -413,6 +439,8 @@ export class AgentSession {
    *   Default 4 ≈ 2 LLM turns (assistant + user-tool-results each).
    */
   stripOldMedia(keepRecentMessages = 4): void {
+    // Nothing multimodal has ever been added, so there is nothing to walk.
+    if (!this.hasMediaBlocks) return
     const cutoff = this.messages.length - keepRecentMessages
     if (cutoff <= 0) return
 
@@ -424,7 +452,7 @@ export class AgentSession {
       let changed = false
       const cleaned: ContentBlock[] = []
       for (const block of msg.content) {
-        if (block.type === 'image_url' || block.type === 'input_audio' || block.type === 'video_url') {
+        if (isMediaBlock(block)) {
           changed = true
           // Don't add a placeholder — the tool_result text already describes the file
         } else {
@@ -447,6 +475,12 @@ export class AgentSession {
     }
   }
 
+}
+
+/** Ephemeral base64 payloads: the blocks stripOldMedia drops from old messages
+ *  and the ones addMessage keeps out of the persisted loop entry. */
+function isMediaBlock(block: ContentBlock): boolean {
+  return block.type === 'image_url' || block.type === 'input_audio' || block.type === 'video_url'
 }
 
 /** A loop entry written by appendContextEntry — UI/SQL-only, never sent to the LLM. */

@@ -7,6 +7,13 @@ interface AgentRegistration {
 }
 
 export interface MessageBusLogEntry {
+  /**
+   * Monotonic per-process sequence, assigned by the bus on append. Lets a
+   * poller ask for "everything after N" instead of re-reading the whole log
+   * (with every entry's content) every few seconds. Absent on entries that
+   * never went through the bus.
+   */
+  seq?: number
   timestamp: number
   messageId: string
   from: string
@@ -38,6 +45,15 @@ export class MessageBus extends EventEmitter {
   private agents: Map<string, AgentRegistration> = new Map()
   private log: MessageBusLogEntry[] = []
   private maxLogEntries = 200
+  private nextSeq = 1
+
+  /** Single append point — stamps the sequence and enforces the cap. */
+  private append(entry: MessageBusLogEntry): void {
+    this.log.push({ ...entry, seq: this.nextSeq++ })
+    if (this.log.length > this.maxLogEntries) {
+      this.log.splice(0, this.log.length - this.maxLogEntries)
+    }
+  }
 
   // Performance: O(1) channel lookup index (channel -> Set of agent names)
   private channelIndex: Map<string, Set<string>> = new Map()
@@ -201,10 +217,7 @@ export class MessageBus extends EventEmitter {
       console.warn(`[MessageBus] ${entry.error}`)
     }
 
-    this.log.push(entry)
-    if (this.log.length > this.maxLogEntries) {
-      this.log.splice(0, this.log.length - this.maxLogEntries)
-    }
+    this.append(entry)
 
     if (process.env.NODE_ENV !== 'production') {
       const toLabel = message.to.length > 0 ? message.to.join(',') : '*'
@@ -233,17 +246,18 @@ export class MessageBus extends EventEmitter {
 
   /** Append a pre-built log entry (used by MeshManager which handles its own routing). */
   logEntry(entry: MessageBusLogEntry): void {
-    this.log.push(entry)
-    if (this.log.length > this.maxLogEntries) {
-      this.log.splice(0, this.log.length - this.maxLogEntries)
-    }
+    this.append(entry)
   }
 
-  getLog(): MessageBusLogEntry[] {
+  /** `sinceSeq` returns only entries appended after that sequence. */
+  getLog(sinceSeq?: number): MessageBusLogEntry[] {
+    if (typeof sinceSeq === 'number') return this.log.filter((e) => (e.seq ?? 0) > sinceSeq)
     return [...this.log]
   }
 
   clearLog(): void {
     this.log = []
+    // Sequences keep climbing: a poller holding a pre-clear cursor must not be
+    // told that recycled numbers are entries it has already seen.
   }
 }

@@ -47,6 +47,29 @@ describe('dynamic instruction templates', () => {
     expect(text).not.toContain('{{')
   })
 
+  it('injects the mesh topology block only when the roster actually changes', () => {
+    const roster = [{ handle: 'agent-1', description: 'first' }]
+    const stub = {} as never
+    const executor = new AgentExecutor(
+      { tools: [], messaging: { receive: true } } as never,
+      stub,
+      { get: () => undefined } as never,
+      stub,
+    )
+    executor.setMeshContext(() => roster)
+    const build = (executor as unknown as {
+      buildDynamicInstructions(chat: number, threshold: number): string | undefined
+    }).buildDynamicInstructions.bind(executor)
+
+    expect(build(0, 100)).toContain('agent-1')
+    // Same roster, re-projected: the block is a delta, so it must not repeat.
+    expect(build(0, 100)).toBeUndefined()
+
+    roster.push({ handle: 'agent-2', description: 'second' })
+    expect(build(0, 100)).toContain('agent-2')
+    expect(build(0, 100)).toBeUndefined()
+  })
+
   it('every default template exists for its executor lookup key', () => {
     // dyn_inbox_reply_routing is deliberately blank by default (routing lives in
     // the msg_send tool schema) — the key still exists so settings can override it.

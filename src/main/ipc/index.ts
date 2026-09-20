@@ -3,7 +3,7 @@ import { app, ipcMain, dialog, shell, BrowserWindow, Notification, nativeImage }
 import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, rmSync, type Dirent } from 'fs'
 import { join, dirname, basename, resolve, relative, sep } from 'path'
 import { networkInterfaces, tmpdir } from 'os'
-import { randomUUID } from 'crypto'
+import { randomUUID, createHash } from 'crypto'
 import { nanoid } from 'nanoid'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
 import { initApplicationMenu, recordRecentFile } from '../menu'
@@ -12,6 +12,17 @@ import { verifyAttestation } from '../services/attestation.service'
 import { BackgroundEventBatcher } from './background-event-batch'
 import { FileCreateRefusedError, makeFileCreateHandler, runFileCreateTransition, type FileCreateTransitionDeps } from './file-create-handler'
 import { recoverFileCreateCleanupFailure } from './file-create-recovery'
+import { readdir as readdirAsync } from 'fs/promises'
+
+/**
+ * `[PERF]` timings are development instrumentation: a handful of console.log
+ * lines per IPC round-trip, each one re-formatted into the main log. Off unless
+ * ADF_PERF_LOG=1 is set.
+ */
+const PERF_LOG = process.env.ADF_PERF_LOG === '1'
+function perfLog(message: string): void {
+  if (PERF_LOG) console.log(message)
+}
 
 /**
  * Delete an ADF file and its associated SQLite WAL files (-shm, -wal).
@@ -957,6 +968,78 @@ function findTrackedRootFor(filePath: string): string | null {
   return best
 }
 
+/**
+ * Cached `.adf` listings for the tracked directories. The fleet poll, the
+ * sidebar tree and the dashboard all walk the same trees every few seconds; a
+ * synchronous depth-5 `readdirSync` recursion per poll blocks the main process
+ * for as long as the filesystem takes.
+ *
+ * Invalidated by the directory watcher (an agent file appearing or vanishing
+ * bumps the epoch) with a short TTL as the backstop for anything the watcher
+ * cannot see.
+ */
+let adfScanEpoch = 0
+const ADF_SCAN_TTL_MS = 15_000
+const adfScanCache = new Map<string, { epoch: number; at: number; files: string[] }>()
+
+async function listAdfFiles(root: string, maxDepth: number): Promise<string[]> {
+  const key = `${canonicalizePath(root)}\0${maxDepth}`
+  const hit = adfScanCache.get(key)
+  if (hit && hit.epoch === adfScanEpoch && Date.now() - hit.at < ADF_SCAN_TTL_MS) return hit.files
+
+  const files: string[] = []
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > maxDepth) return
+    let entries: Dirent[]
+    try {
+      entries = await readdirAsync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    const subdirs: string[] = []
+    for (const e of entries) {
+      if (e.isFile() && e.name.endsWith('.adf')) files.push(join(dir, e.name))
+      else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') subdirs.push(join(dir, e.name))
+    }
+    for (const sub of subdirs) await walk(sub, depth + 1)
+  }
+  await walk(root, 0)
+
+  adfScanCache.set(key, { epoch: adfScanEpoch, at: Date.now(), files })
+  return files
+}
+
+/**
+ * mtime-keyed memo around the readonly `AdfDatabase.peek*` helpers. Each peek
+ * is a fresh better-sqlite3 open (plus a checkpoint), so a poll that touches
+ * every tracked file pays for all of them; an unchanged file is never reopened.
+ * A failed peek (transient lock while the agent writes) serves the last good
+ * value instead of dropping the entry.
+ */
+function makePeekCache<T>(peek: (filePath: string) => T | null): (filePath: string) => T | null {
+  const cache = new Map<string, { mtimeMs: number; value: T }>()
+  return (filePath: string): T | null => {
+    let mtimeMs: number
+    try {
+      mtimeMs = statSync(filePath).mtimeMs
+    } catch {
+      cache.delete(filePath) // file gone — genuine removal
+      return null
+    }
+    const cached = cache.get(filePath)
+    if (cached && cached.mtimeMs === mtimeMs) return cached.value
+    const value = peek(filePath)
+    if (value != null) {
+      cache.set(filePath, { mtimeMs, value })
+      return value
+    }
+    return cached?.value ?? null
+  }
+}
+
+const peekMessagingConfigCached = makePeekCache((fp: string) => AdfDatabase.peekMessagingConfig(fp))
+const peekAgentMetaCached = makePeekCache((fp: string) => AdfDatabase.peekAgentMeta(fp))
+
 function startDirWatcher(directories: string[]): void {
   // Idempotent: rebuilding the watcher for an unchanged directory set drops
   // events during the teardown/setup gap (TRACKED_DIRS_GET is called twice at
@@ -1001,11 +1084,17 @@ function startDirWatcher(directories: string[]): void {
     }
   }
 
+  // An agent file appearing or vanishing is exactly what the cached `.adf`
+  // listings must not miss.
   dirWatcher.on('add', (filePath: string) => {
+    if (filePath.endsWith('.adf')) adfScanEpoch++
     emit(filePath)
     maybeAutostartTrackedFile(filePath)
   })
-  dirWatcher.on('unlink', emit)
+  dirWatcher.on('unlink', (filePath: string) => {
+    if (filePath.endsWith('.adf')) adfScanEpoch++
+    emit(filePath)
+  })
 }
 
 /**
@@ -1131,7 +1220,7 @@ async function cleanupCurrentFile(): Promise<void> {
     await backgroundAgentManager.transitionToBackground(
       filePath, config, assembledAgent, derivedKeyCache.get(filePath) ?? null,
     )
-    console.log(`[PERF] cleanupCurrentFile.transitionToBackground: ${(performance.now() - t1).toFixed(1)}ms`)
+    perfLog(`[PERF] cleanupCurrentFile.transitionToBackground: ${(performance.now() - t1).toFixed(1)}ms`)
 
     if (meshManager?.isEnabled() && backgroundAgentManager.hasAgent(filePath)) {
       const agentRefs = backgroundAgentManager.getAgent(filePath)
@@ -1156,7 +1245,7 @@ async function cleanupCurrentFile(): Promise<void> {
     currentWorkspace = null
     currentSession = null
     currentFilePath = null
-    console.log(`[PERF] cleanupCurrentFile (with transition): ${(performance.now() - t0).toFixed(1)}ms`)
+    perfLog(`[PERF] cleanupCurrentFile (with transition): ${(performance.now() - t0).toFixed(1)}ms`)
     return
   }
 
@@ -1179,7 +1268,7 @@ async function cleanupCurrentFile(): Promise<void> {
   currentWorkspace = null
   currentFilePath = null
   if (filePath) applyPendingRename(filePath)
-  console.log(`[PERF] cleanupCurrentFile (no transition): ${(performance.now() - t0).toFixed(1)}ms`)
+  perfLog(`[PERF] cleanupCurrentFile (no transition): ${(performance.now() - t0).toFixed(1)}ms`)
 }
 
 /**
@@ -1982,7 +2071,7 @@ export function registerAllIpcHandlers(): void {
 
       let t1 = performance.now()
       await cleanupCurrentFile()
-      console.log(`[PERF] FILE_OPEN.cleanup: ${(performance.now() - t1).toFixed(1)}ms`)
+      perfLog(`[PERF] FILE_OPEN.cleanup: ${(performance.now() - t1).toFixed(1)}ms`)
 
       // Check for running background agent
       let agentWasRunning = false
@@ -1993,7 +2082,7 @@ export function registerAllIpcHandlers(): void {
           const cachedKey = derivedKeyCache.get(filePath)
           if (!cachedKey) {
             // Cannot extract — stop the background agent and prompt for password
-            console.log(`[PERF] FILE_OPEN: background agent is password-protected, stopping and prompting`)
+            perfLog(`[PERF] FILE_OPEN: background agent is password-protected, stopping and prompting`)
             if (meshManager?.isEnabled()) {
               meshManager.unregisterAgent(filePath)
             }
@@ -2011,7 +2100,7 @@ export function registerAllIpcHandlers(): void {
           meshManager.unregisterAgent(filePath, { keepWsConnections: true })
         }
         const extracted = backgroundAgentManager.extractBackgroundAgent(filePath)
-        console.log(`[PERF] FILE_OPEN.extractBackground: ${(performance.now() - t1).toFixed(1)}ms`)
+        perfLog(`[PERF] FILE_OPEN.extractBackground: ${(performance.now() - t1).toFixed(1)}ms`)
         if (extracted) {
           currentWorkspace = extracted.workspace
           attachWorkspaceDataForwarder(currentWorkspace)
@@ -2028,7 +2117,7 @@ export function registerAllIpcHandlers(): void {
           extractedDisplayState = extracted.displayState
           currentFilePath = filePath
           agentWasRunning = true
-          console.log(`[PERF] FILE_OPEN total (from background): ${(performance.now() - t0).toFixed(1)}ms`)
+          perfLog(`[PERF] FILE_OPEN total (from background): ${(performance.now() - t0).toFixed(1)}ms`)
           return { success: true, filePath, agentWasRunning }
         }
       }
@@ -2036,7 +2125,7 @@ export function registerAllIpcHandlers(): void {
       // Open the ADF file
       t1 = performance.now()
       currentWorkspace = AdfWorkspace.open(filePath)
-      console.log(`[PERF] FILE_OPEN.workspaceOpen: ${(performance.now() - t1).toFixed(1)}ms`)
+      perfLog(`[PERF] FILE_OPEN.workspaceOpen: ${(performance.now() - t1).toFixed(1)}ms`)
       currentFilePath = filePath
       attachWorkspaceDataForwarder(currentWorkspace)
 
@@ -2055,15 +2144,15 @@ export function registerAllIpcHandlers(): void {
             // not the password string — converting would strip the password
             // route. IDENTITY_PASSWORD_UNLOCK owns conversion; it happens on
             // the next fresh-session unlock, when the password is in hand.
-            console.log(`[PERF] FILE_OPEN: using cached derived key`)
+            perfLog(`[PERF] FILE_OPEN: using cached derived key`)
           } else {
             // Cached key is stale, remove it and prompt
             derivedKeyCache.delete(filePath)
-            console.log(`[PERF] FILE_OPEN total (needs password, stale cache): ${(performance.now() - t0).toFixed(1)}ms`)
+            perfLog(`[PERF] FILE_OPEN total (needs password, stale cache): ${(performance.now() - t0).toFixed(1)}ms`)
             return { success: true, filePath, needsPassword: true }
           }
         } else {
-          console.log(`[PERF] FILE_OPEN total (needs password): ${(performance.now() - t0).toFixed(1)}ms`)
+          perfLog(`[PERF] FILE_OPEN total (needs password): ${(performance.now() - t0).toFixed(1)}ms`)
           return { success: true, filePath, needsPassword: true }
         }
       }
@@ -2095,7 +2184,7 @@ export function registerAllIpcHandlers(): void {
       t1 = performance.now()
       const agentName = basename(filePath, '.adf')
       const config = currentWorkspace.getAgentConfig()
-      console.log(`[PERF] FILE_OPEN.getConfig: ${(performance.now() - t1).toFixed(1)}ms`)
+      perfLog(`[PERF] FILE_OPEN.getConfig: ${(performance.now() - t1).toFixed(1)}ms`)
       if (config.name !== agentName) {
         config.name = agentName
         currentWorkspace.setAgentConfig(config)
@@ -2145,7 +2234,7 @@ export function registerAllIpcHandlers(): void {
         catch { /* ignore */ }
       }, 0)
 
-      console.log(`[PERF] FILE_OPEN total: ${(performance.now() - t0).toFixed(1)}ms`)
+      perfLog(`[PERF] FILE_OPEN total: ${(performance.now() - t0).toFixed(1)}ms`)
       return { success: true, filePath, agentWasRunning }
     } catch (error) {
       console.error('[IPC] FILE_OPEN error:', error)
@@ -2902,7 +2991,7 @@ export function registerAllIpcHandlers(): void {
     const read = currentWorkspace.getInbox('read')
     const archived = currentWorkspace.getInbox('archived')
     const messages = [...unread, ...read, ...archived]
-    console.log(`[PERF] DOC_GET_INBOX: ${(performance.now() - t0).toFixed(1)}ms (messages=${messages.length})`)
+    perfLog(`[PERF] DOC_GET_INBOX: ${(performance.now() - t0).toFixed(1)}ms (messages=${messages.length})`)
 
     const result = {
       inbox: {
@@ -3358,18 +3447,18 @@ export function registerAllIpcHandlers(): void {
     // Only load last N loop entries for display (not the full 25k+ history)
     let t1 = performance.now()
     const totalCount = currentWorkspace.getLoopCount()
-    console.log(`[PERF] DOC_GET_BATCH.getLoopCount: ${(performance.now() - t1).toFixed(1)}ms (count=${totalCount})`)
+    perfLog(`[PERF] DOC_GET_BATCH.getLoopCount: ${(performance.now() - t1).toFixed(1)}ms (count=${totalCount})`)
 
     t1 = performance.now()
     const offset = Math.max(0, totalCount - LOOP_DISPLAY_LIMIT)
     const loopEntries = offset > 0
       ? currentWorkspace.getLoopPaginated(LOOP_DISPLAY_LIMIT, offset)
       : currentWorkspace.getLoop()
-    console.log(`[PERF] DOC_GET_BATCH.getLoop: ${(performance.now() - t1).toFixed(1)}ms (entries=${loopEntries.length}, offset=${offset})`)
+    perfLog(`[PERF] DOC_GET_BATCH.getLoop: ${(performance.now() - t1).toFixed(1)}ms (entries=${loopEntries.length}, offset=${offset})`)
 
     t1 = performance.now()
     const displayEntries = parseLoopToDisplay(loopEntries)
-    console.log(`[PERF] DOC_GET_BATCH.parseLoop: ${(performance.now() - t1).toFixed(1)}ms (display=${displayEntries.length})`)
+    perfLog(`[PERF] DOC_GET_BATCH.parseLoop: ${(performance.now() - t1).toFixed(1)}ms (display=${displayEntries.length})`)
 
     t1 = performance.now()
     const document = currentWorkspace.readDocument()
@@ -3380,7 +3469,7 @@ export function registerAllIpcHandlers(): void {
     const lastTokens = currentWorkspace.getLastAssistantTokens()
     const contextBaseline = currentWorkspace.getContextBaseline() ?? null
     const statusText = currentWorkspace.getMeta('status') ?? ''
-    console.log(`[PERF] DOC_GET_BATCH.readDocConfig: ${(performance.now() - t1).toFixed(1)}ms`)
+    perfLog(`[PERF] DOC_GET_BATCH.readDocConfig: ${(performance.now() - t1).toFixed(1)}ms`)
 
     const result = {
       document,
@@ -3396,8 +3485,22 @@ export function registerAllIpcHandlers(): void {
       }
     }
 
-    console.log(`[PERF] DOC_GET_BATCH total: ${(performance.now() - t0).toFixed(1)}ms`)
+    perfLog(`[PERF] DOC_GET_BATCH total: ${(performance.now() - t0).toFixed(1)}ms`)
     return result
+  })
+
+  // The batch without the loop. Every main-loop turn end (and every meta write)
+  // used to call DOC_GET_BATCH purely for these three fields, paying for 200
+  // parsed loop rows that were serialized, structured-cloned and dropped.
+  ipcMain.handle(IPC.DOC_GET_HEADER, async () => {
+    if (!currentWorkspace) {
+      return { document: '', agentConfig: null, statusText: '' }
+    }
+    return {
+      document: currentWorkspace.readDocument(),
+      agentConfig: currentWorkspace.getAgentConfig(),
+      statusText: currentWorkspace.getMeta('status') ?? ''
+    }
   })
 
   // --- Agent runtime ---
@@ -3670,7 +3773,7 @@ export function registerAllIpcHandlers(): void {
     if (!capturedSession || session.getMessages().length === 0) {
       const tLoop = performance.now()
       const loopEntries = capturedWorkspace.getLoop()
-      console.log(`[PERF] AGENT_START.getLoop: ${(performance.now() - tLoop).toFixed(1)}ms (entries=${loopEntries.length})`)
+      perfLog(`[PERF] AGENT_START.getLoop: ${(performance.now() - tLoop).toFixed(1)}ms (entries=${loopEntries.length})`)
       if (loopEntries.length > 0) {
         session.restoreMessages(loopEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at, seq: e.seq })))
       }
@@ -4696,7 +4799,7 @@ export function registerAllIpcHandlers(): void {
         await assembled.disposeAsync({ mode: 'immediate' })
       }
       startingFilePaths.delete(capturedFilePath)
-      console.log(`[PERF] AGENT_START (fresh, to background): ${(performance.now() - t0).toFixed(1)}ms`)
+      perfLog(`[PERF] AGENT_START (fresh, to background): ${(performance.now() - t0).toFixed(1)}ms`)
       return { success: true, sessionId: session.getSessionId(), agentState: initialDisplayState }
     }
 
@@ -4772,7 +4875,7 @@ export function registerAllIpcHandlers(): void {
     })
 
     startingFilePaths.delete(capturedFilePath)
-    console.log(`[PERF] AGENT_START (fresh): ${(performance.now() - t0).toFixed(1)}ms`)
+    perfLog(`[PERF] AGENT_START (fresh): ${(performance.now() - t0).toFixed(1)}ms`)
     return { success: true, sessionId: session.getSessionId(), agentState: initialDisplayState }
   })
 
@@ -5211,13 +5314,20 @@ export function registerAllIpcHandlers(): void {
   ): Promise<TrackedDirEntry[]> {
     if (currentDepth > maxDepth) return []
 
-    const entries = readdirSync(currentPath, { withFileTypes: true })
+    let entries: Dirent[]
+    try {
+      entries = await readdirAsync(currentPath, { withFileTypes: true })
+    } catch {
+      return []
+    }
     const result: TrackedDirEntry[] = []
 
     const adfFiles = entries.filter((e) => e.isFile() && e.name.endsWith('.adf'))
     for (const e of adfFiles) {
       const fp = join(currentPath, e.name)
-      const msgConfig = AdfDatabase.peekMessagingConfig(fp)
+      // mtime-keyed: an unchanged agent file is never reopened, so a rescan of
+      // a tracked tree no longer costs a readonly SQLite open per agent.
+      const msgConfig = peekMessagingConfigCached(fp)
       result.push({
         filePath: fp,
         fileName: e.name,
@@ -5237,19 +5347,21 @@ export function registerAllIpcHandlers(): void {
       e.name !== 'node_modules'
     )
 
-    for (const dir of subdirs) {
-      const dirPath = join(currentPath, dir.name)
-      const children = await scanDirectoryRecursive(rootPath, dirPath, maxDepth, currentDepth + 1)
-
+    const scanned = await mapWithConcurrency(subdirs, 4, (dir) =>
+      scanDirectoryRecursive(rootPath, join(currentPath, dir.name), maxDepth, currentDepth + 1)
+    )
+    subdirs.forEach((dir, i) => {
+      const settled = scanned[i]
+      const children = settled.status === 'fulfilled' ? settled.value : []
       if (children.length > 0) {
         result.push({
-          filePath: dirPath,
+          filePath: join(currentPath, dir.name),
           fileName: dir.name,
           isDirectory: true,
           children
         })
       }
-    }
+    })
 
     return result
   }
@@ -5479,7 +5591,14 @@ export function registerAllIpcHandlers(): void {
     })
   }
 
-  ipcMain.handle(IPC.MESH_STATUS, async (_event, args?: { debug?: boolean }) => {
+  // Extracted so the fleet map's aggregate poll (MESH_MAP_POLL) can reuse the
+  // exact same body instead of a second copy of it.
+  //
+  // `sinceSeq` is the message-log cursor: with it, only bus entries newer than
+  // that sequence come back and `logSeq` names the newest one the bus holds, so
+  // the 5s poll stops re-sending the whole 200-entry log (with its content) every
+  // cycle. Callers that omit it get the full log exactly as before.
+  const getMeshStatus = async (args?: { debug?: boolean; sinceSeq?: number }): Promise<Record<string, unknown>> => {
     if (!meshManager || !meshManager.isEnabled()) {
       if (args?.debug) {
         return {
@@ -5505,6 +5624,13 @@ export function registerAllIpcHandlers(): void {
       try {
         const debugInfo = meshManager.getDebugInfo()
         Object.assign(result, debugInfo)
+        const fullLog = debugInfo.messageLog
+        const newest = fullLog.length > 0 ? fullLog[fullLog.length - 1].seq ?? 0 : 0
+        result.logSeq = newest
+        if (typeof args.sinceSeq === 'number') {
+          result.messageLog = fullLog.filter((e) => (e.seq ?? 0) > args.sinceSeq!)
+          result.logIncremental = true
+        }
       } catch (error) {
         console.error('[IPC] Mesh debug error:', error)
         result.busRegistrations = []
@@ -5516,7 +5642,9 @@ export function registerAllIpcHandlers(): void {
     }
 
     return result
-  })
+  }
+
+  ipcMain.handle(IPC.MESH_STATUS, async (_event, args?: { debug?: boolean; sinceSeq?: number }) => getMeshStatus(args))
 
   // Ghost metadata cache, keyed by file path. Two jobs:
   // 1. Perf — the 5s fleet poll would otherwise open every offline agent's
@@ -5546,10 +5674,46 @@ export function registerAllIpcHandlers(): void {
     return cached?.meta ?? null
   }
 
+  /**
+   * Fleet metadata read straight out of an agent's OPEN workspace. A running
+   * agent rewrites its own file constantly, so the mtime cache above never hits
+   * for one and every poll paid for a fresh readonly open (two opens plus a
+   * TRUNCATE checkpoint) of a database already held in memory.
+   */
+  const liveFleetMeta = (workspace: AdfWorkspace): ReturnType<typeof AdfDatabase.peekFleetMeta> => {
+    try {
+      const config = workspace.getAgentConfig()
+      let didHistory: string[] = []
+      const rawHistory = workspace.getMeta('adf_did_history')
+      if (rawHistory) {
+        try {
+          const parsed = JSON.parse(rawHistory)
+          didHistory = Array.isArray(parsed) ? parsed.filter((d) => typeof d === 'string' && d) : []
+        } catch {
+          didHistory = []
+        }
+      }
+      return {
+        handle: workspace.getMeta('adf_handle') || config?.handle || null,
+        name: workspace.getMeta('adf_name') || config?.name || null,
+        icon: config?.icon ?? null,
+        model: config?.model?.model_id || null,
+        status: workspace.getMeta('status') ?? null,
+        did: workspace.getMeta('adf_did') || null,
+        didHistory,
+        agentId: config?.id ?? null,
+        parentDid: workspace.getMeta('adf_parent_did') || null,
+        createdAt: workspace.getMeta('adf_created_at') || config?.metadata?.created_at || null
+      }
+    } catch {
+      return null
+    }
+  }
+
   // Fleet map: live mesh agents plus on-disk .adf files in tracked
   // directories that have no running executor ("ghost" nodes). Works even
   // with the mesh disabled — every on-disk agent is then a ghost.
-  ipcMain.handle(IPC.MESH_FLEET_STATUS, async (): Promise<FleetStatusResult> => {
+  const getFleetStatus = async (): Promise<FleetStatusResult> => {
     const running = !!(meshManager && meshManager.isEnabled())
 
     const liveContext = (filePath: string): { tokens: number; threshold: number } | undefined => {
@@ -5589,26 +5753,6 @@ export function registerAllIpcHandlers(): void {
       return longestMatch
     }
 
-    // Same walk rules as scanDirectoryRecursive (depth cap, skip dotdirs and
-    // node_modules) but only collects .adf paths — the fleet peek below reads
-    // each file once, so the per-file messaging peek would be wasted work.
-    const collectAdfFilePaths = (currentPath: string, currentDepth: number, out: string[]): void => {
-      if (currentDepth > maxDepth) return
-      let entries: Dirent[]
-      try {
-        entries = readdirSync(currentPath, { withFileTypes: true })
-      } catch {
-        return
-      }
-      for (const e of entries) {
-        if (e.isFile() && e.name.endsWith('.adf')) {
-          out.push(join(currentPath, e.name))
-        } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
-          collectAdfFilePaths(join(currentPath, e.name), currentDepth + 1, out)
-        }
-      }
-    }
-
     // Live executors independent of mesh registration — with the mesh
     // disabled, getLiveMeshAgents() is empty, so a foreground chat-started
     // agent (or a background executor) would otherwise be reported as an
@@ -5616,24 +5760,36 @@ export function registerAllIpcHandlers(): void {
     // renderer just applied. Overlay their real display state so the poll
     // stays truthful; a genuinely stopped executor leaves these maps and
     // the ghost settles back to 'off' within one poll cycle.
+    //
+    // The open workspaces come along for the ride: a live agent's metadata is
+    // read out of the database it already has open, so the poll never reopens a
+    // file whose mtime is changing under it anyway.
     const liveExecStates = new Map<string, AgentState>()
+    const liveWorkspaces = new Map<string, AdfWorkspace>()
     if (backgroundAgentManager) {
       for (const s of backgroundAgentManager.getStatuses()) {
         liveExecStates.set(canonicalizePath(s.filePath), s.state)
+      }
+      for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
+        const ws = backgroundAgentManager.getAgent(fp)?.workspace
+        if (ws) liveWorkspaces.set(canonicalizePath(fp), ws)
       }
     }
     if (currentFilePath && agentExecutor) {
       liveExecStates.set(canonicalizePath(currentFilePath), toDisplayState(agentExecutor.getState()))
     }
+    if (currentFilePath && currentWorkspace) {
+      liveWorkspaces.set(canonicalizePath(currentFilePath), currentWorkspace)
+    }
 
     for (const dir of trackedDirs) {
-      const filePaths: string[] = []
-      collectAdfFilePaths(dir, 0, filePaths)
+      const filePaths = await listAdfFiles(dir, maxDepth)
       for (const filePath of filePaths) {
         const canon = canonicalizePath(filePath)
         if (seen.has(canon)) continue
         seen.add(canon)
-        const meta = peekFleetMetaCached(filePath)
+        const openWorkspace = liveWorkspaces.get(canon)
+        const meta = (openWorkspace ? liveFleetMeta(openWorkspace) : null) ?? peekFleetMetaCached(filePath)
         if (!meta) continue
         const live = liveExecStates.get(canon)
         const isLive = live !== undefined && live !== 'off'
@@ -5676,6 +5832,26 @@ export function registerAllIpcHandlers(): void {
     }
 
     return { running, agents }
+  }
+
+  ipcMain.handle(IPC.MESH_FLEET_STATUS, async (): Promise<FleetStatusResult> => getFleetStatus())
+
+  // The fleet map's 5s poll in ONE round-trip. It used to fire five separate
+  // invokes every cycle; each is the same handler body as before, just called
+  // in-process instead of over the bridge. The individual channels stay for
+  // every other caller.
+  //
+  // `sinceSeq` rides through to the mesh debug slice as the message-log cursor.
+  ipcMain.handle(IPC.MESH_MAP_POLL, async (_event, args?: { sinceSeq?: number }) => {
+    const [debug, fleet, adapters, peers] = await Promise.all([
+      getMeshStatus({ debug: true, sinceSeq: args?.sinceSeq }).catch(() => null),
+      getFleetStatus(),
+      getAdapterStatus().catch(() => ({ adapters: [], perAgent: [] })),
+      getDiscoveredRuntimes().catch(() => [])
+    ])
+    let burn: unknown = null
+    try { burn = getFleetBurnService().getBurn() } catch { burn = null }
+    return { debug, fleet, burn, adapters, peers }
   })
 
   // Σ totals survive restarts — the renderer persists them in fleetMapState
@@ -6001,17 +6177,63 @@ export function registerAllIpcHandlers(): void {
     owner_alias?: string
     owner_delegation?: { issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string }
   }
+  // TTL-cached on the same 30s clock as DirectoryFetchCache: the peer poll runs
+  // every 5s and a runtime's alias/owner identity does not change between
+  // cycles, so an uncached /ping per peer per poll was six HTTP round-trips per
+  // peer per minute for an answer that never moved. Cleared by `force`.
+  const runtimeMetaCache = new Map<string, { expiresAt: number; meta: RuntimeMeta | null }>()
+  const RUNTIME_META_TTL_MS = 30_000
   const fetchRuntimeMeta = async (baseUrl: string): Promise<RuntimeMeta | null> => {
+    const now = Date.now()
+    const cached = runtimeMetaCache.get(baseUrl)
+    if (cached && cached.expiresAt > now) return cached.meta
+    let meta: RuntimeMeta | null = null
     try {
       const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/ping`, { signal: AbortSignal.timeout(4_000) })
-      if (!res.ok) return null
-      return (await res.json()) as RuntimeMeta
+      if (res.ok) meta = (await res.json()) as RuntimeMeta
     } catch {
-      return null
+      meta = null
     }
+    runtimeMetaCache.set(baseUrl, { expiresAt: now + RUNTIME_META_TTL_MS, meta })
+    return meta
   }
 
-  ipcMain.handle(IPC.MESH_DISCOVERED_RUNTIMES, async (_event, args?: { force?: boolean }) => {
+  /**
+   * Ed25519 verification is pure but expensive, and the peer poll re-ran it for
+   * every card and every attestation of every peer every 5s. Memoized on a
+   * digest of the exact thing being checked (the whole card / attestation, plus
+   * the expected subject), so ANY change to the signed content or the signature
+   * is a different key and is verified afresh — a replayed signature over
+   * tampered content can never ride a cached `true`.
+   *
+   * Entries expire on the same 30s clock as the directory cache, which also
+   * bounds how long an attestation that lapsed between polls can keep reading
+   * as verified. Bounded FIFO.
+   */
+  const verifyMemo = new Map<string, { at: number; value: boolean }>()
+  const VERIFY_MEMO_MAX = 512
+  const VERIFY_MEMO_TTL_MS = 30_000
+  const memoVerify = (subject: unknown, compute: () => boolean): boolean => {
+    let key: string
+    try {
+      key = createHash('sha256').update(JSON.stringify(subject) ?? '').digest('base64')
+    } catch {
+      return compute() // unserializable — just verify
+    }
+    const now = Date.now()
+    const hit = verifyMemo.get(key)
+    if (hit && now - hit.at < VERIFY_MEMO_TTL_MS) return hit.value
+    const value = compute()
+    if (verifyMemo.size >= VERIFY_MEMO_MAX) {
+      const oldest = verifyMemo.keys().next().value
+      if (oldest !== undefined) verifyMemo.delete(oldest)
+    }
+    verifyMemo.set(key, { at: now, value })
+    return value
+  }
+
+  // Extracted so the fleet map's aggregate poll can reuse the body.
+  const getDiscoveredRuntimes = async (args?: { force?: boolean }) => {
     if (!mdnsService || !directoryFetchCache) return []
     // The 5s peer poll doubles as the staleness signal for the tailnet
     // sweep — a freshly added manual peer appears within seconds. `force`
@@ -6019,6 +6241,7 @@ export function registerAllIpcHandlers(): void {
     if (args?.force) {
       try { await tailnetDiscovery?.sweepNow() } catch { /* results below reflect whatever we have */ }
       directoryFetchCache.invalidate()
+      runtimeMetaCache.clear()
     } else {
       tailnetDiscovery?.ensureFresh()
     }
@@ -6044,7 +6267,9 @@ export function registerAllIpcHandlers(): void {
           del.role === 'runtime' &&
           del.issuer === meta.owner_did &&
           del.subject === peer.runtime_did &&
-          verifyAttestation(del, { expectedSubject: peer.runtime_did })
+          memoVerify(['att', del, peer.runtime_did], () =>
+            verifyAttestation(del, { expectedSubject: peer.runtime_did })
+          )
         isSelf = ownerVerified && !!ourOwnerDid && meta.owner_did === ourOwnerDid
       }
       // Trust decoration — the same judgment agent_discover applies to
@@ -6052,10 +6277,14 @@ export function registerAllIpcHandlers(): void {
       // card signature, then look for a verified owner attestation. Without
       // this the fleet map shows every signed peer card as "unverified".
       const decorated = cards?.map((card) => {
-        const cardVerified = !!card.did && !!card.signature && verifyCardSignature(card)
+        const cardVerified = !!card.did && !!card.signature &&
+          memoVerify(['card', card], () => verifyCardSignature(card))
         const ownerAtt = cardVerified
           ? (card.attestations ?? []).find(
-              (a) => a.role === 'owner' && verifyAttestation(a, { expectedSubject: card.did })
+              (a) => a.role === 'owner' &&
+                memoVerify(['att', a, card.did], () =>
+                  verifyAttestation(a, { expectedSubject: card.did })
+                )
             )
           : undefined
         return {
@@ -6077,7 +6306,9 @@ export function registerAllIpcHandlers(): void {
       }
     }))
     return enriched
-  })
+  }
+
+  ipcMain.handle(IPC.MESH_DISCOVERED_RUNTIMES, async (_event, args?: { force?: boolean }) => getDiscoveredRuntimes(args))
 
   // Live health probe for a remote agent — the fleet map's peer readout shows
   // the /health state (idle/active) on open. Runs in main because the mesh
@@ -6430,7 +6661,7 @@ export function registerAllIpcHandlers(): void {
         definitions[name] = schema
       }
     }
-    console.log(`[PERF] TOOLS_DESCRIPTIONS: ${(performance.now() - t0).toFixed(1)}ms (tools=${Object.keys(definitions).length})`)
+    perfLog(`[PERF] TOOLS_DESCRIPTIONS: ${(performance.now() - t0).toFixed(1)}ms (tools=${Object.keys(definitions).length})`)
     return definitions
   })
 
@@ -6533,44 +6764,32 @@ export function registerAllIpcHandlers(): void {
 
   // Slice 4: readonly peek across tracked .adf files.
   ipcMain.handle(IPC.DASHBOARD_AGENT_STATS, async () => {
-    const { readdirSync, realpathSync } = await import('fs')
+    const { realpath } = await import('fs/promises')
     const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-
-    const collectAdfFiles = (dir: string, depth: number, maxDepth = 5): string[] => {
-      if (depth > maxDepth) return []
-      const results: string[] = []
-      try {
-        const entries = readdirSync(dir, { withFileTypes: true })
-        for (const entry of entries) {
-          const full = join(dir, entry.name)
-          if (entry.isFile() && entry.name.endsWith('.adf')) {
-            results.push(full)
-          } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
-            results.push(...collectAdfFiles(full, depth + 1, maxDepth))
-          }
-        }
-      } catch { /* skip unreadable dirs */ }
-      return results
-    }
 
     const seen = new Set<string>()
     const uniqueFiles: string[] = []
     for (const dir of trackedDirs) {
-      for (const file of collectAdfFiles(dir, 0)) {
-        let resolved: string
-        try { resolved = realpathSync(file) } catch { resolved = file }
-        if (!seen.has(resolved)) {
-          seen.add(resolved)
-          uniqueFiles.push(file)
-        }
-      }
+      // Shared cached async walk — the same listing the fleet poll uses.
+      const files = await listAdfFiles(dir, 5)
+      const resolved = await mapWithConcurrency(files, 8, async (file) => {
+        try { return await realpath(file) } catch { return file }
+      })
+      files.forEach((file, i) => {
+        const settled = resolved[i]
+        const canon = settled.status === 'fulfilled' ? settled.value : file
+        if (seen.has(canon)) return
+        seen.add(canon)
+        uniqueFiles.push(file)
+      })
     }
 
     let autostart = 0
     let autonomous = 0
     let hostAccessAgents = 0
     for (const filePath of uniqueFiles) {
-      const meta = AdfDatabase.peekAgentMeta(filePath)
+      // mtime-keyed — an unchanged agent file is never reopened.
+      const meta = peekAgentMetaCached(filePath)
       if (!meta) continue
       if (meta.autostart) autostart++
       if (meta.autonomous) autonomous++
@@ -7870,7 +8089,8 @@ export function registerAllIpcHandlers(): void {
     return { packages: adapterPackageResolver.listInstalled() }
   })
 
-  ipcMain.handle(IPC.ADAPTER_GET_STATUS, async () => {
+  // Extracted so the fleet map's aggregate poll can reuse the body.
+  const getAdapterStatus = async (): Promise<{ adapters: ReturnType<ChannelAdapterManager['getStates']>; perAgent: AdapterAgentStatus[] }> => {
     // Merge adapter states across the foreground agent AND every background
     // agent — adapters run per-agent, and the fleet map's base stations must
     // exist regardless of which agent hosts the channel. Deduped by type,
@@ -7902,7 +8122,9 @@ export function registerAllIpcHandlers(): void {
       }
     }
     return { adapters: [...byType.values()], perAgent }
-  })
+  }
+
+  ipcMain.handle(IPC.ADAPTER_GET_STATUS, async () => getAdapterStatus())
 
   // Adapters run inside whichever agent hosts them, so logs and restarts must
   // reach that agent's manager — the foreground one when the path matches (or

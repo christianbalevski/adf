@@ -436,6 +436,21 @@ function FleetTopBar({
   )
 }
 
+/**
+ * Sorted-filePath membership key, cached on the agents array identity so the
+ * sort runs once per roster change instead of once per store mutation. The
+ * fleet map is a singleton view, so a module-level cache of one is enough.
+ */
+let layoutKeyAgents: unknown = null
+let layoutKeyValue = ''
+function layoutKeyFor(agents: { filePath: string }[]): string {
+  if (agents !== layoutKeyAgents) {
+    layoutKeyAgents = agents
+    layoutKeyValue = agents.map((a) => a.filePath).sort().join('|')
+  }
+  return layoutKeyValue
+}
+
 export function MeshGraphView() {
   const meshEnabled = useMeshStore((s) => s.enabled)
   const { enableMesh } = useMesh()
@@ -935,21 +950,43 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   const shortcutsOpenRef = useRef(false)
   shortcutsOpenRef.current = shortcutsOpen
 
+  // The mesh message-log cursor. The poll sends the newest sequence it has
+  // seen and main answers with only what came after it, instead of re-sending
+  // all 200 entries (content and all) every 5s. The client keeps the same
+  // window the bus does.
+  const MESH_LOG_LIMIT = 200
+  const logSeqRef = useRef(0)
+
   // Single debug poll — shared with MeshLogDrawer; refreshes the full fleet
   // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
+  // ONE round-trip: main assembles every slice from the same handler bodies the
+  // individual channels use.
   const refreshDebug = useCallback(async () => {
     try {
-      const [info, fleet, burn, adapterStatus, peers] = await Promise.all([
-        window.adfApi.getMeshDebug(),
-        window.adfApi.getMeshFleetStatus(),
-        window.adfApi.getMeshTokenBurn(),
-        window.adfApi.getAdapterStatus().catch(() => ({ adapters: [] })),
-        window.adfApi.getDiscoveredRuntimes().catch(() => [])
-      ])
+      const requestedSeq = logSeqRef.current
+      const poll = await window.adfApi.getMeshMapPoll(requestedSeq)
+      const info = poll.debug
+      const fleet = poll.fleet
+      const burn = poll.burn
+      const adapterStatus = poll.adapters ?? { adapters: [] }
+      const peers = poll.peers ?? []
+
+      // A response to cursor 0 is the whole log; anything else is the tail to
+      // append. `logSeq` below the cursor means the bus restarted (mesh
+      // disable/enable) — keep what we have and refetch in full next cycle.
+      const nextSeq = typeof info?.logSeq === 'number' ? info.logSeq : 0
+      logSeqRef.current = nextSeq < requestedSeq ? 0 : nextSeq
+
       // Content-compare before setting (the dedupe setAgents does in
       // mesh.store): the 5s poll usually returns byte-identical data, and a
       // fresh identity here rebuilds edges/stations and rediffs the graph.
-      setDebugInfo((prev) => (JSON.stringify(prev) === JSON.stringify(info) ? prev : info))
+      setDebugInfo((prev) => {
+        if (!info) return prev
+        const merged = info.logIncremental && requestedSeq > 0 && prev
+          ? { ...info, messageLog: [...prev.messageLog, ...info.messageLog].slice(-MESH_LOG_LIMIT) }
+          : info
+        return JSON.stringify(prev) === JSON.stringify(merged) ? prev : merged
+      })
       const nextAdapters = (adapterStatus as { adapters: { type: string; status: string }[] }).adapters ?? []
       setAdapters((prev) => (JSON.stringify(prev) === JSON.stringify(nextAdapters) ? prev : nextAdapters))
       // DEV: window.__fleetPeersOverride injects synthetic LAN peers for
@@ -960,7 +997,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       const nextPeers = ((peersOverride ?? peers) as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; runtime_alias?: string; owner_alias?: string; owner_verified?: boolean; is_self_owned?: boolean; agents?: RemotePeerAgent[] }[]) ?? []
       setLanPeers((prev) => (JSON.stringify(prev) === JSON.stringify(nextPeers) ? prev : nextPeers))
       if (fleet.agents.length > 0) setAgents(fleet.agents)
-      setBurn(burn)
+      if (burn) setBurn(burn)
       // Boot animations end when the poll confirms the agent is up — or
       // after 30s if the start silently failed (button reappears)
       const { starting, clearStarting } = useFleetStore.getState()
@@ -1675,9 +1712,11 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     })
   }, [rfStoreApi])
 
-  // Layout membership key — memoized via selector so the O(n log n) sort
-  // runs per roster change, never per render.
-  const layoutKey = useMeshStore((s) => s.agents.map((a) => a.filePath).sort().join('|'))
+  // Layout membership key. The selector runs on EVERY mesh-store mutation (a
+  // state flip, an upsert), so the map/sort/join is cached on the agents array
+  // identity — the store only hands out a new array when the roster or a row
+  // actually changed, and a state-only change still reuses the same key string.
+  const layoutKey = useMeshStore((s) => layoutKeyFor(s.agents))
 
   useEffect(() => {
     // Never yank a tile out from under the pointer: a poll or activity
@@ -2353,6 +2392,22 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     flyToNode(node, 1, 400)
   }, [reactFlow, setFocusedFilePath, flyToNode])
 
+  // Stable handlers for the memo'd fleet bars — a fresh closure per render
+  // made their memo a no-op, so every store tick re-rendered both bars.
+  const openAgentInDock = useCallback((filePath: string) => {
+    openFile(filePath)
+    revealRightPanel()
+  }, [openFile, revealRightPanel])
+
+  const flyToSelection = useCallback((filePaths: string[]) => {
+    flyToAgents(filePaths, 350)
+  }, [flyToAgents])
+
+  const selectKnownGroup = useCallback((filePaths: string[]) => {
+    const known = new Set(useMeshStore.getState().agents.map((a) => a.filePath))
+    selectAgents(filePaths.filter((p) => known.has(p)))
+  }, [selectAgents])
+
   // Hotkeys — `.` = next agent awaiting input, `,` = next idle agent (the
   // RTS idle-worker key), Enter = open focused, Escape = clear focus and
   // selection, Ctrl/Cmd+1-9 = assign control group, 1-9 = recall group.
@@ -2593,10 +2648,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         {/* Alert layer — needs-me queue + fleet state counts + token burn */}
         <FleetAlertBar
           onFocusAgent={focusAgent}
-          onSelectGroup={(filePaths) => {
-            const known = new Set(useMeshStore.getState().agents.map((a) => a.filePath))
-            selectAgents(filePaths.filter((p) => known.has(p)))
-          }}
+          onSelectGroup={selectKnownGroup}
         />
 
         {/* Left rail — chain of command on top (steward statuses speak for
@@ -2731,13 +2783,8 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         {/* Batch command bar — visible while agents are selected */}
         <FleetCommandBar
           onDone={refreshDebug}
-          onOpenAgent={(filePath) => {
-            openFile(filePath)
-            revealRightPanel()
-          }}
-          onFlyTo={(filePaths) => {
-            flyToAgents(filePaths, 350)
-          }}
+          onOpenAgent={openAgentInDock}
+          onFlyTo={flyToSelection}
         />
 
         {/* Hover preview — screen-space, readable at any zoom. Yields to an

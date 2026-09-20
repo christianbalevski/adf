@@ -23,6 +23,7 @@
     "test:lifecycle": "node scripts/rebuild-for-node.mjs && vitest run tests/lifecycle",
     "test:watch": "node scripts/rebuild-for-node.mjs && vitest",
     "bench": "RUN_BENCH=1 NODE_ENV=production node scripts/rebuild-for-node.mjs && RUN_BENCH=1 NODE_ENV=production vitest run tests/perf/stress-harness.test.ts --reporter=verbose",
+    "bench:review": "node scripts/rebuild-for-node.mjs && RUN_BENCH=1 vitest run tests/perf/review-bench.test.ts tests/perf/markdown-stream.test.ts --reporter=verbose",
     "daemon": "node scripts/rebuild-for-node.mjs && tsx src/main/daemon/index.ts",
     "adf": "tsx src/main/cli/index.ts",
     "registry:index": "node scripts/rebuild-for-node.mjs && node scripts/registry-index.mjs",

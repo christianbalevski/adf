@@ -203,6 +203,15 @@ export function createUmbilicalReplayBuffer(options: {
  * blindly-sliced string, so the shape stays an object either way.
  */
 export function truncatePayload(payload: unknown): { payload: unknown; truncated: boolean } {
+  // Serializing every payload just to measure it is this buffer's whole cost on
+  // the publish path. Walk the value first with a deliberately pessimistic
+  // per-character bound; when even that fits, the real serialization cannot
+  // exceed the limit and is skipped. Anything the bound can't clear falls
+  // through to the exact check below.
+  if (maxSerializedBytes(payload, UMBILICAL_REPLAY_MAX_PAYLOAD_BYTES) <= UMBILICAL_REPLAY_MAX_PAYLOAD_BYTES) {
+    return { payload: payload ?? {}, truncated: false }
+  }
+
   let raw: string
   try {
     raw = JSON.stringify(payload ?? {}) ?? '{}'
@@ -217,6 +226,43 @@ export function truncatePayload(payload: unknown): { payload: unknown; truncated
     payload: { _truncated: true, preview: raw.slice(0, UMBILICAL_REPLAY_PREVIEW_CHARS) },
     truncated: true,
   }
+}
+
+/**
+ * Upper bound on `JSON.stringify(value)`'s UTF-8 byte length, stopping as soon
+ * as the bound passes `bail` (the caller only cares whether it clears the
+ * limit). Six bytes per character is the worst case JSON escaping can produce
+ * (a control character becomes a six-character escape), so a value that fits
+ * under this bound always fits for real.
+ * Returns Infinity for anything the walk cannot bound (cycles, getters,
+ * toJSON) so the caller falls back to serializing.
+ */
+function maxSerializedBytes(value: unknown, bail: number, depth = 0): number {
+  if (depth > 8) return Infinity
+  if (value === null || value === undefined) return 4
+  switch (typeof value) {
+    case 'boolean': return 5
+    case 'number': return 24
+    case 'string': return value.length * 6 + 2
+    case 'object': break
+    default: return Infinity  // function/symbol/bigint — let JSON.stringify decide
+  }
+  if (Object.getPrototypeOf(value) === Date.prototype) return 26
+  if (Array.isArray(value)) {
+    let total = 2
+    for (const item of value) {
+      total += maxSerializedBytes(item, bail, depth + 1) + 1
+      if (total > bail) return total
+    }
+    return total
+  }
+  if (Object.getPrototypeOf(value) !== Object.prototype) return Infinity
+  let total = 2
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    total += key.length * 6 + 4 + maxSerializedBytes(item, bail, depth + 1)
+    if (total > bail) return total
+  }
+  return total
 }
 
 // =============================================================================

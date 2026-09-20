@@ -479,8 +479,20 @@ export async function runMcpAuthPreflight(
       )
     }
 
-    // Give the process a moment to start and potentially open the browser itself
-    await new Promise((r) => setTimeout(r, graceMs))
+    // Give the process a moment to start and potentially open the browser
+    // itself — but stop waiting the instant it settles on its own. The grace
+    // is an upper bound, not a fixed sleep: on a loaded machine a child that
+    // failed fast could otherwise still be mid-teardown when the grace
+    // elapses, and this branch would show a dead-end dialog for an auth
+    // command that had already exited. ('close' fires after the stdio pipes
+    // flush, so stderrTail is complete, and the 'close' listener registered
+    // above has already set earlyExit by the time this one runs.)
+    await new Promise<void>((r) => {
+      const timer = setTimeout(() => { preflight.off('close', onClose); r() }, graceMs)
+      function onClose(): void { clearTimeout(timer); r() }
+      if (earlyExit) { clearTimeout(timer); r(); return }
+      preflight.once('close', onClose)
+    })
 
     // Auth command already finished: skip the pointless dialog. Exit 0 means
     // it stored its tokens (or was already authorized); nonzero means the

@@ -60,6 +60,11 @@ jobs:
           $rebuildExit = $LASTEXITCODE
           if ($rebuildExit -ne 0) { throw "npm rebuild better-sqlite3 failed with exit code $rebuildExit" }
 
+      # These tests create, copy and reopen real SQLite files. They finish in
+      # well under a second locally but take 5-12s on this runner (file I/O under
+      # real-time scanning), so the 5s vitest default fails them; and a test that
+      # times out is still holding its database open when cleanup runs, which
+      # is where the follow-on EBUSY came from.
       - name: Focused collision and lifecycle tests
         shell: pwsh
         run: >-
@@ -72,6 +77,8 @@ jobs:
           tests/unit/tools/sys-create-adf-collision.test.ts
           tests/unit/agent-templates-instantiate.test.ts
           tests/daemon-node-runtime.test.ts
+          --testTimeout=60000
+          --hookTimeout=60000
           --reporter=verbose
 
       # Deliberately NOT the full suite: a handful of tests assume POSIX paths,

@@ -4,9 +4,10 @@ import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type Pen
 import { useDocumentStore } from '../../stores/document.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
+import { pickOldestSeq } from '../../hooks/live-seq'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { nanoid } from 'nanoid'
-import { renderMarkdownToSafeHtml } from '../../utils/markdown'
+import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
 import { loopColor } from '../../utils/loop-color'
 import { getLoopActivity, isTurnCompleteMarker } from '../../utils/loop-activity'
@@ -234,9 +235,33 @@ function renderMarkdown(src: string): string {
   return renderMarkdownToSafeHtml(encodeAdfFileUrls(src))
 }
 
-// Memoized markdown component to avoid re-parsing on every render
+// How long a streamed answer must hold still before it is parsed once more in
+// full. The incremental path only ever concatenates independently-parsed
+// blocks; this pass guarantees the transcript the user keeps is byte-for-byte
+// the whole-document parse.
+const MARKDOWN_SETTLE_MS = 200
+
+// Memoized markdown component to avoid re-parsing on every render.
+// While an answer streams, `createIncrementalMarkdownRenderer` re-parses only
+// the block still being written instead of the whole accumulated text (which is
+// quadratic at ~20 deltas/s). A row that never changes — every restored
+// transcript row — takes exactly the one full parse it always did.
 const MarkdownEntry = memo(({ content }: { content: string }) => {
-  const html = useMemo(() => renderMarkdown(content), [content])
+  const renderIncrementally = useRef<((source: string) => string) | null>(null)
+  if (!renderIncrementally.current) renderIncrementally.current = createIncrementalMarkdownRenderer(encodeAdfFileUrls)
+  const mountedContent = useRef(content)
+  const streamed = content !== mountedContent.current
+  const [settled, setSettled] = useState<{ source: string; html: string } | null>(null)
+  const streamingHtml = useMemo(() => renderIncrementally.current!(content), [content])
+  useEffect(() => {
+    if (!streamed || settled?.source === content) return
+    const timer = setTimeout(
+      () => setSettled({ source: content, html: renderMarkdown(content) }),
+      MARKDOWN_SETTLE_MS
+    )
+    return () => clearTimeout(timer)
+  }, [streamed, content, settled])
+  const html = settled?.source === content ? settled.html : streamingHtml
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const anchor = (e.target as HTMLElement).closest('a[href]')
     if (!anchor) return
@@ -950,16 +975,19 @@ const LogEntryRow = memo(({
 function LoopStream({ loop }: { loop: string }) {
   const isMainLoop = loop === MAIN_LOOP
   const filePath = useDocumentStore((s) => s.filePath)
-  const draftInputs = useDocumentStore((s) => s.draftInputs)
   const setDraftInput = useDocumentStore((s) => s.setDraftInput)
   // Each loop tab keeps its own composer draft.
   const draftKey = filePath ? (isMainLoop ? filePath : `${filePath}#loop:${loop}`) : null
-  const input = draftKey ? (draftInputs[draftKey] ?? '') : ''
+  // Select the draft STRING, not the record: the writer rebuilds the record on
+  // every keystroke, so selecting it would re-render this whole stream for a
+  // draft belonging to another tab.
+  const input = useDocumentStore((s) => (draftKey ? s.draftInputs[draftKey] ?? '' : ''))
   const setInput = useCallback((value: string) => {
     if (draftKey) setDraftInput(draftKey, value)
   }, [draftKey, setDraftInput])
   const log = useAgentStore((s) => selectLoopSlice(s, loop).log)
   const logVersion = useAgentStore((s) => selectLoopSlice(s, loop).logVersion)
+  const structuralVersion = useAgentStore((s) => selectLoopSlice(s, loop).structuralVersion)
   const earlierCount = useAgentStore((s) => selectLoopSlice(s, loop).earlierCount)
   const prependLog = useAgentStore((s) => s.prependLog)
   const setEarlierCount = useAgentStore((s) => s.setEarlierCount)
@@ -1063,11 +1091,18 @@ function LoopStream({ loop }: { loop: string }) {
 
   // Virtual scrolling setup
   // Filter out tool_result entries — their content is accessible via the tool_call inspector
+  //
+  // These three passes walk the WHOLE log, so they key on `structuralVersion`
+  // (entry appended / window replaced / an entry's type or metadata rewritten)
+  // rather than `logVersion`, which also moves for each of the ~20 streamed
+  // deltas a second. Nothing they read changes on a delta: the store only
+  // withholds the structural bump when a text/thinking entry's `content` grew
+  // and nothing else about it moved.
   const displayLog = useMemo(
     () => log.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry)),
-    [log, logVersion]
+    [log, structuralVersion]
   )
-  const toolPairIndex = useMemo(() => buildToolPairIndex(log), [log.length, logVersion])
+  const toolPairIndex = useMemo(() => buildToolPairIndex(log), [log, structuralVersion])
   const isActive = state === 'active'
 
   // Every step stays in the transcript, including calls whose results have
@@ -1076,7 +1111,15 @@ function LoopStream({ loop }: { loop: string }) {
     active: isActive,
     starting,
     waiting: pendingApprovals.size > 0 || pendingAsks.size > 0 || pendingSuspend !== null,
-  }), [log, logVersion, isActive, starting, pendingApprovals, pendingAsks, pendingSuspend])
+  }), [log, structuralVersion, isActive, starting, pendingApprovals, pendingAsks, pendingSuspend])
+
+  // The streaming entry is mutated in place, so the grouping passes above hold
+  // the object it had when it was appended. Swap the live one back in at the
+  // point of use — O(1), and the only place a content delta is visible.
+  // Read fresh on every render; `logVersion` above is what schedules them.
+  const tailEntry = log.length > 0 ? log[log.length - 1] : null
+  const liveEntry = (entry: AgentLogEntry): AgentLogEntry =>
+    tailEntry !== null && tailEntry.id === entry.id ? tailEntry : entry
   const displayItems = useMemo(
     () => buildDisplayItems(displayLog, toolPairIndex),
     [displayLog, toolPairIndex]
@@ -1223,30 +1266,42 @@ function LoopStream({ loop }: { loop: string }) {
     return () => clearTimeout(timer)
   }, [])
 
+  // One pin per frame. Both triggers below (new content, and the total size
+  // growing once rows are measured) want the same "keep the tail visible"
+  // write, and a delta lands ~20×/s — scheduling on rAF collapses the pair into
+  // a single scrollHeight read + scrollTop write per painted frame. The
+  // stick-to-bottom rule is unchanged: a user who has scrolled up is never
+  // yanked, because `isAtBottom` is re-checked when the frame runs.
+  const pinFrame = useRef<number | null>(null)
+  const schedulePin = useCallback(() => {
+    if (pinFrame.current !== null) return
+    pinFrame.current = requestAnimationFrame(() => {
+      pinFrame.current = null
+      const el = scrollRef.current
+      if (el && isAtBottom.current) el.scrollTop = el.scrollHeight
+    })
+  }, [])
+  useEffect(() => () => {
+    if (pinFrame.current !== null) cancelAnimationFrame(pinFrame.current)
+  }, [])
+
   // Auto-scroll to bottom when new content arrives
   useEffect(() => {
-    if (scrollRef.current) {
-      if (isAtBottom.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-      } else {
-        setShowScrollBtn(true)
-      }
-    }
-  }, [logVersion])
+    if (!scrollRef.current) return
+    if (isAtBottom.current) schedulePin()
+    else setShowScrollBtn(true)
+  }, [logVersion, schedulePin])
 
   // Keep the tail visible while pinned.
-  // The logVersion effect above scrolls synchronously, but rows use
+  // The logVersion effect above pins for the content itself, but rows use
   // estimateSize 60 and are only measured by ResizeObserver afterwards — when
   // measured sizes exceed the estimate, getTotalSize() grows after the scroll
   // and pushes the tail under the fold. Re-pin whenever the total changes, but
   // only if the user was already at the bottom (never fight a scrolled-up user).
   const virtualTotalSize = virtualizer.getTotalSize()
   useEffect(() => {
-    const el = scrollRef.current
-    if (el && isAtBottom.current) {
-      el.scrollTop = el.scrollHeight
-    }
-  }, [virtualTotalSize, activity.phase])
+    if (isAtBottom.current) schedulePin()
+  }, [virtualTotalSize, activity.phase, schedulePin])
 
   // The composer grows as the user types (up to MAX_INPUT_ROWS), shrinking the
   // log viewport above it. scrollTop doesn't move on resize, so without this
@@ -1717,14 +1772,11 @@ function LoopStream({ loop }: { loop: string }) {
   const [loadingOlder, setLoadingOlder] = useState(false)
   const handleLoadOlder = useCallback(async () => {
     if (loadingOlder) return
-    // Oldest loaded loop row — display entries carry their source seq in metadata.
-    // Live-streamed entries have no seq, so scan forward for the first that does.
+    // Oldest loaded loop row — display entries carry their source seq in
+    // metadata, live-appended ones included (see hooks/live-seq.ts), so a
+    // window made entirely of live entries still names a cursor.
     const s = selectLoopSlice(useAgentStore.getState(), loop)
-    let oldestSeq: number | undefined
-    for (const entry of s.log) {
-      const seq = entry.metadata?.seq
-      if (typeof seq === 'number') { oldestSeq = seq; break }
-    }
+    const oldestSeq = pickOldestSeq(s.log)
     if (oldestSeq === undefined) return
     setLoadingOlder(true)
     try {
@@ -1754,9 +1806,11 @@ function LoopStream({ loop }: { loop: string }) {
     return toolPairIndex.get(entry.id) ?? { call: null, result: null }
   }, [toolPairIndex])
 
-  const handleToolClick = (entry: AgentLogEntry) => {
+  // Stable — LogEntryRow is memo'd, and a fresh handler here would re-render
+  // every visible row on every streaming delta.
+  const handleToolClick = useCallback((entry: AgentLogEntry) => {
     setInspectedToolCall(entry)
-  }
+  }, [])
 
   const toggleThinking = useCallback((id: string) => {
     setExpandedThinking((prev) => {
@@ -1817,7 +1871,8 @@ function LoopStream({ loop }: { loop: string }) {
     return entries.some((entry) => Boolean(toolPairIndex.get(entry.id)?.result?.metadata?.imageUrl))
   }, [toolPairIndex])
 
-  const renderLogEntry = (entry: AgentLogEntry, compact = false) => {
+  const renderLogEntry = (grouped: AgentLogEntry, compact = false) => {
+    const entry = liveEntry(grouped)
     const toolPair = entry.type === 'tool_call' ? toolPairIndex.get(entry.id) : undefined
     // Effective error: the executor's isError flag, OR — for adf_shell, which
     // always reports isError:false — a nonzero exit_code in the result payload.

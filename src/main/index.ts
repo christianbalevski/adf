@@ -5,6 +5,7 @@ import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, get
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
+import { startStallMonitor, stopStallMonitor } from './utils/stall-monitor'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 
@@ -410,8 +411,14 @@ async function createWindow(): Promise<void> {
     console.warn(`[App] Blocked navigation to: ${url}`)
   })
 
-  // Log renderer console messages to main process stdout
+  // Log renderer console messages to main process stdout. Every renderer log
+  // line otherwise crosses the bridge and is re-formatted into the main log —
+  // in a packaged run that is pure overhead, so only warnings and errors get
+  // through. Dev keeps everything, and ADF_RENDERER_LOG=1 forces it back on.
+  const verboseRendererLog = isDev || process.env.ADF_RENDERER_LOG === '1'
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    // Chromium levels: 0 verbose, 1 info, 2 warning, 3 error
+    if (!verboseRendererLog && level < 2) return
     const levelStr = ['VERBOSE', 'INFO', 'WARNING', 'ERROR'][level] ?? 'LOG'
     console.log(`[Renderer ${levelStr}] ${message} (${sourceId}:${line})`)
   })
@@ -448,6 +455,14 @@ app.on('web-contents-created', (_event, contents) => {
 })
 
 app.whenReady().then(() => {
+  // Dev/diagnostic only: logs one line per multi-hundred-ms main-thread freeze.
+  // Creates nothing in a packaged build unless ADF_STALL_MONITOR=1.
+  const stallMonitor = startStallMonitor({ packaged: app.isPackaged })
+  if (stallMonitor) {
+    console.log(`[App] Stall monitor active (threshold ${stallMonitor.thresholdMs} ms)`)
+    app.once('before-quit', () => stopStallMonitor())
+  }
+
   registerAllIpcHandlers()
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
   ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TapManager } from '../../src/main/runtime/tap-manager'
+import { MAX_QUEUE_DEPTH } from '../../src/main/runtime/system-dispatch-limits'
 import { clearAllUmbilicalBuses, ensureUmbilicalBus } from '../../src/main/runtime/umbilical-bus'
 import type { UmbilicalTapConfig } from '../../src/shared/types/adf-v02.types'
 
@@ -125,5 +126,58 @@ describe('TapManager', () => {
 
     expect(lifecycle).toEqual(['lambda.started:tap', 'lambda.failed:tap'])
     expect(insertLog).toHaveBeenCalledWith('warn', 'umbilical_tap', 'dispatch_error', 'orders', expect.stringContaining('boom'))
+  })
+
+  it('runs one dispatch at a time per tap and queues the rest', async () => {
+    const { bus, manager, execute } = makeHarness()
+    let inFlight = 0
+    let maxInFlight = 0
+    const release: Array<() => void> = []
+    execute.mockImplementation(async () => {
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise<void>(resolve => release.push(resolve))
+      inFlight--
+      return { stdout: '' }
+    })
+    await manager.register([makeTap({ max_rate_per_sec: 0 })])
+
+    for (let i = 0; i < 3; i++) {
+      bus.publish({ event_type: 'db.write', timestamp: i, source: 'agent:t', payload: { sql: `INSERT ${i}` } })
+    }
+    await tick()
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(maxInFlight).toBe(1)
+
+    while (release.length > 0) {
+      release.shift()!()
+      await tick()
+    }
+    expect(execute).toHaveBeenCalledTimes(3)
+    expect(maxInFlight).toBe(1)
+  })
+
+  it('drops queued events past the depth cap and logs the drop', async () => {
+    const { bus, manager, execute, insertLog } = makeHarness()
+    const release: Array<() => void> = []
+    execute.mockImplementation(async () => {
+      await new Promise<void>(resolve => release.push(resolve))
+      return { stdout: '' }
+    })
+    await manager.register([makeTap({ max_rate_per_sec: 0 })])
+
+    // 1 in flight + 64 queued + 1 over the cap.
+    for (let i = 0; i < MAX_QUEUE_DEPTH + 2; i++) {
+      bus.publish({ event_type: 'db.write', timestamp: i, source: 'agent:t', payload: { sql: `INSERT ${i}` } })
+    }
+    await tick()
+
+    expect(insertLog).toHaveBeenCalledWith(
+      'error', 'umbilical_tap', 'dispatch_dropped', 'orders',
+      expect.stringContaining('Backpressure: dropped db.write'),
+    )
+    for (const resolve of release.splice(0)) resolve()
+    await tick()
+    manager.dispose()
   })
 })

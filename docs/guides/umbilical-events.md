@@ -488,8 +488,9 @@ Notes:
   `direction: 'a_to_b' | 'b_to_a'` for copy failures — never both.
 - `threshold` on `binding.threshold_exceeded` names which limit tripped
   (`max_bytes`, `max_duration_ms`, `idle_timeout_ms`), with `observed` vs `limit`.
-- `binding.flow_summary` fires on the `flow_summary_interval_ms` timer and once
-  more immediately before termination.
+- `binding.flow_summary` fires on the `flow_summary_interval_ms` timer — the
+  first tick always, later ticks only when bytes, drops or status changed since
+  the last summary — and once more immediately before termination.
 
 ## `adapter.*` / `mcp.*` — stable
 

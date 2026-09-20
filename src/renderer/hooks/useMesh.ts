@@ -2,6 +2,9 @@ import { useEffect, useCallback } from 'react'
 import { useMeshStore } from '../stores/mesh.store'
 import type { MeshEvent } from '../../shared/types/ipc.types'
 
+/** Trailing window that folds an agent_joined burst into one getMeshStatus. */
+const JOIN_REFRESH_DEBOUNCE_MS = 250
+
 /**
  * Subscribes to MESH_EVENT IPC and updates the mesh store.
  * Should be called once at the app root level.
@@ -9,6 +12,19 @@ import type { MeshEvent } from '../../shared/types/ipc.types'
 export function useMeshEvents() {
   useEffect(() => {
     if (!window.adfApi?.onMeshEvent) return
+
+    // A mass start fires one agent_joined per agent; a trailing debounce
+    // collapses the burst into a single status fetch.
+    let joinTimer: ReturnType<typeof setTimeout> | null = null
+    const scheduleStatusRefresh = () => {
+      if (joinTimer) clearTimeout(joinTimer)
+      joinTimer = setTimeout(() => {
+        joinTimer = null
+        window.adfApi.getMeshStatus().then((status) => {
+          useMeshStore.getState().upsertAgents(status.agents)
+        })
+      }, JOIN_REFRESH_DEBOUNCE_MS)
+    }
 
     const unsubscribe = window.adfApi.onMeshEvent((event: MeshEvent) => {
       const store = useMeshStore.getState()
@@ -23,9 +39,7 @@ export function useMeshEvents() {
         case 'agent_joined': {
           // Merge — replacing with the live-only snapshot would wipe fleet
           // ghosts and collapse the fleet map on every mass start.
-          window.adfApi.getMeshStatus().then((status) => {
-            useMeshStore.getState().upsertAgents(status.agents)
-          })
+          scheduleStatusRefresh()
           break
         }
         case 'agent_left': {
@@ -39,7 +53,10 @@ export function useMeshEvents() {
       }
     })
 
-    return unsubscribe
+    return () => {
+      if (joinTimer) clearTimeout(joinTimer)
+      unsubscribe?.()
+    }
   }, [])
 }
 
