@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest'
-import { describeCodexRequest, patchCodexRequestBody } from '../../../src/main/providers/chatgpt-subscription'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  createChatGPTSubscriptionProvider,
+  describeCodexRequest,
+  patchCodexRequestBody,
+} from '../../../src/main/providers/chatgpt-subscription'
 
 const SYSTEM = 'You are an ADF agent — a learning system that gets better over time.'
 
@@ -119,6 +123,15 @@ describe('patchCodexRequestBody', () => {
     expect(patchCodexRequestBody(body, SYSTEM).repairedStrings).toBe(0)
   })
 
+  it('skips the deep walk when the caller pre-scanned and found nothing repairable', () => {
+    const half = '🚀'.slice(0, 1)
+    const body = sdkBody({ input: [{ role: 'user', content: [{ type: 'input_text', text: half }] }] })
+    const { repairedStrings } = patchCodexRequestBody(body, SYSTEM, undefined, { repairStrings: false })
+    expect(repairedStrings).toBe(0)
+    const text = (body.input as Array<{ content: Array<{ text: string }> }>)[0].content[0].text
+    expect(text).toBe(half) // untouched — the opt-out is the caller's promise, not a guess
+  })
+
   it('describeCodexRequest summarizes the request shape', () => {
     const body = sdkBody()
     patchCodexRequestBody(body, SYSTEM)
@@ -128,5 +141,50 @@ describe('patchCodexRequestBody', () => {
     expect(summary).toContain(`instructions_chars=${SYSTEM.length}`)
     expect(summary).toContain('tools=0')
     expect(summary).toContain('body_chars=1234')
+  })
+})
+
+/**
+ * The fetch wrapper pre-scans the serialized body instead of deep-walking it on
+ * every turn. The repair itself must stay effective — a lone surrogate reaching
+ * the codex backend is an opaque 400.
+ */
+describe('surrogate repair through the fetch wrapper', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  async function sendPrompt(text: string, instructions?: string): Promise<Record<string, unknown>> {
+    const fetchSpy = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('request captured'))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { provider, setInstructions } = createChatGPTSubscriptionProvider({
+      getValidAccessToken: async () => 'test-token',
+      getAccountId: () => 'test-account',
+    })
+    if (instructions !== undefined) setInstructions(instructions)
+
+    await expect(provider.responses('gpt-5.4').doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text }] }],
+    })).rejects.toThrow('request captured')
+
+    return JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))
+  }
+
+  it('still repairs a lone surrogate in the input text', async () => {
+    const body = await sendPrompt('cut mid-emoji ' + '🚀'.slice(0, 1))
+    const sent = JSON.stringify(body)
+    expect(sent).not.toMatch(/\\ud83d(?!\\ud)/i)
+    expect(sent).toContain('�')
+  })
+
+  it('still repairs a lone surrogate that arrives only via setInstructions', async () => {
+    const body = await sendPrompt('hi', 'sys ' + '🚀'.slice(0, 1))
+    expect(body.instructions).toBe('sys �')
+  })
+
+  it('leaves a well-formed body — including paired astral characters — intact', async () => {
+    const body = await sendPrompt('hi 🚀 done', 'Reply briefly.')
+    expect(JSON.stringify(body)).not.toContain('�')
+    expect(body.instructions).toBe('Reply briefly.')
+    expect(body.store).toBe(false)
+    expect(body.stream).toBe(true)
   })
 })

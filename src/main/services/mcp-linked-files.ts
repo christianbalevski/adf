@@ -13,7 +13,7 @@
  * reached through `podman exec` / `podman cp`.
  */
 import { extname, posix, resolve, sep } from 'path'
-import { readFileSync, statSync } from 'fs'
+import { promises as fsp } from 'fs'
 import type { PodmanService } from './podman.service'
 
 /** Claude rejects images over ~5MB — skip larger linked files rather than poison the turn. */
@@ -45,14 +45,14 @@ export function hostLinkedFileReader(scratchDir: string): McpLinkedFileReader {
     },
     async size(path) {
       try {
-        const stat = statSync(path)
+        const stat = await fsp.stat(path)
         return stat.isFile() ? stat.size : null
       } catch {
         return null
       }
     },
-    async read(path) {
-      return readFileSync(path)
+    read(path) {
+      return fsp.readFile(path)
     },
   }
 }

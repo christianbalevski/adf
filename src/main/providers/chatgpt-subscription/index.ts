@@ -4,6 +4,23 @@ import { repairStringsDeep } from '../../../shared/utils/well-formed'
 // ChatGPT subscription users hit this backend, NOT api.openai.com
 const BASE_URL = 'https://chatgpt.com/backend-api/codex'
 
+/**
+ * Cheap pre-scan for anything `repairStringsDeep` could possibly fix, run over
+ * a SERIALIZED body before it is parsed. Matches either a raw lone surrogate
+ * code unit, or the `\udXXX` escape that `JSON.stringify` emits for one
+ * (ES2019 well-formed stringify escapes unpaired surrogates and only those).
+ *
+ * Deliberately over-matches — an escaped but well-formed pair also trips it,
+ * which just falls back to the deep walk. One linear regex pass over the body
+ * replaces a full recursive walk of every string on every turn.
+ */
+const REPAIRABLE_RE = /\\u[dD][89a-fA-F]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+
+/** True when `text` may contain a lone UTF-16 surrogate (raw or escaped). */
+function mayNeedSurrogateRepair(text: string | undefined): boolean {
+  return text !== undefined && REPAIRABLE_RE.test(text)
+}
+
 /** Rate limit and usage info extracted from x-codex-* response headers. */
 export interface ChatGPTResponseMeta {
   planType?: string
@@ -61,7 +78,8 @@ function extractCodexHeaders(headers: Headers): ChatGPTResponseMeta {
 export function patchCodexRequestBody(
   body: Record<string, unknown>,
   pendingInstructions: string | undefined,
-  extraParams?: Record<string, unknown>
+  extraParams?: Record<string, unknown>,
+  options?: { repairStrings?: boolean }
 ): { repairedStrings: number } {
   // ChatGPT subscription backend requires both of these
   body.store = false
@@ -134,6 +152,10 @@ export function patchCodexRequestBody(
   // half by a fixed-offset truncation, serialized as a bare `\ud83d` escape)
   // with an opaque 400 {"detail":"Bad Request"}. Repair every string in the
   // body — instructions, input text, tool results — before it goes out.
+  //
+  // `repairStrings: false` is only ever passed by a caller that already
+  // pre-scanned every string entering this body and found none repairable.
+  if (options?.repairStrings === false) return { repairedStrings: 0 }
   const repairedStrings = repairStringsDeep(body)
   return { repairedStrings }
 }
@@ -160,6 +182,9 @@ export function createChatGPTSubscriptionProvider(authManager: {
 
   // Last response metadata — captured from every response for agent self-management
   let lastResponseMeta: ChatGPTResponseMeta | undefined
+
+  // extraParams is fixed for the life of the provider — scan it once, not per turn.
+  const extraParamsMayNeedRepair = extraParams !== undefined && mayNeedSurrogateRepair(JSON.stringify(extraParams))
 
   const customFetch: typeof globalThis.fetch = async (input, init) => {
     let token: string
@@ -188,8 +213,15 @@ export function createChatGPTSubscriptionProvider(authManager: {
     let requestSummary: string | undefined
     if (init?.body && typeof init.body === 'string') {
       try {
+        // Every string that can end up in the patched body comes from one of
+        // these three; if none of them can hold a lone surrogate, the deep
+        // walk has nothing to find and is skipped.
+        const repairStrings =
+          extraParamsMayNeedRepair ||
+          mayNeedSurrogateRepair(init.body) ||
+          mayNeedSurrogateRepair(pendingInstructions)
         const body = JSON.parse(init.body)
-        const { repairedStrings } = patchCodexRequestBody(body, pendingInstructions, extraParams)
+        const { repairedStrings } = patchCodexRequestBody(body, pendingInstructions, extraParams, { repairStrings })
         if (repairedStrings > 0) {
           console.warn(`[ChatGPT Subscription] Repaired ${repairedStrings} string(s) with lone UTF-16 surrogates before send (would have been a 400 Bad Request)`)
         }

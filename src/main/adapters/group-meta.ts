@@ -62,21 +62,43 @@ const DEFAULT_FAILURE_TTL_MS = 60 * 1000
  */
 export class GroupMetaCache {
   private entries = new Map<string, { value: GroupMeta | null; fetchedAt: number }>()
+  /** Entry count past which an insert of a NEW key sweeps expired entries first. */
+  private static readonly SWEEP_THRESHOLD = 64
 
   constructor(
     private ttlMs: number = DEFAULT_TTL_MS,
     private failureTtlMs: number = DEFAULT_FAILURE_TTL_MS
   ) {}
 
+  private expired(entry: { value: GroupMeta | null; fetchedAt: number }, now: number): boolean {
+    return now - entry.fetchedAt > (entry.value ? this.ttlMs : this.failureTtlMs)
+  }
+
   private lookup(chatId: string): { value: GroupMeta | null; fetchedAt: number } | null {
     const entry = this.entries.get(chatId)
     if (!entry) return null
-    const ttl = entry.value ? this.ttlMs : this.failureTtlMs
-    if (Date.now() - entry.fetchedAt > ttl) {
+    if (this.expired(entry, Date.now())) {
       this.entries.delete(chatId)
       return null
     }
     return entry
+  }
+
+  /**
+   * Store an entry, opportunistically dropping expired ones first. Without
+   * this a chat that is never looked up again keeps its entry forever — a
+   * long-lived adapter would accumulate one per chat it ever saw. Sweeping
+   * only when a NEW key pushes the map past the threshold keeps the common
+   * refresh-in-place path O(1) and needs no timer.
+   */
+  private store(chatId: string, value: GroupMeta | null): void {
+    const now = Date.now()
+    if (this.entries.size >= GroupMetaCache.SWEEP_THRESHOLD && !this.entries.has(chatId)) {
+      for (const [key, entry] of this.entries) {
+        if (this.expired(entry, now)) this.entries.delete(key)
+      }
+    }
+    this.entries.set(chatId, { value, fetchedAt: now })
   }
 
   get(chatId: string): GroupMeta | null {
@@ -84,7 +106,7 @@ export class GroupMetaCache {
   }
 
   set(chatId: string, value: GroupMeta): void {
-    this.entries.set(chatId, { value, fetchedAt: Date.now() })
+    this.store(chatId, value)
   }
 
   clear(): void {
@@ -103,10 +125,10 @@ export class GroupMetaCache {
     if (cached) return cached.value
     try {
       const fresh = await fetch()
-      this.entries.set(chatId, { value: fresh, fetchedAt: Date.now() })
+      this.store(chatId, fresh)
       return fresh
     } catch {
-      this.entries.set(chatId, { value: null, fetchedAt: Date.now() })
+      this.store(chatId, null)
       return null
     }
   }

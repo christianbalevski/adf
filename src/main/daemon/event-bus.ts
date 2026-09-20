@@ -16,7 +16,9 @@ export type DaemonEventListener = (envelope: DaemonEventEnvelope) => void
 
 export class DaemonEventBus {
   private nextCursor = 1
+  /** Circular buffer: once full, `head` is the oldest slot and the next to be overwritten. */
   private readonly buffer: DaemonEventEnvelope[] = []
+  private head = 0
   private readonly listeners = new Set<DaemonEventListener>()
 
   constructor(private readonly capacity = 1000) {}
@@ -27,8 +29,14 @@ export class DaemonEventBus {
       event,
     }
 
-    this.buffer.push(envelope)
-    while (this.buffer.length > this.capacity) this.buffer.shift()
+    if (this.capacity > 0) {
+      if (this.buffer.length < this.capacity) {
+        this.buffer.push(envelope)
+      } else {
+        this.buffer[this.head] = envelope
+        this.head = (this.head + 1) % this.capacity
+      }
+    }
 
     for (const listener of this.listeners) {
       try {
@@ -41,11 +49,17 @@ export class DaemonEventBus {
     return envelope
   }
 
-  /** Replay buffered envelopes with a cursor strictly greater than `cursor`. */
+  /** Replay buffered envelopes with a cursor strictly greater than `cursor`, oldest first. */
   getSince(cursor: number, agentId?: string): DaemonEventEnvelope[] {
-    return this.buffer.filter(envelope =>
-      envelope.cursor > cursor && (!agentId || envelope.event.agent_id === agentId)
-    )
+    const size = this.buffer.length
+    const out: DaemonEventEnvelope[] = []
+    for (let i = 0; i < size; i++) {
+      const envelope = this.buffer[(this.head + i) % size]
+      if (envelope.cursor > cursor && (!agentId || envelope.event.agent_id === agentId)) {
+        out.push(envelope)
+      }
+    }
+    return out
   }
 
   subscribe(listener: DaemonEventListener): () => void {

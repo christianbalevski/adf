@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { getUserDataPath } from '../utils/user-data-path'
-import { writeJsonAtomic, readJsonOrQuarantine } from '../utils/atomic-json'
+import { writeJsonAtomic, writeJsonAtomicAsync, readJsonOrQuarantine } from '../utils/atomic-json'
 import { localDateKey } from '../../shared/utils/date-key'
 
 /**
@@ -146,6 +146,11 @@ export class TokenUsageService {
   private pendingClear = false
   private dirty = false
   private saveTimer: ReturnType<typeof setTimeout> | null = null
+  /** In-flight debounced write, so two timer ticks never overlap. */
+  private asyncSave: Promise<boolean> | null = null
+  /** Bumped by every synchronous save; an async save that sees a change while
+   *  writing leaves the in-memory view to the synchronous one. */
+  private saveGeneration = 0
   private static readonly SAVE_DEBOUNCE_MS = 5000
 
   constructor() {
@@ -182,10 +187,11 @@ export class TokenUsageService {
       this.saveTimer = null
       if (this.dirty) {
         this.dirty = false
-        if (!this.saveNow()) {
+        // Debounced flushes are never urgent — write off the main thread.
+        void this.saveNowAsync().then((ok) => {
           // Keep the data dirty and try again on the next debounce window.
-          this.scheduleSave()
-        }
+          if (!ok) this.scheduleSave()
+        })
       }
     }, TokenUsageService.SAVE_DEBOUNCE_MS)
     // Never keep the process alive just for a pending usage flush
@@ -193,12 +199,13 @@ export class TokenUsageService {
   }
 
   /**
-   * Merge the pending delta onto a fresh read of the file and write the
-   * result. Returns false on failure so callers can re-mark the data dirty
-   * instead of silently dropping it; the delta is only discarded once the
-   * merged file is safely on disk.
+   * Read the file fresh and fold the pending delta onto it. The delta is taken
+   * out of `pending` here, so anything recorded while the write is still in
+   * flight accumulates into a NEW delta instead of being written twice.
+   * Returns null when the delta must not be written (corrupt file that could
+   * not be preserved, or the read itself failed) — `pending` is then untouched.
    */
-  private saveNow(): boolean {
+  private prepareSave(): { merged: TokenUsageData; delta: TokenUsageData; clearing: boolean } | null {
     try {
       const dir = dirname(this.filePath)
       if (!existsSync(dir)) {
@@ -209,23 +216,95 @@ export class TokenUsageService {
         base = {}
       } else {
         const disk = this.readDisk()
-        if (disk === null) return false
+        if (disk === null) return null
         base = disk
       }
-      const merged = mergeUsage(base, this.pending)
-      writeJsonAtomic(this.filePath, merged)
-      this.data = merged
+      const delta = this.pending
+      const clearing = this.pendingClear
       this.pending = {}
       this.pendingClear = false
-      return true
+      return { merged: mergeUsage(base, delta), delta, clearing }
     } catch (err) {
       console.error('[TokenUsage] Failed to save token usage data:', err)
-      return false
+      return null
     }
   }
 
+  /** Adopt the written ledger as the live view, keeping anything recorded since. */
+  private commitSave(merged: TokenUsageData): void {
+    this.data = mergeUsage(merged, this.pending)
+  }
+
+  /** Put an unwritten delta back so a later attempt retries it. */
+  private restoreDelta(delta: TokenUsageData, clearing: boolean): void {
+    this.pending = mergeUsage(delta, this.pending)
+    if (clearing) this.pendingClear = true
+  }
+
   /**
-   * Flush pending writes immediately. Call on app quit.
+   * Merge the pending delta onto a fresh read of the file and write the
+   * result synchronously. Returns false on failure so callers can re-mark the
+   * data dirty instead of silently dropping it; the delta is only discarded
+   * once the merged file is safely on disk.
+   *
+   * Reserved for shutdown flushes and `clearAll`, where the bytes have to be
+   * on disk before the call returns. Debounced saves use `saveNowAsync`.
+   */
+  private saveNow(): boolean {
+    this.saveGeneration++
+    const prepared = this.prepareSave()
+    if (!prepared) return false
+    try {
+      writeJsonAtomic(this.filePath, prepared.merged)
+    } catch (err) {
+      console.error('[TokenUsage] Failed to save token usage data:', err)
+      this.restoreDelta(prepared.delta, prepared.clearing)
+      return false
+    }
+    this.commitSave(prepared.merged)
+    return true
+  }
+
+  /**
+   * Same merge, written off the main thread. Concurrent calls coalesce onto the
+   * one in flight; `writeJsonAtomicAsync` additionally serializes per path, so
+   * two writers can never interleave temp files.
+   */
+  private saveNowAsync(): Promise<boolean> {
+    if (this.asyncSave) return this.asyncSave
+    const run = this.runAsyncSave()
+    this.asyncSave = run
+    void run.then(
+      () => { if (this.asyncSave === run) this.asyncSave = null },
+      () => { if (this.asyncSave === run) this.asyncSave = null }
+    )
+    return run
+  }
+
+  private async runAsyncSave(): Promise<boolean> {
+    const generation = this.saveGeneration
+    const prepared = this.prepareSave()
+    if (!prepared) return false
+    try {
+      await writeJsonAtomicAsync(this.filePath, prepared.merged)
+    } catch (err) {
+      console.error('[TokenUsage] Failed to save token usage data:', err)
+      this.restoreDelta(prepared.delta, prepared.clearing)
+      return false
+    }
+    // A synchronous flush/clear ran while this write was in flight: it is
+    // authoritative for the in-memory view, so don't overwrite it here.
+    if (generation !== this.saveGeneration) return true
+    this.commitSave(prepared.merged)
+    return true
+  }
+
+  /**
+   * Flush pending writes immediately, synchronously. Call on app quit.
+   *
+   * A debounced async write that is already mid-rename when this runs owns the
+   * delta it took; it completes on its own (or, if the process exits first,
+   * costs at most one debounce window of counts — this ledger is analytics).
    */
   flush(): void {
     if (this.saveTimer) {
