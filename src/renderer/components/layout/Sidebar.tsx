@@ -1154,6 +1154,11 @@ const AgentFileRow = memo(function AgentFileRow({
     [onFileContextMenu, file, dirPath]
   )
   const agentState = useAgentStore((s) => isActive ? s.state : 'off')
+  // Inner loops only — main is the dot. A primitive selector, so a streaming
+  // side loop re-renders the row on the count, not on every delta.
+  const foregroundActiveLoops = useAgentStore((s) =>
+    isActive ? Object.values(s.sideLoops).filter((l) => l.state === 'active').length : 0
+  )
   const isStarting = useAppStore((s) => s.startingFilePaths.has(file.filePath))
   const isStopping = useAppStore((s) => s.stoppingFilePaths.has(file.filePath))
   const agentConfig = useAgentStore((s) => isActive ? s.config : null)
@@ -1165,6 +1170,10 @@ const AgentFileRow = memo(function AgentFileRow({
   const dotState: AgentState = isActive
     ? (agentState === 'off' ? 'not_participating' : agentState as AgentState)
     : (backgroundStatus ? toDisplayState(backgroundStatus.state) : 'not_participating')
+
+  const activeLoops = !isRunning ? 0
+    : isActive ? foregroundActiveLoops
+    : backgroundStatus?.activeLoops ?? 0
 
   const isAutonomous = isActive
     ? (agentConfig?.autonomous ?? false)
@@ -1243,7 +1252,7 @@ const AgentFileRow = memo(function AgentFileRow({
 
       {/* The full path is the hint; a native title never renders in this
           window, so the portal tooltip carries it instead. */}
-      <Tooltip tip={file.filePath} delay={1000} className="flex-1 min-w-0">
+      <Tooltip tip={file.filePath} delay={1000} className="flex min-w-0 shrink">
         <button onClick={handleOpen} className="block w-full min-w-0 text-left truncate">
           {(isActive ? agentConfig?.name : undefined) ?? file.agentName ?? file.fileName}
           {folderHint && (
@@ -1253,6 +1262,21 @@ const AgentFileRow = memo(function AgentFileRow({
           )}
         </button>
       </Tooltip>
+
+      {/* Inner loops mid-turn, written as an exponent on the name. Main is
+          the status dot, never this count, and nothing renders at zero. The
+          count sits outside the name's tooltip anchor so it can carry its own. */}
+      {activeLoops > 0 && (
+        <Tooltip
+          tip={`${activeLoops} inner ${activeLoops === 1 ? 'loop' : 'loops'} working`}
+          className="flex shrink-0 self-start -ml-1 pt-px"
+        >
+          <span className="text-[8px] leading-none font-semibold text-yellow-400 tabular-nums">
+            {activeLoops}
+          </span>
+        </Tooltip>
+      )}
+      <span className="flex-1" />
 
       {/* A sibling of the name, never a child of it: nesting one tooltip
           anchor inside another leaves the outer one open while the inner

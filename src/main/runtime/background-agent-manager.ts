@@ -91,6 +91,13 @@ export function toDisplayState(executorState: string): AgentState {
   }
 }
 
+/** How many inner loops are mid-turn. The sidebar's count badge reads this. */
+export function countActiveLoops(loopStates: Map<string, AgentState>): number {
+  let count = 0
+  for (const state of loopStates.values()) if (state === 'active') count++
+  return count
+}
+
 export interface BackgroundManagedAgent {
   assembledAgent: AssembledAgent<AgentProfileName>
   hostAttachment: HostAttachment | null
@@ -101,6 +108,14 @@ export interface BackgroundManagedAgent {
   triggerEvaluator: TriggerEvaluator
   config: AgentConfig
   state: AgentState
+  /**
+   * Display state of each SIDE loop, keyed by loop name — main is never in
+   * here (`state` is main's). Only the derived count of `active` entries
+   * leaves the manager, as `activeLoops`.
+   */
+  loopStates: Map<string, AgentState>
+  /** Last `activeLoops` count broadcast, so an unchanged count stays quiet. */
+  activeLoops: number
   toolRegistry: ToolRegistry
   accumulatedText: string
   mcpManager: McpClientManager | null
@@ -968,7 +983,8 @@ export class BackgroundAgentManager extends EventEmitter {
       statuses.push({
         filePath,
         handle: managed.config.handle || deriveHandle(filePath),
-        state: managed.state
+        state: managed.state,
+        activeLoops: countActiveLoops(managed.loopStates)
       })
     }
     return statuses
@@ -998,6 +1014,8 @@ export class BackgroundAgentManager extends EventEmitter {
       triggerEvaluator: assembledAgent.triggerEvaluator,
       config,
       state: toDisplayState(assembledAgent.executor.getState()),
+      loopStates: new Map(),
+      activeLoops: 0,
       toolRegistry: assembledAgent.registry,
       accumulatedText: '',
       mcpManager: assembledAgent.mcpManager,
@@ -1034,7 +1052,10 @@ export class BackgroundAgentManager extends EventEmitter {
         if (!this.agents.has(filePath)) return
         // Side-loop events never move the agent's display state or its
         // accumulated text: `AgentState` is MAIN's (§6.3), and a backgrounded
-        // agent has no loop tabs to route them to.
+        // agent has no loop tabs to route them to. Their states are tracked
+        // apart, in `loopStates`, so the sidebar can still say how many inner
+        // loops are mid-turn without main's dot ever lying.
+        this.recordLoopState(managed, filePath, event)
         if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
         if (event.type === 'state_changed') {
           managed.state = toDisplayState((event.payload as { state: string }).state)
@@ -1818,6 +1839,8 @@ export class BackgroundAgentManager extends EventEmitter {
       triggerEvaluator: assembledAgent.triggerEvaluator,
       config,
       state: 'idle',
+      loopStates: new Map(),
+      activeLoops: 0,
       toolRegistry: assembledAgent.registry,
       accumulatedText: '',
       mcpManager: assembledAgent.mcpManager,
@@ -1918,7 +1941,9 @@ export class BackgroundAgentManager extends EventEmitter {
       },
       onEvent: (event) => {
         if (!this.agents.has(filePath)) return
-        // See the adopt path above: side-loop events are MAIN-state-inert.
+        // See the adopt path above: side-loop events are MAIN-state-inert, and
+        // their states are tracked apart for the inner-loop count.
+        this.recordLoopState(managed, filePath, event)
         if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
         if (event.type === 'state_changed') {
           const payload = event.payload as { state: string }
@@ -1995,6 +2020,38 @@ export class BackgroundAgentManager extends EventEmitter {
       throw error
     }
     return managed
+  }
+
+  /**
+   * Fold a SIDE loop's `state_changed` into `loopStates` and broadcast the new
+   * inner-loop count when it moved; main's own `state_changed` only matters
+   * here when it goes off, which empties the map. Every other event passes
+   * through untouched — the caller still runs its own main-loop handling.
+   */
+  private recordLoopState(
+    managed: BackgroundManagedAgent,
+    filePath: string,
+    event: { type: string; payload: unknown; loop?: string }
+  ): void {
+    if (event.type !== 'state_changed') return
+    const loop = event.loop ?? MAIN_LOOP
+    const state = toDisplayState((event.payload as { state: string }).state)
+    if (loop === MAIN_LOOP) {
+      // Main going off takes its inner loops with it — they stop with the
+      // executor pool and will never report their own way back to idle.
+      if (state !== 'off' || managed.loopStates.size === 0) return
+      managed.loopStates.clear()
+    } else {
+      managed.loopStates.set(loop, state)
+    }
+    const activeLoops = countActiveLoops(managed.loopStates)
+    if (activeLoops === managed.activeLoops) return
+    managed.activeLoops = activeLoops
+    this.emitEvent({
+      type: 'agent_loops_changed',
+      payload: { filePath, activeLoops },
+      timestamp: Date.now()
+    })
   }
 
   private flushAccumulatedText(managed: BackgroundManagedAgent): void {
