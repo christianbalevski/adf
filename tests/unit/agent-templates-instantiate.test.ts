@@ -86,7 +86,7 @@ const providers: ProviderConfig[] = [
 describe('instantiateTemplateFile', () => {
   const dirs: string[] = []
   afterEach(() => {
-    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
   })
 
   function workdir(): string {
@@ -260,7 +260,7 @@ describe('AgentTemplatesService', () => {
   const previousUserData = process.env.ADF_USER_DATA_DIR
 
   afterEach(() => {
-    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
     if (previousUserData === undefined) delete process.env.ADF_USER_DATA_DIR
     else process.env.ADF_USER_DATA_DIR = previousUserData
   })
