@@ -1283,7 +1283,9 @@ const AgentFileRow = memo(function AgentFileRow({
           tip={`${activeLoops} inner ${activeLoops === 1 ? 'loop' : 'loops'} working`}
           className="flex shrink-0 self-start -ml-1 pt-px"
         >
-          <span className="text-[8px] leading-none font-semibold text-yellow-400 tabular-nums">
+          {/* yellow-400 is the status dot's colour but ~1.5:1 as text on a
+              light surface, so light mode takes the darker end of the hue. */}
+          <span className="text-[9px] leading-none font-bold text-amber-600 dark:text-yellow-400 tabular-nums">
             {activeLoops}
           </span>
         </Tooltip>
