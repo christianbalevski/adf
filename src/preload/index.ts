@@ -273,7 +273,7 @@ const api: AdfApi = {
     mode: 'once_at' | 'once_delay' | 'interval' | 'cron'
     at?: number; delay_ms?: number; every_ms?: number
     start_at?: number; end_at?: number; max_runs?: number
-    cron?: string; scope: string[]; lambda?: string; warm?: boolean; payload?: string
+    cron?: string; scope: string[]; lambda?: string; warm?: boolean; payload?: string; locked?: boolean
   }) => ipcRenderer.invoke(IPC.DOC_UPDATE_TIMER, args),
   deleteTimer: (id: number) =>
     ipcRenderer.invoke(IPC.DOC_DELETE_TIMER, { id }),

@@ -6,7 +6,7 @@ import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecu
 } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
-import type { ChatHistory, Inbox } from '../shared/types/adf.types'
+import type { ChatHistory, ChatHistoryEntry, Inbox, RendererOutboxMessage } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
 import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
@@ -57,6 +57,7 @@ export interface AdfApi {
   clearChat: (loop?: string) => Promise<{ success: boolean }>
   getInbox: () => Promise<{ inbox: Inbox | null }>
   clearInbox: () => Promise<{ success: boolean }>
+  getOutbox: () => Promise<{ outbox: { messages: RendererOutboxMessage[] } | null }>
   getBatch: () => Promise<{
     document: string
     agentConfig: AgentConfig | null
@@ -87,7 +88,7 @@ export interface AdfApi {
   /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
   compactLoop: () => Promise<{ success: boolean; error?: string }>
   getAgentStatus: () => Promise<AgentStatusResult>
-  respondToolApproval: (requestId: string, approved: boolean) => Promise<{ success: boolean }>
+  respondToolApproval: (requestId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean }>
   alwaysApproveTool: (requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>
   /** Approve all pending gated (restricted) tool approvals at once; protection overrides are excluded server-side. */
   approveAllGatedTools: () => Promise<{ success: boolean; approved?: number; skippedProtection?: number; error?: string }>
@@ -225,6 +226,11 @@ export interface AdfApi {
     | { ok: true; mime: string; size: number; binary: boolean; content: string }
     | { ok: false; error: string }
   >
+  /** Probe a remote agent's health endpoint (main-side; mesh server sends no CORS) */
+  getPeerAgentHealth: (healthUrl: string) => Promise<
+    | { ok: true; status?: string; state?: string }
+    | { ok: false; error: string }
+  >
   /** Inspect LAN-reachability preconditions: server binding + inbound firewall rule (read-only). */
   checkLanFirewall: () => Promise<{
     platform: string
@@ -253,7 +259,7 @@ export interface AdfApi {
   /** Batched — the main process coalesces ~50ms of background agent events per send. */
   onBackgroundAgentEvents: (callback: (events: RendererBackgroundAgentEvent[]) => void) => () => void
   respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) => Promise<{ success: boolean; error?: string }>
-  respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean) => Promise<{ success: boolean; error?: string }>
+  respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>
   alwaysApproveBackgroundAgentTool: (filePath: string, requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>
 
   // Directory bulk operations
@@ -324,6 +330,7 @@ export interface AdfApi {
     lambda?: string
     warm?: boolean
     payload?: string
+    locked?: boolean
   }) => Promise<{ success: boolean; error?: string }>
   deleteTimer: (id: number) => Promise<{ success: boolean }>
 

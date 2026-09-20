@@ -224,6 +224,14 @@ export interface AppSettings {
   /** Electron zoom factor for the whole window (1 = 100%). */
   uiScale?: number
   globalSystemPrompt?: string
+  /** Override for the loop-compaction prompt. Absent = DEFAULT_COMPACTION_PROMPT. */
+  compactionPrompt?: string
+  /** Per-tool and dynamic prompt overrides, keyed by prompt id. Absent = code defaults. */
+  toolPrompts?: Record<string, string>
+  /** OS notifications for agent events. Absent = enabled. */
+  nativeNotificationsEnabled?: boolean
+  /** npm packages installed into the code-execution sandbox at runtime level. */
+  sandboxPackages?: Array<{ name: string; version: string }>
   trackedDirectories?: string[]
   /** Destination folder for accepted/claimed agents. Empty = built-in default (Documents/adf-agents). */
   agentsFolder?: string

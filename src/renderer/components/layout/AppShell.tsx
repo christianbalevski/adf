@@ -132,9 +132,9 @@ export function AppShell() {
   }, [filePath, applyInboxData])
 
   const fetchOutbox = useCallback(() => {
-    window.adfApi?.getOutbox?.().then((result: { outbox?: { messages?: unknown[] } } | undefined) => {
+    window.adfApi?.getOutbox?.().then((result) => {
       if (result?.outbox?.messages) {
-        setOutboxMessages(result.outbox.messages as import('../../../shared/types/adf.types').RendererOutboxMessage[])
+        setOutboxMessages(result.outbox.messages)
       }
     })
   }, [setOutboxMessages])
