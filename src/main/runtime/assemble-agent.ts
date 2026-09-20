@@ -619,6 +619,10 @@ export function assembleAgent<P extends AgentProfileName>(
             key: SKILLS_REGISTRY_INJECT_KEY,
             content: text,
             delivery: 'next_boundary',
+            // Row already persisted — hand its seq over so the entry the chat
+            // panel appends live matches the rehydrated row (pagination cursor
+            // only; nothing renders it).
+            seq,
           },
           timestamp: Date.now(),
         })

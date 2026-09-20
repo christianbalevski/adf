@@ -90,8 +90,14 @@ export class AgentSession {
    *  (DB busy/closed) fall back to buffering so flushToLoop retries later —
    *  a write error must never crash the turn or lose the entry silently.
    *  On success the insert's seq is stamped onto the live message (backref)
-   *  so provider conversion can inject its [S<seq>] marker. */
-  private persistLoopEntry(entry: { role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt: number; backref?: LLMMessage }): void {
+   *  so provider conversion can inject its [S<seq>] marker.
+   *
+   *  Returns the inserted row's seq, or `undefined` when the insert failed and
+   *  the entry was buffered for retry (the seq only exists after a successful
+   *  INSERT). Callers use it to stamp the live event that renders the same row,
+   *  so the chat panel's entries carry the same `seq` live as they do after a
+   *  reload through `parseLoopToDisplay`. */
+  private persistLoopEntry(entry: { role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt: number; backref?: LLMMessage }): number | undefined {
     // If earlier entries are already queued behind a failed insert, queue this
     // one too — writing it now would leapfrog the failed entry in seq order,
     // and a retried row landing at the tail puts tool_result before its
@@ -99,14 +105,16 @@ export class AgentSession {
     // successful flush drains everything in original order.
     if (this.pendingLoopWrites.length > 0) {
       this.pendingLoopWrites.push(entry)
-      return
+      return undefined
     }
     try {
       const seq = this.workspace.appendToLoop(entry.role, entry.content, entry.model, entry.tokens, entry.createdAt)
       if (entry.backref) entry.backref.seq = seq
+      return seq
     } catch (error) {
       console.error('[AgentSession] Immediate loop write failed — buffering for retry:', error)
       this.pendingLoopWrites.push(entry)
+      return undefined
     }
   }
 
@@ -182,10 +190,13 @@ export class AgentSession {
    *  through the request itself (system prompt via the `system` param, dynamic
    *  instructions as a per-call trailing user message), so including it in
    *  `messages` would send it twice — a ~30k+ token duplication per request
-   *  when large files are injected into the system prompt. */
-  appendContextEntry(category: string, content: string): void {
+   *  when large files are injected into the system prompt.
+   *
+   *  Returns the persisted row's seq (undefined if the insert was buffered for
+   *  retry) so the caller can stamp the matching `context_injected` event. */
+  appendContextEntry(category: string, content: string): number | undefined {
     const block: ContentBlock = { type: 'text', text: `[Context: ${category}] ${content}` }
-    this.persistLoopEntry({
+    return this.persistLoopEntry({
       role: 'user',
       content: [block],
       createdAt: Date.now()

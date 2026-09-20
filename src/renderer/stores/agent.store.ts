@@ -156,6 +156,19 @@ interface AgentStoreState extends LoopSlice {
   updateLastEntry: (mutator: (entry: AgentLogEntry) => void, loop?: string) => void
   /** Mutate a log entry at a specific index and bump logVersion. */
   updateEntryAt: (index: number, mutator: (entry: AgentLogEntry) => void, loop?: string) => void
+  /**
+   * Stamp `metadata.seq` (the adf_loop row a live-appended entry ended up in)
+   * on entries that do not have one yet.
+   *
+   * Deliberately invisible: no renderer reads `seq`, so this mutates the
+   * existing entry objects in place and bumps NEITHER version. Going through
+   * `updateEntryAt` would rewrite `metadata`, which `isContentOnlyDelta`
+   * (correctly) treats as structural — every streamed block would then force a
+   * whole-log regroup (tool pairing, activity grouping, the result filter) for
+   * a pagination cursor nothing draws. `handleLoadOlder` reads the store
+   * imperatively via getState(), so it sees the stamp without a re-render.
+   */
+  stampSeq: (indexes: number[], seq: number, loop?: string) => void
   setLog: (log: AgentLogEntry[], earlierCount?: number, loop?: string) => void
   /** Prepend older loop entries loaded via keyset pagination. */
   prependLog: (entries: AgentLogEntry[], earlierCount: number, loop?: string) => void
@@ -248,11 +261,11 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     setState: (state, loop) => patchSlice(loop, () => ({ state })),
     setStarting: (starting) => set({ starting }),
     setSessionId: (sessionId) => set({ sessionId }),
-    // NOT capped with a head-drop. "Load earlier" pages by the `seq` of the
-    // oldest LOADED entry, and live-streamed entries carry no seq (only rows
-    // rehydrated from adf_loop do) — so once a long session's hydrated head
-    // was dropped, nothing in the window could name a cursor and the dropped
-    // entries would be unreachable rather than paginated.
+    // NOT capped with a head-drop. That is a separate decision — but the
+    // blocker is gone: "Load earlier" pages by the `seq` of the oldest LOADED
+    // entry, and live-streamed entries now carry one too (see `stampSeq` and
+    // hooks/live-seq.ts), so a dropped head would stay reachable instead of
+    // leaving the window with no cursor to name.
     addLogEntry: (entry, loop) => patchSlice(loop, (s) => ({
       log: [...s.log, entry],
       logVersion: s.logVersion + 1,
@@ -279,6 +292,15 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
         ? { logVersion: s.logVersion + 1 }
         : { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
     }),
+    stampSeq: (indexes, seq, loop) => {
+      if (indexes.length === 0) return
+      const slice = selectLoopSlice(get(), loop)
+      for (const index of indexes) {
+        const entry = slice.log[index]
+        if (!entry || typeof entry.metadata?.seq === 'number') continue
+        entry.metadata = { ...entry.metadata, seq }
+      }
+    },
     setLog: (log, earlierCount, loop) => patchSlice(loop, (s) => ({
       log,
       logVersion: s.logVersion + 1,

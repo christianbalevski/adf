@@ -4,6 +4,7 @@ import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type Pen
 import { useDocumentStore } from '../../stores/document.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
+import { pickOldestSeq } from '../../hooks/live-seq'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer } from '../../utils/markdown'
@@ -1771,14 +1772,11 @@ function LoopStream({ loop }: { loop: string }) {
   const [loadingOlder, setLoadingOlder] = useState(false)
   const handleLoadOlder = useCallback(async () => {
     if (loadingOlder) return
-    // Oldest loaded loop row — display entries carry their source seq in metadata.
-    // Live-streamed entries have no seq, so scan forward for the first that does.
+    // Oldest loaded loop row — display entries carry their source seq in
+    // metadata, live-appended ones included (see hooks/live-seq.ts), so a
+    // window made entirely of live entries still names a cursor.
     const s = selectLoopSlice(useAgentStore.getState(), loop)
-    let oldestSeq: number | undefined
-    for (const entry of s.log) {
-      const seq = entry.metadata?.seq
-      if (typeof seq === 'number') { oldestSeq = seq; break }
-    }
+    const oldestSeq = pickOldestSeq(s.log)
     if (oldestSeq === undefined) return
     setLoadingOlder(true)
     try {

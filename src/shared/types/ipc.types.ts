@@ -29,6 +29,7 @@ export interface AgentExecutionEvent {
     | 'file_updated'
     | 'context_injected'
     | 'response_metadata'
+    | 'loop_seq'
   payload: unknown
   timestamp: number
   /**
@@ -40,6 +41,38 @@ export interface AgentExecutionEvent {
    * never truncate main's view (IMPL-5 / RT-F17).
    */
   loop?: string
+}
+
+/**
+ * Late `adf_loop` seq assignment for entries the renderer ALREADY appended.
+ *
+ * Most entries can be stamped on the event that finalizes them, because the row
+ * is written through to SQLite before the event is emitted (see
+ * `AgentSession.addMessage`). Tool results are the exception: they are shown one
+ * by one as each tool returns, but the whole batch lands in ONE user row that is
+ * only written after the last tool in the batch. This event closes that gap —
+ * it carries no content and changes nothing on screen.
+ */
+export interface LoopSeqPayload {
+  /** `adf_loop.seq` of the row that now holds those entries. */
+  seq: number
+  /** The `tool_use_id`s whose `tool_result` entries belong to that row. */
+  toolUseIds: string[]
+}
+
+/**
+ * The normalized write targets of a tool call, carried on `tool_call_result` so
+ * the renderer can tell whether the write touched the document it is showing
+ * instead of re-reading the document after every single write.
+ *
+ * ABSENT means "not determinable" (unknown tool shape, shell redirection,
+ * sys_code / sys_lambda writes) — the renderer must then refresh as before.
+ * Paths ONLY: the write's `content` must never cross IPC again.
+ */
+export interface ToolCallResultTargets {
+  targetPaths?: string[]
+  /** Normalized path of the agent's document, for the comparison. */
+  documentPath?: string
 }
 
 export interface FileOperationResult {

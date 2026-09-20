@@ -4,8 +4,9 @@ import type { ToolRegistry } from '../tools/tool-registry'
 import { stripInternalToolFlags } from '../tools/tool-registry'
 import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
-import type { ContentBlock } from '../../shared/types/provider.types'
-import type { AgentExecutionEvent, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts } from '../../shared/types/ipc.types'
+import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
+import type { AgentExecutionEvent, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts, ToolCallResultTargets } from '../../shared/types/ipc.types'
+import { deriveToolTargetPaths } from '../../shared/utils/document-target'
 import type { ToolProviderFormat, ToolResult, ProtectionDenial } from '../../shared/types/tool.types'
 import type { SystemScopeHandler } from './system-scope-handler'
 import {
@@ -1843,6 +1844,10 @@ export class AgentExecutor extends EventEmitter {
       // a wake whose pre-appended row the session ALREADY holds (review M6).
       const skipTriggerMessage = opts?.skipTriggerMessage === true
         || this.preAppendedRowAlreadyInSession(dispatch)
+      // adf_loop seq of the row this trigger was persisted as. Carried on the
+      // trigger_message event so the entry the chat panel appends live wears
+      // the same `metadata.seq` the reloaded row does.
+      let triggerRowSeq: number | undefined
       if (!skipTriggerMessage) {
         // Owner messages were already appended to the loop at delivery time
         // (deliverOwnerMessage) so they're visible immediately — inline them
@@ -1850,8 +1855,9 @@ export class AgentExecutor extends EventEmitter {
         // The delivery-time row's seq rides the dispatch (loop_seq) so the
         // inlined message still gets its [S<seq>] marker.
         const preAppended = isPreAppendedDispatch(dispatch)
+        const triggerMsg: LLMMessage = { role: 'user', content: triggerContent }
         this.session.addMessage(
-          { role: 'user', content: triggerContent },
+          triggerMsg,
           undefined,
           { skipLoop: preAppended, seq: preAppendedLoopSeq(dispatch) }
         )
@@ -1859,21 +1865,29 @@ export class AgentExecutor extends EventEmitter {
         // it is on disk the moment the turn starts. This retry-flush only
         // re-attempts the insert if it failed (DB busy).
         this.session.flushToLoop()
+        // Read AFTER the retry-flush: a first insert that failed gets its seq
+        // stamped onto the same message object when the flush succeeds.
+        triggerRowSeq = triggerMsg.seq
       }
       // Provider-recovery retry: tell the model what failed and how long has
       // passed, mirroring the crash-recovery checkpoint notice. Added here —
       // after the re-entrant rehydrate — so an idle-swept session can't lose
       // the history the notice rides on.
       if (opts?.recoveryNotice) {
-        this.session.addMessage({
+        const noticeMsg: LLMMessage = {
           role: 'user',
           content: [{ type: 'text', text: opts.recoveryNotice }]
-        })
+        }
+        this.session.addMessage(noticeMsg)
         // The chat panel renders live from events, not the loop — without this
         // the notice only appears after a transcript reload.
         this.emitEvent({
           type: 'context_injected',
-          payload: { category: 'System', content: opts.recoveryNotice },
+          payload: {
+            category: 'System',
+            content: opts.recoveryNotice,
+            ...(noticeMsg.seq !== undefined ? { seq: noticeMsg.seq } : {})
+          },
           timestamp: Date.now()
         })
       }
@@ -1885,7 +1899,11 @@ export class AgentExecutor extends EventEmitter {
       } else if (eventType !== 'chat' || !isEchoedChat(dispatch)) {
         this.emitEvent({
           type: 'trigger_message',
-          payload: { content: triggerMessage, triggerType: eventType ?? 'unknown' },
+          payload: {
+            content: triggerMessage,
+            triggerType: eventType ?? 'unknown',
+            ...(triggerRowSeq !== undefined ? { seq: triggerRowSeq } : {})
+          },
           timestamp: Date.now()
         })
       }
@@ -1996,19 +2014,27 @@ export class AgentExecutor extends EventEmitter {
           ? `${this.systemPromptCache.injectedFilesHash}|${this.systemPromptCache.configHash}`
           : this.hashString(systemPrompt)
         if (currentSPHash !== this.lastSystemPromptHash) {
-          this.session.appendContextEntry('system_prompt', systemPrompt)
+          const spSeq = this.session.appendContextEntry('system_prompt', systemPrompt)
           this.emitEvent({
             type: 'context_injected',
-            payload: { category: 'system_prompt', content: systemPrompt },
+            payload: {
+              category: 'system_prompt',
+              content: systemPrompt,
+              ...(spSeq !== undefined ? { seq: spSeq } : {})
+            },
             timestamp: Date.now()
           })
           this.lastSystemPromptHash = currentSPHash
         }
         if (dynamicInstructions && dynamicInstructions !== this.lastDynamicInstructions) {
-          this.session.appendContextEntry('dynamic_instructions', dynamicInstructions)
+          const diSeq = this.session.appendContextEntry('dynamic_instructions', dynamicInstructions)
           this.emitEvent({
             type: 'context_injected',
-            payload: { category: 'dynamic_instructions', content: dynamicInstructions },
+            payload: {
+              category: 'dynamic_instructions',
+              content: dynamicInstructions,
+              ...(diSeq !== undefined ? { seq: diSeq } : {})
+            },
             timestamp: Date.now()
           })
           this.lastDynamicInstructions = dynamicInstructions
@@ -2241,10 +2267,15 @@ export class AgentExecutor extends EventEmitter {
           consecutiveTextOnly = 0
           this.setState('tool_use')
 
+          // One assistant ROW, several display entries (parseLoopToDisplay
+          // splits its content blocks): every thinking/text/tool_call entry
+          // this row produces shares this seq, live exactly as on reload.
+          const assistantMsg: LLMMessage = { role: 'assistant', content: response.content }
           this.session.addMessage(
-            { role: 'assistant', content: response.content },
+            assistantMsg,
             { model: llmMetadata.model, tokens: loopTokensFromLlmMetadata(llmMetadata) }
           )
+          const assistantSeq = assistantMsg.seq
 
           const toolResults: ContentBlock[] = []
           let needsLoopReset = false
@@ -2255,7 +2286,12 @@ export class AgentExecutor extends EventEmitter {
 
             this.emitEvent({
               type: 'tool_call_start',
-              payload: { name: toolBlock.name, input: toolBlock.input, id: toolBlock.id },
+              payload: {
+                name: toolBlock.name,
+                input: toolBlock.input,
+                id: toolBlock.id,
+                ...(assistantSeq !== undefined ? { seq: assistantSeq } : {})
+              },
               timestamp: Date.now()
             })
 
@@ -2700,7 +2736,8 @@ export class AgentExecutor extends EventEmitter {
                 name: toolBlock.name,
                 id: toolBlock.id,
                 result,
-                ...(eventImageUrl ? { imageUrl: eventImageUrl } : {})
+                ...(eventImageUrl ? { imageUrl: eventImageUrl } : {}),
+                ...this.documentTargets(toolBlock.name!, toolBlock.input)
               },
               timestamp: Date.now()
             })
@@ -2827,10 +2864,11 @@ export class AgentExecutor extends EventEmitter {
             }
           }
 
-          this.session.addMessage({
+          const toolResultsMsg: LLMMessage = {
             role: 'user',
             content: toolResults
-          })
+          }
+          this.session.addMessage(toolResultsMsg)
 
           // addMessage writes every entry through to the loop synchronously,
           // so the completed model step (assistant tool_use batch + results)
@@ -2839,6 +2877,11 @@ export class AgentExecutor extends EventEmitter {
           // forceCompact paths below wipe the table, so a retried row is
           // wiped with its peers instead of resurrected afterwards.
           this.session.flushToLoop()
+          // The tool_result entries were shown one at a time as each tool
+          // returned; they all live in the row that was just written. Hand the
+          // renderer that row's seq now (metadata only — nothing on screen
+          // changes) so a live transcript can still name a pagination cursor.
+          this.emitToolResultSeq(toolResultsMsg, toolResults)
 
           // Drop base64 media from older messages to prevent heap growth.
           // Media blocks are ephemeral (not persisted to DB) and only needed
@@ -2906,14 +2949,19 @@ export class AgentExecutor extends EventEmitter {
             this.flushDeltaBuffer()
             this.emitEvent({
               type: 'turn_complete',
-              payload: { content: response.content, ...(targetState ? { targetState } : {}) },
+              payload: {
+                content: response.content,
+                ...(targetState ? { targetState } : {}),
+                ...(assistantSeq !== undefined ? { seq: assistantSeq } : {})
+              },
               timestamp: Date.now()
             })
           }
         } else {
           // No tool use — raw text response
+          const textOnlyMsg: LLMMessage = { role: 'assistant', content: response.content }
           this.session.addMessage(
-            { role: 'assistant', content: response.content },
+            textOnlyMsg,
             { model: llmMetadata.model, tokens: loopTokensFromLlmMetadata(llmMetadata) }
           )
           // Write-through already persisted this step; retry-flush any failed
@@ -2926,7 +2974,13 @@ export class AgentExecutor extends EventEmitter {
           this.flushDeltaBuffer()
           this.emitEvent({
             type: 'turn_complete',
-            payload: { content: response.content },
+            payload: {
+              content: response.content,
+              // The row for the text/thinking blocks the renderer streamed into
+              // place BEFORE it existed. No tool call closed this row, so this
+              // is where those entries get their seq.
+              ...(textOnlyMsg.seq !== undefined ? { seq: textOnlyMsg.seq } : {})
+            },
             timestamp: Date.now()
           })
 
@@ -4549,7 +4603,9 @@ export class AgentExecutor extends EventEmitter {
         })
       }
     }
-    this.session.addMessage({ role: 'user', content: toolResults })
+    const msg: LLMMessage = { role: 'user', content: toolResults }
+    this.session.addMessage(msg)
+    this.emitToolResultSeq(msg, toolResults)
   }
 
   /**
@@ -4936,6 +4992,45 @@ export class AgentExecutor extends EventEmitter {
     } catch { /* observability must never break the loop */ }
   }
 
+  /**
+   * Hand the renderer the `adf_loop` seq of the row that now holds this batch's
+   * tool results. Pure metadata: nothing on screen changes, and nothing is
+   * emitted when the insert was buffered for retry (no seq exists yet) or when
+   * the batch produced no tool_result blocks.
+   */
+  private emitToolResultSeq(msg: LLMMessage, blocks: ContentBlock[]): void {
+    if (typeof msg.seq !== 'number') return
+    const toolUseIds = blocks
+      .filter((b): b is ContentBlock & { type: 'tool_result'; tool_use_id: string } =>
+        b.type === 'tool_result' && typeof b.tool_use_id === 'string')
+      .map((b) => b.tool_use_id)
+    if (toolUseIds.length === 0) return
+    this.emitEvent({
+      type: 'loop_seq',
+      payload: { seq: msg.seq, toolUseIds },
+      timestamp: Date.now()
+    })
+  }
+
+  /**
+   * Write targets for a `tool_call_result` payload, plus this agent's document
+   * path, so the chat panel can skip the document re-read for writes that did
+   * not touch it. Returns `{}` when the target is not determinable — the
+   * renderer then refreshes exactly as it always did. Paths only: the write's
+   * `content` must never ride across IPC.
+   */
+  private documentTargets(name: string, input: unknown): ToolCallResultTargets {
+    const targetPaths = deriveToolTargetPaths(name, input)
+    if (!targetPaths) return {}
+    try {
+      return { targetPaths, documentPath: this.session.getWorkspace().getDocumentPath() }
+    } catch {
+      // Workspace gone mid-turn — "target known, document unknown" already
+      // means "refresh anyway" on the renderer side.
+      return { targetPaths }
+    }
+  }
+
   /** Umbilical emission from executor state transitions — never fatal. */
   private emitRuntimeEvent(eventType: string, payload: Record<string, unknown>): void {
     try {
@@ -5006,6 +5101,9 @@ export class AgentExecutor extends EventEmitter {
         //    (this executor type is UI-only and emitted from ipc/index.ts, not here).
         //  - trigger_message: the turn it initiates is observable via
         //    turn.completed; message-driven triggers are covered by message.received.
+        //  - loop_seq: a renderer bookkeeping stamp (which adf_loop row already
+        //    holds entries the chat panel showed before the row existed). It
+        //    carries no content and no state transition.
         //  - chat_updated, autosaved, response_metadata: UI-only. Model-call
         //    metadata is already carried by llm.completed. text/thinking delta
         //    batches are opt-in via turn.delta.
@@ -5033,7 +5131,7 @@ export class AgentExecutor extends EventEmitter {
     const snap = this.injectedFileSnapshots
     const ws = this.session.getWorkspace()
     const referenced = collectInjectedFiles(sources, (p) => ws.readFile(p), snap)
-    const hash = this.hashString(referenced.map(p => `${p}${snap.get(p)}`).join(''))
+    const hash = this.hashString(referenced.map(p => `${p}\x02${snap.get(p)}`).join('\x01'))
     return { hash, referenced }
   }
 
