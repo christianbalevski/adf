@@ -62,6 +62,13 @@ export interface LoopSlice {
    *  for scroll-to-bottom or virtualiser re-measure). Avoids creating a new array
    *  reference on every streaming delta. */
   logVersion: number
+  /** Bumped only when the SHAPE of the log changes — an entry appended, the
+   *  window replaced/prepended/cleared, or any field a grouping pass reads
+   *  (type, metadata, pairing) rewritten. A streaming content delta bumps
+   *  `logVersion` alone, so consumers that rebuild per-entry indexes (filter,
+   *  tool pairing, activity grouping) can key on this and stay untouched by the
+   *  ~20 deltas/s a live answer produces. */
+  structuralVersion: number
   /** Loop rows in the DB older than the loaded window (0 = fully loaded). */
   earlierCount: number
   /** Maps logEntryId -> pending approval info for tool calls awaiting HIL approval */
@@ -91,6 +98,7 @@ function emptySlice(): LoopSlice {
     state: 'idle',
     log: [],
     logVersion: 0,
+    structuralVersion: 0,
     earlierCount: 0,
     pendingApprovals: new Map(),
     pendingAsks: new Map(),
@@ -104,6 +112,20 @@ function emptySlice(): LoopSlice {
 /** Stable reference for "a side loop that has never emitted anything" so
  *  selectors don't churn referentially on every render. */
 const EMPTY_SLICE: LoopSlice = emptySlice()
+
+/**
+ * True when a mutation only appended streamed prose to a text/thinking entry.
+ * Anything else — a rewritten `metadata` object, a changed type — can move the
+ * row between activity groups or re-pair a tool call, so it is structural.
+ * Deliberately conservative: unknown shapes fall through to "structural".
+ */
+function isContentOnlyDelta(before: AgentLogEntry, after: AgentLogEntry): boolean {
+  return (after.type === 'text' || after.type === 'thinking')
+    && before.type === after.type
+    && before.id === after.id
+    && before.timestamp === after.timestamp
+    && before.metadata === after.metadata
+}
 
 /** `undefined`/`'main'` both mean the host loop. */
 function isMainLoop(loop?: string): boolean {
@@ -210,6 +232,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     sessionId: null,
     log: [],
     logVersion: 0,
+    structuralVersion: 0,
     earlierCount: 0,
     sideLoops: {},
     config: null,
@@ -225,9 +248,15 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     setState: (state, loop) => patchSlice(loop, () => ({ state })),
     setStarting: (starting) => set({ starting }),
     setSessionId: (sessionId) => set({ sessionId }),
+    // NOT capped with a head-drop. "Load earlier" pages by the `seq` of the
+    // oldest LOADED entry, and live-streamed entries carry no seq (only rows
+    // rehydrated from adf_loop do) — so once a long session's hydrated head
+    // was dropped, nothing in the window could name a cursor and the dropped
+    // entries would be unreachable rather than paginated.
     addLogEntry: (entry, loop) => patchSlice(loop, (s) => ({
       log: [...s.log, entry],
-      logVersion: s.logVersion + 1
+      logVersion: s.logVersion + 1,
+      structuralVersion: s.structuralVersion + 1
     })),
     updateLastEntry: (mutator, loop) => patchSlice(loop, (s) => {
       const last = s.log[s.log.length - 1]
@@ -236,7 +265,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       const updated = { ...last }
       mutator(updated)
       s.log[s.log.length - 1] = updated
-      return { logVersion: s.logVersion + 1 }
+      return isContentOnlyDelta(last, updated)
+        ? { logVersion: s.logVersion + 1 }
+        : { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
     }),
     updateEntryAt: (index, mutator, loop) => patchSlice(loop, (s) => {
       const entry = s.log[index]
@@ -244,20 +275,29 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       const updated = { ...entry }
       mutator(updated)
       s.log[index] = updated
-      return { logVersion: s.logVersion + 1 }
+      return isContentOnlyDelta(entry, updated)
+        ? { logVersion: s.logVersion + 1 }
+        : { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
     }),
     setLog: (log, earlierCount, loop) => patchSlice(loop, (s) => ({
       log,
       logVersion: s.logVersion + 1,
+      structuralVersion: s.structuralVersion + 1,
       ...(earlierCount !== undefined ? { earlierCount } : {})
     })),
     prependLog: (entries, earlierCount, loop) => patchSlice(loop, (s) => ({
       log: [...entries, ...s.log],
       logVersion: s.logVersion + 1,
+      structuralVersion: s.structuralVersion + 1,
       earlierCount
     })),
     setEarlierCount: (earlierCount, loop) => patchSlice(loop, () => ({ earlierCount })),
-    clearLog: (loop) => patchSlice(loop, (s) => ({ log: [], logVersion: s.logVersion + 1, earlierCount: 0 })),
+    clearLog: (loop) => patchSlice(loop, (s) => ({
+      log: [],
+      logVersion: s.logVersion + 1,
+      structuralVersion: s.structuralVersion + 1,
+      earlierCount: 0
+    })),
     dropLoop: (loop) => {
       if (isMainLoop(loop)) return
       const s = get()
@@ -289,7 +329,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
         ...entry,
         metadata: { ...entry.metadata, overrideOutcome: approved ? 'approved' : 'denied' }
       }
-      return { logVersion: s.logVersion + 1 }
+      // A new entry object — the grouping passes must hand the row out again.
+      return { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
     }),
     addPendingAsk: (logEntryId, requestId, question, loop) => patchSlice(loop, (s) => {
       const next = new Map(s.pendingAsks)
