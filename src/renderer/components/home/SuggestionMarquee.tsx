@@ -51,9 +51,11 @@ function MarqueeRow({ chips, speed, onPick, disabled }: {
     const track = trackRef.current
     const group = groupRef.current
     if (!track || !group) return
-    const width = () => group.getBoundingClientRect().width
+    // One copy's width, cached: a getBoundingClientRect per frame forces a
+    // layout flush on every row, every frame. A ResizeObserver re-measures it.
+    let groupWidth = group.getBoundingClientRect().width
     const apply = () => {
-      const w = width()
+      const w = groupWidth
       if (w <= 0) return
       if (pos.current === null) pos.current = -Math.random() * w
       // Wrap into (-w, 0]: the second copy makes any such offset look whole.
@@ -72,10 +74,42 @@ function MarqueeRow({ chips, speed, onPick, disabled }: {
       apply()
       frame = requestAnimationFrame(tick)
     }
-    apply()
-    frame = requestAnimationFrame(tick)
+    const start = () => {
+      if (frame) return
+      last = performance.now()
+      frame = requestAnimationFrame(tick)
+    }
+    const stop = () => {
+      if (!frame) return
+      cancelAnimationFrame(frame)
+      frame = 0
+    }
 
     const row = rowRef.current
+    // Drift only while the row is actually on screen and the window is shown.
+    let onScreen = true
+    const sync = () => {
+      if (onScreen && !document.hidden) start()
+      else stop()
+    }
+
+    const ro = new ResizeObserver(() => {
+      groupWidth = group.getBoundingClientRect().width
+      apply()
+    })
+    ro.observe(group)
+
+    let io: IntersectionObserver | null = null
+    if (row) {
+      io = new IntersectionObserver((entries) => {
+        onScreen = entries[entries.length - 1].isIntersecting
+        sync()
+      })
+      io.observe(row)
+    }
+
+    document.addEventListener('visibilitychange', sync)
+
     const onWheel = (e: WheelEvent) => {
       const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
       if (delta === 0) return
@@ -84,8 +118,14 @@ function MarqueeRow({ chips, speed, onPick, disabled }: {
       apply()
     }
     row?.addEventListener('wheel', onWheel, { passive: false })
+
+    apply()
+    sync()
     return () => {
-      cancelAnimationFrame(frame)
+      stop()
+      ro.disconnect()
+      io?.disconnect()
+      document.removeEventListener('visibilitychange', sync)
       row?.removeEventListener('wheel', onWheel)
     }
   }, [speed])

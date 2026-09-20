@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { Dialog } from '../common/Dialog'
@@ -396,10 +396,14 @@ export function AgentFiles() {
 
   const filterQuery = fileFilter.trim().toLowerCase()
   const filtering = filterQuery.length > 0
-  const visibleFiles = filtering
-    ? files.filter((f) => f.path.toLowerCase().includes(filterQuery))
-    : files
+  const visibleFiles = useMemo(
+    () => (filtering ? files.filter((f) => f.path.toLowerCase().includes(filterQuery)) : files),
+    [files, filtering, filterQuery]
+  )
   const onlySeededFiles = files.length > 0 && files.every((f) => SEEDED_FILES.has(f.path))
+  // Rebuilding the tree in the render body ran the whole walk on every
+  // keystroke in the filter box (and on every unrelated state change).
+  const tree = useMemo(() => buildFileTree(visibleFiles), [visibleFiles])
 
   return (
     <div
@@ -503,8 +507,6 @@ export function AgentFiles() {
           </div>
         )}
         {(() => {
-          const tree = buildFileTree(visibleFiles)
-
           const renderFileRow = (file: FileEntry, displayName: string, depth: number) => {
             return (
               <div

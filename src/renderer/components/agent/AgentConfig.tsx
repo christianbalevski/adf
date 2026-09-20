@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, createContext, useContext } f
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useEditorTabsStore } from '../../stores/editor-tabs.store'
+import { useEditorTabsStore, registerPreSwitchFlush } from '../../stores/editor-tabs.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, LOOP_PROHIBITED_TOOLS, DEFAULT_NEW_LOOP_TOOLS } from '../../../shared/types/adf-v02.types'
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig } from '../../../shared/types/adf-v02.types'
@@ -113,6 +113,9 @@ const INBOX_TOOLS = new Set(['msg_list', 'msg_read', 'msg_update'])
 
 /** All categorized tool names (anything not in here is uncategorized). */
 const ALL_GROUPED_TOOLS = new Set(TOOL_GROUPS.flatMap(g => [...g.tools]))
+
+/** Trailing window that coalesces a burst of edits into one setAgentConfig. */
+const SAVE_DEBOUNCE_MS = 300
 
 type TriState = 'all' | 'none' | 'mixed'
 
@@ -873,6 +876,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [executionTargets, setExecutionTargets] = useState<ExecutionTarget[]>([])
   const nameInputRef = useRef<HTMLInputElement>(null)
   const savingRef = useRef(false)
+  // Debounced config write — see `save` below.
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingSaveRef = useRef<{ config: AgentConfigType; owner: string | null } | null>(null)
 
   useEffect(() => {
     if (savingRef.current) {
@@ -1125,15 +1131,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
   const updateFileEntry = useTrackedDirsStore((s) => s.updateFileEntry)
 
-  const save = useCallback(
-    (updated: AgentConfigType) => {
-      savingRef.current = true
-      setLocal(updated)
-      if (templateRef.current) {
-        templateRef.current.onChange(updated)
-        return
-      }
-      setConfig(updated)
+  /** The actual write: SQLite + side-loop/MCP reconcile on the main side. */
+  const persistConfig = useCallback(
+    (updated: AgentConfigType, owner: string | null) => {
+      // The agent moved on between scheduling and delivery — writing now would
+      // put one agent's config into another agent's workspace.
+      if (owner !== useDocumentStore.getState().filePath) return
       // Never fire-and-forget: a refused save (no workspace open, or the
       // backend switched to a different agent file) would otherwise leave the
       // panel showing state that was never persisted — e.g. a tool displayed
@@ -1155,16 +1158,69 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
       // Sync sidebar-visible fields to tracked dirs store so they
       // persist when this file is no longer the foreground agent
-      if (filePath) {
-        updateFileEntry(filePath, {
+      if (owner) {
+        updateFileEntry(owner, {
           autonomous: updated.autonomous ?? false,
           canReceive: updated.triggers?.on_inbox?.enabled ?? false,
           sendMode: updated.messaging?.mode
         })
       }
     },
-    [setConfig, filePath, updateFileEntry]
+    [setConfig, updateFileEntry]
   )
+
+  /** Write any debounced edit through right now (blur, unmount, file switch). */
+  const flushSave = useCallback(() => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
+    const pending = pendingSaveRef.current
+    pendingSaveRef.current = null
+    if (pending) persistConfig(pending.config, pending.owner)
+  }, [persistConfig])
+  const flushSaveRef = useRef(flushSave)
+  flushSaveRef.current = flushSave
+
+  // setAgentConfig is the heaviest IPC handler in the app (SQLite write plus a
+  // side-loop and MCP reconcile). Every keystroke used to fire one. Local state
+  // and the renderer store still update synchronously, so the panel and the
+  // rest of the UI stay instantly responsive; only the write is coalesced.
+  const save = useCallback(
+    (updated: AgentConfigType) => {
+      savingRef.current = true
+      setLocal(updated)
+      if (templateRef.current) {
+        templateRef.current.onChange(updated)
+        return
+      }
+      setConfig(updated)
+      pendingSaveRef.current = { config: updated, owner: filePath }
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = setTimeout(() => {
+        saveTimerRef.current = null
+        const pending = pendingSaveRef.current
+        pendingSaveRef.current = null
+        if (pending) persistConfig(pending.config, pending.owner)
+      }, SAVE_DEBOUNCE_MS)
+    },
+    [setConfig, filePath, persistConfig]
+  )
+
+  // Nothing may outlive the panel or the open file with an unwritten edit.
+  // The cleanup runs before `filePath` takes its new value here, and the
+  // pending entry carries its own owner, so a late flush can never land in the
+  // wrong workspace.
+  useEffect(() => () => flushSaveRef.current(), [filePath])
+  useEffect(() => {
+    const flush = () => flushSaveRef.current()
+    window.addEventListener('beforeunload', flush)
+    const unregister = registerPreSwitchFlush(flush)
+    return () => {
+      window.removeEventListener('beforeunload', flush)
+      unregister()
+    }
+  }, [])
 
   /**
    * A section lock is one or more top-level config keys in `locked_fields` —
@@ -1277,7 +1333,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
   return (
     <TemplateModeContext.Provider value={!!template}>
-    <div className={template ? '' : 'h-full overflow-y-auto'}>
+    {/* Leaving any field writes the pending edit through immediately, so a
+        click that switches agent or starts one never races the debounce. */}
+    <div className={template ? '' : 'h-full overflow-y-auto'} onBlurCapture={flushSave}>
       <div className={template ? 'space-y-4' : 'p-3 space-y-4'}>
         {/* Identity */}
         <Section docs={DOCS.identity} title={template ? 'Startup' : 'Identity'}>

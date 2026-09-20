@@ -143,11 +143,11 @@ export function LogsPanel() {
     return [...set].sort()
   }, [logs])
 
-  const filtered = logs.filter((l) => {
+  const filtered = useMemo(() => logs.filter((l) => {
     if (levelFilter !== 'all' && l.level !== levelFilter) return false
     if (originFilter !== 'all' && (l.origin ?? '') !== originFilter) return false
     return true
-  })
+  }), [logs, levelFilter, originFilter])
 
   return (
     <div className="flex flex-col flex-1 min-h-0">

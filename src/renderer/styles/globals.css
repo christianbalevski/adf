@@ -266,20 +266,51 @@ body,
   border-color: #93c5fd;
 }
 
-/* Subtle pulse animation for mesh indicator */
+/* Subtle pulse animation for mesh indicator. The glow sits on a pseudo-element
+   that carries ONE pre-blurred shadow and breathes with transform/opacity —
+   animating the blur radius itself re-rasterized the shadow every frame. */
 @keyframes pulse-subtle {
   0%, 100% {
     opacity: 1;
-    box-shadow: 0 0 12px rgba(74, 222, 128, 0.7);
   }
   50% {
     opacity: 0.9;
-    box-shadow: 0 0 16px rgba(74, 222, 128, 0.9);
+  }
+}
+
+/* 12px/0.7 → 16px/0.9 glow, reproduced as a scale + opacity ramp on the
+   static 16px/0.9 shadow. */
+@keyframes pulse-subtle-glow {
+  0%, 100% {
+    opacity: 0.78;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
   }
 }
 
 .animate-pulse-subtle {
+  position: relative;
   animation: pulse-subtle 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-pulse-subtle::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 16px rgba(74, 222, 128, 0.9);
+  animation: pulse-subtle-glow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-subtle,
+  .animate-pulse-subtle::after {
+    animation: none;
+  }
 }
 
 /* Loading indicator used by the fleet map while it is being prepared. */
@@ -533,9 +564,11 @@ body,
    stacked text never competes; hover lifts them into focus. Text is
    unselectable: a left-drag starting on a chip is a marquee/pan gesture,
    not a copy — mid-gesture blue selection was pure noise. (pointer-events
-   stay ON: chips keep click/hover/wheel-forwarding behavior.) */
+   stay ON: chips keep click/hover/wheel-forwarding behavior.)
+   No backdrop-filter: it re-sampled the backdrop under every chip on every
+   frame the camera moved. The chip background is near-opaque (0.85/0.9), so
+   the blur was already invisible — dropping it keeps frames translate-only. */
 .fleet-voice-chip {
-  backdrop-filter: blur(3px);
   transition: box-shadow 150ms ease, filter 150ms ease;
   -webkit-user-select: none;
   user-select: none;
@@ -543,14 +576,6 @@ body,
 .fleet-voice-chip:hover {
   box-shadow: 0 0 0 2.5px rgba(94, 234, 212, 0.55);
   filter: brightness(1.12);
-}
-/* While the camera moves (or the compositor struggles), the blur would
-   re-sample the backdrop under every chip on every translated frame. The
-   chip background is near-opaque, so dropping it mid-gesture is invisible
-   and keeps pan frames translate-only. */
-.fleet-calm .fleet-voice-chip,
-.fleet-panning .fleet-voice-chip {
-  backdrop-filter: none;
 }
 
 /* Fleet map: garden atmosphere — washes breathe on a slow cycle. The wash

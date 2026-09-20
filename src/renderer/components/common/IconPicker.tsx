@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Picker } from 'emoji-mart'
-import emojiData from '@emoji-mart/data'
 
 /**
  * Agent avatar picker: the current emoji as a button, and the full emoji set
  * (emoji-mart, bundled data, no network) in a popover. The picker is a web
  * component, so it is mounted into a ref rather than rendered by React.
+ *
+ * emoji-mart and its data set are the single largest dependency the agent
+ * panel drags in, and the closed button needs neither, so they are imported
+ * only when the popover first opens.
  */
 export function IconPicker({
   value,
@@ -31,24 +33,30 @@ export function IconPicker({
     // Theme follows the app's `dark` class, not the OS: Settings › Appearance
     // can pin either theme regardless of what the system prefers.
     const dark = document.documentElement.classList.contains('dark')
-    const picker = new Picker({
-      data: emojiData,
-      theme: dark ? 'dark' : 'light',
-      set: 'native',
-      previewPosition: 'none',
-      skinTonePosition: 'search',
-      navPosition: 'top',
-      maxFrequentRows: 1,
-      perLine: 9,
-      emojiSize: 20,
-      emojiButtonSize: 30,
-      autoFocus: true,
-      onEmojiSelect: (emoji: { native?: string }) => {
-        if (emoji.native) onChangeRef.current(emoji.native)
-        close()
+    let cancelled = false
+    void Promise.all([import('emoji-mart'), import('@emoji-mart/data')]).then(
+      ([{ Picker }, emojiData]) => {
+        if (cancelled) return
+        const picker = new Picker({
+          data: emojiData.default,
+          theme: dark ? 'dark' : 'light',
+          set: 'native',
+          previewPosition: 'none',
+          skinTonePosition: 'search',
+          navPosition: 'top',
+          maxFrequentRows: 1,
+          perLine: 9,
+          emojiSize: 20,
+          emojiButtonSize: 30,
+          autoFocus: true,
+          onEmojiSelect: (emoji: { native?: string }) => {
+            if (emoji.native) onChangeRef.current(emoji.native)
+            close()
+          }
+        }) as unknown as HTMLElement
+        host.replaceChildren(picker)
       }
-    }) as unknown as HTMLElement
-    host.replaceChildren(picker)
+    )
 
     const onDown = (e: MouseEvent) => {
       if (!rootRef.current?.contains(e.target as Node)) close()
@@ -59,6 +67,7 @@ export function IconPicker({
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
     return () => {
+      cancelled = true
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
       host.replaceChildren()
