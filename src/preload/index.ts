@@ -659,6 +659,7 @@ const api: AdfApi = {
     return () => ipcRenderer.removeListener(IPC.APP_SHUTTING_DOWN, handler)
   },
   getUpdateState: () => ipcRenderer.invoke(IPC.APP_UPDATE_GET_STATE),
+  checkForUpdates: () => ipcRenderer.invoke(IPC.APP_UPDATE_CHECK),
   downloadUpdate: () => ipcRenderer.invoke(IPC.APP_UPDATE_DOWNLOAD),
   installUpdate: () => ipcRenderer.invoke(IPC.APP_UPDATE_INSTALL),
   onUpdateState: (callback: (state: AppUpdateState) => void) => {

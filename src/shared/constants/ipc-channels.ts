@@ -388,6 +388,7 @@ export const IPC = {
   // download/install are user-initiated from the status bar badge.
   APP_UPDATE_STATE: 'adf:app:update-state',
   APP_UPDATE_GET_STATE: 'adf:app:update:get-state',
+  APP_UPDATE_CHECK: 'adf:app:update:check',
   APP_UPDATE_DOWNLOAD: 'adf:app:update:download',
   APP_UPDATE_INSTALL: 'adf:app:update:install',
 

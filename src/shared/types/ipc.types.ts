@@ -1059,3 +1059,17 @@ export type AppUpdateState =
   | { status: 'ready'; version: string }
   | { status: 'installing'; version: string }
   | { status: 'error'; message: string; version?: string }
+
+/**
+ * What a check the user asked for found. The background check stays silent on
+ * failure; this one answers, because someone is waiting on it.
+ * `version` is the running version for `up-to-date`, the new one otherwise.
+ */
+export type AppUpdateCheckResult =
+  | { outcome: 'up-to-date'; version: string }
+  | { outcome: 'available'; version: string }
+  /** A download or restart is already under way; the status bar shows it. */
+  | { outcome: 'in-progress'; version: string }
+  /** Not a packaged build (`npm run dev`), which never checks. */
+  | { outcome: 'unsupported' }
+  | { outcome: 'failed'; message: string }

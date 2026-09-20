@@ -9,12 +9,54 @@
 
 import { useEffect, useState } from 'react'
 import { Button, SettingsGroup, SettingsRow } from '../ui'
+import type { AppUpdateCheckResult, AppUpdateState } from '../../../shared/types/ipc.types'
 
 const REPO_URL = 'https://github.com/christianbalevski/adf'
 const RELEASES_URL = `${REPO_URL}/releases/latest`
 
+/** What the version row says after a check, in the same words the status-bar badge uses. */
+function updateLine(update: AppUpdateState, result: AppUpdateCheckResult | null): string | null {
+  // A download in flight outranks whatever the last check said.
+  if (update.status === 'downloading') return `Downloading v${update.version}… ${update.percent}%`
+  if (update.status === 'ready' || update.status === 'installing') return `Restarting into v${update.version}…`
+  if (update.status === 'error') return `Update failed: ${update.message}`
+  if (update.status === 'available') return `v${update.version} is available.`
+  if (!result) return null
+  switch (result.outcome) {
+    case 'up-to-date': return `v${result.version} is the latest version.`
+    case 'failed': return `Could not check for updates: ${result.message}`
+    case 'unsupported': return 'Update checks only run in the installed app, not in a development build.'
+    default: return null
+  }
+}
+
 export function AboutTab() {
   const [appVersion, setAppVersion] = useState<string | null>(null)
+  const [update, setUpdate] = useState<AppUpdateState>({ status: 'idle' })
+  const [checking, setChecking] = useState(false)
+  const [checkResult, setCheckResult] = useState<AppUpdateCheckResult | null>(null)
+
+  // Same feed the status-bar badge reads, so the two never disagree.
+  useEffect(() => {
+    window.adfApi?.getUpdateState().then(setUpdate).catch(() => {})
+    return window.adfApi?.onUpdateState(setUpdate)
+  }, [])
+
+  const checkForUpdates = async () => {
+    setChecking(true)
+    setCheckResult(null)
+    try {
+      setCheckResult(await window.adfApi.checkForUpdates())
+    } catch (err) {
+      setCheckResult({ outcome: 'failed', message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const line = checking ? 'Checking for updates…' : updateLine(update, checkResult)
+  const canDownload = update.status === 'available' || (update.status === 'error' && !!update.version)
+  const busy = checking || update.status === 'downloading' || update.status === 'ready' || update.status === 'installing'
 
   useEffect(() => {
     let active = true
@@ -45,12 +87,28 @@ export function AboutTab() {
       <SettingsGroup>
         <SettingsRow
           label="ADF Studio"
-          description={<span aria-live="polite">Version {appVersion ?? '…'}</span>}
+          description={
+            <span aria-live="polite">
+              Version {appVersion ?? '…'}
+              {line && <span className="block">{line}</span>}
+            </span>
+          }
         >
-          <Button variant="ghost" onClick={() => openExternal(RELEASES_URL)}>
-            <span>Check for updates</span>
-            <span aria-hidden>↗</span>
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" onClick={() => openExternal(RELEASES_URL)}>
+              <span>Release notes</span>
+              <span aria-hidden>↗</span>
+            </Button>
+            {canDownload ? (
+              <Button onClick={() => void window.adfApi.downloadUpdate()}>
+                {update.status === 'error' ? 'Retry download' : 'Download and restart'}
+              </Button>
+            ) : (
+              <Button onClick={() => void checkForUpdates()} disabled={busy}>
+                Check for updates
+              </Button>
+            )}
+          </div>
         </SettingsRow>
       </SettingsGroup>
 

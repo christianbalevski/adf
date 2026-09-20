@@ -150,9 +150,12 @@ software developer; the verdict then clears for the certificate.
 ## In-app updates
 
 Installed copies check GitHub Releases (`latest*.yml`, published by the same
-`npm run release`) shortly after launch and every 6 hours. Nothing downloads
-by itself: when a newer *published* release exists, an **Update** badge
-appears next to the version number in the status bar; clicking it downloads
+`npm run release`) shortly after launch and every hour. **Check for updates**
+in Settings → About runs the same check on demand and says what it found,
+including a failed check, which the background check keeps to the log.
+Nothing downloads by itself: when a newer *published* release exists, an
+**Update** badge appears next to the version number in the status bar (and
+the About button becomes **Download and restart**); clicking either downloads
 the update (percent shown in the badge), runs the normal shutdown teardown,
 and restarts into the new version. Drafts are ignored, so the review-then-
 publish flow above is unchanged.

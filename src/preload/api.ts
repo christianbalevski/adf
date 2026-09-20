@@ -1,4 +1,4 @@
-import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
+import type { AppUpdateState, AppUpdateCheckResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
   QuickCreateResult, FileSharePrepareResult,
   AgentTemplateListResult,
   AgentTemplateContents,
@@ -631,6 +631,8 @@ export interface AdfApi {
   onShuttingDown: (callback: () => void) => () => void
   /** Current in-app update state (for a freshly mounted status bar). */
   getUpdateState: () => Promise<AppUpdateState>
+  /** Check now and report the outcome. Never downloads. */
+  checkForUpdates: () => Promise<AppUpdateCheckResult>
   /** Start downloading the available update; progress arrives via onUpdateState. */
   downloadUpdate: () => Promise<void>
   /** Restart into a downloaded update. Main does this itself after a download; exposed for completeness. */

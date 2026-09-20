@@ -2,8 +2,9 @@
  * In-app updates via electron-updater, fed by the GitHub Releases that
  * `npm run release` already publishes (latest*.yml + blockmaps).
  *
- * Deliberately not "auto": nothing is downloaded until the user clicks the
- * status-bar badge. Once a download completes the app restarts into the new
+ * Deliberately not "auto": it checks on its own (hourly, and on demand from
+ * Settings → About) but nothing is downloaded until the user clicks the
+ * status-bar badge or the About button. Once a download completes the app restarts into the new
  * version on its own — that's the one click the user gave us.
  *
  * Platform notes:
@@ -21,10 +22,10 @@ import { app, ipcMain } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import type { ProgressInfo, UpdateInfo } from 'electron-updater'
 import { IPC } from '../../shared/constants/ipc-channels'
-import type { AppUpdateState } from '../../shared/types/ipc.types'
+import type { AppUpdateCheckResult, AppUpdateState } from '../../shared/types/ipc.types'
 
 const FIRST_CHECK_DELAY_MS = 15_000
-const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+const CHECK_INTERVAL_MS = 60 * 60 * 1000
 /** Lets the badge show "Restarting…" before the shutdown overlay takes over. */
 const INSTALL_GRACE_MS = 1_500
 
@@ -69,6 +70,38 @@ async function checkQuietly(): Promise<void> {
   }
 }
 
+/** Two clicks in a row share one request. */
+let manualCheck: Promise<AppUpdateCheckResult> | null = null
+
+/**
+ * The check behind Settings → About. Same request as the background check,
+ * but it reports what it found, failures included. It never downloads: an
+ * available update still waits for the user to ask for it.
+ */
+function checkNow(): Promise<AppUpdateCheckResult> {
+  if (!app.isPackaged) return Promise.resolve({ outcome: 'unsupported' })
+  if (state.status === 'downloading' || state.status === 'ready' || state.status === 'installing') {
+    return Promise.resolve({ outcome: 'in-progress', version: state.version })
+  }
+  manualCheck ??= (async (): Promise<AppUpdateCheckResult> => {
+    try {
+      await autoUpdater.checkForUpdates()
+      // The update-available / update-not-available handlers have already
+      // moved `state` by the time the check resolves.
+      return state.status === 'available'
+        ? { outcome: 'available', version: state.version }
+        : { outcome: 'up-to-date', version: app.getVersion() }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn('[Updater] Manual check failed:', message)
+      return { outcome: 'failed', message }
+    } finally {
+      manualCheck = null
+    }
+  })()
+  return manualCheck
+}
+
 async function download(): Promise<void> {
   const version = versionOf()
   if (state.status !== 'available' && state.status !== 'error') return
@@ -106,6 +139,7 @@ export function initAppUpdater(h: AppUpdaterHooks): void {
   hooks = h
 
   ipcMain.handle(IPC.APP_UPDATE_GET_STATE, () => state)
+  ipcMain.handle(IPC.APP_UPDATE_CHECK, () => checkNow())
   ipcMain.handle(IPC.APP_UPDATE_DOWNLOAD, () => download())
   ipcMain.handle(IPC.APP_UPDATE_INSTALL, () => install())
 
