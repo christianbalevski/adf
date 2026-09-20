@@ -38,7 +38,9 @@ const DIES_EARLY_GRACE_MS = 15_000
 
 describe('runMcpAuthPreflight', () => {
   it('never opens a URL printed by an auth command that exits before the startup grace (error help text)', async () => {
-    const io = makeIO({ startupGraceMs: 300 })
+    // The URL gate opens when the grace timer fires; a child slow to spawn under
+    // load would outlive a short grace and get its help-text URL opened.
+    const io = makeIO({ startupGraceMs: DIES_EARLY_GRACE_MS })
     await expect(runMcpAuthPreflight(
       serverCfg('console.error("OAuth credentials not found. Go to the Google Cloud Console (https://console.cloud.google.com/) to create them"); process.exit(1)'),
       {},
@@ -75,7 +77,9 @@ describe('runMcpAuthPreflight', () => {
 
   it('interactive: fails after the dialog if the auth command died nonzero while it was up', async () => {
     // Child lives past the grace, then dies while "the dialog is open".
-    const confirm = vi.fn(() => new Promise<void>((r) => setTimeout(r, 800)))
+    // The exit is only noticed once confirm resolves, so the dialog has to stay
+    // up past the child's startup latency plus its 400ms life, not just 400ms.
+    const confirm = vi.fn(() => new Promise<void>((r) => setTimeout(r, 3000)))
     const io = makeIO({ confirm, startupGraceMs: 100 })
     await expect(runMcpAuthPreflight(
       serverCfg('console.error("late failure"); setTimeout(() => process.exit(2), 400)'),
