@@ -38,6 +38,14 @@ jobs:
       - name: Test
         run: npm test
 
+      # Order-of-magnitude regression gate for the storage and streaming hot
+      # paths fixed in the perf review. The ceilings are 20x-300x above the
+      # measured numbers, so this catches a reverted fix, not runner noise.
+      # Linux only: the Windows job is a focused filesystem gate, and timings
+      # from a second OS would add flake without adding signal.
+      - name: Performance regression benchmarks
+        run: RUN_BENCH=1 npx vitest run tests/perf/review-bench.test.ts tests/perf/markdown-stream.test.ts --reporter=verbose
+
       # Verbose output surfaces the independently asserted final ledger totals:
       # 6 fixed, 3 declaredByProfile, 0 pending.
       - name: Lifecycle conformance, closed ledger, and architecture fences

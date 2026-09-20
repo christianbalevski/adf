@@ -59,9 +59,16 @@ describe('streaming markdown', () => {
     for (let end = DELTA; end <= doc.length; end += DELTA) render(doc.slice(0, end))
     const incrementalMs = performance.now() - incrementalStart
 
+    // A ratio, not an absolute budget: both halves run on the same runner in
+    // the same process, so a slow or noisy CI machine scales them together.
+    // The observed speedup is one to two orders of magnitude; 5x is the
+    // regression gate — falling under it means the quadratic re-parse is back.
+    const speedup = fullMs / incrementalMs
     console.log(
-      `markdown stream ${doc.length}B in ${DELTA}B deltas — full: ${fullMs.toFixed(1)}ms, incremental: ${incrementalMs.toFixed(1)}ms`
+      `markdown stream ${doc.length}B in ${DELTA}B deltas — full: ${fullMs.toFixed(1)}ms, ` +
+      `incremental: ${incrementalMs.toFixed(1)}ms (${speedup.toFixed(1)}x faster, floor 5x)`
     )
-    expect(incrementalMs).toBeLessThan(fullMs / 2)
+    expect(speedup, `incremental markdown is only ${speedup.toFixed(1)}x faster than a full re-parse`)
+      .toBeGreaterThanOrEqual(5)
   })
 })

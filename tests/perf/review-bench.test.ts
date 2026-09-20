@@ -22,13 +22,41 @@ const INBOX_ROWS = 1500
 const OUTBOX_ROWS = 5000
 const BIG_FILE_BYTES = 5 * 1024 * 1024
 
+/**
+ * Regression ceilings (ms/op), enforced only under RUN_BENCH=1.
+ *
+ * These guard against an order-of-magnitude regression — a return to the
+ * O(rows) / read-the-whole-blob behaviour these ops replaced — not against
+ * drift. Reference on a fast dev box: counts 0.044 ms (27 ms before the fix),
+ * lookup_by_id 0.004 ms, file_exists_5mb 0.002 ms (3.6 ms before),
+ * find_by_meta_recent 0.003 ms. Every ceiling therefore leaves 20x-300x of
+ * headroom so a slow, shared CI runner cannot flake it.
+ *
+ * Deliberately unguarded: `inbox_lookup_legacy_scan` (the control, which is
+ * *meant* to be slow) and the write/list ops (disk-bound and noisy on CI).
+ */
+const CEILINGS_MS: Record<string, number> = {
+  inbox_summary_counts: 2,
+  inbox_lookup_by_id: 1,
+  file_exists_5mb: 1,
+  outbox_find_by_meta_recent: 1
+}
+
 function time(name: string, iterations: number, fn: () => unknown): void {
   fn() // warm up
   const start = performance.now()
   for (let i = 0; i < iterations; i++) fn()
   const perOp = (performance.now() - start) / iterations
   results[name] = Number(perOp.toFixed(4))
-  console.log(`[bench] ${name}: ${perOp.toFixed(3)} ms/op (${iterations} iters)`)
+  const ceiling = CEILINGS_MS[name]
+  const suffix = ceiling === undefined ? '' : ` [ceiling ${ceiling} ms]`
+  console.log(`[bench] ${name}: ${perOp.toFixed(3)} ms/op (${iterations} iters)${suffix}`)
+  if (ceiling !== undefined) {
+    expect(
+      perOp,
+      `${name} regressed: ${perOp.toFixed(3)} ms/op is over the ${ceiling} ms ceiling`
+    ).toBeLessThan(ceiling)
+  }
 }
 
 describe.skipIf(!RUN)('perf review storage bench', () => {
@@ -109,4 +137,10 @@ describe.skipIf(!RUN)('perf review storage bench', () => {
     const buf = Buffer.alloc(BIG_FILE_BYTES, 0x62)
     time('write_file_5mb_overwrite', 10, () => ws.writeFileBuffer('data/big.bin', buf))
   }, 120_000)
+
+  // A renamed or deleted op would otherwise drop its gate silently: the ceiling
+  // would simply never be looked up and the suite would still pass green.
+  it('every declared ceiling was actually measured', () => {
+    expect(Object.keys(CEILINGS_MS).filter(name => !(name in results))).toEqual([])
+  })
 })

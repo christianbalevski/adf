@@ -5,6 +5,7 @@ import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, get
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
+import { startStallMonitor, stopStallMonitor } from './utils/stall-monitor'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 
@@ -454,6 +455,14 @@ app.on('web-contents-created', (_event, contents) => {
 })
 
 app.whenReady().then(() => {
+  // Dev/diagnostic only: logs one line per multi-hundred-ms main-thread freeze.
+  // Creates nothing in a packaged build unless ADF_STALL_MONITOR=1.
+  const stallMonitor = startStallMonitor({ packaged: app.isPackaged })
+  if (stallMonitor) {
+    console.log(`[App] Stall monitor active (threshold ${stallMonitor.thresholdMs} ms)`)
+    app.once('before-quit', () => stopStallMonitor())
+  }
+
   registerAllIpcHandlers()
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
   ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {
