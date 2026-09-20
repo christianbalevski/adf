@@ -225,9 +225,12 @@ export interface AppSettings {
 export interface TrackedDirEntry {
   filePath: string
   fileName: string
-  /** Agent display name from the file's config (may differ from fileName
-   *  while a rename is deferred because the agent is running). */
+  /** The agent's name: always the file's name on disk without `.adf`, never
+   *  read from the config inside it. */
   agentName?: string
+  /** Set while a rename waits for a running agent to stop: the name the file
+   *  will take. Until then the file, and so `agentName`, keep the old one. */
+  pendingName?: string
   canReceive?: boolean
   sendMode?: 'proactive' | 'respond_only' | 'listen_only'
   autonomous?: boolean

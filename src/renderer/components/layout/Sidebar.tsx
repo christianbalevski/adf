@@ -39,7 +39,7 @@ function filterTree(entries: TrackedDirEntry[], query: string, rootPath: string)
     const relPath = entry.filePath.startsWith(rootPath)
       ? entry.filePath.slice(rootPath.length + 1)
       : entry.filePath
-    const haystack = `${entry.fileName}\n${entry.agentName ?? ''}\n${relPath}`.toLowerCase()
+    const haystack = `${entry.fileName}\n${entry.pendingName ?? ''}\n${relPath}`.toLowerCase()
     if (haystack.includes(query)) out.push(entry)
   }
   return out
@@ -378,16 +378,17 @@ export function Sidebar() {
     setUntrackTarget(null)
   }, [untrackTarget, untrackFiles, filePath, backgroundAgentMap, closeFile, directories, removeDirectory])
 
-  const handleRenamed = useCallback(async (target: RowTarget, newPath: string, name: string) => {
+  const handleRenamed = useCallback(async (target: RowTarget, newPath: string, name: string, deferred: boolean) => {
     setRenameTarget(null)
     if (target.file.filePath === filePath) {
       useDocumentStore.getState().setFilePath(newPath)
       const cfg = useAgentStore.getState().config
       if (cfg) useAgentStore.getState().setConfig({ ...cfg, name })
     }
-    // A running agent keeps its old path until it stops (deferred rename);
-    // the row shows the new name meanwhile.
-    updateFileEntry(newPath, { agentName: name })
+    // A running agent's file cannot move until it stops. The row keeps the
+    // file's name, which is still the old one, and shows the new one as
+    // pending; the rescan below confirms either outcome from disk.
+    if (deferred) updateFileEntry(newPath, { pendingName: name })
     await rescanDirectory(target.dirPath)
   }, [filePath, rescanDirectory, updateFileEntry])
   const [cloneTarget, setCloneTarget] = useState<RowTarget | null>(null)
@@ -1272,7 +1273,15 @@ const AgentFileRow = memo(function AgentFileRow({
         {/* No handler of its own: the click bubbles to the row. It stays a
             button so the row is reachable and openable from the keyboard. */}
         <button className="block w-full min-w-0 text-left truncate">
-          {(isActive ? agentConfig?.name : undefined) ?? file.agentName ?? file.fileName}
+          {/* Always the file's name on disk, selected or not. The open
+              agent's config.name is deliberately not used: it can run ahead
+              of the file while a rename waits for the agent to stop. */}
+          {file.agentName ?? file.fileName.replace(/\.adf$/i, '')}
+          {file.pendingName && (
+            <span className="ml-1 text-[10px] text-[var(--adf-ui-text-subtle)]">
+              → {file.pendingName}
+            </span>
+          )}
           {folderHint && (
             <span className="ml-1 text-[10px] text-[var(--adf-ui-text-subtle)]">
               {folderHint}
@@ -1507,9 +1516,9 @@ function UntrackFolderDialog({ dirPath, runningCount, onClose, onConfirm }: {
 function RenameAgentDialog({ target, onClose, onRenamed }: {
   target: RowTarget
   onClose: () => void
-  onRenamed: (target: RowTarget, newPath: string, name: string) => void
+  onRenamed: (target: RowTarget, newPath: string, name: string, deferred: boolean) => void
 }) {
-  const initial = target.file.agentName ?? target.file.fileName.replace(/\.adf$/i, '')
+  const initial = target.file.pendingName ?? target.file.agentName ?? target.file.fileName.replace(/\.adf$/i, '')
   const [name, setName] = useState(initial)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1523,7 +1532,7 @@ function RenameAgentDialog({ target, onClose, onRenamed }: {
     try {
       const result = await window.adfApi.renameFile(target.file.filePath, trimmed)
       if (result.success && result.filePath) {
-        onRenamed(target, result.filePath, trimmed)
+        onRenamed(target, result.filePath, trimmed, result.renameDeferred ?? false)
         return
       }
       setError(result.error ?? 'Rename failed')
