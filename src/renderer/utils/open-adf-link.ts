@@ -24,6 +24,6 @@ export async function openAdfFileLink(href: string): Promise<void> {
 
   const result = await window.adfApi?.readInternalFile(filePath)
   if (result?.content != null) {
-    useEditorTabsStore.getState().openTab(filePath, result.binary ? '' : result.content, result.binary)
+    useEditorTabsStore.getState().openTab(filePath, result.binary ? '' : result.content, result.binary, result.mimeType)
   }
 }
