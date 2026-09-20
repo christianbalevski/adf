@@ -1488,7 +1488,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         </Section>
 
         {/* Model */}
-        <Section docs={DOCS.model} title="Model" locked={isSectionLocked('model')} onToggleLock={() => toggleSectionLock('model')} summary={`${local.model.provider ?? 'none'} / ${local.model.model ?? 'default'}`}>
+        <Section docs={DOCS.model} title="Model" locked={isSectionLocked('model')} onToggleLock={() => toggleSectionLock('model')} summary={`${local.model.provider ?? 'none'} / ${local.model.model_id || 'default'}`}>
           <Field label="Provider">
             {(() => {
               // Merge app-wide providers with ADF-stored providers (ADF takes priority)
@@ -3640,7 +3640,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         </Section>
 
         {/* Security */}
-        <Section docs={DOCS.security} title="Security" locked={isSectionLocked('security')} onToggleLock={() => toggleSectionLock('security')} summary={(['Open', 'Signed', 'Encrypted'] as const)[local.security?.level ?? 0]}>
+        <Section docs={DOCS.security} title="Security" locked={isSectionLocked('security')} onToggleLock={() => toggleSectionLock('security')} summary={(['Open', 'Signed', 'Encrypted', 'Advanced'] as const)[local.security?.level ?? 0]}>
           <div className="flex items-center justify-between mb-0.5">
             <label className="block text-xs text-neutral-500 dark:text-neutral-400">Security level<InfoHint tip="Open: no signing. Signed: messages are cryptographically signed. Encrypted: signed, and payloads to DID recipients are encrypted end-to-end (encryption key derived from the recipient’s DID). Local same-runtime and channel-adapter messages are not encrypted." /></label>
             {!isSectionLocked('security') && (
