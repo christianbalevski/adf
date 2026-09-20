@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { AgentConfigSummary } from '../../shared/types/ipc.types'
+import { LOGS_PANEL_HEIGHT_KEY, SIDEBAR_WIDTH_KEY, loadStoredSize } from '../utils/stored-size'
 
 export type RightPanel = 'loop' | 'inbox' | 'files' | 'agent'
 type AgentSubTab = 'config' | 'timers' | 'identity' | 'skills'
@@ -71,6 +72,17 @@ export function isUiScale(value: unknown): value is UiScale {
   return typeof value === 'number' && (UI_SCALE_OPTIONS as readonly number[]).includes(value)
 }
 
+/** Drag limits for the agent directory sidebar. The default is the old fixed `w-60`. */
+export const SIDEBAR_WIDTH_MIN = 200
+export const SIDEBAR_WIDTH_MAX = 480
+export const SIDEBAR_WIDTH_DEFAULT = 240
+/** Share of the window the sidebar may take, so a width saved on a big window can't crowd out a small one. */
+export const SIDEBAR_MAX_VW = 40
+
+export const LOGS_PANEL_HEIGHT_MIN = 100
+export const LOGS_PANEL_HEIGHT_MAX = 600
+export const LOGS_PANEL_HEIGHT_DEFAULT = 200
+
 /** Same localStorage idiom the editor's line-wrap / open-tabs prefs use. */
 const CHAT_PLACEMENT_KEY = 'adf-chat-placement'
 const CHAT_WIDTH_KEY = 'adf-chat-width'
@@ -137,6 +149,8 @@ export interface AppState {
    */
   centerChatTabActive: boolean
   sidebarCollapsed: boolean
+  /** Expanded width in px, committed when a drag is released. SidebarFrame mirrors it into a CSS variable. */
+  sidebarWidth: number
   rightPanelCollapsed: boolean
   theme: 'light' | 'dark' | 'system'
   uiFont: UiFont
@@ -229,6 +243,7 @@ export interface AppState {
    */
   revealRightPanel: () => void
   toggleSidebar: () => void
+  setSidebarWidth: (w: number) => void
   toggleRightPanel: () => void
   setTheme: (theme: 'light' | 'dark' | 'system') => void
   setUiFont: (font: UiFont) => void
@@ -324,6 +339,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   chatWidth: loadChatWidth(),
   centerChatTabActive: loadChatPlacement() === 'center',
   sidebarCollapsed: false,
+  sidebarWidth: loadStoredSize(SIDEBAR_WIDTH_KEY, SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX),
   rightPanelCollapsed: false,
   theme: 'system',
   uiFont: 'system',
@@ -353,7 +369,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   templateReview: null,
   showLogsPanel: false,
   logsAutoRefresh: false,
-  logsPanelHeight: 200,
+  logsPanelHeight: loadStoredSize(LOGS_PANEL_HEIGHT_KEY, LOGS_PANEL_HEIGHT_DEFAULT, LOGS_PANEL_HEIGHT_MIN, LOGS_PANEL_HEIGHT_MAX),
   bottomPanelTab: 'logs',
   shuttingDown: false,
 
@@ -402,6 +418,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCenterChatTabActive: (active) => set({ centerChatTabActive: active }),
   revealRightPanel: () => set({ rightPanelCollapsed: false }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  setSidebarWidth: (w) => set({ sidebarWidth: w }),
   toggleRightPanel: () =>
     set((s) => ({ rightPanelCollapsed: !s.rightPanelCollapsed })),
   setTheme: (theme) => set({ theme }),

@@ -586,6 +586,13 @@ export class BackgroundAgentManager extends EventEmitter {
         try { workspace.insertLog('error', 'runtime', 'credentials_locked', null, degradedReason.slice(0, 500)) } catch { /* non-fatal */ }
       }
       const config = workspace.getAgentConfig()
+      // Agent name is derived from filename, same as opening the file does: a
+      // file renamed outside the app must not run under its old name.
+      const fileDerivedName = basename(filePath, '.adf')
+      if (config.name !== fileDerivedName) {
+        config.name = fileDerivedName
+        workspace.setAgentConfig(config)
+      }
 
       const session = new AgentSession(workspace)
       const existingLoop = workspace.getLoop()

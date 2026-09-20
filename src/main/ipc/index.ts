@@ -1714,7 +1714,7 @@ function syncAgentFileToName(filePath: string, name: string): { filePath?: strin
   }
   if (isAgentFileRunning(filePath)) {
     pendingAgentRenames.set(filePath, trimmed)
-    // Refresh the sidebar so it shows the new agent name ahead of the rename
+    // Refresh the sidebar so the row shows the rename is waiting
     notifyTrackedRootChanged(filePath)
     return { deferred: true }
   }
@@ -2181,9 +2181,11 @@ export function registerAllIpcHandlers(): void {
         console.warn('[OwnerIdentity] Lazy envelope migration failed:', err)
       }
 
-      // Agent name is derived from filename
+      // Agent name is derived from filename. A rename waiting on a running
+      // agent is the one exception: the file cannot move yet, and resetting
+      // the name here would undo the rename the user just asked for.
       t1 = performance.now()
-      const agentName = basename(filePath, '.adf')
+      const agentName = pendingAgentRenames.get(filePath) ?? basename(filePath, '.adf')
       const config = currentWorkspace.getAgentConfig()
       perfLog(`[PERF] FILE_OPEN.getConfig: ${(performance.now() - t1).toFixed(1)}ms`)
       if (config.name !== agentName) {
@@ -5309,6 +5311,7 @@ export function registerAllIpcHandlers(): void {
     filePath: string
     fileName: string
     agentName?: string
+    pendingName?: string
     canReceive?: boolean
     sendMode?: string
     autonomous?: boolean
@@ -5341,7 +5344,11 @@ export function registerAllIpcHandlers(): void {
       result.push({
         filePath: fp,
         fileName: e.name,
-        agentName: msgConfig?.name,
+        // The name is the file's name on disk, not config.name: a file renamed
+        // in Finder/Explorer, or one that arrived with a different name
+        // inside, reads the same here as it does in the user's file manager.
+        agentName: basename(e.name, '.adf'),
+        pendingName: pendingAgentRenames.get(fp),
         canReceive: msgConfig ? msgConfig.receive : undefined,
         sendMode: msgConfig?.mode,
         autonomous: msgConfig?.autonomous,

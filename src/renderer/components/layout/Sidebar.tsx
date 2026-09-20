@@ -10,6 +10,7 @@ import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { useShareDrag } from '../../hooks/useShareDrag'
+import { useDragResize } from '../../hooks/useDragResize'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
 import { Tooltip } from '../common/Tooltip'
 import { CloneDialog } from '../common/CloneDialog'
@@ -17,6 +18,7 @@ import { Dialog } from '../common/Dialog'
 import { Button } from '../ui'
 import { REVEAL_IN_FOLDER_LABEL } from '../../utils/platform'
 import { collectRunningAgents, type RunningAgentRow } from '../../utils/running-agents'
+import { SIDEBAR_RUNNING_CAP_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../../shared/types/ipc.types'
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
@@ -37,7 +39,7 @@ function filterTree(entries: TrackedDirEntry[], query: string, rootPath: string)
     const relPath = entry.filePath.startsWith(rootPath)
       ? entry.filePath.slice(rootPath.length + 1)
       : entry.filePath
-    const haystack = `${entry.fileName}\n${entry.agentName ?? ''}\n${relPath}`.toLowerCase()
+    const haystack = `${entry.fileName}\n${entry.pendingName ?? ''}\n${relPath}`.toLowerCase()
     if (haystack.includes(query)) out.push(entry)
   }
   return out
@@ -173,6 +175,17 @@ function loadRunningCollapsed(): boolean {
     return false
   }
 }
+
+/**
+ * The Running list's height is a cap, not a size: the list is as tall as its
+ * rows until it reaches the cap, then scrolls. Dragging the section's bottom
+ * edge moves the cap. The default is the old fixed `max-h-36`, about six rows.
+ */
+const RUNNING_CAP_DEFAULT = 144
+const RUNNING_CAP_STORED_MAX = 4000
+const RUNNING_ROW_FALLBACK = 22
+/** Height the agent tree always keeps, however far the Running list is dragged. */
+const TREE_MIN_HEIGHT = 120
 
 function saveRunningCollapsed(collapsed: boolean): void {
   try {
@@ -406,16 +419,17 @@ export function Sidebar() {
     setUntrackTarget(null)
   }, [untrackTarget, untrackFiles, filePath, backgroundAgentMap, closeFile, directories, removeDirectory])
 
-  const handleRenamed = useCallback(async (target: RowTarget, newPath: string, name: string) => {
+  const handleRenamed = useCallback(async (target: RowTarget, newPath: string, name: string, deferred: boolean) => {
     setRenameTarget(null)
     if (target.file.filePath === filePath) {
       useDocumentStore.getState().setFilePath(newPath)
       const cfg = useAgentStore.getState().config
       if (cfg) useAgentStore.getState().setConfig({ ...cfg, name })
     }
-    // A running agent keeps its old path until it stops (deferred rename);
-    // the row shows the new name meanwhile.
-    updateFileEntry(newPath, { agentName: name })
+    // A running agent's file cannot move until it stops. The row keeps the
+    // file's name, which is still the old one, and shows the new one as
+    // pending; the rescan below confirms either outcome from disk.
+    if (deferred) updateFileEntry(newPath, { pendingName: name })
     await rescanDirectory(target.dirPath)
   }, [filePath, rescanDirectory, updateFileEntry])
   const [cloneTarget, setCloneTarget] = useState<RowTarget | null>(null)
@@ -511,7 +525,7 @@ export function Sidebar() {
   }
 
   return (
-    <div className="w-60 bg-surface-2 flex flex-col overflow-hidden">
+    <div className="w-full bg-surface-2 flex flex-col overflow-hidden">
       {/* Single header row: search · new · open · collapse. The search box
           doubles as the panel's title, so there is no separate label. */}
       <div className="h-9 px-2.5 flex items-center gap-1 shrink-0">
@@ -586,11 +600,18 @@ export function Sidebar() {
           backgroundAgentMap={backgroundAgentMap}
           onOpenFile={handleOpenFile}
           onFileContextMenu={handleFileContextMenu}
+          treeRef={dirScrollRef}
         />
       )}
 
-      {/* Only the agent tree scrolls; the title and actions remain visible. */}
-      <div ref={dirScrollRef} className="scrollbar-autohide flex-1 min-h-0 overflow-y-auto">
+      {/* Only the agent tree scrolls; the title and actions remain visible.
+          The min height is what a short window leaves it: the Running list
+          above gives up its rows first. */}
+      <div
+        ref={dirScrollRef}
+        style={{ minHeight: TREE_MIN_HEIGHT }}
+        className="scrollbar-autohide flex-1 overflow-y-auto"
+      >
         {directories.length > 0 ? (
           <div className="pb-1">
             {visibleDirectories.map((dirPath, index) => (
@@ -736,7 +757,8 @@ function PlayIcon() {
  * Pinned above the directory tree: a flat list of every running agent, so
  * finding what is on never depends on which folders happen to be open. Rows
  * are the same AgentFileRow the tree uses, so open, toggle, and the context
- * menu behave identically. Capped at about six rows, then scrolls on its own.
+ * menu behave identically. Grows with its rows up to a cap the user can drag
+ * (about six rows by default), then scrolls on its own.
  */
 const RunningSection = memo(function RunningSection({
   rows,
@@ -745,7 +767,8 @@ const RunningSection = memo(function RunningSection({
   agentStatusMap,
   backgroundAgentMap,
   onOpenFile,
-  onFileContextMenu
+  onFileContextMenu,
+  treeRef
 }: {
   rows: RunningAgentRow[]
   currentFilePath: string | null
@@ -754,8 +777,61 @@ const RunningSection = memo(function RunningSection({
   backgroundAgentMap: Map<string, BackgroundAgentStatus>
   onOpenFile: (filePath: string) => void
   onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
+  /** The agent tree below, which the drag must leave TREE_MIN_HEIGHT of. */
+  treeRef: React.RefObject<HTMLDivElement | null>
 }) {
   const [collapsed, setCollapsed] = useState(loadRunningCollapsed)
+  const [cap, setCap] = useState(() =>
+    loadStoredSize(SIDEBAR_RUNNING_CAP_KEY, RUNNING_CAP_DEFAULT, RUNNING_ROW_FALLBACK, RUNNING_CAP_STORED_MAX)
+  )
+  const listRef = useRef<HTMLDivElement>(null)
+  const capAtDragStart = useRef(cap)
+  const dragLimit = useRef(cap)
+
+  // A drag pinned at its upper limit must not lower the cap. The list can sit
+  // below its cap (three agents under a six-row cap, or a short window
+  // squeezing it); tugging the edge down then changes nothing on screen, and
+  // must not quietly leave a three-row cap for the next ten agents.
+  const resolveCap = (dragged: number): number =>
+    dragged >= dragLimit.current ? Math.max(dragged, capAtDragStart.current) : dragged
+
+  const handleResizeMouseDown = useDragResize({
+    axis: 'y',
+    grow: 1,
+    // Never less than one row.
+    min: () => listRef.current?.firstElementChild?.getBoundingClientRect().height ?? RUNNING_ROW_FALLBACK,
+    // Never past the last row (dragging further would change nothing on
+    // screen), and never into the tree's minimum.
+    max: () => {
+      const list = listRef.current
+      if (!list) return RUNNING_CAP_DEFAULT
+      const spare = (treeRef.current?.clientHeight ?? TREE_MIN_HEIGHT) - TREE_MIN_HEIGHT
+      dragLimit.current = Math.min(list.scrollHeight, list.clientHeight + Math.max(0, spare))
+      return dragLimit.current
+    },
+    // From the height on screen, not the stored cap: with few agents running
+    // the list sits below its cap, and starting there would be a dead zone.
+    getStart: () => {
+      capAtDragStart.current = cap
+      return listRef.current?.clientHeight ?? cap
+    },
+    // Straight to the element while dragging; rows re-render on state only
+    // once, at release.
+    onDrag: (h) => { if (listRef.current) listRef.current.style.maxHeight = `${h}px` },
+    onCommit: (h) => {
+      const resolved = resolveCap(h)
+      // When the cap is kept, state does not change and React re-renders
+      // nothing, so put the element back on the real cap by hand.
+      if (listRef.current) listRef.current.style.maxHeight = `${resolved}px`
+      setCap(resolved)
+      saveStoredSize(SIDEBAR_RUNNING_CAP_KEY, resolved)
+    }
+  })
+
+  const resetCap = useCallback(() => {
+    setCap(RUNNING_CAP_DEFAULT)
+    saveStoredSize(SIDEBAR_RUNNING_CAP_KEY, RUNNING_CAP_DEFAULT)
+  }, [])
   const toggle = useCallback(() => {
     setCollapsed((p) => {
       saveRunningCollapsed(!p)
@@ -764,14 +840,14 @@ const RunningSection = memo(function RunningSection({
   }, [])
 
   return (
-    <div className="shrink-0 border-b border-hairline pb-1">
+    <div className="relative min-h-0 flex flex-col border-b border-hairline pb-1">
       <div
         role="button"
         tabIndex={0}
         aria-expanded={!collapsed}
         onClick={toggle}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle() } }}
-        className="w-full px-3 py-[3px] text-[11px] leading-4 text-left flex items-center gap-1.5 text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] cursor-pointer select-none"
+        className="w-full shrink-0 px-3 py-[3px] text-[11px] leading-4 text-left flex items-center gap-1.5 text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] cursor-pointer select-none"
       >
         <Chevron expanded={!collapsed} />
         <span className="relative shrink-0 w-2 h-2">
@@ -781,7 +857,7 @@ const RunningSection = memo(function RunningSection({
         <span className="text-[10px] tabular-nums text-[var(--adf-ui-text-subtle)]">{rows.length}</span>
       </div>
       {!collapsed && (
-        <div className="scrollbar-autohide max-h-36 overflow-y-auto">
+        <div ref={listRef} style={{ maxHeight: cap }} className="scrollbar-autohide min-h-0 overflow-y-auto">
           {rows.map(({ file, dirPath, folderHint }) => (
             <AgentFileRow
               key={file.filePath}
@@ -798,6 +874,14 @@ const RunningSection = memo(function RunningSection({
             />
           ))}
         </div>
+      )}
+      {/* Straddles the bottom border rather than adding a row of its own. */}
+      {!collapsed && (
+        <div
+          onMouseDown={handleResizeMouseDown}
+          onDoubleClick={resetCap}
+          className="absolute inset-x-0 -bottom-0.5 z-10 h-1 cursor-row-resize hover:bg-blue-300 active:bg-blue-400 transition-colors bg-transparent"
+        />
       )}
     </div>
   )
@@ -1231,8 +1315,12 @@ const AgentFileRow = memo(function AgentFileRow({
   const busy = toggling || isStarting || isStopping
 
   return (
+    // The whole row opens the agent, not just the name: the avatar, the gap
+    // and the markers are all part of the same target. Only the run button
+    // (and its placeholder) opt out.
     <div
       {...shareDrag}
+      onClick={handleOpen}
       onContextMenu={handleContextMenu}
       data-active={isActive || undefined}
       className={`group flex items-center gap-1.5 py-[3px] text-[11px] leading-4 cursor-pointer ${
@@ -1253,8 +1341,18 @@ const AgentFileRow = memo(function AgentFileRow({
       {/* The full path is the hint; a native title never renders in this
           window, so the portal tooltip carries it instead. */}
       <Tooltip tip={file.filePath} delay={1000} className="flex min-w-0 shrink">
-        <button onClick={handleOpen} className="block w-full min-w-0 text-left truncate">
-          {(isActive ? agentConfig?.name : undefined) ?? file.agentName ?? file.fileName}
+        {/* No handler of its own: the click bubbles to the row. It stays a
+            button so the row is reachable and openable from the keyboard. */}
+        <button className="block w-full min-w-0 text-left truncate">
+          {/* Always the file's name on disk, selected or not. The open
+              agent's config.name is deliberately not used: it can run ahead
+              of the file while a rename waits for the agent to stop. */}
+          {file.agentName ?? file.fileName.replace(/\.adf$/i, '')}
+          {file.pendingName && (
+            <span className="ml-1 text-[10px] text-[var(--adf-ui-text-subtle)]">
+              → {file.pendingName}
+            </span>
+          )}
           {folderHint && (
             <span className="ml-1 text-[10px] text-[var(--adf-ui-text-subtle)]">
               {folderHint}
@@ -1271,7 +1369,9 @@ const AgentFileRow = memo(function AgentFileRow({
           tip={`${activeLoops} inner ${activeLoops === 1 ? 'loop' : 'loops'} working`}
           className="flex shrink-0 self-start -ml-1 pt-px"
         >
-          <span className="text-[8px] leading-none font-semibold text-yellow-400 tabular-nums">
+          {/* yellow-400 is the status dot's colour but ~1.5:1 as text on a
+              light surface, so light mode takes the darker end of the hue. */}
+          <span className="text-[9px] leading-none font-bold text-amber-600 dark:text-yellow-400 tabular-nums">
             {activeLoops}
           </span>
         </Tooltip>
@@ -1305,7 +1405,9 @@ const AgentFileRow = memo(function AgentFileRow({
         )}
 
         {busy ? (
-          <span className="w-4 h-4 shrink-0" />
+          // Swallows the click: a second press on Start lands here once the
+          // button has stepped aside, and must not open the agent instead.
+          <span className="w-4 h-4 shrink-0" onClick={(e) => e.stopPropagation()} />
         ) : (
           <Tooltip tip={isRunning ? 'Stop' : 'Start'} className="flex shrink-0">
             <button
@@ -1485,9 +1587,9 @@ function UntrackFolderDialog({ dirPath, runningCount, onClose, onConfirm }: {
 function RenameAgentDialog({ target, onClose, onRenamed }: {
   target: RowTarget
   onClose: () => void
-  onRenamed: (target: RowTarget, newPath: string, name: string) => void
+  onRenamed: (target: RowTarget, newPath: string, name: string, deferred: boolean) => void
 }) {
-  const initial = target.file.agentName ?? target.file.fileName.replace(/\.adf$/i, '')
+  const initial = target.file.pendingName ?? target.file.agentName ?? target.file.fileName.replace(/\.adf$/i, '')
   const [name, setName] = useState(initial)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1501,7 +1603,7 @@ function RenameAgentDialog({ target, onClose, onRenamed }: {
     try {
       const result = await window.adfApi.renameFile(target.file.filePath, trimmed)
       if (result.success && result.filePath) {
-        onRenamed(target, result.filePath, trimmed)
+        onRenamed(target, result.filePath, trimmed, result.renameDeferred ?? false)
         return
       }
       setError(result.error ?? 'Rename failed')

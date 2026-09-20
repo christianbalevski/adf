@@ -1,5 +1,6 @@
 import { TitleBar } from './TitleBar'
 import { Sidebar } from './Sidebar'
+import { SidebarFrame } from './SidebarFrame'
 import { StatusBar } from './StatusBar'
 import { MeshTrafficBar } from './MeshTrafficBar'
 import { RightDock, RightDockIconBar } from './RightDock'
@@ -17,6 +18,8 @@ import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
 import { useMeshStore } from '../../stores/mesh.store'
+import { useDragResize } from '../../hooks/useDragResize'
+import { RIGHT_PANEL_WIDTH_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
 import { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
@@ -65,47 +68,30 @@ export function AppShell() {
   const showSettings = useAppStore((s) => s.showSettings)
   const showMeshGraph = useAppStore((s) => s.showMeshGraph)
   const filePath = useDocumentStore((s) => s.filePath)
-  const [rightPanelWidth, setRightPanelWidth] = useState(RIGHT_PANEL_DEFAULT)
-  const isDragging = useRef(false)
-  // The drag writes the width straight to the panel element (rAF-throttled) and
-  // only commits to state on mouseup — a setState per mousemove re-renders the
-  // whole shell at pointer rate.
+  const [rightPanelWidth, setRightPanelWidth] = useState(() =>
+    loadStoredSize(RIGHT_PANEL_WIDTH_KEY, RIGHT_PANEL_DEFAULT, RIGHT_PANEL_MIN, RIGHT_PANEL_MAX)
+  )
+  // The drag writes the width straight to the panel element and only commits
+  // to state on mouseup — a setState per mousemove re-renders the whole shell
+  // at pointer rate.
   const rightPanelRef = useRef<HTMLDivElement>(null)
-  const dragWidth = useRef(RIGHT_PANEL_DEFAULT)
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    isDragging.current = true
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-    document.body.classList.add('panel-resizing')
-
-    let frame = 0
-    const paint = () => {
-      frame = 0
-      if (rightPanelRef.current) rightPanelRef.current.style.width = `${dragWidth.current}px`
+  const handleMouseDown = useDragResize({
+    axis: 'x',
+    grow: -1,
+    min: RIGHT_PANEL_MIN,
+    max: RIGHT_PANEL_MAX,
+    getStart: () => rightPanelWidth,
+    onDrag: (w) => { if (rightPanelRef.current) rightPanelRef.current.style.width = `${w}px` },
+    onCommit: (w) => {
+      setRightPanelWidth(w)
+      saveStoredSize(RIGHT_PANEL_WIDTH_KEY, w)
     }
+  })
 
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!isDragging.current) return
-      const newWidth = window.innerWidth - ev.clientX
-      dragWidth.current = Math.max(RIGHT_PANEL_MIN, Math.min(RIGHT_PANEL_MAX, newWidth))
-      if (!frame) frame = requestAnimationFrame(paint)
-    }
-
-    const onMouseUp = () => {
-      isDragging.current = false
-      if (frame) { cancelAnimationFrame(frame); frame = 0 }
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      document.body.classList.remove('panel-resizing')
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-      setRightPanelWidth(dragWidth.current)
-    }
-
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
+  const resetRightPanelWidth = useCallback(() => {
+    setRightPanelWidth(RIGHT_PANEL_DEFAULT)
+    saveStoredSize(RIGHT_PANEL_WIDTH_KEY, RIGHT_PANEL_DEFAULT)
   }, [])
 
   // Inbox + outbox updates: event-driven push + fallback poll
@@ -211,7 +197,7 @@ export function AppShell() {
         {/* Settings has its own navigation; the workspace tree stays out of
             the way. The fleet map hides it too — opening a file from the tree
             leaves the map anyway, so the tree is dead weight there. */}
-        {!showSettings && !showMeshGraph && <Sidebar />}
+        {!showSettings && !showMeshGraph && <SidebarFrame><Sidebar /></SidebarFrame>}
 
         {showMeshGraph ? (
           <div className="flex-1 flex flex-col overflow-hidden bg-surface-1">
@@ -252,6 +238,7 @@ export function AppShell() {
             {/* Resize handle */}
             <div
               onMouseDown={handleMouseDown}
+              onDoubleClick={resetRightPanelWidth}
               className="shrink-0 w-1 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors bg-transparent"
             />
             <div

@@ -1,10 +1,9 @@
-import { useCallback, useRef } from 'react'
-import { useAppStore } from '../../stores/app.store'
+import { useRef } from 'react'
+import { useAppStore, LOGS_PANEL_HEIGHT_MIN, LOGS_PANEL_HEIGHT_MAX, LOGS_PANEL_HEIGHT_DEFAULT } from '../../stores/app.store'
+import { useDragResize } from '../../hooks/useDragResize'
+import { LOGS_PANEL_HEIGHT_KEY, saveStoredSize } from '../../utils/stored-size'
 import { LogsPanel } from '../logs/LogsPanel'
 import { TasksPanel } from '../tasks/TasksPanel'
-
-const PANEL_MIN = 100
-const PANEL_MAX = 600
 
 export function BottomPanel() {
   const toggleLogsPanel = useAppStore((s) => s.toggleLogsPanel)
@@ -13,57 +12,35 @@ export function BottomPanel() {
   const activeTab = useAppStore((s) => s.bottomPanelTab)
   const setActiveTab = useAppStore((s) => s.setBottomPanelTab)
 
-  const isDragging = useRef(false)
-  // The drag writes the height straight to the panel element (rAF-throttled)
-  // and only commits to the store on mouseup — a store write per mousemove
-  // re-filters and re-renders the logs list (up to 2000 rows) at pointer rate.
+  // The drag writes the height straight to the panel element and only commits
+  // to the store on mouseup — a store write per mousemove re-filters and
+  // re-renders the logs list (up to 2000 rows) at pointer rate.
   const panelRef = useRef<HTMLDivElement>(null)
-  const dragHeight = useRef(panelHeight)
 
-  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    isDragging.current = true
-    document.body.style.cursor = 'row-resize'
-    document.body.style.userSelect = 'none'
-    document.body.classList.add('panel-resizing')
-
-    const startY = e.clientY
-    const startHeight = panelHeight
-    dragHeight.current = startHeight
-
-    let frame = 0
-    const paint = () => {
-      frame = 0
-      if (panelRef.current) panelRef.current.style.height = `${dragHeight.current}px`
+  const handleResizeMouseDown = useDragResize({
+    axis: 'y',
+    grow: -1,
+    min: LOGS_PANEL_HEIGHT_MIN,
+    max: LOGS_PANEL_HEIGHT_MAX,
+    getStart: () => panelHeight,
+    onDrag: (h) => { if (panelRef.current) panelRef.current.style.height = `${h}px` },
+    onCommit: (h) => {
+      setPanelHeight(h)
+      saveStoredSize(LOGS_PANEL_HEIGHT_KEY, h)
     }
+  })
 
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!isDragging.current) return
-      const delta = startY - ev.clientY
-      dragHeight.current = Math.max(PANEL_MIN, Math.min(PANEL_MAX, startHeight + delta))
-      if (!frame) frame = requestAnimationFrame(paint)
-    }
-
-    const onMouseUp = () => {
-      isDragging.current = false
-      if (frame) { cancelAnimationFrame(frame); frame = 0 }
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      document.body.classList.remove('panel-resizing')
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-      setPanelHeight(dragHeight.current)
-    }
-
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
-  }, [panelHeight, setPanelHeight])
+  const resetHeight = () => {
+    setPanelHeight(LOGS_PANEL_HEIGHT_DEFAULT)
+    saveStoredSize(LOGS_PANEL_HEIGHT_KEY, LOGS_PANEL_HEIGHT_DEFAULT)
+  }
 
   return (
     <div ref={panelRef} style={{ height: panelHeight }} className="flex flex-col border-t border-hairline bg-neutral-950 shrink-0">
       {/* Resize handle */}
       <div
         onMouseDown={handleResizeMouseDown}
+        onDoubleClick={resetHeight}
         className="h-1 cursor-row-resize hover:bg-blue-500/40 transition-colors bg-transparent shrink-0"
       />
 
