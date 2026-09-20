@@ -18,15 +18,13 @@ export class InboxCheckTool implements Tool {
   readonly category = 'communication' as const
 
   async execute(_input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
-    const unreadMessages = workspace.getInbox('unread')
-    const readMessages = workspace.getInbox('read')
-    const archivedMessages = workspace.getInbox('archived')
+    const counts = workspace.getInboxCounts()
 
     const summary = {
-      unread: unreadMessages.length,
-      read: readMessages.length,
-      archived: archivedMessages.length,
-      total: unreadMessages.length + readMessages.length + archivedMessages.length
+      unread: counts.unread,
+      read: counts.read,
+      archived: counts.archived,
+      total: counts.unread + counts.read + counts.archived
     }
 
     const message = [

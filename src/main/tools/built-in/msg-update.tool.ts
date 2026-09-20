@@ -31,13 +31,13 @@ export class InboxUpdateTool implements Tool {
     // Normalize to array
     const ids = Array.isArray(message_ids) ? message_ids : [message_ids]
 
-    // Get all messages to validate
-    const allMessages = workspace.getInbox()
     const results: string[] = []
     const errors: string[] = []
 
     for (const id of ids) {
-      const message = allMessages.find(m => m.id === id)
+      // Primary-key lookup — reading the whole inbox to scan for an id pulls
+      // every body and inline attachment through JSON.parse.
+      const message = workspace.getInboxMessageById(id)
 
       if (!message) {
         errors.push(`Message "${id}" not found`)

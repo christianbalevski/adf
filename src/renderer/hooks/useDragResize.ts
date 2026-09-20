@@ -16,9 +16,15 @@ export interface DragResizeOptions {
   max: Bound
   /** Size the drag starts from, read at mousedown. */
   getStart: () => number
-  /** Every mousemove, already clamped. */
-  onChange: (size: number) => void
-  /** Once on mouseup with the final size — the place to persist. Skipped if the pointer never moved. */
+  /**
+   * The drag in progress, already clamped, at most once per animation frame.
+   * Write the size straight to the element (or a CSS variable) here and never
+   * to React state or a store: a state write per mousemove re-renders whatever
+   * reads it at pointer rate. Called one last time, unthrottled, before
+   * `onCommit`, so the element always ends on the final size.
+   */
+  onDrag: (size: number) => void
+  /** Once on mouseup with the final size — the place for state and persistence. Skipped if the pointer never moved. */
   onCommit?: (size: number) => void
 }
 
@@ -26,8 +32,9 @@ const resolve = (bound: Bound): number => (typeof bound === 'function' ? bound()
 
 /**
  * Mousedown handler for a panel resize handle. Owns the gesture bookkeeping
- * every handle needs: the body cursor, text-selection lock, and the
- * `panel-resizing` class that keeps webviews from swallowing the drag.
+ * every handle needs: the body cursor, text-selection lock, the
+ * `panel-resizing` class that keeps webviews from swallowing the drag, and the
+ * rAF throttle between pointer moves and paints.
  */
 export function useDragResize(options: DragResizeOptions): (e: React.MouseEvent) => void {
   // Latest options without re-creating the handler mid-gesture.
@@ -47,6 +54,11 @@ export function useDragResize(options: DragResizeOptions): (e: React.MouseEvent)
     const min = resolve(optionsRef.current.min)
     const max = Math.max(min, resolve(optionsRef.current.max))
     let latest: number | null = null
+    let frame = 0
+    const paint = () => {
+      frame = 0
+      if (latest !== null) optionsRef.current.onDrag(latest)
+    }
 
     document.body.style.cursor = axis === 'x' ? 'col-resize' : 'row-resize'
     document.body.style.userSelect = 'none'
@@ -57,10 +69,11 @@ export function useDragResize(options: DragResizeOptions): (e: React.MouseEvent)
       const next = clampSize(startSize + delta, min, max)
       if (next === latest) return
       latest = next
-      optionsRef.current.onChange(next)
+      if (!frame) frame = requestAnimationFrame(paint)
     }
 
     const cleanup = () => {
+      if (frame) { cancelAnimationFrame(frame); frame = 0 }
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       document.body.classList.remove('panel-resizing')
@@ -71,7 +84,12 @@ export function useDragResize(options: DragResizeOptions): (e: React.MouseEvent)
 
     const onMouseUp = () => {
       cleanup()
-      if (latest !== null) optionsRef.current.onCommit?.(latest)
+      if (latest === null) return
+      // The pending frame was just cancelled; without this the element could
+      // be left on an earlier size when the final one equals the old state and
+      // React therefore has nothing to re-render.
+      optionsRef.current.onDrag(latest)
+      optionsRef.current.onCommit?.(latest)
     }
 
     cleanupRef.current = cleanup

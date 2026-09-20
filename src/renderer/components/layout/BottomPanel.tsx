@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { useAppStore, LOGS_PANEL_HEIGHT_MIN, LOGS_PANEL_HEIGHT_MAX, LOGS_PANEL_HEIGHT_DEFAULT } from '../../stores/app.store'
 import { useDragResize } from '../../hooks/useDragResize'
 import { LOGS_PANEL_HEIGHT_KEY, saveStoredSize } from '../../utils/stored-size'
@@ -11,14 +12,22 @@ export function BottomPanel() {
   const activeTab = useAppStore((s) => s.bottomPanelTab)
   const setActiveTab = useAppStore((s) => s.setBottomPanelTab)
 
+  // The drag writes the height straight to the panel element and only commits
+  // to the store on mouseup — a store write per mousemove re-filters and
+  // re-renders the logs list (up to 2000 rows) at pointer rate.
+  const panelRef = useRef<HTMLDivElement>(null)
+
   const handleResizeMouseDown = useDragResize({
     axis: 'y',
     grow: -1,
     min: LOGS_PANEL_HEIGHT_MIN,
     max: LOGS_PANEL_HEIGHT_MAX,
     getStart: () => panelHeight,
-    onChange: setPanelHeight,
-    onCommit: (h) => saveStoredSize(LOGS_PANEL_HEIGHT_KEY, h)
+    onDrag: (h) => { if (panelRef.current) panelRef.current.style.height = `${h}px` },
+    onCommit: (h) => {
+      setPanelHeight(h)
+      saveStoredSize(LOGS_PANEL_HEIGHT_KEY, h)
+    }
   })
 
   const resetHeight = () => {
@@ -27,7 +36,7 @@ export function BottomPanel() {
   }
 
   return (
-    <div style={{ height: panelHeight }} className="flex flex-col border-t border-hairline bg-neutral-950 shrink-0">
+    <div ref={panelRef} style={{ height: panelHeight }} className="flex flex-col border-t border-hairline bg-neutral-950 shrink-0">
       {/* Resize handle */}
       <div
         onMouseDown={handleResizeMouseDown}

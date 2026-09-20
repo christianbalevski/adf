@@ -106,7 +106,7 @@ export interface AdfOpenOptions {
 }
 
 /** Latest ADF schema version. Files at this version skip the migration ladder on open. */
-export const ADF_LATEST_SCHEMA_VERSION = 31
+export const ADF_LATEST_SCHEMA_VERSION = 32
 
 /**
  * adf_meta key written by close() as the final write before the connection
@@ -244,6 +244,10 @@ CREATE TABLE IF NOT EXISTS adf_outbox (
 CREATE INDEX IF NOT EXISTS idx_adf_outbox_status ON adf_outbox(status);
 CREATE INDEX IF NOT EXISTS idx_adf_outbox_thread ON adf_outbox(thread_id);
 CREATE INDEX IF NOT EXISTS idx_adf_outbox_message_id ON adf_outbox(message_id);
+-- created_at is the sort key of every outbox read (getOutboxMessages,
+-- getOutboxByStatus, findOutboxByMetaValue); without it each one builds a TEMP
+-- B-TREE over the whole table.
+CREATE INDEX IF NOT EXISTS idx_adf_outbox_created ON adf_outbox(created_at);
 
 -- 6. Scheduled wake events
 CREATE TABLE IF NOT EXISTS adf_timers (
@@ -479,8 +483,16 @@ export class AdfDatabase {
     getLastAssistantTokens?: Database.Statement
     getInboxMessages?: Database.Statement
     getInboxByStatus?: Database.Statement
+    getInboxMessageById?: Database.Statement
+    getInboxCounts?: Database.Statement
+    getInboxCountByStatus?: Database.Statement
+    getInboxUnreadBySender?: Database.Statement
+    getInboxUnreadBySource?: Database.Statement
+    getOldestUnreadInbox?: Database.Statement
     addInboxMessage?: Database.Statement
     updateInboxStatus?: Database.Statement
+    archiveAllInbox?: Database.Statement
+    deleteInboxMessage?: Database.Statement
     getOutboxMessages?: Database.Statement
     getOutboxByStatus?: Database.Statement
     addOutboxMessage?: Database.Statement
@@ -499,7 +511,9 @@ export class AdfDatabase {
     listFiles?: Database.Statement
     fileExists?: Database.Statement
     getDocumentFile?: Database.Statement
+    getFileMeta?: Database.Statement
     renameFile?: Database.Statement
+    renameFolder?: Database.Statement
     setFileProtection?: Database.Statement
     getFileProtection?: Database.Statement
     getFileAuthorized?: Database.Statement
@@ -512,6 +526,9 @@ export class AdfDatabase {
     getAllIdentityFull?: Database.Statement
     hasEncryptedIdentity?: Database.Statement
     setIdentityRaw?: Database.Statement
+    listAllIdentityPurposes?: Database.Statement
+    getIdentityRow?: Database.Statement
+    setIdentityCodeAccess?: Database.Statement
     updateOutboxDelivery?: Database.Statement
     updateOutboxDeliveryFull?: Database.Statement
     updateOutboxMeta?: Database.Statement
@@ -542,6 +559,12 @@ export class AdfDatabase {
     trimLogs?: Database.Statement
     countLogs?: Database.Statement
   } = {}
+
+  /** Cached db.transaction wrapper for incrementMeta (built once, not per call). */
+  private incrementMetaTxn?: Database.Transaction
+
+  /** Page cap for getLogsAfterId — pollers carry a cursor, so pages catch up. */
+  private static readonly MAX_LOGS_AFTER_ID = 5000
 
   private constructor(db: Database.Database, filePath: string) {
     this.db = db
@@ -1938,6 +1961,18 @@ export class AdfDatabase {
         console.log('[AdfDatabase] Migrated schema v30 → v31 (icon seed)')
       }
 
+      // Migrate schema v31 → v32: index adf_outbox(created_at). Every outbox
+      // read orders by created_at, so without the index each one sorts the
+      // whole table in a TEMP B-TREE.
+      const sv32 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
+      if (sv32?.value === '31') {
+        db.transaction(() => {
+          db.exec('CREATE INDEX IF NOT EXISTS idx_adf_outbox_created ON adf_outbox(created_at)')
+          db.prepare("UPDATE adf_meta SET value = '32' WHERE key = 'adf_schema_version'").run()
+        })()
+        console.log('[AdfDatabase] Migrated schema v31 → v32 (outbox created_at index)')
+      }
+
       // Ensure the per-loop stream index exists regardless of version history:
       // files migrated to v29 by an earlier build of this branch (before the
       // index was added) skip the v28→v29 step, so a version-gated create can't
@@ -2756,6 +2791,13 @@ export class AdfDatabase {
     this.db.pragma('synchronous = NORMAL')
     this.db.pragma('busy_timeout = 5000')
     this.db.pragma('foreign_keys = ON')
+    // 64 MB page cache (negative = KiB, not pages) so a fleet-sized loop/file
+    // table stays hot instead of re-reading pages per statement.
+    this.db.pragma('cache_size = -65536')
+    // Sorts and temp b-trees in RAM — the inbox/outbox/loop reads order by
+    // columns that do not always have a covering index.
+    this.db.pragma('temp_store = MEMORY')
+    this.db.pragma('mmap_size = 268435456')
     this.loadVecExtension()
   }
 
@@ -2842,6 +2884,28 @@ export class AdfDatabase {
     this.stmts.getInboxByStatus = this.db.prepare(
       'SELECT * FROM adf_inbox WHERE status = ? ORDER BY received_at DESC'
     )
+    this.stmts.getInboxMessageById = this.db.prepare('SELECT * FROM adf_inbox WHERE id = ?')
+    // Counting/grouping statements: callers that only need tallies must never
+    // pull `content`/`attachments` (base64 blobs) back through JS.
+    this.stmts.getInboxCounts = this.db.prepare(
+      'SELECT status, COUNT(*) as count FROM adf_inbox GROUP BY status'
+    )
+    this.stmts.getInboxCountByStatus = this.db.prepare(
+      'SELECT COUNT(*) as count FROM adf_inbox WHERE status = ?'
+    )
+    this.stmts.getInboxUnreadBySender = this.db.prepare(
+      'SELECT "from" as sender, COUNT(*) as count FROM adf_inbox WHERE status = \'unread\' GROUP BY "from"'
+    )
+    this.stmts.getInboxUnreadBySource = this.db.prepare(
+      "SELECT COALESCE(source, 'mesh') as source, COUNT(*) as count FROM adf_inbox WHERE status = 'unread' GROUP BY COALESCE(source, 'mesh')"
+    )
+    this.stmts.getOldestUnreadInbox = this.db.prepare(
+      "SELECT MIN(received_at) as oldest FROM adf_inbox WHERE status = 'unread'"
+    )
+    this.stmts.archiveAllInbox = this.db.prepare(
+      "UPDATE adf_inbox SET status = 'archived' WHERE status != 'archived'"
+    )
+    this.stmts.deleteInboxMessage = this.db.prepare('DELETE FROM adf_inbox WHERE id = ?')
     this.stmts.addInboxMessage = this.db.prepare(`
       INSERT INTO adf_inbox (id, message_id, "from", "to", reply_to, network, thread_id, parent_id, subject, content, content_type, attachments, meta, sender_alias, recipient_alias, owner, card, return_path, source, source_context, sent_at, received_at, status, original_message)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2923,8 +2987,14 @@ export class AdfDatabase {
     this.stmts.getDocumentFile = this.db.prepare(
       "SELECT path, content FROM adf_files WHERE path = 'README.md' OR path = 'document.md' ORDER BY CASE WHEN path = 'README.md' THEN 0 ELSE 1 END LIMIT 1"
     )
+    this.stmts.getFileMeta = this.db.prepare(
+      'SELECT path, mime_type, size, protection, authorized, created_at, updated_at FROM adf_files WHERE path = ?'
+    )
     this.stmts.renameFile = this.db.prepare(
       'UPDATE adf_files SET path = ?, updated_at = ? WHERE path = ?'
+    )
+    this.stmts.renameFolder = this.db.prepare(
+      'UPDATE adf_files SET path = ? || substr(path, ?), updated_at = ? WHERE path LIKE ?'
     )
     this.stmts.setFileProtection = this.db.prepare(
       'UPDATE adf_files SET protection = ?, updated_at = ? WHERE path = ?'
@@ -2968,6 +3038,13 @@ export class AdfDatabase {
     )
     this.stmts.setIdentityRaw = this.db.prepare(
       'INSERT INTO adf_identity (purpose, value, encryption_algo, salt, kdf_params) VALUES (?, ?, ?, ?, ?) ON CONFLICT(purpose) DO UPDATE SET value = excluded.value, encryption_algo = excluded.encryption_algo, salt = excluded.salt, kdf_params = excluded.kdf_params'
+    )
+    this.stmts.listAllIdentityPurposes = this.db.prepare('SELECT purpose FROM adf_identity')
+    this.stmts.getIdentityRow = this.db.prepare(
+      'SELECT purpose, encryption_algo, code_access FROM adf_identity WHERE purpose = ?'
+    )
+    this.stmts.setIdentityCodeAccess = this.db.prepare(
+      'UPDATE adf_identity SET code_access = ? WHERE purpose = ?'
     )
 
     // Audit
@@ -3030,11 +3107,16 @@ export class AdfDatabase {
       'SELECT id, level, origin, event, target, message, data, created_at FROM adf_logs ORDER BY id DESC LIMIT ?'
     )
     this.stmts.getLogsAfterId = this.db.prepare(
-      'SELECT id, level, origin, event, target, message, data, created_at FROM adf_logs WHERE id > ? ORDER BY id ASC'
+      'SELECT id, level, origin, event, target, message, data, created_at FROM adf_logs WHERE id > ? ORDER BY id ASC LIMIT ?'
     )
     this.stmts.clearLogs = this.db.prepare('DELETE FROM adf_logs')
+    // Ring-buffer trim by id arithmetic. adf_logs.id is AUTOINCREMENT and rows
+    // only ever leave from the front (this trim) or all at once (clearLogs), so
+    // the live id range stays contiguous and `max - maxRows` is the exact cut
+    // point — no COUNT(*), no OFFSET scan. On an empty table MAX(id) is NULL,
+    // the comparison is NULL, and nothing is deleted.
     this.stmts.trimLogs = this.db.prepare(
-      'DELETE FROM adf_logs WHERE id <= (SELECT id FROM adf_logs ORDER BY id DESC LIMIT 1 OFFSET ?)'
+      'DELETE FROM adf_logs WHERE id <= (SELECT MAX(id) FROM adf_logs) - ?'
     )
     this.stmts.countLogs = this.db.prepare('SELECT COUNT(*) as count FROM adf_logs')
   }
@@ -3066,21 +3148,25 @@ export class AdfDatabase {
    * synchronous better-sqlite3 makes it atomic against other JS in-process.
    */
   incrementMeta(key: string, delta: number, protection: MetaProtectionLevel = 'none'): string | null {
-    const txn = this.db.transaction((k: string, d: number, prot: MetaProtectionLevel): string | null => {
-      const row = this.stmts.getMeta!.get(k) as { value: string } | undefined
-      if (row === undefined) {
-        const initial = formatMetaNumber(d)
-        this.stmts.setMeta!.run(k, initial, prot)
-        return initial
+    // The wrapper is built once and reused — db.transaction() compiles three
+    // statements (BEGIN/COMMIT/ROLLBACK variants) on every call otherwise.
+    this.incrementMetaTxn ??= this.db.transaction(
+      (k: string, d: number, prot: MetaProtectionLevel): string | null => {
+        const row = this.stmts.getMeta!.get(k) as { value: string } | undefined
+        if (row === undefined) {
+          const initial = formatMetaNumber(d)
+          this.stmts.setMeta!.run(k, initial, prot)
+          return initial
+        }
+        // Number('') and Number(' ') are 0 — an empty value is not a counter.
+        const current = row.value.trim() === '' ? NaN : Number(row.value)
+        if (!Number.isFinite(current)) return null
+        const next = formatMetaNumber(current + d)
+        this.stmts.setMeta!.run(k, next, prot)
+        return next
       }
-      // Number('') and Number(' ') are 0 — an empty value is not a counter.
-      const current = row.value.trim() === '' ? NaN : Number(row.value)
-      if (!Number.isFinite(current)) return null
-      const next = formatMetaNumber(current + d)
-      this.stmts.setMeta!.run(k, next, prot)
-      return next
-    })
-    return txn.immediate(key, delta, protection)
+    )
+    return this.incrementMetaTxn.immediate(key, delta, protection) as string | null
   }
 
   deleteMeta(key: string): boolean {
@@ -3137,7 +3223,7 @@ export class AdfDatabase {
       const rows = this.stmts.listIdentityByPrefix!.all(prefix) as { purpose: string }[]
       return rows.map((r) => r.purpose)
     }
-    const rows = this.db.prepare('SELECT purpose FROM adf_identity').all() as { purpose: string }[]
+    const rows = this.stmts.listAllIdentityPurposes!.all() as { purpose: string }[]
     return rows.map((r) => r.purpose)
   }
 
@@ -3213,9 +3299,8 @@ export class AdfDatabase {
    * Used by get_identity to check code_access flag before returning the value.
    */
   getIdentityRow(purpose: string): { purpose: string; code_access: boolean; encryption_algo: string } | null {
-    const row = this.db.prepare(
-      'SELECT purpose, encryption_algo, code_access FROM adf_identity WHERE purpose = ?'
-    ).get(purpose) as { purpose: string; encryption_algo: string; code_access: number } | undefined
+    const row = this.stmts.getIdentityRow!.get(purpose) as
+      { purpose: string; encryption_algo: string; code_access: number } | undefined
     if (!row) return null
     return { purpose: row.purpose, code_access: !!row.code_access, encryption_algo: row.encryption_algo }
   }
@@ -3224,9 +3309,7 @@ export class AdfDatabase {
    * Update the code_access flag for an identity row.
    */
   setIdentityCodeAccess(purpose: string, codeAccess: boolean): boolean {
-    const result = this.db.prepare(
-      'UPDATE adf_identity SET code_access = ? WHERE purpose = ?'
-    ).run(codeAccess ? 1 : 0, purpose)
+    const result = this.stmts.setIdentityCodeAccess!.run(codeAccess ? 1 : 0, purpose)
     return result.changes > 0
   }
 
@@ -3664,8 +3747,47 @@ export class AdfDatabase {
   }
 
   getInboxMessageById(id: string): InboxMessage | null {
-    const row = this.db.prepare('SELECT * FROM adf_inbox WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    const row = this.stmts.getInboxMessageById!.get(id) as Record<string, unknown> | undefined
     return row ? this.rowToInboxMessage(row) : null
+  }
+
+  /**
+   * Per-status row counts, resolved in SQL. The alternative — counting the
+   * arrays getInboxMessages() returns — drags every body and every base64
+   * attachment through JSON.parse just to read `.length`.
+   */
+  getInboxCounts(): { unread: number; read: number; archived: number; total: number } {
+    const counts = { unread: 0, read: 0, archived: 0, total: 0 }
+    const rows = this.stmts.getInboxCounts!.all() as Array<{ status: string; count: number }>
+    for (const row of rows) {
+      if (row.status === 'unread' || row.status === 'read' || row.status === 'archived') {
+        counts[row.status] = row.count
+      }
+      counts.total += row.count
+    }
+    return counts
+  }
+
+  getInboxCount(status: InboxStatus): number {
+    return (this.stmts.getInboxCountByStatus!.get(status) as { count: number }).count
+  }
+
+  /** Unread tallies grouped by sender and by source, plus the oldest arrival. */
+  getUnreadInboxSummary(): {
+    bySender: Record<string, number>
+    bySource: Record<string, number>
+    oldest: number | undefined
+  } {
+    const bySender: Record<string, number> = {}
+    for (const row of this.stmts.getInboxUnreadBySender!.all() as Array<{ sender: string; count: number }>) {
+      bySender[row.sender] = row.count
+    }
+    const bySource: Record<string, number> = {}
+    for (const row of this.stmts.getInboxUnreadBySource!.all() as Array<{ source: string; count: number }>) {
+      bySource[row.source] = row.count
+    }
+    const oldest = (this.stmts.getOldestUnreadInbox!.get() as { oldest: number | null }).oldest
+    return { bySender, bySource, oldest: oldest ?? undefined }
   }
 
   /** True when an inbox row from this source already carries this platform message_id (dedup guard for redelivery/backfill overlap). */
@@ -3713,20 +3835,17 @@ export class AdfDatabase {
   }
 
   archiveAllInbox(): number {
-    const result = this.db.prepare("UPDATE adf_inbox SET status = 'archived' WHERE status != 'archived'").run()
+    const result = this.stmts.archiveAllInbox!.run()
     return result.changes
   }
 
   deleteInboxMessage(id: string): boolean {
-    const result = this.db.prepare('DELETE FROM adf_inbox WHERE id = ?').run(id)
+    const result = this.stmts.deleteInboxMessage!.run(id)
     return result.changes > 0
   }
 
   getUnreadInboxCount(): number {
-    const row = this.db
-      .prepare("SELECT COUNT(*) as count FROM adf_inbox WHERE status = 'unread'")
-      .get() as { count: number }
-    return row.count
+    return this.getInboxCount('unread')
   }
 
   private rowToInboxMessage(row: Record<string, unknown>): InboxMessage {
@@ -4039,10 +4158,13 @@ export class AdfDatabase {
     return result.changes > 0
   }
 
+  /** Existence without reading the BLOB — the row's content can be megabytes. */
+  fileExists(path: string): boolean {
+    return this.stmts.fileExists!.get(path) !== undefined
+  }
+
   getFileMeta(path: string): { path: string; mime_type: string | null; size: number; protection: FileProtectionLevel; authorized: boolean; created_at: string; updated_at: string } | null {
-    const row = this.db.prepare(
-      'SELECT path, mime_type, size, protection, authorized, created_at, updated_at FROM adf_files WHERE path = ?'
-    ).get(path) as { path: string; mime_type: string | null; size: number; protection: FileProtectionLevel; authorized: number; created_at: string; updated_at: string } | undefined
+    const row = this.stmts.getFileMeta!.get(path) as { path: string; mime_type: string | null; size: number; protection: FileProtectionLevel; authorized: number; created_at: string; updated_at: string } | undefined
     if (!row) return null
     return { ...row, authorized: !!row.authorized }
   }
@@ -4090,10 +4212,7 @@ export class AdfDatabase {
   renameFolder(oldPrefix: string, newPrefix: string): number {
     const now = new Date().toISOString()
     const likePattern = oldPrefix + '/%'
-    const stmt = this.db.prepare(
-      `UPDATE adf_files SET path = ? || substr(path, ?), updated_at = ? WHERE path LIKE ?`
-    )
-    const result = stmt.run(newPrefix, oldPrefix.length + 1, now, likePattern)
+    const result = this.stmts.renameFolder!.run(newPrefix, oldPrefix.length + 1, now, likePattern)
     return result.changes
   }
 
@@ -4186,8 +4305,13 @@ export class AdfDatabase {
     return this.stmts.getLogs!.all(limit) as Array<{ id: number; level: string; origin: string | null; event: string | null; target: string | null; message: string; data: string | null; created_at: number }>
   }
 
-  getLogsAfterId(afterId: number): Array<{ id: number; level: string; origin: string | null; event: string | null; target: string | null; message: string; data: string | null; created_at: number }> {
-    return this.stmts.getLogsAfterId!.all(afterId) as Array<{ id: number; level: string; origin: string | null; event: string | null; target: string | null; message: string; data: string | null; created_at: number }>
+  /**
+   * Rows after `afterId`, oldest first, capped at `limit`. Consumers poll with
+   * the highest id they received, so a capped page just catches up on the next
+   * poll instead of materializing an unbounded backlog in one call.
+   */
+  getLogsAfterId(afterId: number, limit: number = AdfDatabase.MAX_LOGS_AFTER_ID): Array<{ id: number; level: string; origin: string | null; event: string | null; target: string | null; message: string; data: string | null; created_at: number }> {
+    return this.stmts.getLogsAfterId!.all(afterId, limit) as Array<{ id: number; level: string; origin: string | null; event: string | null; target: string | null; message: string; data: string | null; created_at: number }>
   }
 
   clearLogs(): void {
@@ -4195,10 +4319,7 @@ export class AdfDatabase {
   }
 
   trimLogs(maxRows: number): void {
-    const { count } = this.stmts.countLogs!.get() as { count: number }
-    if (count > maxRows) {
-      this.stmts.trimLogs!.run(maxRows)
-    }
+    this.stmts.trimLogs!.run(maxRows)
   }
 
   // ===========================================================================

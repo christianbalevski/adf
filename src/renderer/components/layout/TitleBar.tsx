@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore, SIDEBAR_MAX_VW } from '../../stores/app.store'
+import { SIDEBAR_WIDTH_VAR } from './SidebarFrame'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { toDisplayState } from '../../hooks/useAgent'
@@ -264,10 +265,10 @@ export function TitleBar() {
   const starting = localStarting || startingElsewhere
 
   const isMac = window.adfApi?.platform === 'darwin'
-  const sidebarWidth = useAppStore((s) => s.sidebarWidth)
   // Continues the pane below it: Settings' nav is a fixed w-60, the agent
-  // sidebar is whatever the user dragged it to.
-  const leftPaneWidth = showSettings ? 240 : sidebarCollapsed ? null : sidebarWidth
+  // sidebar is whatever the user dragged it to. The variable is SidebarFrame's,
+  // so this pane tracks a drag without subscribing to anything.
+  const leftPaneWidth = showSettings ? 240 : sidebarCollapsed ? null : `var(${SIDEBAR_WIDTH_VAR}, 240px)`
 
   useEffect(() => {
     let mounted = true

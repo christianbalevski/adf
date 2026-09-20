@@ -643,7 +643,10 @@ export class LoopPool implements LoopPoolApi {
     // race below does not swallow the card (review C5).
     this.deps.onLoopEvent({
       type: 'context_injected',
-      payload: { category: 'loop', origin: `loop:${fromLoop}`, content: text, delivery: 'next_boundary' },
+      // The row is already persisted, so its seq rides along: the entry the
+      // chat panel appends live then wears the same `metadata.seq` the
+      // rehydrated row does (pagination cursor only; nothing renders it).
+      payload: { category: 'loop', origin: `loop:${fromLoop}`, content: text, delivery: 'next_boundary', seq },
       timestamp: Date.now(),
       loop: loopName,
     })

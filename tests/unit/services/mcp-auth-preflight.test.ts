@@ -27,9 +27,20 @@ function makeIO(overrides: Partial<McpAuthPreflightIO> = {}): McpAuthPreflightIO
   }
 }
 
+/**
+ * Grace for the "child exits during the startup grace" cases. The preflight
+ * resolves this wait as soon as the child closes, so a generous bound costs
+ * nothing at runtime but removes the race against process-startup latency
+ * (spawning `node`/electron-as-node takes far longer than 100ms on a machine
+ * running the rest of the suite in parallel).
+ */
+const DIES_EARLY_GRACE_MS = 15_000
+
 describe('runMcpAuthPreflight', () => {
   it('never opens a URL printed by an auth command that exits before the startup grace (error help text)', async () => {
-    const io = makeIO({ startupGraceMs: 300 })
+    // The URL gate opens when the grace timer fires; a child slow to spawn under
+    // load would outlive a short grace and get its help-text URL opened.
+    const io = makeIO({ startupGraceMs: DIES_EARLY_GRACE_MS })
     await expect(runMcpAuthPreflight(
       serverCfg('console.error("OAuth credentials not found. Go to the Google Cloud Console (https://console.cloud.google.com/) to create them"); process.exit(1)'),
       {},
@@ -40,7 +51,10 @@ describe('runMcpAuthPreflight', () => {
 
   it('interactive: fails with stderr before showing the dialog when the auth command dies early', async () => {
     const confirm = vi.fn(async () => {})
-    const io = makeIO({ confirm, startupGraceMs: 100 })
+    // The grace is an upper bound the preflight short-circuits on child exit,
+    // so this stays fast; it only has to exceed the child's *startup* cost,
+    // which under full-suite parallel load is well over 100ms.
+    const io = makeIO({ confirm, startupGraceMs: DIES_EARLY_GRACE_MS })
     await expect(runMcpAuthPreflight(
       serverCfg('console.error("Credentials file not found: /root/.config/x.json"); process.exit(1)'),
       {},
@@ -52,7 +66,7 @@ describe('runMcpAuthPreflight', () => {
 
   it('interactive: skips the dialog when the auth command completes on its own', async () => {
     const confirm = vi.fn(async () => {})
-    const io = makeIO({ confirm, startupGraceMs: 100 })
+    const io = makeIO({ confirm, startupGraceMs: DIES_EARLY_GRACE_MS })
     await runMcpAuthPreflight(
       serverCfg('console.log("already authorized"); process.exit(0)'),
       {},
@@ -63,7 +77,9 @@ describe('runMcpAuthPreflight', () => {
 
   it('interactive: fails after the dialog if the auth command died nonzero while it was up', async () => {
     // Child lives past the grace, then dies while "the dialog is open".
-    const confirm = vi.fn(() => new Promise<void>((r) => setTimeout(r, 800)))
+    // The exit is only noticed once confirm resolves, so the dialog has to stay
+    // up past the child's startup latency plus its 400ms life, not just 400ms.
+    const confirm = vi.fn(() => new Promise<void>((r) => setTimeout(r, 3000)))
     const io = makeIO({ confirm, startupGraceMs: 100 })
     await expect(runMcpAuthPreflight(
       serverCfg('console.error("late failure"); setTimeout(() => process.exit(2), 400)'),

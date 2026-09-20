@@ -8,9 +8,12 @@ type McpCredentialSource = Pick<McpServerConfig, 'name' | 'npm_package' | 'pypi_
 }
 
 function sourcePackage(source: McpCredentialSource): string | undefined {
-  return 'npm_package' in source
-    ? source.npm_package ?? source.pypi_package
-    : source.npmPackage ?? source.pypiPackage
+  // Optional keys are often absent rather than undefined, so an `in` check on
+  // one of them cannot tell the two shapes apart: a pypi-only agent config has
+  // no npm_package key and would fall through to the server name, while the
+  // credential panel stored its keys under the pypi package.
+  const s = source as { npm_package?: string; pypi_package?: string; npmPackage?: string; pypiPackage?: string }
+  return s.npm_package ?? s.npmPackage ?? s.pypi_package ?? s.pypiPackage
 }
 
 export function mcpCredentialNamespace(source: McpCredentialSource): string {

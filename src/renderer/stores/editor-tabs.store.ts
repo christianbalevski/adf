@@ -23,6 +23,9 @@ export interface EditorTab {
   savedContent: string
   isDirty: boolean
   isBinary: boolean
+  /** Stored `adf_files.mime_type`, when the opener had it. Untrusted — an agent
+   *  can write any value — so it only ever feeds resolveImageMime's allowlist. */
+  mimeType?: string
   extension: string
   kind: 'file' | 'browser'
   browserMeta?: BrowserTabMeta
@@ -44,7 +47,7 @@ interface EditorTabsState {
    */
   lastExternalWrite: ExternalWriteMark | null
 
-  openTab: (path: string, content: string, isBinary: boolean) => void
+  openTab: (path: string, content: string, isBinary: boolean, mimeType?: string) => void
   /**
    * `activate: false` adds/refreshes the tab without taking the stage — used
    * by the auto-open on agent startup so it doesn't yank the user off the chat.
@@ -71,16 +74,22 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
   activeTabPath: null,
   lastExternalWrite: null,
 
-  openTab: (path, content, isBinary) => {
+  openTab: (path, content, isBinary, mimeType) => {
     const { tabs } = get()
     const existing = tabs.find((t) => t.path === path)
     if (existing) {
       // Re-opening reloads from disk, but only over a clean tab — unsaved local
       // edits outrank whatever the caller read. Refreshing also lets the editor
       // re-evaluate the large-file gate, which it can't do without new content.
-      if (!existing.isDirty && existing.content !== content) {
+      // A binary tab carries no content, so its kind is compared instead: the
+      // file may have been replaced by one of a different type since it opened.
+      const changed =
+        existing.content !== content ||
+        existing.isBinary !== isBinary ||
+        (isBinary && existing.mimeType !== mimeType)
+      if (!existing.isDirty && changed) {
         set({
-          tabs: tabs.map((t) => (t.path === path ? { ...t, content, savedContent: content, isBinary } : t)),
+          tabs: tabs.map((t) => (t.path === path ? { ...t, content, savedContent: content, isBinary, mimeType } : t)),
           activeTabPath: path
         })
         return
@@ -94,6 +103,7 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
       savedContent: content,
       isDirty: false,
       isBinary,
+      mimeType,
       extension: getExtension(path),
       kind: 'file'
     }
@@ -209,7 +219,25 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
  */
 let agentSwitchDepth = 0
 
+/**
+ * Debounced writers that carry no agent identity (AgentConfig's save) register
+ * here so their pending edit is delivered while the outgoing agent's workspace
+ * is still the open one — a switch that never blurs the field (keyboard nav)
+ * would otherwise drop the last debounce window of typing.
+ */
+const preSwitchFlushers = new Set<() => void>()
+
+export function registerPreSwitchFlush(flush: () => void): () => void {
+  preSwitchFlushers.add(flush)
+  return () => { preSwitchFlushers.delete(flush) }
+}
+
 export function beginAgentSwitch(): void {
+  if (agentSwitchDepth === 0) {
+    for (const flush of preSwitchFlushers) {
+      try { flush() } catch { /* a failed flush must not block the switch */ }
+    }
+  }
   agentSwitchDepth++
 }
 

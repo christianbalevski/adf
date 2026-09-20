@@ -6,7 +6,7 @@ import type { AppUpdateState, FileOperationResult, AgentStatusResult, AgentExecu
 } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
-import type { ChatHistory, Inbox } from '../shared/types/adf.types'
+import type { ChatHistory, ChatHistoryEntry, Inbox, RendererOutboxMessage } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
 import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
@@ -57,6 +57,7 @@ export interface AdfApi {
   clearChat: (loop?: string) => Promise<{ success: boolean }>
   getInbox: () => Promise<{ inbox: Inbox | null }>
   clearInbox: () => Promise<{ success: boolean }>
+  getOutbox: () => Promise<{ outbox: { messages: RendererOutboxMessage[] } | null }>
   getBatch: () => Promise<{
     document: string
     agentConfig: AgentConfig | null
@@ -66,6 +67,16 @@ export interface AdfApi {
     lastTokens?: LoopTokenUsage
     /** Persisted context-size baseline (status-bar gauge); null on files that predate it. */
     contextBaseline?: ContextBaseline | null
+  }>
+  /**
+   * The batch minus the loop — document, config and status text only. For
+   * callers that refresh the header after a turn or a meta write and would
+   * otherwise pay for 200 parsed loop rows they discard.
+   */
+  getHeader: () => Promise<{
+    document: string
+    agentConfig: AgentConfig | null
+    statusText: string
   }>
 
   // Agent runtime
@@ -77,7 +88,7 @@ export interface AdfApi {
   /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
   compactLoop: () => Promise<{ success: boolean; error?: string }>
   getAgentStatus: () => Promise<AgentStatusResult>
-  respondToolApproval: (requestId: string, approved: boolean) => Promise<{ success: boolean }>
+  respondToolApproval: (requestId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean }>
   alwaysApproveTool: (requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>
   /** Approve all pending gated (restricted) tool approvals at once; protection overrides are excluded server-side. */
   approveAllGatedTools: () => Promise<{ success: boolean; approved?: number; skippedProtection?: number; error?: string }>
@@ -173,6 +184,23 @@ export interface AdfApi {
   getMeshTokenBurn: () => Promise<FleetBurnResult>
   onMeshEvent: (callback: (event: MeshEvent) => void) => () => void
   getMeshDebug: () => Promise<MeshDebugInfo>
+  /**
+   * The fleet map's whole 5s poll in one round-trip: mesh debug, fleet status,
+   * token burn, adapter status and discovered peers. Each slice is produced by
+   * the same handler body the individual channels use.
+   *
+   * `sinceSeq` is the mesh message-log cursor — pass back the previous
+   * response's `debug.logSeq` and only newer bus entries come down (the
+   * response then carries `logIncremental: true`). Omit it (or pass 0) for the
+   * full log.
+   */
+  getMeshMapPoll: (sinceSeq?: number) => Promise<{
+    debug: MeshDebugInfo | null
+    fleet: FleetStatusResult
+    burn: FleetBurnResult | null
+    adapters: { adapters: AdapterState[]; perAgent?: AdapterAgentStatus[] }
+    peers: unknown[]
+  }>
   getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string }>
   restartMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   startMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
@@ -196,6 +224,11 @@ export interface AdfApi {
   /** Fetch a remote agent's shared file from <baseUrl>/<path> (main-side; mesh server sends no CORS) */
   getPeerSharedFile: (baseUrl: string, filePath: string) => Promise<
     | { ok: true; mime: string; size: number; binary: boolean; content: string }
+    | { ok: false; error: string }
+  >
+  /** Probe a remote agent's health endpoint (main-side; mesh server sends no CORS) */
+  getPeerAgentHealth: (healthUrl: string) => Promise<
+    | { ok: true; status?: string; state?: string }
     | { ok: false; error: string }
   >
   /** Inspect LAN-reachability preconditions: server binding + inbound firewall rule (read-only). */
@@ -226,7 +259,7 @@ export interface AdfApi {
   /** Batched — the main process coalesces ~50ms of background agent events per send. */
   onBackgroundAgentEvents: (callback: (events: RendererBackgroundAgentEvent[]) => void) => () => void
   respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) => Promise<{ success: boolean; error?: string }>
-  respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean) => Promise<{ success: boolean; error?: string }>
+  respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>
   alwaysApproveBackgroundAgentTool: (filePath: string, requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>
 
   // Directory bulk operations
@@ -297,6 +330,7 @@ export interface AdfApi {
     lambda?: string
     warm?: boolean
     payload?: string
+    locked?: boolean
   }) => Promise<{ success: boolean; error?: string }>
   deleteTimer: (id: number) => Promise<{ success: boolean }>
 
@@ -310,7 +344,19 @@ export interface AdfApi {
   renameFolder: (oldPrefix: string, newPrefix: string) => Promise<{ success: boolean; count: number }>
   setFileProtection: (path: string, protection: 'read_only' | 'no_delete' | 'none') => Promise<{ success: boolean }>
   setFileAuthorized: (path: string, authorized: boolean) => Promise<{ success: boolean }>
-  readInternalFile: (path: string) => Promise<{ content: string | null; binary: boolean }>
+  /**
+   * Text files come back as `content`. A binary file comes back with
+   * `binary: true` and empty content unless `binaryContent` is set, in which
+   * case `content` is base64 — or stays empty with `tooLarge` when the file is
+   * over the inline cap. `size` is the stored byte length.
+   */
+  readInternalFile: (path: string, opts?: { binaryContent?: boolean }) => Promise<{
+    content: string | null
+    binary: boolean
+    mimeType?: string
+    size?: number
+    tooLarge?: boolean
+  }>
   writeInternalFile: (path: string, content: string) => Promise<{ success: boolean }>
   downloadInternalFile: (path: string) => Promise<{ success: boolean; error?: string }>
 

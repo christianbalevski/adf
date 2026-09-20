@@ -3,9 +3,7 @@ import { Sidebar } from './Sidebar'
 import { SidebarFrame } from './SidebarFrame'
 import { StatusBar } from './StatusBar'
 import { MeshTrafficBar } from './MeshTrafficBar'
-import { EditorPanel } from '../editor/EditorPanel'
 import { RightDock, RightDockIconBar } from './RightDock'
-import { SettingsPage } from '../settings/SettingsPage'
 import { HomeScreen } from '../home/HomeScreen'
 import { PasswordDialog } from '../common/PasswordDialog'
 import { OwnerMismatchDialog } from '../common/OwnerMismatchDialog'
@@ -15,7 +13,6 @@ import { ShareAgentDialog } from '../common/ShareAgentDialog'
 import { AgentReviewBanner } from '../common/AgentReviewBanner'
 import { ShutdownOverlay } from '../common/ShutdownOverlay'
 import { BottomPanel } from './BottomPanel'
-import { MeshGraphView } from '../mesh/MeshGraphView'
 import { ApprovalToasts } from './ApprovalsMenu'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
@@ -23,12 +20,48 @@ import { useInboxStore } from '../../stores/inbox.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useDragResize } from '../../hooks/useDragResize'
 import { RIGHT_PANEL_WIDTH_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 const RIGHT_PANEL_MIN = 260
 const RIGHT_PANEL_MAX = 600
 const RIGHT_PANEL_DEFAULT = 320
+
+// The three heavy main-content views are split out of the startup chunk. None
+// of them is on the first-paint path — a cold start has no file open, so the
+// Home screen renders first — and all three are warmed on idle below, so the
+// fallback only ever shows if a view is opened before its chunk lands.
+const SettingsPage = lazy(() =>
+  import('../settings/SettingsPage').then((m) => ({ default: m.SettingsPage }))
+)
+const MeshGraphView = lazy(() =>
+  import('../mesh/MeshGraphView').then((m) => ({ default: m.MeshGraphView }))
+)
+const EditorPanel = lazy(() =>
+  import('../editor/EditorPanel').then((m) => ({ default: m.EditorPanel }))
+)
+
+/** The app's spinner, centred in whatever area the pending view will fill. */
+function ViewFallback() {
+  return (
+    <div className="h-full w-full flex items-center justify-center">
+      <svg
+        className="h-8 w-8 animate-spin text-neutral-400 dark:text-neutral-500"
+        xmlns="http://www.w3.org/2000/svg"
+        fill="none"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+      >
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path
+          className="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+        />
+      </svg>
+    </div>
+  )
+}
 
 export function AppShell() {
   const rightPanelCollapsed = useAppStore((s) => s.rightPanelCollapsed)
@@ -38,6 +71,10 @@ export function AppShell() {
   const [rightPanelWidth, setRightPanelWidth] = useState(() =>
     loadStoredSize(RIGHT_PANEL_WIDTH_KEY, RIGHT_PANEL_DEFAULT, RIGHT_PANEL_MIN, RIGHT_PANEL_MAX)
   )
+  // The drag writes the width straight to the panel element and only commits
+  // to state on mouseup — a setState per mousemove re-renders the whole shell
+  // at pointer rate.
+  const rightPanelRef = useRef<HTMLDivElement>(null)
 
   const handleMouseDown = useDragResize({
     axis: 'x',
@@ -45,8 +82,11 @@ export function AppShell() {
     min: RIGHT_PANEL_MIN,
     max: RIGHT_PANEL_MAX,
     getStart: () => rightPanelWidth,
-    onChange: setRightPanelWidth,
-    onCommit: (w) => saveStoredSize(RIGHT_PANEL_WIDTH_KEY, w)
+    onDrag: (w) => { if (rightPanelRef.current) rightPanelRef.current.style.width = `${w}px` },
+    onCommit: (w) => {
+      setRightPanelWidth(w)
+      saveStoredSize(RIGHT_PANEL_WIDTH_KEY, w)
+    }
   })
 
   const resetRightPanelWidth = useCallback(() => {
@@ -78,9 +118,9 @@ export function AppShell() {
   }, [filePath, applyInboxData])
 
   const fetchOutbox = useCallback(() => {
-    window.adfApi?.getOutbox?.().then((result: { outbox?: { messages?: unknown[] } } | undefined) => {
+    window.adfApi?.getOutbox?.().then((result) => {
       if (result?.outbox?.messages) {
-        setOutboxMessages(result.outbox.messages as import('../../../shared/types/adf.types').RendererOutboxMessage[])
+        setOutboxMessages(result.outbox.messages)
       }
     })
   }, [setOutboxMessages])
@@ -117,6 +157,26 @@ export function AppShell() {
   const meshEnabled = useMeshStore((s) => s.enabled)
   const showLogsPanel = useAppStore((s) => s.showLogsPanel)
 
+  // Warm the split chunks once the first paint is done, so opening a file,
+  // Settings or the fleet map looks exactly as instant as it did before.
+  useEffect(() => {
+    const warm = () => {
+      void import('../editor/EditorPanel')
+      void import('../mesh/MeshGraphView')
+      void import('../settings/SettingsPage')
+    }
+    const ric = (window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
+    }).requestIdleCallback
+    if (ric) {
+      const id = ric(warm, { timeout: 3000 })
+      return () => (window as unknown as { cancelIdleCallback?: (h: number) => void })
+        .cancelIdleCallback?.(id)
+    }
+    const t = setTimeout(warm, 1000)
+    return () => clearTimeout(t)
+  }, [])
+
   // Only Windows floats the native controls over the dock's top-right corner
   // (titleBarOverlay). macOS puts its traffic lights on the map's left edge.
   const dockUnderWindowControls =
@@ -142,7 +202,9 @@ export function AppShell() {
         {showMeshGraph ? (
           <div className="flex-1 flex flex-col overflow-hidden bg-surface-1">
             <div className="flex-1 overflow-hidden">
-              <MeshGraphView />
+              <Suspense fallback={<ViewFallback />}>
+                <MeshGraphView />
+              </Suspense>
             </div>
             {/* Same Logs/Tasks drawer the editor gets — the status-bar
                 toggles otherwise point at a panel the map paints over */}
@@ -151,13 +213,15 @@ export function AppShell() {
         ) : (
           <div className="flex-1 flex flex-col overflow-hidden bg-surface-1">
             <div className="flex-1 flex flex-col overflow-hidden">
-              {showSettings ? (
-                <SettingsPage />
-              ) : filePath ? (
-                <EditorPanel />
-              ) : (
-                <HomeScreen />
-              )}
+              <Suspense fallback={<ViewFallback />}>
+                {showSettings ? (
+                  <SettingsPage />
+                ) : filePath ? (
+                  <EditorPanel />
+                ) : (
+                  <HomeScreen />
+                )}
+              </Suspense>
             </div>
             {showLogsPanel && filePath && !showSettings && <BottomPanel />}
           </div>
@@ -178,6 +242,7 @@ export function AppShell() {
               className="shrink-0 w-1 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors bg-transparent"
             />
             <div
+              ref={rightPanelRef}
               style={{ width: rightPanelWidth }}
               className="shrink-0 flex flex-col bg-surface-2"
             >

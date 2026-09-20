@@ -992,7 +992,10 @@ export class AdfCallHandler {
       })
       this.onEvent?.({
         type: 'context_injected',
-        payload: { category, origin, ...(key ? { key } : {}), content: text, delivery: 'next_boundary' },
+        // `seq` is the row just appended — the chat panel stamps it on the
+        // entry it appends live so it matches the rehydrated row (pagination
+        // cursor only; nothing renders it).
+        payload: { category, origin, ...(key ? { key } : {}), content: text, delivery: 'next_boundary', seq: loopSeq },
         timestamp: Date.now()
       })
       return { result: `Queued ${category} context for the next model boundary (${input.content.length} chars).` }

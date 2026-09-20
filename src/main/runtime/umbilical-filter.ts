@@ -14,13 +14,13 @@
  *   4. `when` expression — compiled once, evaluated in a locked-down vm context.
  *   5. rate limit — token bucket; overruns invoke `onRateLimited` and drop.
  *
- * The `when` sandbox: a fresh context per evaluation with a JSON-cloned `event`
- * as the only binding, 10 ms timeout, and code generation from strings/wasm
- * disabled. Any throw (including timeout) evaluates to false — filters fail
- * closed, they never crash the publisher.
+ * The `when` sandbox: one locked-down context per compiled expression, holding
+ * a JSON-cloned `event` as the only binding, 10 ms timeout, and code generation
+ * from strings/wasm disabled. Any throw (including timeout) evaluates to false —
+ * filters fail closed, they never crash the publisher.
  */
 
-import { Script } from 'node:vm'
+import { Script, createContext } from 'node:vm'
 import type { UmbilicalEvent } from './umbilical-bus'
 
 /**
@@ -71,16 +71,24 @@ export function compileWhenExpression(
     throw wrapCompileError ? wrapCompileError(err) : (err instanceof Error ? err : new Error(String(err)))
   }
 
+  // One context per compiled expression, not per event: contextifying a fresh
+  // sandbox is the expensive half of runInNewContext and this runs on the bus
+  // hot path. The clone still keeps the real event unreachable, and every
+  // property the expression leaves on the global is swept after each run so one
+  // event can never carry state into the next.
+  const sandbox: Record<string, unknown> = {}
+  const context = createContext(sandbox, {
+    codeGeneration: { strings: false, wasm: false },
+  })
+
   return (event: UmbilicalEvent) => {
     try {
-      const clonedEvent = JSON.parse(JSON.stringify(event)) as UmbilicalEvent
-      return Boolean(script.runInNewContext(
-        { event: clonedEvent },
-        {
-          timeout: 10,
-          contextCodeGeneration: { strings: false, wasm: false },
-        },
-      ))
+      sandbox.event = JSON.parse(JSON.stringify(event)) as UmbilicalEvent
+      try {
+        return Boolean(script.runInContext(context, { timeout: 10 }))
+      } finally {
+        for (const key of Object.keys(sandbox)) delete sandbox[key]
+      }
     } catch {
       return false
     }

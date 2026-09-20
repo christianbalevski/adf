@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback, useRef, createContext, useContext } f
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useEditorTabsStore } from '../../stores/editor-tabs.store'
+import { useEditorTabsStore, registerPreSwitchFlush } from '../../stores/editor-tabs.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
+import { useRowKeys, useRowKeysGroup } from '../../hooks/useRowKeys'
 import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, LOOP_PROHIBITED_TOOLS, DEFAULT_NEW_LOOP_TOOLS } from '../../../shared/types/adf-v02.types'
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
@@ -113,6 +114,9 @@ const INBOX_TOOLS = new Set(['msg_list', 'msg_read', 'msg_update'])
 
 /** All categorized tool names (anything not in here is uncategorized). */
 const ALL_GROUPED_TOOLS = new Set(TOOL_GROUPS.flatMap(g => [...g.tools]))
+
+/** Trailing window that coalesces a burst of edits into one setAgentConfig. */
+const SAVE_DEBOUNCE_MS = 300
 
 type TriState = 'all' | 'none' | 'mixed'
 
@@ -247,6 +251,7 @@ function McpInstallModal({ open, onClose, serverConfig, onInstalled }: McpInstal
   const [npmPackage, setNpmPackage] = useState('')
   const [customArgs, setCustomArgs] = useState('')
   const [envVars, setEnvVars] = useState<{ key: string; value: string }[]>([])
+  const envVarKeys = useRowKeys(envVars, serverConfig)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; count?: number; error?: string } | null>(null)
 
@@ -379,7 +384,7 @@ function McpInstallModal({ open, onClose, serverConfig, onInstalled }: McpInstal
           <div className="flex items-center justify-between mb-1">
             <label className="block text-xs text-neutral-500 dark:text-neutral-400">Environment Variables</label>
             <button
-              onClick={() => setEnvVars([...envVars, { key: '', value: '' }])}
+              onClick={() => { envVarKeys.append(); setEnvVars([...envVars, { key: '', value: '' }]) }}
               className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
             >
               + Add
@@ -388,7 +393,7 @@ function McpInstallModal({ open, onClose, serverConfig, onInstalled }: McpInstal
           {envVars.length > 0 && (
             <div className="space-y-1.5">
               {envVars.map((envVar, j) => (
-                <div key={j} className="flex gap-1.5 items-center">
+                <div key={envVarKeys.keys[j]} className="flex gap-1.5 items-center">
                   <input
                     type="text"
                     value={envVar.key}
@@ -412,7 +417,7 @@ function McpInstallModal({ open, onClose, serverConfig, onInstalled }: McpInstal
                     className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
                   />
                   <button
-                    onClick={() => setEnvVars(envVars.filter((_, i) => i !== j))}
+                    onClick={() => { envVarKeys.removeAt(j); setEnvVars(envVars.filter((_, i) => i !== j)) }}
                     className="text-xs text-red-400 hover:text-red-600 px-1"
                   >
                     &times;
@@ -873,6 +878,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [executionTargets, setExecutionTargets] = useState<ExecutionTarget[]>([])
   const nameInputRef = useRef<HTMLInputElement>(null)
   const savingRef = useRef(false)
+  // Debounced config write — see `save` below.
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingSaveRef = useRef<{ config: AgentConfigType; owner: string | null } | null>(null)
 
   useEffect(() => {
     if (savingRef.current) {
@@ -1125,15 +1133,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
   const updateFileEntry = useTrackedDirsStore((s) => s.updateFileEntry)
 
-  const save = useCallback(
-    (updated: AgentConfigType) => {
-      savingRef.current = true
-      setLocal(updated)
-      if (templateRef.current) {
-        templateRef.current.onChange(updated)
-        return
-      }
-      setConfig(updated)
+  /** The actual write: SQLite + side-loop/MCP reconcile on the main side. */
+  const persistConfig = useCallback(
+    (updated: AgentConfigType, owner: string | null) => {
+      // The agent moved on between scheduling and delivery — writing now would
+      // put one agent's config into another agent's workspace.
+      if (owner !== useDocumentStore.getState().filePath) return
       // Never fire-and-forget: a refused save (no workspace open, or the
       // backend switched to a different agent file) would otherwise leave the
       // panel showing state that was never persisted — e.g. a tool displayed
@@ -1155,16 +1160,69 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
       // Sync sidebar-visible fields to tracked dirs store so they
       // persist when this file is no longer the foreground agent
-      if (filePath) {
-        updateFileEntry(filePath, {
+      if (owner) {
+        updateFileEntry(owner, {
           autonomous: updated.autonomous ?? false,
           canReceive: updated.triggers?.on_inbox?.enabled ?? false,
           sendMode: updated.messaging?.mode
         })
       }
     },
-    [setConfig, filePath, updateFileEntry]
+    [setConfig, updateFileEntry]
   )
+
+  /** Write any debounced edit through right now (blur, unmount, file switch). */
+  const flushSave = useCallback(() => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
+    const pending = pendingSaveRef.current
+    pendingSaveRef.current = null
+    if (pending) persistConfig(pending.config, pending.owner)
+  }, [persistConfig])
+  const flushSaveRef = useRef(flushSave)
+  flushSaveRef.current = flushSave
+
+  // setAgentConfig is the heaviest IPC handler in the app (SQLite write plus a
+  // side-loop and MCP reconcile). Every keystroke used to fire one. Local state
+  // and the renderer store still update synchronously, so the panel and the
+  // rest of the UI stay instantly responsive; only the write is coalesced.
+  const save = useCallback(
+    (updated: AgentConfigType) => {
+      savingRef.current = true
+      setLocal(updated)
+      if (templateRef.current) {
+        templateRef.current.onChange(updated)
+        return
+      }
+      setConfig(updated)
+      pendingSaveRef.current = { config: updated, owner: filePath }
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = setTimeout(() => {
+        saveTimerRef.current = null
+        const pending = pendingSaveRef.current
+        pendingSaveRef.current = null
+        if (pending) persistConfig(pending.config, pending.owner)
+      }, SAVE_DEBOUNCE_MS)
+    },
+    [setConfig, filePath, persistConfig]
+  )
+
+  // Nothing may outlive the panel or the open file with an unwritten edit.
+  // The cleanup runs before `filePath` takes its new value here, and the
+  // pending entry carries its own owner, so a late flush can never land in the
+  // wrong workspace.
+  useEffect(() => () => flushSaveRef.current(), [filePath])
+  useEffect(() => {
+    const flush = () => flushSaveRef.current()
+    window.addEventListener('beforeunload', flush)
+    const unregister = registerPreSwitchFlush(flush)
+    return () => {
+      window.removeEventListener('beforeunload', flush)
+      unregister()
+    }
+  }, [])
 
   /**
    * A section lock is one or more top-level config keys in `locked_fields` —
@@ -1262,6 +1320,23 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     }
   }, [editingName, filePath, local, setFilePath, setConfig, updateFileEntry])
 
+  // Stable row keys for the editable lists below. Every field in those rows is
+  // rewritten per keystroke, so nothing in the item can be the key; an index
+  // key hands a removed row's DOM node, focus and local state to its
+  // successor. Keyed on the open file, so switching agent starts clean.
+  const paramKeys = useRowKeys(local?.model.params, filePath)
+  const loopKeys = useRowKeys(local?.loops, filePath)
+  const inboxMwKeys = useRowKeys(local?.security?.middleware?.inbox, filePath)
+  const outboxMwKeys = useRowKeys(local?.security?.middleware?.outbox, filePath)
+  const fetchMwKeys = useRowKeys(local?.security?.fetch_middleware, filePath)
+  const apiRouteKeys = useRowKeys(local?.serving?.api, filePath)
+  const routeMwKeys = useRowKeysGroup(filePath)
+  const triggerTargetKeys = useRowKeysGroup(filePath)
+  const wsConnKeys = useRowKeys(local?.ws_connections, filePath)
+  const bindingKeys = useRowKeys(local?.stream_bindings, filePath)
+  const tapKeys = useRowKeys(local?.umbilical_taps, filePath)
+  const logRuleKeys = useRowKeys(local?.logging?.rules, filePath)
+
   if (!local) {
     return (
       <div className="p-4 text-sm text-neutral-400 dark:text-neutral-500 text-center mt-8">
@@ -1278,7 +1353,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
   return (
     <TemplateModeContext.Provider value={!!template}>
-    <div className={template ? '' : 'h-full overflow-y-auto'}>
+    {/* Leaving any field writes the pending edit through immediately, so a
+        click that switches agent or starts one never races the debounce. */}
+    <div className={template ? '' : 'h-full overflow-y-auto'} onBlurCapture={flushSave}>
       <div className={template ? 'space-y-4' : 'p-3 space-y-4'}>
         {/* Identity */}
         <Section docs={DOCS.identity} title={template ? 'Startup' : 'Identity'}>
@@ -1431,7 +1508,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         </Section>
 
         {/* Model */}
-        <Section docs={DOCS.model} title="Model" locked={isSectionLocked('model')} onToggleLock={() => toggleSectionLock('model')} summary={`${local.model.provider ?? 'none'} / ${local.model.model ?? 'default'}`}>
+        <Section docs={DOCS.model} title="Model" locked={isSectionLocked('model')} onToggleLock={() => toggleSectionLock('model')} summary={`${local.model.provider ?? 'none'} / ${local.model.model_id || 'default'}`}>
           <Field label="Provider">
             {(() => {
               // Merge app-wide providers with ADF-stored providers (ADF takes priority)
@@ -1757,6 +1834,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   onClick={() => {
                     const params = [...(local.model.params ?? [])]
                     params.push({ key: '', value: '' })
+                    paramKeys.append()
                     save({ ...local, model: { ...local.model, params } })
                   }}
                 >
@@ -1766,7 +1844,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               {(local.model.params ?? []).length > 0 ? (
                 <div className="space-y-1.5">
                   {(local.model.params ?? []).map((param, j) => (
-                    <div key={j} className="flex gap-1 items-center">
+                    <div key={paramKeys.keys[j]} className="flex gap-1 items-center">
                       <input
                         type="text"
                         value={param.key}
@@ -1792,6 +1870,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       <button
                         onClick={() => {
                           const params = (local.model.params ?? []).filter((_, k) => k !== j)
+                          paramKeys.removeAt(j)
                           save({ ...local, model: { ...local.model, params } })
                         }}
                         className="text-xs text-red-400 hover:text-red-600 px-0.5"
@@ -2421,6 +2500,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       // The appended loop takes the next index — mark it so its
                       // card opens expanded for immediate editing.
                       setNewLoopIndex(loops.length)
+                      loopKeys.append()
                       saveLoops([...loops, { name, goal: '', enabled: true, autostart: true, ...(seeded.length > 0 && { tools: seeded }) }])
                     }}
                     className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
@@ -2437,7 +2517,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
                 {loops.map((entry, i) => (
                   <LoopCard
-                    key={i}
+                    key={loopKeys.keys[i]}
                     entry={entry}
                     duplicate={loops.some((other, j) => j !== i && other.name === entry.name)}
                     grantableTools={grantableTools}
@@ -2448,7 +2528,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       providers.find((p) => p.id === picked)?.defaultModel ?? ''
                     }
                     patchLoop={(patch) => patchLoop(i, patch)}
-                    onRemove={() => saveLoops(loops.filter((_, j) => j !== i))}
+                    onRemove={() => { loopKeys.removeAt(i); saveLoops(loops.filter((_, j) => j !== i)) }}
                     defaultExpanded={i === newLoopIndex}
                   />
                 ))}
@@ -3596,7 +3676,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         </Section>
 
         {/* Security */}
-        <Section docs={DOCS.security} title="Security" locked={isSectionLocked('security')} onToggleLock={() => toggleSectionLock('security')} summary={(['Open', 'Signed', 'Encrypted'] as const)[local.security?.level ?? 0]}>
+        <Section docs={DOCS.security} title="Security" locked={isSectionLocked('security')} onToggleLock={() => toggleSectionLock('security')} summary={(['Open', 'Signed', 'Encrypted', 'Advanced'] as const)[local.security?.level ?? 0]}>
           <div className="flex items-center justify-between mb-0.5">
             <label className="block text-xs text-neutral-500 dark:text-neutral-400">Security level<InfoHint tip="Open: no signing. Signed: messages are cryptographically signed. Encrypted: signed, and payloads to DID recipients are encrypted end-to-end (encryption key derived from the recipient’s DID). Local same-runtime and channel-adapter messages are not encrypted." /></label>
             {!isSectionLocked('security') && (
@@ -3844,6 +3924,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <button
                   onClick={() => {
                     const mw = [...(local.security?.middleware?.inbox ?? []), { lambda: '' }]
+                    inboxMwKeys.append()
                     save({
                       ...local,
                       security: { ...local.security, middleware: { ...local.security?.middleware, inbox: mw } }
@@ -3855,7 +3936,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 </button>
               </div>
               {(local.security?.middleware?.inbox ?? []).map((ref, i) => (
-                <div key={i} className="flex gap-1 items-center mb-1">
+                <div key={inboxMwKeys.keys[i]} className="flex gap-1 items-center mb-1">
                   <input
                     type="text"
                     value={ref.lambda}
@@ -3873,6 +3954,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   <button
                     onClick={() => {
                       const mw = (local.security?.middleware?.inbox ?? []).filter((_, j) => j !== i)
+                      inboxMwKeys.removeAt(i)
                       save({
                         ...local,
                         security: { ...local.security, middleware: { ...local.security?.middleware, inbox: mw.length > 0 ? mw : undefined } }
@@ -3893,6 +3975,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <button
                   onClick={() => {
                     const mw = [...(local.security?.middleware?.outbox ?? []), { lambda: '' }]
+                    outboxMwKeys.append()
                     save({
                       ...local,
                       security: { ...local.security, middleware: { ...local.security?.middleware, outbox: mw } }
@@ -3904,7 +3987,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 </button>
               </div>
               {(local.security?.middleware?.outbox ?? []).map((ref, i) => (
-                <div key={i} className="flex gap-1 items-center mb-1">
+                <div key={outboxMwKeys.keys[i]} className="flex gap-1 items-center mb-1">
                   <input
                     type="text"
                     value={ref.lambda}
@@ -3922,6 +4005,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   <button
                     onClick={() => {
                       const mw = (local.security?.middleware?.outbox ?? []).filter((_, j) => j !== i)
+                      outboxMwKeys.removeAt(i)
                       save({
                         ...local,
                         security: { ...local.security, middleware: { ...local.security?.middleware, outbox: mw.length > 0 ? mw : undefined } }
@@ -3953,6 +4037,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   disabled={isSectionLocked('security.fetch_middleware')}
                   onClick={() => {
                     const mw = [...(local.security?.fetch_middleware ?? []), { lambda: '' }]
+                    fetchMwKeys.append()
                     save({
                       ...local,
                       security: { ...local.security, fetch_middleware: mw }
@@ -3965,7 +4050,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               </div>
               <div className={isSectionLocked('security.fetch_middleware') ? 'opacity-60 pointer-events-none' : ''}>
               {(local.security?.fetch_middleware ?? []).map((ref, i) => (
-                <div key={i} className="flex gap-1 items-center mb-1">
+                <div key={fetchMwKeys.keys[i]} className="flex gap-1 items-center mb-1">
                   <input
                     type="text"
                     value={ref.lambda}
@@ -3983,6 +4068,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   <button
                     onClick={() => {
                       const mw = (local.security?.fetch_middleware ?? []).filter((_, j) => j !== i)
+                      fetchMwKeys.removeAt(i)
                       save({
                         ...local,
                         security: { ...local.security, fetch_middleware: mw.length > 0 ? mw : undefined }
@@ -4100,6 +4186,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             const showTiming = !noTimingTypes.includes(key)
             /** Side loops available as target streams. Empty ⇒ no Loop field at all. */
             const sideLoops: LoopConfig[] = local.loops ?? []
+            // One key list per trigger type — the target rows hold local input state.
+            const targetKeys = triggerTargetKeys.for(key, triggerCfg.targets ?? [])
 
             const updateTriggerCfg = (patch: Partial<TriggerConfig>) => {
               save({
@@ -4147,11 +4235,13 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 undefined
               const newTarget: TriggerTarget = { scope: 'agent' as TriggerScopeV3, ...(defaultFilter ? { filter: defaultFilter } : {}) }
               const newTargets = [...(triggerCfg.targets ?? []), newTarget]
+              targetKeys.append()
               updateTriggerCfg({ targets: newTargets })
             }
 
             const removeTarget = (idx: number) => {
               const newTargets = (triggerCfg.targets ?? []).filter((_, i) => i !== idx)
+              targetKeys.removeAt(idx)
               updateTriggerCfg({ targets: newTargets })
             }
 
@@ -4190,7 +4280,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       const timingValue = target.debounce_ms ?? target.interval_ms ?? target.batch_ms ?? 0
 
                       return (
-                        <div key={ti} className={`rounded-md border p-2 space-y-1.5 ${target.locked ? 'border-amber-300 dark:border-amber-600 bg-amber-50/30 dark:bg-amber-900/10' : 'border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50'}`}>
+                        <div key={targetKeys.keys[ti]} className={`rounded-md border p-2 space-y-1.5 ${target.locked ? 'border-amber-300 dark:border-amber-600 bg-amber-50/30 dark:bg-amber-900/10' : 'border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50'}`}>
                           {/* Target header: scope + lock + remove */}
                           <div className="flex items-center gap-1.5">
                             <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Scope</span>
@@ -4608,6 +4698,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               <button
                 onClick={() => {
                   const api = [...(local.serving?.api ?? []), { method: 'GET' as const, path: '/', lambda: '', warm: false }]
+                  apiRouteKeys.append()
                   save({
                     ...local,
                     serving: { ...(local.serving ?? {}), api }
@@ -4619,7 +4710,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               </button>
             </div>
             {(local.serving?.api ?? []).map((route, i) => (
-              <div key={i} className={`mb-2 p-2 rounded border space-y-1.5 ${route.locked ? 'border-amber-300 dark:border-amber-600 bg-amber-50/30 dark:bg-amber-900/10' : 'border-neutral-200 dark:border-neutral-700'}`}>
+              <div key={apiRouteKeys.keys[i]} className={`mb-2 p-2 rounded border space-y-1.5 ${route.locked ? 'border-amber-300 dark:border-amber-600 bg-amber-50/30 dark:bg-amber-900/10' : 'border-neutral-200 dark:border-neutral-700'}`}>
                 <div className="flex gap-1.5 items-center min-w-0">
                   <select
                     value={route.method}
@@ -4660,6 +4751,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     onClick={() => {
                       if (route.locked) return
                       const api = (local.serving?.api ?? []).filter((_, j) => j !== i)
+                      apiRouteKeys.removeAt(i)
                       save({ ...local, serving: { ...(local.serving ?? {}), api: api.length > 0 ? api : undefined } })
                     }}
                     className={`text-xs shrink-0 px-1 ${route.locked ? 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed' : 'text-red-400 hover:text-red-600'}`}
@@ -4748,6 +4840,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         <span className="text-[10px] text-neutral-400">Include on Agent Card</span>
                       </label>
                     </div>
+                    {/* Per-route list: its keys hang off the route's own row key. */}
+                    {(() => {
+                    const mwKeys = routeMwKeys.for(apiRouteKeys.keys[i], route.middleware ?? [])
+                    return (
                     <div>
                       <div className="flex items-center justify-between mb-0.5">
                         <span className="text-[10px] text-neutral-400">middleware</span>
@@ -4756,6 +4852,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                             const api = [...(local.serving?.api ?? [])]
                             const mw = [...(route.middleware ?? []), { lambda: '' }]
                             api[i] = { ...api[i], middleware: mw }
+                            mwKeys.append()
                             save({ ...local, serving: { ...(local.serving ?? {}), api } })
                           }}
                           className="text-[10px] text-blue-500 hover:text-blue-700 font-medium"
@@ -4764,7 +4861,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         </button>
                       </div>
                       {(route.middleware ?? []).map((ref, j) => (
-                        <div key={j} className="flex gap-1 items-center mb-1">
+                        <div key={mwKeys.keys[j]} className="flex gap-1 items-center mb-1">
                           <input
                             type="text"
                             value={ref.lambda}
@@ -4783,6 +4880,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                               const api = [...(local.serving?.api ?? [])]
                               const mw = (route.middleware ?? []).filter((_, k) => k !== j)
                               api[i] = { ...api[i], middleware: mw.length > 0 ? mw : undefined }
+                              mwKeys.removeAt(j)
                               save({ ...local, serving: { ...(local.serving ?? {}), api } })
                             }}
                             className="text-xs text-red-400 hover:text-red-600 px-1"
@@ -4792,6 +4890,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         </div>
                       ))}
                     </div>
+                    )
+                    })()}
                   </>
                 )}
               </div>
@@ -4832,6 +4932,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   url: '',
                   enabled: true
                 } as WsConnectionConfig]
+                wsConnKeys.append()
                 save({ ...local, ws_connections: wsConns })
               }}
               className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
@@ -4840,7 +4941,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             </button>
           </div>
           {(local.ws_connections ?? []).map((conn, i) => (
-            <div key={i} className="mb-2 p-2 rounded border border-neutral-200 dark:border-neutral-700 space-y-1.5">
+            <div key={wsConnKeys.keys[i]} className="mb-2 p-2 rounded border border-neutral-200 dark:border-neutral-700 space-y-1.5">
               <div className="flex gap-1.5 items-center">
                 <label className="flex items-center gap-1 cursor-pointer shrink-0">
                   <input
@@ -4868,6 +4969,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <button
                   onClick={() => {
                     const wsConns = (local.ws_connections ?? []).filter((_, j) => j !== i)
+                    wsConnKeys.removeAt(i)
                     save({ ...local, ws_connections: wsConns.length > 0 ? wsConns : undefined })
                   }}
                   className="text-xs text-red-400 hover:text-red-600 px-1"
@@ -5041,6 +5143,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   reconnect: true,
                   options: { flow_summary_interval_ms: 5000 },
                 } as StreamBindingDeclaration]
+                bindingKeys.append()
                 save({ ...local, stream_bindings: bindings })
               }}
               className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
@@ -5050,7 +5153,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           </div>
 
           {(local.stream_bindings ?? []).map((binding, i) => (
-            <div key={i} className="mb-2 p-2 rounded border border-neutral-200 dark:border-neutral-700 space-y-1.5">
+            <div key={bindingKeys.keys[i]} className="mb-2 p-2 rounded border border-neutral-200 dark:border-neutral-700 space-y-1.5">
               <div className="flex gap-1.5 items-center">
                 <input
                   type="text"
@@ -5066,6 +5169,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <button
                   onClick={() => {
                     const bindings = (local.stream_bindings ?? []).filter((_, j) => j !== i)
+                    bindingKeys.removeAt(i)
                     save({ ...local, stream_bindings: bindings.length > 0 ? bindings : undefined })
                   }}
                   className="text-xs text-red-400 hover:text-red-600 px-1"
@@ -5183,6 +5287,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   exclude_own_origin: true,
                   max_rate_per_sec: 100,
                 } as UmbilicalTapConfig]
+                tapKeys.append()
                 save({ ...local, umbilical_taps: taps })
               }}
               className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
@@ -5191,7 +5296,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             </button>
           </div>
           {(local.umbilical_taps ?? []).map((tap, i) => (
-            <div key={i} className="mb-2 p-2 rounded border border-neutral-200 dark:border-neutral-700 space-y-1.5">
+            <div key={tapKeys.keys[i]} className="mb-2 p-2 rounded border border-neutral-200 dark:border-neutral-700 space-y-1.5">
               <div className="flex gap-1.5 items-center">
                 <input
                   type="text"
@@ -5207,6 +5312,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <button
                   onClick={() => {
                     const taps = (local.umbilical_taps ?? []).filter((_, j) => j !== i)
+                    tapKeys.removeAt(i)
                     save({ ...local, umbilical_taps: taps.length > 0 ? taps : undefined })
                   }}
                   className="text-xs text-red-400 hover:text-red-600 px-1"
@@ -5356,6 +5462,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               <button
                 onClick={() => {
                   const rules = [...(local.logging?.rules ?? []), { origin: '*', min_level: 'info' as const }]
+                  logRuleKeys.append()
                   save({
                     ...local,
                     logging: {
@@ -5370,7 +5477,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               </button>
             </div>
             {(local.logging?.rules ?? []).map((rule, i) => (
-              <div key={i} className="flex gap-1.5 items-center mb-1">
+              <div key={logRuleKeys.keys[i]} className="flex gap-1.5 items-center mb-1">
                 <input
                   type="text"
                   value={rule.origin}
@@ -5404,6 +5511,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <button
                   onClick={() => {
                     const rules = (local.logging?.rules ?? []).filter((_, j) => j !== i)
+                    logRuleKeys.removeAt(i)
                     save({
                       ...local,
                       logging: {

@@ -12,9 +12,9 @@
  * SQLite VFS by the command handlers — the applet never touches host disk.
  */
 
-import { readFileSync, existsSync } from 'fs'
-import { join, dirname } from 'path'
+import { readFileSync } from 'fs'
 import { Worker } from 'node:worker_threads'
+import { locate } from './locate-resource'
 
 export interface AppletResult {
   stdout: string
@@ -27,29 +27,6 @@ export interface RunAppletOptions {
   timeoutMs?: number
   /** Abort signal (shell cancel); aborting terminates the worker (exit 130). */
   signal?: AbortSignal
-}
-
-/**
- * Walk up from `start` looking for `resources/wasm/<name>` or
- * `node_modules/<pkg>`. Resolves across all runtimes: bundled Electron main
- * (out/main inside asar — Electron patches fs for asar paths), tsx daemon/CLI,
- * and vitest. Falls back to cwd for module systems without __dirname.
- */
-function locate(segments: string[]): string {
-  const starts: string[] = []
-  if (typeof __dirname !== 'undefined') starts.push(__dirname)
-  starts.push(process.cwd())
-  for (const start of starts) {
-    let dir = start
-    for (let i = 0; i < 8; i++) {
-      const candidate = join(dir, ...segments)
-      if (existsSync(candidate)) return candidate
-      const parent = dirname(dir)
-      if (parent === dir) break
-      dir = parent
-    }
-  }
-  throw new Error(`not found: ${segments.join('/')}`)
 }
 
 function locateWasm(): string {

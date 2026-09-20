@@ -109,7 +109,7 @@ export function useAdfFile() {
         try {
           const file = await window.adfApi.readInternalFile(path)
           if (file?.content != null) {
-            tabStore.openTab(path, file.binary ? '' : file.content, file.binary)
+            tabStore.openTab(path, file.binary ? '' : file.content, file.binary, file.mimeType)
             return true
           }
         } catch { /* file gone since last session — skip */ }

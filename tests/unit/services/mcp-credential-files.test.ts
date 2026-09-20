@@ -71,6 +71,9 @@ describe('credentialFilePurposes', () => {
   })
 })
 
+/** A rooted host home in the platform's own syntax (`~` expansion resolves). */
+const HOST_HOME = process.platform === 'win32' ? 'C:\\custom' : '/custom'
+
 describe('expandCredentialPath', () => {
   it('expands ~ against the container home', () => {
     const target = fsContainerTarget('/ctr')
@@ -78,17 +81,19 @@ describe('expandCredentialPath', () => {
   })
 
   it('expands ~ against an explicit host home', () => {
-    expect(expandCredentialPath('~/x.json', { kind: 'host', home: '/custom' })).toBe('/custom/x.json')
-    expect(expandCredentialPath('~/.config/ok.json', { kind: 'host', home: '/custom' })).toBe('/custom/.config/ok.json')
+    // Host paths are real OS paths (path.resolve), so the expected value is
+    // built with path.join rather than hardcoded POSIX separators.
+    expect(expandCredentialPath('~/x.json', { kind: 'host', home: HOST_HOME })).toBe(join(HOST_HOME, 'x.json'))
+    expect(expandCredentialPath('~/.config/ok.json', { kind: 'host', home: HOST_HOME })).toBe(join(HOST_HOME, '.config/ok.json'))
   })
 
   it('confines host paths to ~: rejects absolute paths', () => {
-    expect(() => expandCredentialPath('/etc/keys.json', { kind: 'host', home: '/custom' }))
+    expect(() => expandCredentialPath('/etc/keys.json', { kind: 'host', home: HOST_HOME }))
       .toThrow(/Host credential files must live under ~ — declare a ~-relative path/)
   })
 
   it('confines host paths to ~: rejects .. escapes', () => {
-    expect(() => expandCredentialPath('~/../../etc/x', { kind: 'host', home: '/custom/home' }))
+    expect(() => expandCredentialPath('~/../../etc/x', { kind: 'host', home: join(HOST_HOME, 'home') }))
       .toThrow(/escapes the home directory/)
   })
 
@@ -155,7 +160,10 @@ describe('materializeCredentialFiles', () => {
     await materializeCredentialFiles(store, server(), { kind: 'host', home })
     const dest = join(home, '.config/gdrive/keys.json')
     expect(readFileSync(dest, 'utf8')).toBe('host-copy')
-    expect(statSync(dest).mode & 0o777).toBe(0o600)
+    // POSIX mode bits only: NTFS has no rwx bits and Node reports 0666/0444
+    // regardless of the mode passed to writeFileSync. The 0600 guarantee is
+    // still asserted in full on every POSIX platform (incl. CI).
+    if (process.platform !== 'win32') expect(statSync(dest).mode & 0o777).toBe(0o600)
   })
 
   it('fails plainly for a required file missing from the keystore, naming purpose, path, and routes', async () => {

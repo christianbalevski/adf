@@ -62,6 +62,13 @@ export interface LoopSlice {
    *  for scroll-to-bottom or virtualiser re-measure). Avoids creating a new array
    *  reference on every streaming delta. */
   logVersion: number
+  /** Bumped only when the SHAPE of the log changes — an entry appended, the
+   *  window replaced/prepended/cleared, or any field a grouping pass reads
+   *  (type, metadata, pairing) rewritten. A streaming content delta bumps
+   *  `logVersion` alone, so consumers that rebuild per-entry indexes (filter,
+   *  tool pairing, activity grouping) can key on this and stay untouched by the
+   *  ~20 deltas/s a live answer produces. */
+  structuralVersion: number
   /** Loop rows in the DB older than the loaded window (0 = fully loaded). */
   earlierCount: number
   /** Maps logEntryId -> pending approval info for tool calls awaiting HIL approval */
@@ -91,6 +98,7 @@ function emptySlice(): LoopSlice {
     state: 'idle',
     log: [],
     logVersion: 0,
+    structuralVersion: 0,
     earlierCount: 0,
     pendingApprovals: new Map(),
     pendingAsks: new Map(),
@@ -104,6 +112,20 @@ function emptySlice(): LoopSlice {
 /** Stable reference for "a side loop that has never emitted anything" so
  *  selectors don't churn referentially on every render. */
 const EMPTY_SLICE: LoopSlice = emptySlice()
+
+/**
+ * True when a mutation only appended streamed prose to a text/thinking entry.
+ * Anything else — a rewritten `metadata` object, a changed type — can move the
+ * row between activity groups or re-pair a tool call, so it is structural.
+ * Deliberately conservative: unknown shapes fall through to "structural".
+ */
+function isContentOnlyDelta(before: AgentLogEntry, after: AgentLogEntry): boolean {
+  return (after.type === 'text' || after.type === 'thinking')
+    && before.type === after.type
+    && before.id === after.id
+    && before.timestamp === after.timestamp
+    && before.metadata === after.metadata
+}
 
 /** `undefined`/`'main'` both mean the host loop. */
 function isMainLoop(loop?: string): boolean {
@@ -134,6 +156,19 @@ interface AgentStoreState extends LoopSlice {
   updateLastEntry: (mutator: (entry: AgentLogEntry) => void, loop?: string) => void
   /** Mutate a log entry at a specific index and bump logVersion. */
   updateEntryAt: (index: number, mutator: (entry: AgentLogEntry) => void, loop?: string) => void
+  /**
+   * Stamp `metadata.seq` (the adf_loop row a live-appended entry ended up in)
+   * on entries that do not have one yet.
+   *
+   * Deliberately invisible: no renderer reads `seq`, so this mutates the
+   * existing entry objects in place and bumps NEITHER version. Going through
+   * `updateEntryAt` would rewrite `metadata`, which `isContentOnlyDelta`
+   * (correctly) treats as structural — every streamed block would then force a
+   * whole-log regroup (tool pairing, activity grouping, the result filter) for
+   * a pagination cursor nothing draws. `handleLoadOlder` reads the store
+   * imperatively via getState(), so it sees the stamp without a re-render.
+   */
+  stampSeq: (indexes: number[], seq: number, loop?: string) => void
   setLog: (log: AgentLogEntry[], earlierCount?: number, loop?: string) => void
   /** Prepend older loop entries loaded via keyset pagination. */
   prependLog: (entries: AgentLogEntry[], earlierCount: number, loop?: string) => void
@@ -210,6 +245,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     sessionId: null,
     log: [],
     logVersion: 0,
+    structuralVersion: 0,
     earlierCount: 0,
     sideLoops: {},
     config: null,
@@ -225,9 +261,15 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     setState: (state, loop) => patchSlice(loop, () => ({ state })),
     setStarting: (starting) => set({ starting }),
     setSessionId: (sessionId) => set({ sessionId }),
+    // NOT capped with a head-drop. That is a separate decision — but the
+    // blocker is gone: "Load earlier" pages by the `seq` of the oldest LOADED
+    // entry, and live-streamed entries now carry one too (see `stampSeq` and
+    // hooks/live-seq.ts), so a dropped head would stay reachable instead of
+    // leaving the window with no cursor to name.
     addLogEntry: (entry, loop) => patchSlice(loop, (s) => ({
       log: [...s.log, entry],
-      logVersion: s.logVersion + 1
+      logVersion: s.logVersion + 1,
+      structuralVersion: s.structuralVersion + 1
     })),
     updateLastEntry: (mutator, loop) => patchSlice(loop, (s) => {
       const last = s.log[s.log.length - 1]
@@ -236,7 +278,9 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       const updated = { ...last }
       mutator(updated)
       s.log[s.log.length - 1] = updated
-      return { logVersion: s.logVersion + 1 }
+      return isContentOnlyDelta(last, updated)
+        ? { logVersion: s.logVersion + 1 }
+        : { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
     }),
     updateEntryAt: (index, mutator, loop) => patchSlice(loop, (s) => {
       const entry = s.log[index]
@@ -244,20 +288,38 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       const updated = { ...entry }
       mutator(updated)
       s.log[index] = updated
-      return { logVersion: s.logVersion + 1 }
+      return isContentOnlyDelta(entry, updated)
+        ? { logVersion: s.logVersion + 1 }
+        : { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
     }),
+    stampSeq: (indexes, seq, loop) => {
+      if (indexes.length === 0) return
+      const slice = selectLoopSlice(get(), loop)
+      for (const index of indexes) {
+        const entry = slice.log[index]
+        if (!entry || typeof entry.metadata?.seq === 'number') continue
+        entry.metadata = { ...entry.metadata, seq }
+      }
+    },
     setLog: (log, earlierCount, loop) => patchSlice(loop, (s) => ({
       log,
       logVersion: s.logVersion + 1,
+      structuralVersion: s.structuralVersion + 1,
       ...(earlierCount !== undefined ? { earlierCount } : {})
     })),
     prependLog: (entries, earlierCount, loop) => patchSlice(loop, (s) => ({
       log: [...entries, ...s.log],
       logVersion: s.logVersion + 1,
+      structuralVersion: s.structuralVersion + 1,
       earlierCount
     })),
     setEarlierCount: (earlierCount, loop) => patchSlice(loop, () => ({ earlierCount })),
-    clearLog: (loop) => patchSlice(loop, (s) => ({ log: [], logVersion: s.logVersion + 1, earlierCount: 0 })),
+    clearLog: (loop) => patchSlice(loop, (s) => ({
+      log: [],
+      logVersion: s.logVersion + 1,
+      structuralVersion: s.structuralVersion + 1,
+      earlierCount: 0
+    })),
     dropLoop: (loop) => {
       if (isMainLoop(loop)) return
       const s = get()
@@ -289,7 +351,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
         ...entry,
         metadata: { ...entry.metadata, overrideOutcome: approved ? 'approved' : 'denied' }
       }
-      return { logVersion: s.logVersion + 1 }
+      // A new entry object — the grouping passes must hand the row out again.
+      return { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
     }),
     addPendingAsk: (logEntryId, requestId, question, loop) => patchSlice(loop, (s) => {
       const next = new Map(s.pendingAsks)

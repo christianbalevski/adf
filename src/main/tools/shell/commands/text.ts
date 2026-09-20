@@ -8,6 +8,14 @@ import { ok, err } from './types'
 import type { ArgumentNode } from '../parser/ast'
 import { shellReadFile, shellReadFileRow, isTextRow, isTextMime } from './fs-read-helper'
 import { runApplet } from './wasi-applet-adapter'
+import type { RegexMatch, SelectResult } from './regex-worker'
+import { execLines, mayBacktrack, selectLines, OFFLOAD_MIN_BYTES } from './regex-worker'
+
+/** Exit codes for a regex that was killed off-thread — same convention as the
+ *  WASM applets (124 timeout, 130 aborted). */
+function regexFailure(cmd: string, reason: 'timeout' | 'aborted' | 'error', message: string): CommandResult {
+  return err(`${cmd}: ${message}`, reason === 'timeout' ? 124 : reason === 'aborted' ? 130 : 1)
+}
 
 /** Normalize a path for VFS: strip leading ./ and / */
 function vfsPath(p: string): string {
@@ -203,17 +211,43 @@ const grepHandler: CommandHandler = {
     const noFilename = !!ctx.flags.h   // -h: suppress filename prefix
     const forceFilename = !!ctx.flags.H // -H: force filename prefix
 
-    /** Emit the matching pieces of one line (respects -o). Under -o, empty
-     *  (zero-width) matches are dropped — GNU prints nothing for those. */
-    const emit = (line: string, prefix: string, out: string[]): number => {
-      if (onlyMatching && oRe) {
-        const found = (line.match(oRe) ?? []).filter(m => m.length > 0)
-        if (found.length === 0) return 0
-        for (const m of found) out.push(`${prefix}${m}`)
-        return found.length
+    // The pattern comes from the agent and JS regex matching is synchronous and
+    // unbounded, so a nested-quantifier pattern would freeze the process past
+    // any timeout. Matching moves to a worker (with a real kill) when the
+    // pattern can backtrack or the input is large; see regex-worker.
+    const reFlags = ignoreCase ? 'i' : ''
+    const wantPieces = onlyMatching && !listFiles && !quiet && !count
+    const offloadPattern = mayBacktrack(src)
+    const timeoutMs = ctx.config.limits?.execution_timeout_ms
+
+    /** Select matching line indices (plus -o pieces), inline or off-thread. */
+    const select = async (lines: string[], bytes: number): Promise<SelectResult | { failure: CommandResult }> => {
+      if (!offloadPattern && bytes <= OFFLOAD_MIN_BYTES) {
+        const idx: number[] = []
+        const pieces: string[][] | null = wantPieces ? [] : null
+        for (let i = 0; i < lines.length && idx.length < maxCount; i++) {
+          if (lineRe.test(lines[i]) !== invert) {
+            idx.push(i)
+            if (pieces && oRe) pieces.push((lines[i].match(oRe) ?? []).filter(m => m.length > 0))
+          }
+        }
+        return { idx, pieces }
+      }
+      const r = await selectLines(
+        { source: src, flags: reFlags, lines, invert, maxCount, pieces: wantPieces },
+        { timeoutMs, signal: ctx.signal }
+      )
+      return r.ok ? r.value : { failure: regexFailure('grep', r.reason, r.message) }
+    }
+
+    /** Emit one selected line (respects -o). Under -o, empty (zero-width)
+     *  matches are dropped — GNU prints nothing for those. */
+    const emit = (line: string, prefix: string, out: string[], pieces: string[] | null): void => {
+      if (wantPieces && pieces) {
+        for (const m of pieces) out.push(`${prefix}${m}`)
+        return
       }
       out.push(`${prefix}${line}`)
-      return 1
     }
 
     // ── Recursive / multi-file mode ──
@@ -237,16 +271,16 @@ const grepHandler: CommandHandler = {
         const [content, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, file.path)
         if (readErr) continue
         const lines = splitLines(content)
-        let fileMatches = 0
-        for (let i = 0; i < lines.length && fileMatches < maxCount; i++) {
-          if (lineRe.test(lines[i]) !== invert) {
-            anyMatch = true
-            fileMatches++
-            if (!listFiles && !quiet && !count) {
-              // GNU: path:content by default, path:N:content only with -n
-              const prefix = `${withName ? `${file.path}:` : ''}${showNumbers ? `${i + 1}:` : ''}`
-              emit(lines[i], prefix, out)
-            }
+        const sel = await select(lines, content?.length ?? 0)
+        if ('failure' in sel) return sel.failure
+        const fileMatches = sel.idx.length
+        if (fileMatches > 0) anyMatch = true
+        if (!listFiles && !quiet && !count) {
+          for (let k = 0; k < sel.idx.length; k++) {
+            const i = sel.idx[k]
+            // GNU: path:content by default, path:N:content only with -n
+            const prefix = `${withName ? `${file.path}:` : ''}${showNumbers ? `${i + 1}:` : ''}`
+            emit(lines[i], prefix, out, sel.pieces ? sel.pieces[k] : null)
           }
         }
         if (count) counts.push(`${withName ? `${file.path}:` : ''}${fileMatches}`)
@@ -274,10 +308,9 @@ const grepHandler: CommandHandler = {
     }
 
     const lines = splitLines(text)
-    const matchIdx: number[] = []
-    for (let i = 0; i < lines.length && matchIdx.length < maxCount; i++) {
-      if (lineRe.test(lines[i]) !== invert) matchIdx.push(i)
-    }
+    const sel = await select(lines, text.length)
+    if ('failure' in sel) return sel.failure
+    const matchIdx = sel.idx
 
     if (quiet) return { exit_code: matchIdx.length > 0 ? 0 : 1, stdout: '', stderr: '' }
     if (count) return { exit_code: matchIdx.length > 0 ? 0 : 1, stdout: String(matchIdx.length), stderr: '' }
@@ -288,7 +321,10 @@ const grepHandler: CommandHandler = {
       // matchIdx.length > 0 here (empty case returned above), so a line was
       // selected → exit 0 even if -o emits nothing for zero-width matches
       // (matches GNU: exit tracks line selection, not printed pieces).
-      for (const i of matchIdx) emit(lines[i], showNumbers ? `${i + 1}:` : '', out)
+      for (let k = 0; k < matchIdx.length; k++) {
+        const i = matchIdx[k]
+        emit(lines[i], showNumbers ? `${i + 1}:` : '', out, sel.pieces ? sel.pieces[k] : null)
+      }
       return ok(out.join('\n'))
     }
 
@@ -340,6 +376,21 @@ function renderSedReplacement(template: string, matchArgs: unknown[]): string {
   return out
 }
 
+/** Rebuild String.replace() output from worker-reported match positions, using
+ *  the same renderer as the inline path (so the two cannot drift). */
+function applySedMatches(line: string, matches: RegexMatch[], template: string): string {
+  if (matches.length === 0) return line
+  let out = ''
+  let pos = 0
+  for (const m of matches) {
+    // renderSedReplacement reads the replacer's argument list, where the first
+    // number marks the end of the capture groups.
+    out += line.slice(pos, m.index) + renderSedReplacement(template, [m.match, ...m.groups, m.index, line])
+    pos = m.index + m.match.length
+  }
+  return out + line.slice(pos)
+}
+
 const SED_KNOWN_FLAGS = new Set(['i', 'E', 'r'])
 
 const sedHandler: CommandHandler = {
@@ -372,9 +423,10 @@ const sedHandler: CommandHandler = {
     if (!match) return err(`sed: unsupported expression "${expr}" — only s/old/new/[gi] is supported`)
 
     const [, , pattern, rawReplacement, flags] = match
+    const reFlags = (flags.includes('i') ? 'i' : '') + (flags.includes('g') ? 'g' : '')
     let regex: RegExp
     try {
-      regex = new RegExp(pattern, (flags.includes('i') ? 'i' : '') + (flags.includes('g') ? 'g' : ''))
+      regex = new RegExp(pattern, reFlags)
     } catch (e) {
       return err(`sed: invalid pattern: ${e instanceof Error ? e.message : pattern}`)
     }
@@ -393,7 +445,21 @@ const sedHandler: CommandHandler = {
       return ok('')
     }
 
-    const result = text.split('\n').map(line => line.replace(regex, replacer as never)).join('\n')
+    // Same reasoning as grep: an agent-supplied pattern that backtracks
+    // catastrophically must not run on the main thread, where nothing can
+    // preempt it. Small inputs with a safe pattern stay inline.
+    const lines = text.split('\n')
+    let result: string
+    if (!mayBacktrack(pattern) && text.length <= OFFLOAD_MIN_BYTES) {
+      result = lines.map(line => line.replace(regex, replacer as never)).join('\n')
+    } else {
+      const r = await execLines(
+        { source: pattern, flags: reFlags, lines },
+        { timeoutMs: ctx.config.limits?.execution_timeout_ms, signal: ctx.signal }
+      )
+      if (!r.ok) return regexFailure('sed', r.reason, r.message)
+      result = lines.map((line, i) => applySedMatches(line, r.value[i], rawReplacement)).join('\n')
+    }
 
     if (inPlace && filePath) {
       // Preserve exact file content (incl. trailing newline) on write-back.

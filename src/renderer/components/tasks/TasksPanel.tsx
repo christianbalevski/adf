@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
+import { usePollWhenVisible } from '../../hooks/usePollWhenVisible'
 import { formatTime } from '../logs/LogsPanel'
 import type { TaskEntry, TaskStatus } from '../../../shared/types/adf-v02.types'
 import { TASK_STATUSES } from '../../../shared/types/adf-v02.types'
@@ -61,12 +62,9 @@ export function TasksPanel() {
     }
   }, [tasks, userScrolledUp])
 
-  // Auto-refresh interval
-  useEffect(() => {
-    if (!autoRefresh) return
-    const interval = setInterval(fetchTasks, 2000)
-    return () => clearInterval(interval)
-  }, [autoRefresh, fetchTasks])
+  // Auto-refresh interval — gated on visibility so a backgrounded window (or
+  // a drawer sitting behind the Logs tab) stops polling.
+  usePollWhenVisible(fetchTasks, 2000, { enabled: autoRefresh, ref: scrollRef })
 
   const handleScroll = useCallback(() => {
     if (!scrollRef.current) return

@@ -112,6 +112,51 @@ describe('TokenUsageService — delta merge across processes', () => {
     expect(existsSync(join(dir, 'token-usage.json'))).toBe(true)
   })
 
+  it('the debounced async save keeps delta-merge semantics', async () => {
+    const dir = makeDir()
+    const studio = new TokenUsageService()
+    const daemon = new TokenUsageService()
+    const asyncSave = (s: TokenUsageService) =>
+      (s as unknown as { saveNowAsync(): Promise<boolean> }).saveNowAsync()
+
+    studio.recordUsage('anthropic', 'a', 100, 10)
+    daemon.recordUsage('anthropic', 'a', 1, 1)
+
+    expect(await asyncSave(studio)).toBe(true)
+    expect(await asyncSave(daemon)).toBe(true)
+
+    expect(onDisk(dir)[today].anthropic.a).toEqual({ input: 101, output: 11 })
+    expect(daemon.getUsageData()[today].anthropic.a).toEqual({ input: 101, output: 11 })
+  })
+
+  it('usage recorded while an async save is in flight is neither lost nor double-counted', async () => {
+    const dir = makeDir()
+    const service = new TokenUsageService()
+    service.recordUsage('p', 'm', 10, 0)
+
+    const inFlight = (service as unknown as { saveNowAsync(): Promise<boolean> }).saveNowAsync()
+    service.recordUsage('p', 'm', 5, 0) // lands after the delta was taken
+    expect(await inFlight).toBe(true)
+
+    expect(onDisk(dir)[today].p.m).toEqual({ input: 10, output: 0 })
+    // The live view keeps the in-flight record...
+    expect(service.getUsageData()[today].p.m).toEqual({ input: 15, output: 0 })
+    // ...and the next flush adds it exactly once.
+    service.flush()
+    expect(onDisk(dir)[today].p.m).toEqual({ input: 15, output: 0 })
+  })
+
+  it('overlapping async saves coalesce onto the one in flight', async () => {
+    const dir = makeDir()
+    const service = new TokenUsageService()
+    const save = () => (service as unknown as { saveNowAsync(): Promise<boolean> }).saveNowAsync()
+    service.recordUsage('p', 'm', 3, 3)
+    const first = save()
+    expect(save()).toBe(first)
+    await first
+    expect(onDisk(dir)[today].p.m).toEqual({ input: 3, output: 3 })
+  })
+
   it('sanitizes malformed shapes on load so getSummary cannot throw', () => {
     makeDir({
       '2026-01-01': null,

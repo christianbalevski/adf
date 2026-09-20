@@ -204,6 +204,7 @@ CREATE TABLE IF NOT EXISTS adf_outbox (
 CREATE INDEX IF NOT EXISTS idx_adf_outbox_status ON adf_outbox(status);
 CREATE INDEX IF NOT EXISTS idx_adf_outbox_thread ON adf_outbox(thread_id);
 CREATE INDEX IF NOT EXISTS idx_adf_outbox_message_id ON adf_outbox(message_id);
+CREATE INDEX IF NOT EXISTS idx_adf_outbox_created ON adf_outbox(created_at);
 
 CREATE TABLE IF NOT EXISTS adf_timers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

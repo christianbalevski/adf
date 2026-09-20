@@ -209,7 +209,7 @@ export function createProvider(
 
   if (cfg.type === 'chatgpt-subscription') {
     const authManager = getChatGptAuthManager()
-    const { provider, setInstructions, getResponseMeta } = createChatGPTSubscriptionProvider(
+    const { provider, beginRequest, getResponseMeta } = createChatGPTSubscriptionProvider(
       authManager,
       hasExtraParams ? extraParams : undefined
     )
@@ -219,7 +219,7 @@ export function createProvider(
       providerType: cfg.type,
       reasoningStyle: 'openai',
       forwardProviderParams: 'openai',
-      onBeforeRequest: (system) => setInstructions(system),
+      beginRequest,
       streamOnly: true,
       getResponseMeta
     })

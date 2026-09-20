@@ -149,7 +149,7 @@ export interface AppState {
    */
   centerChatTabActive: boolean
   sidebarCollapsed: boolean
-  /** Expanded width in px. Live during a drag; the drag handle persists it on release. */
+  /** Expanded width in px, committed when a drag is released. SidebarFrame mirrors it into a CSS variable. */
   sidebarWidth: number
   rightPanelCollapsed: boolean
   theme: 'light' | 'dark' | 'system'
@@ -329,7 +329,7 @@ export const selectActiveDockPanel = (s: AppState): RightPanel => {
 export const selectCanPromoteChat = (s: AppState): boolean =>
   s.chatPlacement !== 'center' && !s.showMeshGraph
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   showSettings: false,
   pendingSettingsSection: null,
   pendingSettingsAnchor: null,
@@ -380,12 +380,12 @@ export const useAppStore = create<AppState>((set) => ({
   openSettingsAt: (section, anchor) =>
     set({ showSettings: true, showMeshGraph: false, pendingSettingsSection: section, pendingSettingsAnchor: anchor ?? null }),
   consumePendingSettingsAnchor: () => {
-    const current = useAppStore.getState().pendingSettingsAnchor
+    const current = get().pendingSettingsAnchor
     if (current) set({ pendingSettingsAnchor: null })
     return current
   },
   consumePendingSettingsSection: () => {
-    const current = useAppStore.getState().pendingSettingsSection
+    const current = get().pendingSettingsSection
     if (current) set({ pendingSettingsSection: null })
     return current
   },
@@ -502,12 +502,12 @@ export const useAppStore = create<AppState>((set) => ({
   setHomeModelId: (id) => set({ homeModelId: id }),
   openTemplateReview: (id, summary, onDone) => set({ templateReview: { id, summary, onDone } }),
   closeTemplateReview: (accepted) => {
-    const current = useAppStore.getState().templateReview
+    const current = get().templateReview
     set({ templateReview: null })
     current?.onDone?.(accepted)
   },
   takePendingFirstMessage: (filePath) => {
-    const pending = useAppStore.getState().pendingFirstMessage
+    const pending = get().pendingFirstMessage
     if (!pending || pending.filePath !== filePath) return null
     set({ pendingFirstMessage: null })
     return pending

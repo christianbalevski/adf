@@ -17,14 +17,22 @@ import { FsWriteTool } from '../../../src/main/tools/built-in/fs-write.tool'
 import { ShellTool } from '../../../src/main/tools/shell/shell.tool'
 
 const dirs: string[] = []
-afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
+const workspaces: AdfWorkspace[] = []
+afterEach(() => {
+  // Close the SQLite connections FIRST: on Windows an open .adf (plus its
+  // -wal/-shm sidecars) cannot be unlinked, so rmSync fails with EPERM.
+  for (const ws of workspaces.splice(0)) { try { ws.close() } catch { /* already closed */ } }
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+})
 
 function realWorkspace(): AdfWorkspace {
   const dir = mkdtempSync(join(tmpdir(), 'adf-enforce-'))
   dirs.push(dir)
   const adfPath = join(dir, 'agent.adf')
   const db = AdfDatabase.create(adfPath, { name: 'enforce' })
-  return new AdfWorkspace(db, adfPath)
+  const ws = new AdfWorkspace(db, adfPath)
+  workspaces.push(ws)
+  return ws
 }
 
 function enabledConfig() {

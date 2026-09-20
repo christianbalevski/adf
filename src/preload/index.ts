@@ -65,6 +65,7 @@ const api: AdfApi = {
   clearInbox: () => ipcRenderer.invoke(IPC.DOC_CLEAR_INBOX),
   getOutbox: () => ipcRenderer.invoke(IPC.DOC_GET_OUTBOX),
   getBatch: () => ipcRenderer.invoke(IPC.DOC_GET_BATCH),
+  getHeader: () => ipcRenderer.invoke(IPC.DOC_GET_HEADER),
 
   // Agent
   startAgent: (filePath?: string, hasUserMessage?: boolean) => ipcRenderer.invoke(IPC.AGENT_START, { filePath, hasUserMessage }),
@@ -175,6 +176,8 @@ const api: AdfApi = {
   },
   getMeshDebug: () =>
     ipcRenderer.invoke(IPC.MESH_STATUS, { debug: true }),
+  getMeshMapPoll: (sinceSeq?: number) =>
+    ipcRenderer.invoke(IPC.MESH_MAP_POLL, { sinceSeq }),
   getMeshServerStatus: () =>
     ipcRenderer.invoke(IPC.MESH_SERVER_STATUS),
   restartMeshServer: () =>
@@ -270,7 +273,7 @@ const api: AdfApi = {
     mode: 'once_at' | 'once_delay' | 'interval' | 'cron'
     at?: number; delay_ms?: number; every_ms?: number
     start_at?: number; end_at?: number; max_runs?: number
-    cron?: string; scope: string[]; lambda?: string; warm?: boolean; payload?: string
+    cron?: string; scope: string[]; lambda?: string; warm?: boolean; payload?: string; locked?: boolean
   }) => ipcRenderer.invoke(IPC.DOC_UPDATE_TIMER, args),
   deleteTimer: (id: number) =>
     ipcRenderer.invoke(IPC.DOC_DELETE_TIMER, { id }),
@@ -293,8 +296,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.DOC_SET_FILE_PROTECTION, { path, protection }),
   setFileAuthorized: (path: string, authorized: boolean) =>
     ipcRenderer.invoke(IPC.DOC_SET_FILE_AUTHORIZED, { path, authorized }),
-  readInternalFile: (path: string) =>
-    ipcRenderer.invoke(IPC.DOC_READ_INTERNAL_FILE, { path }),
+  readInternalFile: (path: string, opts?: { binaryContent?: boolean }) =>
+    ipcRenderer.invoke(IPC.DOC_READ_INTERNAL_FILE, { path, binaryContent: opts?.binaryContent === true }),
   writeInternalFile: (path: string, content: string) =>
     ipcRenderer.invoke(IPC.DOC_WRITE_INTERNAL_FILE, { path, content }),
   downloadInternalFile: (path: string) =>

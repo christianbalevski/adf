@@ -4,7 +4,7 @@ import { isFontInstalled } from '../../utils/fonts'
 import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS } from '../../../shared/constants/adf-defaults'
 import { addCatalogSource, normalizeCatalogSources, MAX_CATALOG_SOURCES } from '../../utils/skills-panel'
 import { invalidateConfigCaches } from '../agent/AgentConfig'
-import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAgentStatus } from '../../../shared/types/ipc.types'
+import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAgentStatus, MeshEvent } from '../../../shared/types/ipc.types'
 import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { ChannelsPanel } from '../adapters/ChannelsPanel'
 import { ProvidersPanel } from '../providers/ProvidersPanel'
@@ -29,6 +29,16 @@ import { reconcileHostApprovedRegistrations } from '../../../shared/utils/mcp-co
  */
 const OUTDATED_CONTAINER_ADVISORY =
   'This container was built before newer features. Rebuilding it adds network isolation from other agents.\n\nRebuilding erases its workspace files, installed packages, and any saved browser session, so it is optional and up to you. Use Rebuild in the More actions menu when you choose to.'
+
+/** Mesh events that change what the Networking tab shows. `message_routed`
+ *  fires per message and is deliberately absent. */
+const MESH_STATUS_EVENTS = new Set<MeshEvent['type']>([
+  'agent_state_changed',
+  'agent_joined',
+  'agent_left',
+  'lan_peer_discovered',
+  'lan_peer_expired',
+])
 
 type SettingsNavItem = {
   id: SettingsSection
@@ -1487,15 +1497,26 @@ export function SettingsPage() {
   // Fetch mesh server status + agent list for "Networking" tab
   useEffect(() => {
     if (activeTab !== 'networking') return
-    window.adfApi?.getMeshServerStatus().then(setMeshServerStatus)
-    window.adfApi?.getMeshStatus().then((s) => setMeshAgents(s.agents))
-    window.adfApi?.getMeshServerLanIps().then(setLanInfo)
-    // Subscribe to mesh events for live updates
-    const unsub = window.adfApi?.onMeshEvent(() => {
+    const refresh = () => {
       window.adfApi?.getMeshServerStatus().then(setMeshServerStatus)
       window.adfApi?.getMeshStatus().then((s) => setMeshAgents(s.agents))
+    }
+    refresh()
+    window.adfApi?.getMeshServerLanIps().then(setLanInfo)
+    // Subscribe to mesh events for live updates. Only lifecycle/peer events
+    // change what this tab shows — `message_routed` fires per message and would
+    // otherwise cost two IPC round-trips each. The rest coalesce behind a
+    // trailing debounce.
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined
+    const unsub = window.adfApi?.onMeshEvent((event: MeshEvent) => {
+      if (!MESH_STATUS_EVENTS.has(event.type)) return
+      clearTimeout(refreshTimer)
+      refreshTimer = setTimeout(refresh, 500)
     })
-    return unsub
+    return () => {
+      clearTimeout(refreshTimer)
+      unsub?.()
+    }
   }, [activeTab, meshEnabled])
 
   // Auto-save on change (debounced) — flushes immediately on unmount.
@@ -2100,14 +2121,13 @@ export function SettingsPage() {
                 max={65535}
                 value={meshPort}
                 disabled={meshRestarting}
-                onChange={async (e) => {
+                onChange={(e) => {
                   const port = parseInt(e.target.value, 10)
-                  if (!isNaN(port) && port >= 1 && port <= 65535) {
-                    setMeshPort(port)
-                    await window.adfApi?.setSettings({ meshPort: port })
-                  }
+                  if (!isNaN(port) && port >= 1 && port <= 65535) setMeshPort(port)
                 }}
                 onBlur={async () => {
+                  // Commit before the restart — main reads the saved port back.
+                  await window.adfApi?.setSettings({ meshPort })
                   if (meshServerStatus.running && meshPort !== meshServerStatus.port) {
                     await restartMeshServer()
                   }
