@@ -198,6 +198,17 @@ body,
   height: 0;
 }
 
+/* Image viewer: checkerboard behind the image itself, so transparent pixels
+   read as transparent in either theme. */
+.image-checkerboard {
+  background-image: conic-gradient(#e5e5e5 25%, #ffffff 0 50%, #e5e5e5 0 75%, #ffffff 0);
+  background-size: 16px 16px;
+}
+
+.dark .image-checkerboard {
+  background-image: conic-gradient(#3f3f46 25%, #27272a 0 50%, #3f3f46 0 75%, #27272a 0);
+}
+
 /* Sidebar tree: one continuous indent guide per open folder, drawn on the
    children container so it never gaps between rows. The guide of the
    innermost hovered folder (or the one holding the open agent) brightens. */

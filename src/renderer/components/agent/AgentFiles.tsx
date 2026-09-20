@@ -4,6 +4,8 @@ import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { Dialog } from '../common/Dialog'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
+import { MAX_INLINE_BINARY_BYTES, resolveImageMime } from '../../../shared/utils/image-files'
+import { useWorkspaceImage } from '../editor/ImageViewer'
 
 type FileProtectionLevel = 'read_only' | 'no_delete' | 'none'
 
@@ -96,6 +98,38 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * The file detail dialog's preview for an image: the same read, allowlist and
+ * size cap as the editor's image tab, scaled down to fit the dialog. "Open in
+ * editor" is where the full-size view lives.
+ */
+function ImagePreview({ path, mime, size }: { path: string; mime: string; size: number }) {
+  const image = useWorkspaceImage(path, mime)
+  const [decodeFailed, setDecodeFailed] = useState(false)
+  if (image.status === 'ready' && !decodeFailed) {
+    return (
+      <div className="flex justify-center overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 p-3">
+        <img
+          src={image.url}
+          alt={path}
+          draggable={false}
+          onError={() => setDecodeFailed(true)}
+          className="image-checkerboard max-h-[40vh] max-w-full object-contain"
+        />
+      </div>
+    )
+  }
+  return (
+    <p className="text-sm text-neutral-500 dark:text-neutral-400">
+      {image.status === 'loading' && 'Loading image'}
+      {image.status === 'missing' && 'File not found.'}
+      {image.status === 'too-large' &&
+        `This image is ${formatSize(size)}. Images larger than ${formatSize(MAX_INLINE_BINARY_BYTES)} are not displayed.`}
+      {(image.status === 'failed' || decodeFailed) && `This file could not be displayed as an image (${formatSize(size)}).`}
+    </p>
+  )
 }
 
 function formatDate(iso: string): string {
@@ -284,7 +318,7 @@ export function AgentFiles() {
   const handleOpenInEditor = useCallback(async (path: string) => {
     const result = await window.adfApi?.readInternalFile(path)
     if (result?.content != null) {
-      useEditorTabsStore.getState().openTab(path, result.binary ? '' : result.content, result.binary)
+      useEditorTabsStore.getState().openTab(path, result.binary ? '' : result.content, result.binary, result.mimeType)
     }
   }, [])
 
@@ -815,7 +849,13 @@ export function AgentFiles() {
               </span>
             </div>
 
-            {viewingFile.binary ? (
+            {viewingFile.binary && resolveImageMime(viewingFile.path, viewingFile.meta.mime_type) ? (
+              <ImagePreview
+                path={viewingFile.path}
+                mime={resolveImageMime(viewingFile.path, viewingFile.meta.mime_type)!}
+                size={viewingFile.meta.size}
+              />
+            ) : viewingFile.binary ? (
               <p className="text-sm text-neutral-500 dark:text-neutral-400">
                 Binary file ({formatSize(viewingFile.meta.size)}). Cannot display inline.
               </p>

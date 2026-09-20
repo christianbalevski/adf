@@ -344,7 +344,19 @@ export interface AdfApi {
   renameFolder: (oldPrefix: string, newPrefix: string) => Promise<{ success: boolean; count: number }>
   setFileProtection: (path: string, protection: 'read_only' | 'no_delete' | 'none') => Promise<{ success: boolean }>
   setFileAuthorized: (path: string, authorized: boolean) => Promise<{ success: boolean }>
-  readInternalFile: (path: string) => Promise<{ content: string | null; binary: boolean }>
+  /**
+   * Text files come back as `content`. A binary file comes back with
+   * `binary: true` and empty content unless `binaryContent` is set, in which
+   * case `content` is base64 — or stays empty with `tooLarge` when the file is
+   * over the inline cap. `size` is the stored byte length.
+   */
+  readInternalFile: (path: string, opts?: { binaryContent?: boolean }) => Promise<{
+    content: string | null
+    binary: boolean
+    mimeType?: string
+    size?: number
+    tooLarge?: boolean
+  }>
   writeInternalFile: (path: string, content: string) => Promise<{ success: boolean }>
   downloadInternalFile: (path: string) => Promise<{ success: boolean; error?: string }>
 

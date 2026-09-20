@@ -136,7 +136,8 @@ Key features:
 - **Syntax highlighting** — Automatic language detection based on file extension (TypeScript, JavaScript, Python, JSON, Markdown, etc.)
 - **Dirty-state tracking** — Unsaved changes are indicated with a dot on the tab; save with `Cmd/Ctrl + S`
 - **Live updates** — When an agent modifies a file (e.g., via `fs_write`), the editor tab updates automatically
-- **Binary file handling** — Binary files show a placeholder instead of attempting to render content
+- **Image viewing** — PNG, JPEG, GIF, WebP, SVG, BMP, ICO, and AVIF files open in a read-only image tab, fitted to the view; click the image or use **Actual size** to see it at 100%. The footer shows dimensions, file size, and type. Images over 25 MB are not displayed. An image tab does not update while it is showing — use **Reload** after the agent rewrites the file
+- **Binary file handling** — Other binary files show a placeholder instead of attempting to render content
 
 When you open an ADF file, `README.md` is automatically opened in the first editor tab. Clicking files in the Files panel opens them in new tabs.
 

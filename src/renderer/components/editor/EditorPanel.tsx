@@ -11,6 +11,8 @@ import { MarkdownEditor } from './MarkdownEditor'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
 import { BinaryFilePlaceholder } from './BinaryFilePlaceholder'
 import { BrowserViewer } from './BrowserViewer'
+import { ImageViewer } from './ImageViewer'
+import { resolveImageMime } from '../../../shared/utils/image-files'
 import { estimateTokens, formatTokenCount } from '../../utils/token-estimate'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
@@ -212,7 +214,7 @@ export function EditorPanel() {
       try {
         const file = await window.adfApi?.readInternalFile(path)
         if (file?.content != null) {
-          tabStore.openTab(path, file.binary ? '' : file.content, file.binary)
+          tabStore.openTab(path, file.binary ? '' : file.content, file.binary, file.mimeType)
         }
       } catch { /* file gone — skip it */ }
     }
@@ -303,6 +305,11 @@ export function EditorPanel() {
   }
 
   const isMarkdown = MD_EXTENSIONS.has(activeTab.extension)
+  // Only files main already classed as binary: an image tab is read-only, and
+  // nothing a text editor can open should lose its editor to a mime string.
+  const imageMime = activeTab.kind === 'file' && activeTab.isBinary
+    ? resolveImageMime(activeTab.path, activeTab.mimeType)
+    : null
   // Text files only — one overlay here covers every editor mode (rich, source, code).
   const showTokens = activeTab.kind === 'file' && !activeTab.isBinary
 
@@ -312,6 +319,8 @@ export function EditorPanel() {
       <div className="flex-1 overflow-hidden relative">
         {activeTab.kind === 'browser' && activeTab.browserMeta ? (
           <BrowserViewer key={activeTab.path} meta={activeTab.browserMeta} reloadNonce={activeTab.browserMeta.reloadNonce} />
+        ) : imageMime ? (
+          <ImageViewer key={activeTab.path} filePath={activeTab.path} mime={imageMime} />
         ) : activeTab.isBinary ? (
           <BinaryFilePlaceholder filePath={activeTab.path} />
         ) : isMarkdown ? (

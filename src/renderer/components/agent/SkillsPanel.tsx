@@ -373,7 +373,7 @@ export function SkillsPanel() {
   const openInEditor = useCallback(async (path: string) => {
     const result = await window.adfApi?.readInternalFile(path)
     if (result?.content != null) {
-      useEditorTabsStore.getState().openTab(path, result.binary ? '' : result.content, result.binary)
+      useEditorTabsStore.getState().openTab(path, result.binary ? '' : result.content, result.binary, result.mimeType)
     }
   }, [])
 

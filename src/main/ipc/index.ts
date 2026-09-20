@@ -208,6 +208,7 @@ import { getFleetBurnService } from '../services/fleet-burn.service'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
+import { MAX_INLINE_BINARY_BYTES } from '../../shared/utils/image-files'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
 import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, McpRegistrationTestResult, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
@@ -3369,17 +3370,26 @@ export function registerAllIpcHandlers(): void {
     return { success: currentWorkspace.setMetaProtection(key, protection) }
   })
 
-  ipcMain.handle(IPC.DOC_READ_INTERNAL_FILE, async (_event, { path: filePath }: { path: string }) => {
+  ipcMain.handle(IPC.DOC_READ_INTERNAL_FILE, async (_event, { path: filePath, binaryContent }: { path: string; binaryContent?: boolean }) => {
     if (!currentWorkspace) return { content: null, binary: false }
-    const buf = currentWorkspace.readFileBuffer(filePath)
-    if (!buf) return { content: null, binary: false }
+    const entry = currentWorkspace.getDatabase().readFile(filePath)
+    if (!entry) return { content: null, binary: false }
+    const buf = entry.content
+    const info = { mimeType: entry.mime_type, size: buf.length }
     const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
     const textExts = new Set(['md', 'txt', 'json', 'js', 'ts', 'py', 'html', 'css', 'csv', 'xml', 'yaml', 'yml', 'toml', 'sh', 'bat', 'log', 'sql', 'env', 'cfg', 'ini', 'jsx', 'tsx'])
     const isText = textExts.has(ext)
     if (isText) {
-      return { content: buf.toString('utf-8'), binary: false }
+      return { content: buf.toString('utf-8'), binary: false, ...info }
     }
-    return { content: buf.toString('base64'), binary: true }
+    // Binary bytes cross IPC only for a caller that will use them (the image
+    // viewer). Every other caller just needs the `binary` flag, and base64 of a
+    // large file is an expensive thing to build and ship to be thrown away.
+    if (!binaryContent) return { content: '', binary: true, ...info }
+    // The cap is enforced here, not in the renderer: past it the renderer would
+    // have to hold the base64 string, the decoded bytes and the blob at once.
+    if (buf.length > MAX_INLINE_BINARY_BYTES) return { content: '', binary: true, tooLarge: true, ...info }
+    return { content: buf.toString('base64'), binary: true, ...info }
   })
 
   ipcMain.handle(IPC.DOC_WRITE_INTERNAL_FILE, async (_event, { path, content }: { path: string; content: string }) => {
