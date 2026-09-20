@@ -149,23 +149,32 @@ describe('patchCodexRequestBody', () => {
  * every turn. The repair itself must stay effective — a lone surrogate reaching
  * the codex backend is an opaque 400.
  */
+/** Drive the real fetch wrapper end to end and return the exact bytes it sent. */
+async function captureWireBody(
+  text: string,
+  instructions?: string,
+  extraParams?: Record<string, unknown>
+): Promise<string> {
+  const fetchSpy = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('request captured'))
+  vi.stubGlobal('fetch', fetchSpy)
+  const { provider, setInstructions } = createChatGPTSubscriptionProvider({
+    getValidAccessToken: async () => 'test-token',
+    getAccountId: () => 'test-account',
+  }, extraParams)
+  if (instructions !== undefined) setInstructions(instructions)
+
+  await expect(provider.responses('gpt-5.4').doStream({
+    prompt: [{ role: 'user', content: [{ type: 'text', text }] }],
+  })).rejects.toThrow('request captured')
+
+  return String(fetchSpy.mock.calls[0][1]?.body)
+}
+
 describe('surrogate repair through the fetch wrapper', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   async function sendPrompt(text: string, instructions?: string): Promise<Record<string, unknown>> {
-    const fetchSpy = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('request captured'))
-    vi.stubGlobal('fetch', fetchSpy)
-    const { provider, setInstructions } = createChatGPTSubscriptionProvider({
-      getValidAccessToken: async () => 'test-token',
-      getAccountId: () => 'test-account',
-    })
-    if (instructions !== undefined) setInstructions(instructions)
-
-    await expect(provider.responses('gpt-5.4').doStream({
-      prompt: [{ role: 'user', content: [{ type: 'text', text }] }],
-    })).rejects.toThrow('request captured')
-
-    return JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))
+    return JSON.parse(await captureWireBody(text, instructions))
   }
 
   it('still repairs a lone surrogate in the input text', async () => {
@@ -186,5 +195,70 @@ describe('surrogate repair through the fetch wrapper', () => {
     expect(body.instructions).toBe('Reply briefly.')
     expect(body.store).toBe(false)
     expect(body.stream).toBe(true)
+  })
+})
+
+/**
+ * Wire-byte lock. These golden strings are the EXACT bytes the fetch wrapper
+ * put on the socket, captured from the implementation as of 2026-09-20. Any
+ * refactor of the body-patching path (e.g. moving it out of the fetch wrapper
+ * into an SDK body-transform hook) must reproduce them byte for byte — key
+ * order included, because the codex backend is unforgiving and its 400s are
+ * opaque. Regenerate only with a deliberate, reviewed wire change.
+ */
+describe('wire-byte identity', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const HALF_ROCKET = '🚀'.slice(0, 1) // lone high surrogate — an opaque 400 if it escapes
+  const HEAD = '{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":'
+
+  const CASES: Array<{
+    name: string
+    args: [string, (string | undefined)?, (Record<string, unknown> | undefined)?]
+    wire: string
+  }> = [
+    {
+      name: 'plain request (no instructions, no extraParams)',
+      args: ['hi'],
+      wire: HEAD + '"hi"}]}],"stream":true,"store":false,"instructions":"You are a helpful assistant."}',
+    },
+    {
+      name: 'instructions via setInstructions',
+      args: ['hi', 'Reply briefly.'],
+      wire: HEAD + '"hi"}]}],"stream":true,"store":false,"instructions":"Reply briefly."}',
+    },
+    {
+      name: 'extraParams (added key + null-deleted key)',
+      args: ['hi', 'Reply briefly.', { reasoning: { effort: 'low' }, max_output_tokens: null }],
+      wire: HEAD + '"hi"}]}],"stream":true,"store":false,"instructions":"Reply briefly.","reasoning":{"effort":"low"}}',
+    },
+    {
+      name: 'lone surrogate in the input text',
+      args: ['cut mid-emoji ' + HALF_ROCKET],
+      wire: HEAD + '"cut mid-emoji �"}]}],"stream":true,"store":false,"instructions":"You are a helpful assistant."}',
+    },
+    {
+      name: 'lone surrogate arriving only via setInstructions',
+      args: ['hi', 'sys ' + HALF_ROCKET],
+      wire: HEAD + '"hi"}]}],"stream":true,"store":false,"instructions":"sys �"}',
+    },
+    {
+      name: 'paired astral characters pass through untouched',
+      args: ['hi 🚀 done', 'Reply 🚀 briefly.'],
+      wire: HEAD + '"hi 🚀 done"}]}],"stream":true,"store":false,"instructions":"Reply 🚀 briefly."}',
+    },
+  ]
+
+  for (const { name, args, wire } of CASES) {
+    it(`sends identical bytes — ${name}`, async () => {
+      expect(await captureWireBody(...args)).toBe(wire)
+    })
+  }
+
+  it('never puts a bare \\udXXX escape on the wire', async () => {
+    for (const { args } of CASES) {
+      expect(await captureWireBody(...args)).not.toMatch(/\\u[dD][89abAB][0-9a-fA-F]{2}/)
+      vi.unstubAllGlobals()
+    }
   })
 })
