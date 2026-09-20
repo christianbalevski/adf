@@ -96,6 +96,9 @@ const catHandler: CommandHandler = {
   }
 }
 
+/** Max files `ls` prints before truncating (with a stderr notice). */
+const LS_MAX_ENTRIES = 500
+
 const lsHandler: CommandHandler = {
   name: 'ls',
   summary: 'List files',
@@ -113,6 +116,8 @@ const lsHandler: CommandHandler = {
     'are merged and deduped, so `ls *.md` (shell-expanded) lists every match.',
     'An arg matching nothing prints "ls: <arg>: No such file or directory" on',
     'stderr; exit 2 only if NO arg matched. Stdout is always one JSON array.',
+    '',
+    `Long listings are capped at ${LS_MAX_ENTRIES} files; the cap is reported on stderr.`,
   ].join('\n'),
   category: 'filesystem',
   resolvedTools: ['fs_list'],
@@ -126,9 +131,13 @@ const lsHandler: CommandHandler = {
     const seen = new Set<string>()
     const missing: string[] = []
     for (let i = 0; i < prefixes.length; i++) {
+      // _full: ls merges and dedupes several prefix queries into ONE JSON array
+      // (the `ls | jq` contract), so it needs fs_list's unabridged rows and
+      // caps the merged result itself — see below.
       const result = await ctx.toolRegistry.executeTool('fs_list', {
         prefix: prefixes[i],
-        include_metadata: long
+        include_metadata: long,
+        _full: true
       }, ctx.workspace)
       if (result.isError) return err(`ls: ${result.content}`)
       let rows: unknown[]
@@ -153,6 +162,14 @@ const lsHandler: CommandHandler = {
         merged.push(row)
       }
     }
+    // Cap the listing so a large ADF can't flood the model's context. Never a
+    // silent drop: the cap is reported on stderr, which keeps stdout a single
+    // parseable JSON array.
+    const notes = missing.map(m => `ls: ${m}: No such file or directory`)
+    if (merged.length > LS_MAX_ENTRIES) {
+      notes.push(`ls: showing first ${LS_MAX_ENTRIES} of ${merged.length} files — narrow the prefix or slice with jq`)
+      merged.length = LS_MAX_ENTRIES
+    }
     // Stdout is ALWAYS one JSON array (the `ls | jq -r '.[].path'` contract),
     // even on failure. Exit 2 only when explicit args were given and none
     // matched; partial matches list what exists and still exit 0.
@@ -160,7 +177,7 @@ const lsHandler: CommandHandler = {
     return {
       exit_code: nothingMatched ? 2 : EXIT.SUCCESS,
       stdout: JSON.stringify(merged),
-      stderr: missing.map(m => `ls: ${m}: No such file or directory`).join('\n'),
+      stderr: notes.join('\n'),
     }
   }
 }

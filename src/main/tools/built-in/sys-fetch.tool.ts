@@ -20,6 +20,46 @@ export {
   checkFetchTarget
 } from '../../utils/ssrf-guard'
 
+/**
+ * Read a response body up to `cap` bytes, then stop and cancel the stream.
+ * Previously the whole body was buffered with `arrayBuffer()` and the cap was
+ * applied afterwards, so a huge response was fully materialized in the main
+ * process before being thrown away. `totalDesc` is the real size when the
+ * server declared a usable content-length, else "<received>+" — the exact
+ * total is unknowable once we stop reading.
+ */
+async function readCappedBody(
+  response: Response,
+  cap: number
+): Promise<{ bytes: Uint8Array; truncated: boolean; totalDesc: string }> {
+  const reader = response.body?.getReader()
+  if (!reader) return { bytes: new Uint8Array(0), truncated: false, totalDesc: '0' }
+
+  const chunks: Uint8Array[] = []
+  let received = 0
+  let truncated = false
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (!value) continue
+    chunks.push(value)
+    received += value.byteLength
+    if (received > cap) {
+      truncated = true
+      try { await reader.cancel() } catch { /* non-fatal */ }
+      break
+    }
+  }
+
+  const joined = Buffer.concat(chunks, received)
+  if (!truncated) return { bytes: joined, truncated: false, totalDesc: String(received) }
+  // A declared length below what we already read means it described the
+  // compressed transfer, not the decoded body — don't report it.
+  const declared = Number(response.headers.get('content-length'))
+  const totalDesc = Number.isFinite(declared) && declared >= received ? String(declared) : `${received}+`
+  return { bytes: joined.subarray(0, cap), truncated: true, totalDesc }
+}
+
 /** Content types that should be decoded as UTF-8 text; everything else is treated as binary. */
 function isTextContentType(contentType: string): boolean {
   const ct = contentType.toLowerCase().split(';')[0].trim()
@@ -204,24 +244,18 @@ export class SysFetchTool implements Tool {
       if (reqMethod === 'HEAD') {
         body = ''
       } else {
-        const buffer = await response.arrayBuffer()
-        const bytes = new Uint8Array(buffer)
+        // Streamed with a hard cap — the body is never fully buffered.
+        const { bytes, truncated, totalDesc } = await readCappedBody(response, MAX_BODY_BYTES)
 
         if (isTextContentType(contentType)) {
           // Text response — decode as UTF-8
-          if (bytes.length > MAX_BODY_BYTES) {
-            const decoder = new TextDecoder('utf-8', { fatal: false })
-            body =
-              decoder.decode(bytes.slice(0, MAX_BODY_BYTES)) +
-              `\n\n[truncated: response was ${bytes.length} bytes, showing first ${MAX_BODY_BYTES}]`
-          } else {
-            const decoder = new TextDecoder('utf-8', { fatal: false })
-            body = decoder.decode(bytes)
-          }
+          const decoder = new TextDecoder('utf-8', { fatal: false })
+          body = truncated
+            ? decoder.decode(bytes) + `\n\n[truncated: response was ${totalDesc} bytes, showing first ${MAX_BODY_BYTES}]`
+            : decoder.decode(bytes)
         } else {
           // Binary response — base64-encode for safe transport through JSON boundary
-          const toEncode = bytes.length > MAX_BODY_BYTES ? bytes.slice(0, MAX_BODY_BYTES) : bytes
-          body = Buffer.from(toEncode).toString('base64')
+          body = Buffer.from(bytes).toString('base64')
           bodyEncoding = 'base64'
         }
       }
