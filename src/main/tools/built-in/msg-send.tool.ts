@@ -136,12 +136,7 @@ export class SendMessageTool implements Tool {
 
     // Resolve recipient, address, and thread_id from parent_id if not provided
     if (parent_id) {
-      const allInboxMessages = [
-        ...workspace.getInbox('unread'),
-        ...workspace.getInbox('read'),
-        ...workspace.getInbox('archived')
-      ]
-      const parentMsg = allInboxMessages.find(msg => msg.id === parent_id)
+      const parentMsg = workspace.getInboxMessageById(parent_id)
       if (!parentMsg) {
         return {
           content: `No inbox message found with id "${parent_id}". Cannot resolve recipient.`,
@@ -221,12 +216,7 @@ export class SendMessageTool implements Tool {
       // Check if this is a reply to a valid inbox message
       let isValidReply = false
       if (parent_id) {
-        const allInboxMessages = [
-          ...workspace.getInbox('unread'),
-          ...workspace.getInbox('read'),
-          ...workspace.getInbox('archived')
-        ]
-        isValidReply = allInboxMessages.some(msg => msg.id === parent_id)
+        isValidReply = workspace.getInboxMessageById(parent_id) !== null
       }
 
       if (!isValidReply) {

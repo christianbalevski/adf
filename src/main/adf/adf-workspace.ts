@@ -1043,6 +1043,7 @@ export class AdfWorkspace {
     // Caches live on the root — invalidating them on a view would only shadow.
     const root = this.getRoot()
     root._loggingConfigCache = null
+    root._auditConfigCache = null
     root._agentIdCache = config.id || null
     // Only the NAMES of the changed top-level keys go on the wire — config
     // values can hold secrets (provider keys, adapter tokens) and must never
@@ -1664,12 +1665,25 @@ export class AdfWorkspace {
     })
   }
 
+  private static readonly AUDIT_OFF: AuditConfig = { loop: false, inbox: false, outbox: false, files: false }
+  private _auditConfigCache: { config: AuditConfig; timestamp: number } | null = null
+
+  /**
+   * Cached like the logging config: this is read once per audited message and
+   * once per file delete, and each miss re-parses the whole config_json blob.
+   * Invalidated by setAgentConfig; the TTL covers direct db.setConfig writes.
+   */
   private getAuditConfig(): AuditConfig {
+    const now = Date.now()
+    const cached = this._auditConfigCache
+    if (cached && (now - cached.timestamp) < AdfWorkspace.LOGGING_CONFIG_CACHE_MS) return cached.config
     try {
       const config = this.db.getConfig()
-      return config.context?.audit ?? config.audit ?? { loop: false, inbox: false, outbox: false, files: false }
+      const audit = config.context?.audit ?? config.audit ?? AdfWorkspace.AUDIT_OFF
+      this.getRoot()._auditConfigCache = { config: audit, timestamp: now }
+      return audit
     } catch {
-      return { loop: false, inbox: false, outbox: false, files: false }
+      return AdfWorkspace.AUDIT_OFF
     }
   }
 
@@ -1683,6 +1697,24 @@ export class AdfWorkspace {
 
   getInboxMessageById(id: string): InboxMessage | null {
     return this.db.getInboxMessageById(id)
+  }
+
+  /**
+   * Per-status inbox counts straight from SQL. Callers that only need tallies
+   * must use this rather than `getInbox(status).length` — the latter parses
+   * every body and every inline base64 attachment to read an array length.
+   */
+  getInboxCounts(): { unread: number; read: number; archived: number; total: number } {
+    return this.db.getInboxCounts()
+  }
+
+  /** Unread tallies by sender and by source, plus the oldest arrival time. */
+  getUnreadInboxSummary(): {
+    bySender: Record<string, number>
+    bySource: Record<string, number>
+    oldest: number | undefined
+  } {
+    return this.db.getUnreadInboxSummary()
   }
 
   hasInboxMessage(source: string, messageId: string): boolean {
@@ -1872,26 +1904,36 @@ export class AdfWorkspace {
   }
 
   writeFile(relativePath: string, content: string, protection?: FileProtectionLevel): void {
-    const previous = this.db.readFile(relativePath)
+    // created-vs-modified is a SELECT 1; the previous BLOB is only read when a
+    // sink is actually registered to receive it as a diff base.
+    const existed = this.db.fileExists(relativePath)
+    const previous = this.onFileChangeCallback ? this.db.readFile(relativePath)?.content : undefined
     const level: FileProtectionLevel = protection ??
       (relativePath === 'mind.md' || relativePath === 'README.md' || relativePath === 'document.md' ? 'no_delete' : 'none')
+    const buffer = Buffer.from(content, 'utf-8')
     this.db.writeFile(
       relativePath,
-      Buffer.from(content, 'utf-8'),
+      buffer,
       this.getMimeType(relativePath),
       level
     )
-    this.emitUmbilical('file.written', { path: relativePath, bytes: Buffer.byteLength(content, 'utf-8') })
-    this.emitFileChange(relativePath, previous ? 'modified' : 'created', Buffer.from(content, 'utf-8'), previous?.content, this.getFileMeta(relativePath))
+    this.emitUmbilical('file.written', { path: relativePath, bytes: buffer.length })
+    this.emitFileChange(relativePath, existed ? 'modified' : 'created', buffer, previous, this.fileChangeMeta(relativePath))
   }
 
   writeFileBuffer(relativePath: string, content: Buffer, mimeType?: string): void {
-    const previous = this.db.readFile(relativePath)
+    const existed = this.db.fileExists(relativePath)
+    const previous = this.onFileChangeCallback ? this.db.readFile(relativePath)?.content : undefined
     const protection: FileProtectionLevel =
       relativePath === 'mind.md' || relativePath === 'README.md' || relativePath === 'document.md' ? 'no_delete' : 'none'
     this.db.writeFile(relativePath, content, mimeType, protection)
     this.emitUmbilical('file.written', { path: relativePath, bytes: content.length })
-    this.emitFileChange(relativePath, previous ? 'modified' : 'created', content, previous?.content, this.getFileMeta(relativePath))
+    this.emitFileChange(relativePath, existed ? 'modified' : 'created', content, previous, this.fileChangeMeta(relativePath))
+  }
+
+  /** File metadata for a change event — skipped entirely when no sink is registered. */
+  private fileChangeMeta(path: string): WorkspaceFileChange['metadata'] {
+    return this.onFileChangeCallback ? this.getFileMeta(path) : null
   }
 
   /**
@@ -1905,38 +1947,43 @@ export class AdfWorkspace {
    * "not found" — check getFileProtection first and fail plainly.
    */
   deleteFile(relativePath: string, opts?: { force?: boolean }): boolean {
-    const previous = this.db.readFile(relativePath)
-    const metadata = this.getFileMeta(relativePath)
     const audit = this.getAuditConfig()
+    const metadata = this.fileChangeMeta(relativePath)
     if (audit.files) {
+      // One BLOB read, and the brotli pass — multi-second on a large file —
+      // happens BEFORE the transaction opens rather than under the write lock.
+      const entry = this.db.readFile(relativePath)
+      let archive: { json: string; data: Buffer } | null = null
+      if (entry) {
+        const json = JSON.stringify({
+          path: relativePath,
+          content_base64: entry.content.toString('base64'),
+          mime_type: entry.mime_type,
+          size: entry.size
+        })
+        archive = { json, data: brotliCompressSync(Buffer.from(json, 'utf-8'), BROTLI_ARCHIVE_OPTS) }
+      }
       let deleted = false
       this.db.transaction(() => {
-        const entry = this.db.readFile(relativePath)
-        if (entry) {
-          const snapshot = {
-            path: relativePath,
-            content_base64: entry.content.toString('base64'),
-            mime_type: entry.mime_type,
-            size: entry.size
-          }
-          const json = JSON.stringify(snapshot)
-          const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'), BROTLI_ARCHIVE_OPTS)
-          this.db.insertAudit('file', { ref: relativePath, entryCount: 1, sizeBytes: json.length, data: compressed })
+        if (archive) {
+          this.db.insertAudit('file', { ref: relativePath, entryCount: 1, sizeBytes: archive.json.length, data: archive.data })
         }
         if (opts?.force && entry) this.db.setFileProtection(relativePath, 'none')
         deleted = this.db.deleteFile(relativePath)
       })
       if (deleted) {
         this.emitUmbilical('file.deleted', { path: relativePath })
-        this.emitFileChange(relativePath, 'deleted', undefined, previous?.content, metadata)
+        this.emitFileChange(relativePath, 'deleted', undefined, entry?.content, metadata)
       }
       return deleted
     }
-    if (opts?.force && previous) this.db.setFileProtection(relativePath, 'none')
+    // Unaudited path: only a sink registered for the diff needs the old bytes.
+    const previous = this.onFileChangeCallback ? this.db.readFile(relativePath)?.content : undefined
+    if (opts?.force && this.db.fileExists(relativePath)) this.db.setFileProtection(relativePath, 'none')
     const deleted = this.db.deleteFile(relativePath)
     if (deleted) {
       this.emitUmbilical('file.deleted', { path: relativePath })
-      this.emitFileChange(relativePath, 'deleted', undefined, previous?.content, metadata)
+      this.emitFileChange(relativePath, 'deleted', undefined, previous, metadata)
     }
     return deleted
   }
@@ -1966,35 +2013,41 @@ export class AdfWorkspace {
   }
 
   fileExists(relativePath: string): boolean {
-
-    return this.db.readFile(relativePath) !== null
+    return this.db.fileExists(relativePath)
   }
 
   renameInternalFile(oldPath: string, newPath: string): boolean {
-    const previous = this.db.readFile(oldPath)
-    const metadata = this.getFileMeta(oldPath)
+    const previous = this.onFileChangeCallback ? this.db.readFile(oldPath)?.content : undefined
+    const metadata = this.fileChangeMeta(oldPath)
     const renamed = this.db.renameFile(oldPath, newPath)
     if (renamed) {
       // Model a rename as delete + create so existing file-change consumers do
       // not need a fourth operation and watches on either path are reliable.
-      this.emitFileChange(oldPath, 'deleted', undefined, previous?.content, metadata)
-      this.emitFileChange(newPath, 'created', previous?.content, undefined, this.getFileMeta(newPath))
+      this.emitFileChange(oldPath, 'deleted', undefined, previous, metadata)
+      this.emitFileChange(newPath, 'created', previous, undefined, this.fileChangeMeta(newPath))
     }
     return renamed
   }
 
   renameFolder(oldPrefix: string, newPrefix: string): number {
     const prefix = oldPrefix.endsWith('/') ? oldPrefix : `${oldPrefix}/`
+    // Every moved file's BLOB is read only to feed the change events; with no
+    // sink registered the rename is a single UPDATE and nothing else.
+    const notify = !!this.onFileChangeCallback
     const moved = this.listFiles()
       .filter(file => file.path.startsWith(prefix))
-      .map(file => ({ path: file.path, content: this.db.readFile(file.path)?.content, metadata: this.getFileMeta(file.path) }))
+      .map(file => ({
+        path: file.path,
+        content: notify ? this.db.readFile(file.path)?.content : undefined,
+        metadata: notify ? this.getFileMeta(file.path) : null
+      }))
     const count = this.db.renameFolder(oldPrefix, newPrefix)
     if (count > 0) {
       const replacementPrefix = newPrefix.endsWith('/') ? newPrefix : `${newPrefix}/`
       for (const file of moved) {
         const newPath = replacementPrefix + file.path.slice(prefix.length)
         this.emitFileChange(file.path, 'deleted', undefined, file.content, file.metadata)
-        this.emitFileChange(newPath, 'created', file.content, undefined, this.getFileMeta(newPath))
+        this.emitFileChange(newPath, 'created', file.content, undefined, this.fileChangeMeta(newPath))
       }
     }
     return count
@@ -2062,8 +2115,16 @@ export class AdfWorkspace {
     })
   }
 
+  /**
+   * Bytes a file-change diff carries. Past this the decode alone costs more
+   * than any consumer gains — editors and watchers refetch large files anyway,
+   * so the change fires without text rather than stringifying megabytes.
+   */
+  private static readonly MAX_DIFF_BYTES = 1024 * 1024
+
   private toDiffText(content: Buffer | undefined, mimeType: string | null | undefined): string | undefined {
     if (!content || !this.isTextLikeMimeType(mimeType)) return undefined
+    if (content.length > AdfWorkspace.MAX_DIFF_BYTES) return undefined
     return content.toString('utf-8')
   }
 
@@ -2270,8 +2331,8 @@ export class AdfWorkspace {
     return this.db.getLogs(limit)
   }
 
-  getLogsAfterId(afterId: number): Array<{ id: number; level: string; origin: string | null; event: string | null; target: string | null; message: string; data: string | null; created_at: number }> {
-    return this.db.getLogsAfterId(afterId)
+  getLogsAfterId(afterId: number, limit?: number): Array<{ id: number; level: string; origin: string | null; event: string | null; target: string | null; message: string; data: string | null; created_at: number }> {
+    return this.db.getLogsAfterId(afterId, limit)
   }
 
   clearLogs(): void {
