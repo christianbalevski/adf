@@ -38,6 +38,13 @@ export class AgentSession {
   // before a model request.
   private pendingContextInjections: QueuedContextInjection[] = []
 
+  // True once a media block has entered `messages`. Most sessions never carry
+  // any, and stripOldMedia runs on every model iteration — without this flag it
+  // walks the whole history (every block of every message) each time to find
+  // nothing. Sticky: recent media is deliberately retained, so a strip does not
+  // clear it.
+  private hasMediaBlocks = false
+
   constructor(workspace: AdfWorkspace) {
     this.workspace = workspace
     this.sessionId = `session-${Date.now()}`
@@ -51,6 +58,9 @@ export class AgentSession {
     const now = Date.now()
     msg.created_at = now
     this.messages.push(msg)
+    if (!this.hasMediaBlocks && Array.isArray(msg.content) && msg.content.some(isMediaBlock)) {
+      this.hasMediaBlocks = true
+    }
 
     // Callers that already persisted this exact content to the loop (e.g. an
     // owner message appended at delivery time) skip the buffered write —
@@ -64,7 +74,7 @@ export class AgentSession {
 
     const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text' as const, text: msg.content }]
     // Strip multimodal blocks — they're ephemeral (for current context only), not persisted
-    const persistContent = content.filter(b => b.type !== 'image_url' && b.type !== 'input_audio' && b.type !== 'video_url')
+    const persistContent = content.filter(b => !isMediaBlock(b))
     this.persistLoopEntry({
       role: msg.role as 'user' | 'assistant',
       content: persistContent,
@@ -250,12 +260,16 @@ export class AgentSession {
     const undelivered = this.pendingContextInjections
     this.messages = []
     this.pendingContextInjections = []
+    this.hasMediaBlocks = false
     for (const message of messages) {
       const injection = parseContextInjection(message)
       if (injection) {
         this.queueContextInjection(injection)
       } else if (!isContextEntry(message)) {
         this.messages.push(message)
+        if (!this.hasMediaBlocks && Array.isArray(message.content) && message.content.some(isMediaBlock)) {
+          this.hasMediaBlocks = true
+        }
       }
     }
     for (const injection of undelivered) this.queueContextInjection(injection)
@@ -401,6 +415,7 @@ export class AgentSession {
     this.messages = []
     this.pendingLoopWrites = []
     this.pendingContextInjections = []
+    this.hasMediaBlocks = false
   }
 
   /**
@@ -413,6 +428,8 @@ export class AgentSession {
    *   Default 4 ≈ 2 LLM turns (assistant + user-tool-results each).
    */
   stripOldMedia(keepRecentMessages = 4): void {
+    // Nothing multimodal has ever been added, so there is nothing to walk.
+    if (!this.hasMediaBlocks) return
     const cutoff = this.messages.length - keepRecentMessages
     if (cutoff <= 0) return
 
@@ -424,7 +441,7 @@ export class AgentSession {
       let changed = false
       const cleaned: ContentBlock[] = []
       for (const block of msg.content) {
-        if (block.type === 'image_url' || block.type === 'input_audio' || block.type === 'video_url') {
+        if (isMediaBlock(block)) {
           changed = true
           // Don't add a placeholder — the tool_result text already describes the file
         } else {
@@ -447,6 +464,12 @@ export class AgentSession {
     }
   }
 
+}
+
+/** Ephemeral base64 payloads: the blocks stripOldMedia drops from old messages
+ *  and the ones addMessage keeps out of the persisted loop entry. */
+function isMediaBlock(block: ContentBlock): boolean {
+  return block.type === 'image_url' || block.type === 'input_audio' || block.type === 'video_url'
 }
 
 /** A loop entry written by appendContextEntry — UI/SQL-only, never sent to the LLM. */

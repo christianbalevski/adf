@@ -374,7 +374,7 @@ export class MeshManager extends EventEmitter {
 
     // Inject mesh context into executor's system prompt
     if (executor) {
-      executor.setMeshContext(() => this.getAgentDirectory(filePath))
+      executor.setMeshContext(() => this.getMeshContext(filePath))
     }
 
     // Register card builder on workspace so tools can access the signed card
@@ -472,7 +472,7 @@ export class MeshManager extends EventEmitter {
     })
 
     if (executor) {
-      executor.setMeshContext(() => this.getAgentDirectory(filePath))
+      executor.setMeshContext(() => this.getMeshContext(filePath))
     }
 
     workspace._cardBuilder = () => {
@@ -922,8 +922,7 @@ export class MeshManager extends EventEmitter {
 
     // Also check reply routing: if parentId references an inbox message from an adapter
     if (adapterManager && parentId && !address) {
-      const inboxMessages = senderReg.workspace.getInbox()
-      const parentMsg = inboxMessages.find(m => m.id === parentId)
+      const parentMsg = senderReg.workspace.getInboxMessageById(parentId)
       if (parentMsg && parentMsg.source && parentMsg.source !== 'mesh') {
         if (adapterManager.isConnected(parentMsg.source)) {
           const chatId = (parentMsg.source_context as Record<string, unknown> | undefined)?.chat_id
@@ -1466,6 +1465,29 @@ export class MeshManager extends EventEmitter {
   }
 
   /**
+   * Roster projection for an executor's mesh-topology dynamic instruction —
+   * exactly the two fields that reach the prompt, and nothing else.
+   *
+   * The executor used to read this off getAgentDirectory(), which builds a full
+   * signed AlfAgentCard per registered agent on every model iteration: workspace
+   * DB reads, listFiles + a picomatch compile, attestation reads, a signing-key
+   * read (sqlite + AES) and a real ed25519 signature. None of that reaches the
+   * prompt, and because `signed_at`/`signature` differ per build the executor's
+   * change-detection snapshot never matched, so the topology block — documented
+   * as emitted only on change — was injected into every request. Signed cards
+   * stay where they are actually consumed: the directory endpoints
+   * (getDirectoryForScope / getDirectoryForAgent).
+   */
+  getMeshContext(excludeFilePath?: string): { handle: string; description: string }[] {
+    const roster: { handle: string; description: string }[] = []
+    for (const [filePath, reg] of this.registeredAgents) {
+      if (filePath === excludeFilePath) continue
+      roster.push({ handle: reg.handle, description: reg.config.description ?? '' })
+    }
+    return roster
+  }
+
+  /**
    * Get agent directory for the list_agents tool.
    * Returns full agent cards (AlfAgentCard) decorated with in_subdirectory and source.
    */
@@ -1982,8 +2004,7 @@ export class MeshManager extends EventEmitter {
     // using recipientId as the chat_id. The agent can inspect source_context.chat_type
     // on inbox messages to decide whether to reply in-context (via parent_id) or DM.
     if (parentId) {
-      const inboxMessages = senderReg.workspace.getInbox()
-      const parentMsg = inboxMessages.find(m => m.id === parentId)
+      const parentMsg = senderReg.workspace.getInboxMessageById(parentId)
       if (parentMsg?.source_context) {
         outbound.sourceMeta = parentMsg.source_context as Record<string, unknown>
       }
@@ -2352,17 +2373,15 @@ export class MeshManager extends EventEmitter {
   }
 
   private autoHandleInboxMessage(workspace: AdfWorkspace, replyToId: string, filePath?: string): void {
-    const messages = workspace.getInbox('unread')
-    for (const msg of messages) {
-      if (msg.id === replyToId) {
-        workspace.updateInboxStatus(msg.id, 'read')
-        if (filePath) {
-          const unread = workspace.getInbox('unread')
-          const read = workspace.getInbox('read')
-          this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
-        }
-        break
-      }
+    // Primary-key lookup, still scoped to unread so an already-handled message
+    // is not re-marked (and does not re-emit).
+    const msg = workspace.getInboxMessageById(replyToId)
+    if (!msg || msg.status !== 'unread') return
+    workspace.updateInboxStatus(msg.id, 'read')
+    if (filePath) {
+      const unread = workspace.getInbox('unread')
+      const read = workspace.getInbox('read')
+      this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
     }
   }
 
