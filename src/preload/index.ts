@@ -293,8 +293,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.DOC_SET_FILE_PROTECTION, { path, protection }),
   setFileAuthorized: (path: string, authorized: boolean) =>
     ipcRenderer.invoke(IPC.DOC_SET_FILE_AUTHORIZED, { path, authorized }),
-  readInternalFile: (path: string) =>
-    ipcRenderer.invoke(IPC.DOC_READ_INTERNAL_FILE, { path }),
+  readInternalFile: (path: string, opts?: { binaryContent?: boolean }) =>
+    ipcRenderer.invoke(IPC.DOC_READ_INTERNAL_FILE, { path, binaryContent: opts?.binaryContent === true }),
   writeInternalFile: (path: string, content: string) =>
     ipcRenderer.invoke(IPC.DOC_WRITE_INTERNAL_FILE, { path, content }),
   downloadInternalFile: (path: string) =>
