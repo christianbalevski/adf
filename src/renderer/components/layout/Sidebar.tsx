@@ -1243,8 +1243,12 @@ const AgentFileRow = memo(function AgentFileRow({
   const busy = toggling || isStarting || isStopping
 
   return (
+    // The whole row opens the agent, not just the name: the avatar, the gap
+    // and the markers are all part of the same target. Only the run button
+    // (and its placeholder) opt out.
     <div
       {...shareDrag}
+      onClick={onOpen}
       onContextMenu={onContextMenu}
       data-active={isActive || undefined}
       className={`group flex items-center gap-1.5 py-[3px] text-[11px] leading-4 cursor-pointer ${
@@ -1265,7 +1269,9 @@ const AgentFileRow = memo(function AgentFileRow({
       {/* The full path is the hint; a native title never renders in this
           window, so the portal tooltip carries it instead. */}
       <Tooltip tip={file.filePath} delay={1000} className="flex min-w-0 shrink">
-        <button onClick={onOpen} className="block w-full min-w-0 text-left truncate">
+        {/* No handler of its own: the click bubbles to the row. It stays a
+            button so the row is reachable and openable from the keyboard. */}
+        <button className="block w-full min-w-0 text-left truncate">
           {(isActive ? agentConfig?.name : undefined) ?? file.agentName ?? file.fileName}
           {folderHint && (
             <span className="ml-1 text-[10px] text-[var(--adf-ui-text-subtle)]">
@@ -1319,7 +1325,9 @@ const AgentFileRow = memo(function AgentFileRow({
         )}
 
         {busy ? (
-          <span className="w-4 h-4 shrink-0" />
+          // Swallows the click: a second press on Start lands here once the
+          // button has stepped aside, and must not open the agent instead.
+          <span className="w-4 h-4 shrink-0" onClick={(e) => e.stopPropagation()} />
         ) : (
           <Tooltip tip={isRunning ? 'Stop' : 'Start'} className="flex shrink-0">
             <button
