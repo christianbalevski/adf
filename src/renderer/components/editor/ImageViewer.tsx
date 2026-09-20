@@ -7,7 +7,7 @@ interface Props {
   mime: string
 }
 
-type LoadState =
+export type ImageLoadState =
   | { status: 'loading' }
   | { status: 'ready'; url: string; size: number; mime: string }
   | { status: 'too-large'; size: number }
@@ -34,32 +34,18 @@ function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
 }
 
 /**
- * Read-only view of an image in the agent's workspace. The tab holds no bytes:
- * the viewer reads the file when it mounts (so returning to the tab shows the
- * current image), wraps it in a blob: URL, and revokes that URL on unmount.
- *
- * Workspace files are untrusted — agents write them. Every format, SVG
- * included, is shown through <img> only, where Chromium renders SVG without
- * running its scripts or loading anything it references. The markup is never
- * parsed into this document, and the blob's type comes from the
- * resolveImageMime allowlist rather than from the stored mime string.
- *
- * There is no live refresh: the runtime's `file_updated` event carries text
- * content only, so a binary write while the tab is showing needs Reload.
+ * Reads a workspace image and hands back a blob: URL for it, revoked when the
+ * caller unmounts or the inputs change. Shared by the editor tab and the Files
+ * panel's preview so both go through the same allowlist and size cap.
+ * Bump `reloadSeq` to read the file again.
  */
-export function ImageViewer({ filePath, mime }: Props) {
-  const [state, setState] = useState<LoadState>({ status: 'loading' })
-  const [reloadSeq, setReloadSeq] = useState(0)
-  const [natural, setNatural] = useState<{ width: number; height: number } | null>(null)
-  const [stage, setStage] = useState<{ width: number; height: number } | null>(null)
-  const [actualSize, setActualSize] = useState(false)
-  const stageRef = useRef<HTMLDivElement>(null)
+export function useWorkspaceImage(filePath: string, mime: string, reloadSeq = 0): ImageLoadState {
+  const [state, setState] = useState<ImageLoadState>({ status: 'loading' })
 
   useEffect(() => {
     let cancelled = false
     let url: string | null = null
     setState({ status: 'loading' })
-    setNatural(null)
     const read = window.adfApi?.readInternalFile(filePath, { binaryContent: true })
     if (!read) {
       setState({ status: 'failed' })
@@ -94,6 +80,38 @@ export function ImageViewer({ filePath, mime }: Props) {
       if (url) URL.revokeObjectURL(url)
     }
   }, [filePath, mime, reloadSeq])
+
+  return state
+}
+
+/**
+ * Read-only view of an image in the agent's workspace. The tab holds no bytes:
+ * the viewer reads the file when it mounts (so returning to the tab shows the
+ * current image), wraps it in a blob: URL, and revokes that URL on unmount.
+ *
+ * Workspace files are untrusted — agents write them. Every format, SVG
+ * included, is shown through <img> only, where Chromium renders SVG without
+ * running its scripts or loading anything it references. The markup is never
+ * parsed into this document, and the blob's type comes from the
+ * resolveImageMime allowlist rather than from the stored mime string.
+ *
+ * There is no live refresh: the runtime's `file_updated` event carries text
+ * content only, so a binary write while the tab is showing needs Reload.
+ */
+export function ImageViewer({ filePath, mime }: Props) {
+  const [reloadSeq, setReloadSeq] = useState(0)
+  const loaded = useWorkspaceImage(filePath, mime, reloadSeq)
+  // Bytes that arrive fine can still fail to decode (a .png that is not one).
+  const [decodeFailed, setDecodeFailed] = useState(false)
+  useEffect(() => { setDecodeFailed(false) }, [loaded])
+  const state: ImageLoadState = decodeFailed ? { status: 'failed' } : loaded
+  const [natural, setNatural] = useState<{ width: number; height: number } | null>(null)
+  const [stage, setStage] = useState<{ width: number; height: number } | null>(null)
+  const [actualSize, setActualSize] = useState(false)
+  const stageRef = useRef<HTMLDivElement>(null)
+
+  // A fresh read may be a different image; measure it again.
+  useEffect(() => { if (state.status !== 'ready') setNatural(null) }, [state.status])
 
   useEffect(() => {
     const el = stageRef.current
@@ -149,7 +167,7 @@ export function ImageViewer({ filePath, mime }: Props) {
               alt={fileName}
               draggable={false}
               onLoad={(e) => setNatural({ width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight })}
-              onError={() => setState({ status: 'failed' })}
+              onError={() => setDecodeFailed(true)}
               onClick={canToggle ? toggleSize : undefined}
               style={imageStyle}
               // An SVG with no width/height of its own reports no natural
