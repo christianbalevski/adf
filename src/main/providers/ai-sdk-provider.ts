@@ -387,8 +387,16 @@ export interface AiSdkProviderOptions {
   /** If set, merges CreateMessageOptions.providerParams into providerOptions[key] */
   forwardProviderParams?: string
   /** Called before each request with the system prompt — used by providers
-   *  whose fetch wrapper needs to inject it into the request body. */
+   *  whose fetch wrapper needs to inject it into the request body.
+   *  Provider-wide state: only safe when no two calls overlap. Prefer
+   *  `beginRequest`, which binds the prompt to the individual request. */
   onBeforeRequest?: (system: string | undefined) => void
+  /** Per-request counterpart of onBeforeRequest: returns headers that identify
+   *  this call to the provider's fetch wrapper, plus a `release` run once the
+   *  call (and any SDK retry of it) has finished. Takes precedence over
+   *  onBeforeRequest — a provider instance is shared across the main turn,
+   *  side loops, model_invoke and lambda handlers, which can overlap. */
+  beginRequest?: (system: string | undefined) => { headers: Record<string, string>; release: () => void }
   /** Skip validateConfig preflight (provider only supports streaming). */
   streamOnly?: boolean
   /** Which native reasoning mapping to use when normalizing CreateMessageOptions.reasoning. */
@@ -488,9 +496,14 @@ export class AiSdkProvider implements LLMProvider {
       callSettings.providerOptions = existing
     }
 
-    // Notify the fetch wrapper (e.g. chatgpt-subscription) of the system prompt
-    // before making the request, since the AI SDK's Responses model drops `system`.
-    if (this.options?.onBeforeRequest) {
+    // Tell the fetch wrapper (e.g. chatgpt-subscription) this request's system
+    // prompt, since the AI SDK's Responses model drops `system`. The per-request
+    // form rides on call headers the SDK re-sends on every retry, so overlapping
+    // calls on one shared provider instance can't swap each other's prompts.
+    const requestScope = this.options?.beginRequest?.(options.system)
+    if (requestScope) {
+      callSettings.headers = { ...(callSettings.headers as Record<string, string> | undefined), ...requestScope.headers }
+    } else if (this.options?.onBeforeRequest) {
       this.options.onBeforeRequest(options.system)
     }
 
@@ -503,10 +516,14 @@ export class AiSdkProvider implements LLMProvider {
 
     // Normalize all provider failures (streaming or not) into enriched errors
     // so the executor and UI always see status code + response-body detail.
-    if (mustStream) {
-      return this.streamingRequest(callSettings, options).catch((err) => { throw toProviderError(err) })
-    }
-    return this.nonStreamingRequest(callSettings, options).catch((err) => { throw toProviderError(err) })
+    const run = mustStream
+      ? this.streamingRequest(callSettings, options)
+      : this.nonStreamingRequest(callSettings, options)
+    return run
+      .catch((err) => { throw toProviderError(err) })
+      // Release the request-scoped instructions only once the call is fully
+      // done — the SDK's internal retries must still resolve them.
+      .finally(() => requestScope?.release())
   }
 
   async validateConfig(): Promise<{ valid: boolean; error?: string }> {

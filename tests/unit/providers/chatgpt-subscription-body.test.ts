@@ -3,6 +3,7 @@ import {
   createChatGPTSubscriptionProvider,
   describeCodexRequest,
   patchCodexRequestBody,
+  INSTRUCTIONS_ID_HEADER,
 } from '../../../src/main/providers/chatgpt-subscription'
 
 const SYSTEM = 'You are an ADF agent — a learning system that gets better over time.'
@@ -157,15 +158,26 @@ async function captureWireBody(
 ): Promise<string> {
   const fetchSpy = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('request captured'))
   vi.stubGlobal('fetch', fetchSpy)
-  const { provider, setInstructions } = createChatGPTSubscriptionProvider({
+  const { provider, beginRequest } = createChatGPTSubscriptionProvider({
     getValidAccessToken: async () => 'test-token',
     getAccountId: () => 'test-account',
   }, extraParams)
-  if (instructions !== undefined) setInstructions(instructions)
+  // Production path: instructions are bound to THIS request via a private
+  // header id, the way AiSdkProvider passes them.
+  const scope = beginRequest(instructions)
 
-  await expect(provider.responses('gpt-5.4').doStream({
-    prompt: [{ role: 'user', content: [{ type: 'text', text }] }],
-  })).rejects.toThrow('request captured')
+  try {
+    await expect(provider.responses('gpt-5.4').doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text }] }],
+      headers: scope.headers,
+    })).rejects.toThrow('request captured')
+  } finally {
+    scope.release()
+  }
+
+  // The private routing header must never leave the process.
+  const sentHeaders = new Headers(fetchSpy.mock.calls[0][1]?.headers)
+  expect(sentHeaders.get(INSTRUCTIONS_ID_HEADER)).toBeNull()
 
   return String(fetchSpy.mock.calls[0][1]?.body)
 }
@@ -184,7 +196,7 @@ describe('surrogate repair through the fetch wrapper', () => {
     expect(sent).toContain('�')
   })
 
-  it('still repairs a lone surrogate that arrives only via setInstructions', async () => {
+  it('still repairs a lone surrogate that arrives only via the request instructions', async () => {
     const body = await sendPrompt('hi', 'sys ' + '🚀'.slice(0, 1))
     expect(body.instructions).toBe('sys �')
   })
@@ -223,7 +235,7 @@ describe('wire-byte identity', () => {
       wire: HEAD + '"hi"}]}],"stream":true,"store":false,"instructions":"You are a helpful assistant."}',
     },
     {
-      name: 'instructions via setInstructions',
+      name: 'instructions bound to the request',
       args: ['hi', 'Reply briefly.'],
       wire: HEAD + '"hi"}]}],"stream":true,"store":false,"instructions":"Reply briefly."}',
     },
@@ -238,7 +250,7 @@ describe('wire-byte identity', () => {
       wire: HEAD + '"cut mid-emoji �"}]}],"stream":true,"store":false,"instructions":"You are a helpful assistant."}',
     },
     {
-      name: 'lone surrogate arriving only via setInstructions',
+      name: 'lone surrogate arriving only via the request instructions',
       args: ['hi', 'sys ' + HALF_ROCKET],
       wire: HEAD + '"hi"}]}],"stream":true,"store":false,"instructions":"sys �"}',
     },

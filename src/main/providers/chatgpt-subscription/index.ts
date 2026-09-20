@@ -68,8 +68,9 @@ function extractCodexHeaders(headers: Headers): ChatGPTResponseMeta {
  * backend. Exported for unit testing.
  *
  * The system prompt reaches this function through TWO channels at once:
- * 1. `pendingInstructions` — set via onBeforeRequest as a safety net for SDK
- *    versions whose Responses model drops the `system` call setting.
+ * 1. `pendingInstructions` — the per-request instructions resolved from the
+ *    private request-id header, a safety net for SDK versions whose Responses
+ *    model drops the `system` call setting.
  * 2. A `role: "system"` item in `body.input` — the current AI SDK includes it.
  * Both carry the same text, so they must be DEDUPED, not concatenated —
  * blindly merging them sent the full system prompt twice on every request
@@ -172,13 +173,39 @@ export function describeCodexRequest(body: Record<string, unknown>, bodyChars: n
   return `model=${String(body.model)} input_items=${input.length} instructions_chars=${instructions} tools=${tools} body_chars=${bodyChars} keys=[${keys}]`
 }
 
+/**
+ * Private, request-scoped header carrying the id of this call's instructions.
+ * The AI SDK forwards per-call `headers` verbatim to the custom fetch (and
+ * re-sends them on every internal retry of the same call), which makes it the
+ * only channel that survives both concurrency and retries. It is DELETED in the
+ * fetch wrapper and must never reach the wire.
+ */
+export const INSTRUCTIONS_ID_HEADER = 'x-adf-instructions-id'
+
+/**
+ * Safety net: a leaked entry (a call whose `release()` never ran, e.g. a hard
+ * crash between begin and finally) must not grow the map without bound. Far
+ * above any plausible in-flight count for one provider instance.
+ */
+const MAX_TRACKED_REQUESTS = 256
+
 export function createChatGPTSubscriptionProvider(authManager: {
   getValidAccessToken: () => Promise<string>
   getAccountId: () => string | undefined
 }, extraParams?: Record<string, unknown>) {
-  // Closure variable: AiSdkProvider sets this via onBeforeRequest before each
-  // request, because the AI SDK Responses model drops the `system` parameter.
-  let pendingInstructions: string | undefined
+  // Per-request instructions, keyed by the id on INSTRUCTIONS_ID_HEADER.
+  // Provider instances are SHARED (main turn, side loops, model_invoke, lambda
+  // handlers all hold the same object), so a single closure variable raced:
+  // the second call's setInstructions clobbered the first before its fetch ran.
+  // The entry lives until the call completes, so SDK-level retries of the same
+  // call still resolve their instructions.
+  const instructionsById = new Map<string, string | undefined>()
+
+  // Compatibility slot for callers that still use setInstructions() without a
+  // request id (tests, any legacy call site). Deliberately NOT cleared after a
+  // request: clearing is what broke retries. Never consulted when a request
+  // carries an id, so it cannot contaminate the real path.
+  let legacyInstructions: string | undefined
 
   // Last response metadata — captured from every response for agent self-management
   let lastResponseMeta: ChatGPTResponseMeta | undefined
@@ -196,6 +223,14 @@ export function createChatGPTSubscriptionProvider(authManager: {
     }
 
     const headers = new Headers(init?.headers)
+    // Resolve this request's instructions from its private id header, then
+    // strip the header — it is internal routing, never wire bytes.
+    const instructionsId = headers.get(INSTRUCTIONS_ID_HEADER)
+    if (instructionsId !== null) headers.delete(INSTRUCTIONS_ID_HEADER)
+    const pendingInstructions = instructionsId !== null
+      ? instructionsById.get(instructionsId)
+      : legacyInstructions
+
     headers.set('Authorization', `Bearer ${token}`)
     const accountId = authManager.getAccountId()
     if (accountId) {
@@ -230,9 +265,6 @@ export function createChatGPTSubscriptionProvider(authManager: {
         patchedInit = { ...init, body: serialized }
       } catch { /* not JSON, pass through */ }
     }
-
-    // Consume the pending instructions so they don't leak to the next request
-    pendingInstructions = undefined
 
     const response = await globalThis.fetch(input, { ...patchedInit, headers })
 
@@ -301,9 +333,33 @@ export function createChatGPTSubscriptionProvider(authManager: {
 
   return {
     provider,
-    /** Set the system prompt to be injected as `instructions` in the next request. */
+    /**
+     * Bind a system prompt to ONE request. Returns the per-call headers to hand
+     * the SDK and a `release` the caller must run in a `finally` once the call
+     * (including the SDK's own retries) is done.
+     */
+    beginRequest(system: string | undefined): { headers: Record<string, string>; release: () => void } {
+      const id = crypto.randomUUID()
+      // Bound the map before inserting: evict the oldest entries (Map iterates
+      // in insertion order) so a leaked id can never grow it without limit.
+      while (instructionsById.size >= MAX_TRACKED_REQUESTS) {
+        const oldest = instructionsById.keys().next()
+        if (oldest.done) break
+        instructionsById.delete(oldest.value)
+      }
+      instructionsById.set(id, system)
+      return {
+        headers: { [INSTRUCTIONS_ID_HEADER]: id },
+        release: () => { instructionsById.delete(id) }
+      }
+    },
+    /**
+     * Compatibility shim for callers with no request id (tests, legacy call
+     * sites). Applies only to requests that arrive WITHOUT the private header;
+     * the production path goes through beginRequest.
+     */
     setInstructions(system: string | undefined) {
-      pendingInstructions = system
+      legacyInstructions = system
     },
     /** Get rate limit metadata from the last response. */
     getResponseMeta(): ChatGPTResponseMeta | undefined {
