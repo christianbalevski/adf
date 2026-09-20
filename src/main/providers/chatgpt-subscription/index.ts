@@ -21,8 +21,13 @@ function mayNeedSurrogateRepair(text: string | undefined): boolean {
   return text !== undefined && REPAIRABLE_RE.test(text)
 }
 
-/** Rate limit and usage info extracted from x-codex-* response headers. */
-export interface ChatGPTResponseMeta {
+/**
+ * Rate limit and usage info extracted from x-codex-* response headers.
+ * A type alias, not an interface: it is handed to consumers typed as
+ * `Record<string, unknown>` (provider metadata), which only an alias's implicit
+ * index signature satisfies.
+ */
+export type ChatGPTResponseMeta = {
   planType?: string
   primaryUsedPercent?: number
   primaryWindowMinutes?: number
@@ -189,17 +194,27 @@ export const INSTRUCTIONS_ID_HEADER = 'x-adf-instructions-id'
  */
 const MAX_TRACKED_REQUESTS = 256
 
+/** Everything bound to ONE logical request (all of its SDK retry attempts). */
+interface RequestEntry {
+  /** System prompt for this call, injected into the body as `instructions`. */
+  instructions: string | undefined
+  /** x-codex-* metadata of this call's LAST response attempt. */
+  meta?: ChatGPTResponseMeta
+}
+
 export function createChatGPTSubscriptionProvider(authManager: {
   getValidAccessToken: () => Promise<string>
   getAccountId: () => string | undefined
 }, extraParams?: Record<string, unknown>) {
-  // Per-request instructions, keyed by the id on INSTRUCTIONS_ID_HEADER.
-  // Provider instances are SHARED (main turn, side loops, model_invoke, lambda
-  // handlers all hold the same object), so a single closure variable raced:
-  // the second call's setInstructions clobbered the first before its fetch ran.
+  // Per-request state (instructions in, response metadata out), keyed by the id
+  // on INSTRUCTIONS_ID_HEADER. Provider instances are SHARED (main turn, side
+  // loops, model_invoke, lambda handlers all hold the same object), so single
+  // closure variables raced in BOTH directions: the second call's instructions
+  // clobbered the first before its fetch ran, and the second response's
+  // x-codex-* headers were handed to whichever call read them first.
   // The entry lives until the call completes, so SDK-level retries of the same
-  // call still resolve their instructions.
-  const instructionsById = new Map<string, string | undefined>()
+  // call still resolve their instructions and still overwrite their own meta.
+  const requestsById = new Map<string, RequestEntry>()
 
   // Compatibility slot for callers that still use setInstructions() without a
   // request id (tests, any legacy call site). Deliberately NOT cleared after a
@@ -207,7 +222,9 @@ export function createChatGPTSubscriptionProvider(authManager: {
   // carries an id, so it cannot contaminate the real path.
   let legacyInstructions: string | undefined
 
-  // Last response metadata — captured from every response for agent self-management
+  // Response metadata of the last UNSCOPED response (a request that arrived
+  // without the private id header, or whose entry was already released). The
+  // scoped path never reads it — see beginRequest().getResponseMeta.
   let lastResponseMeta: ChatGPTResponseMeta | undefined
 
   // extraParams is fixed for the life of the provider — scan it once, not per turn.
@@ -225,10 +242,10 @@ export function createChatGPTSubscriptionProvider(authManager: {
     const headers = new Headers(init?.headers)
     // Resolve this request's instructions from its private id header, then
     // strip the header — it is internal routing, never wire bytes.
-    const instructionsId = headers.get(INSTRUCTIONS_ID_HEADER)
-    if (instructionsId !== null) headers.delete(INSTRUCTIONS_ID_HEADER)
-    const pendingInstructions = instructionsId !== null
-      ? instructionsById.get(instructionsId)
+    const requestId = headers.get(INSTRUCTIONS_ID_HEADER)
+    if (requestId !== null) headers.delete(INSTRUCTIONS_ID_HEADER)
+    const pendingInstructions = requestId !== null
+      ? requestsById.get(requestId)?.instructions
       : legacyInstructions
 
     headers.set('Authorization', `Bearer ${token}`)
@@ -268,8 +285,16 @@ export function createChatGPTSubscriptionProvider(authManager: {
 
     const response = await globalThis.fetch(input, { ...patchedInit, headers })
 
-    // Capture x-codex-* headers from every response (success or error)
-    lastResponseMeta = extractCodexHeaders(response.headers)
+    // Capture x-codex-* headers from every response (success or error) and file
+    // them under THIS request's id, so a concurrent call can't read them as its
+    // own. Re-resolve the entry here rather than reusing the one read above: it
+    // may have been released while the request was in flight. On an SDK retry
+    // the same id is written again, so the last attempt's meta is what the call
+    // reads. Requests with no live entry fall back to the legacy slot.
+    const responseMeta = extractCodexHeaders(response.headers)
+    const entry = requestId !== null ? requestsById.get(requestId) : undefined
+    if (entry) entry.meta = responseMeta
+    else lastResponseMeta = responseMeta
 
     if (!response.ok) {
       // Detect usage_limit_reached and fail fast — return 403 so the AI SDK
@@ -280,7 +305,7 @@ export function createChatGPTSubscriptionProvider(authManager: {
           const parsed = JSON.parse(errBody)
           if (parsed?.error?.type === 'usage_limit_reached') {
             const resetMin = Math.ceil((parsed.error.resets_in_seconds ?? 0) / 60)
-            console.error(`[ChatGPT Subscription] Usage limit reached (${lastResponseMeta.planType} plan). Resets in ${resetMin} minutes.`)
+            console.error(`[ChatGPT Subscription] Usage limit reached (${responseMeta.planType} plan). Resets in ${resetMin} minutes.`)
             // Return 403 — non-retryable
             return new Response(errBody, {
               status: 403,
@@ -335,22 +360,30 @@ export function createChatGPTSubscriptionProvider(authManager: {
     provider,
     /**
      * Bind a system prompt to ONE request. Returns the per-call headers to hand
-     * the SDK and a `release` the caller must run in a `finally` once the call
-     * (including the SDK's own retries) is done.
+     * the SDK, a reader for THIS call's response metadata, and a `release` the
+     * caller must run in a `finally` once the call (including the SDK's own
+     * retries) is done. `release` drops the instructions and the metadata
+     * together — a reader called after it sees nothing rather than a stale or
+     * foreign response's rate limits.
      */
-    beginRequest(system: string | undefined): { headers: Record<string, string>; release: () => void } {
+    beginRequest(system: string | undefined): {
+      headers: Record<string, string>
+      getResponseMeta: () => ChatGPTResponseMeta | undefined
+      release: () => void
+    } {
       const id = crypto.randomUUID()
       // Bound the map before inserting: evict the oldest entries (Map iterates
       // in insertion order) so a leaked id can never grow it without limit.
-      while (instructionsById.size >= MAX_TRACKED_REQUESTS) {
-        const oldest = instructionsById.keys().next()
+      while (requestsById.size >= MAX_TRACKED_REQUESTS) {
+        const oldest = requestsById.keys().next()
         if (oldest.done) break
-        instructionsById.delete(oldest.value)
+        requestsById.delete(oldest.value)
       }
-      instructionsById.set(id, system)
+      requestsById.set(id, { instructions: system })
       return {
         headers: { [INSTRUCTIONS_ID_HEADER]: id },
-        release: () => { instructionsById.delete(id) }
+        getResponseMeta: () => requestsById.get(id)?.meta,
+        release: () => { requestsById.delete(id) }
       }
     },
     /**
@@ -361,7 +394,11 @@ export function createChatGPTSubscriptionProvider(authManager: {
     setInstructions(system: string | undefined) {
       legacyInstructions = system
     },
-    /** Get rate limit metadata from the last response. */
+    /**
+     * Rate limit metadata from the last UNSCOPED response. Scoped callers read
+     * their own via the object beginRequest() returned; this is the fallback
+     * for requests that arrive without the private id header (legacy/tests).
+     */
     getResponseMeta(): ChatGPTResponseMeta | undefined {
       return lastResponseMeta
     }

@@ -377,6 +377,20 @@ function wrapModelWithVideo(model: LanguageModel, videoUrls: string[]): Language
   }) as LanguageModel
 }
 
+/**
+ * State a provider binds to ONE call. The headers identify the call to the
+ * provider's fetch wrapper (and are re-sent on every SDK retry), the optional
+ * `getResponseMeta` reads back the metadata of THAT call's response, and
+ * `release` drops both once the call is finished.
+ */
+export interface RequestScope {
+  headers: Record<string, string>
+  /** This call's response metadata (e.g. rate-limit headers), if the provider
+   *  records it per request. Read before `release`. */
+  getResponseMeta?: () => Record<string, unknown> | undefined
+  release: () => void
+}
+
 export interface AiSdkProviderOptions {
   /** Stable config provider id, distinct from the user-facing display name. */
   providerId?: string
@@ -396,12 +410,15 @@ export interface AiSdkProviderOptions {
    *  call (and any SDK retry of it) has finished. Takes precedence over
    *  onBeforeRequest — a provider instance is shared across the main turn,
    *  side loops, model_invoke and lambda handlers, which can overlap. */
-  beginRequest?: (system: string | undefined) => { headers: Record<string, string>; release: () => void }
+  beginRequest?: (system: string | undefined) => RequestScope
   /** Skip validateConfig preflight (provider only supports streaming). */
   streamOnly?: boolean
   /** Which native reasoning mapping to use when normalizing CreateMessageOptions.reasoning. */
   reasoningStyle?: ReasoningStyle
-  /** Called after each request to retrieve provider-specific metadata (e.g. rate limit headers). */
+  /** Called after each request to retrieve provider-specific metadata (e.g. rate
+   *  limit headers). Provider-wide state: only consulted when the call has no
+   *  RequestScope of its own, since overlapping calls would otherwise read each
+   *  other's response. Prefer `beginRequest().getResponseMeta`. */
   getResponseMeta?: () => Record<string, unknown> | undefined
 }
 
@@ -517,8 +534,8 @@ export class AiSdkProvider implements LLMProvider {
     // Normalize all provider failures (streaming or not) into enriched errors
     // so the executor and UI always see status code + response-body detail.
     const run = mustStream
-      ? this.streamingRequest(callSettings, options)
-      : this.nonStreamingRequest(callSettings, options)
+      ? this.streamingRequest(callSettings, options, requestScope)
+      : this.nonStreamingRequest(callSettings, options, requestScope)
     return run
       .catch((err) => { throw toProviderError(err) })
       // Release the request-scoped instructions only once the call is fully
@@ -580,17 +597,29 @@ export class AiSdkProvider implements LLMProvider {
     }
   }
 
-  private streamingRequest(callSettings: Record<string, unknown>, options: CreateMessageOptions): Promise<LLMResponse> {
-    return this.withMandatoryReasoningRetry(callSettings, () => this.streamOnce(callSettings, options))
+  private streamingRequest(callSettings: Record<string, unknown>, options: CreateMessageOptions, scope?: RequestScope): Promise<LLMResponse> {
+    return this.withMandatoryReasoningRetry(callSettings, () => this.streamOnce(callSettings, options, scope))
   }
 
-  private nonStreamingRequest(callSettings: Record<string, unknown>, options: CreateMessageOptions): Promise<LLMResponse> {
-    return this.withMandatoryReasoningRetry(callSettings, () => this.generateOnce(callSettings, options))
+  private nonStreamingRequest(callSettings: Record<string, unknown>, options: CreateMessageOptions, scope?: RequestScope): Promise<LLMResponse> {
+    return this.withMandatoryReasoningRetry(callSettings, () => this.generateOnce(callSettings, options, scope))
+  }
+
+  /**
+   * Provider-specific response metadata for THIS call. A request scope keys it
+   * by the individual request, so overlapping calls on one shared provider
+   * instance can't read each other's rate-limit headers; the provider-wide
+   * accessor is the fallback for providers/paths that have no scope.
+   */
+  private readResponseMeta(scope?: RequestScope): Record<string, unknown> | undefined {
+    if (scope?.getResponseMeta) return scope.getResponseMeta()
+    return this.options?.getResponseMeta?.()
   }
 
   private async streamOnce(
     callSettings: Record<string, unknown>,
-    options: CreateMessageOptions
+    options: CreateMessageOptions,
+    scope?: RequestScope
   ): Promise<LLMResponse> {
     if (this.requestDelayMs > 0) {
       await new Promise((r) => setTimeout(r, this.requestDelayMs))
@@ -654,7 +683,7 @@ export class AiSdkProvider implements LLMProvider {
     resp.providerMetadata = mergeProviderMetadata(
       resp.providerMetadata,
       providerMetadata as Record<string, unknown> | undefined,
-      this.options?.getResponseMeta?.() as Record<string, unknown> | undefined,
+      this.readResponseMeta(scope),
     )
     return resp
   }
@@ -663,7 +692,8 @@ export class AiSdkProvider implements LLMProvider {
 
   private async generateOnce(
     callSettings: Record<string, unknown>,
-    options: CreateMessageOptions
+    options: CreateMessageOptions,
+    scope?: RequestScope
   ): Promise<LLMResponse> {
     if (this.requestDelayMs > 0) {
       await new Promise((r) => setTimeout(r, this.requestDelayMs))
@@ -685,7 +715,7 @@ export class AiSdkProvider implements LLMProvider {
     resp.providerMetadata = mergeProviderMetadata(
       resp.providerMetadata,
       result.providerMetadata as Record<string, unknown> | undefined,
-      this.options?.getResponseMeta?.() as Record<string, unknown> | undefined,
+      this.readResponseMeta(scope),
     )
     return resp
   }

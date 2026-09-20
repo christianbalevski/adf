@@ -19,6 +19,34 @@ const AUTH = {
   getAccountId: () => 'test-account',
 }
 
+/**
+ * A fetch stub whose requests are settled by hand, either with an error (the
+ * instructions tests only need the outgoing body) or with a real Response whose
+ * x-codex-* headers the provider reads back as that request's metadata.
+ */
+function deferredResponseFetch() {
+  const calls: Array<{ body: string; headers: Headers }> = []
+  const resolve: Array<(res: Response) => void> = []
+  const fetchStub = vi.fn((_url: unknown, init?: RequestInit) => {
+    calls.push({ body: String(init?.body), headers: new Headers(init?.headers) })
+    return new Promise<Response>((res) => { resolve.push(res) })
+  })
+  vi.stubGlobal('fetch', fetchStub)
+  return { calls, resolve }
+}
+
+/** An SSE-shaped response carrying the given x-codex-* rate limit headers. */
+function codexResponse(plan: string, usedPercent: number): Response {
+  return new Response('data: [DONE]\n\n', {
+    status: 200,
+    headers: {
+      'content-type': 'text/event-stream',
+      'x-codex-plan-type': plan,
+      'x-codex-primary-used-percent': String(usedPercent),
+    },
+  })
+}
+
 /** A fetch stub that records each request and hands back a manual completion. */
 function deferredFetch() {
   const calls: Array<{ url: string; init: RequestInit | undefined; body: string; headers: Headers }> = []
@@ -171,6 +199,102 @@ describe('per-request instructions on a shared provider instance', () => {
   })
 })
 
+/**
+ * The same sharing argument applies in the OTHER direction: the x-codex-*
+ * rate-limit headers of a response must reach the call that made it. A
+ * provider-wide "last response" slot handed whichever call read first the
+ * metadata of whichever response landed last.
+ */
+describe('per-request response metadata on a shared provider instance', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('gives two overlapping requests their OWN metadata (responses settling out of order)', async () => {
+    const { calls, resolve } = deferredResponseFetch()
+    const { provider, beginRequest, getResponseMeta } = createChatGPTSubscriptionProvider(AUTH)
+
+    const scopeA = beginRequest('SYSTEM-A')
+    const scopeB = beginRequest('SYSTEM-B')
+
+    const a = startRequest(provider, scopeA.headers, 'a').catch((e) => e)
+    await until(() => calls.length === 1)
+    const b = startRequest(provider, scopeB.headers, 'b').catch((e) => e)
+    await until(() => calls.length === 2)
+
+    // B's response lands FIRST, A's second — the interleaving that made the
+    // old provider-wide slot return B's limits for A and A's for B.
+    resolve[1](codexResponse('pro', 42))
+    resolve[0](codexResponse('plus', 7))
+    await Promise.all([a, b])
+
+    expect(scopeA.getResponseMeta()).toMatchObject({ planType: 'plus', primaryUsedPercent: 7 })
+    expect(scopeB.getResponseMeta()).toMatchObject({ planType: 'pro', primaryUsedPercent: 42 })
+    // Scoped responses never touch the legacy provider-wide slot.
+    expect(getResponseMeta()).toBeUndefined()
+
+    scopeA.release()
+    scopeB.release()
+  })
+
+  it('keeps the LAST attempt of a retried request', async () => {
+    const { calls, resolve } = deferredResponseFetch()
+    const { provider, beginRequest } = createChatGPTSubscriptionProvider(AUTH)
+    const scope = beginRequest('SYSTEM-RETRY')
+
+    const attempt1 = startRequest(provider, scope.headers, 'hi').catch((e) => e)
+    await until(() => calls.length === 1)
+    resolve[0](codexResponse('plus', 10))
+    await attempt1
+    expect(scope.getResponseMeta()).toMatchObject({ primaryUsedPercent: 10 })
+
+    const attempt2 = startRequest(provider, scope.headers, 'hi').catch((e) => e)
+    await until(() => calls.length === 2)
+    resolve[1](codexResponse('plus', 55))
+    await attempt2
+
+    expect(scope.getResponseMeta()).toMatchObject({ primaryUsedPercent: 55 })
+    scope.release()
+  })
+
+  it('drops the metadata with the scope on release', async () => {
+    const { calls, resolve } = deferredResponseFetch()
+    const { provider, beginRequest, getResponseMeta } = createChatGPTSubscriptionProvider(AUTH)
+    const scope = beginRequest('SYSTEM-ONCE')
+
+    const done = startRequest(provider, scope.headers, 'hi').catch((e) => e)
+    await until(() => calls.length === 1)
+    resolve[0](codexResponse('pro', 99))
+    await done
+
+    expect(scope.getResponseMeta()).toMatchObject({ planType: 'pro' })
+    scope.release()
+    expect(scope.getResponseMeta()).toBeUndefined()
+
+    // A late response on a released id has nowhere scoped to go — it lands in
+    // the legacy slot instead of resurrecting the dead entry.
+    const late = startRequest(provider, scope.headers, 'hi').catch((e) => e)
+    await until(() => calls.length === 2)
+    resolve[1](codexResponse('plus', 1))
+    await late
+    expect(scope.getResponseMeta()).toBeUndefined()
+    expect(getResponseMeta()).toMatchObject({ planType: 'plus', primaryUsedPercent: 1 })
+  })
+
+  it('still exposes metadata on the unscoped legacy path', async () => {
+    const { calls, resolve } = deferredResponseFetch()
+    const { provider, setInstructions, getResponseMeta } = createChatGPTSubscriptionProvider(AUTH)
+    setInstructions('LEGACY-SYSTEM')
+
+    const done = provider.responses('gpt-5.4').doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    }).catch((e) => e)
+    await until(() => calls.length === 1)
+    resolve[0](codexResponse('business', 33))
+    await done
+
+    expect(getResponseMeta()).toMatchObject({ planType: 'business', primaryUsedPercent: 33 })
+  })
+})
+
 describe('AiSdkProvider request scoping', () => {
   /** Minimal LanguageModelV3 that records call headers and fails. */
   function recordingModel(seen: Array<Record<string, string> | undefined>): LanguageModel {
@@ -225,5 +349,67 @@ describe('AiSdkProvider request scoping', () => {
 
     expect(notified).toEqual(['SYSTEM-Y'])
     expect(seen[0]?.[INSTRUCTIONS_ID_HEADER]).toBeUndefined()
+  })
+
+  /** Minimal LanguageModelV3 that answers with a fixed text response. */
+  function answeringModel(): LanguageModel {
+    return {
+      specificationVersion: 'v3',
+      provider: 'test-provider',
+      modelId: 'test-model',
+      supportedUrls: {},
+      doGenerate: async () => ({
+        content: [{ type: 'text', text: 'ok' }],
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+        warnings: [],
+      }),
+      doStream: async () => { throw new Error('not used') },
+    } as unknown as LanguageModel
+  }
+
+  it('reads the response metadata of THIS call from its scope, not the provider-wide slot', async () => {
+    const released: string[] = []
+    const aiProvider = new AiSdkProvider(answeringModel(), 'test', 'test-model', 0, {
+      beginRequest: () => ({
+        headers: { [INSTRUCTIONS_ID_HEADER]: 'id-1' },
+        getResponseMeta: () => ({ planType: 'scoped' }),
+        release: () => { released.push('id-1') },
+      }),
+      getResponseMeta: () => ({ planType: 'provider-wide' }),
+    })
+
+    const response = await aiProvider.createMessage({
+      system: 'SYSTEM-Z',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+
+    expect(response.providerMetadata?.planType).toBe('scoped')
+    expect(released).toEqual(['id-1'])
+  })
+
+  it('falls back to the provider-wide metadata when the scope exposes none', async () => {
+    const aiProvider = new AiSdkProvider(answeringModel(), 'test', 'test-model', 0, {
+      beginRequest: () => ({ headers: { [INSTRUCTIONS_ID_HEADER]: 'id-1' }, release: () => {} }),
+      getResponseMeta: () => ({ planType: 'provider-wide' }),
+    })
+
+    const response = await aiProvider.createMessage({
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+
+    expect(response.providerMetadata?.planType).toBe('provider-wide')
+  })
+
+  it('still reads the provider-wide metadata with no scope at all', async () => {
+    const aiProvider = new AiSdkProvider(answeringModel(), 'test', 'test-model', 0, {
+      getResponseMeta: () => ({ planType: 'provider-wide' }),
+    })
+
+    const response = await aiProvider.createMessage({
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+
+    expect(response.providerMetadata?.planType).toBe('provider-wide')
   })
 })
