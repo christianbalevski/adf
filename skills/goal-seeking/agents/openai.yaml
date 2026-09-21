@@ -1,0 +1,4 @@
+interface:
+  display_name: "Goal Seeking"
+  short_description: "Pursue goals through action, evidence and adaptive strategy"
+  default_prompt: "Use $goal-seeking to pursue my goal with evidence-based iteration and accountable delivery."
