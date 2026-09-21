@@ -17,7 +17,7 @@
     },
     {
       "name": "agent-memory",
-      "description": "Maintain a mind.md wiki — small always-loaded index, mind/ pages with typed frontmatter, append-only log — with whole-page source citations resolvable to adf_audit ground truth. Use when setting up durable memory, installing the audit_read retrieval lambda, writing or superseding memory pages, or running a periodic memory lint.",
+      "description": "Maintain a mind.md wiki \u2014 small always-loaded index, mind/ pages with typed frontmatter, append-only log \u2014 with whole-page source citations resolvable to adf_audit ground truth. Use when setting up durable memory, installing the audit_read retrieval lambda, writing or superseding memory pages, or running a periodic memory lint.",
       "path": "skills/agent-memory/SKILL.md",
       "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-memory/SKILL.md"
     },
@@ -46,6 +46,46 @@
       ]
     },
     {
+      "name": "goal-seeking",
+      "description": "Pursue an authorized goal through concrete action, creative experiments, learning and pivots, coordinating ADF loops, peers and timers through verified delivery. Use for open-ended or multi-session goals, not routine one-step answers.",
+      "path": "skills/goal-seeking/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/goal-seeking/SKILL.md",
+      "files": [
+        {
+          "path": "agents/openai.yaml",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/goal-seeking/agents/openai.yaml"
+        },
+        {
+          "path": "references/async-experiments.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/goal-seeking/references/async-experiments.md"
+        },
+        {
+          "path": "references/evaluation.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/goal-seeking/references/evaluation.md"
+        },
+        {
+          "path": "references/goal-template.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/goal-seeking/references/goal-template.md"
+        },
+        {
+          "path": "references/research.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/goal-seeking/references/research.md"
+        }
+      ]
+    },
+    {
+      "name": "self-observation",
+      "description": "Quantify your own behavioral patterns from adf_loop and adf_audit with hot-path code \u2014 null-turn streaks, repeated actions, spend without external change. Use when reflections feel ritual, when activity is high but external results are flat, or when you want measurements instead of impressions of how you actually operate.",
+      "path": "skills/self-observation/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/self-observation/SKILL.md",
+      "files": [
+        {
+          "path": "scripts/self-observe.js",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/self-observation/scripts/self-observe.js"
+        }
+      ]
+    },
+    {
       "name": "skill-loader",
       "description": "Install, repair, or maintain a file-backed ADF skill catalog entirely in agent space. Use when an agent needs to discover first-party or installed SKILL.md packages, keep skills-registry.json current, enable or disable skills, or configure startup and file-change indexer triggers.",
       "path": "skills/skill-loader/SKILL.md",
@@ -54,18 +94,6 @@
         {
           "path": "agents/openai.yaml",
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/skill-loader/agents/openai.yaml"
-        }
-      ]
-    },
-    {
-      "name": "self-observation",
-      "description": "Quantify your own behavioral patterns from adf_loop and adf_audit with hot-path code — null-turn streaks, repeated actions, spend without external change. Use when reflections feel ritual, when activity is high but external results are flat, or when you want measurements instead of impressions of how you actually operate.",
-      "path": "skills/self-observation/SKILL.md",
-      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/self-observation/SKILL.md",
-      "files": [
-        {
-          "path": "scripts/self-observe.js",
-          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/self-observation/scripts/self-observe.js"
         }
       ]
     },
