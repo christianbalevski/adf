@@ -10,7 +10,7 @@ see_also:
 
 # Desktop Applications with Isolated Compute
 
-ADF can run real Linux GUI processes in an agent's managed **isolated** container, on the same small desktop the principal sees in the Computer tab. This article is the end-to-end recipe for a native application: inputs in, launch, interact, validate, results out. The general driving skills (screenshots, `xdotool`, opening apps and files) are in the [Computer Use](../guides/computer-use.md) guide.
+ADF can run real Linux GUI processes in an agent's managed **isolated** container, on the agent’s own Linux desktop that the principal sees in the Computer tab. This article is the end-to-end recipe for a native application: inputs in, launch, interact, validate, results out. The general driving skills (screenshots, `xdotool`, opening apps and files) are in the [Computer Use](../guides/computer-use.md) guide.
 
 This article composes a task recipe; it does not replace the feature contracts in the [Compute Environments guide](../guides/compute.md), [Computer guide](../guides/browser.md), or [Documents and Files guide](../guides/documents-and-files.md). Follow those guides for canonical configuration, browser lifecycle, file-protection, and security procedures. An installable executable workflow belongs in a skill, not in this article.
 
@@ -22,7 +22,7 @@ This article composes a task recipe; it does not replace the feature contracts i
 - When isolated compute has browser display support enabled (`compute.enabled: true` and `compute.browser` not `false`), managed agent-container processes receive `DISPLAY=:99`. The display is shared by processes in that **same isolated container**: a GUI process can render there while the user watches the container's VNC/noVNC view.
 - ADF starts a display stack in that container (X server, the Openbox window manager, the tint2 panel with an application menu, PCManFM for the wallpaper and files, VNC, and a loopback-published noVNC endpoint). The Studio Computer tab embeds that noVNC page and shows the X display; it is not a second desktop session. Every window gets a close button and a panel task button, so the human can close or switch windows.
 - The managed Chromium opens on demand (`adf-browser start`, an attaching browser MCP server, or the panel button) and stays closed once closed. Use `adf-browser stop` / `adf-browser resume` when a task needs it held down (for example a profile swap).
-- The image ships `xdotool`, `scrot`, `xclip`, and `xterm`. Through `compute_exec` an agent can move and click the mouse, type, send key chords, focus windows by title, screenshot the desktop to a file, and read or write the clipboard.
+- The image ships the Mousepad text editor, LXTerminal, and PCManFM file manager, plus `xdotool`, `scrot`, `xclip`, and `xterm`. Through `compute_exec` an agent can move and click the mouse, type, send key chords, focus windows by title, screenshot the desktop to a file, and read or write the clipboard.
 - `fs_transfer` moves files between the agent VFS and `isolated` or `shared` managed containers. Paths are relative to the selected endpoint and must not escape it. External containers are not file-transfer endpoints in this release.
 - The maintained `@playwright/mcp` integration attaches to ADF's managed Chromium through its container-loopback CDP endpoint. This is the supported agent automation mechanism for web pages.
 
@@ -37,7 +37,7 @@ ADF does not expose a dedicated pointer/keyboard tool. Desktop control goes thro
 1. The agent has `compute.enabled: true` and `compute.browser` left enabled when a visible display is required. These are agent configuration changes and may require human approval.
 2. Podman and the managed compute service are available. If the selected target is unavailable, execution fails closed; ADF does not silently move the command to another container or the host.
 3. The agent has access to `compute_exec` and, when files must cross the boundary, `fs_transfer`. Tool enablement and restricted-command approvals still apply.
-4. The application is already installed in the image, or the owner has explicitly arranged the image/package configuration. Do not describe an app as installed merely because the default image contains Chromium and display dependencies; PDF editors, image editors, and office applications have not been verified as part of this capability.
+4. Check whether the application is installed. The standard desktop includes Mousepad, LXTerminal, PCManFM and Chromium. Additional applications can be installed with `apt-get update && apt-get install -y <package>` under the applicable compute policy and approvals; do not assume PDF editors, image editors or office suites are already installed.
 
 Do not enable host access just to obtain a GUI. Host execution is a separate, high-trust target with the user's OS privileges; see [Compute Environments](../guides/compute.md#security-considerations).
 
@@ -134,4 +134,6 @@ This persistence is container-local, not a guarantee of durable backup, cross-ma
 
 On 2026-09-05, at baseline repository revision `1347204d2f938c6dcf14db7102ad5dcb0c3b2266`, a Linux x86_64 isolated test environment with outer `DISPLAY=:99` ran ADF Studio in development mode alongside the existing persistent Chromium session. Display inspection showed both visible windows; an explicitly selected Studio Electron target reported title `ADF Studio`, `readyState` `complete`, and non-empty rendered body text, and the resulting screenshot was inspected. Podman was not installed in that outer test environment, so this bounded observation verifies the outer Electron/display path—not managed agent-container GUI compatibility or arbitrary native applications.
 
-Still unverified by this observation: installation and operation of particular PDF/image/editor applications; generic mouse or keyboard automation; drag-and-drop; multi-window focus semantics for every window manager; audio, printing, GPU acceleration, and long-running desktop sessions. Treat each as a new verification task rather than a supported promise.
+That historical observation predates the current per-agent desktop and is not the limit of today’s supported computer-use workflow. The current runtime provisions native desktop applications and CLI mouse/keyboard control as described above and in [Computer Use](../guides/computer-use.md). Application-specific behavior still needs result verification; a delivered input event is not proof that an app completed an action. Audio and a print system are not installed; GPU acceleration remains unverified.
+
+Documentation reviewed against runtime revision `39115d6c3221149cf6238e02774b91fc888beac2` (v0.7.2), including the desktop package list and launch configuration in `src/main/services/podman.service.ts`. This update is a source review, not a new application compatibility test.
