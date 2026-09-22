@@ -176,6 +176,10 @@
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/pdf-documents/references/limitations.md"
         },
         {
+          "path": "scripts/pdf-inspect-render.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/pdf-documents/scripts/pdf-inspect-render.mjs"
+        },
+        {
           "path": "scripts/pdf-workflow.mjs",
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/pdf-documents/scripts/pdf-workflow.mjs"
         },
@@ -196,8 +200,20 @@
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/references/limitations.md"
         },
         {
+          "path": "scripts/pptx-generate.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/scripts/pptx-generate.mjs"
+        },
+        {
+          "path": "scripts/pptx-inspect-patch.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/scripts/pptx-inspect-patch.mjs"
+        },
+        {
           "path": "scripts/pptx-workflow.mjs",
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/scripts/pptx-workflow.mjs"
+        },
+        {
+          "path": "tests/pptx-inspect-only.test.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/tests/pptx-inspect-only.test.mjs"
         },
         {
           "path": "tests/pptx-workflow.test.mjs",

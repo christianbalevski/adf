@@ -23,16 +23,16 @@ Use `scripts/docx-tools.cjs` as a Node-test reference. In ADF `sys_code`, use th
 
 See `references/adf-usage.md` for a complete, runnable `sys_code` example that creates a DOCX, reopens its `word/document.xml`, performs a safe single-`w:t` placeholder patch, writes a distinct VFS output, and reopens/verifies that output. Do not call a helper that is not defined in the current code block.
 
-For reliable patches, put each placeholder in one Word text run (`<w:t>{{NAME}}</w:t>`). `patchDocxXml` performs exact replacements only when the placeholder is wholly inside one `<w:t>` text node; it fails on missing, ambiguous, split-run, markup/attribute, or invalid-XML-text placeholders. Replacement text is always XML-escaped; there is no raw-XML bypass.
+For reliable patches, put each placeholder in one Word text run (`<w:t>{{NAME}}</w:t>`). `patchDocxXml` performs exact replacements only when the placeholder is wholly inside one `<w:t>` text node; it fails on missing, ambiguous, split-run, markup/attribute, or invalid-XML-text placeholders. Replacement text is always XML-escaped; `{value, expected}` may set an explicit positive count, and there is no raw-XML bypass. Replacements are applied from the original text node and replacement values are not re-scanned as new tokens.
 
 ## Read and update
 
 - `readDocxText(bytes)` extracts readable `w:t` text for verification; it is not a layout-preserving renderer.
 - `patchDocxXml(bytes, replacements, options)` preserves all unmodified ZIP entries and returns new bytes. Default parts are `word/document.xml`; explicitly choose `word/header*.xml` or `word/footer*.xml` when needed.
-- Use `zipEntryText` for a direct post-write assertion. Reject invalid ZIPs, missing parts, path traversal, missing placeholders, split-run/markup matches, invalid XML 1.0 controls, and unexpected replacement counts.
+- Use `zipEntryText` for a direct post-write assertion. The default part is `word/document.xml`; pass `{parts: ["word/document.xml", "word/header1.xml"]}` for headers/footers. Counts are global across selected parts. Reject invalid ZIPs, macro/VBA/ActiveX/executable entries/content types, missing parts, path traversal, missing placeholders, split-run/markup matches, invalid XML 1.0 controls, and unexpected replacement counts.
 - For edits beyond exact text (tables, numbering, relationships, tracked changes, images), inspect the relevant ECMA-376 XML and make a deliberately scoped patch. Do not regex-rewrite an arbitrary document.
 
-`tests/docx-tools.test.cjs` runs a realistic create → patch → reopen flow plus negative cases. It is a Node test using the exact package versions listed in the ADF code-execution guide, not proof that an ADF sandbox is currently installed or that Word will render every feature identically.
+`tests/docx-tools.test.cjs` runs a realistic create → patch → reopen flow plus entity/token collision, expected-count, header, macro, invalid ZIP/control, and source-preservation negatives. It is a Node test using the exact package versions listed in the ADF code-execution guide, not proof that an ADF sandbox is currently installed or that Word will render every feature identically.
 
 ## Fidelity and safety limits
 

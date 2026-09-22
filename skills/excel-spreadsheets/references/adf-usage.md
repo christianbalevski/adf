@@ -6,6 +6,7 @@ Run the following as one `sys_code` call. ADF transforms the ESM import for the 
 import * as XLSX from "xlsx";
 
 const mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+// For an existing OOXML input, hash bytes before and after the update; reject active-content parts before parsing.
 const sourceWb = XLSX.utils.book_new();
 const sourceWs = XLSX.utils.aoa_to_sheet([
   ["Name", "Amount", "Total"],
@@ -18,7 +19,7 @@ const ws = wb.Sheets.Data;
 if (!ws) throw new Error("No Data worksheet");
 // B2 already exists. A3 is outside the initial range; extend !ref explicitly.
 ws.B2 = { t: "n", v: 3 };
-ws.C2 = { t: "n", v: 6, f: "B2*2" }; // formula text has no leading '='; no JS calculation occurs.
+ws.C2 = { t: "n", v: 6, f: "B2*2" }; // trusted cache v=6 is required; formula text has no leading '='.
 ws.A3 = { t: "s", v: "Updated" };
 const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
 for (const address of ["B2", "C2", "A3"]) {
@@ -37,4 +38,4 @@ if (reopened.Sheets.Data.B2.v !== 3 || reopened.Sheets.Data.C2.f !== "B2*2" || r
 ({ path: "out/updated.xlsx", bytes: output.length, verified: true, formulaNotCalculated: true });
 ```
 
-Keep source and output paths distinct. SheetJS CE does not calculate formulas and does not generally write arbitrary style objects; cached formula values can be stale. For CSV, prefix untrusted strings beginning `=`, `+`, `-`, `@`, tab, CR, or LF before export, and explain that this mitigates but cannot control every consumer.
+Keep source and output paths distinct. The helper preflights active OOXML (`vbaProject*` anywhere in the archive, ActiveX, embeddings, macro-enabled content types/relationships, and traversal paths) and checks the source SHA-256 remains unchanged after update. SheetJS CE does not calculate formulas and does not generally write arbitrary style objects; formula-only cells without trusted cached values are rejected by the helper because CE 0.18.5 can drop them on write/reopen. For CSV, prefix untrusted strings whose leading whitespace/BOM is followed by `=`, `+`, `-`, or `@` before export; numeric values remain typed. Explain that this mitigates but cannot control every consumer.
