@@ -1,0 +1,13 @@
+import {readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+const code=readFileSync(new URL('../tool-search.js',import.meta.url),'utf8');
+const m=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+const tools=[{name:'browser_capture',enabled:true,visible:false,schema:{properties:{format:{enum:['screenshot']}}}},{name:'browser_disabled',enabled:false},{name:'browser_locked',enabled:true,locked:true},{name:'browser_restricted',enabled:true,restricted:true},{name:'fs_read',enabled:true,visible:true}];
+const calls=[];
+globalThis.adf={sys_get_config:async()=>({tools}),sys_update_config:async x=>{calls.push(x);return {ok:true}}};
+test('search default is nonmutating and searches schema vocabulary',async()=>{const r=await m.main({query:'screenshot'});assert.equal(r.matches[0].name,'browser_capture');assert.equal(calls.length,0)});
+test('reject invalid bounds and empty normalized queries',async()=>{for(const args of [{query:'browser',threshold:'bad'},{query:'browser',max_matches:Infinity},{query:'!!'}])await assert.rejects(m.main(args));});
+test('reveal skips disabled locked restricted; only visibility changes',async()=>{calls.length=0;const r=await m.main({task:'reveal',query:'browser',include_disabled:true,threshold:0.4});assert.equal(calls.length,1);assert.equal(calls[0].path,'tools.browser_capture.visible');assert.equal(calls[0].value,true);assert.equal(r.skipped.length,3)});
+test('preview never mutates and caps matches',async()=>{calls.length=0;const r=await m.main({task:'reveal',query:'browser',dry_run:true,max_matches:100});assert.equal(r.max_matches,10);assert.equal(calls.length,0)});
+test('reset preview preserves config; locked tool skipped',async()=>{calls.length=0;const r=await m.main({task:'reset',dry_run:true,core_tools:['browser_locked']});assert.equal(calls.length,0);assert.ok(r.skipped.some(x=>x.name==='browser_locked'))});
