@@ -108,6 +108,22 @@
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/soul-creation/references/example-souls.md"
         }
       ]
+    },
+    {
+      "name": "tool-search",
+      "description": "Search the runtime tool catalog by fuzzy matching a natural-language need against tool names, descriptions, and full JSON schemas, then reveal bounded high-confidence enabled matches without changing enablement or security controls.",
+      "path": "skills/tool-search/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/tool-search/SKILL.md",
+      "files": [
+        {
+          "path": "tool-search.js",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/tool-search/tool-search.js"
+        },
+        {
+          "path": "tests/tool-search.test.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/tool-search/tests/tool-search.test.mjs"
+        }
+      ]
     }
   ]
 }
