@@ -124,6 +124,102 @@
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/tool-search/tests/tool-search.test.mjs"
         }
       ]
+    },
+    {
+      "name": "word-documents",
+      "description": "Create, read, and perform targeted updates to DOCX files with the standard docx and jszip packages; activate for Word generation, placeholder/template patches, or narrowly scoped XML edits where fidelity limits are acceptable.",
+      "path": "skills/word-documents/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/word-documents/SKILL.md",
+      "files": [
+        {
+          "path": "references/adf-usage.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/word-documents/references/adf-usage.md"
+        },
+        {
+          "path": "scripts/docx-tools.cjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/word-documents/scripts/docx-tools.cjs"
+        },
+        {
+          "path": "tests/docx-tools.test.cjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/word-documents/tests/docx-tools.test.cjs"
+        }
+      ]
+    },
+    {
+      "name": "excel-spreadsheets",
+      "description": "Create, read, and make targeted cell or sheet updates to XLSX/CSV files with SheetJS xlsx; activate for workbook generation, inspection, formula-aware patches, or safe CSV export with explicit fidelity and recalculation limits.",
+      "path": "skills/excel-spreadsheets/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/excel-spreadsheets/SKILL.md",
+      "files": [
+        {
+          "path": "references/adf-usage.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/excel-spreadsheets/references/adf-usage.md"
+        },
+        {
+          "path": "scripts/xlsx-tools.cjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/excel-spreadsheets/scripts/xlsx-tools.cjs"
+        },
+        {
+          "path": "tests/xlsx-tools.test.cjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/excel-spreadsheets/tests/xlsx-tools.test.cjs"
+        }
+      ]
+    },
+    {
+      "name": "pdf-documents",
+      "description": "Create, read, modify, and validate PDF documents in ADF using pdf-lib and MuPDF; use for PDF workflows with explicit binary I/O and safety caveats.",
+      "path": "skills/pdf-documents/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/pdf-documents/SKILL.md",
+      "files": [
+        {
+          "path": "references/limitations.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/pdf-documents/references/limitations.md"
+        },
+        {
+          "path": "scripts/pdf-inspect-render.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/pdf-documents/scripts/pdf-inspect-render.mjs"
+        },
+        {
+          "path": "scripts/pdf-workflow.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/pdf-documents/scripts/pdf-workflow.mjs"
+        },
+        {
+          "path": "tests/pdf-workflow.test.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/pdf-documents/tests/pdf-workflow.test.mjs"
+        }
+      ]
+    },
+    {
+      "name": "powerpoint-presentations",
+      "description": "Create and cautiously inspect PowerPoint PPTX files in ADF with PptxGenJS and narrow JSZip XML patches; use for new decks or explicitly bounded existing-deck edits.",
+      "path": "skills/powerpoint-presentations/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/SKILL.md",
+      "files": [
+        {
+          "path": "references/limitations.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/references/limitations.md"
+        },
+        {
+          "path": "scripts/pptx-generate.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/scripts/pptx-generate.mjs"
+        },
+        {
+          "path": "scripts/pptx-inspect-patch.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/scripts/pptx-inspect-patch.mjs"
+        },
+        {
+          "path": "scripts/pptx-workflow.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/scripts/pptx-workflow.mjs"
+        },
+        {
+          "path": "tests/pptx-inspect-only.test.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/tests/pptx-inspect-only.test.mjs"
+        },
+        {
+          "path": "tests/pptx-workflow.test.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/tests/pptx-workflow.test.mjs"
+        }
+      ]
     }
   ]
 }
