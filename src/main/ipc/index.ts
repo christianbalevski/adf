@@ -811,6 +811,9 @@ function issueAttestationsForCurrentOwner(workspace: AdfWorkspace): void {
   }
 }
 
+/** Set by registerAllIpcHandlers; recreates the window from a notification click. */
+let showMainWindowHook: (() => BrowserWindow | null) | null = null
+
 function getMainWindow(): BrowserWindow | null {
   const windows = BrowserWindow.getAllWindows()
   return windows.length > 0 ? windows[0] : null
@@ -839,9 +842,21 @@ function focusMainWindow(): BrowserWindow | null {
  */
 function createNativeNotifierPlatform(): NativeNotifierPlatform {
   const sendReveal = (payload: { filePath?: string; notificationId?: string }): void => {
+    const send = (win: BrowserWindow): void => {
+      if (win.isDestroyed() || win.webContents.isDestroyed()) return
+      try { win.webContents.send(IPC.APPROVALS_REVEAL, payload) } catch { /* window going away */ }
+    }
     const win = focusMainWindow()
-    if (!win || win.webContents.isDestroyed()) return
-    try { win.webContents.send(IPC.APPROVALS_REVEAL, payload) } catch { /* window going away */ }
+    if (win) {
+      send(win)
+      return
+    }
+    // macOS: the app outlives its last window. Recreate it so the click still
+    // lands somewhere; the deep link is best-effort once the renderer loads.
+    const created = showMainWindowHook?.()
+    if (created && !created.isDestroyed()) {
+      created.webContents.once('did-finish-load', () => send(created))
+    }
   }
 
   return {
@@ -1754,7 +1769,13 @@ function setLiveAgentName(filePath: string, name: string): void {
   }
 }
 
-export function registerAllIpcHandlers(): void {
+export interface IpcHostHooks {
+  /** Show the main window, creating it when none exists (see main/index.ts). */
+  showMainWindow?: () => BrowserWindow | null
+}
+
+export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
+  showMainWindowHook = hooks.showMainWindow ?? null
   settings = new SettingsService()
   initApplicationMenu(settings)
 

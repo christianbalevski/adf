@@ -226,17 +226,9 @@ if (!instanceId) {
     app.exit(0)
   } else {
     app.on('second-instance', (_event, argv) => {
-      if (mainWindow) {
-        if (mainWindow.isMinimized()) mainWindow.restore()
-        mainWindow.focus()
-      }
       const secondAdfArg = argv.find((arg) => arg.endsWith('.adf') && !arg.startsWith('-'))
-      if (!secondAdfArg) return
-      if (canPushOpenFile()) {
-        mainWindow!.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath: secondAdfArg })
-      } else {
-        fileToOpen = secondAdfArg
-      }
+      if (secondAdfArg) requestOpenFile(secondAdfArg)
+      else showMainWindow()
     })
   }
 }
@@ -247,19 +239,51 @@ if (!instanceId) {
  * OPEN_FILE_GET_PENDING pull covers that gap). Anything earlier queues.
  */
 function canPushOpenFile(): boolean {
-  const wc = mainWindow?.webContents
-  return !!wc && !wc.isDestroyed() && !wc.isLoading()
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  const wc = mainWindow.webContents
+  return !wc.isDestroyed() && !wc.isLoading()
+}
+
+/**
+ * Bring the main window forward, creating it if there is none. On macOS the
+ * app keeps running after its last window closes, so any request that needs a
+ * window (open a file, second launch, notification click) may find none.
+ * Before 'ready' this is a no-op: startup creates the window itself.
+ */
+function showMainWindow(): BrowserWindow | null {
+  if (!app.isReady()) return null
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    void createWindow()
+    return mainWindow
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  // A window still loading is shown by its own 'ready-to-show' handler;
+  // showing it early flashes an unpainted window.
+  if (!mainWindow.isVisible() && !mainWindow.webContents.isLoading()) mainWindow.show()
+  mainWindow.focus()
+  return mainWindow
+}
+
+/**
+ * Open an .adf in the main window. Pushes straight to a loaded renderer;
+ * otherwise queues it for the renderer's OPEN_FILE_GET_PENDING pull, making
+ * sure a window exists to do the pulling.
+ */
+function requestOpenFile(filePath: string): void {
+  if (canPushOpenFile()) {
+    showMainWindow()
+    mainWindow!.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
+    return
+  }
+  fileToOpen = filePath
+  showMainWindow()
 }
 
 // macOS: fired when user double-clicks .adf or uses Open With
 app.on('open-file', (event, filePath) => {
   event.preventDefault()
   if (!filePath.endsWith('.adf')) return
-  if (canPushOpenFile()) {
-    mainWindow!.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
-  } else {
-    fileToOpen = filePath
-  }
+  requestOpenFile(filePath)
 })
 
 // Cold-start pull: the renderer calls this once its OPEN_FILE_REQUEST
@@ -327,8 +351,12 @@ async function createWindow(): Promise<void> {
   mainWindow.on('close', () => {
     console.log('[App] Main window close requested (user, OS, or WM_CLOSE from another process)')
   })
+  // Drop the reference so later requests recreate the window instead of
+  // calling into a destroyed one (macOS keeps the app alive with no window).
+  const createdWindow = mainWindow
   mainWindow.on('closed', () => {
     console.log('[App] Main window closed')
+    if (mainWindow === createdWindow) mainWindow = null
   })
 
   // Webview guests may only load the local agent-browser (noVNC) pages, with
@@ -463,7 +491,7 @@ app.whenReady().then(() => {
     app.once('before-quit', () => stopStallMonitor())
   }
 
-  registerAllIpcHandlers()
+  registerAllIpcHandlers({ showMainWindow })
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
   ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {
     mainWindow?.setFullScreen(!!fullscreen)
@@ -505,7 +533,9 @@ app.whenReady().then(() => {
     })
   })
 
-  createWindow()
+  // An open-file or second-instance request that raced 'ready' may already
+  // have created the window through showMainWindow().
+  if (!mainWindow || mainWindow.isDestroyed()) void createWindow()
 
   initAppUpdater({
     send: (state) => {
