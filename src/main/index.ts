@@ -1,11 +1,11 @@
 import { app, BrowserWindow, crashReporter, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
-import { execSync } from 'child_process'
 import { join } from 'path'
 import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace } from './ipc'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
 import { startStallMonitor, stopStallMonitor } from './utils/stall-monitor'
+import { resolveLoginShellPath } from './utils/login-shell-path'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 
@@ -49,18 +49,17 @@ protocol.registerSchemesAsPrivileged([
 // Fix PATH for packaged macOS/Linux apps launched from Finder/desktop.
 // GUI apps inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that
 // doesn't include Node.js, Homebrew, nvm, etc.
+// Logged after the main log file is installed so the reason reaches main.log.
+let loginShellPathNote: string | null = null
 if (app.isPackaged && (process.platform === 'darwin' || process.platform === 'linux')) {
-  try {
-    const shell = process.env.SHELL || '/bin/zsh'
-    const shellPath = execSync(`${shell} -ilc 'echo -n $PATH'`, {
-      encoding: 'utf-8',
-      timeout: 5000
-    }).trim()
-    if (shellPath) {
-      process.env.PATH = shellPath
-    }
-  } catch {
-    // Silently fail — PATH remains as-is
+  const resolved = resolveLoginShellPath({
+    shell: process.env.SHELL || '/bin/zsh',
+    currentPath: process.env.PATH ?? '',
+    platform: process.platform
+  })
+  process.env.PATH = resolved.path
+  if (resolved.source === 'fallback') {
+    loginShellPathNote = `[App] Login-shell PATH unavailable (${resolved.reason}); using fallback PATH`
   }
 }
 
@@ -85,6 +84,7 @@ console.log(
   `[App] ADF Studio ${app.getVersion()} starting — pid=${process.pid} packaged=${app.isPackaged} ` +
   `electron=${process.versions.electron} log=${mainLogPath ?? '(unavailable)'}`
 )
+if (loginShellPathNote) console.warn(loginShellPathNote)
 
 let mainWindow: BrowserWindow | null = null
 let fileToOpen: string | null = null
