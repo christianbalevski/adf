@@ -74,6 +74,14 @@ function textOf(content: string | ContentBlock[]): string {
     : content.map(block => block.type === 'text' ? block.text ?? '' : '').join('')
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+  const started = Date.now()
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error('timed out waiting for review condition')
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+
 interface RunningAgent {
   dir: string
   filePath: string
@@ -94,6 +102,8 @@ async function startAgent(opts: {
   provider?: CapturingProvider
   limits?: Partial<AgentConfig['limits']>
   codeExecution?: Partial<NonNullable<AgentConfig['code_execution']>>
+  recovery?: Partial<NonNullable<AgentConfig['recovery']>>
+  preserveToolDeclarations?: boolean
 } = {}): Promise<RunningAgent> {
   const dir = mkdtempSync(join(tmpdir(), 'adf-pre-llm-review-'))
   const filePath = join(dir, 'review.adf')
@@ -121,7 +131,7 @@ async function startAgent(opts: {
   config.code_execution = { ...config.code_execution, ...opts.codeExecution }
   // A hook failure is structural. Do not hide its observation behind the
   // executor's later automatic provider-recovery timer in these tests.
-  config.recovery = { ...(config.recovery ?? {}), auto_retry: false }
+  config.recovery = { ...(config.recovery ?? {}), auto_retry: false, ...opts.recovery }
   workspace.setAgentConfig(config)
   if (opts.hookSource !== undefined) workspace.writeFile(opts.hook?.source.split(':')[0] ?? 'lib/hook.js', opts.hookSource)
   for (const [path, content] of Object.entries(opts.files ?? {})) workspace.writeFile(path, content)
@@ -130,7 +140,7 @@ async function startAgent(opts: {
   const agent = await new AgentRuntimeBuilder({ codeSandboxService: sandbox }).build({
     workspace,
     filePath,
-    config: workspace.getAgentConfig(),
+    config: opts.preserveToolDeclarations ? config : workspace.getAgentConfig(),
     provider,
   })
   const item: RunningAgent = { dir, filePath, workspace, provider, sandbox, agent }
@@ -216,7 +226,7 @@ describe('pre-LLM hook review — provider boundary', () => {
 
     // The normal registry remains declaration-gated. Hook execution owns a
     // private nested-lambda backend instead; no general RPC tool is exposed.
-    expect(started.agent.registry.get('sys_lambda')).toBeUndefined()
+    expect(started.agent.registry.get('sys_lambda')).toBeDefined()
     expect(started.provider.calls).toHaveLength(1)
     expect(started.provider.calls[0].tools?.map(tool => tool.name)).not.toContain('sys_lambda')
     expect(started.provider.calls[0].system).toContain('|review-hook:main')
@@ -530,11 +540,16 @@ describe("pre-LLM hook review — recovery, config, and cancellation regressions
     expect(started.provider.calls).toHaveLength(0);
     expect(started.agent.executor.getState()).toBe("error");
     expect(started.agent.executor.getErrorReason()).toBe("turn_error");
-    // The trigger is the only new durable row. Existing tool history must not
-    // be rewritten and image content must not be stripped by provider recovery.
-    expect(started.workspace.getLoop().slice(0, beforeLoop.length)).toEqual(beforeLoop);
-    expect(started.agent.session.getMessages().slice(0, beforeMessages.length)).toEqual(beforeMessages);
-    expect(started.agent.session.getMessages().some(message =>
+    // Existing tool/image history is byte-for-byte preserved. The only durable
+    // addition attributable to this failed turn is the normal TURN_ERROR row;
+    // hook text must not enter provider auth/image/tool recovery.
+    const afterLoop = started.workspace.getLoop();
+    expect(afterLoop.slice(0, beforeLoop.length)).toEqual(beforeLoop);
+    expect(JSON.stringify(afterLoop.slice(beforeLoop.length))).toContain("[Turn error]");
+    const afterMessages = started.agent.session.getMessages();
+    expect(afterMessages.slice(0, beforeMessages.length)).toEqual(beforeMessages);
+    expect(JSON.stringify(afterMessages.slice(beforeMessages.length))).toContain("[Turn error]");
+    expect(afterMessages.some(message =>
       Array.isArray(message.content) && message.content.some(block => block.type === "image_url"),
     )).toBe(true);
     const logEvents = started.workspace.getLogs(200).map(log => log.event);
@@ -542,7 +557,40 @@ describe("pre-LLM hook review — recovery, config, and cancellation regressions
     expect(logEvents).not.toContain("provider_credentials_invalid");
     expect(logEvents).not.toContain("provider_error");
     expect(logEvents).not.toContain("orphan_tool_repair");
+    expect(logEvents).not.toContain("image_recovery_followup_error");
   });
+
+  it("uses established structural recovery for a hook failure without provider recovery or history cleanup", async () => {
+    const provider = new CapturingProvider();
+    const started = await startAgent({
+      provider,
+      recovery: { auto_retry: true, max_attempts: 1, base_delay_ms: 20, max_delay_ms: 100 },
+      hook: { source: "lib/hook.js" },
+      // Request-scoped workers are intentionally stateless. The recovery
+      // notice is the durable, request-local discriminator for the retry.
+      hookSource: `export function main({ request }) {
+        if (!JSON.stringify(request.messages).toLowerCase().includes("structural recovery retry")) {
+          throw new Error("hook structural failure: invalid api key tool_result image");
+        }
+        return request;
+      }`,
+    });
+
+    await started.agent.dispatch(chatDispatch("structural hook retry"));
+    expect(provider.calls).toHaveLength(0);
+    await waitFor(() => provider.calls.length === 1, 9_000);
+    await waitFor(() => started.agent.executor.getState() === "idle", 9_000);
+
+    expect(provider.calls).toHaveLength(1);
+    const events = started.workspace.getLogs(200).map(log => log.event);
+    expect(events).toContain("pre_llm_hook_error");
+    expect(events).toContain("turn_error_retry_scheduled");
+    expect(events).not.toContain("provider_credentials_invalid");
+    expect(events).not.toContain("provider_error");
+    expect(events).not.toContain("orphan_tool_repair");
+    expect(events).not.toContain("image_recovery_followup_error");
+    expect(JSON.stringify(started.workspace.getLoop())).toContain("[Turn error]");
+  }, 10_000);
 
   it("treats persisted thinking_budget:null as unset for a no-op hook", async () => {
     const started = await startAgent({
@@ -562,15 +610,25 @@ describe("pre-LLM hook review — recovery, config, and cancellation regressions
   });
 
   it("preserves declaration-gated SysLambda registration, then permits only private hook use after live enablement", async () => {
+    const undeclared = await startAgent({
+      tools: [{ name: "sys_code", enabled: true, visible: true }],
+      preserveToolDeclarations: true,
+    });
+    // No declaration remains the pre-feature no-hook baseline: a sandbox alone
+    // must not create a general-purpose sys_lambda backend.
+    expect(undeclared.agent.registry.get("sys_lambda")).toBeUndefined();
+    await undeclared.agent.disposeAsync();
+
     const initial = await startAgent({
       tools: [
         { name: "sys_code", enabled: true, visible: true },
         { name: "sys_lambda", enabled: false, visible: false },
       ],
     });
-    // Before a hook exists, sys_code plus a sandbox must not broaden the
-    // pre-feature registry by registering general-purpose sys_lambda.
-    expect(initial.agent.registry.get("sys_lambda")).toBeUndefined();
+    // An explicit declaration (even disabled) preserves the pre-feature
+    // backend registration. Declaration enabled/visible state, not registry
+    // presence, controls provider presentation and normal execution.
+    expect(initial.agent.registry.get("sys_lambda")).toBeDefined();
     await initial.agent.disposeAsync();
 
     const provider = new CapturingProvider((_options, call) =>
@@ -607,6 +665,35 @@ describe("pre-LLM hook review — recovery, config, and cancellation regressions
     expect(started.provider.calls[0].tools?.map(tool => tool.name)).not.toContain("sys_lambda");
     expect(JSON.stringify(started.provider.calls[1].messages)).toContain("sys_lambda");
     expect(JSON.stringify(started.provider.calls[1].messages)).toContain("not enabled");
+  });
+
+  it("keeps declared sys_lambda blocked while disabled, then delivers and executes it after live enablement", async () => {
+    const provider = new CapturingProvider((_options, call) => {
+      if (call === 1 || call === 3) return toolResponse("sys_lambda", { source: "lib/nested.js" });
+      return textResponse(call === 2 ? "disabled-finished" : "enabled-finished");
+    });
+    const started = await startAgent({
+      provider,
+      tools: [{ name: "sys_lambda", enabled: false, visible: false }],
+      files: { "lib/nested.js": "export function main() { return 'live-normal-lambda-ok' }" },
+    });
+
+    await started.agent.dispatch(chatDispatch("disabled normal lambda"));
+    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls[0].tools?.map(tool => tool.name)).not.toContain("sys_lambda");
+    expect(JSON.stringify(provider.calls[1].messages)).toContain("is not enabled");
+
+    const updated = started.workspace.getAgentConfig();
+    updated.tools = updated.tools.map(tool => tool.name === "sys_lambda"
+      ? { ...tool, enabled: true, visible: true }
+      : tool);
+    started.workspace.setAgentConfig(updated);
+    started.agent.applyConfigChange(updated);
+
+    await started.agent.dispatch(chatDispatch("enabled normal lambda"));
+    expect(provider.calls).toHaveLength(4);
+    expect(provider.calls[2].tools?.map(tool => tool.name)).toContain("sys_lambda");
+    expect(JSON.stringify(provider.calls[3].messages)).toContain("live-normal-lambda-ok");
   });
 
   it("aborts a running hook promptly, prevents provider dispatch, and kills late side effects", async () => {

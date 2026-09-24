@@ -3838,7 +3838,7 @@ export function registerAllIpcHandlers(): void {
 
     // Normal sys_lambda access remains declaration-dependent. A live-added
     // hook uses its private registry/backend instead of this agent registry.
-    if (adfCallHandler && config.tools.some((t) => t.name === 'sys_lambda' && t.enabled)) {
+    if (adfCallHandler && config.tools.some((t) => t.name === 'sys_lambda')) {
       agentToolRegistry.register(new SysLambdaTool(codeSandboxService, adfCallHandler, capturedFilePath, config.limits?.execution_timeout_ms))
     }
 

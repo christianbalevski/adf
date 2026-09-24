@@ -1372,7 +1372,7 @@ export class LoopPool implements LoopPoolApi {
     }
     // Normal sys_lambda access remains declaration-dependent. A live-added
     // hook uses its private registry/backend instead of this loop registry.
-    if (granted.has('sys_lambda') && sandbox && runtime.callHandler) {
+    if (runtime.derived.tools.some(t => t.name === 'sys_lambda') && sandbox && runtime.callHandler) {
       runtime.registry.register(new SysLambdaTool(sandbox, runtime.callHandler, filePath, timeout))
     } else {
       runtime.registry.unregister('sys_lambda')

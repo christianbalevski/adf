@@ -402,7 +402,7 @@ export class AgentRuntimeBuilder {
     }
     // Normal sys_lambda access remains declaration-dependent. A hook that is
     // added live uses its private registry/backend instead of this shared path.
-    if (adfCallHandler && config.tools.some(t => t.name === 'sys_lambda' && t.enabled)) {
+    if (adfCallHandler && config.tools.some(t => t.name === 'sys_lambda')) {
       registry.register(new SysLambdaTool(
         this.codeSandboxService,
         adfCallHandler,

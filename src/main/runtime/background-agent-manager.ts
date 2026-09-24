@@ -1229,7 +1229,7 @@ export class BackgroundAgentManager extends EventEmitter {
 
     // Normal sys_lambda access remains declaration-dependent. A live-added
     // hook has a private backend and does not need this shared registration.
-    if (this.codeSandboxService && adfCallHandler && config.tools.some((t) => t.name === 'sys_lambda' && t.enabled)) {
+    if (this.codeSandboxService && adfCallHandler && config.tools.some((t) => t.name === 'sys_lambda')) {
       agentToolRegistry.register(new SysLambdaTool(this.codeSandboxService, adfCallHandler, filePath, config.limits?.execution_timeout_ms))
     }
 

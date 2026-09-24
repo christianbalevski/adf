@@ -3069,22 +3069,36 @@ export class AgentExecutor extends EventEmitter {
       // A configured pre-LLM hook is a local structural boundary. Handle it
       // before auth classification and every provider-recovery branch: hook text
       // can contain "timeout", "api key", tool mismatch, or image terms, but
-      // none of those describe a provider failure. Do not rewrite session
-      // history (especially images/tool blocks), schedule a provider retry, or
-      // claim that the provider rejected this request.
+      // none of those describe a provider failure. Preserve the authoritative
+      // session history, persist the local turn error, and use the established
+      // bounded structural recovery path without provider/auth/image/tool
+      // cleanup or provider-facing claims.
       if (error instanceof PreLlmHookError) {
         this.enterErrorState('turn_error')
+        this.persistTurnError(errorMsg)
         try {
           this.session.getWorkspace().insertLog('error', 'executor', 'pre_llm_hook_error', null, errorMsg.slice(0, 300))
         } catch { /* observability is never fatal */ }
+        const scheduled = this.scheduleProviderRecovery(dispatch, error, errorMsg, {
+          fromErrorState: true,
+          kind: 'turn_error',
+        })
+        if (!scheduled) {
+          try {
+            this.session.getWorkspace().insertLog(
+              'error', 'executor', 'recovery_exhausted', null,
+              `Structural recovery exhausted after ${this._recoveryAttempts} attempts — hook failure remains in error state: ${errorMsg.slice(0, 200)}`
+            )
+          } catch { /* observability is never fatal */ }
+        }
         this.emitEvent({
           type: 'error',
           payload: { error: errorMsg, details: errorDetails },
           timestamp: Date.now()
         })
-        // Do not fall through to structural/provider recovery below. In
-        // particular, no persisted turn-error row, retry schedule, image
-        // stripping, or tool-block cleanup belongs to a hook failure.
+        // Never fall through: this local failure must not be classified as
+        // provider auth/transient, trigger image stripping, or clean tool
+        // blocks. A scheduled structural retry is the only recovery here.
         return
       } else if (isAuthError(error, errorMsg)) {
         // Credentials became invalid mid-session (revoked key, depleted balance, etc.).
@@ -3759,12 +3773,14 @@ export class AgentExecutor extends EventEmitter {
     dispatch: AdfEventDispatch | AdfBatchDispatch,
     error: unknown,
     errorMsg: string,
-    opts?: { fromErrorState?: boolean },
+    opts?: { fromErrorState?: boolean; kind?: 'provider' | 'turn_error' },
   ): { attempt: number; maxAttempts: number; delayMs: number } | null {
     const recovery = this.config.recovery
     if ((recovery?.auto_retry ?? RECOVERY_DEFAULTS.auto_retry) === false) return null
     const maxAttempts = recovery?.max_attempts ?? RECOVERY_DEFAULTS.max_attempts
     if (this._recoveryAttempts >= maxAttempts) return null
+    const recoveryKind = opts?.kind ?? 'provider'
+    const isStructuralRecovery = recoveryKind === 'turn_error'
 
     if (this._recoveryAttempts === 0) this._recoveryFirstFailureAt = Date.now()
     const attempt = ++this._recoveryAttempts
@@ -3825,25 +3841,38 @@ export class AgentExecutor extends EventEmitter {
       // the UI see the agent go live again instead of silently running a turn
       // while the fleet view still shows it red.
       if (recoveringFromError) this.setState('idle')
-      try { this.session.getWorkspace().insertLog('info', 'executor', 'provider_retry', null, `Auto-recovery retry ${attempt}/${maxAttempts}`) } catch { /* non-fatal */ }
-      this.emitRuntimeEvent('provider.retry_started', { attempt, max_attempts: maxAttempts })
+      const retryEvent = isStructuralRecovery ? 'turn_error_retry_started' : 'provider_retry'
+      try { this.session.getWorkspace().insertLog('info', 'executor', retryEvent, null, `${isStructuralRecovery ? 'Structural' : 'Provider'} recovery retry ${attempt}/${maxAttempts}`) } catch { /* non-fatal */ }
+      // Keep the established provider.retry transport envelope for consumers;
+      // `kind` makes local structural retries distinguishable without adding a
+      // new public event family.
+      this.emitRuntimeEvent('provider.retry_started', {
+        attempt, max_attempts: maxAttempts, kind: recoveryKind,
+      })
       const elapsed = this._recoveryFirstFailureAt !== null
         ? formatElapsed(Date.now() - this._recoveryFirstFailureAt)
         : 'an unknown time'
-      const recoveryNotice =
-        `[Provider error ("${sanitizeForNotice(errorMsg)}") — auto-recovery retry ${attempt}/${maxAttempts}, ` +
-        `~${elapsed} since the first failure (now ${formatTimestamp(Date.now())}). ` +
-        `Account for the delay if anything is time-sensitive.]`
+      const recoveryNotice = isStructuralRecovery
+        ? `[Turn error ("${sanitizeForNotice(errorMsg)}") — structural recovery retry ${attempt}/${maxAttempts}, ` +
+          `~${elapsed} since the first failure (now ${formatTimestamp(Date.now())}). Retry the unfinished turn.]`
+        : `[Provider error ("${sanitizeForNotice(errorMsg)}") — auto-recovery retry ${attempt}/${maxAttempts}, ` +
+          `~${elapsed} since the first failure (now ${formatTimestamp(Date.now())}). ` +
+          `Account for the delay if anything is time-sensitive.]`
       this.scheduleReentrantTurn(dispatch, { skipTriggerMessage: true, isRecoveryRetry: true, recoveryNotice })
     }
     this._recoveryTimer = setTimeout(fire, delayMs)
 
+    const scheduledEvent = isStructuralRecovery ? 'turn_error_retry_scheduled' : 'provider_retry_scheduled'
     try {
-      this.session.getWorkspace().insertLog('warn', 'executor', 'provider_retry_scheduled', null,
-        `Auto-recovery retry ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s`)
+      this.session.getWorkspace().insertLog('warn', 'executor', scheduledEvent, null,
+        `${isStructuralRecovery ? 'Structural' : 'Provider'} recovery retry ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s`)
     } catch { /* non-fatal */ }
+    // Preserve the established transport event name while labelling the local
+    // recovery kind for consumers that need to distinguish it from provider
+    // failures.
     this.emitRuntimeEvent('provider.retry_scheduled', {
       attempt, max_attempts: maxAttempts, delay_ms: delayMs, next_retry_at: Date.now() + delayMs,
+      kind: recoveryKind,
     })
     return { attempt, maxAttempts, delayMs }
   }
