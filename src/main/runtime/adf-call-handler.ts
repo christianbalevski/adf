@@ -184,6 +184,11 @@ export class AdfCallHandler {
     this.session = session
   }
 
+  /** The live session for private execution-bound handler facets. */
+  getAttachedSession(): AgentSession | null {
+    return this.session
+  }
+
   /** Best-effort log to adf_logs — never throws. */
   private logCall(level: string, event: string, target: string | null, message: string): void {
     try { this.workspace.insertLog(level, 'adf_call', event, target, message) } catch { /* non-fatal */ }

@@ -1227,10 +1227,9 @@ export class BackgroundAgentManager extends EventEmitter {
       agentToolRegistry.register(new SysCodeTool(this.codeSandboxService, filePath, adfCallHandler ?? undefined, config.limits?.execution_timeout_ms))
     }
 
-    // Keep the nested-lambda backend ready for a live-added hook. It remains
-    // invisible/ungranted to the LLM until the normal declaration filters say
-    // otherwise, and code_execution gates RPC calls independently.
-    if (this.codeSandboxService && adfCallHandler) {
+    // Normal sys_lambda access remains declaration-dependent. A live-added
+    // hook has a private backend and does not need this shared registration.
+    if (this.codeSandboxService && adfCallHandler && config.tools.some((t) => t.name === 'sys_lambda' && t.enabled)) {
       agentToolRegistry.register(new SysLambdaTool(this.codeSandboxService, adfCallHandler, filePath, config.limits?.execution_timeout_ms))
     }
 

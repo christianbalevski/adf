@@ -1370,11 +1370,9 @@ export class LoopPool implements LoopPoolApi {
     } else {
       runtime.registry.unregister('sys_code')
     }
-    // Keep the backend registered whenever the loop has a bridge. A later
-    // config update may enable pre_llm_hook, whose code can call adf.sys_lambda
-    // immediately; this does not expose sys_lambda unless derived.tools grants
-    // it because provider schemas remain declaration-filtered.
-    if (sandbox && runtime.callHandler) {
+    // Normal sys_lambda access remains declaration-dependent. A live-added
+    // hook uses its private registry/backend instead of this loop registry.
+    if (granted.has('sys_lambda') && sandbox && runtime.callHandler) {
       runtime.registry.register(new SysLambdaTool(sandbox, runtime.callHandler, filePath, timeout))
     } else {
       runtime.registry.unregister('sys_lambda')

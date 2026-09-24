@@ -39,7 +39,7 @@ Target named inner loops without requiring that they already exist:
 }
 ```
 
-The hook is an explicit runtime lambda entry point. It does **not** require—or expose—`sys_lambda` as a conversational tool.
+The hook is an explicit runtime lambda entry point. It does **not** require—or expose—`sys_lambda` as a conversational tool. Its private execution bridge may call nested `adf.sys_lambda` only when the independent `code_execution.sys_lambda` gate and normal source-authorization rules allow it. That private backend does not register `sys_lambda` for ordinary LLM calls or for unrelated `sys_code` executions; those remain declaration- and enabled-state dependent.
 
 ## Contract
 
@@ -106,16 +106,18 @@ export async function transform({ request, loop }) {
 
 The retrieval lambda must return valid conversational messages. The hook still
 returns the full replacement request, and a retrieval failure fails that call
-closed rather than sending the un-enriched original request.
+closed rather than sending the un-enriched original request. Hook workers are
+fresh request-scoped sandbox workers, so do not rely on module/global state
+persisting between tool rounds.
 
 ## Boundaries and failures
 
 - The hook runs after context repair and immediately before each normal conversational call, including later calls after tool results.
 - It does **not** run for `adf.model_invoke()` or automatic history compaction. Calling `adf.model_invoke()` inside a hook uses that direct path and does not recurse.
 - Abort signal and streaming callbacks stay runtime-owned; a hook cannot replace them.
-- The session/history is never mutated by the transformation. Only the outgoing request changes.
-- A malformed result, missing source, execution error, timeout, or cancellation fails the current call closed. The original request is never silently dispatched.
-- Hook code gets the same `adf.*` RPC bridge and file-authorization semantics as other lambdas. Inner-loop hooks use their loop's attenuated handler.
+- Each hook invocation runs in a fresh, isolated worker and is destroyed on completion, failure, or abort. Worker termination is the supported prompt cancellation mechanism; because the VM has no per-execution interrupt, termination would cancel other executions sharing that worker, which is why hooks do not share workers with ordinary callers.
+- A malformed result, missing source, execution error, timeout, or cancellation fails the current call closed. The original request is never silently dispatched. An already-dispatched host-side `adf.*` RPC cannot be retracted by abort; worker termination prevents the sandbox continuation and late writes, but the host handler may finish independently.
+- Hook code gets a private `adf.*` RPC bridge with the same live loop-specific restrictions, HIL rules, and source-file authorization semantics as other lambdas. Its nested `sys_lambda` backend is hook-local and independently gated by `code_execution.sys_lambda`; ordinary shared tool registration is unchanged. Inner-loop hooks use their loop's attenuated handler.
 - Changing `request.tools` changes only what the provider is shown. Actual tool execution still uses the loop's original enabled-tool snapshot, validation, HIL, and file/protection checks. A hook cannot grant a tool or bypass authorization.
 
 See [code execution](code-execution.md) and [authorized code](authorized-code.md) for lambda capabilities and file authorization.

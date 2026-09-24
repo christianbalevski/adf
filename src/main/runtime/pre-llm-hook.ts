@@ -1,6 +1,9 @@
+import { randomUUID } from 'crypto'
 import type { AgentConfig, PreLlmHookConfig } from '../../shared/types/adf-v02.types'
 import type { LLMMessage, ReasoningConfig } from '../../shared/types/provider.types'
 import type { ToolProviderFormat } from '../../shared/types/tool.types'
+import { ToolRegistry } from '../tools/tool-registry'
+import { SysLambdaTool } from '../tools/built-in/sys-lambda.tool'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { AdfCallHandler } from './adf-call-handler'
 import type { CodeSandboxService } from './code-sandbox'
@@ -340,22 +343,44 @@ export class PreLlmHookRunner {
     if (source === null) throw new PreLlmHookError(`source file "${filePath}" was not found`)
 
     // Exactly the authorization semantics of SysLambdaTool: source-file status
-    // is bound through ALS to every nested adf.* call, including sys_lambda.
+    // is bound through ALS to every nested adf.* call. The hook gets a private
+    // registry containing the live runtime tools plus a private sys_lambda
+    // backend; the shared registry remains declaration-dependent, so merely
+    // having sys_code (or adding a hook live) cannot expose sys_lambda to the
+    // normal LLM/code path.
     let fileAuthorized: boolean
+    let hookHandler: AdfCallHandler
     let toolConfig: { enabledTools: string[]; hilTools: string[]; isAuthorized: boolean }
     try {
       fileAuthorized = this.workspace.isFileAuthorized(filePath)
-      this.adfCallHandler.setAuthorizationContext(fileAuthorized)
+      const hookRegistry = new ToolRegistry()
+      for (const tool of this.adfCallHandler.getToolRegistry().getAll()) hookRegistry.register(tool)
+      hookHandler = this.adfCallHandler.forLoop(this.workspace, config, hookRegistry)
+      const session = this.adfCallHandler.getAttachedSession()
+      if (session) hookHandler.attachSession(session)
+      hookHandler.onEvent = this.adfCallHandler.onEvent
+      hookHandler.onTaskCompleted = this.adfCallHandler.onTaskCompleted
+      hookHandler.onLambdaToolEndTurn = this.adfCallHandler.onLambdaToolEndTurn
+      hookHandler.onHilApproved = this.adfCallHandler.onHilApproved
+      hookHandler.requestProtectionApproval = this.adfCallHandler.requestProtectionApproval
+      hookHandler.onLlmCall = this.adfCallHandler.onLlmCall
+      hookRegistry.register(new SysLambdaTool(
+        this.codeSandboxService,
+        hookHandler,
+        this.agentId,
+        config.limits?.execution_timeout_ms,
+      ))
+      hookHandler.setAuthorizationContext(fileAuthorized)
       toolConfig = {
-        enabledTools: this.adfCallHandler.getEnabledToolNames(),
-        hilTools: this.adfCallHandler.getHilToolNames(),
+        enabledTools: hookHandler.getEnabledToolNames(),
+        hilTools: hookHandler.getHilToolNames(),
         isAuthorized: fileAuthorized,
       }
     } catch (error) {
       throw new PreLlmHookError(`could not establish code-execution authority (${error instanceof Error ? error.message : String(error)})`)
     }
     const onAdfCall = (method: string, args: unknown) =>
-      withAuthorization(fileAuthorized, () => this.adfCallHandler.handleCall(method, args))
+      withAuthorization(fileAuthorized, () => hookHandler.handleCall(method, args))
     let input: PreLlmHookInput
     try {
       input = clonePreLlmHookJson({
@@ -384,21 +409,30 @@ throw new Error('Function "${functionName}" not found in "${filePath}".');
       })
     } catch { /* observability must not weaken the hook boundary */ }
 
+    // Each request gets a fresh worker. This prevents hook module/global state
+    // from leaking across tool rounds and isolates abort collateral from all
+    // ordinary sandbox callers.
+    const sandboxId = `${this.agentId}:pre_llm_hook:${randomUUID()}`
     const result = await (async () => {
       try {
         return await withSource(`lambda:${filePath}:${functionName}`, this.agentId, () =>
           this.codeSandboxService.execute(
-            `${this.agentId}:pre_llm_hook:${filePath}`,
+            sandboxId,
             code,
             timeout,
             onAdfCall,
             toolConfig,
-            { handlerAuthorized: fileAuthorized, agent: this.agentId },
+            { handlerAuthorized: fileAuthorized, agent: this.agentId, signal, ephemeral: true, terminateOnAbort: true },
           )
         )
       } catch (error) {
         if (error instanceof PreLlmHookError) throw error
         throw new PreLlmHookError(`execution could not start (${error instanceof Error ? error.message : String(error)})`)
+      } finally {
+        // Hook workers are cold and request-scoped. Reap on both success and
+        // failure; abort already terminates immediately, while this handles
+        // ordinary completion before the cold-worker TTL can accumulate.
+        this.codeSandboxService.destroy(sandboxId)
       }
     })()
     const durationMs = +(performance.now() - started).toFixed(2)

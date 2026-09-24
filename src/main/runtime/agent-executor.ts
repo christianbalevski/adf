@@ -2187,7 +2187,9 @@ export class AgentExecutor extends EventEmitter {
             maxTokens: this.config.model.max_tokens || undefined,
             temperature: this.config.model.temperature ?? undefined,
             topP: this.config.model.top_p ?? undefined,
-            thinkingBudget,
+            // Persisted config accepts null as "unset", but provider request
+            // options and the hook JSON contract must omit null optional values.
+            thinkingBudget: thinkingBudget ?? undefined,
             reasoning: this.config.model.reasoning,
             dynamicInstructions,
             providerParams: this.config.model.provider_params,
@@ -3064,10 +3066,27 @@ export class AgentExecutor extends EventEmitter {
           : String(error)))
       const errorDetails = buildErrorDetails(error, errorMsg)
 
-      // Transient provider/network failures (429, 5xx, timeouts) are operational,
-      // not structural. Don't destroy the agent — stay idle so triggers/timers retry.
-      // `error` state is reserved for genuine executor breakage.
-      if (isAuthError(error, errorMsg)) {
+      // A configured pre-LLM hook is a local structural boundary. Handle it
+      // before auth classification and every provider-recovery branch: hook text
+      // can contain "timeout", "api key", tool mismatch, or image terms, but
+      // none of those describe a provider failure. Do not rewrite session
+      // history (especially images/tool blocks), schedule a provider retry, or
+      // claim that the provider rejected this request.
+      if (error instanceof PreLlmHookError) {
+        this.enterErrorState('turn_error')
+        try {
+          this.session.getWorkspace().insertLog('error', 'executor', 'pre_llm_hook_error', null, errorMsg.slice(0, 300))
+        } catch { /* observability is never fatal */ }
+        this.emitEvent({
+          type: 'error',
+          payload: { error: errorMsg, details: errorDetails },
+          timestamp: Date.now()
+        })
+        // Do not fall through to structural/provider recovery below. In
+        // particular, no persisted turn-error row, retry schedule, image
+        // stripping, or tool-block cleanup belongs to a hook failure.
+        return
+      } else if (isAuthError(error, errorMsg)) {
         // Credentials became invalid mid-session (revoked key, depleted balance, etc.).
         // Surface a clear, actionable message and reset the validation flag so the
         // next turn will re-preflight (and re-surface the issue if it's still broken).
@@ -3085,13 +3104,7 @@ export class AgentExecutor extends EventEmitter {
           },
           timestamp: Date.now()
         })
-      // A configured pre-LLM hook is a local execution boundary, not a
-      // provider outage. Its error text can include "timeout", but treating it
-      // as transient would reset to idle and schedule a retry as though the
-      // provider had failed. Keep every hook failure structurally visible and
-      // fail this request closed; retries, if any, remain normal fresh turns
-      // that must execute the hook again.
-      } else if (!(error instanceof PreLlmHookError) && isTransientProviderError(error, errorMsg)) {
+      } else if (isTransientProviderError(error, errorMsg)) {
         this.setState('idle')
         const scheduled = this.scheduleProviderRecovery(dispatch, error, errorMsg)
         // Severity tracks the outcome: warn while auto-recovery is handling it,

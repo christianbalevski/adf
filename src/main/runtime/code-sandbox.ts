@@ -776,6 +776,15 @@ export interface ExecuteOptions {
   agent?: string
   /** True for per-invocation sandboxes torn down right after (cold lambdas). */
   ephemeral?: boolean
+  /** Abort signal for this execution. */
+  signal?: AbortSignal
+  /**
+   * Terminate the worker when the signal aborts. This is deliberately opt-in:
+   * vm execution has no per-execution interrupt, so termination cancels every
+   * execution sharing the worker. Callers that opt in must use an isolated
+   * sandbox id when collateral cancellation is unacceptable.
+   */
+  terminateOnAbort?: boolean
 }
 
 /**
@@ -956,6 +965,9 @@ export class CodeSandboxService {
   ): Promise<CodeResult> {
     const effectiveTimeout = Math.min(timeout ?? DEFAULT_TIMEOUT, MAX_TIMEOUT)
     const ephemeral = options?.ephemeral ?? false
+    if (options?.signal?.aborted) {
+      return { stdout: '', error: 'Execution cancelled', errorCode: 'ABORTED' }
+    }
 
     // Transform imports and exports before sending to worker
     let transformedCode = transformImports(code)
@@ -964,9 +976,31 @@ export class CodeSandboxService {
     if (options?.agent) this.registerSandbox(options.agent, agentId)
 
     let entry: WorkerEntry
+    const creation = this.getOrCreateWorker(agentId, ephemeral, effectiveTimeout)
     try {
-      entry = await this.getOrCreateWorker(agentId, ephemeral, effectiveTimeout)
+      if (!options?.signal) {
+        entry = await creation
+      } else {
+        let onAbort: (() => void) | undefined
+        const aborted = new Promise<never>((_, reject) => {
+          onAbort = () => reject(Object.assign(new Error('Execution cancelled'), { code: 'ABORTED' }))
+          options.signal!.addEventListener('abort', onAbort, { once: true })
+        })
+        try {
+          entry = await Promise.race([creation, aborted])
+        } finally {
+          if (onAbort) options.signal.removeEventListener('abort', onAbort)
+        }
+      }
     } catch (err) {
+      if (options?.signal?.aborted) {
+        // If creation won the race after cancellation, reap its unique worker;
+        // otherwise this no-op leaves the shared service untouched.
+        if (options.terminateOnAbort) {
+          void creation.then(() => this.destroyWorker(agentId), () => {})
+        }
+        return { stdout: '', error: 'Execution cancelled', errorCode: 'ABORTED' }
+      }
       // No worker at all — a boot failure or the global gate giving up. Report
       // it as a result rather than throwing: every caller already handles a
       // failed CodeResult, and half of them would turn a throw into a crash.
@@ -1001,13 +1035,30 @@ export class CodeSandboxService {
 
     const result = await new Promise<CodeResult>((resolve) => {
       let timer: NodeJS.Timeout
+      let settled = false
+      const onAbort = (): void => {
+        if (settled) return
+        settle({ stdout: '', error: 'Execution cancelled', errorCode: 'ABORTED' })
+        if (options?.terminateOnAbort) this.destroyWorker(agentId)
+      }
       const settle = (r: CodeResult): void => {
-        if (!entry.pending.delete(execId)) return // already settled
+        if (settled) return
+        settled = true
+        entry.pending.delete(execId)
         // Keep the handler reachable for calls this execution's stored closures
         // make later — see RetiredExec.
         this.retire(entry, execId, { onAdfCall, isAuthorized })
         clearTimeout(timer)
+        options?.signal?.removeEventListener('abort', onAbort)
         resolve(r)
+      }
+
+      if (options?.signal) {
+        if (options.signal.aborted) {
+          onAbort()
+          return
+        }
+        options.signal.addEventListener('abort', onAbort, { once: true })
       }
 
       // Worker-level timeout guard. Settle first, then terminate — otherwise the
@@ -1025,8 +1076,7 @@ export class CodeSandboxService {
       // The worker can die while we await its creation — registering on a dead
       // one would wait out the guard timer for nothing.
       if (this.workers.get(agentId) !== entry) {
-        clearTimeout(timer)
-        resolve({ stdout: '', error: 'Sandbox worker terminated', errorCode: 'SANDBOX_TERMINATED' })
+        settle({ stdout: '', error: 'Sandbox worker terminated', errorCode: 'SANDBOX_TERMINATED' })
         return
       }
 

@@ -400,10 +400,9 @@ export class AgentRuntimeBuilder {
         config.limits?.execution_timeout_ms,
       ))
     }
-    // Keep the backend available for a hook added by a live config update.
-    // Registration alone does not grant or expose sys_lambda: the executor's
-    // declaration/visible filtering still owns provider schemas and RPC gates.
-    if (adfCallHandler) {
+    // Normal sys_lambda access remains declaration-dependent. A hook that is
+    // added live uses its private registry/backend instead of this shared path.
+    if (adfCallHandler && config.tools.some(t => t.name === 'sys_lambda' && t.enabled)) {
       registry.register(new SysLambdaTool(
         this.codeSandboxService,
         adfCallHandler,
