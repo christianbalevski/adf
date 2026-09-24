@@ -2,9 +2,12 @@
  * ALF MCP inbox server — HTTP listener + mDNS announce so ADF Studio agents
  * can discover and message this agent. Endpoint shapes mirror mesh-server.ts:
  *
- *   GET  /health                 GET  /:handle/mesh/card
- *   GET  /mesh/directory         GET  /:handle/mesh/health
- *   POST /:handle/mesh/inbox
+ *   GET  /health                 GET  /agents/:handle/card
+ *   GET  /agents                 GET  /agents/:handle/health
+ *   POST /agents/:handle/inbox
+ *
+ * The legacy layout (/mesh/directory, /:handle/mesh/*) is still answered so
+ * contacts saved by older alf-mcp versions keep routing here.
  */
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http'
@@ -21,6 +24,7 @@ import {
   type InboxRecord,
   type Store
 } from './core'
+import { DIRECTORY_PATH, LEGACY_DIRECTORY_PATH, agentPath, legacyAgentPath, type AgentLeaf } from './routes'
 import type { AlfMessage } from '../../src/shared/types/adf-v02.types'
 
 const MAX_BODY_BYTES = 10_000_000
@@ -148,6 +152,10 @@ export async function startInboxServer(identity: Identity, store: Store): Promis
   const bindHost = process.env.ALF_MCP_BIND ?? '0.0.0.0'
   const basePort = Number(process.env.ALF_MCP_PORT ?? 7396)
 
+  // Current and legacy spellings of the same endpoint.
+  const isPath = (path: string, leaf: AgentLeaf): boolean =>
+    path === agentPath(HANDLE, leaf) || path === legacyAgentPath(HANDLE, leaf)
+
   const server = createServer((req, res) => {
     const path = (req.url ?? '/').split('?')[0]
     const cardHost = req.headers.host?.split(':')[0] ?? '127.0.0.1'
@@ -156,19 +164,19 @@ export async function startInboxServer(identity: Identity, store: Store): Promis
       json(res, 200, { status: 'ok', uptime: process.uptime(), agents: 1, port })
       return
     }
-    if (req.method === 'GET' && path === '/mesh/directory') {
+    if (req.method === 'GET' && (path === DIRECTORY_PATH || path === LEGACY_DIRECTORY_PATH)) {
       json(res, 200, [buildCard(identity, cardHost, port)])
       return
     }
-    if (req.method === 'GET' && path === `/${HANDLE}/mesh/card`) {
+    if (req.method === 'GET' && isPath(path, 'card')) {
       json(res, 200, buildCard(identity, cardHost, port))
       return
     }
-    if (req.method === 'GET' && path === `/${HANDLE}/mesh/health`) {
+    if (req.method === 'GET' && isPath(path, 'health')) {
       json(res, 200, { status: 'ok', state: 'on' })
       return
     }
-    if (req.method === 'POST' && path === `/${HANDLE}/mesh/inbox`) {
+    if (req.method === 'POST' && isPath(path, 'inbox')) {
       readBody(req)
         .then((body) => handleInboxPost(body, req, res, identity, store))
         .catch(() => json(res, 400, { error: 'Failed to read request body' }))
@@ -198,7 +206,7 @@ export async function startInboxServer(identity: Identity, store: Store): Promis
     }
     tryListen()
   })
-  console.error(`[alf-mcp] inbox listening on http://${bindHost}:${port}/${HANDLE}/mesh/inbox`)
+  console.error(`[alf-mcp] inbox listening on http://${bindHost}:${port}${agentPath(HANDLE, 'inbox')}`)
 
   // mDNS: announce as an ADF runtime + browse for peers (gated like Studio:
   // announce only makes sense when bound beyond loopback).

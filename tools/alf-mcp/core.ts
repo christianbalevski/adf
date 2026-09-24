@@ -23,6 +23,7 @@ import {
 import { generateMnemonic, deriveOwnerIdentity } from '../../src/main/crypto/mnemonic-identity'
 import { canonicalJsonStringify } from '../../src/main/services/alf-pipeline'
 import type { AlfMessage, AlfPayload, AlfAgentCard } from '../../src/shared/types/adf-v02.types'
+import { agentPath } from './routes'
 
 export const DATA_DIR = process.env.ALF_MCP_DATA_DIR ?? join(homedir(), '.alf-mcp')
 export const HANDLE = process.env.ALF_MCP_HANDLE ?? 'claude'
@@ -199,13 +200,17 @@ function canonicalizeCardForSignature(card: AlfAgentCard): string {
 }
 
 export function buildCard(identity: Identity, host: string, port: number): AlfAgentCard {
-  const base = `http://${host}:${port}/${HANDLE}/mesh`
+  const base = `http://${host}:${port}`
   const card: AlfAgentCard = {
     handle: HANDLE,
     description: 'Claude Code — external ALF agent (MCP)',
     icon: '🤖',
-    resolution: { method: 'self', endpoint: `${base}/card` },
-    endpoints: { inbox: `${base}/inbox`, card: `${base}/card`, health: `${base}/health` },
+    resolution: { method: 'self', endpoint: `${base}${agentPath(HANDLE, 'card')}` },
+    endpoints: {
+      inbox: `${base}${agentPath(HANDLE, 'inbox')}`,
+      card: `${base}${agentPath(HANDLE, 'card')}`,
+      health: `${base}${agentPath(HANDLE, 'health')}`
+    },
     api_routes: [],
     public: true,
     shared: [],

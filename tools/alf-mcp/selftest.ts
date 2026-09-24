@@ -60,7 +60,7 @@ async function main(): Promise<void> {
     {
       to: studio.did,
       content: 'hello from claude',
-      replyTo: 'http://127.0.0.1:7411/claude/mesh/inbox',
+      replyTo: 'http://127.0.0.1:7411/agents/claude/inbox',
       subject: 'e2e-a',
       network: 'devnet'
     },
@@ -103,13 +103,13 @@ async function main(): Promise<void> {
     check('B: alf-mcp server up', up)
     if (!up) return
 
-    const card = (await (await fetch('http://127.0.0.1:7411/claude/mesh/card')).json()) as { did: string }
+    const card = (await (await fetch('http://127.0.0.1:7411/agents/claude/card')).json()) as { did: string }
     check('B: card has DID', typeof card.did === 'string' && card.did.startsWith('did:key:'))
 
     let msg = buildAlfMessage({
       from: studio.did,
       to: card.did,
-      replyTo: 'http://127.0.0.1:7295/agent-1/mesh/inbox',
+      replyTo: 'http://127.0.0.1:7295/agents/agent-1/inbox',
       network: 'devnet',
       content: 'hello from studio',
       subject: 'e2e-b',
@@ -120,7 +120,7 @@ async function main(): Promise<void> {
     msg = egress.data
     check('B: Studio egress encrypted to me', msg.payload.content_type === 'application/x-adf-encrypted')
 
-    const res = await fetch('http://127.0.0.1:7411/claude/mesh/inbox', {
+    const res = await fetch('http://127.0.0.1:7411/agents/claude/inbox', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(msg)
@@ -141,7 +141,7 @@ async function main(): Promise<void> {
     check('B: marked encrypted', rec?.encrypted === true)
 
     const bad = { ...msg, timestamp: new Date(Date.now() + 60_000).toISOString() }
-    const badRes = await fetch('http://127.0.0.1:7411/claude/mesh/inbox', {
+    const badRes = await fetch('http://127.0.0.1:7411/agents/claude/inbox', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(bad)
