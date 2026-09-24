@@ -61,7 +61,8 @@ export interface PodmanAvailability {
 
 /** Well-known locations where podman might live. */
 const EXTRA_SEARCH_PATHS: Record<string, string[]> = {
-  darwin: ['/opt/homebrew/bin/podman', '/usr/local/bin/podman'],
+  // Homebrew (Apple Silicon, Intel), then the podman.io .pkg installer.
+  darwin: ['/opt/homebrew/bin/podman', '/usr/local/bin/podman', '/opt/podman/bin/podman'],
   win32: [
     'C:\\Program Files\\RedHat\\Podman\\podman.exe',
     `${process.env.LOCALAPPDATA ?? ''}\\Programs\\Podman\\podman.exe`,
@@ -117,13 +118,29 @@ async function findPodmanBin(): Promise<string | null> {
   return null
 }
 
-function getInstallMethods(): InstallMethod[] {
-  const plat = platform()
+/** Official macOS installer (.pkg), for machines without Homebrew. */
+export const PODMAN_MACOS_INSTALLER_URL = 'https://podman.io/docs/installation#macos'
 
+const HOMEBREW_LOCATIONS = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew']
+
+/**
+ * Absolute path to Homebrew, if installed in a standard location. The install
+ * step runs the command with execFile, which only sees the app's PATH — a
+ * Finder-launched app may not have Homebrew on it.
+ */
+export function findHomebrew(exists: (path: string) => boolean = existsSync): string | null {
+  return HOMEBREW_LOCATIONS.find((p) => exists(p)) ?? null
+}
+
+export function getInstallMethods(plat: NodeJS.Platform = platform(), exists: (path: string) => boolean = existsSync): InstallMethod[] {
   if (plat === 'darwin') {
-    return [
-      { command: 'brew install podman', label: 'Install via Homebrew', autoRunnable: true },
-    ]
+    const brew = findHomebrew(exists)
+    if (brew) {
+      return [{ command: `${brew} install podman`, label: 'Install via Homebrew', autoRunnable: true }]
+    }
+    // No Homebrew: point at the official installer instead of offering a
+    // command that can only fail.
+    return [{ command: PODMAN_MACOS_INSTALLER_URL, label: 'Download the Podman installer', autoRunnable: false }]
   }
 
   if (plat === 'win32') {
@@ -134,13 +151,13 @@ function getInstallMethods(): InstallMethod[] {
 
   // Linux — detect available package managers
   const methods: InstallMethod[] = []
-  if (existsSync('/usr/bin/apt-get') || existsSync('/usr/bin/apt')) {
+  if (exists('/usr/bin/apt-get') || exists('/usr/bin/apt')) {
     methods.push({ command: 'sudo apt-get install -y podman', label: 'Install via apt', autoRunnable: false })
   }
-  if (existsSync('/usr/bin/dnf')) {
+  if (exists('/usr/bin/dnf')) {
     methods.push({ command: 'sudo dnf install -y podman', label: 'Install via dnf', autoRunnable: false })
   }
-  if (existsSync('/usr/bin/pacman')) {
+  if (exists('/usr/bin/pacman')) {
     methods.push({ command: 'sudo pacman -S --noconfirm podman', label: 'Install via pacman', autoRunnable: false })
   }
   if (methods.length === 0) {

@@ -1346,14 +1346,27 @@ export class PodmanService extends EventEmitter {
     console.log('[Compute] Container destroyed — will be recreated on next start')
   }
 
+  /**
+   * The compute setup wizard (Studio IPC COMPUTE_SETUP and the daemon's
+   * /compute/setup both call this): check, install, machine init, machine start.
+   */
   async setup(
     step: 'install' | 'machine_init' | 'machine_start' | 'check',
     installCommand?: string
   ): Promise<Record<string, unknown>> {
-    const run = (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number }> =>
+    const run = (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> =>
       new Promise((resolve) => {
         execFile(cmd, cmdArgs, { timeout }, (error, stdout, stderr) => {
-          resolve({ stdout: stdout?.trim() ?? '', stderr: stderr?.trim() ?? '', code: error ? 1 : 0 })
+          resolve({
+            stdout: stdout?.trim() ?? '',
+            stderr: stderr?.trim() ?? '',
+            code: error ? 1 : 0,
+            error: error
+              ? (error as NodeJS.ErrnoException).code === 'ENOENT'
+                ? `\`${cmd}\` was not found`
+                : error.message
+              : undefined,
+          })
         })
       })
 
@@ -1371,7 +1384,9 @@ export class PodmanService extends EventEmitter {
 
     if (step === 'install') {
       if (!installCommand) return { success: false, error: 'No install command provided' }
+      // Split command string: "brew install podman", "winget install -e --id RedHat.Podman", etc.
       const parts = installCommand.split(/\s+/).filter(Boolean)
+      // Skip 'sudo' — the app can't run sudo
       const startIdx = parts[0] === 'sudo' ? 1 : 0
       const cmd = parts[startIdx]
       const cmdArgs = parts.slice(startIdx + 1)
@@ -1379,21 +1394,10 @@ export class PodmanService extends EventEmitter {
 
       console.log(`[Compute] Running: ${cmd} ${cmdArgs.join(' ')}`)
       const result = await run(cmd, cmdArgs)
-      if (result.code !== 0) return { success: false, error: result.stderr || `${cmd} failed` }
-      return { success: true, availability: await checkPodmanAvailability() }
-    }
-
-    if (step === 'machine_init') {
-      const info = await checkPodmanAvailability()
-      if (!info.binPath) return { success: false, error: 'Podman not installed' }
-      const missingPrereq = info.prerequisites.find((p) => !p.installed)
-      if (missingPrereq) {
-        return { success: false, error: `Missing prerequisite: ${missingPrereq.name}. Run \`${missingPrereq.installCommand}\` first.`, availability: info }
+      if (result.code !== 0) {
+        return { success: false, error: result.stderr || result.error || `${cmd} failed` }
       }
-      const result = await run(info.binPath, ['machine', 'init', '--memory', '2048', '--cpus', '2'], 300_000)
-      if (result.code !== 0 && !result.stderr.includes('already exists')) {
-        return { success: false, error: explainMachineError('init', result.stderr), availability: await checkPodmanAvailability() }
-      }
+      console.log('[Compute] Podman installed successfully')
       return { success: true, availability: await checkPodmanAvailability() }
     }
 
@@ -1403,11 +1407,34 @@ export class PodmanService extends EventEmitter {
     if (missingPrereq) {
       return { success: false, error: `Missing prerequisite: ${missingPrereq.name}. Run \`${missingPrereq.installCommand}\` first.`, availability: info }
     }
-    const result = await run(info.binPath, ['machine', 'start'], 120_000)
-    if (result.code !== 0 && !result.stderr.includes('already running')) {
-      return { success: false, error: explainMachineError('start', result.stderr), availability: await checkPodmanAvailability() }
+
+    if (step === 'machine_init') {
+      // Same sizing as ensureMachine, so a wizard-created machine matches the
+      // user's compute settings.
+      const cfg = this._getSettings()
+      const mem = String(cfg.machineMemoryMb || DEFAULT_SETTINGS.machineMemoryMb)
+      const cpus = String(cfg.machineCpus || DEFAULT_SETTINGS.machineCpus)
+      console.log(`[Compute] Initializing Podman machine (${cpus} CPUs, ${mem}MB RAM)...`)
+      const result = await run(info.binPath, ['machine', 'init', '--memory', mem, '--cpus', cpus], 300_000)
+      // "already exists" is fine: a previous init succeeded
+      if (result.code !== 0 && !result.stderr.includes('already exists')) {
+        return { success: false, error: explainMachineError('init', result.stderr), availability: await checkPodmanAvailability() }
+      }
+      console.log('[Compute] Podman machine initialized')
+      return { success: true, availability: await checkPodmanAvailability() }
     }
-    return { success: true, availability: await checkPodmanAvailability() }
+
+    if (step === 'machine_start') {
+      console.log('[Compute] Starting Podman machine...')
+      const result = await run(info.binPath, ['machine', 'start'], 120_000)
+      if (result.code !== 0 && !result.stderr.includes('already running')) {
+        return { success: false, error: explainMachineError('start', result.stderr), availability: await checkPodmanAvailability() }
+      }
+      console.log('[Compute] Podman machine started')
+      return { success: true, availability: await checkPodmanAvailability() }
+    }
+
+    return { success: false, error: `Unknown step: ${step}` }
   }
 
   // ---------------------------------------------------------------------------
