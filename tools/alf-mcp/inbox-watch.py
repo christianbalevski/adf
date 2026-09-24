@@ -11,7 +11,9 @@ re-fires on messages already present when the watcher started.
 """
 import json, os, sys, time
 
-INBOX = os.environ.get("ALF_INBOX_FILE", r"C:\Users\Christian\.alf-mcp\inbox.json")
+# Same data directory as core.ts: ALF_MCP_DATA_DIR, else ~/.alf-mcp.
+DATA_DIR = os.environ.get("ALF_MCP_DATA_DIR") or os.path.join(os.path.expanduser("~"), ".alf-mcp")
+INBOX = os.environ.get("ALF_INBOX_FILE") or os.path.join(DATA_DIR, "inbox.json")
 POLL_SECONDS = int(os.environ.get("ALF_WATCH_POLL", "5"))
 MAX_WAIT_SECONDS = int(os.environ.get("ALF_WATCH_MAX", str(4 * 3600)))  # safety heartbeat
 
