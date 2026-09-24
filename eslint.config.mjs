@@ -15,7 +15,9 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['src/**/*.{ts,tsx}'],
+    // tools/ shares the src/ baseline: it imports runtime modules directly
+    // (tools/alf-mcp reuses the crypto and pipeline code) and follows its style.
+    files: ['src/**/*.{ts,tsx}', 'tools/**/*.ts'],
     languageOptions: {
       ecmaVersion: 2022,
       globals: {

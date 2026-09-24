@@ -17,7 +17,7 @@
     "package": "electron-vite build && electron-builder",
     "release": "electron-vite build && electron-builder --publish always",
     "postversion": "git push --follow-tags",
-    "lint": "eslint src/ --max-warnings 0",
+    "lint": "eslint src/ tools/ --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/rebuild-for-node.mjs && vitest run",
     "test:lifecycle": "node scripts/rebuild-for-node.mjs && vitest run tests/lifecycle",
