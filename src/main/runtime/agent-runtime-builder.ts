@@ -368,18 +368,10 @@ export class AgentRuntimeBuilder {
     if (!this.codeSandboxService) return null
 
     const { config } = opts
-    const hasSystemLambda = Object.values(config.triggers ?? {}).some(
-      (tc: any) => tc?.enabled && tc?.targets?.some((t: any) => t.scope === 'system' && t.lambda),
-    )
-    const hasApiRoutes = (config.serving?.api?.length ?? 0) > 0
-    const hasMiddleware = !!(
-      config.security?.middleware?.inbox?.length ||
-      config.security?.middleware?.outbox?.length ||
-      config.security?.fetch_middleware?.length ||
-      config.serving?.api?.some(r => r.middleware?.length)
-    )
-    const hasCodeTools = config.tools.some(t => t.name === 'sys_code' || t.name === 'sys_lambda')
-    if (!hasSystemLambda && !hasApiRoutes && !hasMiddleware && !hasCodeTools) return null
+    // Keep the RPC bridge available for live configuration. In particular,
+    // `sys_update_config` can add pre_llm_hook to an agent that originally had
+    // no code-related declaration; the next turn must execute it, not fail due
+    // to a construction-time omission. The bridge itself grants no tool.
 
     return new AdfCallHandler({
       toolRegistry: opts.registry,
@@ -408,7 +400,10 @@ export class AgentRuntimeBuilder {
         config.limits?.execution_timeout_ms,
       ))
     }
-    if (adfCallHandler && config.tools.some(t => t.name === 'sys_lambda')) {
+    // Keep the backend available for a hook added by a live config update.
+    // Registration alone does not grant or expose sys_lambda: the executor's
+    // declaration/visible filtering still owns provider schemas and RPC gates.
+    if (adfCallHandler) {
       registry.register(new SysLambdaTool(
         this.codeSandboxService,
         adfCallHandler,

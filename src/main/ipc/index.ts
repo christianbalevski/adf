@@ -3808,20 +3808,10 @@ export function registerAllIpcHandlers(): void {
     const agentToolRegistry = new ToolRegistry()
     registerBuiltInTools(agentToolRegistry)
 
-    // Create AdfCallHandler if code execution, sys_lambda, system scope lambdas, serving API routes, or middleware are declared
-    const hasSystemLambda = Object.values(config.triggers ?? {}).some(
-      (tc: any) => tc?.enabled && tc?.targets?.some((t: any) => t.scope === 'system' && t.lambda)
-    )
-    const hasApiRoutes = (config.serving?.api?.length ?? 0) > 0
-    const hasMiddleware = !!(
-      config.security?.middleware?.inbox?.length ||
-      config.security?.middleware?.outbox?.length ||
-      config.security?.fetch_middleware?.length ||
-      config.serving?.api?.some(r => r.middleware?.length)
-    )
-    const needsAdfHandler = hasSystemLambda || hasApiRoutes || hasMiddleware || config.tools.some(t =>
-      t.name === 'sys_code' || t.name === 'sys_lambda'
-    )
+    // Keep the code-execution bridge ready for live config changes. A hook can
+    // be added after Studio assembled the agent, without exposing sys_lambda or
+    // relaxing any code_execution/tool declaration gate.
+    const needsAdfHandler = true
     let adfCallHandler: AdfCallHandler | null = null
     if (needsAdfHandler) {
       adfCallHandler = new AdfCallHandler({
@@ -3846,8 +3836,9 @@ export function registerAllIpcHandlers(): void {
       agentToolRegistry.register(new SysCodeTool(codeSandboxService, capturedFilePath, adfCallHandler ?? undefined, config.limits?.execution_timeout_ms))
     }
 
-    // Register sys_lambda with adf handler
-    if (adfCallHandler && config.tools.some((t) => t.name === 'sys_lambda')) {
+    // Keep the nested-lambda backend ready for a live-added hook. Provider
+    // visibility and actual RPC authority still come from normal config gates.
+    if (adfCallHandler) {
       agentToolRegistry.register(new SysLambdaTool(codeSandboxService, adfCallHandler, capturedFilePath, config.limits?.execution_timeout_ms))
     }
 

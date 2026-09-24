@@ -9,6 +9,7 @@ import type { AgentExecutionEvent, ApprovalMeta, ContextBreakdown, ContextBreakd
 import { deriveToolTargetPaths } from '../../shared/utils/document-target'
 import type { ToolProviderFormat, ToolResult, ProtectionDenial } from '../../shared/types/tool.types'
 import type { SystemScopeHandler } from './system-scope-handler'
+import { PreLlmHookError, PreLlmHookRunner, preLlmHookApplies, type PreLlmHookRequest } from './pre-llm-hook'
 import {
   type AdfEventDispatch, type AdfBatchDispatch, type AnyAdfEventDispatch,
   type InboxEventData, type OutboxEventData, type FileChangeEventData, type ChatEventData,
@@ -690,7 +691,8 @@ export class AgentExecutor extends EventEmitter {
     session: AgentSession,
     basePrompt: string = '',
     toolPrompts: Record<string, string> = {},
-    compactionPrompt: string = DEFAULT_COMPACTION_PROMPT
+    compactionPrompt: string = DEFAULT_COMPACTION_PROMPT,
+    private readonly preLlmHookRunner: PreLlmHookRunner | null = null,
   ) {
     super()
     this.config = config
@@ -2173,19 +2175,41 @@ export class AgentExecutor extends EventEmitter {
 
         const thinkingBudget = this.config.model.thinking_budget
         const turnId = 'event' in dispatch ? dispatch.event.id : dispatch.events[0]?.id
+        // This snapshot is authoritative for the execution phase below. A hook
+        // may alter the provider-facing schema (including exposing another
+        // catalog tool), but it can never widen enabledNames/declarations/HIL.
         const toolSnapshot = this.buildToolSnapshot()
-        const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
+        const baseRequest: PreLlmHookRequest = {
           system: systemPrompt,
           messages: this.session.getMessages(),
-          dynamicInstructions,
           tools: toolSnapshot.schemas,
-          maxTokens: this.config.model.max_tokens || undefined,
-          temperature: this.config.model.temperature ?? undefined,
-          topP: this.config.model.top_p ?? undefined,
+          options: {
+            maxTokens: this.config.model.max_tokens || undefined,
+            temperature: this.config.model.temperature ?? undefined,
+            topP: this.config.model.top_p ?? undefined,
+            thinkingBudget,
+            reasoning: this.config.model.reasoning,
+            dynamicInstructions,
+            providerParams: this.config.model.provider_params,
+          },
+        }
+        // The hook runs after all context repair and immediately before this
+        // normal conversational request. It never sees callbacks/AbortSignal,
+        // and its cloned replacement never reaches AgentSession/history.
+        const transformedRequest = this.transformPreLlmRequest(baseRequest, this.abortController?.signal)
+        const request = transformedRequest ? await transformedRequest : baseRequest
+        const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
+          system: request.system,
+          messages: request.messages,
+          dynamicInstructions: request.options.dynamicInstructions,
+          tools: request.tools,
+          maxTokens: request.options.maxTokens,
+          temperature: request.options.temperature,
+          topP: request.options.topP,
           signal: this.abortController?.signal,
-          thinkingBudget,
-          reasoning: this.config.model.reasoning,
-          providerParams: this.config.model.provider_params,
+          thinkingBudget: request.options.thinkingBudget,
+          reasoning: request.options.reasoning,
+          providerParams: request.options.providerParams,
           onTextDelta: (delta: string) => {
             this.deltaQueue.push({ type: 'text', text: delta })
             this.scheduleDeltaFlush()
@@ -3061,7 +3085,13 @@ export class AgentExecutor extends EventEmitter {
           },
           timestamp: Date.now()
         })
-      } else if (isTransientProviderError(error, errorMsg)) {
+      // A configured pre-LLM hook is a local execution boundary, not a
+      // provider outage. Its error text can include "timeout", but treating it
+      // as transient would reset to idle and schedule a retry as though the
+      // provider had failed. Keep every hook failure structurally visible and
+      // fail this request closed; retries, if any, remain normal fresh turns
+      // that must execute the hook again.
+      } else if (!(error instanceof PreLlmHookError) && isTransientProviderError(error, errorMsg)) {
         this.setState('idle')
         const scheduled = this.scheduleProviderRecovery(dispatch, error, errorMsg)
         // Severity tracks the outcome: warn while auto-recovery is handling it,
@@ -3822,6 +3852,23 @@ export class AgentExecutor extends EventEmitter {
     const serverName = parts[1]
     const server = this.config.mcp?.servers?.find(s => s.name === serverName)
     return server?.restricted === true
+  }
+
+  /**
+   * Return a transformed normal-turn request when this stream is selected.
+   * `preLlmHookApplies` also validates a present config, so malformed hook
+   * configuration fails closed instead of becoming a silently unhooked call.
+   */
+  private transformPreLlmRequest(
+    request: PreLlmHookRequest,
+    signal?: AbortSignal,
+  ): Promise<PreLlmHookRequest> | null {
+    const loopName = this.session.getWorkspace().getLoopName()
+    if (!preLlmHookApplies(this.config, loopName)) return null
+    if (!this.preLlmHookRunner) {
+      return Promise.reject(new PreLlmHookError('runtime has no code-execution bridge for this configured hook'))
+    }
+    return this.preLlmHookRunner.transform(this.config, request, signal)
   }
 
   private async createMessageWithLlmCall(

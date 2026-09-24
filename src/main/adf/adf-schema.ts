@@ -465,6 +465,40 @@ export const LoopsConfigSchema = z.array(LoopConfigSchema).superRefine((loops, c
   })
 })
 
+/**
+ * A hook is an explicit runtime entry point, separate from the `sys_lambda`
+ * tool declaration. Its selected source still executes under ordinary file
+ * authorization and code-execution checks.
+ */
+export const PreLlmHookConfigSchema = z.object({
+  source: z.string().min(1),
+  scope: z.enum(['all', 'main', 'loops']).default('all'),
+  loops: z.array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,31}$/))
+    .min(1)
+    .max(64)
+    .optional(),
+  timeout_ms: z.number().int().min(1000).max(300000).optional(),
+}).superRefine((hook, ctx) => {
+  if (hook.scope === 'loops') {
+    if (!hook.loops || hook.loops.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'loops is required when pre_llm_hook.scope is "loops"', path: ['loops'] })
+      return
+    }
+    const seen = new Set<string>()
+    hook.loops.forEach((name, index) => {
+      if (name === 'main') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'main is not an inner-loop target; use scope "main" or "all"', path: ['loops', index] })
+      }
+      if (seen.has(name)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `duplicate loop name "${name}"`, path: ['loops', index] })
+      }
+      seen.add(name)
+    })
+  } else if (hook.loops !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'loops is only allowed when pre_llm_hook.scope is "loops"', path: ['loops'] })
+  }
+})
+
 export const AgentConfigSchema = z.object({
   adf_version: z.literal('0.2'),
   id: z.string().min(1),
@@ -539,6 +573,7 @@ export const AgentConfigSchema = z.object({
     base_delay_ms: z.number().int().positive().max(3_600_000).default(15000),
     max_delay_ms: z.number().int().positive().max(86_400_000).default(300000)
   }).optional(),
+  pre_llm_hook: PreLlmHookConfigSchema.optional(),
   messaging: z.object({
     receive: z.boolean().optional().default(true)
       .describe('Whether the agent participates in the mesh and can receive messages.'),

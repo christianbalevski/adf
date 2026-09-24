@@ -38,6 +38,7 @@ import type { CodeSandboxService } from './code-sandbox'
 import { AgentExecutor } from './agent-executor'
 import { AgentSession } from './agent-session'
 import type { AdfCallHandler } from './adf-call-handler'
+import { PreLlmHookRunner } from './pre-llm-hook'
 import {
   MAIN_LOOP,
   deriveLoopConfig,
@@ -1176,6 +1177,12 @@ export class LoopPool implements LoopPoolApi {
       const callHandler = this.deps.adfCallHandler?.forLoop(workspace, derived, registry) ?? null
 
       const provider = this.providerFor(derived, loop.name)
+      // The root config can gain pre_llm_hook after this side-loop runtime
+      // exists. Keep its loop-bound runner available so the next re-derived
+      // config applies it without reconstructing the executor.
+      const preLlmHookRunner = this.deps.codeSandboxService && callHandler
+        ? new PreLlmHookRunner(workspace, this.deps.codeSandboxService, callHandler, derived.id)
+        : null
       const executor = new AgentExecutor(
         derived,
         provider,
@@ -1184,6 +1191,7 @@ export class LoopPool implements LoopPoolApi {
         this.deps.basePrompt,
         this.deps.toolPrompts,
         this.deps.compactionPrompt,
+        preLlmHookRunner,
       )
       callHandler?.attachSession(session)
 
@@ -1362,7 +1370,11 @@ export class LoopPool implements LoopPoolApi {
     } else {
       runtime.registry.unregister('sys_code')
     }
-    if (granted.has('sys_lambda') && sandbox && runtime.callHandler) {
+    // Keep the backend registered whenever the loop has a bridge. A later
+    // config update may enable pre_llm_hook, whose code can call adf.sys_lambda
+    // immediately; this does not expose sys_lambda unless derived.tools grants
+    // it because provider schemas remain declaration-filtered.
+    if (sandbox && runtime.callHandler) {
       runtime.registry.register(new SysLambdaTool(sandbox, runtime.callHandler, filePath, timeout))
     } else {
       runtime.registry.unregister('sys_lambda')
