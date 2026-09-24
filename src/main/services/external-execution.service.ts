@@ -20,7 +20,7 @@ const ENGINE_LOCATIONS: Record<ContainerEngine, Partial<Record<NodeJS.Platform, 
     win32: ['C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'],
   },
   podman: {
-    darwin: ['/opt/homebrew/bin/podman', '/usr/local/bin/podman'],
+    darwin: ['/opt/homebrew/bin/podman', '/usr/local/bin/podman', '/opt/podman/bin/podman'],
     linux: ['/usr/bin/podman', '/usr/local/bin/podman'],
     win32: ['C:\\Program Files\\RedHat\\Podman\\podman.exe'],
   },
