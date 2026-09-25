@@ -8,6 +8,8 @@ see_also: [code-execution.md, authorized-code.md, inner-loops.md]
 
 `pre_llm_hook` optionally runs a workspace lambda immediately before each **normal conversational** provider request. It can rewrite the request-local system prompt, messages, provider-facing tool definitions, and model request options.
 
+**Triggers and hooks are different.** Triggers react to events and start work. Hooks run inside work already underway; the pre-LLM hook transforms the request before the model call continues.
+
 It is for bounded transformations such as adding a policy reminder, selecting a smaller presented tool set, adapting a provider option, or running a fast RAG lambda with the existing `adf.*` capabilities. It is deliberately a small interception point, not a separate built-in RAG or tool-selection subsystem, and it is never a way to grant capabilities.
 
 ## Configuration
@@ -23,8 +25,9 @@ It is for bounded transformations such as adding a policy reminder, selecting a 
 ```
 
 - `source` is a workspace `.js` or `.ts` lambda path, optionally followed by `:functionName`; omitted function name means `main`.
-- `scope` is `all` (default: main and every current/future inner loop), `main`, or `loops`.
+- `scope` is `all` (main and every current/future inner loop), `main`, or `loops`. Existing configurations keep this shape.
 - `loops` is required only for `scope: "loops"`; it is a non-empty unique list of named **inner** loops. It cannot contain `main`.
+- `include_main` is optional and valid only with `scope: "loops"`; when true, the hook also runs for Main. This additive field lets Studio represent Main plus specific inner loops without putting `main` into the inner-loop list.
 - `timeout_ms` is optional. It is always capped by `limits.execution_timeout_ms`.
 
 Target named inner loops without requiring that they already exist:
@@ -38,6 +41,8 @@ Target named inner loops without requiring that they already exist:
   }
 }
 ```
+
+Studio presents targets as rows: a new hook starts with **Main**, and **Add target** adds a declared or future inner-loop name. The **All streams (including future loops)** option is exclusive with specific target rows and remains an explicit `scope: "all"` configuration; opening an existing `all` hook never narrows it to a finite list. Main plus named loops is stored as `scope: "loops"`, `include_main: true`, and a `loops` array.
 
 The hook is an explicit runtime lambda entry point. It does **not** require—or expose—`sys_lambda` as a conversational tool. Its private execution bridge may call nested `adf.sys_lambda` only when the independent `code_execution.sys_lambda` gate and normal source-authorization rules allow it. That private backend does not register `sys_lambda` for ordinary LLM calls or for unrelated `sys_code` executions; those remain declaration- and enabled-state dependent.
 

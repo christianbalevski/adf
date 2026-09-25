@@ -48,6 +48,7 @@ export class PreLlmHookError extends Error {
 }
 
 const MAX_HOOK_TIMEOUT_MS = 300_000
+const MAX_HOOK_LOOPS = 64
 const MIN_HOOK_TIMEOUT_MS = 1_000
 const OPTION_KEYS = new Set<keyof PreLlmHookRequestOptions>([
   'maxTokens', 'temperature', 'topP', 'thinkingBudget',
@@ -97,9 +98,18 @@ function validateHookConfig(hook: PreLlmHookConfig): Required<Pick<PreLlmHookCon
   }
 
   const loops = hook.loops
+  if (hook.include_main !== undefined && typeof hook.include_main !== 'boolean') {
+    throw new PreLlmHookError('config include_main must be a boolean')
+  }
+  if (scope !== 'loops' && hook.include_main !== undefined) {
+    throw new PreLlmHookError('config include_main is only allowed with scope "loops"')
+  }
   if (scope === 'loops') {
     if (!Array.isArray(loops) || loops.length === 0) {
       throw new PreLlmHookError('config scope "loops" requires a non-empty loops array')
+    }
+    if (loops.length > MAX_HOOK_LOOPS) {
+      throw new PreLlmHookError(`config loops must contain no more than ${MAX_HOOK_LOOPS} entries`)
     }
     const seen = new Set<string>()
     for (const loop of loops) {
@@ -137,7 +147,7 @@ export function preLlmHookApplies(config: AgentConfig, loopName: string): boolea
   const hook = validateHookConfig(configured)
   if (hook.scope === 'all') return true
   if (hook.scope === 'main') return loopName === 'main'
-  return hook.loops!.includes(loopName)
+  return loopName === 'main' ? hook.include_main === true : hook.loops!.includes(loopName)
 }
 
 function parseLambdaSource(source: string): { filePath: string; functionName: string } {

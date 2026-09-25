@@ -477,6 +477,7 @@ export const PreLlmHookConfigSchema = z.object({
     .min(1)
     .max(64)
     .optional(),
+  include_main: z.boolean().optional(),
   timeout_ms: z.number().int().min(1000).max(300000).optional(),
 }).superRefine((hook, ctx) => {
   if (hook.scope === 'loops') {
@@ -496,6 +497,9 @@ export const PreLlmHookConfigSchema = z.object({
     })
   } else if (hook.loops !== undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'loops is only allowed when pre_llm_hook.scope is "loops"', path: ['loops'] })
+  }
+  if (hook.scope !== 'loops' && hook.include_main !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'include_main is only allowed when pre_llm_hook.scope is "loops"', path: ['include_main'] })
   }
 })
 

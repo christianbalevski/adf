@@ -995,6 +995,8 @@ export interface PreLlmHookConfig {
   scope?: PreLlmHookScope
   /** Required only when scope is 'loops'; main is deliberately not valid here. */
   loops?: string[]
+  /** When scope is 'loops', also run for the membrane-facing main stream. */
+  include_main?: boolean
   /** Bounded again at runtime by limits.execution_timeout_ms. */
   timeout_ms?: number
 }

@@ -17,7 +17,7 @@ import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { ExecutionTarget } from '../../../shared/types/compute.types'
 import { resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
-import { preLlmHookDraftFromConfig, validatePreLlmHookDraft, type PreLlmHookDraft } from './pre-llm-hook-config'
+import { preLlmHookDraftFromConfig, validatePreLlmHookDraft, PRE_LLM_HOOK_MAIN_TARGET, type PreLlmHookDraft } from './pre-llm-hook-config'
 
 /**
  * All tools this runtime supports. Any tool listed here will appear
@@ -4618,18 +4618,29 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           })}
         </Section>
 
-        {/* Pre-LLM request hook — an explicit lambda transform, not a trigger. */}
+        {/* Hooks run inside work already underway; they are not event triggers. */}
         <Section
           docs={DOCS.preLlmHook}
-          title="Pre-LLM request hook"
-          hint="Runs immediately before each normal conversational provider request, including tool rounds. It does not run for compaction or direct model_invoke calls."
+          title="Hooks"
+          hint="Triggers react to events and start work. Hooks run inside work already underway; the pre-LLM hook transforms the request before the model call continues."
           locked={isSectionLocked('pre_llm_hook')}
           onToggleLock={() => toggleSectionLock('pre_llm_hook')}
-          summary={local.pre_llm_hook ? `${local.pre_llm_hook.scope === 'loops' ? `${local.pre_llm_hook.loops?.length ?? 0} loops` : (local.pre_llm_hook.scope ?? 'all')}` : 'not configured'}
+          summary={local.pre_llm_hook
+            ? local.pre_llm_hook.scope === 'all'
+              ? 'all streams'
+              : local.pre_llm_hook.scope === 'main'
+                ? 'Main'
+                : `${(local.pre_llm_hook.include_main ? 1 : 0) + (local.pre_llm_hook.loops?.length ?? 0)} targets`
+            : 'not configured'}
           defaultCollapsed
           testId="pre-llm-hook-section"
         >
           <div data-testid="pre-llm-hook-fields" className="space-y-2">
+            <div className="flex items-center gap-2 border-b border-neutral-200 dark:border-neutral-700 pb-1">
+              <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Pre-LLM call</span>
+              <InfoHint tip="Runs immediately before each normal conversational provider request, including tool rounds. It does not run for compaction or direct model_invoke calls." />
+              <DocsLink href={DOCS.preLlmHook} label="Guide" className="ml-auto" />
+            </div>
             <p className="text-[10px] text-neutral-500 dark:text-neutral-400">
               Transform the request with an authorized workspace lambda. Changes are request-local; this never grants tools or changes execution permissions.
             </p>
@@ -4645,63 +4656,113 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               />
             </Field>
 
-            <Field label="Run for" hint="All includes main and current/future inner loops. Named inner loops may be entered before they exist.">
-              <select
-                data-testid="pre-llm-hook-scope"
-                value={preLlmHookDraft.scope}
-                onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, scope: e.target.value as PreLlmHookDraft['scope'] }))}
-                className="field-input w-full"
-                aria-label="Pre-LLM hook scope"
-              >
-                <option value="all">All cognition streams</option>
-                <option value="main">Main only</option>
-                <option value="loops">Named inner loops</option>
-              </select>
-            </Field>
-
-            {preLlmHookDraft.scope === 'loops' && (
-              <div data-testid="pre-llm-hook-loops" className="rounded-md border border-neutral-200 dark:border-neutral-700 p-2 space-y-1.5">
+            <Field label="Targets" hint="New hooks start on Main. Add specific inner loops as rows, or choose All streams (including future loops); All streams cannot be combined with specific targets.">
+              <div data-testid="pre-llm-hook-targets" className="rounded-md border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 p-2 space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Named inner loops</span>
+                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Runs before the selected model calls</span>
                   <button
                     type="button"
-                    onClick={() => setPreLlmHookDraft((draft) => ({ ...draft, loops: [...draft.loops, ''] }))}
-                    className="text-[10px] text-blue-500 hover:text-blue-700 font-medium"
-                    data-testid="pre-llm-hook-add-loop"
+                    data-testid="pre-llm-hook-add-target"
+                    onClick={() => setPreLlmHookDraft((draft) => ({
+                      ...draft,
+                      targetMode: 'targets',
+                      targets: draft.targetMode === 'all' ? [PRE_LLM_HOOK_MAIN_TARGET, ''] : [...draft.targets, ''],
+                    }))}
+                    className="text-[10px] text-blue-500 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 font-medium"
                   >
-                    + Add loop
+                    + Add target
                   </button>
                 </div>
-                <datalist id="pre-llm-hook-loop-suggestions">
-                  {(local.loops ?? []).map((loop) => <option key={loop.name} value={loop.name} />)}
-                </datalist>
-                {preLlmHookDraft.loops.length === 0 && (
-                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Add a name. Future loop names are allowed.</p>
-                )}
-                {preLlmHookDraft.loops.map((name, index) => (
-                  <div key={`pre-llm-hook-loop-${index}`} className="flex items-center gap-1">
-                    <input
-                      data-testid={`pre-llm-hook-loop-${index}`}
-                      type="text"
-                      list="pre-llm-hook-loop-suggestions"
-                      value={name}
-                      onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, loops: draft.loops.map((entry, i) => i === index ? e.target.value : entry) }))}
-                      placeholder="inner-loop-name"
-                      className="field-input flex-1 font-mono"
-                      aria-label={`Named inner loop ${index + 1}`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setPreLlmHookDraft((draft) => ({ ...draft, loops: draft.loops.filter((_, i) => i !== index) }))}
-                      className="text-xs text-red-400 hover:text-red-600 px-1"
-                      aria-label={`Remove named inner loop ${index + 1}`}
+                {preLlmHookDraft.targetMode === 'all' ? (
+                  <div className="flex items-center gap-1.5 rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-1.5">
+                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-12 shrink-0">Target</span>
+                    <select
+                      data-testid="pre-llm-hook-target-0"
+                      value="__all_streams__"
+                      onChange={(e) => {
+                        const value = e.target.value
+                        if (value === '__all_streams__') return
+                        setPreLlmHookDraft((draft) => ({
+                          ...draft,
+                          targetMode: 'targets',
+                          targets: [value === '__future__' ? '' : value],
+                        }))
+                      }}
+                      className="field-input text-[10px] flex-1"
+                      aria-label="Hook target"
                     >
-                      &times;
-                    </button>
+                      <option value="__all_streams__">All streams (including future loops)</option>
+                      <option value={PRE_LLM_HOOK_MAIN_TARGET}>Main</option>
+                      {(local.loops ?? []).map((loop) => <option key={loop.name} value={loop.name}>{loop.name}</option>)}
+                      <option value="__future__">Future or other loop…</option>
+                    </select>
                   </div>
-                ))}
+                ) : (
+                  preLlmHookDraft.targets.map((target, index) => {
+                    const declaredLoops = local.loops ?? []
+                    const isMain = target === PRE_LLM_HOOK_MAIN_TARGET
+                    const isDeclared = declaredLoops.some((loop) => loop.name === target)
+                    const isCustom = !isMain && !isDeclared
+                    const selectValue = target === '' ? '__future__' : target
+                    return (
+                      <div key={`pre-llm-hook-target-${index}`} className="min-w-0 rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-1.5 space-y-1">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-12 shrink-0">Target</span>
+                          <select
+                            data-testid={`pre-llm-hook-target-${index}`}
+                            value={selectValue}
+                            onChange={(e) => {
+                              const value = e.target.value
+                              if (value === '__all_streams__') {
+                                setPreLlmHookDraft((draft) => ({ ...draft, targetMode: 'all', targets: [] }))
+                                return
+                              }
+                              setPreLlmHookDraft((draft) => ({
+                                ...draft,
+                                targets: draft.targets.map((entry, i) => i === index ? (value === '__future__' ? '' : value) : entry),
+                              }))
+                            }}
+                            className="field-input text-[10px] min-w-0 flex-1"
+                            aria-label={`Hook target ${index + 1}`}
+                          >
+                            <option value="">Choose a loop…</option>
+                            <option value="__all_streams__">All streams (including future loops)</option>
+                            <option value={PRE_LLM_HOOK_MAIN_TARGET}>Main</option>
+                            {declaredLoops.map((loop) => <option key={loop.name} value={loop.name}>{loop.name}</option>)}
+                            {isCustom && target && <option value={target}>{target} (not declared)</option>}
+                            <option value="__future__">Future or other loop…</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => setPreLlmHookDraft((draft) => ({ ...draft, targets: draft.targets.filter((_, i) => i !== index) }))}
+                            className="text-xs text-red-400 hover:text-red-600 dark:hover:text-red-300 px-1"
+                            aria-label={`Remove hook target ${index + 1}`}
+                          >
+                            &times;
+                          </button>
+                        </div>
+                        {(target === '' || isCustom) && (
+                          <div className="min-w-0 pl-[3.35rem]">
+                          <input
+                            data-testid={`pre-llm-hook-target-name-${index}`}
+                            type="text"
+                            value={target}
+                            onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, targets: draft.targets.map((entry, i) => i === index ? e.target.value : entry) }))}
+                            placeholder="future-loop-name"
+                            className="field-input text-[10px] w-full min-w-0 max-w-full box-border font-mono"
+                            aria-label={`Future hook target name ${index + 1}`}
+                          />
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })
+                )}
+                {preLlmHookDraft.targetMode === 'targets' && preLlmHookDraft.targets.length === 0 && (
+                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Add Main or an inner-loop target.</p>
+                )}
               </div>
-            )}
+            </Field>
 
             <Field label="Timeout (optional, milliseconds)" hint="Whole number from 1000 to 300000 ms. The runtime also caps this by limits.execution_timeout_ms.">
               <input

@@ -29,6 +29,9 @@ describe('pre-LLM hook contract', () => {
     expect(preLlmHookApplies(config({ scope: 'main' }), 'worker')).toBe(false)
     expect(preLlmHookApplies(config({ scope: 'loops', loops: ['future'] }), 'future')).toBe(true)
     expect(preLlmHookApplies(config({ scope: 'loops', loops: ['future'] }), 'main')).toBe(false)
+    expect(preLlmHookApplies(config({ scope: 'loops', include_main: true, loops: ['future'] }), 'main')).toBe(true)
+    expect(preLlmHookApplies(config({ scope: 'loops', include_main: true, loops: ['future'] }), 'future')).toBe(true)
+    expect(preLlmHookApplies(config({ scope: 'loops', include_main: true, loops: ['future'] }), 'other')).toBe(false)
   })
 
   it('accepts a valid JSON request and rejects provider-breaking tool pairs', () => {
@@ -43,5 +46,8 @@ describe('pre-LLM hook contract', () => {
     expect(() => preLlmHookApplies(config({ scope: 'all', loops: ['worker'] }), 'main')).toThrow(PreLlmHookError)
     expect(() => preLlmHookApplies(config({ scope: 'loops', loops: ['main'] }), 'main')).toThrow(PreLlmHookError)
     expect(() => preLlmHookApplies(config({ scope: 'loops', loops: ['worker', 'worker'] }), 'worker')).toThrow(PreLlmHookError)
+    expect(() => preLlmHookApplies(config({ scope: 'main', include_main: true }), 'main')).toThrow(PreLlmHookError)
+    expect(() => preLlmHookApplies(config({ scope: 'all', include_main: true }), 'main')).toThrow(PreLlmHookError)
+    expect(() => preLlmHookApplies(config({ scope: 'loops', include_main: true, loops: Array.from({ length: 65 }, (_, i) => `loop-${i}`) }), 'main')).toThrow(PreLlmHookError)
   })
 })

@@ -5,56 +5,77 @@ import {
   PRE_LLM_HOOK_MAX_TIMEOUT_MS,
   PRE_LLM_HOOK_MIN_TIMEOUT_MS,
   PRE_LLM_HOOK_MAX_LOOPS,
+  PRE_LLM_HOOK_MAIN_TARGET,
+  type PreLlmHookDraft,
 } from '../../../src/renderer/components/agent/pre-llm-hook-config'
 
-describe('pre-LLM hook Studio draft', () => {
-  it('loads an absent hook as an empty, all-stream draft', () => {
-    expect(preLlmHookDraftFromConfig()).toEqual({ source: '', scope: 'all', loops: [], timeout_ms: '' })
+const draft = (patch: Partial<PreLlmHookDraft>): PreLlmHookDraft => ({
+  source: 'lib/hook.ts',
+  targetMode: 'targets',
+  targets: [PRE_LLM_HOOK_MAIN_TARGET],
+  timeout_ms: '',
+  ...patch,
+})
+
+describe('pre-LLM hook Studio target draft', () => {
+  it('defaults a new hook to Main only', () => {
+    expect(preLlmHookDraftFromConfig()).toEqual({
+      source: '', targetMode: 'targets', targets: ['main'], timeout_ms: '',
+    })
     expect(validatePreLlmHookDraft(preLlmHookDraftFromConfig()).config).toBeUndefined()
   })
 
-  it('round-trips configured source, scope, named loops, and timeout', () => {
-    const draft = preLlmHookDraftFromConfig({ source: 'lib/policy.ts:transform', scope: 'loops', loops: ['future_loop'], timeout_ms: 2500 })
-    expect(draft).toEqual({ source: 'lib/policy.ts:transform', scope: 'loops', loops: ['future_loop'], timeout_ms: '2500' })
-    expect(validatePreLlmHookDraft(draft)).toEqual({
-      errors: [],
-      config: { source: 'lib/policy.ts:transform', scope: 'loops', loops: ['future_loop'], timeout_ms: 2500 },
+  it('preserves legacy all scope when opening and saving', () => {
+    const loaded = preLlmHookDraftFromConfig({ source: 'lib/hook.ts', scope: 'all', timeout_ms: 2500 })
+    expect(loaded).toEqual({ source: 'lib/hook.ts', targetMode: 'all', targets: [], timeout_ms: '2500' })
+    expect(validatePreLlmHookDraft(loaded)).toEqual({
+      errors: [], config: { source: 'lib/hook.ts', scope: 'all', timeout_ms: 2500 },
     })
   })
 
   it.each([
-    ['all', { source: 'lib/hook.ts', scope: 'all', loops: ['future'], timeout_ms: '' }],
-    ['main', { source: 'lib/hook.ts', scope: 'main', loops: [], timeout_ms: '' }],
-  ] as const)('omits loops for %s scope', (_scope, draft) => {
-    const result = validatePreLlmHookDraft(draft)
-    expect(result.errors).toEqual([])
-    expect(result.config).toEqual(draft.scope === 'all' ? { source: 'lib/hook.ts' } : { source: 'lib/hook.ts', scope: draft.scope })
+    ['main only', ['main'], { source: 'lib/hook.ts', scope: 'main' }],
+    ['named only', ['future_loop'], { source: 'lib/hook.ts', scope: 'loops', loops: ['future_loop'] }],
+    ['main and named loops', ['main', 'future_loop'], { source: 'lib/hook.ts', scope: 'loops', include_main: true, loops: ['future_loop'] }],
+  ] as const)('maps %s targets to the compatible runtime shape', (_name, targets, config) => {
+    expect(validatePreLlmHookDraft(draft({ targets }))).toEqual({ errors: [], config })
+  })
+
+  it('loads combined scope with Main before named loops', () => {
+    expect(preLlmHookDraftFromConfig({
+      source: 'lib/hook.ts', scope: 'loops', include_main: true, loops: ['future_loop'], timeout_ms: 2500,
+    })).toEqual({ source: 'lib/hook.ts', targetMode: 'targets', targets: ['main', 'future_loop'], timeout_ms: '2500' })
   })
 
   it.each([
-    ['empty source', { source: ' ', scope: 'all', loops: [], timeout_ms: '' }],
-    ['empty named loop', { source: 'lib/hook.ts', scope: 'loops', loops: [''], timeout_ms: '' }],
-    ['duplicate named loop', { source: 'lib/hook.ts', scope: 'loops', loops: ['one', 'one'], timeout_ms: '' }],
-    ['main named loop', { source: 'lib/hook.ts', scope: 'loops', loops: ['main'], timeout_ms: '' }],
-    ['uppercase named loop', { source: 'lib/hook.ts', scope: 'loops', loops: ['Future'], timeout_ms: '' }],
-    ['punctuated named loop', { source: 'lib/hook.ts', scope: 'loops', loops: ['future.loop'], timeout_ms: '' }],
-  ] as const)('rejects %s without producing config', (_name, draft) => {
-    const result = validatePreLlmHookDraft(draft)
+    ['empty source', draft({ source: ' ' })],
+    ['empty target', draft({ targets: [''] })],
+    ['duplicate target', draft({ targets: ['main', 'main'] })],
+    ['main as a named-loop-looking invalid identifier', draft({ targets: ['main', 'main'] })],
+    ['uppercase target', draft({ targets: ['Future'] })],
+    ['punctuated target', draft({ targets: ['future.loop'] })],
+  ] as const)('rejects %s without producing config', (_name, value) => {
+    const result = validatePreLlmHookDraft(value)
     expect(result.errors.length).toBeGreaterThan(0)
     expect(result.config).toBeUndefined()
   })
 
-  it('rejects more than the runtime maximum number of named loops', () => {
+  it('rejects more than the runtime maximum named loops but accepts Main plus 64 loops', () => {
     const loops = Array.from({ length: PRE_LLM_HOOK_MAX_LOOPS + 1 }, (_, index) => `loop-${index}`)
-    const result = validatePreLlmHookDraft({ source: 'lib/hook.ts', scope: 'loops', loops, timeout_ms: '' })
-    expect(result.errors).toContain(`Choose no more than ${PRE_LLM_HOOK_MAX_LOOPS} named inner loops.`)
-    expect(result.config).toBeUndefined()
+    const tooMany = validatePreLlmHookDraft(draft({ targets: ['main', ...loops] }))
+    expect(tooMany.errors).toContain(`Choose no more than ${PRE_LLM_HOOK_MAX_LOOPS} named inner loops.`)
+    expect(tooMany.config).toBeUndefined()
+
+    const boundary = Array.from({ length: PRE_LLM_HOOK_MAX_LOOPS }, (_, index) => `loop-${index}`)
+    const valid = validatePreLlmHookDraft(draft({ targets: ['main', ...boundary] }))
+    expect(valid.errors).toEqual([])
+    expect(valid.config).toMatchObject({ scope: 'loops', include_main: true, loops: boundary })
   })
 
-  it('accepts future free-form names when they match the loop identifier schema', () => {
-    const result = validatePreLlmHookDraft({ source: 'lib/hook.ts', scope: 'loops', loops: ['not-yet-created_2'], timeout_ms: '' })
+  it('allows future free-form names matching the loop identifier schema', () => {
+    const result = validatePreLlmHookDraft(draft({ targets: ['future_loop_2'] }))
     expect(result.errors).toEqual([])
-    expect(result.config?.loops).toEqual(['not-yet-created_2'])
+    expect(result.config).toEqual({ source: 'lib/hook.ts', scope: 'loops', loops: ['future_loop_2'] })
   })
 
   it.each([
@@ -63,8 +84,8 @@ describe('pre-LLM hook Studio draft', () => {
     [String(PRE_LLM_HOOK_MAX_TIMEOUT_MS + 1), 'above maximum'],
     ['1.5', 'decimal'],
     ['Infinity', 'non-finite'],
-  ])('rejects %s timeout (%s)', (timeout_ms) => {
-    const result = validatePreLlmHookDraft({ source: 'lib/hook.ts', scope: 'all', loops: [], timeout_ms })
+  ])('validates %s timeout (%s)', (timeout_ms) => {
+    const result = validatePreLlmHookDraft(draft({ timeout_ms }))
     if (timeout_ms === '') {
       expect(result.errors).toEqual([])
       expect(result.config?.timeout_ms).toBeUndefined()
@@ -74,9 +95,14 @@ describe('pre-LLM hook Studio draft', () => {
     }
   })
 
-  it('accepts the runtime timeout boundaries and trims textual values', () => {
-    const result = validatePreLlmHookDraft({ source: '  lib/hook.ts  ', scope: 'all', loops: [], timeout_ms: String(PRE_LLM_HOOK_MIN_TIMEOUT_MS) })
-    expect(result).toEqual({ errors: [], config: { source: 'lib/hook.ts', timeout_ms: PRE_LLM_HOOK_MIN_TIMEOUT_MS } })
-    expect(validatePreLlmHookDraft({ source: 'lib/hook.ts', scope: 'all', loops: [], timeout_ms: String(PRE_LLM_HOOK_MAX_TIMEOUT_MS) }).errors).toEqual([])
+  it('accepts timeout boundaries and trims textual values', () => {
+    const result = validatePreLlmHookDraft(draft({ source: '  lib/hook.ts  ', timeout_ms: String(PRE_LLM_HOOK_MIN_TIMEOUT_MS) }))
+    expect(result).toEqual({ errors: [], config: { source: 'lib/hook.ts', scope: 'main', timeout_ms: PRE_LLM_HOOK_MIN_TIMEOUT_MS } })
+    expect(validatePreLlmHookDraft(draft({ timeout_ms: String(PRE_LLM_HOOK_MAX_TIMEOUT_MS) })).errors).toEqual([])
+  })
+
+  it('keeps All streams exclusive from target rows', () => {
+    const result = validatePreLlmHookDraft({ source: 'lib/hook.ts', targetMode: 'all', targets: ['main', 'future'], timeout_ms: '' })
+    expect(result).toEqual({ errors: [], config: { source: 'lib/hook.ts', scope: 'all' } })
   })
 })

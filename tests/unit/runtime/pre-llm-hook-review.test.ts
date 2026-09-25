@@ -169,6 +169,8 @@ describe('pre-LLM hook review — schema and selection', () => {
       { source: 'lib/hook.js', scope: 'loops', loops: ['review', 'review'] },
       { source: 'lib/hook.js', scope: 'all', loops: ['review'] },
       { source: 'lib/hook.js', scope: 'main', loops: ['review'] },
+      { source: 'lib/hook.js', scope: 'main', include_main: true },
+      { source: 'lib/hook.js', scope: 'all', include_main: true },
       { source: 'lib/hook.js', timeout_ms: 999 },
     ]) {
       expect(PreLlmHookConfigSchema.safeParse(invalid).success).toBe(false)
@@ -183,6 +185,8 @@ describe('pre-LLM hook review — schema and selection', () => {
     expect(preLlmHookApplies(cfg({ source: 'x', scope: 'main' }), 'review')).toBe(false)
     expect(preLlmHookApplies(cfg({ source: 'x', scope: 'loops', loops: ['review'] }), 'review')).toBe(true)
     expect(preLlmHookApplies(cfg({ source: 'x', scope: 'loops', loops: ['review'] }), 'unknown')).toBe(false)
+    expect(preLlmHookApplies(cfg({ source: 'x', scope: 'loops', include_main: true, loops: ['review'] }), 'main')).toBe(true)
+    expect(preLlmHookApplies(cfg({ source: 'x', scope: 'loops', include_main: true, loops: ['review'] }), 'review')).toBe(true)
     expect(() => preLlmHookApplies(cfg({ source: 'x', scope: 'all', loops: ['review'] }), 'unselected'))
       .toThrow(/Pre-LLM hook failed.*only allowed/i)
   })
