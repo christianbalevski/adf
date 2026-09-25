@@ -4642,7 +4642,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               <DocsLink href={DOCS.preLlmHook} label="Guide" className="ml-auto" />
             </div>
             <p className="text-[10px] text-neutral-500 dark:text-neutral-400">
-              Transform the request with an authorized workspace lambda. Changes are request-local; this never grants tools or changes execution permissions.
+              Modify LLM calls before they are sent.
             </p>
             <Field label="Lambda source" hint="Use a workspace .js or .ts path, optionally followed by :functionName. Without a function name, main is used.">
               <input
