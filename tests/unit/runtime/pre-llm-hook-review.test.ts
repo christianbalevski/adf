@@ -490,6 +490,51 @@ describe('pre-LLM hook review — live config fanout', () => {
     )).toBe(true)
   })
 
+  it.each([
+    { grantLambda: false, expected: 'denied:NOT_FOUND', label: 'denies nested sys_lambda when the loop grants sys_code only' },
+    { grantLambda: true, expected: 'nested:loop-allowed', label: 'allows nested sys_lambda when the loop explicitly grants it' },
+  ])('$label', async ({ grantLambda, expected }) => {
+    const provider = new CapturingProvider((_options, call) => call === 1
+      ? toolResponse('sys_code', {
+          code: `return await adf.sys_lambda({ source: 'lib/nested.js', args: { value: 'loop-allowed' } })
+            .then(value => 'nested:' + value, error => 'denied:' + error.code)`,
+          clear_state: true,
+        })
+      : textResponse('loop rpc complete'))
+    const started = await startAgent({
+      provider,
+      // The host has both code capabilities, but the side-loop allow-list is
+      // the authority boundary under review.
+      tools: [
+        { name: 'sys_code', enabled: true, visible: true },
+        { name: 'sys_lambda', enabled: true, visible: true },
+      ],
+      loops: [{
+        name: 'rpc-attenuation',
+        goal: 'test nested code RPC attenuation',
+        enabled: true,
+        tools: grantLambda ? ['sys_code', 'sys_lambda'] : ['sys_code'],
+      }],
+      files: {
+        'lib/nested.js': `export function main({ value }) { return value }`,
+      },
+    })
+
+    await started.agent.dispatchTo('rpc-attenuation', chatDispatch('loop nested rpc'))
+
+    const runtime = started.agent.loopPool.getRuntime('rpc-attenuation')!
+    expect(runtime.derived.tools.find(tool => tool.name === 'sys_code')?.enabled).toBe(true)
+    expect(runtime.derived.tools.find(tool => tool.name === 'sys_lambda')?.enabled).toBe(grantLambda)
+    expect(provider.calls).toHaveLength(2)
+    expect(provider.calls[0].tools?.map(tool => tool.name)).toContain('sys_code')
+    const firstTools = provider.calls[0].tools?.map(tool => tool.name) ?? []
+    if (grantLambda) expect(firstTools).toContain('sys_lambda')
+    else expect(firstTools).not.toContain('sys_lambda')
+    expect(JSON.stringify(provider.calls[1].messages)).toContain(expected)
+    if (grantLambda) expect(runtime.registry.get('sys_lambda')).toBeDefined()
+    else expect(runtime.registry.get('sys_lambda')).toBeUndefined()
+  })
+
   it('activates a hook added through the normal live config-change choke point without requiring a restart', async () => {
     const started = await startAgent({ tools: [] })
     started.workspace.writeFile('lib/hook.js', `export function main({ request }) { return { ...request, system: request.system + '|hot-enabled' } }`)
