@@ -52,6 +52,7 @@ export const DOCS = {
   sharingAgents: guideUrl('security-and-identity', 'sharing-an-agent'),
   messageSecurity: guideUrl('security-and-identity', 'message-security'),
   triggers: guideUrl('triggers'),
+  preLlmHook: guideUrl('pre-llm-hook'),
   timers: guideUrl('timers'),
   tasks: guideUrl('tasks'),
   serving: guideUrl('serving'),

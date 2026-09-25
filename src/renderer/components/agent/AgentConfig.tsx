@@ -17,6 +17,7 @@ import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { ExecutionTarget } from '../../../shared/types/compute.types'
 import { resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
+import { preLlmHookDraftFromConfig, validatePreLlmHookDraft, type PreLlmHookDraft } from './pre-llm-hook-config'
 
 /**
  * All tools this runtime supports. Any tool listed here will appear
@@ -839,6 +840,14 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   // Index of a just-added inner loop, so its card mounts EXPANDED (ready to
   // fill in) while every existing card stays collapsed.
   const [newLoopIndex, setNewLoopIndex] = useState<number | null>(null)
+  // The hook is an optional object, so keep its editor draft separate from
+  // the debounced AgentConfig write. This prevents an incomplete source,
+  // loop name, or timeout from being serialized while the user is typing.
+  const [preLlmHookDraft, setPreLlmHookDraft] = useState<PreLlmHookDraft>(() =>
+    preLlmHookDraftFromConfig((template ? template.value : storeConfig)?.pre_llm_hook)
+  )
+  const [preLlmHookErrors, setPreLlmHookErrors] = useState<string[]>([])
+  const preLlmHookDraftOwnerRef = useRef<string | null>(null)
   const [mcpRegistrations, setMcpRegistrations] = useState<McpServerRegistration[]>([])
   const [mcpProbing, setMcpProbing] = useState<Record<string, boolean>>({})
   const [mcpProbeErrors, setMcpProbeErrors] = useState<Record<string, string>>({})
@@ -893,6 +902,17 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       setLocal(clone)
     }
   }, [config])
+
+  // A new agent/file gets a fresh draft. Deliberately do not key this effect
+  // on `config.pre_llm_hook`: store synchronization can arrive while a user is
+  // editing, and must not erase an incomplete draft before Save is pressed.
+  useEffect(() => {
+    const owner = `${filePath ?? 'template'}:${config?.id ?? ''}`
+    if (preLlmHookDraftOwnerRef.current === owner) return
+    preLlmHookDraftOwnerRef.current = owner
+    setPreLlmHookDraft(preLlmHookDraftFromConfig(config?.pre_llm_hook))
+    setPreLlmHookErrors([])
+  }, [filePath, config?.id])
 
   // Fetch custom providers from settings (cached — invalidated on settings save)
   useEffect(() => {
@@ -1208,6 +1228,26 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     },
     [setConfig, filePath, persistConfig]
   )
+
+  /** Validate and commit the hook as one optional top-level config object. */
+  const savePreLlmHook = useCallback(() => {
+    if (!local) return
+    const result = validatePreLlmHookDraft(preLlmHookDraft)
+    setPreLlmHookErrors(result.errors)
+    if (!result.config) return
+    save({ ...local, pre_llm_hook: result.config })
+    setPreLlmHookDraft(preLlmHookDraftFromConfig(result.config))
+  }, [local, preLlmHookDraft, save])
+
+  /** Remove the optional field entirely rather than leaving an enabled flag. */
+  const removePreLlmHook = useCallback(() => {
+    if (!local) return
+    const next = structuredClone(local)
+    delete next.pre_llm_hook
+    save(next)
+    setPreLlmHookDraft(preLlmHookDraftFromConfig())
+    setPreLlmHookErrors([])
+  }, [local, save])
 
   // Nothing may outlive the panel or the open file with an unwritten edit.
   // The cleanup runs before `filePath` takes its new value here, and the
@@ -4578,6 +4618,134 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           })}
         </Section>
 
+        {/* Pre-LLM request hook — an explicit lambda transform, not a trigger. */}
+        <Section
+          docs={DOCS.preLlmHook}
+          title="Pre-LLM request hook"
+          hint="Runs immediately before each normal conversational provider request, including tool rounds. It does not run for compaction or direct model_invoke calls."
+          locked={isSectionLocked('pre_llm_hook')}
+          onToggleLock={() => toggleSectionLock('pre_llm_hook')}
+          summary={local.pre_llm_hook ? `${local.pre_llm_hook.scope === 'loops' ? `${local.pre_llm_hook.loops?.length ?? 0} loops` : (local.pre_llm_hook.scope ?? 'all')}` : 'not configured'}
+          defaultCollapsed
+          testId="pre-llm-hook-section"
+        >
+          <div data-testid="pre-llm-hook-fields" className="space-y-2">
+            <p className="text-[10px] text-neutral-500 dark:text-neutral-400">
+              Transform the request with an authorized workspace lambda. Changes are request-local; this never grants tools or changes execution permissions.
+            </p>
+            <Field label="Lambda source" hint="Use a workspace .js or .ts path, optionally followed by :functionName. Without a function name, main is used.">
+              <input
+                data-testid="pre-llm-hook-source"
+                type="text"
+                value={preLlmHookDraft.source}
+                onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, source: e.target.value }))}
+                placeholder="lib/request-policy.ts:transform"
+                className="field-input w-full font-mono"
+                aria-label="Pre-LLM hook lambda source"
+              />
+            </Field>
+
+            <Field label="Run for" hint="All includes main and current/future inner loops. Named inner loops may be entered before they exist.">
+              <select
+                data-testid="pre-llm-hook-scope"
+                value={preLlmHookDraft.scope}
+                onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, scope: e.target.value as PreLlmHookDraft['scope'] }))}
+                className="field-input w-full"
+                aria-label="Pre-LLM hook scope"
+              >
+                <option value="all">All cognition streams</option>
+                <option value="main">Main only</option>
+                <option value="loops">Named inner loops</option>
+              </select>
+            </Field>
+
+            {preLlmHookDraft.scope === 'loops' && (
+              <div data-testid="pre-llm-hook-loops" className="rounded-md border border-neutral-200 dark:border-neutral-700 p-2 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Named inner loops</span>
+                  <button
+                    type="button"
+                    onClick={() => setPreLlmHookDraft((draft) => ({ ...draft, loops: [...draft.loops, ''] }))}
+                    className="text-[10px] text-blue-500 hover:text-blue-700 font-medium"
+                    data-testid="pre-llm-hook-add-loop"
+                  >
+                    + Add loop
+                  </button>
+                </div>
+                <datalist id="pre-llm-hook-loop-suggestions">
+                  {(local.loops ?? []).map((loop) => <option key={loop.name} value={loop.name} />)}
+                </datalist>
+                {preLlmHookDraft.loops.length === 0 && (
+                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Add a name. Future loop names are allowed.</p>
+                )}
+                {preLlmHookDraft.loops.map((name, index) => (
+                  <div key={`pre-llm-hook-loop-${index}`} className="flex items-center gap-1">
+                    <input
+                      data-testid={`pre-llm-hook-loop-${index}`}
+                      type="text"
+                      list="pre-llm-hook-loop-suggestions"
+                      value={name}
+                      onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, loops: draft.loops.map((entry, i) => i === index ? e.target.value : entry) }))}
+                      placeholder="inner-loop-name"
+                      className="field-input flex-1 font-mono"
+                      aria-label={`Named inner loop ${index + 1}`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setPreLlmHookDraft((draft) => ({ ...draft, loops: draft.loops.filter((_, i) => i !== index) }))}
+                      className="text-xs text-red-400 hover:text-red-600 px-1"
+                      aria-label={`Remove named inner loop ${index + 1}`}
+                    >
+                      &times;
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <Field label="Timeout (optional, milliseconds)" hint="Whole number from 1000 to 300000 ms. The runtime also caps this by limits.execution_timeout_ms.">
+              <input
+                data-testid="pre-llm-hook-timeout"
+                type="text"
+                inputMode="numeric"
+                value={preLlmHookDraft.timeout_ms}
+                onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, timeout_ms: e.target.value }))}
+                placeholder="Inherit execution timeout"
+                className="field-input w-full"
+                aria-label="Pre-LLM hook timeout in milliseconds"
+              />
+            </Field>
+
+            {preLlmHookErrors.length > 0 && (
+              <div data-testid="pre-llm-hook-errors" role="alert" className="rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-2 py-1.5 text-[10px] text-red-600 dark:text-red-300 space-y-0.5">
+                {preLlmHookErrors.map((error) => <p key={error}>{error}</p>)}
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                data-testid="pre-llm-hook-save"
+                onClick={savePreLlmHook}
+                className="px-2.5 py-1 text-[10px] rounded-md bg-blue-500 text-white hover:bg-blue-600 font-medium"
+              >
+                {local.pre_llm_hook ? 'Save changes' : 'Save hook'}
+              </button>
+              {local.pre_llm_hook && (
+                <button
+                  type="button"
+                  data-testid="pre-llm-hook-remove"
+                  onClick={removePreLlmHook}
+                  className="px-2.5 py-1 text-[10px] rounded-md border border-red-200 dark:border-red-800 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 font-medium"
+                >
+                  Remove hook
+                </button>
+              )}
+              {!local.pre_llm_hook && <span className="text-[10px] text-neutral-400 dark:text-neutral-500">Not configured</span>}
+            </div>
+          </div>
+        </Section>
+
         {/* Serving (HTTP) */}
         <Section docs={DOCS.serving} title="Serving" locked={isSectionLocked('serving')} onToggleLock={() => toggleSectionLock('serving')} summary={`${(local.serving?.api ?? []).length} routes${local.serving?.public?.enabled ? ', public' : ''}`} defaultCollapsed>
           {/* Handle */}
@@ -6025,6 +6193,7 @@ function Section({
   docs,
   hint,
   defaultCollapsed = false,
+  testId,
   children
 }: {
   title: React.ReactNode
@@ -6036,11 +6205,13 @@ function Section({
   /** What this section is, in a sentence or two — shown as an ⓘ tooltip. */
   hint?: string
   defaultCollapsed?: boolean
+  /** Stable hook for targeted renderer/electron verification. */
+  testId?: string
   children: React.ReactNode
 }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
   return (
-    <div className={`bg-white dark:bg-neutral-800 rounded-lg border ${locked ? 'border-amber-300 dark:border-amber-600' : 'border-neutral-200 dark:border-neutral-700'} ${collapsed ? 'p-2.5' : 'p-3'}`}>
+    <div data-testid={testId} className={`bg-white dark:bg-neutral-800 rounded-lg border ${locked ? 'border-amber-300 dark:border-amber-600' : 'border-neutral-200 dark:border-neutral-700'} ${collapsed ? 'p-2.5' : 'p-3'}`}>
       <h4
         className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider flex items-center gap-1.5 cursor-pointer select-none"
         onClick={() => setCollapsed(!collapsed)}
