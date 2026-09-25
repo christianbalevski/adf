@@ -1199,20 +1199,11 @@ export class BackgroundAgentManager extends EventEmitter {
       )
     }
 
-    // Create AdfCallHandler if code execution, sys_lambda, serving API routes, or middleware are declared
-    const hasSystemLambda = Object.values(config.triggers ?? {}).some(
-      (tc: any) => tc?.enabled && tc?.targets?.some((t: any) => t.scope === 'system' && t.lambda)
-    )
-    const hasApiRoutes = (config.serving?.api?.length ?? 0) > 0
-    const hasMiddleware = !!(
-      config.security?.middleware?.inbox?.length ||
-      config.security?.middleware?.outbox?.length ||
-      config.security?.fetch_middleware?.length ||
-      config.serving?.api?.some(r => r.middleware?.length)
-    )
-    const needsAdfHandler = this.codeSandboxService && (hasSystemLambda || hasApiRoutes || hasMiddleware || config.tools.some(t =>
-      t.name === 'sys_code' || t.name === 'sys_lambda'
-    ))
+    // Keep the code-execution bridge ready for live configuration. A hook can
+    // be added after startup, but that must not require rebuilding a running
+    // Studio background agent. The bridge alone grants neither a tool nor code
+    // execution; normal per-call config gates remain authoritative.
+    const needsAdfHandler = !!this.codeSandboxService
     let adfCallHandler: AdfCallHandler | null = null
     if (needsAdfHandler) {
       adfCallHandler = new AdfCallHandler({
@@ -1236,7 +1227,8 @@ export class BackgroundAgentManager extends EventEmitter {
       agentToolRegistry.register(new SysCodeTool(this.codeSandboxService, filePath, adfCallHandler ?? undefined, config.limits?.execution_timeout_ms))
     }
 
-    // Register sys_lambda tool if declared in agent config
+    // Normal sys_lambda access remains declaration-dependent. A live-added
+    // hook has a private backend and does not need this shared registration.
     if (this.codeSandboxService && adfCallHandler && config.tools.some((t) => t.name === 'sys_lambda')) {
       agentToolRegistry.register(new SysLambdaTool(this.codeSandboxService, adfCallHandler, filePath, config.limits?.execution_timeout_ms))
     }

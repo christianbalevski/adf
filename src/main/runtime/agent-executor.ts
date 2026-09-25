@@ -9,6 +9,7 @@ import type { AgentExecutionEvent, ApprovalMeta, ContextBreakdown, ContextBreakd
 import { deriveToolTargetPaths } from '../../shared/utils/document-target'
 import type { ToolProviderFormat, ToolResult, ProtectionDenial } from '../../shared/types/tool.types'
 import type { SystemScopeHandler } from './system-scope-handler'
+import { PreLlmHookError, PreLlmHookRunner, preLlmHookApplies, type PreLlmHookRequest } from './pre-llm-hook'
 import {
   type AdfEventDispatch, type AdfBatchDispatch, type AnyAdfEventDispatch,
   type InboxEventData, type OutboxEventData, type FileChangeEventData, type ChatEventData,
@@ -690,7 +691,8 @@ export class AgentExecutor extends EventEmitter {
     session: AgentSession,
     basePrompt: string = '',
     toolPrompts: Record<string, string> = {},
-    compactionPrompt: string = DEFAULT_COMPACTION_PROMPT
+    compactionPrompt: string = DEFAULT_COMPACTION_PROMPT,
+    private readonly preLlmHookRunner: PreLlmHookRunner | null = null,
   ) {
     super()
     this.config = config
@@ -2173,19 +2175,43 @@ export class AgentExecutor extends EventEmitter {
 
         const thinkingBudget = this.config.model.thinking_budget
         const turnId = 'event' in dispatch ? dispatch.event.id : dispatch.events[0]?.id
+        // This snapshot is authoritative for the execution phase below. A hook
+        // may alter the provider-facing schema (including exposing another
+        // catalog tool), but it can never widen enabledNames/declarations/HIL.
         const toolSnapshot = this.buildToolSnapshot()
-        const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
+        const baseRequest: PreLlmHookRequest = {
           system: systemPrompt,
           messages: this.session.getMessages(),
-          dynamicInstructions,
           tools: toolSnapshot.schemas,
-          maxTokens: this.config.model.max_tokens || undefined,
-          temperature: this.config.model.temperature ?? undefined,
-          topP: this.config.model.top_p ?? undefined,
+          options: {
+            maxTokens: this.config.model.max_tokens || undefined,
+            temperature: this.config.model.temperature ?? undefined,
+            topP: this.config.model.top_p ?? undefined,
+            // Persisted config accepts null as "unset", but provider request
+            // options and the hook JSON contract must omit null optional values.
+            thinkingBudget: thinkingBudget ?? undefined,
+            reasoning: this.config.model.reasoning,
+            dynamicInstructions,
+            providerParams: this.config.model.provider_params,
+          },
+        }
+        // The hook runs after all context repair and immediately before this
+        // normal conversational request. It never sees callbacks/AbortSignal,
+        // and its cloned replacement never reaches AgentSession/history.
+        const transformedRequest = this.transformPreLlmRequest(baseRequest, this.abortController?.signal)
+        const request = transformedRequest ? await transformedRequest : baseRequest
+        const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
+          system: request.system,
+          messages: request.messages,
+          dynamicInstructions: request.options.dynamicInstructions,
+          tools: request.tools,
+          maxTokens: request.options.maxTokens,
+          temperature: request.options.temperature,
+          topP: request.options.topP,
           signal: this.abortController?.signal,
-          thinkingBudget,
-          reasoning: this.config.model.reasoning,
-          providerParams: this.config.model.provider_params,
+          thinkingBudget: request.options.thinkingBudget,
+          reasoning: request.options.reasoning,
+          providerParams: request.options.providerParams,
           onTextDelta: (delta: string) => {
             this.deltaQueue.push({ type: 'text', text: delta })
             this.scheduleDeltaFlush()
@@ -3040,10 +3066,41 @@ export class AgentExecutor extends EventEmitter {
           : String(error)))
       const errorDetails = buildErrorDetails(error, errorMsg)
 
-      // Transient provider/network failures (429, 5xx, timeouts) are operational,
-      // not structural. Don't destroy the agent — stay idle so triggers/timers retry.
-      // `error` state is reserved for genuine executor breakage.
-      if (isAuthError(error, errorMsg)) {
+      // A configured pre-LLM hook is a local structural boundary. Handle it
+      // before auth classification and every provider-recovery branch: hook text
+      // can contain "timeout", "api key", tool mismatch, or image terms, but
+      // none of those describe a provider failure. Preserve the authoritative
+      // session history, persist the local turn error, and use the established
+      // bounded structural recovery path without provider/auth/image/tool
+      // cleanup or provider-facing claims.
+      if (error instanceof PreLlmHookError) {
+        this.enterErrorState('turn_error')
+        this.persistTurnError(errorMsg)
+        try {
+          this.session.getWorkspace().insertLog('error', 'executor', 'pre_llm_hook_error', null, errorMsg.slice(0, 300))
+        } catch { /* observability is never fatal */ }
+        const scheduled = this.scheduleProviderRecovery(dispatch, error, errorMsg, {
+          fromErrorState: true,
+          kind: 'turn_error',
+        })
+        if (!scheduled) {
+          try {
+            this.session.getWorkspace().insertLog(
+              'error', 'executor', 'recovery_exhausted', null,
+              `Structural recovery exhausted after ${this._recoveryAttempts} attempts — hook failure remains in error state: ${errorMsg.slice(0, 200)}`
+            )
+          } catch { /* observability is never fatal */ }
+        }
+        this.emitEvent({
+          type: 'error',
+          payload: { error: errorMsg, details: errorDetails },
+          timestamp: Date.now()
+        })
+        // Never fall through: this local failure must not be classified as
+        // provider auth/transient, trigger image stripping, or clean tool
+        // blocks. A scheduled structural retry is the only recovery here.
+        return
+      } else if (isAuthError(error, errorMsg)) {
         // Credentials became invalid mid-session (revoked key, depleted balance, etc.).
         // Surface a clear, actionable message and reset the validation flag so the
         // next turn will re-preflight (and re-surface the issue if it's still broken).
@@ -3716,12 +3773,14 @@ export class AgentExecutor extends EventEmitter {
     dispatch: AdfEventDispatch | AdfBatchDispatch,
     error: unknown,
     errorMsg: string,
-    opts?: { fromErrorState?: boolean },
+    opts?: { fromErrorState?: boolean; kind?: 'provider' | 'turn_error' },
   ): { attempt: number; maxAttempts: number; delayMs: number } | null {
     const recovery = this.config.recovery
     if ((recovery?.auto_retry ?? RECOVERY_DEFAULTS.auto_retry) === false) return null
     const maxAttempts = recovery?.max_attempts ?? RECOVERY_DEFAULTS.max_attempts
     if (this._recoveryAttempts >= maxAttempts) return null
+    const recoveryKind = opts?.kind ?? 'provider'
+    const isStructuralRecovery = recoveryKind === 'turn_error'
 
     if (this._recoveryAttempts === 0) this._recoveryFirstFailureAt = Date.now()
     const attempt = ++this._recoveryAttempts
@@ -3782,25 +3841,38 @@ export class AgentExecutor extends EventEmitter {
       // the UI see the agent go live again instead of silently running a turn
       // while the fleet view still shows it red.
       if (recoveringFromError) this.setState('idle')
-      try { this.session.getWorkspace().insertLog('info', 'executor', 'provider_retry', null, `Auto-recovery retry ${attempt}/${maxAttempts}`) } catch { /* non-fatal */ }
-      this.emitRuntimeEvent('provider.retry_started', { attempt, max_attempts: maxAttempts })
+      const retryEvent = isStructuralRecovery ? 'turn_error_retry_started' : 'provider_retry'
+      try { this.session.getWorkspace().insertLog('info', 'executor', retryEvent, null, `${isStructuralRecovery ? 'Structural' : 'Provider'} recovery retry ${attempt}/${maxAttempts}`) } catch { /* non-fatal */ }
+      // Keep the established provider.retry transport envelope for consumers;
+      // `kind` makes local structural retries distinguishable without adding a
+      // new public event family.
+      this.emitRuntimeEvent('provider.retry_started', {
+        attempt, max_attempts: maxAttempts, kind: recoveryKind,
+      })
       const elapsed = this._recoveryFirstFailureAt !== null
         ? formatElapsed(Date.now() - this._recoveryFirstFailureAt)
         : 'an unknown time'
-      const recoveryNotice =
-        `[Provider error ("${sanitizeForNotice(errorMsg)}") — auto-recovery retry ${attempt}/${maxAttempts}, ` +
-        `~${elapsed} since the first failure (now ${formatTimestamp(Date.now())}). ` +
-        `Account for the delay if anything is time-sensitive.]`
+      const recoveryNotice = isStructuralRecovery
+        ? `[Turn error ("${sanitizeForNotice(errorMsg)}") — structural recovery retry ${attempt}/${maxAttempts}, ` +
+          `~${elapsed} since the first failure (now ${formatTimestamp(Date.now())}). Retry the unfinished turn.]`
+        : `[Provider error ("${sanitizeForNotice(errorMsg)}") — auto-recovery retry ${attempt}/${maxAttempts}, ` +
+          `~${elapsed} since the first failure (now ${formatTimestamp(Date.now())}). ` +
+          `Account for the delay if anything is time-sensitive.]`
       this.scheduleReentrantTurn(dispatch, { skipTriggerMessage: true, isRecoveryRetry: true, recoveryNotice })
     }
     this._recoveryTimer = setTimeout(fire, delayMs)
 
+    const scheduledEvent = isStructuralRecovery ? 'turn_error_retry_scheduled' : 'provider_retry_scheduled'
     try {
-      this.session.getWorkspace().insertLog('warn', 'executor', 'provider_retry_scheduled', null,
-        `Auto-recovery retry ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s`)
+      this.session.getWorkspace().insertLog('warn', 'executor', scheduledEvent, null,
+        `${isStructuralRecovery ? 'Structural' : 'Provider'} recovery retry ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s`)
     } catch { /* non-fatal */ }
+    // Preserve the established transport event name while labelling the local
+    // recovery kind for consumers that need to distinguish it from provider
+    // failures.
     this.emitRuntimeEvent('provider.retry_scheduled', {
       attempt, max_attempts: maxAttempts, delay_ms: delayMs, next_retry_at: Date.now() + delayMs,
+      kind: recoveryKind,
     })
     return { attempt, maxAttempts, delayMs }
   }
@@ -3822,6 +3894,23 @@ export class AgentExecutor extends EventEmitter {
     const serverName = parts[1]
     const server = this.config.mcp?.servers?.find(s => s.name === serverName)
     return server?.restricted === true
+  }
+
+  /**
+   * Return a transformed normal-turn request when this stream is selected.
+   * `preLlmHookApplies` also validates a present config, so malformed hook
+   * configuration fails closed instead of becoming a silently unhooked call.
+   */
+  private transformPreLlmRequest(
+    request: PreLlmHookRequest,
+    signal?: AbortSignal,
+  ): Promise<PreLlmHookRequest> | null {
+    const loopName = this.session.getWorkspace().getLoopName()
+    if (!preLlmHookApplies(this.config, loopName)) return null
+    if (!this.preLlmHookRunner) {
+      return Promise.reject(new PreLlmHookError('runtime has no code-execution bridge for this configured hook'))
+    }
+    return this.preLlmHookRunner.transform(this.config, request, signal)
   }
 
   private async createMessageWithLlmCall(

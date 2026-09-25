@@ -238,7 +238,7 @@ export function mergeTemplateWithOverrides(
   const sectionKeys: Array<keyof CreateAgentOptions> = [
     'description', 'instructions', 'icon', 'handle', 'autonomous', 'autostart',
     'start_in_state', 'model', 'context', 'tools', 'triggers',
-    'security', 'limits', 'messaging', 'audit', 'code_execution',
+    'security', 'limits', 'messaging', 'audit', 'pre_llm_hook', 'code_execution',
     'logging', 'mcp', 'adapters', 'serving', 'providers',
     'ws_connections', 'locked_fields', 'card', 'metadata'
   ]
@@ -307,6 +307,9 @@ export function mergeTemplateWithOverrides(
     // Optional sections: override if provided, else use template if present
     ...(overrides.audit ?? templateConfig.audit
       ? { audit: overrides.audit ?? templateConfig.audit }
+      : {}),
+    ...(overrides.pre_llm_hook ?? templateConfig.pre_llm_hook
+      ? { pre_llm_hook: overrides.pre_llm_hook ?? templateConfig.pre_llm_hook }
       : {}),
     ...(overrides.code_execution ?? templateConfig.code_execution
       ? {

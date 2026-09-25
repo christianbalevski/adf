@@ -666,6 +666,7 @@ export interface CreateAgentOptions {
   limits?: Partial<LimitsConfig>
   messaging?: Partial<MessagingConfig>
   audit?: AuditConfig
+  pre_llm_hook?: PreLlmHookConfig
   code_execution?: Partial<CodeExecutionConfig>
   logging?: LoggingConfig
   mcp?: McpConfig
@@ -979,6 +980,27 @@ export function resolveAgentLoops(config: Pick<AgentConfig, 'loops'>): LoopConfi
   return config.loops ?? []
 }
 
+/** Selects which cognition streams run a configured pre-LLM hook. */
+export type PreLlmHookScope = 'all' | 'main' | 'loops'
+
+/**
+ * Optional lambda transform run immediately before a normal conversational
+ * provider call. The hook gets `{ request, loop: { name } }` and returns a
+ * replacement request object; runtime callbacks, cancellation and actual tool
+ * authorization remain outside its control.
+ */
+export interface PreLlmHookConfig {
+  source: string
+  /** all current/future streams, main only, or an explicit inner-loop set. */
+  scope?: PreLlmHookScope
+  /** Required only when scope is 'loops'; main is deliberately not valid here. */
+  loops?: string[]
+  /** When scope is 'loops', also run for the membrane-facing main stream. */
+  include_main?: boolean
+  /** Bounded again at runtime by limits.execution_timeout_ms. */
+  timeout_ms?: number
+}
+
 export interface AgentConfig {
   adf_version: '0.2'
   locked_fields?: string[]
@@ -1017,6 +1039,8 @@ export interface AgentConfig {
   security: SecurityConfig
   limits: LimitsConfig
   recovery?: RecoveryConfig
+  /** Request-local lambda transform before normal conversational provider calls. */
+  pre_llm_hook?: PreLlmHookConfig
   messaging: MessagingConfig
   audit?: AuditConfig
   code_execution?: CodeExecutionConfig

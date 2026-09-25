@@ -18,6 +18,7 @@ import type { StreamBindingManager } from './stream-binding-manager'
 import type { TapManager } from './tap-manager'
 import type { SystemScopeHandler } from './system-scope-handler'
 import type { AdfCallHandler } from './adf-call-handler'
+import { PreLlmHookRunner } from './pre-llm-hook'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { AGENT_PROFILES, profileHasAsyncTeardown } from './agent-capability-profiles'
 import { AgentExecutor } from './agent-executor'
@@ -305,6 +306,13 @@ export function assembleAgent<P extends AgentProfileName>(
   // at model boundaries, never inside a tool_use/tool_result exchange.
   adfCallHandler?.attachSession(session)
 
+  // Keep the runner available whenever this runtime has the code-execution
+  // bridge. `pre_llm_hook` is live config: adding it after assembly must take
+  // effect on the next turn, rather than finding a start-time null runner.
+  // Its presence still never exposes sys_lambda in provider schemas.
+  const preLlmHookRunner = codeSandboxService && adfCallHandler
+    ? new PreLlmHookRunner(workspace, codeSandboxService, adfCallHandler, config.id)
+    : null
   const executor = new AgentExecutor(
     config,
     provider,
@@ -313,6 +321,7 @@ export function assembleAgent<P extends AgentProfileName>(
     options.basePrompt ?? '',
     options.toolPrompts ?? {},
     options.compactionPrompt,
+    preLlmHookRunner,
   )
   executor.recoverStaleTurnCheckpoint()
   // Both sweeps run before any turn of this session: every row/field they see

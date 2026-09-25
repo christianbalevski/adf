@@ -26,6 +26,7 @@ Guides carry YAML frontmatter (`type`, `description`, `see_also`) mirroring the 
 - **timers.md** — one-time, recurring, and cron-based scheduling
 - **tools.md** — tool access controls (enabled/visible/restricted) and every built-in tool
 - **code-execution.md** — the sandbox, sys_code, sys_lambda, and lambdas
+- **pre-llm-hook.md** — a request-local lambda immediately before normal conversational provider dispatch
 - **adf-object.md** — the global `adf` RPC proxy available in code execution
 - **authorized-code.md** — privileged code, HIL approval, and restricted tools
 - **tasks.md** — deferred and asynchronous tool executions in adf_tasks
