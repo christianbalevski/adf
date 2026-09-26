@@ -62,6 +62,16 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(data)
 }
 
+/** Hostname from a Host header, keeping IPv6 brackets ("[::1]:7396" → "[::1]"). */
+export function hostFromHeader(host: string | undefined): string {
+  if (!host) return '127.0.0.1'
+  try {
+    return new URL(`http://${host}`).hostname || '127.0.0.1'
+  } catch {
+    return '127.0.0.1'
+  }
+}
+
 const isLoopback = (h: string | undefined): boolean =>
   !h || h === '127.0.0.1' || h === '::1' || h === 'localhost' || h === '::ffff:127.0.0.1'
 
@@ -156,12 +166,20 @@ export async function startInboxServer(identity: Identity, store: Store): Promis
   const isPath = (path: string, leaf: AgentLeaf): boolean =>
     path === agentPath(HANDLE, leaf) || path === legacyAgentPath(HANDLE, leaf)
 
+  const runtimeId = `alf-mcp-${identity.did.slice(-8)}`
+
   const server = createServer((req, res) => {
     const path = (req.url ?? '/').split('?')[0]
-    const cardHost = req.headers.host?.split(':')[0] ?? '127.0.0.1'
+    const cardHost = hostFromHeader(req.headers.host)
 
     if (req.method === 'GET' && path === '/health') {
       json(res, 200, { status: 'ok', uptime: process.uptime(), agents: 1, port })
+      return
+    }
+    // Runtime identity probe (mesh-server.ts /ping): tailnet and manual-peer
+    // discovery only accept peers that answer it with a runtime_id.
+    if (req.method === 'GET' && path === '/ping') {
+      json(res, 200, { runtime_id: runtimeId, runtime_did: identity.did, proto: 'alf/0.2' })
       return
     }
     if (req.method === 'GET' && (path === DIRECTORY_PATH || path === LEGACY_DIRECTORY_PATH)) {
@@ -218,7 +236,7 @@ export async function startInboxServer(identity: Identity, store: Store): Promis
         announce: bindHost === '0.0.0.0',
         browse: true,
         port,
-        runtimeId: `alf-mcp-${identity.did.slice(-8)}`,
+        runtimeId,
         runtimeDid: identity.did
       })
     } catch (err) {

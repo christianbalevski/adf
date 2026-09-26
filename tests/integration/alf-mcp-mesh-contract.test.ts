@@ -9,6 +9,8 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -95,6 +97,23 @@ describe('alf-mcp → runtime', () => {
     expect(found!.endpoints?.inbox).toBe(`http://127.0.0.1:${MESH_PORT}${routes.agentPath(HANDLE, 'inbox')}`)
   })
 
+  it('discovers through discoverAgents when the live runtime is not first in the list', async () => {
+    // Regression: urls.map(fetchDirectory) fed the array index in as the
+    // timeout, so every runtime after the first (and the first, at 0 ms)
+    // aborted before responding.
+    const agents = await routes.discoverAgents({
+      runtimeUrls: ['http://127.0.0.1:1', `http://127.0.0.1:${MESH_PORT}`],
+      self: { handle: 'claude', did: 'did:key:not-this-agent' },
+    })
+    expect(agents.map((a) => a.handle)).toContain(HANDLE)
+  })
+
+  it('excludes its own card from discovery results', async () => {
+    const did = agent.workspace.getDid()!
+    const agents = await routes.discoverAgents({ runtimeUrls: [`http://127.0.0.1:${MESH_PORT}`], self: { handle: HANDLE, did } })
+    expect(agents.find((a) => a.did === did)).toBeUndefined()
+  })
+
   it('delivers a signed, encrypted message to the discovered inbox', async () => {
     const [target] = (await routes.fetchDirectory(`http://127.0.0.1:${MESH_PORT}`)).filter((a) => a.handle === HANDLE)
     const identity = core.loadOrCreateIdentity()
@@ -165,5 +184,66 @@ describe('runtime → alf-mcp', () => {
     const base = `http://127.0.0.1:${inbox.port}`
     expect((await fetch(`${base}${routes.LEGACY_DIRECTORY_PATH}`)).status).toBe(200)
     expect((await fetch(`${base}${routes.legacyAgentPath(core.HANDLE, 'card')}`)).status).toBe(200)
+
+    // Saved contacts POST to the legacy inbox path.
+    const sender = core.loadOrCreateIdentity()
+    const message = core.buildMessage({ to: identity.did, content: 'via legacy inbox', replyTo: `${base}/legacy-reply` }, sender)
+    const res = await fetch(`${base}${routes.legacyAgentPath(core.HANDLE, 'inbox')}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(core.prepareWire(message, sender, true)),
+    })
+    expect(res.status).toBe(202)
+    expect(store.inbox.some((r) => r.message.payload.content === 'via legacy inbox')).toBe(true)
+  })
+
+  it('answers health and the /ping identity probe', async () => {
+    const base = `http://127.0.0.1:${inbox.port}`
+    expect(await (await fetch(`${base}${routes.agentPath(core.HANDLE, 'health')}`)).json()).toEqual({ status: 'ok', state: 'on' })
+    const ping = (await (await fetch(`${base}/ping`)).json()) as { runtime_id?: string; runtime_did?: string }
+    expect(ping.runtime_id).toMatch(/^alf-mcp-/)
+    expect(ping.runtime_did).toBe(identity.did)
+  })
+})
+
+describe('fetchDirectory fallback', () => {
+  const servers: Server[] = []
+  const listen = async (handler: Parameters<typeof createServer>[1]): Promise<{ url: string; hits: string[] }> => {
+    const hits: string[] = []
+    const server = createServer((req, res) => {
+      hits.push(req.url ?? '')
+      handler!(req, res)
+    })
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, hits }
+  }
+
+  afterAll(async () => {
+    for (const server of servers) {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it('falls back to the legacy directory when /agents is missing', async () => {
+    const legacy = await listen((req, res) => {
+      if (req.url === routes.LEGACY_DIRECTORY_PATH) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify([{ handle: 'old-runtime-agent' }]))
+      } else {
+        res.writeHead(404)
+        res.end()
+      }
+    })
+    const agents = await routes.fetchDirectory(legacy.url)
+    expect(agents.map((a) => a.handle)).toEqual(['old-runtime-agent'])
+    expect(legacy.hits).toEqual([routes.DIRECTORY_PATH, routes.LEGACY_DIRECTORY_PATH])
+  })
+
+  it('does not retry the legacy path when the runtime does not answer', async () => {
+    const silent = await listen(() => { /* never responds */ })
+    expect(await routes.fetchDirectory(silent.url, 200)).toEqual([])
+    expect(silent.hits).toEqual([routes.DIRECTORY_PATH])
   })
 })

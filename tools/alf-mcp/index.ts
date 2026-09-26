@@ -24,7 +24,7 @@ import {
   type InboxRecord
 } from './core'
 import { startInboxServer, type InboxServer } from './serve'
-import { agentPath, fetchDirectory, type DiscoveredAgent } from './routes'
+import { agentPath, discoverAgents as discoverRuntimeAgents, type DiscoveredAgent } from './routes'
 
 const identity = loadOrCreateIdentity()
 const store = new Store()
@@ -42,11 +42,9 @@ const DEFAULT_RUNTIME_URLS = (process.env.ALF_RUNTIME_URLS ?? 'http://127.0.0.1:
   .filter(Boolean)
 
 async function discoverAgents(extraRuntimeUrl?: string): Promise<DiscoveredAgent[]> {
-  const urls = new Set<string>(DEFAULT_RUNTIME_URLS)
-  if (extraRuntimeUrl) urls.add(extraRuntimeUrl)
-  for (const peer of inbox.discoveredRuntimes()) urls.add(peer.url)
-  const results = await Promise.all([...urls].map(fetchDirectory))
-  const agents = results.flat().filter((a) => a.handle !== HANDLE || a.did !== identity.did)
+  const urls = [...DEFAULT_RUNTIME_URLS, ...inbox.discoveredRuntimes().map((peer) => peer.url)]
+  if (extraRuntimeUrl) urls.push(extraRuntimeUrl)
+  const agents = await discoverRuntimeAgents({ runtimeUrls: urls, self: { handle: HANDLE, did: identity.did } })
   for (const a of agents) {
     if (a.did && a.endpoints?.inbox) {
       store.upsertContact({ did: a.did, handle: a.handle, inbox_url: a.endpoints.inbox })
