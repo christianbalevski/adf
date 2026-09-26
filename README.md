@@ -17,6 +17,14 @@
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-444.svg" alt="Platform: macOS, Linux, Windows">
 </p>
 
+<p align="center">
+  <a href="https://youtu.be/_N1UiMjvH2U" title="Watch the ADF demo on YouTube">
+    <img src="https://img.youtube.com/vi/_N1UiMjvH2U/maxresdefault.jpg" alt="ADF demo video — click to play on YouTube" width="800">
+  </a>
+  <br>
+  <sub>▶ Click to watch the demo on YouTube</sub>
+</p>
+
 ![The ADF Studio window with a fleet of agents in the sidebar, a markdown document open in the center editor, and the Loop panel on the right showing a conversation with tool calls, reasoning blocks, and token counts.](docs/assets/screenshots/studio-agent-loop.png)
 
 This repository contains the spec, the runtime daemon, the CLI, and the desktop **ADF Studio** — the reference implementation of ADF.
