@@ -11,7 +11,7 @@
 import { createHash } from 'crypto'
 import { gradientWallpaperPng } from './desktop-wallpaper'
 import { execFile, spawn, type ChildProcess } from 'child_process'
-import { tmpdir } from 'os'
+import { cpus as hostCpus, tmpdir, totalmem } from 'os'
 import { join } from 'path'
 import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, rmSync } from 'fs'
 import { EventEmitter } from 'events'
@@ -676,6 +676,39 @@ interface ProvisionFailure {
   at: number
   image: string
   identity: { kind: 'shared' } | { kind: 'agent'; agentId: string; agentName: string }
+}
+
+const SETUP_STEPS: ReadonlySet<string> = new Set(['install', 'machine_init', 'machine_start', 'check'])
+
+const boundedInt = (value: unknown, max: number): number | null => {
+  const n = typeof value === 'string' ? Number(value) : value
+  return typeof n === 'number' && Number.isInteger(n) && n > 0 && n <= max ? n : null
+}
+
+export interface HostCapacity {
+  memoryMb: number
+  cpus: number
+}
+
+const hostCapacity = (): HostCapacity => ({
+  memoryMb: Math.floor(totalmem() / (1024 * 1024)),
+  cpus: Math.max(1, hostCpus().length),
+})
+
+/**
+ * Podman machine size from settings. The settings store is untyped, so a
+ * missing, non-numeric, non-positive or larger-than-this-host value falls
+ * back to the default rather than reaching `podman machine init` as
+ * `--memory abc` or `--memory 99999999`.
+ */
+export function machineSize(
+  cfg: Pick<ComputeEnvSettings, 'machineMemoryMb' | 'machineCpus'>,
+  host: HostCapacity = hostCapacity(),
+): { memoryMb: number; cpus: number } {
+  return {
+    memoryMb: boundedInt(cfg.machineMemoryMb, host.memoryMb) ?? DEFAULT_SETTINGS.machineMemoryMb,
+    cpus: boundedInt(cfg.machineCpus, host.cpus) ?? DEFAULT_SETTINGS.machineCpus,
+  }
 }
 
 export class PodmanService extends EventEmitter {
@@ -1346,24 +1379,31 @@ export class PodmanService extends EventEmitter {
     console.log('[Compute] Container destroyed — will be recreated on next start')
   }
 
+  /**
+   * The compute setup wizard (Studio IPC COMPUTE_SETUP and the daemon's
+   * /compute/setup both call this): check, install, machine init, machine start.
+   */
   async setup(
     step: 'install' | 'machine_init' | 'machine_start' | 'check',
     installCommand?: string
   ): Promise<Record<string, unknown>> {
-    const run = (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number }> =>
+    if (!SETUP_STEPS.has(step)) return { success: false, error: `Unknown step: ${step}` }
+
+    const run = (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> =>
       new Promise((resolve) => {
         execFile(cmd, cmdArgs, { timeout }, (error, stdout, stderr) => {
-          resolve({ stdout: stdout?.trim() ?? '', stderr: stderr?.trim() ?? '', code: error ? 1 : 0 })
+          resolve({
+            stdout: stdout?.trim() ?? '',
+            stderr: stderr?.trim() ?? '',
+            code: error ? 1 : 0,
+            error: error
+              ? (error as NodeJS.ErrnoException).code === 'ENOENT'
+                ? `\`${cmd}\` was not found`
+                : error.message
+              : undefined,
+          })
         })
       })
-
-    const explainMachineError = (op: 'init' | 'start', stderr: string): string => {
-      const normalized = stderr.replace(/\u0000/g, '')
-      if (process.platform === 'win32' && /Windows Subsystem for Linux is not installed/i.test(normalized)) {
-        return 'WSL is required but not installed. Run `wsl --install` in an admin terminal, reboot, then retry.'
-      }
-      return normalized.trim() || `podman machine ${op} failed`
-    }
 
     if (step === 'check') {
       return { success: true, availability: await checkPodmanAvailability() }
@@ -1371,29 +1411,24 @@ export class PodmanService extends EventEmitter {
 
     if (step === 'install') {
       if (!installCommand) return { success: false, error: 'No install command provided' }
-      const parts = installCommand.split(/\s+/).filter(Boolean)
-      const startIdx = parts[0] === 'sudo' ? 1 : 0
-      const cmd = parts[startIdx]
-      const cmdArgs = parts.slice(startIdx + 1)
-      if (!cmd) return { success: false, error: 'No install command provided' }
+      // Only run a command this runtime offered. Over the daemon's HTTP API the
+      // caller supplies installCommand, and execFile would otherwise run any
+      // binary it names.
+      const offered = (await checkPodmanAvailability()).installMethods
+        .filter((m) => m.autoRunnable && m.command)
+        .map((m) => m.command)
+      if (!offered.includes(installCommand)) {
+        return { success: false, error: 'Install command is not one this runtime can run automatically' }
+      }
+      // Split command string: "brew install podman", "winget install -e --id RedHat.Podman", etc.
+      const [cmd, ...cmdArgs] = installCommand.split(/\s+/).filter(Boolean)
 
       console.log(`[Compute] Running: ${cmd} ${cmdArgs.join(' ')}`)
       const result = await run(cmd, cmdArgs)
-      if (result.code !== 0) return { success: false, error: result.stderr || `${cmd} failed` }
-      return { success: true, availability: await checkPodmanAvailability() }
-    }
-
-    if (step === 'machine_init') {
-      const info = await checkPodmanAvailability()
-      if (!info.binPath) return { success: false, error: 'Podman not installed' }
-      const missingPrereq = info.prerequisites.find((p) => !p.installed)
-      if (missingPrereq) {
-        return { success: false, error: `Missing prerequisite: ${missingPrereq.name}. Run \`${missingPrereq.installCommand}\` first.`, availability: info }
+      if (result.code !== 0) {
+        return { success: false, error: result.stderr || result.error || `${cmd} failed` }
       }
-      const result = await run(info.binPath, ['machine', 'init', '--memory', '2048', '--cpus', '2'], 300_000)
-      if (result.code !== 0 && !result.stderr.includes('already exists')) {
-        return { success: false, error: explainMachineError('init', result.stderr), availability: await checkPodmanAvailability() }
-      }
+      console.log('[Compute] Podman installed successfully')
       return { success: true, availability: await checkPodmanAvailability() }
     }
 
@@ -1403,11 +1438,35 @@ export class PodmanService extends EventEmitter {
     if (missingPrereq) {
       return { success: false, error: `Missing prerequisite: ${missingPrereq.name}. Run \`${missingPrereq.installCommand}\` first.`, availability: info }
     }
-    const result = await run(info.binPath, ['machine', 'start'], 120_000)
-    if (result.code !== 0 && !result.stderr.includes('already running')) {
-      return { success: false, error: explainMachineError('start', result.stderr), availability: await checkPodmanAvailability() }
+
+    if (step === 'machine_init') {
+      // Same sizing as ensureMachine, so a wizard-created machine matches the
+      // user's compute settings.
+      const { memoryMb, cpus } = machineSize(this._getSettings())
+      console.log(`[Compute] Initializing Podman machine (${cpus} CPUs, ${memoryMb}MB RAM)...`)
+      const result = await run(info.binPath, ['machine', 'init', '--memory', String(memoryMb), '--cpus', String(cpus)], 300_000)
+      // "already exists" is fine: a previous init succeeded
+      if (result.code !== 0 && !/already exists/i.test(result.stderr)) {
+        return { success: false, error: this.explainMachineError('init', result.stderr, result.error), availability: await checkPodmanAvailability() }
+      }
+      console.log('[Compute] Podman machine initialized')
+      return { success: true, availability: await checkPodmanAvailability() }
     }
-    return { success: true, availability: await checkPodmanAvailability() }
+
+    if (step === 'machine_start') {
+      console.log('[Compute] Starting Podman machine...')
+      const result = await run(info.binPath, ['machine', 'start'], 120_000)
+      if (result.code !== 0 && !/already running/i.test(result.stderr)) {
+        return { success: false, error: this.explainMachineError('start', result.stderr, result.error), availability: await checkPodmanAvailability() }
+      }
+      console.log('[Compute] Podman machine started')
+      return { success: true, availability: await checkPodmanAvailability() }
+    }
+
+    // Exhaustiveness: a new step added to the union without a branch above is
+    // a compile error here rather than silently starting the machine.
+    const unhandled: never = step
+    return { success: false, error: `Unknown step: ${String(unhandled)}` }
   }
 
   // ---------------------------------------------------------------------------
@@ -2142,11 +2201,9 @@ export class PodmanService extends EventEmitter {
     }
 
     // No machine — init and start
-    const cfg = this._getSettings()
-    const mem = String(cfg.machineMemoryMb || DEFAULT_SETTINGS.machineMemoryMb)
-    const cpus = String(cfg.machineCpus || DEFAULT_SETTINGS.machineCpus)
-    console.log(`[Compute] Initializing Podman machine (${cpus} CPUs, ${mem}MB RAM)…`)
-    const initRes = await this.exec0(bin, ['machine', 'init', '--memory', mem, '--cpus', cpus], 180_000)
+    const { memoryMb, cpus } = machineSize(this._getSettings())
+    console.log(`[Compute] Initializing Podman machine (${cpus} CPUs, ${memoryMb}MB RAM)…`)
+    const initRes = await this.exec0(bin, ['machine', 'init', '--memory', String(memoryMb), '--cpus', String(cpus)], 180_000)
     if (initRes.code !== 0 && !/already exists/i.test(initRes.stderr)) {
       throw new Error(this.explainMachineError('init', initRes.stderr))
     }
@@ -2190,14 +2247,19 @@ export class PodmanService extends EventEmitter {
    * Convert a raw `podman machine` stderr into a user-friendly message.
    * Recognises WSL-not-installed (Windows) and passes other errors through.
    */
-  private explainMachineError(op: 'init' | 'start', stderr: string): string {
+  /**
+   * `detail` is the exec error (ENOENT, timeout kill) for failures that leave
+   * stderr empty; with neither, the message is the bare "podman machine <op>
+   * failed" rather than that text twice.
+   */
+  private explainMachineError(op: 'init' | 'start', stderr: string, detail?: string): string {
     // wsl.exe prints UTF-16; Node decodes that as interleaved nulls in UTF-8.
     const normalized = stderr.replace(/\u0000/g, '')
     if (process.platform === 'win32' && /Windows Subsystem for Linux is not installed/i.test(normalized)) {
       return 'WSL is required but not installed. Run `wsl --install` in an admin terminal, reboot, then retry.'
     }
-    const trimmed = normalized.trim() || `podman machine ${op} failed`
-    return `podman machine ${op} failed: ${trimmed}`
+    const reason = normalized.trim() || detail?.trim()
+    return reason ? `podman machine ${op} failed: ${reason}` : `podman machine ${op} failed`
   }
 
   // ---------------------------------------------------------------------------

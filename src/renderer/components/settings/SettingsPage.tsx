@@ -2328,6 +2328,8 @@ interface InstallMethod {
   command: string
   label: string
   autoRunnable: boolean
+  /** A page to open (e.g. an installer download) instead of a command to copy. */
+  url?: string
 }
 
 interface Prerequisite {
@@ -3165,7 +3167,19 @@ function PodmanStep({
       </div>
       {status === 'pending' && !autoMethod && manualMethods.length > 0 && (
         <div className="ml-6 space-y-1">
-          {manualMethods.map((m) => (
+          {manualMethods.map((m) => m.url ? (
+            <div key={m.url} className="flex items-center gap-1">
+              <span className="text-[10px] text-neutral-600 dark:text-neutral-400">{m.label}</span>
+              <Button
+                // main routes window.open to the OS browser (setWindowOpenHandler)
+                onClick={() => window.open(m.url, '_blank', 'noopener,noreferrer')}
+                size="compact"
+                className="text-[10px]"
+              >
+                Open
+              </Button>
+            </div>
+          ) : (
             <div key={m.command} className="flex items-center gap-1">
               <code className="text-[10px] text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 rounded font-mono">
                 {m.command}

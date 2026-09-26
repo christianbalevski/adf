@@ -1521,7 +1521,11 @@ Runs Podman setup/bootstrap steps used by Studio's compute setup UI.
 }
 ```
 
-Valid `step` values are `check`, `install`, `machine_init`, and `machine_start`. `install` also accepts `installCommand`.
+Valid `step` values are `check`, `install`, `machine_init`, and `machine_start`. Any other `step` is rejected before Podman is probed.
+
+`install` also takes `installCommand`, which must exactly match the `command` of an `autoRunnable` entry in `availability.installMethods` from the `check` step (for example `/opt/homebrew/bin/brew install podman`). Any other value is rejected with `Install command is not one this runtime can run automatically`, and nothing is run. Methods with a `url` (such as the macOS installer when Homebrew is absent) are for the user to open, not to run. On Linux every install method needs `sudo` and is not `autoRunnable`, so `install` is always refused there; run the listed command yourself.
+
+`machine_init` sizes the Podman machine from the compute settings `machineMemoryMb` and `machineCpus`. Missing, non-integer, non-positive, or larger-than-this-host values fall back to the defaults (2048 MB, 2 CPUs).
 
 ### `GET /compute/exec-log?name=...`
 
