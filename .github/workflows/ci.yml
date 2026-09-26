@@ -38,6 +38,14 @@ jobs:
       - name: Test
         run: npm test
 
+      # The skill packages ship node:test suites that need the agent sandbox's
+      # document libraries (pinned in skills/package.json to the sandbox
+      # stdlib versions). Vitest excludes them; they run here instead.
+      - name: Skill package tests (node:test)
+        run: |
+          npm ci --prefix skills --no-audit --no-fund
+          npm run test:skills
+
       # Order-of-magnitude regression gate for the storage and streaming hot
       # paths fixed in the perf review. The ceilings are 20x-300x above the
       # measured numbers, so this catches a reverted fix, not runner noise.

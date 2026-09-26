@@ -1,0 +1,16 @@
+{
+  "name": "adf-skills-tests",
+  "private": true,
+  "description": "Test harness for the skill packages' node:test suites. Versions match the agent sandbox stdlib (src/main/services/sandbox-stdlib.service.ts); pptxgenjs is the version the powerpoint skill installs.",
+  "scripts": {
+    "test": "node --test \"*/tests/*.test.*\""
+  },
+  "devDependencies": {
+    "docx": "9.0.2",
+    "jszip": "3.10.1",
+    "mupdf": "0.3.0",
+    "pdf-lib": "1.17.1",
+    "pptxgenjs": "3.12.0",
+    "xlsx": "0.18.5"
+  }
+}
