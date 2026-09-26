@@ -104,6 +104,8 @@ const api: AdfApi = {
     ipcRenderer.on(IPC.APPROVALS_REVEAL, handler)
     return () => ipcRenderer.removeListener(IPC.APPROVALS_REVEAL, handler)
   },
+  // A reveal that arrived while the renderer was still loading (pull + clear).
+  getPendingApprovalReveal: () => ipcRenderer.invoke(IPC.APPROVALS_GET_PENDING_REVEAL),
   respondSuspend: (resume: boolean) =>
     ipcRenderer.invoke(IPC.AGENT_SUSPEND_RESPOND, { resume }),
 

@@ -1,11 +1,12 @@
 import { app, BrowserWindow, crashReporter, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
-import { execSync } from 'child_process'
 import { join } from 'path'
 import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace } from './ipc'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
 import { startStallMonitor, stopStallMonitor } from './utils/stall-monitor'
+import { resolveLoginShellPath } from './utils/login-shell-path'
+import { showOrCreateMainWindow } from './utils/main-window'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 
@@ -49,18 +50,17 @@ protocol.registerSchemesAsPrivileged([
 // Fix PATH for packaged macOS/Linux apps launched from Finder/desktop.
 // GUI apps inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that
 // doesn't include Node.js, Homebrew, nvm, etc.
+// Logged after the main log file is installed so the reason reaches main.log.
+let loginShellPathNote: string | null = null
 if (app.isPackaged && (process.platform === 'darwin' || process.platform === 'linux')) {
-  try {
-    const shell = process.env.SHELL || '/bin/zsh'
-    const shellPath = execSync(`${shell} -ilc 'echo -n $PATH'`, {
-      encoding: 'utf-8',
-      timeout: 5000
-    }).trim()
-    if (shellPath) {
-      process.env.PATH = shellPath
-    }
-  } catch {
-    // Silently fail — PATH remains as-is
+  const resolved = resolveLoginShellPath({
+    shell: process.env.SHELL || '/bin/zsh',
+    currentPath: process.env.PATH ?? '',
+    platform: process.platform
+  })
+  process.env.PATH = resolved.path
+  if (resolved.source === 'fallback') {
+    loginShellPathNote = `[App] Login-shell PATH unavailable (${resolved.reason}); using fallback PATH`
   }
 }
 
@@ -85,9 +85,13 @@ console.log(
   `[App] ADF Studio ${app.getVersion()} starting — pid=${process.pid} packaged=${app.isPackaged} ` +
   `electron=${process.versions.electron} log=${mainLogPath ?? '(unavailable)'}`
 )
+if (loginShellPathNote) console.warn(loginShellPathNote)
 
 let mainWindow: BrowserWindow | null = null
 let fileToOpen: string | null = null
+// Set at the end of the whenReady continuation, once IPC handlers and the
+// adf-file protocol exist. app.isReady() flips earlier, on the 'ready' event.
+let startupComplete = false
 
 // --- Shutdown plumbing ---------------------------------------------------
 // Total wall-clock budget for cleanup before the process force-exits.
@@ -226,17 +230,9 @@ if (!instanceId) {
     app.exit(0)
   } else {
     app.on('second-instance', (_event, argv) => {
-      if (mainWindow) {
-        if (mainWindow.isMinimized()) mainWindow.restore()
-        mainWindow.focus()
-      }
       const secondAdfArg = argv.find((arg) => arg.endsWith('.adf') && !arg.startsWith('-'))
-      if (!secondAdfArg) return
-      if (canPushOpenFile()) {
-        mainWindow!.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath: secondAdfArg })
-      } else {
-        fileToOpen = secondAdfArg
-      }
+      if (secondAdfArg) requestOpenFile(secondAdfArg)
+      else showMainWindow()
     })
   }
 }
@@ -247,19 +243,45 @@ if (!instanceId) {
  * OPEN_FILE_GET_PENDING pull covers that gap). Anything earlier queues.
  */
 function canPushOpenFile(): boolean {
-  const wc = mainWindow?.webContents
-  return !!wc && !wc.isDestroyed() && !wc.isLoading()
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  const wc = mainWindow.webContents
+  return !wc.isDestroyed() && !wc.isLoading()
+}
+
+/**
+ * Bring the main window forward, creating it if there is none (macOS keeps
+ * the app alive with no window). A no-op until startup completes — startup
+ * creates the window itself — and once shutdown has begun. Rules and tests:
+ * utils/main-window.ts.
+ */
+function showMainWindow(): BrowserWindow | null {
+  return showOrCreateMainWindow({
+    current: () => mainWindow,
+    create: createWindow,
+    canShow: () => startupComplete && !shutdownCleanup && !quittingForUpdate,
+  })
+}
+
+/**
+ * Open an .adf in the main window. Pushes straight to a loaded renderer;
+ * otherwise queues it for the renderer's OPEN_FILE_GET_PENDING pull, making
+ * sure a window exists to do the pulling.
+ */
+function requestOpenFile(filePath: string): void {
+  if (canPushOpenFile()) {
+    showMainWindow()
+    mainWindow!.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
+    return
+  }
+  fileToOpen = filePath
+  showMainWindow()
 }
 
 // macOS: fired when user double-clicks .adf or uses Open With
 app.on('open-file', (event, filePath) => {
   event.preventDefault()
   if (!filePath.endsWith('.adf')) return
-  if (canPushOpenFile()) {
-    mainWindow!.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
-  } else {
-    fileToOpen = filePath
-  }
+  requestOpenFile(filePath)
 })
 
 // Cold-start pull: the renderer calls this once its OPEN_FILE_REQUEST
@@ -284,7 +306,7 @@ function getOverlayColors(): { color: string; symbolColor: string } {
     : { color: '#f5f5f5', symbolColor: '#404040' }
 }
 
-async function createWindow(): Promise<void> {
+function createWindow(): BrowserWindow {
   const isMac = process.platform === 'darwin'
 
   mainWindow = new BrowserWindow({
@@ -327,8 +349,12 @@ async function createWindow(): Promise<void> {
   mainWindow.on('close', () => {
     console.log('[App] Main window close requested (user, OS, or WM_CLOSE from another process)')
   })
+  // Drop the reference so later requests recreate the window instead of
+  // calling into a destroyed one (macOS keeps the app alive with no window).
+  const createdWindow = mainWindow
   mainWindow.on('closed', () => {
     console.log('[App] Main window closed')
+    if (mainWindow === createdWindow) mainWindow = null
   })
 
   // Webview guests may only load the local agent-browser (noVNC) pages, with
@@ -439,6 +465,7 @@ async function createWindow(): Promise<void> {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+  return mainWindow
 }
 
 // Harden webview guests (agent-browser noVNC pages): no popups, no navigation
@@ -463,7 +490,7 @@ app.whenReady().then(() => {
     app.once('before-quit', () => stopStallMonitor())
   }
 
-  registerAllIpcHandlers()
+  registerAllIpcHandlers({ showMainWindow })
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
   ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {
     mainWindow?.setFullScreen(!!fullscreen)
@@ -527,10 +554,12 @@ app.whenReady().then(() => {
   setImmediate(() => purgeStaleProcessDirs())
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
-    }
+    // Through the same gate, so a Dock click during quit cleanup can't boot a
+    // window that app.exit is about to tear down.
+    if (BrowserWindow.getAllWindows().length === 0) showMainWindow()
   })
+
+  startupComplete = true
 })
 
 app.on('window-all-closed', () => {
