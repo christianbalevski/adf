@@ -2948,7 +2948,10 @@
         "required": ["step"],
         "properties": {
           "step": { "type": "string", "enum": ["install", "machine_init", "machine_start", "check"] },
-          "installCommand": { "type": "string" }
+          "installCommand": {
+            "type": "string",
+            "description": "For step=install: must exactly match the command of an autoRunnable entry in availability.installMethods from step=check; anything else is rejected and not run."
+          }
         }
       },
       "LanAddressesResponse": {

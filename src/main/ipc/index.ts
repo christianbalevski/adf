@@ -9158,89 +9158,9 @@ export function registerAllIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.COMPUTE_SETUP, async (_event, args: { step: 'install' | 'machine_init' | 'machine_start' | 'check'; installCommand?: string }) => {
-    const { checkPodmanAvailability } = await import('../services/podman-bootstrap')
-    const { execFile } = await import('child_process')
-
-    const run = (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number }> =>
-      new Promise((resolve) => {
-        execFile(cmd, cmdArgs, { timeout }, (error, stdout, stderr) => {
-          resolve({ stdout: stdout?.trim() ?? '', stderr: stderr?.trim() ?? '', code: error ? 1 : 0 })
-        })
-      })
-
-    const explainMachineError = (op: 'init' | 'start', stderr: string): string => {
-      // wsl.exe outputs UTF-16; Node reads it as UTF-8 with interleaved null bytes.
-      const normalized = stderr.replace(/\u0000/g, '')
-      if (process.platform === 'win32' && /Windows Subsystem for Linux is not installed/i.test(normalized)) {
-        return 'WSL is required but not installed. Run `wsl --install` in an admin terminal, reboot, then retry.'
-      }
-      return normalized.trim() || `podman machine ${op} failed`
-    }
-
+    // One wizard implementation, shared with the daemon's /compute/setup.
     try {
-      if (args.step === 'check') {
-        return { success: true, availability: await checkPodmanAvailability() }
-      }
-
-      if (args.step === 'install') {
-        // Parse the install command from the availability info
-        const cmdStr = args.installCommand
-        if (!cmdStr) return { success: false, error: 'No install command provided' }
-
-        // Split command string: handle "brew install podman", "winget install -e --id RedHat.Podman", etc.
-        const parts = cmdStr.split(/\s+/).filter(Boolean)
-        // Skip 'sudo' — we can't run sudo from Electron
-        const startIdx = parts[0] === 'sudo' ? 1 : 0
-        const cmd = parts[startIdx]
-        const cmdArgs = parts.slice(startIdx + 1)
-
-        console.log(`[Compute] Running: ${cmd} ${cmdArgs.join(' ')}`)
-        const result = await run(cmd, cmdArgs)
-        if (result.code !== 0) {
-          return { success: false, error: result.stderr || `${cmd} failed` }
-        }
-        console.log('[Compute] Podman installed successfully')
-        return { success: true, availability: await checkPodmanAvailability() }
-      }
-
-      if (args.step === 'machine_init') {
-        const info = await checkPodmanAvailability()
-        if (!info.binPath) return { success: false, error: 'Podman not installed' }
-        const missingPrereq = info.prerequisites.find((p) => !p.installed)
-        if (missingPrereq) {
-          return { success: false, error: `Missing prerequisite: ${missingPrereq.name}. Run \`${missingPrereq.installCommand}\` first.`, availability: info }
-        }
-        console.log('[Compute] Initializing Podman machine...')
-        const result = await run(info.binPath, ['machine', 'init', '--memory', '2048', '--cpus', '2'], 300_000)
-        if (result.code !== 0) {
-          // "already exists" is fine — means a previous init succeeded
-          if (!result.stderr.includes('already exists')) {
-            return { success: false, error: explainMachineError('init', result.stderr), availability: await checkPodmanAvailability() }
-          }
-        }
-        console.log('[Compute] Podman machine initialized')
-        return { success: true, availability: await checkPodmanAvailability() }
-      }
-
-      if (args.step === 'machine_start') {
-        const info = await checkPodmanAvailability()
-        if (!info.binPath) return { success: false, error: 'Podman not installed' }
-        const missingPrereq = info.prerequisites.find((p) => !p.installed)
-        if (missingPrereq) {
-          return { success: false, error: `Missing prerequisite: ${missingPrereq.name}. Run \`${missingPrereq.installCommand}\` first.`, availability: info }
-        }
-        console.log('[Compute] Starting Podman machine...')
-        const result = await run(info.binPath, ['machine', 'start'], 120_000)
-        if (result.code !== 0) {
-          if (!result.stderr.includes('already running')) {
-            return { success: false, error: explainMachineError('start', result.stderr), availability: await checkPodmanAvailability() }
-          }
-        }
-        console.log('[Compute] Podman machine started')
-        return { success: true, availability: await checkPodmanAvailability() }
-      }
-
-      return { success: false, error: `Unknown step: ${args.step}` }
+      return await podmanService.setup(args.step, args.installCommand)
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
     }

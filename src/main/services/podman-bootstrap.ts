@@ -9,14 +9,17 @@
 import { execFile } from 'child_process'
 import { platform } from 'os'
 import { existsSync } from 'fs'
+import { delimiter, join } from 'path'
 
 export interface InstallMethod {
-  /** Shell command to run (e.g. 'brew install podman') */
+  /** Shell command to run (e.g. 'brew install podman'). Empty for a `url` method. */
   command: string
   /** Human-readable label for UI buttons */
   label: string
   /** Whether this can be run automatically (no sudo, no GUI installer) */
   autoRunnable: boolean
+  /** A page to open instead of a command to run (e.g. a GUI installer download). */
+  url?: string
 }
 
 export interface Prerequisite {
@@ -61,7 +64,8 @@ export interface PodmanAvailability {
 
 /** Well-known locations where podman might live. */
 const EXTRA_SEARCH_PATHS: Record<string, string[]> = {
-  darwin: ['/opt/homebrew/bin/podman', '/usr/local/bin/podman'],
+  // Homebrew (Apple Silicon, Intel), then the podman.io .pkg installer.
+  darwin: ['/opt/homebrew/bin/podman', '/usr/local/bin/podman', '/opt/podman/bin/podman'],
   win32: [
     'C:\\Program Files\\RedHat\\Podman\\podman.exe',
     `${process.env.LOCALAPPDATA ?? ''}\\Programs\\Podman\\podman.exe`,
@@ -117,13 +121,42 @@ async function findPodmanBin(): Promise<string | null> {
   return null
 }
 
-function getInstallMethods(): InstallMethod[] {
-  const plat = platform()
+/** Podman's macOS installation docs, which link the official .pkg installer. */
+export const PODMAN_MACOS_INSTALL_DOCS_URL = 'https://podman.io/docs/installation#macos'
 
+const HOMEBREW_LOCATIONS = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew']
+
+/**
+ * Absolute path to Homebrew: the standard prefixes first, then PATH (custom
+ * prefixes such as ~/homebrew). Resolved to an absolute path because the
+ * install step runs it with execFile, which only sees the app's PATH — a
+ * Finder-launched app may not have Homebrew on it.
+ */
+export function findHomebrew(
+  exists: (path: string) => boolean = existsSync,
+  pathEnv: string = process.env.PATH ?? '',
+): string | null {
+  const standard = HOMEBREW_LOCATIONS.find((p) => exists(p))
+  if (standard) return standard
+  for (const dir of pathEnv.split(delimiter)) {
+    if (dir && exists(join(dir, 'brew'))) return join(dir, 'brew')
+  }
+  return null
+}
+
+export function getInstallMethods(
+  plat: NodeJS.Platform = platform(),
+  exists: (path: string) => boolean = existsSync,
+  pathEnv: string = process.env.PATH ?? '',
+): InstallMethod[] {
   if (plat === 'darwin') {
-    return [
-      { command: 'brew install podman', label: 'Install via Homebrew', autoRunnable: true },
-    ]
+    const brew = findHomebrew(exists, pathEnv)
+    if (brew) {
+      return [{ command: `${brew} install podman`, label: 'Install via Homebrew', autoRunnable: true }]
+    }
+    // No Homebrew: point at the official installer instead of offering a
+    // command that can only fail.
+    return [{ command: '', url: PODMAN_MACOS_INSTALL_DOCS_URL, label: 'Download the Podman installer', autoRunnable: false }]
   }
 
   if (plat === 'win32') {
@@ -134,13 +167,13 @@ function getInstallMethods(): InstallMethod[] {
 
   // Linux — detect available package managers
   const methods: InstallMethod[] = []
-  if (existsSync('/usr/bin/apt-get') || existsSync('/usr/bin/apt')) {
+  if (exists('/usr/bin/apt-get') || exists('/usr/bin/apt')) {
     methods.push({ command: 'sudo apt-get install -y podman', label: 'Install via apt', autoRunnable: false })
   }
-  if (existsSync('/usr/bin/dnf')) {
+  if (exists('/usr/bin/dnf')) {
     methods.push({ command: 'sudo dnf install -y podman', label: 'Install via dnf', autoRunnable: false })
   }
-  if (existsSync('/usr/bin/pacman')) {
+  if (exists('/usr/bin/pacman')) {
     methods.push({ command: 'sudo pacman -S --noconfirm podman', label: 'Install via pacman', autoRunnable: false })
   }
   if (methods.length === 0) {
@@ -167,6 +200,12 @@ async function getPrerequisites(): Promise<Prerequisite[]> {
   ]
 }
 
+function installNotFoundMessage(method: InstallMethod | undefined): string {
+  if (method?.url) return `Podman not found. ${method.label}: ${method.url}`
+  if (method?.command) return `Podman not found. Run: ${method.command}`
+  return 'Podman not found on this system.'
+}
+
 export async function checkPodmanAvailability(): Promise<PodmanAvailability> {
   const plat = platform()
   const machineRequired = plat === 'darwin' || plat === 'win32'
@@ -181,9 +220,7 @@ export async function checkPodmanAvailability(): Promise<PodmanAvailability> {
       platform: plat,
       installMethods,
       prerequisites,
-      error: installMethods[0]?.command
-        ? `Podman not found. Run: ${installMethods[0].command}`
-        : 'Podman not found on this system.',
+      error: installNotFoundMessage(installMethods[0]),
     }
   }
 
