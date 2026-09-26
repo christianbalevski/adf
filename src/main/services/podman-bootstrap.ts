@@ -8,8 +8,8 @@
 
 import { execFile } from 'child_process'
 import { platform } from 'os'
-import { existsSync } from 'fs'
-import { delimiter, join } from 'path'
+import { accessSync, constants as fsConstants, existsSync, statSync } from 'fs'
+import { posix } from 'path'
 
 export interface InstallMethod {
   /** Shell command to run (e.g. 'brew install podman'). Empty for a `url` method. */
@@ -126,20 +126,38 @@ export const PODMAN_MACOS_INSTALL_DOCS_URL = 'https://podman.io/docs/installatio
 
 const HOMEBREW_LOCATIONS = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew']
 
+/** True for an existing regular file this process may execute. */
+export function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false
+    accessSync(path, fsConstants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * Absolute path to Homebrew: the standard prefixes first, then PATH (custom
  * prefixes such as ~/homebrew). Resolved to an absolute path because the
  * install step runs it with execFile, which only sees the app's PATH — a
  * Finder-launched app may not have Homebrew on it.
+ *
+ * macOS-only, so it uses POSIX path rules explicitly (`:`-separated PATH,
+ * `/` joins) whatever platform the code is running on — e.g. tests on a
+ * Windows dev box. Relative PATH entries are skipped: they would resolve
+ * against the app's cwd, not give an absolute path.
  */
 export function findHomebrew(
-  exists: (path: string) => boolean = existsSync,
+  isExecutable: (path: string) => boolean = isExecutableFile,
   pathEnv: string = process.env.PATH ?? '',
 ): string | null {
-  const standard = HOMEBREW_LOCATIONS.find((p) => exists(p))
+  const standard = HOMEBREW_LOCATIONS.find((p) => isExecutable(p))
   if (standard) return standard
-  for (const dir of pathEnv.split(delimiter)) {
-    if (dir && exists(join(dir, 'brew'))) return join(dir, 'brew')
+  for (const dir of pathEnv.split(':')) {
+    if (!posix.isAbsolute(dir)) continue
+    const candidate = posix.join(dir, 'brew')
+    if (isExecutable(candidate)) return candidate
   }
   return null
 }
@@ -148,9 +166,10 @@ export function getInstallMethods(
   plat: NodeJS.Platform = platform(),
   exists: (path: string) => boolean = existsSync,
   pathEnv: string = process.env.PATH ?? '',
+  isExecutable: (path: string) => boolean = isExecutableFile,
 ): InstallMethod[] {
   if (plat === 'darwin') {
-    const brew = findHomebrew(exists, pathEnv)
+    const brew = findHomebrew(isExecutable, pathEnv)
     if (brew) {
       return [{ command: `${brew} install podman`, label: 'Install via Homebrew', autoRunnable: true }]
     }

@@ -1,3 +1,6 @@
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const execFileMock = vi.hoisted(() => vi.fn())
@@ -17,6 +20,7 @@ import { PodmanService, machineSize } from '../../../src/main/services/podman.se
 import {
   PODMAN_MACOS_INSTALL_DOCS_URL,
   findHomebrew,
+  isExecutableFile,
   getInstallMethods,
 } from '../../../src/main/services/podman-bootstrap'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../../src/shared/constants/compute-defaults'
@@ -36,27 +40,35 @@ beforeEach(() => {
 describe('getInstallMethods (macOS)', () => {
   it('runs Homebrew by absolute path when it is installed', () => {
     const exists = (p: string) => p === '/usr/local/bin/brew'
-    expect(findHomebrew(exists)).toBe('/usr/local/bin/brew')
-    expect(getInstallMethods('darwin', exists)).toEqual([
+    expect(findHomebrew(exists, '')).toBe('/usr/local/bin/brew')
+    expect(getInstallMethods('darwin', () => false, '', exists)).toEqual([
       { command: '/usr/local/bin/brew install podman', label: 'Install via Homebrew', autoRunnable: true },
     ])
   })
 
   it('prefers the Apple Silicon Homebrew prefix', () => {
-    expect(findHomebrew(() => true)).toBe('/opt/homebrew/bin/brew')
+    expect(findHomebrew(() => true, '')).toBe('/opt/homebrew/bin/brew')
   })
 
   it('finds Homebrew in a custom prefix on PATH', () => {
     const exists = (p: string) => p === '/Users/me/homebrew/bin/brew'
     expect(findHomebrew(exists, '/usr/bin:/Users/me/homebrew/bin')).toBe('/Users/me/homebrew/bin/brew')
-    expect(getInstallMethods('darwin', exists, '/usr/bin:/Users/me/homebrew/bin')[0]).toMatchObject({
+    expect(getInstallMethods('darwin', () => false, '/usr/bin:/Users/me/homebrew/bin', exists)[0]).toMatchObject({
       command: '/Users/me/homebrew/bin/brew install podman',
       autoRunnable: true,
     })
   })
 
+  it('uses POSIX PATH rules on any host and skips relative entries', () => {
+    // Runs the same on a Windows dev box: ':' separators and '/' joins.
+    const seen: string[] = []
+    const exists = (p: string) => { seen.push(p); return p === '/opt/brew/bin/brew' }
+    expect(findHomebrew(exists, '.:bin:/opt/brew/bin')).toBe('/opt/brew/bin/brew')
+    expect(seen.filter((p) => !p.startsWith('/'))).toEqual([])
+  })
+
   it('offers the installer as a link, not a command, when Homebrew is missing', () => {
-    expect(getInstallMethods('darwin', () => false, '')).toEqual([
+    expect(getInstallMethods('darwin', () => false, '', () => false)).toEqual([
       { command: '', url: PODMAN_MACOS_INSTALL_DOCS_URL, label: 'Download the Podman installer', autoRunnable: false },
     ])
   })
@@ -78,13 +90,35 @@ describe('getInstallMethods (Windows, Linux)', () => {
   })
 })
 
+describe('isExecutableFile', () => {
+  it.skipIf(process.platform === 'win32')('accepts only executable regular files', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-brew-probe-'))
+    mkdirSync(join(dir, 'a-directory'))
+    writeFileSync(join(dir, 'not-executable'), '#!/bin/sh\n')
+    writeFileSync(join(dir, 'executable'), '#!/bin/sh\n')
+    chmodSync(join(dir, 'executable'), 0o755)
+    expect(isExecutableFile(join(dir, 'a-directory'))).toBe(false)
+    expect(isExecutableFile(join(dir, 'not-executable'))).toBe(false)
+    expect(isExecutableFile(join(dir, 'missing'))).toBe(false)
+    expect(isExecutableFile(join(dir, 'executable'))).toBe(true)
+  })
+})
+
 describe('machineSize', () => {
+  const host = { memoryMb: 16384, cpus: 8 }
+
   it('uses valid settings and falls back on missing or bogus values', () => {
-    expect(machineSize({ machineMemoryMb: 8192, machineCpus: 6 })).toEqual({ memoryMb: 8192, cpus: 6 })
-    expect(machineSize({ machineMemoryMb: '4096' as never, machineCpus: 4 })).toEqual({ memoryMb: 4096, cpus: 4 })
-    const defaults = machineSize({ machineMemoryMb: 0, machineCpus: 0 })
-    expect(machineSize({ machineMemoryMb: 'abc' as never, machineCpus: -2 })).toEqual(defaults)
-    expect(machineSize({ machineMemoryMb: 1.5, machineCpus: undefined as never })).toEqual(defaults)
+    expect(machineSize({ machineMemoryMb: 8192, machineCpus: 6 }, host)).toEqual({ memoryMb: 8192, cpus: 6 })
+    expect(machineSize({ machineMemoryMb: '4096' as never, machineCpus: 4 }, host)).toEqual({ memoryMb: 4096, cpus: 4 })
+    const defaults = machineSize({ machineMemoryMb: 0, machineCpus: 0 }, host)
+    expect(machineSize({ machineMemoryMb: 'abc' as never, machineCpus: -2 }, host)).toEqual(defaults)
+    expect(machineSize({ machineMemoryMb: 1.5, machineCpus: undefined as never }, host)).toEqual(defaults)
+  })
+
+  it('falls back when a value exceeds what this host has', () => {
+    const defaults = machineSize({ machineMemoryMb: 0, machineCpus: 0 }, host)
+    expect(machineSize({ machineMemoryMb: 99_999_999, machineCpus: 64 }, host)).toEqual(defaults)
+    expect(machineSize({ machineMemoryMb: 16384, machineCpus: 8 }, host)).toEqual({ memoryMb: 16384, cpus: 8 })
   })
 })
 
@@ -92,14 +126,14 @@ describe('PodmanService.setup', () => {
   it('initializes the machine with the configured size', async () => {
     execSucceeds()
     const service = new PodmanService()
-    service.setSettingsAccessor(() => ({ ...DEFAULT_COMPUTE_SETTINGS, machineCpus: 6, machineMemoryMb: 8192 }))
+    service.setSettingsAccessor(() => ({ ...DEFAULT_COMPUTE_SETTINGS, machineCpus: 1, machineMemoryMb: 1024 }))
 
     const result = await service.setup('machine_init')
 
     expect(result.success).toBe(true)
     expect(execFileMock).toHaveBeenCalledWith(
       '/opt/podman/bin/podman',
-      ['machine', 'init', '--memory', '8192', '--cpus', '6'],
+      ['machine', 'init', '--memory', '1024', '--cpus', '1'],
       expect.anything(),
       expect.any(Function),
     )
@@ -124,7 +158,7 @@ describe('PodmanService.setup', () => {
       installMethods: [{ command: '/opt/homebrew/bin/brew install podman', label: 'Install via Homebrew', autoRunnable: true }],
     })
     const result = await new PodmanService().setup('install', '/bin/sh -c touch /tmp/pwned')
-    expect(result).toEqual({ success: false, error: 'Install command is not one this runtime offers' })
+    expect(result).toEqual({ success: false, error: 'Install command is not one this runtime can run automatically' })
     expect(execFileMock).not.toHaveBeenCalled()
   })
 
@@ -134,6 +168,18 @@ describe('PodmanService.setup', () => {
     const result = await new PodmanService().setup('machine_start')
     expect(result.success).toBe(true)
     expect(execFileMock).toHaveBeenCalledWith('/opt/podman/bin/podman', ['machine', 'start'], expect.anything(), expect.any(Function))
+  })
+
+  it('explains a machine failure with empty stderr from the exec error, once', async () => {
+    execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: ExecCallback) =>
+      cb(Object.assign(new Error('spawn /opt/podman/bin/podman ENOENT'), { code: 'ENOENT' }), '', ''))
+    const init = await new PodmanService().setup('machine_init')
+    expect(init.error).toBe('podman machine init failed: `/opt/podman/bin/podman` was not found')
+
+    execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: ExecCallback) =>
+      cb(Object.assign(new Error(''), { code: 1 as never }), '', ''))
+    const start = await new PodmanService().setup('machine_start')
+    expect(start.error).toBe('podman machine start failed')
   })
 
   it('rejects an unknown step before probing for Podman', async () => {
