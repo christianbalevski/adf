@@ -15,19 +15,25 @@
  * Instead we run the external `/usr/bin/env` between two marker lines and read
  * the exported `PATH=` line, which is colon-separated whatever the shell. The
  * result is validated, and anything unusable falls back to the inherited PATH
- * plus the standard package-manager directories — never a broken PATH.
+ * with the standard package-manager directories appended — never a broken
+ * PATH. Output is still parsed when the shell exits non-zero or times out
+ * after env has printed (a hanging logout hook, a shell that propagates rc
+ * errors).
  *
  * Kept free of electron imports so it can be unit tested under plain Node.
  */
 import { execFileSync } from 'child_process'
+import { homedir } from 'os'
 
 export const PATH_START_MARKER = '__ADF_LOGIN_ENV_START__'
 export const PATH_END_MARKER = '__ADF_LOGIN_ENV_END__'
 
 /** Directories package managers install into, in precedence order. */
-const FALLBACK_DIRS: Record<string, string[]> = {
-  darwin: ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin'],
-  linux: ['/usr/local/bin', '/home/linuxbrew/.linuxbrew/bin'],
+function fallbackDirs(platform: NodeJS.Platform, home: string): string[] {
+  const user = home ? [`${home}/.local/bin`] : []
+  if (platform === 'darwin') return ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin', ...user]
+  if (platform === 'linux') return ['/usr/local/bin', '/usr/local/sbin', '/home/linuxbrew/.linuxbrew/bin', ...user]
+  return []
 }
 
 const DEFAULT_TIMEOUT_MS = 5000
@@ -41,6 +47,8 @@ export interface ResolveLoginShellPathOptions {
   timeoutMs?: number
   /** Injectable for tests; defaults to a synchronous execFile of the shell. */
   exec?: LoginShellExec
+  /** Injectable for tests; defaults to os.homedir(). */
+  home?: string
 }
 
 export type LoginShellPathResult =
@@ -57,17 +65,22 @@ export function loginShellScript(): string {
  * the PATH line are missing, or the value doesn't look like a PATH.
  */
 export function parseLoginShellPath(output: string): string | null {
-  const start = output.indexOf(PATH_START_MARKER)
+  // Last start marker: under `set -x` the echoed command line carries the
+  // marker text too, ahead of the real output.
+  const start = output.lastIndexOf(PATH_START_MARKER)
   if (start === -1) return null
   const end = output.indexOf(PATH_END_MARKER, start + PATH_START_MARKER.length)
   if (end === -1) return null
 
-  const block = output.slice(start + PATH_START_MARKER.length, end)
-  const line = block.split(/\r?\n/).find((l) => l.startsWith('PATH='))
-  if (!line) return null
-
-  const value = line.slice('PATH='.length).trim()
-  return isPlausiblePath(value) ? value : null
+  // Last plausible PATH= line: a multi-line value of another variable can
+  // contain a line that happens to start with PATH=.
+  const candidates = output
+    .slice(start + PATH_START_MARKER.length, end)
+    .split(/\r?\n/)
+    .filter((l) => l.startsWith('PATH='))
+    .map((l) => l.slice('PATH='.length).trim())
+    .filter(isPlausiblePath)
+  return candidates.length > 0 ? candidates[candidates.length - 1] : null
 }
 
 /** Colon-separated, no whitespace-joined list, and at least one absolute entry. */
@@ -81,11 +94,15 @@ export function isPlausiblePath(value: string): boolean {
   return entries.some((e) => e.startsWith('/'))
 }
 
-/** Inherited PATH with the platform's package-manager directories prepended. */
-export function fallbackPath(currentPath: string, platform: NodeJS.Platform): string {
+/**
+ * Inherited PATH with the platform's package-manager directories appended.
+ * Appended, not prepended, so they add tools without shadowing the system
+ * binaries the inherited PATH already resolves.
+ */
+export function fallbackPath(currentPath: string, platform: NodeJS.Platform, home: string = homedir()): string {
   const current = currentPath.split(':').filter(Boolean)
-  const extra = (FALLBACK_DIRS[platform] ?? []).filter((dir) => !current.includes(dir))
-  return [...extra, ...current].join(':')
+  const extra = fallbackDirs(platform, home).filter((dir) => !current.includes(dir))
+  return [...current, ...extra].join(':')
 }
 
 const defaultExec: LoginShellExec = (shell, args, timeoutMs) =>
@@ -99,23 +116,26 @@ const defaultExec: LoginShellExec = (shell, args, timeoutMs) =>
 
 export function resolveLoginShellPath(opts: ResolveLoginShellPathOptions): LoginShellPathResult {
   const exec = opts.exec ?? defaultExec
+  const fallback = (reason: string): LoginShellPathResult => ({
+    source: 'fallback',
+    path: fallbackPath(opts.currentPath, opts.platform, opts.home),
+    reason,
+  })
   let output: string
   try {
     // Separate flags rather than -ilc: bash, zsh, fish and nushell all accept
     // `-i -l -c`, but not all of them parse the combined form.
     output = exec(opts.shell, ['-i', '-l', '-c', loginShellScript()], opts.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   } catch (err) {
+    // execFileSync throws on a non-zero exit and on timeout, but whatever the
+    // shell printed is still on the error.
+    const stdout = (err as { stdout?: unknown }).stdout
+    const salvaged = typeof stdout === 'string' ? parseLoginShellPath(stdout) : null
+    if (salvaged) return { source: 'login-shell', path: salvaged }
     const reason = err instanceof Error ? err.message.split('\n')[0] : String(err)
-    return { source: 'fallback', path: fallbackPath(opts.currentPath, opts.platform), reason: `shell failed: ${reason}` }
+    return fallback(`shell failed: ${reason}`)
   }
 
   const parsed = parseLoginShellPath(output)
-  if (!parsed) {
-    return {
-      source: 'fallback',
-      path: fallbackPath(opts.currentPath, opts.platform),
-      reason: `no usable PATH in ${opts.shell} output`,
-    }
-  }
-  return { source: 'login-shell', path: parsed }
+  return parsed ? { source: 'login-shell', path: parsed } : fallback(`no usable PATH in ${opts.shell} output`)
 }

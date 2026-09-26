@@ -42,6 +42,16 @@ describe('parseLoginShellPath', () => {
   it('rejects the space-joined list fish prints for `echo $PATH`', () => {
     expect(parseLoginShellPath(marked('PATH=/opt/homebrew/bin /usr/bin /bin'))).toBeNull()
   })
+
+  it('reads the real block when xtrace echoes the command line first', () => {
+    const xtrace = `+ echo ${PATH_START_MARKER}; /usr/bin/env; echo ${PATH_END_MARKER}\n`
+    expect(parseLoginShellPath(xtrace + marked('PATH=/usr/local/bin:/usr/bin'))).toBe('/usr/local/bin:/usr/bin')
+  })
+
+  it('takes the last plausible PATH= line in the block', () => {
+    const block = 'NOTES=first line\nPATH=not a path\nPATH=/opt/homebrew/bin:/usr/bin\nHOME=/Users/me'
+    expect(parseLoginShellPath(marked(block))).toBe('/opt/homebrew/bin:/usr/bin')
+  })
 })
 
 describe('isPlausiblePath', () => {
@@ -54,11 +64,15 @@ describe('isPlausiblePath', () => {
 })
 
 describe('fallbackPath', () => {
-  it('prepends the platform package-manager dirs without duplicating them', () => {
-    expect(fallbackPath('/usr/bin:/bin:/usr/local/bin', 'darwin')).toBe(
-      '/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/local/bin',
+  it('appends the platform package-manager dirs without duplicating them', () => {
+    expect(fallbackPath('/usr/bin:/bin:/usr/local/bin', 'darwin', '/Users/me')).toBe(
+      '/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/sbin:/Users/me/.local/bin',
     )
-    expect(fallbackPath('/usr/bin', 'win32')).toBe('/usr/bin')
+    expect(fallbackPath('/usr/bin', 'win32', '/Users/me')).toBe('/usr/bin')
+  })
+
+  it('keeps inherited entries first so system binaries are not shadowed', () => {
+    expect(fallbackPath('/usr/bin:/bin', 'linux', '/home/me').split(':').slice(0, 2)).toEqual(['/usr/bin', '/bin'])
   })
 })
 
@@ -89,10 +103,26 @@ describe('resolveLoginShellPath', () => {
     const exec: LoginShellExec = () => {
       throw new Error('spawnSync /bin/zsh ETIMEDOUT')
     }
-    const result = resolveLoginShellPath({ ...base, exec })
+    const result = resolveLoginShellPath({ ...base, exec, home: '/Users/me' })
     expect(result.source).toBe('fallback')
-    expect(result.path).toBe('/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin')
+    expect(result.path).toBe('/usr/bin:/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/Users/me/.local/bin')
     if (result.source === 'fallback') expect(result.reason).toContain('ETIMEDOUT')
+  })
+
+  it('uses the output of a shell that exits non-zero or times out after printing', () => {
+    // bash/zsh exit with the -c command's status even when an rc file fails,
+    // but a hanging logout hook (timeout) or an error-propagating shell can
+    // still end in an exec error after env has printed.
+    const exec: LoginShellExec = () => {
+      throw Object.assign(new Error('Command failed: /bin/zsh -i -l -c ...'), {
+        status: 1,
+        stdout: marked('PATH=/Users/me/.nvm/versions/node/v22/bin:/usr/bin'),
+      })
+    }
+    expect(resolveLoginShellPath({ ...base, exec })).toEqual({
+      source: 'login-shell',
+      path: '/Users/me/.nvm/versions/node/v22/bin:/usr/bin',
+    })
   })
 
   it('falls back when the output has no usable PATH', () => {

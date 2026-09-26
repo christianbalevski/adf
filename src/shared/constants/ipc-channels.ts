@@ -81,6 +81,7 @@ export const IPC = {
   // absent = open the notifications panel, which is all a coalesced summary
   // ("5 approvals waiting") can meaningfully point at.
   APPROVALS_REVEAL: 'adf:approvals:reveal',
+  APPROVALS_GET_PENDING_REVEAL: 'adf:approvals:get-pending-reveal',
 
   // Agent ask tool (renderer -> main)
   AGENT_ASK_RESPOND: 'adf:agent:ask-respond',

@@ -107,6 +107,7 @@ export interface AdfApi {
   getApprovalInput: (filePath: string, approvalId: string) => Promise<unknown>
   /** B19: a clicked OS notification — open that agent (filePath present) or the bell panel (absent). Returns an unsubscribe. */
   onApprovalReveal: (callback: (payload: { filePath?: string; notificationId?: string }) => void) => () => void
+  getPendingApprovalReveal: () => Promise<{ filePath?: string; notificationId?: string } | null>
 
   // Models
   listModels: (provider: string, filePath?: string) => Promise<{ models: string[]; error?: string }>

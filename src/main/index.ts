@@ -6,6 +6,7 @@ import { withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
 import { startStallMonitor, stopStallMonitor } from './utils/stall-monitor'
 import { resolveLoginShellPath } from './utils/login-shell-path'
+import { showOrCreateMainWindow } from './utils/main-window'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 
@@ -88,6 +89,9 @@ if (loginShellPathNote) console.warn(loginShellPathNote)
 
 let mainWindow: BrowserWindow | null = null
 let fileToOpen: string | null = null
+// Set at the end of the whenReady continuation, once IPC handlers and the
+// adf-file protocol exist. app.isReady() flips earlier, on the 'ready' event.
+let startupComplete = false
 
 // --- Shutdown plumbing ---------------------------------------------------
 // Total wall-clock budget for cleanup before the process force-exits.
@@ -245,23 +249,17 @@ function canPushOpenFile(): boolean {
 }
 
 /**
- * Bring the main window forward, creating it if there is none. On macOS the
- * app keeps running after its last window closes, so any request that needs a
- * window (open a file, second launch, notification click) may find none.
- * Before 'ready' this is a no-op: startup creates the window itself.
+ * Bring the main window forward, creating it if there is none (macOS keeps
+ * the app alive with no window). A no-op until startup completes — startup
+ * creates the window itself — and once shutdown has begun. Rules and tests:
+ * utils/main-window.ts.
  */
 function showMainWindow(): BrowserWindow | null {
-  if (!app.isReady()) return null
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    void createWindow()
-    return mainWindow
-  }
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  // A window still loading is shown by its own 'ready-to-show' handler;
-  // showing it early flashes an unpainted window.
-  if (!mainWindow.isVisible() && !mainWindow.webContents.isLoading()) mainWindow.show()
-  mainWindow.focus()
-  return mainWindow
+  return showOrCreateMainWindow({
+    current: () => mainWindow,
+    create: createWindow,
+    canShow: () => startupComplete && !shutdownCleanup && !quittingForUpdate,
+  })
 }
 
 /**
@@ -308,7 +306,7 @@ function getOverlayColors(): { color: string; symbolColor: string } {
     : { color: '#f5f5f5', symbolColor: '#404040' }
 }
 
-async function createWindow(): Promise<void> {
+function createWindow(): BrowserWindow {
   const isMac = process.platform === 'darwin'
 
   mainWindow = new BrowserWindow({
@@ -467,6 +465,7 @@ async function createWindow(): Promise<void> {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+  return mainWindow
 }
 
 // Harden webview guests (agent-browser noVNC pages): no popups, no navigation
@@ -533,9 +532,7 @@ app.whenReady().then(() => {
     })
   })
 
-  // An open-file or second-instance request that raced 'ready' may already
-  // have created the window through showMainWindow().
-  if (!mainWindow || mainWindow.isDestroyed()) void createWindow()
+  createWindow()
 
   initAppUpdater({
     send: (state) => {
@@ -557,10 +554,12 @@ app.whenReady().then(() => {
   setImmediate(() => purgeStaleProcessDirs())
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
-    }
+    // Through the same gate, so a Dock click during quit cleanup can't boot a
+    // window that app.exit is about to tear down.
+    if (BrowserWindow.getAllWindows().length === 0) showMainWindow()
   })
+
+  startupComplete = true
 })
 
 app.on('window-all-closed', () => {

@@ -814,6 +814,10 @@ function issueAttestationsForCurrentOwner(workspace: AdfWorkspace): void {
 /** Set by registerAllIpcHandlers; recreates the window from a notification click. */
 let showMainWindowHook: (() => BrowserWindow | null) | null = null
 
+type ApprovalRevealPayload = { filePath?: string; notificationId?: string }
+/** A notification reveal waiting for a loading renderer (APPROVALS_GET_PENDING_REVEAL). */
+let pendingApprovalReveal: ApprovalRevealPayload | null = null
+
 function getMainWindow(): BrowserWindow | null {
   const windows = BrowserWindow.getAllWindows()
   return windows.length > 0 ? windows[0] : null
@@ -841,22 +845,23 @@ function focusMainWindow(): BrowserWindow | null {
  * reading the user's toggle, and pushing the deep link at the renderer.
  */
 function createNativeNotifierPlatform(): NativeNotifierPlatform {
-  const sendReveal = (payload: { filePath?: string; notificationId?: string }): void => {
+  const sendReveal = (payload: ApprovalRevealPayload): void => {
     const send = (win: BrowserWindow): void => {
       if (win.isDestroyed() || win.webContents.isDestroyed()) return
       try { win.webContents.send(IPC.APPROVALS_REVEAL, payload) } catch { /* window going away */ }
     }
-    const win = focusMainWindow()
-    if (win) {
+    // macOS: the app outlives its last window, so recreate it if needed.
+    const win = focusMainWindow() ?? showMainWindowHook?.() ?? null
+    if (!win || win.isDestroyed()) return
+    if (!win.webContents.isLoading()) {
       send(win)
       return
     }
-    // macOS: the app outlives its last window. Recreate it so the click still
-    // lands somewhere; the deep link is best-effort once the renderer loads.
-    const created = showMainWindowHook?.()
-    if (created && !created.isDestroyed()) {
-      created.webContents.once('did-finish-load', () => send(created))
-    }
+    // A loading renderer may not have registered its listener yet (the same
+    // race OPEN_FILE_GET_PENDING covers): queue for its pull, and push once
+    // loaded as a backstop. Handling the reveal twice is harmless.
+    pendingApprovalReveal = payload
+    win.webContents.once('did-finish-load', () => send(win))
   }
 
   return {
@@ -5008,6 +5013,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // callback bound to its own executor, so a background agent's approval — which
   // has no in-chat card rendered anywhere — resolves identically).
   ipcMain.handle(IPC.APPROVALS_LIST, async (): Promise<NotificationsSnapshot> => approvalHub.fullSnapshot())
+  // Pulled once by the renderer after its reveal listener registers; clears.
+  ipcMain.handle(IPC.APPROVALS_GET_PENDING_REVEAL, (): ApprovalRevealPayload | null => {
+    const payload = pendingApprovalReveal
+    pendingApprovalReveal = null
+    return payload
+  })
 
   // B8: the broadcast snapshot omits the raw tool input; the modal fetches it on
   // demand. Returns undefined for a resolved/gone entry or a mismatched agent.

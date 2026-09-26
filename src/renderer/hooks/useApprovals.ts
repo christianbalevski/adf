@@ -172,21 +172,26 @@ export function useApprovalDeepLink(): void {
   const jumpToAgent = useJumpToAgent()
 
   useEffect(() => {
+    type RevealPayload = { filePath?: string; notificationId?: string }
     const api = (globalThis as {
       adfApi?: {
-        onApprovalReveal?: (
-          cb: (payload: { filePath?: string; notificationId?: string }) => void
-        ) => () => void
+        onApprovalReveal?: (cb: (payload: RevealPayload) => void) => () => void
+        getPendingApprovalReveal?: () => Promise<RevealPayload | null>
       }
     }).adfApi
     if (!api?.onApprovalReveal) return
 
-    return api.onApprovalReveal(({ filePath }) => {
+    const reveal = ({ filePath }: RevealPayload): void => {
       if (filePath) {
         jumpToAgent(filePath)
         return
       }
       useApprovalsStore.getState().setPanelOpen(true)
-    })
+    }
+    const unsubscribe = api.onApprovalReveal(reveal)
+    // A click that recreated the window was queued while this renderer loaded
+    // and may have been pushed before the listener above existed.
+    void api.getPendingApprovalReveal?.().then((pending) => { if (pending) reveal(pending) }).catch(() => {})
+    return unsubscribe
   }, [jumpToAgent])
 }
