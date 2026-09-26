@@ -69,3 +69,47 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # Runs the Node-level suite and the Electron build on darwin. The suite has
+  # no darwin-gated tests of the app's Electron runtime paths (window
+  # lifecycle, packaged-app PATH, Podman wizard), so this doesn't cover those;
+  # it covers the darwin branches unit tests do reach (case-insensitive FS in
+  # tracked-paths/adf-database, the darwin user-data path, host-exec 'macos',
+  # real-shell login PATH tests, POSIX-only tests) and proves electron-vite
+  # builds on macOS. Typecheck and lint are platform-independent, so they stay
+  # on the Linux job.
+  #
+  # Keep the install/test/lifecycle/build steps in sync with `verify` above
+  # (a matrix can't share them: job-level `if:` can't reference matrix values).
+  verify-macos:
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies for Node tests
+        run: |
+          # Same as the Linux job: skip the Electron-ABI postinstall and build
+          # better-sqlite3 once for the active Node runtime.
+          npm ci --ignore-scripts
+          npm rebuild better-sqlite3
+
+      - name: Test
+        run: npm test
+
+      # Run even when Test fails: they are independent signals, and a failing
+      # unit test shouldn't hide whether lifecycle conformance or the build
+      # hold on macOS.
+      - name: Lifecycle conformance, closed ledger, and architecture fences
+        if: ${{ !cancelled() }}
+        run: npm run test:lifecycle -- --reporter=verbose
+
+      - name: Build
+        if: ${{ !cancelled() }}
+        run: npm run build
