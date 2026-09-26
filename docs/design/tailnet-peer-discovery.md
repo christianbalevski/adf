@@ -1,6 +1,13 @@
 # Tailnet Peer Discovery — friends' hubs in your landscape
 
-**Status: draft for review — not implemented.**
+**Status: SHIPPED.** Implemented in `src/main/services/tailnet-discovery.ts`,
+wired up in `src/main/ipc/index.ts`, with a Networking-page toggle
+(`tailnetDiscovery`, on unless explicitly disabled). This document is kept as
+the design record; where it and the code disagree, the code is authoritative.
+Known deltas from this draft: the sweep interval landed at 45s (not 60s), and
+an `ensureFresh()` hook lets the peer-list IPC force a sweep so a newly added
+manual peer appears in seconds. Refused addresses back off for 5 minutes.
+See the user-facing writeup in `docs/guides/lan-discovery.md`.
 
 Goal: a friend joins your tailnet → their runtime's base station appears on
 your Age of Agents map (and yours on theirs), with agent tiles and full

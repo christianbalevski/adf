@@ -1,6 +1,10 @@
 # Settings and Common Controls — Visual System Modernization
 
-**Status:** implementation-ready proposal
+**Status:** partially shipped. The shared primitives exist
+(`src/renderer/components/ui/`: `Button`, `IconButton`, `SegmentedControl`,
+`SettingsGroup`, `Fields`) and `--adf-ui-*` tokens are in use across settings
+panels; the full rollout described below is not complete. Verify against
+`src/renderer/` before citing any specific control as done.
 **Scope:** ADF Studio Settings and non-fleet shared controls only
 **Difficulty:** 4–5 / 10
 **Target:** a dedicated PR based on current `main`

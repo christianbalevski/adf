@@ -2,7 +2,13 @@
 
 > **⚠️ SUPERSEDED — early proposal, do not use as truth.** This is the original Tier-1 proposal, written against an older tree (it still says schema `24 → 25`; the shipped reality is `28 → 29`). It is retained for its *why*, but its mechanics are stale in several places. For the design that was actually implemented, read [`agent-loops-mvp.md`](agent-loops-mvp.md). For the user-facing feature, read the guide at [`../guides/inner-loops.md`](../guides/inner-loops.md). Terminology note: user-facing prose now says "inner loops", not "side loops".
 
-**Status:** Proposal · Not yet implemented
+**Status: SHIPPED.** Inner loops are implemented: `src/main/runtime/loop-pool.ts`,
+`src/main/adf/derive-loop-config.ts`, `MAX_SIDE_LOOPS = 16` in
+`src/main/adf/adf-schema.ts`, and the `loop_manage` / `loop_send` / `loop_list`
+tools. See `docs/design/agent-loops-mvp.md` for the build log and accepted
+deviations, and `docs/guides/inner-loops.md` for the user-facing guide. This
+document is the original design record; where it and the code disagree, the
+code is authoritative.
 **Schema impact:** `adf_loop` gains a column; one new table; schema version `24 → 25`
 **Scope:** Tier 1 only (facets/threads). Tier 2 (mounts with separate identity) is explicitly out of scope and cross-referenced where it matters.
 **Difficulty:** 6–7 / 10 (see §13)
