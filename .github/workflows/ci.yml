@@ -103,6 +103,12 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Skill package tests (node:test)
+        if: ${{ !cancelled() }}
+        run: |
+          npm ci --prefix skills --no-audit --no-fund
+          npm run test:skills
+
       # Run even when Test fails: they are independent signals, and a failing
       # unit test shouldn't hide whether lifecycle conformance or the build
       # hold on macOS.
