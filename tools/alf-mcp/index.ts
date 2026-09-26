@@ -24,7 +24,7 @@ import {
   type InboxRecord
 } from './core'
 import { startInboxServer, type InboxServer } from './serve'
-import type { AlfAgentCard } from '../../src/shared/types/adf-v02.types'
+import { agentPath, discoverAgents as discoverRuntimeAgents, type DiscoveredAgent } from './routes'
 
 const identity = loadOrCreateIdentity()
 const store = new Store()
@@ -41,29 +41,10 @@ const DEFAULT_RUNTIME_URLS = (process.env.ALF_RUNTIME_URLS ?? 'http://127.0.0.1:
   .map((s) => s.trim())
   .filter(Boolean)
 
-interface DiscoveredAgent extends AlfAgentCard {
-  runtime_url: string
-}
-
-async function fetchDirectory(runtimeUrl: string): Promise<DiscoveredAgent[]> {
-  try {
-    const res = await fetch(`${runtimeUrl.replace(/\/$/, '')}/mesh/directory`, {
-      signal: AbortSignal.timeout(2500)
-    })
-    if (!res.ok) return []
-    const cards = (await res.json()) as AlfAgentCard[]
-    return (Array.isArray(cards) ? cards : []).map((c) => ({ ...c, runtime_url: runtimeUrl }))
-  } catch {
-    return []
-  }
-}
-
 async function discoverAgents(extraRuntimeUrl?: string): Promise<DiscoveredAgent[]> {
-  const urls = new Set<string>(DEFAULT_RUNTIME_URLS)
-  if (extraRuntimeUrl) urls.add(extraRuntimeUrl)
-  for (const peer of inbox.discoveredRuntimes()) urls.add(peer.url)
-  const results = await Promise.all([...urls].map(fetchDirectory))
-  const agents = results.flat().filter((a) => a.handle !== HANDLE || a.did !== identity.did)
+  const urls = [...DEFAULT_RUNTIME_URLS, ...inbox.discoveredRuntimes().map((peer) => peer.url)]
+  if (extraRuntimeUrl) urls.push(extraRuntimeUrl)
+  const agents = await discoverRuntimeAgents({ runtimeUrls: urls, self: { handle: HANDLE, did: identity.did } })
   for (const a of agents) {
     if (a.did && a.endpoints?.inbox) {
       store.upsertContact({ did: a.did, handle: a.handle, inbox_url: a.endpoints.inbox })
@@ -94,6 +75,11 @@ async function resolveRecipient(
     )
   }
   return { did: match.did, address: explicitAddress ?? match.endpoints.inbox, handle: match.handle }
+}
+
+/** This agent's own endpoint as advertised to peers (loopback; see serve.ts). */
+function ownEndpoint(leaf: 'inbox' | 'card'): string {
+  return `http://127.0.0.1:${inbox.port}${agentPath(HANDLE, leaf)}`
 }
 
 // ===========================================================================
@@ -144,8 +130,8 @@ async function sendAlf(args: SendArgs): Promise<Record<string, unknown>> {
   const { did, address, handle } = await resolveRecipient(args.to, args.address)
   const encrypt = args.encrypt ?? true
 
-  const replyTo = `http://127.0.0.1:${inbox.port}/${HANDLE}/mesh/inbox`
-  const cardUrl = `http://127.0.0.1:${inbox.port}/${HANDLE}/mesh/card`
+  const replyTo = ownEndpoint('inbox')
+  const cardUrl = ownEndpoint('card')
   const message = buildMessage(
     {
       to: did,
@@ -215,8 +201,8 @@ mcp.registerTool(
     text({
       handle: HANDLE,
       did: identity.did,
-      inbox_endpoint: `http://127.0.0.1:${inbox.port}/${HANDLE}/mesh/inbox`,
-      card_endpoint: `http://127.0.0.1:${inbox.port}/${HANDLE}/mesh/card`,
+      inbox_endpoint: ownEndpoint('inbox'),
+      card_endpoint: ownEndpoint('card'),
       port: inbox.port,
       network: DEFAULT_NETWORK,
       data_dir: DATA_DIR,
