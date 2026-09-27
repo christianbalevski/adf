@@ -19,7 +19,7 @@ ADF-managed Podman is the recommended configuration because Studio owns setup, l
 
 ### Shared Container (`adf-mcp`)
 
-The shared container starts on app launch and is always available when Podman is running. Agent-installed MCP servers (`mcp_install`) run here by default; servers you add yourself in Settings default to the host — your explicit choice is the trust decision — with per-server container isolation as an opt-in hardening upgrade (see the [MCP integration guide](mcp-integration.md)).
+The shared container starts on app launch and is always available when Podman is running. **Every MCP server runs here by default** — the ones an agent installs with `mcp_install` and the ones you add yourself in Settings alike. Host is a deliberate per-server choice in either case, and the few curated registry servers that cannot work containerized declare it up front (see the [MCP integration guide](mcp-integration.md#run-location)).
 
 - **Scope:** All agents share one container
 - **Workspace:** `/workspace/{agentId}/` — each agent gets its own directory
@@ -142,6 +142,8 @@ Each MCP server can be individually assigned to run in a specific environment. I
 | Both enabled | Isolated (default), Shared, Host |
 
 This is stored as `run_location` on the MCP server config (`'host'`, `'shared'`, or `undefined` for default) — dot-path form `mcp.servers.<name>.run_location`. Changes require an agent restart to take effect.
+
+`undefined` is what a freshly installed server carries, and it means *containerized*: the agent's isolated container when it has one, the shared container otherwise. `'shared'` is stronger than the default — it **pins** the server to the shared container even for an agent that has its own isolated one.
 
 **Host requires two levels of approval:** The agent must have `compute.host_access` enabled AND the runtime must have **Enable host access** checked in Settings > Compute. If either is off, the "Host" option won't appear in the location cycling UI.
 

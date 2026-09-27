@@ -106,7 +106,7 @@ describe('McpInstallTool attach mode (Settings registrations)', () => {
     { id: '2', name: 'drive', type: 'npm' as const, npmPackage: '@x/drive', runLocation: 'host' as const,
       agentVisible: true, auth: true, authArgs: ['auth'],
       credentialFiles: [{ path: '~/.x/keys.json', required: true }] },
-    { id: '3', name: 'files', type: 'npm' as const, npmPackage: '@x/fs', runLocation: 'host' as const }, // invisible (host default)
+    { id: '3', name: 'files', type: 'npm' as const, npmPackage: '@x/fs', runLocation: 'host' as const }, // invisible (host servers are not agent-visible by default)
   ]
 
   function ws() {

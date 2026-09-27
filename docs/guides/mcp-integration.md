@@ -57,10 +57,11 @@ https://raw.githubusercontent.com/christianbalevski/adf/main/mcp-registry.json
 
 Fetch it directly (e.g. with `sys_fetch`) to see every known server — each entry carries its package (`npmPackage` / `pypiPackage`) or remote `url`, required and optional env keys, auth flow, credential files, and any `prerequisite` the owner must satisfy first. Use it to pick a server before calling `mcp_install`, or to tell your principal exactly which credentials a capability needs.
 
-Two flags to respect when reading entries:
+Three fields to respect when reading entries:
 
 - **`deprecated`** — the entry stays resolvable for existing installs, but do not install it fresh; the field's text says why and what to use instead.
 - **`advisory`** — a short security or operational warning to weigh (and relay to your principal) before installing.
+- **`runLocation`** — absent on most entries, which means the server runs in a container (the default). `"host"` marks a server that cannot work containerized — it needs a host binary, a host daemon or loopback listener, host CLI login state, host filesystem paths, or the Settings-side auth flow. Installing one still needs a host grant you may not have; see [run location](#run-location) below. (Studio also keeps a built-in floor for exactly those names, so they prefill Host even when read from an older registry document.)
 
 The app bundles the same document as its offline fallback, so what you fetch is what the quick-add cards show — minus deprecated entries, which the UI hides.
 
@@ -74,11 +75,29 @@ The app bundles the same document as its offline fallback, so what you fetch is 
 
 Each server row afterwards has **Configure** (same form), **Reconnect** (or **Re-authorize** for OAuth servers), **Logs**, and **Remove**.
 
-Servers you install in Settings **run on the host by default** — no Podman or container setup is needed to get started. The server row shows a persistent location badge; host entries carry the boundary statement: *runs on the host with your user account's access — your agents drive it*. Installing a host server also adds it to the approved-for-host list in Settings → Compute, so agents can use it without extra gates once the app-wide **Enable host access** toggle is on (the configure panel surfaces a one-click enable when it is off). Your explicit install choice is the trust decision.
+### Run Location
 
-Prefer stronger isolation for a specific server? Switch its **Runs on** control to **Container** — that routes it into the shared compute container instead, which requires Podman (a one-time setup). Container isolation is a per-server hardening upgrade, not a prerequisite.
+Servers you install in Settings **run in the shared compute container by default** — the same default an agent's own `mcp_install` gets, so a server does not become more privileged just because you were the one who added it. The container has no bind mount of your filesystem, so a containerized server sees its own files and nothing of yours. It requires Podman, which Studio sets up once.
 
-Agent-initiated installs (`mcp_install`) keep the opposite default: they run **in the container** unless the agent has been granted host access — an autonomous install is not the same trust event as your click in Settings.
+**Host is a deliberate choice.** Switch a server's **Runs on** control to **Host** and the form immediately shows the boundary statement — *runs on the host with your user account's access — your agents drive it* — and the server row keeps a persistent location badge afterwards. A host choice still passes both host gates at run time: the app-wide **Enable host access** toggle in Settings → Compute (the configure panel offers a one-click enable when it is off), plus either the agent's `compute.host_access` or the server's presence in the approved-for-host list. Choosing Host in Settings adds the server's name (with the package it resolved to) to that approved list, so your explicit choice is the trust decision for *that* package — a different package later squatting the same name stays containerized.
+
+A minority of curated quick-add servers **prefill Host** because they cannot do their job containerized, and the form shows that choice before you save. They are the ones that need:
+
+- a host binary or daemon — `pandoc`, `docker`, `kubernetes`;
+- a listener on your machine's loopback — `blender`;
+- a locally installed Chrome — `chrome-devtools`;
+- host CLI login state — `netlify`;
+- an in-flow browser sign-in the auth preflight cannot drive yet — `workspace`;
+- host filesystem paths — `filesystem`, `sqlite`, `duckdb`, `git`, `markitdown`, `excel`, `semgrep`, and `google-sheets` (its service-account key is referenced by path);
+- the Settings-side OAuth flow with a credential file you drop into the form — `gmail`, `google-drive`, `google-calendar`, `google-docs`, `teams`. **Connect** stores those files and completes the sign-in only for a host-located server; a containerized server defers both to the moment an agent attaches it, so these stay on the host until Settings can store credential files for containers.
+
+Everything else in the registry — the browser MCPs included, whose managed Chromium lives in the agent's own container — installs containerized. In the registry document this is the entry's `runLocation` field; absent means container.
+
+A **Custom server** you configure yourself is containerized too, so its command has to exist inside the container — `npx`, `uvx`, `node` and `python` do; a program installed on your own machine does not. The form says so under the **Runs on** control. Point it at Host to run a command from your machine.
+
+Because the run location also drives the suggested **Available to agents** default (below), a container-located server is suggested **on** while a host-located one is suggested **off**.
+
+Servers you have **already installed keep the run location they were saved with**: nothing is migrated, and a server you previously added on the host stays on the host (with its host approval intact) until you change its **Runs on** control yourself. Only servers added from now on get the container default.
 
 ### Making Settings Servers Available to Agents
 

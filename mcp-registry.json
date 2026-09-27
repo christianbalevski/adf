@@ -14,6 +14,7 @@
       "category": "tools",
       "requiredEnvKeys": [],
       "repo": "https://github.com/modelcontextprotocol/servers/blob/main/src/filesystem",
+      "runLocation": "host",
       "verified": true
     },
     {
@@ -45,6 +46,7 @@
       "category": "tools",
       "requiredEnvKeys": [],
       "repo": "https://github.com/microsoft/markitdown",
+      "runLocation": "host",
       "verified": true
     },
     {
@@ -57,6 +59,7 @@
       "category": "tools",
       "requiredEnvKeys": [],
       "repo": "https://github.com/vivekVells/mcp-pandoc",
+      "runLocation": "host",
       "verified": false,
       "prerequisite": "Needs the pandoc binary installed where the server runs (host run recommended; PDF output additionally needs TeX)."
     },
@@ -322,6 +325,7 @@
       "category": "dev",
       "requiredEnvKeys": [],
       "repo": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+      "runLocation": "host",
       "verified": true
     },
     {
@@ -388,6 +392,7 @@
       "category": "dev",
       "requiredEnvKeys": [],
       "repo": "https://github.com/semgrep/mcp",
+      "runLocation": "host",
       "verified": true
     },
     {
@@ -399,6 +404,7 @@
       "category": "dev",
       "requiredEnvKeys": [],
       "repo": "https://github.com/ChromeDevTools/chrome-devtools-mcp",
+      "runLocation": "host",
       "verified": true,
       "prerequisite": "Drives a local Chrome installation — run on host with Chrome installed."
     },
@@ -528,6 +534,7 @@
         "MOTHERDUCK_TOKEN"
       ],
       "repo": "https://github.com/motherduckdb/mcp-server-motherduck",
+      "runLocation": "host",
       "verified": true,
       "prerequisite": "Database path can be a local .duckdb file or :memory:; MOTHERDUCK_TOKEN is only needed for MotherDuck cloud."
     },
@@ -674,6 +681,7 @@
       "category": "data",
       "requiredEnvKeys": [],
       "repo": "https://github.com/jparkerweb/mcp-sqlite",
+      "runLocation": "host",
       "verified": false
     },
     {
@@ -703,6 +711,7 @@
         "DRIVE_FOLDER_ID"
       ],
       "repo": "https://github.com/xing5/mcp-google-sheets",
+      "runLocation": "host",
       "verified": false,
       "prerequisite": "Headless service-account mode: needs a Google Cloud service-account JSON key (Sheets + Drive APIs enabled) and a Drive folder shared with the service account's email. SERVICE_ACCOUNT_PATH points at the key file."
     },
@@ -718,6 +727,7 @@
       "category": "data",
       "requiredEnvKeys": [],
       "repo": "https://github.com/haris-musa/excel-mcp-server",
+      "runLocation": "host",
       "verified": false
     },
     {
@@ -729,6 +739,7 @@
       "category": "data",
       "requiredEnvKeys": [],
       "repo": "https://github.com/piotr-agier/google-drive-mcp",
+      "runLocation": "host",
       "verified": false,
       "auth": true,
       "authArgs": [
@@ -836,6 +847,7 @@
       "category": "communication",
       "requiredEnvKeys": [],
       "repo": "https://github.com/GongRzhe/Gmail-MCP-Server",
+      "runLocation": "host",
       "verified": false,
       "auth": true,
       "authArgs": [
@@ -860,6 +872,7 @@
       "category": "communication",
       "requiredEnvKeys": [],
       "repo": "https://github.com/floriscornel/teams-mcp",
+      "runLocation": "host",
       "verified": false,
       "auth": true,
       "authArgs": [
@@ -1119,6 +1132,7 @@
         "GOOGLE_OAUTH_CREDENTIALS"
       ],
       "repo": "https://github.com/nspady/google-calendar-mcp",
+      "runLocation": "host",
       "verified": false,
       "auth": true,
       "authArgs": [
@@ -1147,6 +1161,7 @@
         "GOOGLE_CLIENT_SECRET"
       ],
       "repo": "https://github.com/a-bonus/google-docs-mcp",
+      "runLocation": "host",
       "verified": false,
       "auth": true,
       "authArgs": [
@@ -1171,6 +1186,7 @@
         "GOOGLE_OAUTH_CLIENT_SECRET"
       ],
       "repo": "https://github.com/taylorwilsdon/google_workspace_mcp",
+      "runLocation": "host",
       "verified": false,
       "prerequisite": "Needs a Google OAuth client from console.cloud.google.com with each Workspace API enabled. Browser sign-in happens in-flow on first use (port 8000) — host run recommended."
     },
@@ -1229,6 +1245,7 @@
         "NETLIFY_PERSONAL_ACCESS_TOKEN"
       ],
       "repo": "https://github.com/netlify/netlify-mcp",
+      "runLocation": "host",
       "verified": true,
       "prerequisite": "Reuses Netlify CLI login state — run `netlify login` on host first (or set NETLIFY_PERSONAL_ACCESS_TOKEN). Requires Node 22+."
     },
@@ -1315,6 +1332,7 @@
         "KUBECONFIG"
       ],
       "repo": "https://github.com/containers/kubernetes-mcp-server",
+      "runLocation": "host",
       "verified": false,
       "prerequisite": "Needs a kubeconfig on the machine it runs on — host run recommended."
     },
@@ -1331,6 +1349,7 @@
         "DOCKER_HOST"
       ],
       "repo": "https://github.com/ckreiling/mcp-server-docker",
+      "runLocation": "host",
       "verified": false,
       "prerequisite": "Needs access to a Docker daemon — host run recommended (DOCKER_HOST supports ssh:// remotes)."
     },
@@ -1414,6 +1433,7 @@
       "category": "ai",
       "requiredEnvKeys": [],
       "repo": "https://github.com/ahujasid/blender-mcp",
+      "runLocation": "host",
       "verified": false,
       "prerequisite": "Install the Blender MCP addon and click \"Start MCP Server\" inside Blender first; connects to localhost:9876 — host run required."
     }

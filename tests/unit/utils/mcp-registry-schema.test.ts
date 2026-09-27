@@ -104,6 +104,24 @@ describe('parseMcpRegistryDocument', () => {
     expect(result!.entries[0].oauth).toBe(true)
   })
 
+  it('round-trips a declared runLocation and leaves it absent otherwise', () => {
+    const hostBound = { ...validEntry, name: 'needs-host', runLocation: 'host' }
+    const result = parseMcpRegistryDocument(doc([hostBound, { ...validEntry, name: 'containerized' }]))
+    expect(result).not.toBeNull()
+    expect(result!.dropped).toBe(0)
+    expect(result!.entries[0].runLocation).toBe('host')
+    // Absent = containerized (the install default) — never coerced to 'shared',
+    // which would pin the server to the shared container.
+    expect(result!.entries[1].runLocation).toBeUndefined()
+  })
+
+  it('drops an entry whose runLocation is not host/shared', () => {
+    const result = parseMcpRegistryDocument(doc([{ ...validEntry, runLocation: 'isolated' }]))
+    expect(result).not.toBeNull()
+    expect(result!.dropped).toBe(1)
+    expect(result!.entries).toEqual([])
+  })
+
   it('round-trips deprecated and advisory fields', () => {
     const flagged = {
       ...validEntry,

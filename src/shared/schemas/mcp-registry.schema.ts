@@ -39,7 +39,11 @@ export const McpRegistryEntrySchema = z.object({
   })).optional(),
   prerequisite: z.string().optional(),
   deprecated: z.string().optional(),
-  advisory: z.string().optional()
+  advisory: z.string().optional(),
+  // Absent = containerized (the default for every install). 'host' marks an
+  // entry that cannot work in the container — see McpRegistryEntry.runLocation
+  // for the criteria. Only meaningful on stdio (non-url) entries.
+  runLocation: z.enum(['host', 'shared']).optional()
 }).refine(
   (e) => !!(e.npmPackage || e.pypiPackage || e.url),
   { message: 'entry needs at least one of npmPackage / pypiPackage / url' }
