@@ -326,17 +326,26 @@ export function assembleAgent<P extends AgentProfileName>(
   // predates this load, so nothing legitimately in flight can be affected.
   executor.reconcileOrphanedTasks()
   validateConfigOnLoad(workspace, config)
-  if (options.effectiveRuntime) {
-    recordEffectiveRuntime(workspace, buildEffectiveRuntime({
+  // Effective runtime snapshot: written now, and rewritten whenever the main
+  // loop's provider or the config changes, so it never describes a provider
+  // or config the agent has since left.
+  let snapshotConfig = config
+  const refreshEffectiveRuntime = (): void => {
+    const sources = options.effectiveRuntime
+    if (!sources) return
+    recordEffectiveRuntime(workspace, () => buildEffectiveRuntime({
       host: profile,
-      config,
-      provider,
+      config: snapshotConfig,
+      provider: executor.getProvider() ?? provider,
       basePrompt: options.basePrompt ?? '',
       toolPrompts: options.toolPrompts ?? {},
       compactionPrompt: options.compactionPrompt,
-      sources: options.effectiveRuntime,
+      sources,
+      sandboxModules: codeSandboxService?.getUserPackageModules(),
     }))
   }
+  refreshEffectiveRuntime()
+  if (options.effectiveRuntime) executor.setProviderChangeListener(() => refreshEffectiveRuntime())
   if (options.systemScopeHandler) executor.setSystemScopeHandler(options.systemScopeHandler)
 
   const triggerEvaluator = new TriggerEvaluator(config)
@@ -786,6 +795,7 @@ export function assembleAgent<P extends AgentProfileName>(
     // Handing a side loop this object would be total attenuation loss (D6b).
     stripLoopNameMarker(updatedConfig)
     rawConfig = updatedConfig
+    snapshotConfig = updatedConfig
     executor.updateConfig(updatedConfig)
     triggerEvaluator.updateConfig(updatedConfig)
     adfCallHandler?.updateConfig(updatedConfig)
@@ -793,6 +803,7 @@ export function assembleAgent<P extends AgentProfileName>(
     // loop_send/loop_list registration; a loop_manage toggle flips its own.
     syncLoopToolRegistration(updatedConfig)
     loopPool.reconcile(updatedConfig)
+    refreshEffectiveRuntime()
     if (configOptions?.notifyHost === false) return
     for (const bindings of hostBindings()) void bindings.onConfigChanged?.(updatedConfig)
   }

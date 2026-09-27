@@ -913,6 +913,11 @@ export class CodeSandboxService {
     this.userPkgModules = modules
   }
 
+  /** Module names currently visible to sandboxed code (process-wide). */
+  getUserPackageModules(): string[] {
+    return [...this.userPkgModules]
+  }
+
   /**
    * Set the global ceiling on concurrent cold-lambda workers (user setting —
    * it decides how much of the machine the app claims). Warm residency is

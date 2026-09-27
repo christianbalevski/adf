@@ -103,8 +103,18 @@ describe('RuntimeService', () => {
     })
 
     const ref = await runtime.loadAgent(filePath)
-    // The file's base URL wins; its missing key is borrowed from the runtime.
-    expect(seen[0]).toMatchObject({ baseUrl: 'https://own.example/v1', name: 'Own', apiKey: 'app-key' })
+    // The file's entry wins. Its base URL differs from the runtime's provider
+    // of the same id, so the runtime's key is NOT lent to it.
+    expect(seen[0]).toMatchObject({ baseUrl: 'https://own.example/v1', name: 'Own', apiKey: '' })
+
+    // Correcting the entry to the runtime's endpoint rebuilds the provider
+    // (providers[] edits count as a provider change) and the key is lent.
+    const current = runtime.getAgent(ref.id)!.config
+    await runtime.setAgentConfig(ref.id, {
+      ...current,
+      providers: [{ id: 'custom:own', type: 'openai-compatible', name: 'Own', baseUrl: 'https://app.example/v1/' }],
+    })
+    expect(seen.at(-1)).toMatchObject({ baseUrl: 'https://app.example/v1/', apiKey: 'app-key' })
     await runtime.unloadAgent(ref.id)
   })
 

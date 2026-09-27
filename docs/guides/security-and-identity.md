@@ -197,7 +197,7 @@ This is the only situation where Studio prompts for a password on open. Envelope
 
 ## Effective Runtime Config
 
-What an agent runs with is its `adf_config` **plus** app-level settings inherited from whichever runtime loaded it. At every start the runtime writes a snapshot of those inherited values to `adf_meta` under `adf_effective_runtime` (readonly JSON). Read it with any SQLite tool:
+What an agent runs with is its `adf_config` **plus** app-level settings inherited from whichever runtime loaded it. The runtime writes a snapshot of those inherited values to `adf_meta` under `adf_effective_runtime` (readonly JSON) at start, and rewrites it whenever the main loop's provider or the agent config changes. Read it with any SQLite tool:
 
 ```sql
 SELECT value FROM adf_meta WHERE key = 'adf_effective_runtime';
@@ -206,17 +206,21 @@ SELECT value FROM adf_meta WHERE key = 'adf_effective_runtime';
 | Field | What it tells you |
 |---|---|
 | `host` | Which runtime started the agent: `studioForeground`, `studioBackground`, or `daemon` |
-| `provider` | Provider id, type, base URL and model actually used; `source` = `agent` (the file's own provider copy), `app` (the runtime's Settings → Providers row), or `unknown` (a provider the runtime did not build itself, e.g. one supplied by an embedding host); `api_key_source` = `agent` / `app` / `none` |
-| `prompts` | Whether the base prompt was applied and whether it is the shipped default, which tool/dynamic prompts are overridden, plus SHA-256 of each. The prompt text itself is persisted in the loop |
-| `compute` | App-level host access switch, host-approved MCP servers, registered execution targets, container image and packages |
-| `mcp_servers` | Per attached server: whether its command/URL/package is pinned to the app registration (the file's copy is then not what runs), transport, run location, env var **names** |
-| `adapters`, `sandbox_packages`, `mesh` | Enabled channel adapters, app-level sandbox packages applied, mesh on/LAN/port |
+| `provider` | Provider id, type, name, base URL (omitted for Anthropic, OpenAI and subscription types, whose endpoint is fixed) and model actually used. `source` = `agent` (the file's own provider copy), `app` (the runtime's Settings → Providers row), or `unknown` (a provider the runtime did not build itself, e.g. one supplied by an embedding host). `api_key_source` = `agent` / `app` / `subscription` (app-level OAuth session) / `env` (SDK environment-variable fallback) / `none` |
+| `prompts` | Base and compaction prompt: applied / shipped-default flags and a SHA-256 each. Tool and dynamic prompts: the overridden keys and one combined SHA-256. The system prompt text is written to the loop when a turn runs |
+| `compute` | App-level host access switch, host-approved MCP servers, registered execution targets (this runtime's whole inventory, not only this agent's), container image and packages |
+| `mcp_servers` | Per server that starts: whether its command/URL/package is pinned to the app registration (the file's copy is then not what runs), transport, the command, URL and package values in effect, run location, env var **names** |
+| `adapters` | Adapter types that start: enabled in the file and registered on this runtime |
+| `sandbox_packages` | Package modules visible to code execution (a process-wide sandbox setting) |
+| `mesh` | Mesh on / LAN / port; `forces_messaging_receive` is true when the agent receives mesh messages although its file says `messaging.receive: false` |
 
-Secrets are never recorded: keys appear only as their source, env vars only by name.
+Key and env values are never recorded — keys appear only as their source, env vars only by name. URLs are recorded with any userinfo, query string and fragment removed; commands and package names are recorded as configured, so don't embed credentials in them.
 
-Runtime defaults are also written to the file rather than applied only in memory: joining the mesh persists `messaging.receive: true` and the communication tool declarations, and a start persists the core inbox/stream tool declarations.
+Limits: the snapshot describes the main loop's provider — side loops and `model_invoke` with their own model overrides are not listed. App settings changed while an agent runs (MCP registrations, compute policy) appear at the next rewrite. `readonly` stops ordinary tool writes but not authorized code or an owner-approved override, so the snapshot is not tamper-evident on its own.
 
-Provider resolution is the same in Studio and the headless daemon: the agent's own `providers[]` entry (base URL, params, per-agent key) wins, and only a missing key is borrowed from the runtime's provider of the same id.
+Runtime defaults that only fill gaps are written to the file rather than applied in memory: joining the mesh persists a missing messaging section or mode and missing communication tool declarations, and every start persists missing core inbox/stream tool declarations. An open Studio editor is refreshed after such a write. The mesh never writes over the owner's `messaging.receive` choice; receiving on the mesh is a runtime policy, recorded as `mesh.forces_messaging_receive`.
+
+Provider resolution is the same in Studio and the headless daemon. The agent's own `providers[]` entry (base URL, params, per-agent key) wins; if the file has no entry for the selected provider id, the runtime's provider is used as-is. A key-less entry borrows the runtime's key for the same id **only when it targets the same endpoint** — same type and, for types that honor a base URL, the same base URL — so a file cannot direct your key to a server of its choosing. An agent key that is stored but locked (password or sealed envelope not open) is never replaced by the runtime's key; the provider is rebuilt once the key is unlocked.
 
 > **Note:** `security.allow_protected_writes` is **dead** — it is stripped from stored config on migration and no longer exists. `no_delete` files are always writable by the agent (the protection blocks *deletion*, not overwrite); there is no config flag gating that. Any older claim that it gates overwriting `no_delete` is incorrect.
 

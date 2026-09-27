@@ -111,6 +111,38 @@ function createParamInjector(extraParams: Record<string, unknown>): typeof globa
 /** The slice of AdfWorkspace provider resolution reads. */
 export interface ProviderIdentitySource {
   getIdentityDecrypted(purpose: string, derivedKey: Buffer | null): string | null
+  /** Present on AdfWorkspace: lets resolution tell "no key stored" from "key stored but locked". */
+  getIdentityRow?(purpose: string): unknown
+}
+
+/** Types whose builder ignores `baseUrl` (fixed first-party endpoint). */
+const FIXED_ENDPOINT_TYPES = new Set(['anthropic', 'openai', 'chatgpt-subscription', 'grok-subscription'])
+
+function normalizeBaseUrl(url: string | undefined): string {
+  const trimmed = (url ?? '').trim().replace(/\/+$/, '')
+  try {
+    const u = new URL(trimmed)
+    return `${u.protocol}//${u.host.toLowerCase()}${u.pathname.replace(/\/+$/, '')}`
+  } catch {
+    return trimmed.toLowerCase()
+  }
+}
+
+/**
+ * Whether an agent's key-less provider copy may use the runtime's key for the
+ * same id. Only when the copy would send it to the SAME endpoint: same type,
+ * and — for types that honor baseUrl — the same base URL. Matching on id
+ * alone would let a crafted .adf (or a child spawned with a tampered
+ * providers[] entry) name the owner's provider id with its own base URL and
+ * receive the owner's key.
+ */
+export function mayBorrowAppKey(
+  agentEntry: Pick<ProviderConfig, 'type' | 'baseUrl'>,
+  appProvider: Pick<ProviderConfig, 'type' | 'baseUrl'> | undefined
+): boolean {
+  if (!appProvider || agentEntry.type !== appProvider.type) return false
+  if (FIXED_ENDPOINT_TYPES.has(agentEntry.type)) return true
+  return normalizeBaseUrl(agentEntry.baseUrl) === normalizeBaseUrl(appProvider.baseUrl)
 }
 
 /**
@@ -131,17 +163,19 @@ export function resolveAgentProviderConfig(
 ): ProviderConfig | undefined {
   const adfProvider = config.providers?.find(p => p.id === config.model.provider)
   if (!adfProvider) return undefined
-  let apiKey = ''
-  try {
-    apiKey = workspace.getIdentityDecrypted(`provider:${adfProvider.id}:apiKey`, derivedKey) ?? ''
-  } catch {
-    // Locked keystore: fall through to the runtime's key.
-  }
-  if (apiKey) return { ...adfProvider, apiKey }
-  // No key stored in the ADF. Fall back to the runtime's key of the same
-  // provider id — without it the request goes out with an empty key, which
-  // the AI SDK forwards verbatim and the provider answers 401.
-  return { ...adfProvider, apiKey: settings.getProvider(adfProvider.id)?.apiKey ?? '' }
+  const purpose = `provider:${adfProvider.id}:apiKey`
+  const stored = workspace.getIdentityDecrypted(purpose, derivedKey)
+  if (stored) return { ...adfProvider, apiKey: stored }
+  // The agent HAS a key that cannot be opened right now (password-locked,
+  // envelope sealed on this runtime — decrypts to null, not ''): fail closed.
+  // Borrowing here would send the runtime's key to an endpoint chosen for a
+  // different key.
+  if (stored === null && workspace.getIdentityRow?.(purpose)) return { ...adfProvider, apiKey: '' }
+  // No key stored in the ADF — the normal shape for an agent created from the
+  // app's default provider. Use the runtime's key of the same provider id,
+  // but only when this copy targets the same endpoint (mayBorrowAppKey).
+  const appProvider = settings.getProvider(adfProvider.id)
+  return { ...adfProvider, apiKey: mayBorrowAppKey(adfProvider, appProvider) ? appProvider?.apiKey ?? '' : '' }
 }
 
 /**
@@ -151,9 +185,9 @@ export function resolveAgentProviderConfig(
  * agent's config + adf_identity) wins for every field it carries. The one
  * exception is a missing key: Studio copies the default provider into every
  * new agent WITHOUT its key ("sans secrets"), so a key-less copy borrows the
- * key of the app provider with the same id. Only the key is borrowed; model,
- * params, base URL, and delay stay the agent's. A copy that has its own key
- * never sees the app key.
+ * key of the app provider with the same id — only when it targets the same
+ * endpoint (mayBorrowAppKey). Only the key is borrowed; model, params, and
+ * delay stay the agent's. A copy that has its own key never sees the app key.
  */
 export function resolveEffectiveProviderConfig(
   providerKey: string,
@@ -162,7 +196,7 @@ export function resolveEffectiveProviderConfig(
 ): ProviderConfig | undefined {
   const appProvider = settings.getProvider(providerKey)
   if (!resolvedProvider) return appProvider
-  if (!resolvedProvider.apiKey && appProvider?.apiKey) {
+  if (!resolvedProvider.apiKey && appProvider?.apiKey && mayBorrowAppKey(resolvedProvider, appProvider)) {
     return { ...resolvedProvider, apiKey: appProvider.apiKey }
   }
   return resolvedProvider

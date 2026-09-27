@@ -10,6 +10,7 @@ import { encrypt } from '../crypto/identity-crypto'
 import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { withDeadline } from '../utils/concurrency'
 import type { LLMProvider } from '../providers/provider.interface'
+import { providerSelectionChanged } from '../providers/provider-selection'
 import type {
   AgentConfig,
   AgentState as AdfAgentState,
@@ -753,11 +754,7 @@ export class RuntimeService extends EventEmitter {
     // next loop_manage write reverted the save (review C2).
     managed.agent.applyConfigChange(config)
 
-    const providerChanged =
-      previousConfig.model.provider !== config.model.provider ||
-      previousConfig.model.model_id !== config.model.model_id ||
-      JSON.stringify(previousConfig.model.params) !== JSON.stringify(config.model.params)
-    if (providerChanged && this.providerFactory) {
+    if (providerSelectionChanged(previousConfig, config) && this.providerFactory) {
       const provider = await this.providerFactory(config, managed.filePath, {
         workspace: managed.agent.workspace,
         derivedKey: managed.derivedKey,
@@ -1170,7 +1167,21 @@ export class RuntimeService extends EventEmitter {
   unlockAgentIdentityPassword(agentId: string, password: string): { agentId: string; success: true } {
     const managed = this.requireAgent(agentId)
     managed.derivedKey = managed.agent.workspace.unlockWithPassword(password)
+    // The provider was built while the agent's own key was unreadable (and so
+    // resolved fail-closed); rebuild it now that the key opens.
+    this.rebuildProviderAfterUnlock(managed)
     return { agentId: managed.id, success: true }
+  }
+
+  private rebuildProviderAfterUnlock(managed: ManagedRuntimeAgent): void {
+    if (!this.providerFactory) return
+    void Promise.resolve(this.providerFactory(managed.config, managed.filePath, {
+      workspace: managed.agent.workspace,
+      derivedKey: managed.derivedKey,
+    })).then(
+      provider => managed.agent.executor.updateProvider(provider),
+      err => console.warn(`[RuntimeService] Provider rebuild after unlock failed for ${managed.id}:`, err),
+    )
   }
 
   /** @deprecated Whole-file password creation is removed; the method stays so daemon callers fail loudly. */

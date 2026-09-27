@@ -106,6 +106,8 @@ export class AgentRegistryService {
   /** Whether the last completed fetch attempt failed, and when it started. */
   private lastAttemptFailed = false
   private lastAttemptAt = 0
+  /** The last attempt was skipped because remote catalogs were off — not a failure, no backoff. */
+  private lastAttemptDisabled = false
   /** Bundled files never change at runtime, so the index is parsed once. */
   private bundledCache: AgentRegistryIndex | null = null
   private bundledError: string | undefined
@@ -196,6 +198,7 @@ export class AgentRegistryService {
    */
   private shouldAutoFetch(): boolean {
     if (!this.refreshedOnce) return true
+    if (this.lastAttemptDisabled) return this.isRemoteEnabled()
     if (!this.lastAttemptFailed) return false
     return this.now() - this.lastAttemptAt >= REFRESH_RETRY_MS
   }
@@ -225,13 +228,15 @@ export class AgentRegistryService {
   }
 
   private async refreshRemote(): Promise<void> {
-    this.lastAttemptAt = this.now()
-    this.lastAttemptFailed = true
-    if (!this.isRemoteEnabled()) {
+    this.lastAttemptDisabled = !this.isRemoteEnabled()
+    if (this.lastAttemptDisabled) {
+      this.lastAttemptFailed = false
       this.remoteError = REMOTE_CATALOGS_OFF
       this.loadCache()
       return
     }
+    this.lastAttemptAt = this.now()
+    this.lastAttemptFailed = true
     let body: GuardedFetchResult
     try {
       body = await this.fetchFn(AGENT_REGISTRY_INDEX_URL, { maxBytes: MAX_INDEX_BYTES, timeoutMs: FETCH_TIMEOUT_MS })

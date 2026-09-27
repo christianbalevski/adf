@@ -13,12 +13,13 @@ ADF Studio settings are accessed via the gear icon in the sidebar or `Cmd/Ctrl +
 
 ## Privacy
 
-Studio sends no telemetry. Under **General → Privacy** are the only two requests it makes on its own, each with an off switch:
+Studio sends no telemetry. **General → Privacy** has an off switch for each request it makes on its own:
 
 - **Check for updates** (`updateChecksEnabled`) — packaged builds ask GitHub Releases for a newer version 15 s after launch and every 6 hours. Nothing downloads until you click the update badge. Off = Studio never contacts GitHub for updates.
-- **Live catalogs** (`remoteCatalogsEnabled`) — fetch the current MCP server registry and agent template gallery from GitHub when you open them. Off = only the copies bundled with the build and the last fetched copy; templates that are not bundled cannot be downloaded.
+- **Check provider connections** (`providerChecksEnabled`) — a `GET /models` with each configured provider's key when Home loads, when the provider list first shows a provider, and when an agent review opens. Off = providers are contacted only when you click **Test** or an agent runs.
+- **Live catalogs** (`remoteCatalogsEnabled`) — fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, which the current UI does not use). Off = only the copies bundled with the build and the last fetched copy.
 
-Every other connection is one you or an agent configured. [Network traffic](../NETWORK.md) lists them all.
+The first-party skill catalog is a default entry in **Settings → Skills**, fetched when you open the skill browser; remove it there to stop that request. [Network traffic](../NETWORK.md) lists every connection.
 
 ## Identity
 
@@ -76,7 +77,7 @@ Most tiles are the same OpenAI-compatible runtime with a different base URL and 
 
 ### Provider Types
 
-> **Model requirement: tool calling.** ADF gives the model every capability it acts through — built-in tools, messaging, memory and file writes, MCP tools, spawning agents — as native tool (function) calls. There is no text-based fallback. Any provider and model that supports tool calling gets the full capability set, including local open-weight models served through Ollama, LM Studio, vLLM or llama.cpp. A model without tool calling can hold a conversation but cannot use any tool. Triggers, timers, lambdas and middleware run in the runtime and keep working regardless of the model. When choosing a local model, pick one whose model card lists tool or function calling support (and, for llama.cpp, start the server with tool calling enabled, e.g. `--jinja`).
+> **Model requirement: tool calling.** ADF gives the model every capability it acts through — built-in tools, messaging, memory and file writes, MCP tools, spawning agents — as native tool (function) calls. There is no text-based fallback. Any provider and model that supports tool calling gets every tool-driven capability, including local open-weight models served through Ollama, LM Studio, vLLM or llama.cpp. A model without tool calling cannot run a standard agent: every request carries the enabled tools' definitions, which such models typically reject (Ollama answers "does not support tools") — it can only chat if every tool is disabled. Triggers, timers, lambdas and middleware run in the runtime and keep working regardless of the model. Image, audio and video input need a multimodal model, and reasoning controls depend on the provider. When choosing a local model, pick one whose model card lists tool or function calling support (older llama.cpp server builds also need `--jinja`).
 
 **Anthropic** — Claude models. Uses the Anthropic API format.
 
@@ -228,7 +229,7 @@ You can also leave Reasoning on and override a single field, or set a key's valu
 
 ### Per-ADF Provider Configurations
 
-Each ADF file can store its own copy of a provider independently of the app-wide settings. This allows agents to ship with embedded API keys, custom models, and provider-specific parameters. At runtime, when `providers[]` in the agent config contains the selected provider id, that entry is used for every field it carries, with the key read from the agent's `adf_identity`. If the agent's copy has no key, the app-wide provider with the same id supplies the key (and nothing else). New agents created in Studio get exactly such a key-less copy of the default provider, which is why they work out of the box with the app key. The headless daemon resolves providers the same way, using its own settings file as the "app-wide" side.
+Each ADF file can store its own copy of a provider independently of the app-wide settings. This allows agents to ship with embedded API keys, custom models, and provider-specific parameters. At runtime, when `providers[]` in the agent config contains the selected provider id, that entry is used for every field it carries, with the key read from the agent's `adf_identity`. If the agent's copy has no key, the app-wide provider with the same id supplies the key (and nothing else) — only when the agent's copy targets the same endpoint (same type and, for types that honor a base URL, the same base URL). New agents created in Studio get exactly such a key-less copy of the default provider, which is why they work out of the box with the app key. The headless daemon resolves providers the same way, using its own settings file as the "app-wide" side.
 
 Per-ADF provider configs are managed from:
 

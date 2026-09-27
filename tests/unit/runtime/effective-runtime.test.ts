@@ -22,10 +22,11 @@ function config(overrides: Partial<AgentConfig> = {}): AgentConfig {
     mcp: {
       servers: [
         { name: 'github', transport: 'stdio', command: 'evil', env: { GITHUB_TOKEN: 'agent-secret' } },
-        { name: 'local-only', transport: 'http', url: 'https://mcp.example/x', env_keys: ['API_KEY'] },
+        { name: 'local-only', transport: 'http', url: 'https://user:pw@mcp.example/x?token=s3cret', env_keys: ['API_KEY'], source: 'http:https://mcp.example/x' },
+        { name: 'orphan', transport: 'stdio', command: 'node' },
       ],
     },
-    adapters: { telegram: { enabled: true }, discord: { enabled: false } },
+    adapters: { telegram: { enabled: true }, discord: { enabled: false }, slack: {}, nosuch: { enabled: true } },
     ...overrides,
   } as unknown as AgentConfig
 }
@@ -56,7 +57,8 @@ describe('buildEffectiveRuntime', () => {
       provider: createProvider(config(), s),
       basePrompt: DEFAULT_BASE_PROMPT,
       toolPrompts,
-      sources: { settings: s, sandboxPackagesApplied: true },
+      sources: { settings: s },
+      sandboxModules: ['lodash'],
       now: new Date('2026-09-27T00:00:00Z'),
     })
 
@@ -71,13 +73,28 @@ describe('buildEffectiveRuntime', () => {
     expect(snap.mcp_servers[0].command).toBeUndefined()
     expect(snap.mcp_servers[0].env_names).toEqual(['GH_HOST', 'GITHUB_TOKEN'])
     expect(snap.mcp_servers[1]).toMatchObject({ pinned_to_app_registration: false, url: 'https://mcp.example/x', env_names: ['API_KEY'] })
+    // Unregistered + no source is skipped at start by every host, so not listed.
+    expect(snap.mcp_servers.map(m => m.name)).toEqual(['github', 'local-only'])
     expect(snap.adapters).toEqual(['telegram'])
-    expect(snap.sandbox_packages).toEqual(['lodash@4.17.21'])
-    expect(snap.mesh).toEqual({ enabled: true, lan: true, port: 7295 })
+    expect(snap.sandbox_packages).toEqual(['lodash'])
+    expect(snap.mesh).toEqual({ enabled: true, lan: true, port: 7295, forces_messaging_receive: false })
 
     const json = JSON.stringify(snap)
     expect(json).not.toContain('app-secret')
     expect(json).not.toContain('agent-secret')
+    expect(json).not.toContain('s3cret')
+    expect(json).not.toContain('pw@')
+  })
+
+  it('omits the base URL for fixed-endpoint types and reports subscription auth', () => {
+    const s = settings({ providers: [{ id: 'anthropic', type: 'anthropic', name: 'A', baseUrl: 'https://ignored.example', apiKey: 'k' }] })
+    const cfg = config({ model: { provider: 'anthropic', model_id: 'claude' } } as Partial<AgentConfig>)
+    const snap = buildEffectiveRuntime({
+      host: 'daemon', config: cfg, provider: createProvider(cfg, s),
+      basePrompt: '', toolPrompts: {}, sources: { settings: s },
+    })
+    expect(snap.provider.base_url).toBeUndefined()
+    expect(snap.provider.api_key_source).toBe('app')
   })
 
   it("prefers the agent's own provider copy and reports whose key it uses", () => {
@@ -90,7 +107,7 @@ describe('buildEffectiveRuntime', () => {
       provider: createProvider(cfg, s, own),
       basePrompt: 'custom base',
       toolPrompts: { ...toolPrompts, dyn_extra: 'x' },
-      sources: { settings: s, sandboxPackagesApplied: false },
+      sources: { settings: s },
     })
     expect(snap.provider).toMatchObject({ source: 'agent', base_url: 'https://own.example/v1', api_key_source: 'agent' })
     expect(snap.prompts.base_prompt).toMatchObject({ applied: false, is_default: false })
@@ -105,7 +122,7 @@ describe('buildEffectiveRuntime', () => {
       provider: createProvider(config(), s, { ...own, apiKey: 'app-secret' }),
       basePrompt: DEFAULT_BASE_PROMPT,
       toolPrompts,
-      sources: { settings: s, sandboxPackagesApplied: false },
+      sources: { settings: s },
     })
     expect(borrowed.provider.api_key_source).toBe('app')
   })
@@ -117,7 +134,7 @@ describe('buildEffectiveRuntime', () => {
       provider: new MockLLMProvider(),
       basePrompt: '',
       toolPrompts: {},
-      sources: { settings: settings(baseSettings), sandboxPackagesApplied: false },
+      sources: { settings: settings(baseSettings) },
     })
     expect(snap.provider).toMatchObject({ source: 'unknown', params_source: 'unknown', api_key_source: 'unknown' })
     expect(snap.provider.base_url).toBeUndefined()

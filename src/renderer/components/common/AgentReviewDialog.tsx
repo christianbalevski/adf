@@ -135,9 +135,11 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
   // provider configured at all there is nothing to fix on this screen, so the
   // line says what happens next instead of naming a missing key.
   const provider = summary.provider
-  const providerGap = providers && providers.length === 0
-    ? ' — connect a provider when you run it'
-    : ' — no API key on this computer'
+  const providerGap = provider?.status === 'unchecked'
+    ? ' — not checked (provider checks are off in Settings)'
+    : providers && providers.length === 0
+      ? ' — connect a provider when you run it'
+      : ' — no API key on this computer'
   // A file may name a model with no provider at all (registry agents do):
   // say so plainly instead of printing an empty id.
   const configuredLabel = provider
@@ -249,7 +251,7 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
           <CapabilityRow label="Triggers" value={triggersSummary} />
           {summary.codeExecution && <CapabilityRow label="Code" value="Code execution enabled" amber />}
           <CapabilityRow label="Messaging" value={messagingSummary} />
-          <CapabilityRow label="Provider" value={providerSummary} amber={!!provider && provider.status !== 'ok'} />
+          <CapabilityRow label="Provider" value={providerSummary} amber={!!provider && provider.status !== 'ok' && provider.status !== 'unchecked'} />
         </div>
       </div>
 

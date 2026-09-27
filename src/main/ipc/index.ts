@@ -57,6 +57,19 @@ function providerTestCacheKey(cfg: ProviderConfig): string {
   return `${cfg.id}::${cfg.type}::${cfg.baseUrl ?? ''}::${cfg.apiKey ? 'k' : '-'}`
 }
 
+/**
+ * Probe for checks Studio starts on its own (dashboard, provider list, agent
+ * review). Honors the `providerChecksEnabled` opt-out: off = no request, the
+ * last result from this session if there is one, else 'unchecked'. An explicit
+ * Test click always calls testProviderCredentialsForDashboard directly.
+ */
+async function autoProviderCheck(cfg: ProviderConfig): Promise<'ok' | 'failed' | 'unconfigured' | 'unchecked'> {
+  if (settings?.get('providerChecksEnabled') === false) {
+    return providerTestSessionCache.get(providerTestCacheKey(cfg)) ?? 'unchecked'
+  }
+  return testProviderCredentialsForDashboard(cfg)
+}
+
 async function testProviderCredentialsForDashboard(
   cfg: ProviderConfig,
   force = false
@@ -151,6 +164,8 @@ import { approvalHub } from '../runtime/approval-hub'
 import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
 import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
 import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
+import { providerSelectionChanged } from '../providers/provider-selection'
+import { ensureCoreToolDeclarations } from '../runtime/core-tool-declarations'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
 import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
@@ -1895,15 +1910,16 @@ export function registerAllIpcHandlers(): void {
   // schedule the .adf file rename for when it stops.
   backgroundAgentManager.onAgentRenamed = (fp, name) => syncAgentFileToName(fp, name)
 
-  // Auto-start the shared MCP container in the background.
-  // All MCP servers run here by default. Non-blocking — agents that start
-  // before the container is ready will connect MCP servers on host.
-  // Deferred a few seconds so podman probing never competes with first paint;
-  // settings expose no compute-enabled flag (compute.enabled is per-agent
-  // config), so this stays unconditional. Agents that need the container
-  // earlier trigger ensureRunning() themselves via their start path.
+  // Pre-warm the shared MCP container in the background — only when it was
+  // provisioned before, so starting it is local. First-time provisioning
+  // (podman machine init, image pull, apt) downloads from the network and
+  // happens on first use instead: agents that need the container trigger
+  // ensureRunning() themselves via their start path. Non-blocking; deferred
+  // a few seconds so podman probing never competes with first paint.
   setTimeout(() => {
-    podmanService.ensureRunning().then(() => {
+    podmanService.sharedContainerExists().then(async (exists) => {
+      if (!exists) return
+      await podmanService.ensureRunning()
       console.log('[Compute] Shared MCP container ready')
     }).catch((err) => {
       console.warn('[Compute] Shared container failed to start (MCP servers will run on host):', err instanceof Error ? err.message : err)
@@ -2538,7 +2554,7 @@ export function registerAllIpcHandlers(): void {
       configuredId: config.model.provider,
       configuredType: embedded?.type,
       modelId: config.model.model_id,
-      status: localProvider ? await testProviderCredentialsForDashboard(localProvider) : 'missing',
+      status: localProvider ? await autoProviderCheck(localProvider) : 'missing',
       ...(localProvider ? { resolvedLocalId: localProvider.id } : {})
     }
     // Accept/claim moves untracked files into the managed agents folder;
@@ -2832,12 +2848,7 @@ export function registerAllIpcHandlers(): void {
     }
 
     if (agentExecutor) {
-      const modelChanged =
-        previousConfig.model.provider !== config.model.provider ||
-        previousConfig.model.model_id !== config.model.model_id
-      const paramsChanged =
-        JSON.stringify(previousConfig.model.params) !== JSON.stringify(config.model.params)
-      if (modelChanged || paramsChanged) {
+      if (providerSelectionChanged(previousConfig, config)) {
         try {
           const resolved = resolveProviderConfig(config, currentWorkspace, currentDerivedKey)
           const provider = createProvider(config, settings, resolved)
@@ -3769,18 +3780,9 @@ export function registerAllIpcHandlers(): void {
       }
     }
 
-    // Ensure inbox tools are in config
-    const toolNames = config.tools.map((t) => t.name)
-    for (const toolName of ['msg_list', 'msg_read', 'msg_update']) {
-      if (!toolNames.includes(toolName)) {
-        config.tools.push({ name: toolName, enabled: true, visible: true })
-      }
-    }
-    for (const toolName of ['stream_bind', 'stream_unbind', 'stream_bindings']) {
-      if (!toolNames.includes(toolName)) {
-        config.tools.push({ name: toolName, enabled: false })
-      }
-    }
+    // Ensure inbox tools are in config — and in the file, with the open editor told.
+    ensureCoreToolDeclarations(config, capturedWorkspace, capturedFilePath,
+      (fresh) => notifyRendererConfigChanged(capturedFilePath, fresh))
 
     // Create tool registry
     const agentToolRegistry = new ToolRegistry()
@@ -4621,7 +4623,7 @@ export function registerAllIpcHandlers(): void {
       workspace: capturedWorkspace,
       config,
       provider,
-      effectiveRuntime: { settings, sandboxPackagesApplied: true },
+      effectiveRuntime: { settings },
       registry: agentToolRegistry,
       session,
       basePrompt,
@@ -5375,6 +5377,7 @@ export function registerAllIpcHandlers(): void {
 
       const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
       meshManager = new MeshManager(trackedDirs)
+      meshManager.setConfigPersistedListener(notifyRendererConfigChanged)
       meshManager.enableMesh()
 
       meshManager.on('mesh_event', (event: MeshEvent) => {
@@ -6703,10 +6706,10 @@ export function registerAllIpcHandlers(): void {
     let failed = 0
     let unconfigured = 0
     await Promise.all(providers.map(async (cfg) => {
-      const result = await testProviderCredentialsForDashboard(cfg)
+      const result = await autoProviderCheck(cfg)
       if (result === 'ok') ok++
       else if (result === 'failed') failed++
-      else unconfigured++
+      else if (result === 'unconfigured') unconfigured++
     }))
     return { ok, failed, unconfigured }
   })
@@ -6717,7 +6720,12 @@ export function registerAllIpcHandlers(): void {
     const providers = (settings.get('providers') as ProviderConfig[]) ?? []
     const cfg = providers.find((p) => p.id === args?.providerId)
     if (!cfg) return { status: 'unconfigured' as const }
-    const status = await testProviderCredentialsForDashboard(cfg, args?.force === true)
+    // force = the owner clicked Test; the automatic first-sight test honors the opt-out.
+    if (args?.force !== true) {
+      const auto = await autoProviderCheck(cfg)
+      return { status: auto === 'unchecked' ? 'unknown' as const : auto }
+    }
+    const status = await testProviderCredentialsForDashboard(cfg, true)
     return { status }
   })
 

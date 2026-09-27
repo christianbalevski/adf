@@ -26,6 +26,7 @@ import { approvalHub } from './approval-hub'
 import { SystemScopeHandler } from './system-scope-handler'
 import type { CodeSandboxService } from './code-sandbox'
 import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
+import { ensureCoreToolDeclarations } from './core-tool-declarations'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { createScratchDir, removeScratchDir } from '../utils/scratch-dir'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
@@ -1127,27 +1128,8 @@ export class BackgroundAgentManager extends EventEmitter {
     derivedKey?: Buffer | null,
     envelopesLocked = false
   ): Promise<BackgroundManagedAgent> {
-    // Ensure inbox tools are in config — persisted (read-modify-write against a
-    // fresh read), so the config the owner inspects is the one the agent runs with.
-    const addCoreToolDeclarations = (target: AgentConfig): boolean => {
-      const toolNames = new Set(target.tools.map((t) => t.name))
-      const before = target.tools.length
-      for (const toolName of ['msg_list', 'msg_read', 'msg_update']) {
-        if (!toolNames.has(toolName)) target.tools.push({ name: toolName, enabled: true, visible: true })
-      }
-      for (const toolName of ['stream_bind', 'stream_unbind', 'stream_bindings']) {
-        if (!toolNames.has(toolName)) target.tools.push({ name: toolName, enabled: false })
-      }
-      return target.tools.length !== before
-    }
-    if (addCoreToolDeclarations(config)) {
-      try {
-        const fresh = workspace.getAgentConfig()
-        if (addCoreToolDeclarations(fresh)) workspace.setAgentConfig(fresh)
-      } catch (err) {
-        console.warn(`[BackgroundAgent] Failed to persist core tool declarations for ${filePath}:`, err)
-      }
-    }
+    // Ensure inbox tools are in config — and in the file (core-tool-declarations.ts).
+    ensureCoreToolDeclarations(config, workspace, filePath)
 
     // Create per-agent tool registry with built-in tools (NO communication tools)
     const agentToolRegistry = new ToolRegistry()
@@ -1794,7 +1776,7 @@ export class BackgroundAgentManager extends EventEmitter {
       workspace,
       config,
       provider,
-      effectiveRuntime: { settings: this.settings, sandboxPackagesApplied: false },
+      effectiveRuntime: { settings: this.settings },
       registry: agentToolRegistry,
       session,
       basePrompt: this.basePrompt,

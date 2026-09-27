@@ -25,6 +25,13 @@ import type { ProgressInfo, UpdateInfo } from 'electron-updater'
 import { IPC } from '../../shared/constants/ipc-channels'
 import type { AppUpdateState } from '../../shared/types/ipc.types'
 
+/**
+ * electron-updater sends `x-user-staging-id` on every check: by default a
+ * random UUID it persists in userData/.updaterId — a stable per-install
+ * identifier handed to GitHub. Every install sends this same constant instead
+ * (a valid UUID, so staged-rollout math still parses; releases are not staged).
+ */
+const SHARED_STAGING_ID = '00000000-0000-5000-8000-000000000000'
 const FIRST_CHECK_DELAY_MS = 15_000
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 /** Lets the badge show "Restarting…" before the shutdown overlay takes over. */
@@ -132,6 +139,8 @@ export function initAppUpdater(h: AppUpdaterHooks): void {
     autoUpdater.setFeedURL({ provider: 'generic', url: feedOverride })
   }
 
+  ;(autoUpdater as unknown as { stagingUserIdPromise: { value: Promise<string> } }).stagingUserIdPromise =
+    { value: Promise.resolve(SHARED_STAGING_ID) }
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
   autoUpdater.allowPrerelease = false
