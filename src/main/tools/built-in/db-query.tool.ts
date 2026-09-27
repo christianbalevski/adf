@@ -27,6 +27,20 @@ function blobReplacer(_key: string, value: unknown): unknown {
 /** Allowed table prefixes for read-only queries */
 const ALLOWED_PREFIXES = ['adf_loop', 'adf_inbox', 'adf_outbox', 'adf_timers', 'adf_files', 'adf_audit', 'adf_logs', 'adf_tasks', 'local_']
 
+/**
+ * Real tables (resolved by static analysis) that db_query may read. Anything
+ * else — adf_identity/adf_meta/adf_config and any other adf_* system table — is
+ * rejected fail-closed. sqlite_master is allowed for schema introspection;
+ * local_* tables are matched by prefix.
+ */
+const ADF_READ_ALLOWED = new Set([
+  'adf_loop', 'adf_inbox', 'adf_outbox', 'adf_timers', 'adf_files', 'adf_audit', 'adf_logs', 'adf_tasks'
+])
+
+function isAllowedReadTable(name: string): boolean {
+  return name === 'sqlite_master' || name.startsWith('local_') || ADF_READ_ALLOWED.has(name)
+}
+
 export class DbQueryTool implements Tool {
   readonly name = 'db_query'
   readonly description =
@@ -79,6 +93,39 @@ export class DbQueryTool implements Tool {
     // hiding sensitive table names inside string literals that sanitizeSQL strips
     if (sanitized.includes('pragma_')) {
       return { content: 'PRAGMA table-valued functions are not allowed in queries.', isError: true }
+    }
+
+    // Raw-page virtual tables can read arbitrary bytes of the database file —
+    // including adf_identity/adf_meta — bypassing per-table root-page checks.
+    if (sanitized.includes('sqlite_dbpage') || sanitized.includes('dbstat')) {
+      return { content: 'Access to raw-page virtual tables (sqlite_dbpage, dbstat) is not allowed.', isError: true }
+    }
+
+    // Fail-closed enforcement on what the statement ACTUALLY touches, resolved
+    // statically (quoting, aliases, views, subqueries and CTEs are all defeated
+    // by mapping opened root pages back to their owning table). The text checks
+    // above stay as a cheap first line; this is the real boundary.
+    try {
+      const analysis = workspace.analyzeSQL(sql, params)
+      if (!analysis.readonly) {
+        return { content: 'Only read-only statements are allowed in db_query. Use db_execute for writes.', isError: true }
+      }
+      const touched = [...analysis.reads, ...analysis.writes]
+      const sensitive = touched.find(t => t === 'adf_identity' || t === 'adf_meta' || t === 'adf_config')
+      if (sensitive) {
+        return { content: 'Access to adf_meta, adf_config, and adf_identity is not allowed. Use sys_get_config instead.', isError: true }
+      }
+      const forbidden = touched.find(t => !isAllowedReadTable(t))
+      if (forbidden) {
+        return {
+          content: `Query must reference only allowed tables (${ALLOWED_PREFIXES.join(', ')}); "${forbidden}" is not allowed.`,
+          isError: true
+        }
+      }
+    } catch (error) {
+      // Analysis prepares the statement, so a syntax error surfaces here with
+      // the same shape the execution path would have produced.
+      return { content: `SQL error: ${String(error)}`, isError: true }
     }
 
     const _full = (input as Record<string, unknown>)?._full === true

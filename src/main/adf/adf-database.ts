@@ -4366,6 +4366,68 @@ export class AdfDatabase {
   }
 
   /**
+   * Statically analyse what a statement actually touches, so table-access
+   * rules bind to the resolved objects rather than to source text (which
+   * quoting, aliases, views, subqueries and CTEs all defeat).
+   *
+   * The statement is prepared (validating syntax and giving `readonly`), then
+   * EXPLAINed: every OpenRead/OpenWrite opcode names a b-tree root page, which
+   * `sqlite_master.rootpage` maps back to the owning table — including the base
+   * table behind a view or alias, and any table reached through a subquery.
+   * Virtual tables (pragma_*, fts5, vec0, json_each, dbstat) don't open a root
+   * page, so `usesVirtualTable` flags their presence for the caller to police
+   * separately; a virtual table that internally reads a real table (e.g. an
+   * external-content FTS index over adf_identity) still surfaces that real read
+   * here. `unresolvedRootPages` covers pages allocated at run time (e.g. the new
+   * table in CREATE ... AS SELECT), which never correspond to an existing
+   * sensitive table.
+   */
+  analyzeStatement(
+    sql: string,
+    params?: unknown[]
+  ): { readonly: boolean; reads: Set<string>; writes: Set<string>; usesVirtualTable: boolean } {
+    const stmt = this.db.prepare(sql)
+    const readonly = stmt.readonly
+
+    // A user-supplied EXPLAIN / EXPLAIN QUERY PLAN never opens the tables it
+    // reports on — it emits the plan as rows. Analyse the underlying statement
+    // so its real table access is still policed (and we don't EXPLAIN an
+    // EXPLAIN, which is a syntax error).
+    const core = sql.replace(/^\s*explain\s+(query\s+plan\s+)?/i, '')
+
+    // Map every known b-tree root page to its owning table name.
+    const rootToTable = new Map<number, string>()
+    rootToTable.set(1, 'sqlite_master')
+    for (const row of this.db
+      .prepare("SELECT tbl_name, rootpage FROM sqlite_master WHERE rootpage IS NOT NULL AND rootpage > 0")
+      .all() as Array<{ tbl_name: string; rootpage: number }>) {
+      rootToTable.set(row.rootpage, row.tbl_name)
+    }
+
+    const reads = new Set<string>()
+    const writes = new Set<string>()
+    let usesVirtualTable = false
+
+    // EXPLAIN opcodes are independent of bind values, but the EXPLAINed
+    // statement inherits the inner statement's parameters, so bind them.
+    const explain = this.db.prepare('EXPLAIN ' + core)
+    const opcodes = (params && params.length ? explain.all(...params) : explain.all()) as Array<{
+      opcode: string
+      p2: number
+    }>
+    for (const op of opcodes) {
+      if (op.opcode === 'OpenRead' || op.opcode === 'OpenWrite') {
+        const name = rootToTable.get(op.p2)
+        if (name) (op.opcode === 'OpenWrite' ? writes : reads).add(name.toLowerCase())
+      } else if (op.opcode === 'VOpen' || op.opcode === 'VFilter' || op.opcode === 'VUpdate') {
+        usesVirtualTable = true
+      }
+    }
+
+    return { readonly, reads, writes, usesVirtualTable }
+  }
+
+  /**
    * Execute a read-only SQL query. Only allows SELECT on approved tables.
    */
   querySQL(sql: string, params?: unknown[]): unknown[] {
