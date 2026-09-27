@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MCP_REGISTRY, registrationFromRegistryEntry, hasUnresolvedPlaceholderArgs, findEntryIn } from '../../../src/shared/constants/mcp-registry'
+import { HOST_ONLY_REGISTRY_ENTRY_NAMES, MCP_REGISTRY, registrationFromRegistryEntry, registryEntryRunLocation, hasUnresolvedPlaceholderArgs, findEntryIn } from '../../../src/shared/constants/mcp-registry'
 import type { McpRegistryEntry } from '../../../src/shared/constants/mcp-registry'
 import {
   buildMcpServerConfigFromRegistration,
@@ -11,7 +11,7 @@ import {
 } from '../../../src/shared/utils/mcp-config'
 import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
-import { availableRegistryEntries, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
+import { availableRegistryEntries, blankDraft, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -22,9 +22,11 @@ describe('curated quick-add registry', () => {
     for (const entry of MCP_REGISTRY) {
       const registration = registrationFromRegistryEntry(entry, `mcp:test-${entry.name}`)
       expect(registration.name).toBe(entry.name)
-      // Stdio entries default to host; remote (url) entries carry no runLocation.
+      // Stdio entries default to the shared container (no runLocation
+      // recorded) unless the curated entry declares one; remote (url) entries
+      // never carry a run location.
       if (entry.url) expect(registration.type).toBe('http')
-      else expect(registration.runLocation).toBe('host')
+      else expect(registration.runLocation).toBe(registryEntryRunLocation(entry))
 
       const serverCfg = buildMcpServerConfigFromRegistration(registration)
       const parsed = AgentConfigSchema.safeParse({
@@ -79,6 +81,100 @@ describe('registrationFromRegistryEntry (args + HTTP entries)', () => {
     )
     expect(registration.type).toBe('npm')
     expect(registration.args).toEqual(['--repository', '{repo-path}'])
+  })
+
+  it('stdio entry records NO run location by default (containerized at routing time)', () => {
+    const registration = registrationFromRegistryEntry({ ...base, npmPackage: '@x/mcp' }, 'mcp:t')
+    expect('runLocation' in registration).toBe(false)
+    // Absent, not 'shared': an explicit 'shared' would pin the server to the
+    // shared container and override an agent's own isolated container.
+    const serverCfg = buildMcpServerConfigFromRegistration(registration)
+    expect(serverCfg.run_location).toBeUndefined()
+    // …and a containerized server is agent-attachable by default.
+    expect(suggestedAgentVisible(registration)).toBe(true)
+  })
+
+  it('stdio entry that declares runLocation host carries it through to the server config', () => {
+    const registration = registrationFromRegistryEntry(
+      { ...base, npmPackage: '@x/mcp', runLocation: 'host' },
+      'mcp:t',
+    )
+    expect(registration.runLocation).toBe('host')
+    expect(buildMcpServerConfigFromRegistration(registration).run_location).toBe('host')
+    // Host servers are NOT agent-attachable by default.
+    expect(suggestedAgentVisible(registration)).toBe(false)
+  })
+
+  it('the curated entries that declare host are only the ones that cannot run containerized', () => {
+    // A container default that silently broke these would be a regression:
+    // each needs a host binary, a host daemon/listener, host CLI login state,
+    // or host filesystem paths the container cannot see (it has no bind mount
+    // of the host filesystem). Keep this list in step with mcp-registry.json.
+    const hostEntries = MCP_REGISTRY.filter((e) => e.runLocation === 'host').map((e) => e.name).sort()
+    expect(hostEntries).toEqual([
+      'blender', 'chrome-devtools', 'docker', 'duckdb', 'excel', 'filesystem',
+      'git', 'gmail', 'google-calendar', 'google-docs', 'google-drive',
+      'google-sheets', 'kubernetes', 'markitdown', 'netlify', 'pandoc',
+      'semgrep', 'sqlite', 'teams', 'workspace',
+    ])
+    // …and the container default is still the overwhelming majority.
+    expect(hostEntries.length).toBeLessThan(MCP_REGISTRY.length / 3)
+    // The browser MCPs stay containerized: the managed Chromium they attach to
+    // over CDP lives in the agent's container (resolveContainerCommand adds the
+    // endpoint), so a host pin would point them at the wrong browser.
+    expect(MCP_REGISTRY.find((e) => e.name === 'playwright')?.runLocation).toBeUndefined()
+  })
+
+  it('the code-side host floor and the registry document agree exactly', () => {
+    // The document fetched from GitHub raw overrides the bundled one, so the
+    // floor in code is what keeps these servers off the container default
+    // before the document is published. Drift either way is a bug.
+    const declared = MCP_REGISTRY.filter((e) => e.runLocation === 'host').map((e) => e.name).sort()
+    expect([...HOST_ONLY_REGISTRY_ENTRY_NAMES].sort()).toEqual(declared)
+  })
+
+  it('applies the host floor to an entry the live document forgot to mark', () => {
+    // A remote document that predates this build ships no runLocation at all.
+    const stale: McpRegistryEntry = { ...base, name: 'filesystem', npmPackage: '@modelcontextprotocol/server-filesystem' }
+    expect(registryEntryRunLocation(stale)).toBe('host')
+    expect(registrationFromRegistryEntry(stale, 'mcp:t').runLocation).toBe('host')
+  })
+
+  it('lets an explicit declaration override the host floor in both directions', () => {
+    // A later document can containerize one of these deliberately…
+    expect(registryEntryRunLocation({ ...base, name: 'git', runLocation: 'shared' })).toBe('shared')
+    // …and the floor never applies to an entry outside it.
+    expect(registryEntryRunLocation({ ...base, name: 'memory' })).toBeUndefined()
+    // …nor to a remote entry, even one that declares a location.
+    expect(registryEntryRunLocation({ ...base, name: 'git', url: 'https://x/mcp', runLocation: 'host' })).toBeUndefined()
+  })
+
+  it('every stdio entry with an auth preflight or credential files declares host', () => {
+    // Settings only stores dropped credential files and runs the auth preflight
+    // for a HOST-located server (deriveRegistrationTestPlan.materializeFiles /
+    // authMode). A containerized one defers both to per-agent attach, so a
+    // Settings install would stamp the row verified while the picked OAuth key
+    // file went nowhere. Containerizing these needs that gap closed first.
+    const leaked = MCP_REGISTRY
+      .filter((e) => !e.url && (e.auth || e.credentialFiles?.length) && e.runLocation !== 'host')
+      .map((e) => e.name)
+    expect(leaked).toEqual([])
+  })
+
+  it('a blank custom draft records no run location, so Host is a deliberate click', () => {
+    const custom = blankDraft('custom')
+    expect('runLocation' in custom).toBe(false)
+    expect(buildMcpServerConfigFromRegistration(custom).run_location).toBeUndefined()
+    const http = blankDraft('http')
+    expect('runLocation' in http).toBe(false)
+  })
+
+  it('an http entry ignores a declared run location (remote — runs nowhere locally)', () => {
+    const registration = registrationFromRegistryEntry(
+      { ...base, name: 'remote', url: 'https://mcp.example.com/mcp', runLocation: 'host' },
+      'mcp:t',
+    )
+    expect('runLocation' in registration).toBe(false)
   })
 
   it('http entry: remote registration with shape-flipped headerEnv, seeded deduped env, no host fields', () => {

@@ -88,6 +88,38 @@ export interface McpRegistryEntry {
   deprecated?: string
   /** Short security/operational warning surfaced on the quick-add card. */
   advisory?: string
+  /**
+   * Where this server has to run. Omit it — the overwhelmingly common case:
+   * a registration with no run location is routed into the shared compute
+   * container by shouldContainerize, which is the default for every install.
+   *
+   * Set `'host'` ONLY when the server cannot do its job containerized, i.e.
+   * one of:
+   *  - the entry's own `prerequisite` says a host run is required/recommended
+   *    (a host binary, a host daemon socket, a host localhost listener, host
+   *    CLI login state);
+   *  - its `args` take a host filesystem path the user fills in at install;
+   *  - every one of its tools addresses the user's own files by host path
+   *    (the container has no bind mount of the host filesystem — only an npm
+   *    cache volume — so such a server sees nothing there);
+   *  - a required env key names a host file path;
+   *  - it declares `auth` or `credentialFiles`. The Settings "Connect" test
+   *    only stores dropped credential files and runs the auth preflight for a
+   *    HOST-located server (see deriveRegistrationTestPlan and the
+   *    MCP_REGISTRATION_TEST handler); for a container-located one both are
+   *    deferred to per-agent attach, so a Settings install would stamp the row
+   *    verified while the OAuth key file the user picked went nowhere. Until
+   *    Settings can store credential files for containerized servers, these
+   *    entries stay on the host. (mcp-settings-modal.test.ts enforces this.)
+   *
+   * A `'host'` entry still passes through both host gates at routing time
+   * (app-wide "Enable host access" + agent `compute.host_access` or the
+   * approved-name list); it is a *request*, never a grant. `'shared'` is
+   * accepted for completeness but should not be needed — it PINS the server
+   * to the shared container, overriding an agent's own isolated container.
+   * Meaningless on `url` (remote) entries, which run nowhere locally.
+   */
+  runLocation?: 'host' | 'shared'
 }
 
 /**
@@ -125,9 +157,67 @@ export function hasUnresolvedPlaceholderArgs(args: string[] | undefined): boolea
 }
 
 /**
- * Build a Settings registration draft from a curated entry. User-initiated
- * Settings installs default to host (the explicit choice is the trust
- * decision; no Podman required) — shared by the Add-server modal and tests.
+ * Curated entry names that must run on the HOST even when the live registry
+ * document says nothing about a run location.
+ *
+ * Why a code-side copy of a JSON field: the document fetched from GitHub raw
+ * OVERRIDES the bundled one (McpRegistryFetchService tries remote → cache →
+ * bundled, with no version comparison). A build that ships before its
+ * mcp-registry.json reaches `main` would therefore prefill Container for
+ * servers that cannot work there — silently dropping the OAuth key file the
+ * user picked, for instance. This set is the floor; an entry that DECLARES a
+ * location always wins, so a later document can containerize one of these by
+ * setting `"runLocation": "shared"` explicitly.
+ *
+ * Keep it in step with mcp-registry.json — mcp-settings-modal.test.ts asserts
+ * the two agree exactly. See McpRegistryEntry.runLocation for the criteria.
+ */
+const HOST_ONLY_REGISTRY_ENTRIES = new Set([
+  // Host binary, daemon, or loopback listener
+  'pandoc', 'docker', 'kubernetes', 'blender', 'chrome-devtools',
+  // Host CLI login state / in-flow browser sign-in the preflight can't drive
+  'netlify', 'workspace',
+  // Host filesystem paths (the container has no bind mount of the host FS)
+  'filesystem', 'sqlite', 'duckdb', 'git', 'markitdown', 'excel', 'semgrep',
+  'google-sheets',
+  // Settings-side auth preflight + credential-file storage (host-only today)
+  'gmail', 'google-drive', 'google-calendar', 'google-docs', 'teams',
+])
+
+/**
+ * The run location a curated entry installs with: what it declares, else the
+ * host floor above, else nothing — and nothing means the shared compute
+ * container (shouldContainerize's default). Always undefined for remote (url)
+ * entries, which run nowhere locally.
+ */
+export function registryEntryRunLocation(
+  entry: Pick<McpRegistryEntry, 'name' | 'url' | 'runLocation'>,
+): 'host' | 'shared' | undefined {
+  if (entry.url) return undefined
+  if (entry.runLocation) return entry.runLocation
+  return HOST_ONLY_REGISTRY_ENTRIES.has(entry.name) ? 'host' : undefined
+}
+
+/** The host floor, for tests that keep it in step with the registry document. */
+export const HOST_ONLY_REGISTRY_ENTRY_NAMES: readonly string[] = [...HOST_ONLY_REGISTRY_ENTRIES]
+
+/**
+ * Build a Settings registration draft from a curated entry. Shared by the
+ * Add-server modal and tests.
+ *
+ * Run location: the draft carries NO `runLocation` unless the entry asks for
+ * one (see registryEntryRunLocation), so a new install is routed into the
+ * shared compute container (see shouldContainerize) — containment is the
+ * default everywhere now, for a Settings install exactly as for an agent's
+ * `mcp_install`. Host stays a deliberate click in the Add-server modal, and
+ * the minority of curated entries that genuinely cannot run containerized
+ * declare `runLocation: 'host'` themselves.
+ *
+ * Leaving it ABSENT rather than writing `'shared'` is deliberate: an explicit
+ * `'shared'` PINS the server to the shared container (isServerForceShared),
+ * which would break an agent that runs in its own isolated container — most
+ * visibly the browser MCPs, whose managed Chromium lives in that isolated
+ * container.
  *
  * HTTP entries (`url` present) become remote registrations: no runLocation,
  * no managed flag, no auth/credentialFiles. Their `env` is seeded with one
@@ -159,6 +249,7 @@ export function registrationFromRegistryEntry(entry: McpRegistryEntry, id: strin
     }
   }
   const isPython = entry.runtime === 'python'
+  const runLocation = registryEntryRunLocation(entry)
   return {
     id,
     name: entry.name,
@@ -169,7 +260,8 @@ export function registrationFromRegistryEntry(entry: McpRegistryEntry, id: strin
     managed: true,
     env: [...entry.requiredEnvKeys, ...(entry.optionalEnvKeys ?? [])].map((k) => ({ key: k, value: '' })),
     repo: entry.repo,
-    runLocation: 'host',
+    // Only entries that ask for a run location carry one; absent = container.
+    ...(runLocation ? { runLocation } : {}),
     // Placeholders are copied verbatim — the modal resolves them before install.
     ...(entry.args?.length ? { args: [...entry.args] } : {}),
     ...(entry.auth ? { auth: true } : {}),

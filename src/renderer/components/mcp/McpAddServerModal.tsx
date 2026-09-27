@@ -13,7 +13,9 @@ import { BrandIcon } from './BrandIcon'
 
 /** One-line boundary statement shown on host-located servers. */
 export const HOST_BOUNDARY_TEXT = 'Runs on the host with your user account’s access — your agents drive it.'
-const CONTAINER_TEXT = 'Isolate in container — requires Podman (one-time setup).'
+const CONTAINER_TEXT = 'Default — isolated in the shared compute container, with no access to your files. Requires Podman (a one-time setup).'
+/** Container caveat for a custom command: the container has its own filesystem. */
+const CONTAINER_CUSTOM_COMMAND_TEXT = 'The command must exist inside the container (npx, uvx, node and python do). Switch to Host to run a command installed on your machine.'
 
 interface FilePayload {
   fileName: string
@@ -233,10 +235,16 @@ function cardRequiredKeys(entry: McpRegistryEntry): string[] {
   ])]
 }
 
-function blankDraft(type: 'custom' | 'http'): McpServerRegistration {
+/**
+ * A fresh draft. Stdio drafts carry NO `runLocation`: a new server runs in the
+ * shared compute container (shouldContainerize's default) and Host is a
+ * deliberate click on the "Runs on" control. Absent rather than an explicit
+ * `'shared'` — see registrationFromRegistryEntry for why pinning matters.
+ */
+export function blankDraft(type: 'custom' | 'http'): McpServerRegistration {
   return type === 'http'
     ? { id: newId(), name: '', type: 'http', url: '', headers: [], headerEnv: [], env: [] }
-    : { id: newId(), name: '', type: 'custom', command: '', args: [], env: [], runLocation: 'host' }
+    : { id: newId(), name: '', type: 'custom', command: '', args: [], env: [] }
 }
 
 const inputCls = 'w-full px-2 py-1.5 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400'
@@ -722,6 +730,11 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">
                 {draft.runLocation === 'host' ? HOST_BOUNDARY_TEXT : CONTAINER_TEXT}
               </p>
+              {draft.runLocation !== 'host' && isCustom && (
+                <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                  {CONTAINER_CUSTOM_COMMAND_TEXT}
+                </p>
+              )}
               {draft.runLocation === 'host' && hostAccessEnabled === false && (
                 <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">
                   Host access is disabled app-wide, so this server will be containerized until it is enabled.{' '}
