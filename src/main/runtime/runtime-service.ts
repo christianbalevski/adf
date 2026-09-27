@@ -73,9 +73,20 @@ export interface RuntimeSettingsStore {
   }
 }
 
+/**
+ * The loaded file a provider is built for. Lets a factory honor the agent's
+ * own `config.providers[]` entry and adf_identity key (resolveAgentProviderConfig)
+ * — the same resolution Studio applies — instead of app settings alone.
+ */
+export interface RuntimeProviderContext {
+  workspace: AdfWorkspace
+  derivedKey: Buffer | null
+}
+
 export type RuntimeProviderFactory = (
   config: AgentConfig,
   filePath: string | null,
+  context?: RuntimeProviderContext,
 ) => LLMProvider | Promise<LLMProvider>
 
 export interface RuntimeServiceOptions {
@@ -378,7 +389,7 @@ export class RuntimeService extends EventEmitter {
         try { workspace.insertLog('error', 'runtime', 'credentials_locked', null, degradedReason.slice(0, 500)) } catch { /* non-fatal */ }
       }
       const config = workspace.getAgentConfig() as AgentConfig
-      const provider = await this.resolveProvider(config, canonicalPath, opts.provider)
+      const provider = await this.resolveProvider(config, canonicalPath, opts.provider, workspace)
       const agent = await this.buildLoadedAgent(workspace, canonicalPath, config, provider)
       const ref = this.registerAgent(agent, canonicalPath, config)
       if (degradedReason) {
@@ -747,7 +758,10 @@ export class RuntimeService extends EventEmitter {
       previousConfig.model.model_id !== config.model.model_id ||
       JSON.stringify(previousConfig.model.params) !== JSON.stringify(config.model.params)
     if (providerChanged && this.providerFactory) {
-      const provider = await this.providerFactory(config, managed.filePath)
+      const provider = await this.providerFactory(config, managed.filePath, {
+        workspace: managed.agent.workspace,
+        derivedKey: managed.derivedKey,
+      })
       managed.agent.executor.updateProvider(provider)
     }
 
@@ -1627,12 +1641,19 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  private async resolveProvider(config: AgentConfig, filePath: string, override?: LLMProvider): Promise<LLMProvider> {
+  private async resolveProvider(
+    config: AgentConfig,
+    filePath: string,
+    override: LLMProvider | undefined,
+    workspace: AdfWorkspace,
+  ): Promise<LLMProvider> {
     if (override) return override
     if (!this.providerFactory) {
       throw new Error('RuntimeService: loadAgent requires a provider or providerFactory.')
     }
-    return this.providerFactory(config, filePath)
+    // No derived key at load: the legacy password lock is opened later via
+    // unlock; envelope-sealed keys are already open (unlockWorkspaceEnvelopes).
+    return this.providerFactory(config, filePath, { workspace, derivedKey: null })
   }
 
   private async buildLoadedAgent(
@@ -1650,7 +1671,7 @@ export class RuntimeService extends EventEmitter {
         restoreLoop: true,
         createProviderForModel: (model) => {
           if (!this.providerFactory) return provider
-          const resolved = this.providerFactory({ ...config, model }, filePath)
+          const resolved = this.providerFactory({ ...config, model }, filePath, { workspace, derivedKey: null })
           if (isPromiseLike(resolved)) {
             throw new Error('RuntimeService: model_invoke providerFactory must be synchronous.')
           }

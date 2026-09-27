@@ -15,7 +15,9 @@
  *   behind a pkexec password prompt.
  *
  * Unpackaged (`npm run dev`) builds never contact GitHub: electron-updater
- * refuses to check outside a packed app, and we don't even register.
+ * refuses to check outside a packed app, and we don't even register. Packaged
+ * builds skip every scheduled check while the `updateChecksEnabled` setting
+ * is false.
  */
 import { app, ipcMain } from 'electron'
 import { autoUpdater } from 'electron-updater'
@@ -29,6 +31,11 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 const INSTALL_GRACE_MS = 1_500
 
 export interface AppUpdaterHooks {
+  /**
+   * Owner opt-out for the background check (Settings → General → Privacy).
+   * False means the scheduled checks never contact GitHub.
+   */
+  isCheckEnabled: () => boolean
   /** Push a state transition to the renderer (no-op if the window is gone). */
   send: (state: AppUpdateState) => void
   /**
@@ -62,6 +69,7 @@ async function checkQuietly(): Promise<void> {
   // A failed check (offline, GitHub hiccup, rate limit) is not the user's
   // problem: log it and stay idle. Only download failures surface as errors.
   if (state.status !== 'idle' && state.status !== 'error') return
+  if (hooks && !hooks.isCheckEnabled()) return
   try {
     await autoUpdater.checkForUpdates()
   } catch (err) {

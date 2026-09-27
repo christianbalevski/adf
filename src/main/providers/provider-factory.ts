@@ -7,6 +7,7 @@ import type { LLMProvider } from './provider.interface'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { ProviderConfig } from '../../shared/types/ipc.types'
 import { AiSdkProvider } from './ai-sdk-provider'
+import { recordProviderOrigin } from './provider-origin'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { getChatGptAuthManager } from './chatgpt-subscription/auth-manager'
 import { createChatGPTSubscriptionProvider } from './chatgpt-subscription'
@@ -107,6 +108,42 @@ function createParamInjector(extraParams: Record<string, unknown>): typeof globa
   }
 }
 
+/** The slice of AdfWorkspace provider resolution reads. */
+export interface ProviderIdentitySource {
+  getIdentityDecrypted(purpose: string, derivedKey: Buffer | null): string | null
+}
+
+/**
+ * The agent's own provider entry (`config.providers[]`, ADF-stored metadata)
+ * plus its key, or undefined when the file carries no entry for the selected
+ * provider id. The key lives in adf_identity; when the entry carries none —
+ * the normal shape for an agent created from the app default provider, or one
+ * that arrived from elsewhere — the runtime's key for the same provider id is
+ * used. Every host (Studio foreground/background, daemon) resolves through
+ * this, so an agent runs against the same base URL, params and key wherever
+ * it is loaded.
+ */
+export function resolveAgentProviderConfig(
+  config: AgentConfig,
+  workspace: ProviderIdentitySource,
+  derivedKey: Buffer | null,
+  settings: ProviderSettingsStore
+): ProviderConfig | undefined {
+  const adfProvider = config.providers?.find(p => p.id === config.model.provider)
+  if (!adfProvider) return undefined
+  let apiKey = ''
+  try {
+    apiKey = workspace.getIdentityDecrypted(`provider:${adfProvider.id}:apiKey`, derivedKey) ?? ''
+  } catch {
+    // Locked keystore: fall through to the runtime's key.
+  }
+  if (apiKey) return { ...adfProvider, apiKey }
+  // No key stored in the ADF. Fall back to the runtime's key of the same
+  // provider id — without it the request goes out with an empty key, which
+  // the AI SDK forwards verbatim and the provider answers 401.
+  return { ...adfProvider, apiKey: settings.getProvider(adfProvider.id)?.apiKey ?? '' }
+}
+
 /**
  * Which ProviderConfig actually drives a call.
  *
@@ -150,6 +187,22 @@ export function createProvider(
       `Provider "${providerKey}" not found. Configure it in Settings → Providers.`
     )
   }
+
+  const provider = buildProvider(config, providerKey, cfg)
+  // Hosts fill a key-less agent copy with the app key before handing it over,
+  // so an agent key equal to the app key counts as borrowed from the app.
+  const appKey = settings.getProvider(providerKey)?.apiKey
+  const { apiKey, ...publicCfg } = cfg
+  recordProviderOrigin(provider, {
+    source: resolvedProvider ? 'agent' : 'app',
+    config: publicCfg,
+    apiKeySource: !apiKey ? 'none' : resolvedProvider && apiKey !== appKey ? 'agent' : 'app',
+    paramsSource: config.model.params !== undefined ? 'agent_model' : cfg.params?.length ? 'provider' : 'none',
+  })
+  return provider
+}
+
+function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderConfig): LLMProvider {
 
   const modelId = config.model.model_id || cfg.defaultModel || ''
   const delayMs = cfg.requestDelayMs ?? 0

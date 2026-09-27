@@ -332,18 +332,10 @@ export class MeshManager extends EventEmitter {
     }
     this.handleToFilePath.set(handle, filePath)
 
-    // Ensure messaging config exists so the agent can participate
-    if (!config.messaging) {
-      config.messaging = { receive: false, mode: 'proactive' }
-    }
-    // Ensure mode is set (for backward compatibility)
-    if (!config.messaging.mode) {
-      config.messaging.mode = 'proactive'
-    }
-    config.messaging.receive = true
-
-    // Ensure communication tools are available in config and runtime registry.
-    this.ensureCommunicationTools(config)
+    // Ensure messaging config + communication tools exist so the agent can
+    // participate — persisted, so the owner inspects what the agent runs with.
+    this.applyMeshDefaults(config)
+    this.persistMeshDefaults(filePath, workspace)
     this.registerCommunicationTools(filePath, config, toolRegistry, isMessageTriggeredFn ?? undefined)
 
     // Register on message bus (channels dropped — all agents receive broadcasts)
@@ -442,14 +434,8 @@ export class MeshManager extends EventEmitter {
     this.handleToFilePath.set(handle, filePath)
 
     if (this.enabled) {
-      if (!config.messaging) {
-        config.messaging = { receive: false, mode: 'proactive' }
-      }
-      if (!config.messaging.mode) {
-        config.messaging.mode = 'proactive'
-      }
-      config.messaging.receive = true
-      this.ensureCommunicationTools(config)
+      this.applyMeshDefaults(config)
+      this.persistMeshDefaults(filePath, workspace)
       this.registerCommunicationTools(filePath, config, toolRegistry, () => false)
     }
 
@@ -2263,6 +2249,40 @@ export class MeshManager extends EventEmitter {
       reg.config = updated
     } catch (err) {
       console.warn(`[Mesh] Failed to persist ws_connection "${cfg.id}" for ${filePath}:`, err)
+    }
+  }
+
+  /**
+   * Mesh participation needs `messaging.receive` on, a messaging mode, and the
+   * communication tool declarations. Returns whether `config` changed.
+   */
+  private applyMeshDefaults(config: AgentConfig): boolean {
+    const before = JSON.stringify([config.messaging, config.tools])
+    if (!config.messaging) {
+      config.messaging = { receive: false, mode: 'proactive' }
+    }
+    // Ensure mode is set (for backward compatibility)
+    if (!config.messaging.mode) {
+      config.messaging.mode = 'proactive'
+    }
+    config.messaging.receive = true
+    this.ensureCommunicationTools(config)
+    return JSON.stringify([config.messaging, config.tools]) !== before
+  }
+
+  /**
+   * Write the mesh defaults to the file, so the config the owner inspects is
+   * the config the agent runs with — never an in-memory-only divergence.
+   * Read-modify-write against a fresh read (not the caller's object) so
+   * unrelated concurrent edits survive. Best-effort: a persistence failure
+   * must not keep the agent off the mesh.
+   */
+  private persistMeshDefaults(filePath: string, workspace: AdfWorkspace): void {
+    try {
+      const fresh = workspace.getAgentConfig()
+      if (this.applyMeshDefaults(fresh)) workspace.setAgentConfig(fresh)
+    } catch (err) {
+      console.warn(`[Mesh] Failed to persist mesh defaults for ${filePath}:`, err)
     }
   }
 

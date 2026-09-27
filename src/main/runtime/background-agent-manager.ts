@@ -25,7 +25,7 @@ import { RuntimeGate } from './runtime-gate'
 import { approvalHub } from './approval-hub'
 import { SystemScopeHandler } from './system-scope-handler'
 import type { CodeSandboxService } from './code-sandbox'
-import { createProvider } from '../providers/provider-factory'
+import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { createScratchDir, removeScratchDir } from '../utils/scratch-dir'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
@@ -1116,11 +1116,7 @@ export class BackgroundAgentManager extends EventEmitter {
     workspace: AdfWorkspace,
     derivedKey: Buffer | null
   ): ProviderConfig | undefined {
-    const adfProvider = config.providers?.find((p) => p.id === config.model.provider)
-    if (!adfProvider) return undefined
-    const apiKey = workspace.getIdentityDecrypted(`provider:${adfProvider.id}:apiKey`, derivedKey) ?? ''
-    if (apiKey) return { ...adfProvider, apiKey }
-    return { ...adfProvider, apiKey: this.settings.getProvider(adfProvider.id)?.apiKey ?? '' }
+    return resolveAgentProviderConfig(config, workspace, derivedKey, this.settings)
   }
 
   private async setupManagedAgent(
@@ -1131,16 +1127,25 @@ export class BackgroundAgentManager extends EventEmitter {
     derivedKey?: Buffer | null,
     envelopesLocked = false
   ): Promise<BackgroundManagedAgent> {
-    // Ensure inbox tools are in config
-    const toolNames = config.tools.map((t) => t.name)
-    for (const toolName of ['msg_list', 'msg_read', 'msg_update']) {
-      if (!toolNames.includes(toolName)) {
-        config.tools.push({ name: toolName, enabled: true, visible: true })
+    // Ensure inbox tools are in config — persisted (read-modify-write against a
+    // fresh read), so the config the owner inspects is the one the agent runs with.
+    const addCoreToolDeclarations = (target: AgentConfig): boolean => {
+      const toolNames = new Set(target.tools.map((t) => t.name))
+      const before = target.tools.length
+      for (const toolName of ['msg_list', 'msg_read', 'msg_update']) {
+        if (!toolNames.has(toolName)) target.tools.push({ name: toolName, enabled: true, visible: true })
       }
+      for (const toolName of ['stream_bind', 'stream_unbind', 'stream_bindings']) {
+        if (!toolNames.has(toolName)) target.tools.push({ name: toolName, enabled: false })
+      }
+      return target.tools.length !== before
     }
-    for (const toolName of ['stream_bind', 'stream_unbind', 'stream_bindings']) {
-      if (!toolNames.includes(toolName)) {
-        config.tools.push({ name: toolName, enabled: false })
+    if (addCoreToolDeclarations(config)) {
+      try {
+        const fresh = workspace.getAgentConfig()
+        if (addCoreToolDeclarations(fresh)) workspace.setAgentConfig(fresh)
+      } catch (err) {
+        console.warn(`[BackgroundAgent] Failed to persist core tool declarations for ${filePath}:`, err)
       }
     }
 
@@ -1789,6 +1794,7 @@ export class BackgroundAgentManager extends EventEmitter {
       workspace,
       config,
       provider,
+      effectiveRuntime: { settings: this.settings, sandboxPackagesApplied: false },
       registry: agentToolRegistry,
       session,
       basePrompt: this.basePrompt,

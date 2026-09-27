@@ -45,6 +45,11 @@ export interface McpRegistryFetchOptions {
   userDataDir: string
   /** Injectable for tests; defaults to global fetch. */
   fetchFn?: typeof fetch
+  /**
+   * Owner opt-out (`remoteCatalogsEnabled`). Read on every refresh; false
+   * serves cache/bundled without touching the network. Defaults to enabled.
+   */
+  isRemoteEnabled?: () => boolean
 }
 
 export class McpRegistryFetchService {
@@ -54,6 +59,7 @@ export class McpRegistryFetchService {
 
   private readonly cachePath: string
   private readonly fetchFn: typeof fetch
+  private readonly isRemoteEnabled: () => boolean
   private lastResult: McpRegistryGetResult | null = null
   private inFlight: Promise<McpRegistryGetResult> | null = null
   private refreshTimer: NodeJS.Timeout | null = null
@@ -62,6 +68,7 @@ export class McpRegistryFetchService {
     this.cachePath = join(options.userDataDir, McpRegistryFetchService.CACHE_FILE_NAME)
     // Bind so an injected bare `fetch` keeps its expected receiver.
     this.fetchFn = options.fetchFn ?? ((...args) => fetch(...args))
+    this.isRemoteEnabled = options.isRemoteEnabled ?? (() => true)
   }
 
   /**
@@ -105,6 +112,7 @@ export class McpRegistryFetchService {
 
   private async refreshFresh(): Promise<McpRegistryGetResult> {
     const cache = this.readCacheFile()
+    if (!this.isRemoteEnabled()) return this.serveFallback(cache)
     try {
       const headers: Record<string, string> = {}
       if (cache?.etag) headers['If-None-Match'] = cache.etag

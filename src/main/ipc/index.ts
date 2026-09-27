@@ -150,7 +150,7 @@ import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
 import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
 import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
-import { createProvider } from '../providers/provider-factory'
+import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
 import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
@@ -325,7 +325,10 @@ let mcpRegistryFetchService: McpRegistryFetchService | null = null
  */
 function getMcpRegistryFetchService(): McpRegistryFetchService {
   if (!mcpRegistryFetchService) {
-    mcpRegistryFetchService = new McpRegistryFetchService({ userDataDir: app.getPath('userData') })
+    mcpRegistryFetchService = new McpRegistryFetchService({
+      userDataDir: app.getPath('userData'),
+      isRemoteEnabled: () => settings?.get('remoteCatalogsEnabled') !== false
+    })
     mcpRegistryFetchService.startPeriodicRefresh()
   }
   return mcpRegistryFetchService
@@ -347,7 +350,8 @@ function getAgentRegistryService(): AgentRegistryService {
     agentRegistryService = new AgentRegistryService({
       bundledDir: bundledRegistryDir(),
       userDataDir: app.getPath('userData'),
-      appVersion: app.getVersion()
+      appVersion: app.getVersion(),
+      isRemoteEnabled: () => settings?.get('remoteCatalogsEnabled') !== false
     })
   }
   return agentRegistryService
@@ -764,21 +768,7 @@ function resolveProviderConfig(
   workspace: AdfWorkspace,
   derivedKey: Buffer | null
 ): import('../../shared/types/ipc.types').ProviderConfig | undefined {
-  const adfProvider = config.providers?.find(p => p.id === config.model.provider)
-  if (!adfProvider) return undefined
-  const apiKey = workspace.getIdentityDecrypted(
-    `provider:${adfProvider.id}:apiKey`, derivedKey
-  ) ?? ''
-  if (apiKey) return { ...adfProvider, apiKey }
-  // No key stored in the ADF. That is the NORMAL shape for an agent created
-  // from the app's default provider (and for one brought home from the
-  // registry): the embedded entry carries the provider's metadata, never its
-  // secret. Fall back to the app-level key of the same provider id — without
-  // it the request goes out with an empty key, which the AI SDK forwards
-  // verbatim (an empty string is a valid key to loadApiKey, so there is no
-  // environment fallback either) and the provider answers 401.
-  const local = settings.getProvider(adfProvider.id)
-  return { ...adfProvider, apiKey: local?.apiKey ?? '' }
+  return resolveAgentProviderConfig(config, workspace, derivedKey, settings)
 }
 
 /** Sync a derived key to the mesh manager for pipeline signing access. */
@@ -4631,6 +4621,7 @@ export function registerAllIpcHandlers(): void {
       workspace: capturedWorkspace,
       config,
       provider,
+      effectiveRuntime: { settings, sandboxPackagesApplied: true },
       registry: agentToolRegistry,
       session,
       basePrompt,
@@ -9452,4 +9443,9 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
 /** Expose the active workspace for the adf-file:// protocol handler. */
 export function getCurrentWorkspace(): AdfWorkspace | null {
   return currentWorkspace
+}
+
+/** Read one app setting from outside the IPC layer (undefined before registration). */
+export function readAppSetting(key: string): unknown {
+  return settings?.get(key)
 }

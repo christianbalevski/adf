@@ -230,6 +230,10 @@ export interface AppSettings {
   toolPrompts?: Record<string, string>
   /** OS notifications for agent events. Absent = enabled. */
   nativeNotificationsEnabled?: boolean
+  /** Background update check against GitHub Releases (packaged builds). Absent = enabled. */
+  updateChecksEnabled?: boolean
+  /** Fetch the live MCP / agent registries from GitHub. Off = bundled + cached only. Absent = enabled. */
+  remoteCatalogsEnabled?: boolean
   /** npm packages installed into the code-execution sandbox at runtime level. */
   sandboxPackages?: Array<{ name: string; version: string }>
   trackedDirectories?: string[]

@@ -4,7 +4,7 @@ import { RuntimeService, type RuntimeAgentLoadedEvent } from '../runtime/runtime
 import { AgentRuntimeBuilder } from '../runtime/agent-runtime-builder'
 import { CodeSandboxService } from '../runtime/code-sandbox'
 import { MeshManager } from '../runtime/mesh-manager'
-import { createProvider } from '../providers/provider-factory'
+import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { PodmanService, type ComputeEnvSettings } from '../services/podman.service'
 import { setManagedBrowserEnsurer } from '../services/managed-browser-hook'
@@ -176,7 +176,13 @@ const agentRuntimeBuilder = new AgentRuntimeBuilder({
 })
 const runtime = new RuntimeService({
   settings,
-  providerFactory: config => createProvider(config, settings),
+  // Same resolution as Studio: the agent's own providers[] entry (base URL,
+  // params, per-agent key) wins; the daemon's settings supply the rest.
+  providerFactory: (config, _filePath, context) => createProvider(
+    config,
+    settings,
+    context ? resolveAgentProviderConfig(config, context.workspace, context.derivedKey, settings) : undefined,
+  ),
   basePrompt,
   toolPrompts,
   compactionPrompt,

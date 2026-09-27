@@ -27,6 +27,7 @@ import { RuntimeGate } from './runtime-gate'
 import { CreateAdfTool, ShellTool, SysUpdateConfigTool, LoopSendTool, LoopListTool, LoopManageTool } from '../tools/built-in'
 import { LoopPool, MAIN_LOOP, stripLoopNameMarker } from './loop-pool'
 import { runDispatchDropCompensation } from './system-dispatch-limits'
+import { buildEffectiveRuntime, recordEffectiveRuntime, type EffectiveRuntimeSources } from './effective-runtime'
 // Read-only: used purely to describe config drift in the log, never to gate load.
 import { AgentConfigSchema } from '../adf/adf-schema'
 import {
@@ -135,6 +136,12 @@ export interface AssembleAgentOptions<P extends AgentProfileName> {
   resources?: LifecycleResource[]
   host?: AgentHostBindings
   ownsWorkspace?: boolean
+  /**
+   * App-level inputs this host applies on top of adf_config. When given, a
+   * snapshot is written to adf_meta so the owner can inspect the config the
+   * agent actually runs with (see effective-runtime.ts).
+   */
+  effectiveRuntime?: EffectiveRuntimeSources
 }
 
 export interface AssembledAgentBase<P extends AgentProfileName> {
@@ -319,6 +326,17 @@ export function assembleAgent<P extends AgentProfileName>(
   // predates this load, so nothing legitimately in flight can be affected.
   executor.reconcileOrphanedTasks()
   validateConfigOnLoad(workspace, config)
+  if (options.effectiveRuntime) {
+    recordEffectiveRuntime(workspace, buildEffectiveRuntime({
+      host: profile,
+      config,
+      provider,
+      basePrompt: options.basePrompt ?? '',
+      toolPrompts: options.toolPrompts ?? {},
+      compactionPrompt: options.compactionPrompt,
+      sources: options.effectiveRuntime,
+    }))
+  }
   if (options.systemScopeHandler) executor.setSystemScopeHandler(options.systemScopeHandler)
 
   const triggerEvaluator = new TriggerEvaluator(config)

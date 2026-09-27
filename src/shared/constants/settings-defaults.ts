@@ -37,6 +37,11 @@ export function createSettingsDefaults(): Record<string, unknown> {
     // focused. On by default: an agent blocked on a human the user cannot see
     // is exactly the failure this exists to prevent.
     nativeNotificationsEnabled: true,
+    // Owner opt-outs for the only traffic Studio starts on its own: the
+    // background update check (GitHub Releases) and the MCP / agent registry
+    // fetches (GitHub raw). Off = no request; see docs/NETWORK.md.
+    updateChecksEnabled: true,
+    remoteCatalogsEnabled: true,
     meshEnabled: true,
     meshLan: false,
     meshPort: 7295,
