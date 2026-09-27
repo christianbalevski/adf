@@ -157,6 +157,7 @@ This is the part that makes ADF agents cheap to keep running. An agent can write
 - **Two encryption envelopes** — the signing key and the credentials are sealed separately, each openable by your owner key, this install's key, or an optional share password. *Why it matters:* a stolen file without your keys is useless; a shared file cannot leak your signing key.
 - **Headless trust** — a server daemon gets its own key; you grant it access to specific agents' credentials from Studio and can revoke it later.
 - **Duplicate detection** — two copies of the same agent presenting the same DID are flagged with a one-click fix.
+- **Effective runtime snapshot** — every start records, inside the file, which provider, base URL, model, prompts, compute policy, and MCP registrations the runtime actually applied on top of the agent's config — secrets by source only. [Details](guides/security-and-identity.md#effective-runtime-config).
 - **Tamper-evident history** *(planned)* — signed, chained state commitments so a log cannot quietly omit an action.
 
 ## Serving the web
@@ -172,7 +173,7 @@ This is the part that makes ADF agents cheap to keep running. An agent can write
 ## Models and cost
 
 - **Any major provider** — Anthropic, OpenAI, OpenRouter, and 25+ OpenAI-compatible services (Gemini, xAI, Mistral, DeepSeek, Groq, Cerebras, Together, Fireworks, Perplexity, Azure, and more).
-- **Local models** — LM Studio, Ollama, vLLM, llama.cpp, or any custom URL.
+- **Local models** — LM Studio, Ollama, vLLM, llama.cpp, or any custom URL. Every capability works on any model with native tool calling, the one model requirement ([details](guides/settings.md#provider-types)).
 - **Subscriptions instead of API keys** — sign in with a ChatGPT Plus/Pro account or an xAI account and use the flat-rate allowance. The agent can see how much of the allowance is left.
 - **Multiple accounts per service** — with per-agent overrides so one agent can use a different key, model, or parameters.
 - **Reasoning controls** — one setting for thinking effort and budget, translated to each provider's mechanism.
@@ -197,7 +198,8 @@ This is the part that makes ADF agents cheap to keep running. An agent can write
 - **Inline approvals on the map** — answer an agent's question or approve a tool right on its tile.
 - **Peer platforms** — agents discovered on other machines appear as satellite stations with their verified identity and served files.
 - **Theme, font, and scale** — light/dark, font family, UI scale.
-- **Auto-update** — checks GitHub releases, downloads on your click, restarts to install.
+- **Auto-update** — checks GitHub releases, downloads on your click, restarts to install. The check can be turned off.
+- **No telemetry** — no analytics or crash-reporting SDK; the update check and live catalogs are the only requests Studio starts on its own, and both have an off switch. [Every outbound connection](NETWORK.md) is listed.
 - **Keyboard shortcuts** — throughout, with an in-app reference card on the map.
 - **OS integration** — `.adf` file association, recent files, single-instance focus, native notifications.
 
@@ -388,7 +390,7 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 - **Packaging** — electron-builder for macOS (dmg and zip, arm64 and universal), Windows (NSIS x64), Linux (deb and AppImage).
 - **Signing** — Apple Developer ID plus notarization; Windows Azure Artifact Signing in CI with post-build signature verification.
 - **Release flow** — `npm version` tags and pushes; a three-OS matrix builds to a draft release that goes live only if all builds pass; notes generated from conventional commits.
-- **Auto-update** — GitHub Releases feed, checked on launch and every six hours, platform-appropriate installers.
+- **Auto-update** — GitHub Releases feed, checked on launch and every six hours unless `updateChecksEnabled` is off, platform-appropriate installers.
 - **CI checks** — tests, lifecycle-conformance ledger assertion, typecheck as a capability-profile completeness gate, lint, build, architecture fence.
 - **Performance harness** — headless stress scenarios (smoke, overhead, idle, mixed, burst) with latency percentiles, event-loop lag, memory, and handle counts.
 - **Eval design** *(planned)* — around 58 SQL-scored capability evals across ten areas including adversarial robustness, with scripted, attacker, and real-model provider modes.

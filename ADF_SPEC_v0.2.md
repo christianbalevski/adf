@@ -2144,6 +2144,8 @@ Not guaranteed to transfer:
 - In-memory unlock keys
 - In-memory executor state
 
+Capabilities travel with the file, not the model: tools, skills, lambdas and MCP declarations live in the `.adf` and the runtime. Moving an agent to another provider or model — including a local open-weight model — preserves every capability provided the model supports native tool (function) calling, the one model requirement. A model without it can converse but cannot invoke tools.
+
 Template sharing SHOULD strip signing identity, rotate IDs/DIDs, and clear loop/inbox/outbox unless the template intentionally includes history.
 
 ---

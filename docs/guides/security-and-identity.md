@@ -195,6 +195,29 @@ This is the only situation where Studio prompts for a password on open. Envelope
 
 - The inbox `owner` field and `sender_alias` are **unverified claims** carried in message meta — a sender sets them freely. Trust them only when the message is `message_verified`; otherwise the verified `from` DID is the sole authoritative identity. (Reserved aliases `owner`/`system`/`user` are stripped on ingress, but any other display name passes through unverified.)
 
+## Effective Runtime Config
+
+What an agent runs with is its `adf_config` **plus** app-level settings inherited from whichever runtime loaded it. At every start the runtime writes a snapshot of those inherited values to `adf_meta` under `adf_effective_runtime` (readonly JSON). Read it with any SQLite tool:
+
+```sql
+SELECT value FROM adf_meta WHERE key = 'adf_effective_runtime';
+```
+
+| Field | What it tells you |
+|---|---|
+| `host` | Which runtime started the agent: `studioForeground`, `studioBackground`, or `daemon` |
+| `provider` | Provider id, type, base URL and model actually used; `source` = `agent` (the file's own provider copy), `app` (the runtime's Settings → Providers row), or `unknown` (a provider the runtime did not build itself, e.g. one supplied by an embedding host); `api_key_source` = `agent` / `app` / `none` |
+| `prompts` | Whether the base prompt was applied and whether it is the shipped default, which tool/dynamic prompts are overridden, plus SHA-256 of each. The prompt text itself is persisted in the loop |
+| `compute` | App-level host access switch, host-approved MCP servers, registered execution targets, container image and packages |
+| `mcp_servers` | Per attached server: whether its command/URL/package is pinned to the app registration (the file's copy is then not what runs), transport, run location, env var **names** |
+| `adapters`, `sandbox_packages`, `mesh` | Enabled channel adapters, app-level sandbox packages applied, mesh on/LAN/port |
+
+Secrets are never recorded: keys appear only as their source, env vars only by name.
+
+Runtime defaults are also written to the file rather than applied only in memory: joining the mesh persists `messaging.receive: true` and the communication tool declarations, and a start persists the core inbox/stream tool declarations.
+
+Provider resolution is the same in Studio and the headless daemon: the agent's own `providers[]` entry (base URL, params, per-agent key) wins, and only a missing key is borrowed from the runtime's provider of the same id.
+
 > **Note:** `security.allow_protected_writes` is **dead** — it is stripped from stored config on migration and no longer exists. `no_delete` files are always writable by the agent (the protection blocks *deletion*, not overwrite); there is no config flag gating that. Any older claim that it gates overwriting `no_delete` is incorrect.
 
 ## Best Practices
