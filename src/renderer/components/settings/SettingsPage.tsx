@@ -1320,6 +1320,9 @@ export function SettingsPage() {
   const [updateChecks, setUpdateChecks] = useState(true)
   const [remoteCatalogs, setRemoteCatalogs] = useState(true)
   const [providerChecks, setProviderChecks] = useState(true)
+  const [spellcheckDownloads, setSpellcheckDownloads] = useState(false)
+  const [spellcheckStatus, setSpellcheckStatus] = useState<string | null>(null)
+  const [spellcheckBusy, setSpellcheckBusy] = useState(false)
   const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string }>({ running: false, port: 7295, host: '127.0.0.1' })
   const [meshAutoStart, setMeshAutoStart] = useState(true)
   const [meshLan, setMeshLan] = useState(false)
@@ -1472,6 +1475,7 @@ export function SettingsPage() {
       setUpdateChecks(settings.updateChecksEnabled !== false)
       setRemoteCatalogs(settings.remoteCatalogsEnabled !== false)
       setProviderChecks(settings.providerChecksEnabled !== false)
+      setSpellcheckDownloads(settings.spellcheckDownloadsEnabled === true)
       setMeshAutoStart(settings.meshEnabled !== false)
       setMeshLan(!!settings.meshLan)
       setMeshPort((settings.meshPort as number) ?? 7295)
@@ -1840,7 +1844,7 @@ export function SettingsPage() {
           <SettingsGroup title="Privacy" description="Studio sends no telemetry. These switches cover the requests it makes on its own; docs/NETWORK.md lists every connection.">
             <SettingsRow
               label="Check for updates"
-              description="Ask GitHub Releases for a newer version shortly after launch and every 6 hours. Nothing downloads until you click the update badge."
+              description="Ask GitHub Releases for a newer version shortly after launch and every hour. Nothing downloads until you click the update badge."
               help="Off = Studio never contacts GitHub for updates. Download new versions manually from the releases page."
             >
               <label className="flex items-center gap-2 cursor-pointer">
@@ -1900,6 +1904,40 @@ export function SettingsPage() {
                 </span>
               </label>
             </SettingsRow>
+            {window.adfApi?.platform === 'linux' && (
+              <SettingsRow
+                label="Spell-check dictionaries"
+                description="Linux spell check needs Hunspell dictionaries, which Studio downloads from Google only when you click Download. Windows and macOS use the OS spell checker."
+                help="Downloaded dictionaries stay in Studio's data folder. After you allow it, a newly added spell-check language is fetched the same way."
+              >
+                <div className="flex items-center gap-2">
+                  <Button
+                    disabled={spellcheckBusy}
+                    onClick={async () => {
+                      setSpellcheckBusy(true)
+                      setSpellcheckStatus(null)
+                      try {
+                        const result = await window.adfApi.downloadSpellcheckDictionaries()
+                        if (result.outcome === 'downloaded') {
+                          setSpellcheckDownloads(true)
+                          setSpellcheckStatus(`Installed: ${result.languages.join(', ')}`)
+                        } else if (result.outcome === 'failed') {
+                          setSpellcheckDownloads(true)
+                          setSpellcheckStatus(result.message)
+                        }
+                      } finally {
+                        setSpellcheckBusy(false)
+                      }
+                    }}
+                  >
+                    {spellcheckBusy ? 'Downloading…' : spellcheckDownloads ? 'Download again' : 'Download'}
+                  </Button>
+                  <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
+                    {spellcheckStatus ?? (spellcheckDownloads ? 'Allowed' : 'Not downloaded')}
+                  </span>
+                </div>
+              </SettingsRow>
+            )}
           </SettingsGroup>
 
           <SettingsGroup title="Files">

@@ -9426,3 +9426,8 @@ export function getCurrentWorkspace(): AdfWorkspace | null {
 export function readAppSetting(key: string): unknown {
   return settings?.get(key)
 }
+
+/** Write one app setting from outside the IPC layer (no-op before registration). */
+export function writeAppSetting(key: string, value: unknown): void {
+  settings?.set(key, value)
+}

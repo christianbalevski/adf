@@ -8,7 +8,7 @@ Nothing below carries agent content or usage data to the ADF project.
 Verify it yourself: run Studio behind a logging proxy (mitmproxy, Little Snitch,
 Wireshark) with no agents running. With the three **Privacy** switches below
 off and the default skill catalog removed, an idle Studio makes no outbound
-requests (on Linux, see the spell-check note).
+requests.
 
 ## 1. Traffic Studio starts on its own
 
@@ -17,12 +17,12 @@ Requests the app makes without you or an agent asking. The switches are under
 
 | What | Endpoint | When | Carries | Off switch |
 |---|---|---|---|---|
-| Update check | `github.com/christianbalevski/adf/releases` (`releases.atom`, `releases/latest`, then `latest*.yml`); the yml download redirects to GitHub's release-asset CDN (`*.githubusercontent.com`) | Packaged builds only: 15 s after launch, then every 6 h. Nothing downloads until you click the update badge. | Platform (from the `latest*.yml` file name). The `x-user-staging-id` header carries the same fixed value from every install — not a per-install ID. User-Agent `electron-builder`. No app version, account, or usage data. | **Check for updates** (`updateChecksEnabled: false`) |
+| Update check | `github.com/christianbalevski/adf/releases` (`releases.atom`, `releases/latest`, then `latest*.yml`); the yml download redirects to GitHub's release-asset CDN (`*.githubusercontent.com`) | Packaged builds only: 15 s after launch, then every hour. Nothing downloads until you click the update badge. | Platform (from the `latest*.yml` file name). The `x-user-staging-id` header carries the same fixed value from every install — not a per-install ID. User-Agent `electron-builder`. No app version, account, or usage data. | **Check for updates** (`updateChecksEnabled: false`) |
 | Provider connection checks | Each configured provider's API (`GET <base URL>/models` with that provider's key) | Once per session when Home loads, when the provider list first shows a provider, and when an agent review opens | The provider's own key, to the provider you configured | **Check provider connections** (`providerChecksEnabled: false`). The **Test** button in Settings → Providers always probes. |
 | MCP server registry | `raw.githubusercontent.com/christianbalevski/adf/main/mcp-registry.json` | First time you open **Settings → MCP servers**, then every 24 h while the app runs | Nothing (plain GET, `If-None-Match`) | **Live catalogs** (`remoteCatalogsEnabled: false`) — serves the bundled copy and the last fetched copy |
 | Agent registry index | `raw.githubusercontent.com/christianbalevski/adf/main/registry/…` | Not reachable from the current UI (the service and IPC remain for templates) | Nothing | **Live catalogs** — bundled + cached entries only; remote-only entries refuse to download |
 | First-party skill catalog | `raw.githubusercontent.com/christianbalevski/adf/main/skills/registry.json` | When you open the skill browser. It is the default entry in the skill-catalog list. | Nothing | Remove it from **Settings → Skills** (not covered by Live catalogs) |
-| Spell-check dictionaries (Linux only) | Google's dictionary CDN, via Electron's built-in spell checker | When a text field first needs a dictionary that is not installed | The dictionary language | None in Studio today. Windows and macOS use the OS spell checker and download nothing. |
+| Spell-check dictionaries (Linux only) | Google's dictionary CDN (`redirector.gvt1.com`), via Electron's built-in spell checker | Only after you click **Download** under **Spell-check dictionaries**; then also when you add a spell-check language that is not installed | The dictionary language | Off until you click it (`spellcheckDownloadsEnabled`). Until then the downloader points at loopback and nothing leaves the machine. Windows and macOS use the OS spell checker and download nothing. |
 
 Unpackaged (`npm run dev`) builds never run the update check. The headless
 daemon runs none of these.

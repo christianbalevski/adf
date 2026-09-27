@@ -1104,7 +1104,7 @@ Grouped by area, then category.
 - **Native window controls** — minimize/zoom/fullscreen, traffic-light positioning on macOS, `titleBarOverlay` on Windows/Linux.
 - **Session-end handling** — Windows logoff/shutdown triggers orderly teardown via `session-end`.
 - **Graceful shutdown overlay** — full-screen overlay shown during quit/update-install teardown, distinguishes "Shutting down" vs "Restarting…" wording.
-- **In-app auto-updater** — checks GitHub Releases every 6h, status-bar badge, click-to-download, auto-restart-and-install after download; disabled in unpackaged dev builds.
+- **In-app auto-updater** — checks GitHub Releases every hour, status-bar badge, click-to-download, auto-restart-and-install after download; disabled in unpackaged dev builds.
 - **Native OS notifications** — toast fires only when no Studio window is focused, bursts of 5+ requests collapse into one summary toast, click focuses window and jumps to the agent.
 - **Keyboard shortcuts** — `Cmd/Ctrl+,` Settings, `Cmd/Ctrl+S` save tab, `Cmd/Ctrl+W` close tab, `Cmd/Ctrl+N` new agent, `Cmd/Ctrl+O` open agent, `Cmd/Ctrl+Shift+O` add directory, `Cmd/Ctrl+Shift+W` close agent.
 - **DevTools / reload / zoom** — standard Electron View menu roles exposed.
@@ -1611,7 +1611,7 @@ Grouped by area, then category.
 - **Windows Azure Artifact Signing** — CI-only `electron-builder.win-sign.yml` overlay adds `azureSignOptions`/`forceCodeSigning`; short-lived Microsoft-managed cert avoids SmartScreen reputation ramp; local Windows builds stay unsigned.
 - **Post-build signature verification** — CI runs `Get-AuthenticodeSignature` over every `.exe`, fails the job unless `Valid` and signed by the expected CN.
 - **Draft-then-publish release flow** — installers upload to a draft release; `publish` job generates notes via `scripts/release-notes.mjs` (grouped by conventional-commit prefix) and flips the release live only if all matrix builds pass.
-- **In-app auto-update** — checks GitHub Releases (`latest*.yml`) on launch and every 6h; badge-driven, user-initiated download+restart; macOS uses signed zip (Squirrel.Mac), Windows silent NSIS, AppImage self-swap, `.deb` via `pkexec`-gated `dpkg -i`; `src/main/services/app-updater.service.ts`.
+- **In-app auto-update** — checks GitHub Releases (`latest*.yml`) on launch and every hour; badge-driven, user-initiated download+restart; macOS uses signed zip (Squirrel.Mac), Windows silent NSIS, AppImage self-swap, `.deb` via `pkexec`-gated `dpkg -i`; `src/main/services/app-updater.service.ts`.
 - **Local update-path testing harness** — documented two-build + local HTTP feed procedure using `ADF_INSTANCE`/`ADF_UPDATE_FEED_URL` (real single-instance app never honors the feed override).
 - **NSIS firewall installer hook** — `resources/firewall-installer.nsh` opens LAN discovery ports at elevated install time.
 - **CI verify workflow** — `npm ci --ignore-scripts` + explicit `better-sqlite3` rebuild for Node ABI, `npm test`, lifecycle-conformance test with verbose ledger assertion, `typecheck` (doubles as capability-profile completeness gate), `lint`, `build`.

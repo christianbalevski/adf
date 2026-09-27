@@ -45,6 +45,9 @@ export function createSettingsDefaults(): Record<string, unknown> {
     // Automatic `GET /models` probes of configured providers (Home, provider
     // list, agent review). The explicit Test button is never gated.
     providerChecksEnabled: true,
+    // Linux spell-check dictionaries come from Google's CDN; off until the
+    // owner clicks Download in Settings → Privacy.
+    spellcheckDownloadsEnabled: false,
     meshEnabled: true,
     meshLan: false,
     meshPort: 7295,

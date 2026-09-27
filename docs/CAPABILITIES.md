@@ -390,7 +390,7 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 - **Packaging** — electron-builder for macOS (dmg and zip, arm64 and universal), Windows (NSIS x64), Linux (deb and AppImage).
 - **Signing** — Apple Developer ID plus notarization; Windows Azure Artifact Signing in CI with post-build signature verification.
 - **Release flow** — `npm version` tags and pushes; a three-OS matrix builds to a draft release that goes live only if all builds pass; notes generated from conventional commits.
-- **Auto-update** — GitHub Releases feed, checked on launch and every six hours unless `updateChecksEnabled` is off, platform-appropriate installers.
+- **Auto-update** — GitHub Releases feed, checked on launch and every hour unless `updateChecksEnabled` is off, platform-appropriate installers.
 - **CI checks** — tests, lifecycle-conformance ledger assertion, typecheck as a capability-profile completeness gate, lint, build, architecture fence.
 - **Performance harness** — headless stress scenarios (smoke, overhead, idle, mixed, burst) with latency percentiles, event-loop lag, memory, and handle counts.
 - **Eval design** *(planned)* — around 58 SQL-scored capability evals across ten areas including adversarial robustness, with scripted, attacker, and real-model provider modes.

@@ -236,6 +236,8 @@ export interface AppSettings {
   remoteCatalogsEnabled?: boolean
   /** Automatic provider connection checks (GET /models). Off = only the explicit Test button probes. Absent = enabled. */
   providerChecksEnabled?: boolean
+  /** Linux: let Electron fetch Hunspell dictionaries from Google. Set by the Privacy Download button. Absent = off. */
+  spellcheckDownloadsEnabled?: boolean
   /** npm packages installed into the code-execution sandbox at runtime level. */
   sandboxPackages?: Array<{ name: string; version: string }>
   trackedDirectories?: string[]
@@ -1079,3 +1081,9 @@ export type AppUpdateCheckResult =
   /** Not a packaged build (`npm run dev`), which never checks. */
   | { outcome: 'unsupported' }
   | { outcome: 'failed'; message: string }
+
+/** Result of the Settings → Privacy spell-check dictionary download (Linux only). */
+export type SpellcheckDownloadResult =
+  | { outcome: 'downloaded'; languages: string[] }
+  | { outcome: 'failed'; message: string }
+  | { outcome: 'unsupported' }

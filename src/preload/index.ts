@@ -664,6 +664,7 @@ const api: AdfApi = {
   checkForUpdates: () => ipcRenderer.invoke(IPC.APP_UPDATE_CHECK),
   downloadUpdate: () => ipcRenderer.invoke(IPC.APP_UPDATE_DOWNLOAD),
   installUpdate: () => ipcRenderer.invoke(IPC.APP_UPDATE_INSTALL),
+  downloadSpellcheckDictionaries: () => ipcRenderer.invoke(IPC.SPELLCHECK_DOWNLOAD),
   onUpdateState: (callback: (state: AppUpdateState) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: AppUpdateState) => callback(state)
     ipcRenderer.on(IPC.APP_UPDATE_STATE, handler)

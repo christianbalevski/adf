@@ -15,9 +15,10 @@ ADF Studio settings are accessed via the gear icon in the sidebar or `Cmd/Ctrl +
 
 Studio sends no telemetry. **General → Privacy** has an off switch for each request it makes on its own:
 
-- **Check for updates** (`updateChecksEnabled`) — packaged builds ask GitHub Releases for a newer version 15 s after launch and every 6 hours. Nothing downloads until you click the update badge. Off = Studio never contacts GitHub for updates.
+- **Check for updates** (`updateChecksEnabled`) — packaged builds ask GitHub Releases for a newer version 15 s after launch and every hour. Nothing downloads until you click the update badge. Off = Studio never contacts GitHub for updates.
 - **Check provider connections** (`providerChecksEnabled`) — a `GET /models` with each configured provider's key when Home loads, when the provider list first shows a provider, and when an agent review opens. Off = providers are contacted only when you click **Test** or an agent runs.
 - **Live catalogs** (`remoteCatalogsEnabled`) — fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, which the current UI does not use). Off = only the copies bundled with the build and the last fetched copy.
+- **Spell-check dictionaries** (Linux only, `spellcheckDownloadsEnabled`) — a **Download** button. Linux spell check uses Hunspell dictionaries from Google's CDN; nothing is fetched until you click it. After that, a newly added spell-check language downloads the same way. Windows and macOS use the OS spell checker and never download.
 
 The first-party skill catalog is a default entry in **Settings → Skills**, fetched when you open the skill browser; remove it there to stop that request. [Network traffic](../NETWORK.md) lists every connection.
 

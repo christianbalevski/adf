@@ -393,6 +393,9 @@ export const IPC = {
   APP_UPDATE_DOWNLOAD: 'adf:app:update:download',
   APP_UPDATE_INSTALL: 'adf:app:update:install',
 
+  // Linux spell-check dictionaries: owner-initiated download from Settings → Privacy.
+  SPELLCHECK_DOWNLOAD: 'adf:app:spellcheck:download',
+
   // Emergency stop
   EMERGENCY_STOP: 'adf:emergency-stop'
 } as const

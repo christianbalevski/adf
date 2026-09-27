@@ -1,6 +1,6 @@
 import { app, BrowserWindow, crashReporter, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
 import { join } from 'path'
-import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace, readAppSetting } from './ipc'
+import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace, readAppSetting, writeAppSetting } from './ipc'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
@@ -9,6 +9,7 @@ import { resolveLoginShellPath } from './utils/login-shell-path'
 import { showOrCreateMainWindow } from './utils/main-window'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
+import { initSpellcheckDictionaries } from './services/spellcheck-dictionaries.service'
 
 // A console.log after the parent's stdout pipe is gone (app quitting, or the
 // dev harness restarting the main process underneath us) emits EIO/EPIPE on
@@ -530,6 +531,11 @@ app.whenReady().then(() => {
         'X-Content-Type-Options': 'nosniff'
       }
     })
+  })
+
+  initSpellcheckDictionaries({
+    isAllowed: () => readAppSetting('spellcheckDownloadsEnabled') === true,
+    allow: () => writeAppSetting('spellcheckDownloadsEnabled', true)
   })
 
   createWindow()

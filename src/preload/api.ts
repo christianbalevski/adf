@@ -1,4 +1,4 @@
-import type { AppUpdateState, AppUpdateCheckResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
+import type { AppUpdateState, AppUpdateCheckResult, SpellcheckDownloadResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
   QuickCreateResult, FileSharePrepareResult,
   AgentTemplateListResult,
   AgentTemplateContents,
@@ -638,6 +638,8 @@ export interface AdfApi {
   downloadUpdate: () => Promise<void>
   /** Restart into a downloaded update. Main does this itself after a download; exposed for completeness. */
   installUpdate: () => Promise<void>
+  /** Linux: allow and fetch the spell-check dictionaries (Google CDN). */
+  downloadSpellcheckDictionaries: () => Promise<SpellcheckDownloadResult>
   onUpdateState: (callback: (state: AppUpdateState) => void) => () => void
   getFullscreenState: () => Promise<boolean>
   setFullscreen: (fullscreen: boolean) => Promise<void>
