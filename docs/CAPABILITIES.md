@@ -1,6 +1,6 @@
 # What ADF Studio Can Do
 
-ADF (Agent Definition Format) packages an AI agent as a single portable file. Everything the agent is and knows, its instructions, memory, conversation history, files, timers, keys, and message history, lives inside one `.adf` file. ADF Studio is the desktop app that runs those files: it hosts the agents, gives you a place to talk to them, and lets you watch and steer a whole fleet at once.
+ADF, the Agent Document Format, packages an AI agent as a single portable file. Everything the agent is and knows lives inside one `.adf` file: its instructions, memory, conversation history, files, timers, keys, and message history. Each file pairs one agent with one primary document. ADF Studio is the desktop app that runs those files: it hosts the agents, gives you a place to talk to them, and lets you watch and steer a whole fleet at once.
 
 This page is a catalogue of capabilities. **Part 1** covers what an agent can do and what you can do with it, in plain terms. **Part 2** goes under the hood for people building on top of ADF, operating it headless, or auditing how it stays safe. Both parts are worth skimming regardless of your background; the split is about depth, not audience.
 
@@ -287,7 +287,7 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 - **Task-level authorization** — a task can be flagged once to require an authorized approver; the flag cannot be unset.
 - **Middleware gate** — only authorized files run as middleware by default; the setting is owner-only.
 
-## Messaging protocol (ALF)
+## Messaging protocol (ALF, the Agentic Lingua Franca)
 
 *Full reference: [Messaging](guides/messaging.md) · [LAN Discovery](guides/lan-discovery.md) · [Umbilical Events](guides/umbilical-events.md) · [ALF Spec](../ALF_SPEC_v0.1.md)*
 

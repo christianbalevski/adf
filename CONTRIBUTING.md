@@ -43,9 +43,10 @@ Keep it accurate in the same change that makes it wrong.
 - Not shipped: `**Status:** Proposal · Not yet implemented`.
 - Unsure: say unverified. Do not guess.
 
-Never treat a design document as evidence that a feature exists. Three of the
-eight status lines under `docs/design/` were wrong at once, and that produced
-false claims in user-facing documentation. Verify against `src/`.
+Never treat a design document as evidence that a feature exists. Three status
+lines under `docs/design/` were wrong at the same time, two of them calling a
+shipped feature a proposal, and that produced false claims in user-facing
+documentation. Verify against `src/`.
 
 The same rule applies to [docs/CAPABILITIES.md](docs/CAPABILITIES.md): every
 claim there should trace to code, not to a proposal.
