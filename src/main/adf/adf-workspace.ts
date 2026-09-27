@@ -222,6 +222,21 @@ export function mcpRuntimeIdentityAccess(purpose: string): { readUnlocked: boole
   return { readUnlocked: false, writeUnlocked: false }
 }
 
+/**
+ * Key purposes an agent's own code may never WRITE (set_identity from code,
+ * shell `export`). The whole `crypto:*` namespace is runtime-owned key material
+ * — signing keys, envelope descriptors, KDF salt/params — and letting code
+ * overwrite any of it lets an agent swap its identity or wedge its own
+ * envelopes. Owner/UI and runtime writers use setIdentity directly and are not
+ * subject to this; only the code-facing setIdentityFromCode sink enforces it.
+ * This is the write-side mirror of AdfWorkspace.CODE_FORBIDDEN_PURPOSES, which
+ * governs code reads.
+ */
+const CODE_FORBIDDEN_WRITE_RE = /^crypto:/
+export function isCodeForbiddenIdentityWrite(purpose: string): boolean {
+  return CODE_FORBIDDEN_WRITE_RE.test(purpose)
+}
+
 export class AdfWorkspace {
   private db: AdfDatabase
   private filePath: string
@@ -398,6 +413,29 @@ export class AdfWorkspace {
       return
     }
     this.db.setIdentity(purpose, value, codeAccess)
+  }
+
+  /**
+   * Code-facing identity write (set_identity from code, shell `export`).
+   * Rejects runtime-owned key material — the whole `crypto:*` namespace and
+   * owner-locked reserved MCP runtime purposes — so agent code can store its
+   * own credentials but never overwrite signing/envelope/KDF rows or a locked
+   * MCP token store. Owner/UI/runtime callers keep using setIdentity directly.
+   * Throws a plain Error on a forbidden purpose; created keys get code_access
+   * so the agent can read them back with get_identity.
+   */
+  setIdentityFromCode(purpose: string, value: string): void {
+    if (isCodeForbiddenIdentityWrite(purpose)) {
+      throw new Error(
+        `"${purpose}" is runtime-managed key material (crypto:*) and cannot be written from agent code.`
+      )
+    }
+    if (isReservedMcpRuntimePurpose(purpose) && !mcpRuntimeIdentityAccess(purpose).writeUnlocked) {
+      throw new Error(
+        `"${purpose}" is a runtime-managed MCP identity, locked by owner policy — agent code may not write it.`
+      )
+    }
+    this.setIdentity(purpose, value, true)
   }
 
   /**
@@ -2355,6 +2393,18 @@ export class AdfWorkspace {
 
   querySQL(sql: string, params?: unknown[]): unknown[] {
     return this.db.querySQL(sql, params)
+  }
+
+  /**
+   * Static analysis of the objects a statement resolves to (see
+   * AdfDatabase.analyzeStatement). Used by db_query/db_execute to enforce
+   * table-access rules on what the statement touches, not on its text.
+   */
+  analyzeSQL(
+    sql: string,
+    params?: unknown[]
+  ): { readonly: boolean; reads: Set<string>; writes: Set<string>; usesVirtualTable: boolean } {
+    return this.db.analyzeStatement(sql, params)
   }
 
   executeSQL(sql: string, params?: unknown[]): { changes: number } {
