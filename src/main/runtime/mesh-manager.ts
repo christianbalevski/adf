@@ -332,18 +332,10 @@ export class MeshManager extends EventEmitter {
     }
     this.handleToFilePath.set(handle, filePath)
 
-    // Ensure messaging config exists so the agent can participate
-    if (!config.messaging) {
-      config.messaging = { receive: false, mode: 'proactive' }
-    }
-    // Ensure mode is set (for backward compatibility)
-    if (!config.messaging.mode) {
-      config.messaging.mode = 'proactive'
-    }
-    config.messaging.receive = true
-
-    // Ensure communication tools are available in config and runtime registry.
-    this.ensureCommunicationTools(config)
+    // Ensure messaging config + communication tools exist so the agent can
+    // participate — persisted, so the owner inspects what the agent runs with.
+    this.applyMeshDefaults(config)
+    this.persistMeshDefaults(filePath, workspace)
     this.registerCommunicationTools(filePath, config, toolRegistry, isMessageTriggeredFn ?? undefined)
 
     // Register on message bus (channels dropped — all agents receive broadcasts)
@@ -442,14 +434,8 @@ export class MeshManager extends EventEmitter {
     this.handleToFilePath.set(handle, filePath)
 
     if (this.enabled) {
-      if (!config.messaging) {
-        config.messaging = { receive: false, mode: 'proactive' }
-      }
-      if (!config.messaging.mode) {
-        config.messaging.mode = 'proactive'
-      }
-      config.messaging.receive = true
-      this.ensureCommunicationTools(config)
+      this.applyMeshDefaults(config)
+      this.persistMeshDefaults(filePath, workspace)
       this.registerCommunicationTools(filePath, config, toolRegistry, () => false)
     }
 
@@ -2264,6 +2250,59 @@ export class MeshManager extends EventEmitter {
     } catch (err) {
       console.warn(`[Mesh] Failed to persist ws_connection "${cfg.id}" for ${filePath}:`, err)
     }
+  }
+
+  /**
+   * Mesh participation needs `messaging.receive` on, a messaging mode, and the
+   * communication tool declarations. Applied to the RUNNING config only: the
+   * receive override is a runtime policy while on the mesh (recorded in the
+   * effective-runtime snapshot as mesh.forces_messaging_receive), never
+   * written over the owner's own `receive` choice.
+   */
+  private applyMeshDefaults(config: AgentConfig): void {
+    if (!config.messaging) {
+      config.messaging = { receive: false, mode: 'proactive' }
+    }
+    // Ensure mode is set (for backward compatibility)
+    if (!config.messaging.mode) {
+      config.messaging.mode = 'proactive'
+    }
+    config.messaging.receive = true
+    this.ensureCommunicationTools(config)
+  }
+
+  /**
+   * Persist only what is ABSENT from the file — a missing messaging section,
+   * a missing mode, missing communication tool declarations — so defaults the
+   * agent runs with are inspectable without ever overwriting a value the
+   * owner set. Read-modify-write against a fresh read so unrelated concurrent
+   * edits survive; the host is told so an open editor does not save a stale
+   * copy over it. Best-effort: a persistence failure must not keep the agent
+   * off the mesh.
+   */
+  private persistMeshDefaults(filePath: string, workspace: AdfWorkspace): void {
+    try {
+      const fresh = workspace.getAgentConfig()
+      const before = JSON.stringify([fresh.messaging, fresh.tools])
+      if (!fresh.messaging) {
+        fresh.messaging = { receive: true, mode: 'proactive' }
+      } else if (!fresh.messaging.mode) {
+        fresh.messaging.mode = 'proactive'
+      }
+      this.ensureCommunicationTools(fresh)
+      if (JSON.stringify([fresh.messaging, fresh.tools]) === before) return
+      workspace.setAgentConfig(fresh)
+      this.configPersistedListener?.(filePath, fresh)
+    } catch (err) {
+      console.warn(`[Mesh] Failed to persist mesh defaults for ${filePath}:`, err)
+    }
+  }
+
+  private configPersistedListener: ((filePath: string, config: AgentConfig) => void) | null = null
+
+  /** Host hook: called after the mesh writes defaults into an agent's file. */
+  setConfigPersistedListener(listener: ((filePath: string, config: AgentConfig) => void) | null): void {
+    this.configPersistedListener = listener
   }
 
   private ensureCommunicationTools(config: AgentConfig): void {

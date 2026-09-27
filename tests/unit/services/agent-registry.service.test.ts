@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { AgentRegistryService, AGENT_REGISTRY_INDEX_URL, sha256Hex } from '../../../src/main/services/agent-registry.service'
+import { AgentRegistryService, AGENT_REGISTRY_INDEX_URL, REMOTE_CATALOGS_OFF, sha256Hex } from '../../../src/main/services/agent-registry.service'
 import { parseAgentRegistryIndex, compareAppVersions } from '../../../src/shared/schemas/agent-registry.schema'
 import type { GuardedFetchResult } from '../../../src/main/utils/guarded-fetch'
 
@@ -118,6 +118,28 @@ describe('AgentRegistryService', () => {
       contentType: 'application/json',
     }
   }
+
+  it('remote catalogs off: no fetch, cached index still shown, remote-only entries refuse to download', async () => {
+    writeFileSync(join(userDataDir, AgentRegistryService.CACHE_FILE_NAME), JSON.stringify({
+      fetchedAt: 1_000,
+      document: { version: 1, updated_at: '2026-09-17', agents: [entry('remote-only', remoteBytes)] },
+    }))
+    const fetchFn = vi.fn(async () => ({ error: 'should not be called' }) as GuardedFetchResult)
+    const svc = new AgentRegistryService({
+      bundledDir,
+      userDataDir,
+      appVersion: '0.6.3',
+      fetchFn,
+      isRemoteEnabled: () => false,
+    })
+    const result = await svc.getRegistry()
+    expect(fetchFn).not.toHaveBeenCalled()
+    expect(result.remoteError).toBe(REMOTE_CATALOGS_OFF)
+    expect(result.agents.map((a) => `${a.id}:${a.source}`)).toEqual(['hello:bundled', 'remote-only:remote'])
+    expect((await svc.resolveFile('hello')).source).toBe('bundled')
+    await expect(svc.resolveFile('remote-only')).rejects.toThrow(REMOTE_CATALOGS_OFF)
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
 
   it('serves the bundled gallery when the network is down, hiding entries whose file is not shipped', async () => {
     const svc = service(async () => ({ error: 'offline' }))

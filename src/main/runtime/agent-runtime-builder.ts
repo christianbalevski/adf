@@ -239,6 +239,7 @@ export class AgentRuntimeBuilder {
         config,
         provider,
         registry,
+        ...(this.settings ? { effectiveRuntime: { settings: this.settings } } : {}),
         restoreLoop: opts.restoreLoop,
         basePrompt: this.basePrompt,
         toolPrompts: this.toolPrompts,

@@ -1062,6 +1062,14 @@ export class AgentExecutor extends EventEmitter {
     this.provider = provider
     // New provider instance — must re-validate on the next turn.
     this.providerValidated = false
+    this.providerChangeListener?.(provider)
+  }
+
+  private providerChangeListener: ((provider: LLMProvider) => void) | null = null
+
+  /** Called after every updateProvider (one listener; the assembler owns it). */
+  setProviderChangeListener(listener: ((provider: LLMProvider) => void) | null): void {
+    this.providerChangeListener = listener
   }
 
   /** Live provider accessor. The loop pool shares MAIN's provider with every

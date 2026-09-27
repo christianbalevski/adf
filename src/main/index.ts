@@ -1,7 +1,7 @@
 import { app, BrowserWindow, crashReporter, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
 import { execSync } from 'child_process'
 import { join } from 'path'
-import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace } from './ipc'
+import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace, readAppSetting } from './ipc'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
@@ -508,6 +508,8 @@ app.whenReady().then(() => {
   createWindow()
 
   initAppUpdater({
+    // Read per check, not cached: turning it off in Settings stops the next one.
+    isCheckEnabled: () => readAppSetting('updateChecksEnabled') !== false,
     send: (state) => {
       if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
         mainWindow.webContents.send(IPC.APP_UPDATE_STATE, state)

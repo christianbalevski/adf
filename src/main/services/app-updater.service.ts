@@ -15,7 +15,9 @@
  *   behind a pkexec password prompt.
  *
  * Unpackaged (`npm run dev`) builds never contact GitHub: electron-updater
- * refuses to check outside a packed app, and we don't even register.
+ * refuses to check outside a packed app, and we don't even register. Packaged
+ * builds skip every scheduled check while the `updateChecksEnabled` setting
+ * is false.
  */
 import { app, ipcMain } from 'electron'
 import { autoUpdater } from 'electron-updater'
@@ -23,12 +25,24 @@ import type { ProgressInfo, UpdateInfo } from 'electron-updater'
 import { IPC } from '../../shared/constants/ipc-channels'
 import type { AppUpdateState } from '../../shared/types/ipc.types'
 
+/**
+ * electron-updater sends `x-user-staging-id` on every check: by default a
+ * random UUID it persists in userData/.updaterId — a stable per-install
+ * identifier handed to GitHub. Every install sends this same constant instead
+ * (a valid UUID, so staged-rollout math still parses; releases are not staged).
+ */
+const SHARED_STAGING_ID = '00000000-0000-5000-8000-000000000000'
 const FIRST_CHECK_DELAY_MS = 15_000
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 /** Lets the badge show "Restarting…" before the shutdown overlay takes over. */
 const INSTALL_GRACE_MS = 1_500
 
 export interface AppUpdaterHooks {
+  /**
+   * Owner opt-out for the background check (Settings → General → Privacy).
+   * False means the scheduled checks never contact GitHub.
+   */
+  isCheckEnabled: () => boolean
   /** Push a state transition to the renderer (no-op if the window is gone). */
   send: (state: AppUpdateState) => void
   /**
@@ -62,6 +76,7 @@ async function checkQuietly(): Promise<void> {
   // A failed check (offline, GitHub hiccup, rate limit) is not the user's
   // problem: log it and stay idle. Only download failures surface as errors.
   if (state.status !== 'idle' && state.status !== 'error') return
+  if (hooks && !hooks.isCheckEnabled()) return
   try {
     await autoUpdater.checkForUpdates()
   } catch (err) {
@@ -124,6 +139,8 @@ export function initAppUpdater(h: AppUpdaterHooks): void {
     autoUpdater.setFeedURL({ provider: 'generic', url: feedOverride })
   }
 
+  ;(autoUpdater as unknown as { stagingUserIdPromise: { value: Promise<string> } }).stagingUserIdPromise =
+    { value: Promise.resolve(SHARED_STAGING_ID) }
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
   autoUpdater.allowPrerelease = false

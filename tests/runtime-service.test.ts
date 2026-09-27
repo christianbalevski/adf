@@ -29,6 +29,8 @@ import { RuntimeGate } from '../src/main/runtime/runtime-gate'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
 import type { CreateAgentOptions } from '../src/shared/types/adf-v02.types'
 import { isConfigReviewed } from '../src/main/services/agent-review'
+import { resolveAgentProviderConfig } from '../src/main/providers/provider-factory'
+import type { ProviderConfig } from '../src/shared/types/ipc.types'
 import type { Tool } from '../src/main/tools/tool.interface'
 
 function createTempAgent(dir: string, name: string, createOptions?: Partial<CreateAgentOptions>) {
@@ -64,6 +66,55 @@ describe('RuntimeService', () => {
     }).requireAgent(ref.id)
     expect(managed.agent.profile).toBe('headlessLive')
 
+    await runtime.unloadAgent(ref.id)
+  })
+
+  it("hands the provider factory the loaded file so the agent's own provider entry wins", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-provider-ctx-'))
+    const filePath = join(dir, 'agent-1.adf')
+    const created = createHeadlessAgent({ filePath, name: 'agent-1', provider: new MockLLMProvider() })
+    const cfg = created.workspace.getAgentConfig()
+    created.workspace.setAgentConfig({
+      ...cfg,
+      model: { ...cfg.model, provider: 'custom:own' },
+      providers: [{ id: 'custom:own', type: 'openai-compatible', name: 'Own', baseUrl: 'https://own.example/v1' }],
+    })
+    const agentId = cfg.id
+    created.dispose()
+
+    const appProvider: ProviderConfig = {
+      id: 'custom:own', type: 'openai-compatible', name: 'App', baseUrl: 'https://app.example/v1', apiKey: 'app-key',
+    }
+    const settings = {
+      get(key: string): unknown {
+        if (key === 'reviewedAgents') return [agentId]
+        if (key === 'providers') return [appProvider]
+        return undefined
+      },
+      getProvider: (id: string) => (id === appProvider.id ? appProvider : undefined),
+    }
+    const seen: Array<ProviderConfig | undefined> = []
+    const runtime = new RuntimeService({
+      settings,
+      providerFactory: (config, _filePath, context) => {
+        seen.push(context ? resolveAgentProviderConfig(config, context.workspace, context.derivedKey, settings) : undefined)
+        return new MockLLMProvider()
+      },
+    })
+
+    const ref = await runtime.loadAgent(filePath)
+    // The file's entry wins. Its base URL differs from the runtime's provider
+    // of the same id, so the runtime's key is NOT lent to it.
+    expect(seen[0]).toMatchObject({ baseUrl: 'https://own.example/v1', name: 'Own', apiKey: '' })
+
+    // Correcting the entry to the runtime's endpoint rebuilds the provider
+    // (providers[] edits count as a provider change) and the key is lent.
+    const current = runtime.getAgent(ref.id)!.config
+    await runtime.setAgentConfig(ref.id, {
+      ...current,
+      providers: [{ id: 'custom:own', type: 'openai-compatible', name: 'Own', baseUrl: 'https://app.example/v1/' }],
+    })
+    expect(seen.at(-1)).toMatchObject({ baseUrl: 'https://app.example/v1/', apiKey: 'app-key' })
     await runtime.unloadAgent(ref.id)
   })
 

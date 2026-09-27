@@ -936,6 +936,16 @@ export class PodmanService extends EventEmitter {
    * failures answer from memory; otherwise one inspect settles it and the
    * answer is cached until an exec or lifecycle call observes a change.
    */
+  /**
+   * Whether the shared container was provisioned before (running or stopped).
+   * Starting it then is local; creating it may download a machine image, a
+   * base image and apt packages, which only first use should trigger.
+   */
+  async sharedContainerExists(): Promise<boolean> {
+    const { phase } = await this.containerPhase(SHARED_CONTAINER)
+    return phase !== 'absent' && phase !== 'failed'
+  }
+
   async containerPhase(name: string): Promise<ContainerPhaseInfo> {
     // Memory answers for every phase the service itself drove; only an
     // unknown or absent name pays for an inspect (absent is cheap to be wrong
