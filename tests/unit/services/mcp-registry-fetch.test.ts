@@ -229,4 +229,27 @@ describe('McpRegistryFetchService', () => {
 
     expect(result.source).toBe('bundled')
   })
+  it('remote catalogs off: never fetches, serves the cached copy, then bundled', async () => {
+    let enabled = false
+    const svc = new McpRegistryFetchService({
+      userDataDir: dir,
+      fetchFn: fetchMock as unknown as typeof fetch,
+      isRemoteEnabled: () => enabled,
+    })
+
+    const bundled = await svc.refresh()
+    expect(bundled.source).toBe('bundled')
+
+    seedCache(1_000)
+    const cached = await svc.refresh()
+    expect(cached.source).toBe('cache')
+    expect(cached.entries.map((e) => e.name)).toEqual(['remote-only'])
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    // Read per refresh: turning it back on fetches without a restart.
+    enabled = true
+    fetchMock.mockResolvedValueOnce(jsonResponse(REMOTE_DOC))
+    expect((await svc.refresh()).source).toBe('remote')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
 })

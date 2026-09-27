@@ -133,11 +133,11 @@ export function AboutTab() {
           the agent.
         </p>
         <p className="mt-2">
-          The thesis: ADF is less about what an agent can <em>do</em> and more
-          about what an agent <em>is</em>. If an agent is a file with a defined
-          shape, any runtime conforming to the spec can run it — the same way
-          any photo viewer can open a JPEG. ADF Studio is the reference
-          implementation; the runtime, daemon, and CLI ship alongside it.
+          ADF is less about what an agent can <em>do</em> and more about what an
+          agent <em>is</em>. If an agent is a file with a defined shape, any
+          runtime that implements the spec can run it, the same way any photo
+          viewer can open a JPEG. ADF Studio is the reference implementation.
+          The runtime, daemon, and CLI ship alongside it.
         </p>
       </section>
 
@@ -162,6 +162,9 @@ export function AboutTab() {
           </li>
           <li>
             <strong className="text-neutral-800 dark:text-neutral-100">Files</strong> — internal file storage scoped to the agent.
+          </li>
+          <li>
+            <strong className="text-neutral-800 dark:text-neutral-100">Timers</strong> — scheduled wake-ups, from a one-off delay to a cron expression.
           </li>
           <li>
             <strong className="text-neutral-800 dark:text-neutral-100">Identity</strong> — a cryptographic DID for peer authentication.
@@ -207,22 +210,37 @@ export function AboutTab() {
         <h4 className="font-semibold text-neutral-800 dark:text-neutral-100 mb-1.5">What agents can do</h4>
         <ul className="space-y-1.5 ml-1 text-xs text-neutral-600 dark:text-neutral-400">
           <li>
-            <strong className="text-neutral-800 dark:text-neutral-100">Code execution</strong> — sandboxed JavaScript via <code>sys_code</code> and <code>sys_lambda</code>, with optional npm packages.
+            <strong className="text-neutral-800 dark:text-neutral-100">Code execution</strong> — sandboxed JavaScript and TypeScript via <code>sys_code</code> and <code>sys_lambda</code>, with optional npm packages.
+          </li>
+          <li>
+            <strong className="text-neutral-800 dark:text-neutral-100">Lambdas</strong> — scripts the runtime runs on a trigger, a timer, or a message, with no model call and no token cost.
+          </li>
+          <li>
+            <strong className="text-neutral-800 dark:text-neutral-100">Triggers &amp; timers</strong> — run on schedule, on file change, on inbox arrival, on tool calls, and more.
           </li>
           <li>
             <strong className="text-neutral-800 dark:text-neutral-100">MCP integration</strong> — connect to Model Context Protocol servers for filesystem, web, GitHub, Slack, and more.
           </li>
           <li>
-            <strong className="text-neutral-800 dark:text-neutral-100">Compute containers</strong> — isolate each agent in its own podman container, with optional host-process access.
+            <strong className="text-neutral-800 dark:text-neutral-100">Skills</strong> — drop a <code>SKILL.md</code> folder into an agent to teach it a procedure; mute or remove it at any time.
           </li>
           <li>
-            <strong className="text-neutral-800 dark:text-neutral-100">Channels</strong> — connect agents to Email, Telegram, or Discord.
+            <strong className="text-neutral-800 dark:text-neutral-100">Inner loops</strong> — up to 16 named side loops per agent, each with its own goal and tools, sharing one file.
           </li>
           <li>
-            <strong className="text-neutral-800 dark:text-neutral-100">ALF mesh</strong> — agents message each other's inboxes over the Agent Loop Format protocol and discover peers via mDNS.
+            <strong className="text-neutral-800 dark:text-neutral-100">Compute containers</strong> — run commands in a shared podman container, a container dedicated to one agent, or on the host if you allow it.
           </li>
           <li>
-            <strong className="text-neutral-800 dark:text-neutral-100">Triggers &amp; timers</strong> — run on schedule, on file change, on inbox arrival, on tool calls, and more.
+            <strong className="text-neutral-800 dark:text-neutral-100">Desktop &amp; browser</strong> — a visible Linux desktop and a managed Chromium an agent can drive, and you can watch or take over.
+          </li>
+          <li>
+            <strong className="text-neutral-800 dark:text-neutral-100">Channels</strong> — connect agents to Telegram, Discord, Slack, WhatsApp, or email.
+          </li>
+          <li>
+            <strong className="text-neutral-800 dark:text-neutral-100">ALF mesh</strong> — agents message each other's inboxes over ALF (Agentic Lingua Franca) and find peers on the local network or across a tailnet.
+          </li>
+          <li>
+            <strong className="text-neutral-800 dark:text-neutral-100">HTTP serving</strong> — an agent can serve a site, files, or API routes, and hold WebSocket connections.
           </li>
         </ul>
       </section>

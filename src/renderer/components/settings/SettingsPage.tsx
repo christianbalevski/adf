@@ -58,7 +58,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Personal',
     items: [
-      { id: 'general', label: 'General', description: 'Appearance, notifications, files, and usage', keywords: 'theme tokens', docs: DOCS.settingsGeneral },
+      { id: 'general', label: 'General', description: 'Appearance, notifications, privacy, files, and usage', keywords: 'theme tokens privacy updates telemetry network catalogs', docs: DOCS.settingsGeneral },
       { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation', docs: DOCS.settingsIdentity },
     ],
   },
@@ -1317,6 +1317,9 @@ export function SettingsPage() {
   const [computeContainerImage, setComputeContainerImage] = useState('docker.io/library/node:20-alpine')
   const [computeExecutionTargets, setComputeExecutionTargets] = useState<ExecutionTarget[]>([])
   const [nativeNotifications, setNativeNotifications] = useState(true)
+  const [updateChecks, setUpdateChecks] = useState(true)
+  const [remoteCatalogs, setRemoteCatalogs] = useState(true)
+  const [providerChecks, setProviderChecks] = useState(true)
   const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string }>({ running: false, port: 7295, host: '127.0.0.1' })
   const [meshAutoStart, setMeshAutoStart] = useState(true)
   const [meshLan, setMeshLan] = useState(false)
@@ -1466,6 +1469,9 @@ export function SettingsPage() {
         (settings.toolPrompts as Record<string, string>) ?? { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS }
       )
       setNativeNotifications(settings.nativeNotificationsEnabled !== false)
+      setUpdateChecks(settings.updateChecksEnabled !== false)
+      setRemoteCatalogs(settings.remoteCatalogsEnabled !== false)
+      setProviderChecks(settings.providerChecksEnabled !== false)
       setMeshAutoStart(settings.meshEnabled !== false)
       setMeshLan(!!settings.meshLan)
       setMeshPort((settings.meshPort as number) ?? 7295)
@@ -1826,6 +1832,71 @@ export function SettingsPage() {
                 />
                 <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
                   {nativeNotifications ? 'On' : 'Off'}
+                </span>
+              </label>
+            </SettingsRow>
+          </SettingsGroup>
+
+          <SettingsGroup title="Privacy" description="Studio sends no telemetry. These switches cover the requests it makes on its own; docs/NETWORK.md lists every connection.">
+            <SettingsRow
+              label="Check for updates"
+              description="Ask GitHub Releases for a newer version shortly after launch and every 6 hours. Nothing downloads until you click the update badge."
+              help="Off = Studio never contacts GitHub for updates. Download new versions manually from the releases page."
+            >
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={updateChecks}
+                  onChange={async (e) => {
+                    const enabled = e.target.checked
+                    setUpdateChecks(enabled)
+                    await writeSetting({ updateChecksEnabled: enabled })
+                  }}
+                  className="rounded text-blue-500"
+                />
+                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
+                  {updateChecks ? 'On' : 'Off'}
+                </span>
+              </label>
+            </SettingsRow>
+            <SettingsRow
+              label="Check provider connections"
+              description="Test each configured provider (a GET /models with its key) when Home, the provider list, or an agent review opens. Off = providers are only contacted when you click Test or an agent runs."
+            >
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={providerChecks}
+                  onChange={async (e) => {
+                    const enabled = e.target.checked
+                    setProviderChecks(enabled)
+                    await writeSetting({ providerChecksEnabled: enabled })
+                  }}
+                  className="rounded text-blue-500"
+                />
+                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
+                  {providerChecks ? 'On' : 'Off'}
+                </span>
+              </label>
+            </SettingsRow>
+            <SettingsRow
+              label="Live catalogs"
+              description="Fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, when used). Off = only the copies bundled with this build (and the last fetched copy)."
+              help="Skill catalogs are listed separately under Skills and can be removed there."
+            >
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={remoteCatalogs}
+                  onChange={async (e) => {
+                    const enabled = e.target.checked
+                    setRemoteCatalogs(enabled)
+                    await writeSetting({ remoteCatalogsEnabled: enabled })
+                  }}
+                  className="rounded text-blue-500"
+                />
+                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
+                  {remoteCatalogs ? 'On' : 'Off'}
                 </span>
               </label>
             </SettingsRow>

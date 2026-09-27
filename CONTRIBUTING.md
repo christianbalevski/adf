@@ -33,6 +33,24 @@ Developer account; see `electron-builder.yml` for configuration.
 - New behavior should include tests.
 - Match the existing code style (TypeScript strict mode, no implicit any).
 
+## Documentation and design-doc status
+
+Documents under `docs/design/` describe proposals, and their status line is
+load-bearing: both readers and coding agents use it to decide what exists.
+Keep it accurate in the same change that makes it wrong.
+
+- Shipped: `**Status: SHIPPED.**` followed by the file that implements it.
+- Not shipped: `**Status:** Proposal · Not yet implemented`.
+- Unsure: say unverified. Do not guess.
+
+Never treat a design document as evidence that a feature exists. Three status
+lines under `docs/design/` were wrong at the same time, two of them calling a
+shipped feature a proposal, and that produced false claims in user-facing
+documentation. Verify against `src/`.
+
+The same rule applies to [docs/CAPABILITIES.md](docs/CAPABILITIES.md): every
+claim there should trace to code, not to a proposal.
+
 ## DCO sign-off
 
 All commits must be signed off under the

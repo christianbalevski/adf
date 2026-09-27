@@ -25,7 +25,8 @@ import { RuntimeGate } from './runtime-gate'
 import { approvalHub } from './approval-hub'
 import { SystemScopeHandler } from './system-scope-handler'
 import type { CodeSandboxService } from './code-sandbox'
-import { createProvider } from '../providers/provider-factory'
+import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
+import { ensureCoreToolDeclarations } from './core-tool-declarations'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { createScratchDir, removeScratchDir } from '../utils/scratch-dir'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
@@ -1144,11 +1145,7 @@ export class BackgroundAgentManager extends EventEmitter {
     workspace: AdfWorkspace,
     derivedKey: Buffer | null
   ): ProviderConfig | undefined {
-    const adfProvider = config.providers?.find((p) => p.id === config.model.provider)
-    if (!adfProvider) return undefined
-    const apiKey = workspace.getIdentityDecrypted(`provider:${adfProvider.id}:apiKey`, derivedKey) ?? ''
-    if (apiKey) return { ...adfProvider, apiKey }
-    return { ...adfProvider, apiKey: this.settings.getProvider(adfProvider.id)?.apiKey ?? '' }
+    return resolveAgentProviderConfig(config, workspace, derivedKey, this.settings)
   }
 
   private async setupManagedAgent(
@@ -1159,18 +1156,8 @@ export class BackgroundAgentManager extends EventEmitter {
     derivedKey?: Buffer | null,
     envelopesLocked = false
   ): Promise<BackgroundManagedAgent> {
-    // Ensure inbox tools are in config
-    const toolNames = config.tools.map((t) => t.name)
-    for (const toolName of ['msg_list', 'msg_read', 'msg_update']) {
-      if (!toolNames.includes(toolName)) {
-        config.tools.push({ name: toolName, enabled: true, visible: true })
-      }
-    }
-    for (const toolName of ['stream_bind', 'stream_unbind', 'stream_bindings']) {
-      if (!toolNames.includes(toolName)) {
-        config.tools.push({ name: toolName, enabled: false })
-      }
-    }
+    // Ensure inbox tools are in config — and in the file (core-tool-declarations.ts).
+    ensureCoreToolDeclarations(config, workspace, filePath)
 
     // Create per-agent tool registry with built-in tools (NO communication tools)
     const agentToolRegistry = new ToolRegistry()
@@ -1809,6 +1796,7 @@ export class BackgroundAgentManager extends EventEmitter {
       workspace,
       config,
       provider,
+      effectiveRuntime: { settings: this.settings },
       registry: agentToolRegistry,
       session,
       basePrompt: this.basePrompt,

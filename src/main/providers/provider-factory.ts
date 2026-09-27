@@ -7,6 +7,7 @@ import type { LLMProvider } from './provider.interface'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { ProviderConfig } from '../../shared/types/ipc.types'
 import { AiSdkProvider } from './ai-sdk-provider'
+import { recordProviderOrigin } from './provider-origin'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { getChatGptAuthManager } from './chatgpt-subscription/auth-manager'
 import { createChatGPTSubscriptionProvider } from './chatgpt-subscription'
@@ -107,6 +108,76 @@ function createParamInjector(extraParams: Record<string, unknown>): typeof globa
   }
 }
 
+/** The slice of AdfWorkspace provider resolution reads. */
+export interface ProviderIdentitySource {
+  getIdentityDecrypted(purpose: string, derivedKey: Buffer | null): string | null
+  /** Present on AdfWorkspace: lets resolution tell "no key stored" from "key stored but locked". */
+  getIdentityRow?(purpose: string): unknown
+}
+
+/** Types whose builder ignores `baseUrl` (fixed first-party endpoint). */
+const FIXED_ENDPOINT_TYPES = new Set(['anthropic', 'openai', 'chatgpt-subscription', 'grok-subscription'])
+
+function normalizeBaseUrl(url: string | undefined): string {
+  const trimmed = (url ?? '').trim().replace(/\/+$/, '')
+  try {
+    const u = new URL(trimmed)
+    return `${u.protocol}//${u.host.toLowerCase()}${u.pathname.replace(/\/+$/, '')}`
+  } catch {
+    return trimmed.toLowerCase()
+  }
+}
+
+/**
+ * Whether an agent's key-less provider copy may use the runtime's key for the
+ * same id. Only when the copy would send it to the SAME endpoint: same type,
+ * and — for types that honor baseUrl — the same base URL. Matching on id
+ * alone would let a crafted .adf (or a child spawned with a tampered
+ * providers[] entry) name the owner's provider id with its own base URL and
+ * receive the owner's key.
+ */
+export function mayBorrowAppKey(
+  agentEntry: Pick<ProviderConfig, 'type' | 'baseUrl'>,
+  appProvider: Pick<ProviderConfig, 'type' | 'baseUrl'> | undefined
+): boolean {
+  if (!appProvider || agentEntry.type !== appProvider.type) return false
+  if (FIXED_ENDPOINT_TYPES.has(agentEntry.type)) return true
+  return normalizeBaseUrl(agentEntry.baseUrl) === normalizeBaseUrl(appProvider.baseUrl)
+}
+
+/**
+ * The agent's own provider entry (`config.providers[]`, ADF-stored metadata)
+ * plus its key, or undefined when the file carries no entry for the selected
+ * provider id. The key lives in adf_identity; when the entry carries none —
+ * the normal shape for an agent created from the app default provider, or one
+ * that arrived from elsewhere — the runtime's key for the same provider id is
+ * used. Every host (Studio foreground/background, daemon) resolves through
+ * this, so an agent runs against the same base URL, params and key wherever
+ * it is loaded.
+ */
+export function resolveAgentProviderConfig(
+  config: AgentConfig,
+  workspace: ProviderIdentitySource,
+  derivedKey: Buffer | null,
+  settings: ProviderSettingsStore
+): ProviderConfig | undefined {
+  const adfProvider = config.providers?.find(p => p.id === config.model.provider)
+  if (!adfProvider) return undefined
+  const purpose = `provider:${adfProvider.id}:apiKey`
+  const stored = workspace.getIdentityDecrypted(purpose, derivedKey)
+  if (stored) return { ...adfProvider, apiKey: stored }
+  // The agent HAS a key that cannot be opened right now (password-locked,
+  // envelope sealed on this runtime — decrypts to null, not ''): fail closed.
+  // Borrowing here would send the runtime's key to an endpoint chosen for a
+  // different key.
+  if (stored === null && workspace.getIdentityRow?.(purpose)) return { ...adfProvider, apiKey: '' }
+  // No key stored in the ADF — the normal shape for an agent created from the
+  // app's default provider. Use the runtime's key of the same provider id,
+  // but only when this copy targets the same endpoint (mayBorrowAppKey).
+  const appProvider = settings.getProvider(adfProvider.id)
+  return { ...adfProvider, apiKey: mayBorrowAppKey(adfProvider, appProvider) ? appProvider?.apiKey ?? '' : '' }
+}
+
 /**
  * Which ProviderConfig actually drives a call.
  *
@@ -114,9 +185,9 @@ function createParamInjector(extraParams: Record<string, unknown>): typeof globa
  * agent's config + adf_identity) wins for every field it carries. The one
  * exception is a missing key: Studio copies the default provider into every
  * new agent WITHOUT its key ("sans secrets"), so a key-less copy borrows the
- * key of the app provider with the same id. Only the key is borrowed; model,
- * params, base URL, and delay stay the agent's. A copy that has its own key
- * never sees the app key.
+ * key of the app provider with the same id — only when it targets the same
+ * endpoint (mayBorrowAppKey). Only the key is borrowed; model, params, and
+ * delay stay the agent's. A copy that has its own key never sees the app key.
  */
 export function resolveEffectiveProviderConfig(
   providerKey: string,
@@ -125,7 +196,7 @@ export function resolveEffectiveProviderConfig(
 ): ProviderConfig | undefined {
   const appProvider = settings.getProvider(providerKey)
   if (!resolvedProvider) return appProvider
-  if (!resolvedProvider.apiKey && appProvider?.apiKey) {
+  if (!resolvedProvider.apiKey && appProvider?.apiKey && mayBorrowAppKey(resolvedProvider, appProvider)) {
     return { ...resolvedProvider, apiKey: appProvider.apiKey }
   }
   return resolvedProvider
@@ -150,6 +221,22 @@ export function createProvider(
       `Provider "${providerKey}" not found. Configure it in Settings → Providers.`
     )
   }
+
+  const provider = buildProvider(config, providerKey, cfg)
+  // Hosts fill a key-less agent copy with the app key before handing it over,
+  // so an agent key equal to the app key counts as borrowed from the app.
+  const appKey = settings.getProvider(providerKey)?.apiKey
+  const { apiKey, ...publicCfg } = cfg
+  recordProviderOrigin(provider, {
+    source: resolvedProvider ? 'agent' : 'app',
+    config: publicCfg,
+    apiKeySource: !apiKey ? 'none' : resolvedProvider && apiKey !== appKey ? 'agent' : 'app',
+    paramsSource: config.model.params !== undefined ? 'agent_model' : cfg.params?.length ? 'provider' : 'none',
+  })
+  return provider
+}
+
+function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderConfig): LLMProvider {
 
   const modelId = config.model.model_id || cfg.defaultModel || ''
   const delayMs = cfg.requestDelayMs ?? 0

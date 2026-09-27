@@ -10,6 +10,9 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 
 ## Documentation
 
+- [What ADF Studio Can Do](CAPABILITIES.md) — the full capability catalogue: what an agent can do and what you can do with it, then the mechanisms underneath
+- [Network Traffic](NETWORK.md) — every outbound connection Studio and the daemon make, who starts it, and how to turn it off
+
 ### Runtime Tracks
 
 - [Studio Documentation](ADF_STUDIO_DOCS.md) — Desktop authoring and visual runtime reference

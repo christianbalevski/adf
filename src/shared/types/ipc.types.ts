@@ -230,6 +230,12 @@ export interface AppSettings {
   toolPrompts?: Record<string, string>
   /** OS notifications for agent events. Absent = enabled. */
   nativeNotificationsEnabled?: boolean
+  /** Background update check against GitHub Releases (packaged builds). Absent = enabled. */
+  updateChecksEnabled?: boolean
+  /** Fetch the live MCP / agent registries from GitHub. Off = bundled + cached only. Absent = enabled. */
+  remoteCatalogsEnabled?: boolean
+  /** Automatic provider connection checks (GET /models). Off = only the explicit Test button probes. Absent = enabled. */
+  providerChecksEnabled?: boolean
   /** npm packages installed into the code-execution sandbox at runtime level. */
   sandboxPackages?: Array<{ name: string; version: string }>
   trackedDirectories?: string[]
@@ -950,8 +956,8 @@ export interface AgentConfigSummary {
     /** Type of the matching embedded config.providers entry, when present. */
     configuredType?: string
     modelId: string
-    /** 'missing' = no local provider matches by id or embedded type. */
-    status: 'ok' | 'failed' | 'unconfigured' | 'missing'
+    /** 'missing' = no local provider matches by id or embedded type; 'unchecked' = provider checks are turned off. */
+    status: 'ok' | 'failed' | 'unconfigured' | 'missing' | 'unchecked'
     /** Local settings.providers id the probe ran against. */
     resolvedLocalId?: string
   }

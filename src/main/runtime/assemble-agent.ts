@@ -28,6 +28,7 @@ import { RuntimeGate } from './runtime-gate'
 import { CreateAdfTool, ShellTool, SysUpdateConfigTool, LoopSendTool, LoopListTool, LoopManageTool } from '../tools/built-in'
 import { LoopPool, MAIN_LOOP, stripLoopNameMarker } from './loop-pool'
 import { runDispatchDropCompensation } from './system-dispatch-limits'
+import { buildEffectiveRuntime, recordEffectiveRuntime, type EffectiveRuntimeSources } from './effective-runtime'
 // Read-only: used purely to describe config drift in the log, never to gate load.
 import { AgentConfigSchema } from '../adf/adf-schema'
 import {
@@ -136,6 +137,12 @@ export interface AssembleAgentOptions<P extends AgentProfileName> {
   resources?: LifecycleResource[]
   host?: AgentHostBindings
   ownsWorkspace?: boolean
+  /**
+   * App-level inputs this host applies on top of adf_config. When given, a
+   * snapshot is written to adf_meta so the owner can inspect the config the
+   * agent actually runs with (see effective-runtime.ts).
+   */
+  effectiveRuntime?: EffectiveRuntimeSources
 }
 
 export interface AssembledAgentBase<P extends AgentProfileName> {
@@ -328,6 +335,26 @@ export function assembleAgent<P extends AgentProfileName>(
   // predates this load, so nothing legitimately in flight can be affected.
   executor.reconcileOrphanedTasks()
   validateConfigOnLoad(workspace, config)
+  // Effective runtime snapshot: written now, and rewritten whenever the main
+  // loop's provider or the config changes, so it never describes a provider
+  // or config the agent has since left.
+  let snapshotConfig = config
+  const refreshEffectiveRuntime = (): void => {
+    const sources = options.effectiveRuntime
+    if (!sources) return
+    recordEffectiveRuntime(workspace, () => buildEffectiveRuntime({
+      host: profile,
+      config: snapshotConfig,
+      provider: executor.getProvider() ?? provider,
+      basePrompt: options.basePrompt ?? '',
+      toolPrompts: options.toolPrompts ?? {},
+      compactionPrompt: options.compactionPrompt,
+      sources,
+      sandboxModules: codeSandboxService?.getUserPackageModules(),
+    }))
+  }
+  refreshEffectiveRuntime()
+  if (options.effectiveRuntime) executor.setProviderChangeListener(() => refreshEffectiveRuntime())
   if (options.systemScopeHandler) executor.setSystemScopeHandler(options.systemScopeHandler)
 
   const triggerEvaluator = new TriggerEvaluator(config)
@@ -777,6 +804,7 @@ export function assembleAgent<P extends AgentProfileName>(
     // Handing a side loop this object would be total attenuation loss (D6b).
     stripLoopNameMarker(updatedConfig)
     rawConfig = updatedConfig
+    snapshotConfig = updatedConfig
     executor.updateConfig(updatedConfig)
     triggerEvaluator.updateConfig(updatedConfig)
     adfCallHandler?.updateConfig(updatedConfig)
@@ -784,6 +812,7 @@ export function assembleAgent<P extends AgentProfileName>(
     // loop_send/loop_list registration; a loop_manage toggle flips its own.
     syncLoopToolRegistration(updatedConfig)
     loopPool.reconcile(updatedConfig)
+    refreshEffectiveRuntime()
     if (configOptions?.notifyHost === false) return
     for (const bindings of hostBindings()) void bindings.onConfigChanged?.(updatedConfig)
   }

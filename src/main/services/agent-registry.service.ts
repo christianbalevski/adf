@@ -73,7 +73,14 @@ export interface AgentRegistryServiceOptions {
    * rendering a silently empty gallery. Defaults to false.
    */
   expectBundled?: boolean
+  /**
+   * Owner opt-out (`remoteCatalogsEnabled`). Read per call; false keeps the
+   * gallery to bundled + cached entries and refuses downloads. Defaults to enabled.
+   */
+  isRemoteEnabled?: () => boolean
 }
+
+export const REMOTE_CATALOGS_OFF = 'Remote catalogs are turned off in Settings'
 
 export function sha256Hex(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex')
@@ -90,6 +97,7 @@ export class AgentRegistryService {
   private readonly fetchFn: NonNullable<AgentRegistryServiceOptions['fetchFn']>
   private readonly now: () => number
   private readonly expectBundled: boolean
+  private readonly isRemoteEnabled: () => boolean
 
   private remote: { index: AgentRegistryIndex; fetchedAt: number; source: 'remote' | 'cache' } | null = null
   private remoteError: string | undefined
@@ -98,6 +106,8 @@ export class AgentRegistryService {
   /** Whether the last completed fetch attempt failed, and when it started. */
   private lastAttemptFailed = false
   private lastAttemptAt = 0
+  /** The last attempt was skipped because remote catalogs were off — not a failure, no backoff. */
+  private lastAttemptDisabled = false
   /** Bundled files never change at runtime, so the index is parsed once. */
   private bundledCache: AgentRegistryIndex | null = null
   private bundledError: string | undefined
@@ -110,6 +120,7 @@ export class AgentRegistryService {
     this.fetchFn = options.fetchFn ?? ((url, opts) => guardedFetch(url, opts))
     this.now = options.now ?? (() => Date.now())
     this.expectBundled = options.expectBundled ?? false
+    this.isRemoteEnabled = options.isRemoteEnabled ?? (() => true)
   }
 
   // ---------------------------------------------------------------------------
@@ -187,6 +198,7 @@ export class AgentRegistryService {
    */
   private shouldAutoFetch(): boolean {
     if (!this.refreshedOnce) return true
+    if (this.lastAttemptDisabled) return this.isRemoteEnabled()
     if (!this.lastAttemptFailed) return false
     return this.now() - this.lastAttemptAt >= REFRESH_RETRY_MS
   }
@@ -216,6 +228,13 @@ export class AgentRegistryService {
   }
 
   private async refreshRemote(): Promise<void> {
+    this.lastAttemptDisabled = !this.isRemoteEnabled()
+    if (this.lastAttemptDisabled) {
+      this.lastAttemptFailed = false
+      this.remoteError = REMOTE_CATALOGS_OFF
+      this.loadCache()
+      return
+    }
     this.lastAttemptAt = this.now()
     this.lastAttemptFailed = true
     let body: GuardedFetchResult
@@ -354,6 +373,7 @@ export class AgentRegistryService {
       } catch { /* re-download below */ }
       try { unlinkSync(dest) } catch { /* ignore */ }
     }
+    if (!this.isRemoteEnabled()) throw new Error(`${REMOTE_CATALOGS_OFF} — "${entry.name}" is not bundled with this build`)
     if (entry.size > MAX_AGENT_BYTES) throw new Error(`"${entry.name}" is larger than the ${MAX_AGENT_BYTES / (1024 * 1024)} MB download limit`)
     const url = `${AGENT_REGISTRY_BASE_URL}${encodeURIComponent(entry.file)}`
     let body: GuardedFetchResult

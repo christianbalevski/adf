@@ -45,9 +45,12 @@ The [Quick start](#quick-start) below is for developers running ADF from source;
 - 🖥️ **ADF Studio** — a desktop IDE for agents: author them, watch them think, give them tools, approve their risky actions.
 - 🗺️ **The fleet map** — an RTS-style command surface. Every agent is a tile on a hex map; select, message, hold, and command whole groups with hotkeys.
 - 🔌 **Any model provider** — Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio…), or a ChatGPT / Grok subscription via OAuth.
-- 🧰 **Real capabilities** — sandboxed code execution, lambdas, timers, triggers, MCP servers, container-backed compute, HTTP serving, WebSockets.
+- 🧰 **Real capabilities** — sandboxed code execution, lambdas, timers, triggers, skills, MCP servers, container-backed compute, HTTP serving, WebSockets.
+- ⚙️ **Work without a model call** — lambdas run on a trigger, a timer, or a message, and middleware sits on the inbox, outbox, routes, and fetches. The expensive part only runs when judgment is needed.
+- 🧠 **Inner loops** — up to 16 named side loops inside one agent, each with its own goal and tools, sharing one file.
+- 🖲️ **A computer of its own** — a visible Linux desktop and a managed Chromium an agent can drive, with screen handoff when a login needs you.
 - 🤝 **Agent-to-agent mesh** — agents discover and message each other across runtimes over the ALF protocol (LAN, tailnet, or direct address), with DIDs, signatures, and optional E2E encryption.
-- 💬 **Channels** — bridge agents to Telegram, Discord, and email.
+- 💬 **Channels** — bridge agents to Telegram, Discord, Slack, WhatsApp, and email.
 - 🔍 **No Secrets** — everything injected into an agent's context is stored in the file and viewable in the UI. Auditable by design.
 - 🛡️ **Human-in-the-loop** — restricted tools pause for your approval, inline on the fleet map or in a full-context modal.
 
@@ -136,62 +139,54 @@ npm run test:lifecycle # lifecycle, dispatch, handoff, shutdown, recovery
 
 ## Why ADF
 
-AI agents are starting to look less like apps and more like prosthetics
-for thinking. They read on your behalf, write on your behalf, remember
-things for you, and increasingly make decisions for you. An agent that
-filters your information and shapes your conclusions is closer to your
-mind than any tool we've built before — and right now, almost every
-major one is owned by the platform that runs it. That's a fine model
-for a search box. It's a worse model for something that thinks
-alongside you.
+AI agents read on your behalf, write on your behalf, remember things for
+you, and increasingly decide things for you. Almost every major one is
+owned by the platform that runs it. That seems like the wrong
+arrangement for software that holds your context and shapes what you
+conclude.
 
-I don't think any single technical decision solves that. But portability
-is a precursor. The reason your photos in iCloud or Google Drive feel
-like *yours* is that you can download them and walk away. The host is
-a convenience; the file is the asset. If your agent can't move — if
-its memory, its instructions, its conversation history are stuck
-behind someone else's API — then whatever ownership you claim over it
-is mostly rhetorical.
+Portability isn't a complete answer, but nothing else works without it.
+Your photos in iCloud feel like yours because you can download them and
+leave. If an agent's memory, instructions, and history sit behind
+someone else's API, you don't really own the agent.
 
-The thesis I've ended up with:
-
-> ADF is less about what an agent can *do* and more about what an agent *is*.
-
-If "an agent" is a portable file with a defined shape, then any runtime
-that conforms to the spec can run it — the same way dozens of photo
-viewers can open a JPEG.
+So ADF is less about what an agent can *do* and more about what an agent
+*is*. If an agent is a file with a defined shape, any runtime that
+implements the spec can run it, the same way any photo viewer can open a
+JPEG.
 
 <details>
-<summary><b>More on how ADF got here</b></summary>
+<summary><b>How ADF got here</b></summary>
 
-ADF started much smaller. The original idea was: what if a document
-could come with its own agent attached? Ship them together — a working
-document with an agent that knows the document's history and can act
-on it. The first version was a zip with four files: an agent config, a
-working document, the agent's private memory, and a chat log. SQLite
-turned out to be the right substrate. Once a few agents existed as
-portable files on the same machine, the next question — how do they
-talk to each other? — pulled the project into territory I hadn't
-planned on, including a small communication protocol for asynchronous,
-sovereign agents that sits alongside the format.
+ADF started smaller. The idea was a document that comes with its own
+agent attached, shipped together, so the agent knows the document's
+history and can act on it. The first version was a zip with four files:
+an agent config, a working document, the agent's private memory, and a
+chat log. SQLite turned out to be a better container.
 
-"What an agent *is*" was never meant to constrain "what an agent can
-*do*." A lot of work in the runtime has gone into the primitives,
-controls, and security gates an agent needs to be configurable in
-roughly any direction. The trade-off is that an ADF takes a bit more
-thought to configure up front — but because the result is a file, once
-you've configured an agent you like, replicating or sharing it is just
-copying the file.
+Once a few agents existed as files on one machine, the next question was
+how they talk to each other. That became ALF, a small protocol for
+asynchronous messaging between agents that don't share a host.
 
-I don't know whether ADF specifically becomes the standard people land
-on. I do think it's a useful demonstration that an open, interoperable
-primitive for AI agents is buildable, and that the alternative — every
-agent permanently bound to the platform that birthed it — isn't the
-only way this can go.
+Deciding what an agent *is* was never meant to limit what it can *do*.
+Most of the runtime work has gone into primitives, controls, and
+security gates, so an agent can be configured in almost any direction.
+The cost is that setting one up takes more thought up front. The payoff
+is that once you have an agent you like, copying or sharing it is just
+copying a file.
+
+I don't know if ADF is the standard anyone settles on. It does show that
+an open, interoperable primitive for agents is buildable, and that every
+agent being permanently tied to the platform that made it isn't
+inevitable.
 
 </details>
 
 ## Documentation
+
+**New here?** [What ADF Studio can do](docs/CAPABILITIES.md) is the full
+capability catalogue — plain terms up front, mechanisms and internals further
+down.
 
 | Start here | Reference |
 |---|---|
