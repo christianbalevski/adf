@@ -1,4 +1,4 @@
-import { join } from 'path'
+import { join, dirname } from 'path'
 import {
   existsSync,
   mkdirSync,
@@ -85,7 +85,7 @@ export class SandboxPackagesService {
     version?: string,
     onProgress?: (message: string) => void,
     agentName?: string
-  ): Promise<{ name: string; version: string; size_mb: number; already_installed: boolean }> {
+  ): Promise<{ name: string; version: string; size_mb: number; already_installed: boolean; scripts_skipped?: string[] }> {
     const manifest = this.loadManifest()
     const versionSpec = version ?? 'latest'
     assertNpmSpec(name, versionSpec)
@@ -96,15 +96,23 @@ export class SandboxPackagesService {
       return { name, version: existing.version, size_mb: existing.size_mb, already_installed: true }
     }
 
+    // Validate before anything reaches npm: on Windows npm.cmd runs through
+    // cmd.exe, so an unvalidated name like 'x & calc' was a host command.
+    validatePackageSpec(name, versionSpec)
+
     this.ensureBaseDir()
     const baseDir = this.getBaseDir()
 
     onProgress?.(`Installing ${name}@${versionSpec}...`)
 
     try {
+      // --ignore-scripts: lifecycle scripts (preinstall/install/postinstall) of
+      // the package and every dependency would otherwise run as the user, on
+      // the host, outside any sandbox. Packages that need a build step are
+      // rejected below instead.
       const { stdout, stderr } = await execFileAsync(
         NPM_BIN,
-        ['install', '--save', '--no-audit', '--no-fund', `${name}@${versionSpec}`],
+        ['install', '--save', '--ignore-scripts', '--no-audit', '--no-fund', shellArg(`${name}@${versionSpec}`)],
         {
           cwd: baseDir,
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
@@ -142,6 +150,28 @@ export class SandboxPackagesService {
         )
       }
 
+      // Scripts were not run. A preinstall/install script is a build or fetch
+      // step the package depends on — installed without it, it would be
+      // silently broken, so reject it with the reason. postinstall scripts are
+      // overwhelmingly banners, telemetry and optional downloads; those are
+      // reported but the package is kept.
+      const scripts = this.findInstallScripts(join(baseDir, 'node_modules'), name)
+      const required = scripts.filter((s) => s.hook !== 'postinstall')
+      if (required.length > 0) {
+        await this.npmUninstall(name)
+        const r = required[0]
+        throw new InstallScriptError(
+          `Package "${name}" needs its ${r.hook} script to work` +
+          (r.pkg !== name ? ` (from dependency "${r.pkg}")` : '') +
+          `: "${r.script}". Install scripts never run for sandbox packages — they would execute ` +
+          'on the host outside the sandbox — so this package cannot be installed. Look for a pure-JS or WASM alternative.'
+        )
+      }
+      const scriptsSkipped = scripts.map((s) => `${s.pkg}: ${s.hook} "${s.script}"`)
+      if (scriptsSkipped.length > 0) {
+        onProgress?.(`Skipped ${scriptsSkipped.length} postinstall script(s): ${scriptsSkipped.join('; ')}`)
+      }
+
       // Check size limits
       const sizeMb = this.getPackageSizeMb(join(baseDir, 'node_modules', name))
       if (sizeMb > MAX_PACKAGE_SIZE_MB) {
@@ -172,9 +202,15 @@ export class SandboxPackagesService {
       onProgress?.(`Installed ${name}@${installedVersion}`)
       console.log(`${LOG_TAG} Installed ${name}@${installedVersion} (${sizeMb.toFixed(1)} MB)`)
 
-      return { name, version: installedVersion, size_mb: Math.round(sizeMb * 10) / 10, already_installed: false }
+      return {
+        name,
+        version: installedVersion,
+        size_mb: Math.round(sizeMb * 10) / 10,
+        already_installed: false,
+        ...(scriptsSkipped.length > 0 ? { scripts_skipped: scriptsSkipped } : {})
+      }
     } catch (error) {
-      if (error instanceof NativeAddonError || error instanceof SizeLimitError) {
+      if (error instanceof NativeAddonError || error instanceof SizeLimitError || error instanceof InstallScriptError || error instanceof InvalidPackageSpecError) {
         throw error
       }
       throw new Error(`Failed to install ${name}@${versionSpec}: ${String(error)}`)
@@ -308,27 +344,82 @@ export class SandboxPackagesService {
     return null
   }
 
-  /** Walk the dependency tree and check each dependency for native addons. */
+  /** Walk the whole (transitive) dependency tree and check each dependency for
+   *  native addons. Direct dependencies alone missed natives one level down. */
   private scanDepsForNativeAddons(nodeModulesDir: string, packageName: string): string | null {
-    const pkgJsonPath = join(nodeModulesDir, packageName, 'package.json')
-    if (!existsSync(pkgJsonPath)) return null
-
-    try {
-      const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
-      const allDeps = {
-        ...pkgJson.dependencies,
-        ...pkgJson.optionalDependencies
-      }
-
-      for (const depName of Object.keys(allDeps)) {
-        const depDir = join(nodeModulesDir, depName)
-        if (!existsSync(depDir)) continue
-        const result = this.scanDirForNativeAddons(depDir)
-        if (result) return `Dependency "${depName}": ${result}`
-      }
-    } catch { /* ignore */ }
-
+    for (const dep of this.walkDependencyTree(nodeModulesDir, packageName)) {
+      if (dep.name === packageName) continue
+      const result = this.scanDirForNativeAddons(dep.dir)
+      if (result) return `Dependency "${dep.name}": ${result}`
+    }
     return null
+  }
+
+  /**
+   * The package and every installed dependency reachable from it, resolved the
+   * way Node resolves them (nested node_modules first, then parents up to the
+   * install root). Bounded so a pathological tree can't stall the install.
+   */
+  private walkDependencyTree(nodeModulesDir: string, packageName: string): Array<{ name: string; dir: string }> {
+    const out: Array<{ name: string; dir: string }> = []
+    const seen = new Set<string>()
+    const rootDir = join(nodeModulesDir, packageName)
+    if (!existsSync(rootDir)) return out
+    const queue: Array<{ name: string; dir: string }> = [{ name: packageName, dir: rootDir }]
+    while (queue.length > 0 && out.length < 5000) {
+      const cur = queue.shift()!
+      if (seen.has(cur.dir)) continue
+      seen.add(cur.dir)
+      out.push(cur)
+      let pkgJson: { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> }
+      try {
+        pkgJson = JSON.parse(readFileSync(join(cur.dir, 'package.json'), 'utf-8'))
+      } catch {
+        continue
+      }
+      const deps = Object.keys({ ...pkgJson.dependencies, ...pkgJson.optionalDependencies })
+      for (const depName of deps) {
+        const depDir = this.resolveDepDir(cur.dir, nodeModulesDir, depName)
+        if (depDir && !seen.has(depDir)) queue.push({ name: depName, dir: depDir })
+      }
+    }
+    return out
+  }
+
+  /** Nearest node_modules/<dep> from `fromDir` up to the install root. */
+  private resolveDepDir(fromDir: string, nodeModulesDir: string, depName: string): string | null {
+    let dir = fromDir
+    for (let i = 0; i < 64; i++) {
+      const candidate = join(dir, 'node_modules', depName)
+      if (existsSync(join(candidate, 'package.json'))) return candidate
+      if (dir === nodeModulesDir || !dir.startsWith(nodeModulesDir)) break
+      const parent = dirname(dir)
+      if (parent === dir) break
+      dir = parent
+    }
+    const top = join(nodeModulesDir, depName)
+    return existsSync(join(top, 'package.json')) ? top : null
+  }
+
+  /** Install-time lifecycle scripts declared anywhere in the package's tree.
+   *  npm ran none of them (--ignore-scripts); the caller decides what that means. */
+  private findInstallScripts(
+    nodeModulesDir: string,
+    packageName: string
+  ): Array<{ pkg: string; hook: 'preinstall' | 'install' | 'postinstall'; script: string }> {
+    const found: Array<{ pkg: string; hook: 'preinstall' | 'install' | 'postinstall'; script: string }> = []
+    for (const dep of this.walkDependencyTree(nodeModulesDir, packageName)) {
+      try {
+        const pkgJson = JSON.parse(readFileSync(join(dep.dir, 'package.json'), 'utf-8'))
+        const scripts = pkgJson.scripts ?? {}
+        for (const hook of ['preinstall', 'install', 'postinstall'] as const) {
+          if (typeof scripts[hook] === 'string' && scripts[hook].trim()) {
+            found.push({ pkg: dep.name, hook, script: scripts[hook] })
+          }
+        }
+      } catch { /* unreadable package.json — nothing to report */ }
+    }
+    return found
   }
 
   // ---------------------------------------------------------------------------
@@ -369,7 +460,7 @@ export class SandboxPackagesService {
     try {
       await execFileAsync(
         NPM_BIN,
-        ['uninstall', '--save', '--no-audit', '--no-fund', name],
+        ['uninstall', '--save', '--ignore-scripts', '--no-audit', '--no-fund', shellArg(name)],
         {
           cwd: this.getBaseDir(),
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
@@ -388,6 +479,45 @@ export class SandboxPackagesService {
 export class NativeAddonError extends Error {
   readonly code = 'native_addon'
   constructor(message: string) { super(message) }
+}
+
+/** Thrown when a package needs an install-time script (never run for sandbox packages). */
+export class InstallScriptError extends Error {
+  readonly code = 'install_script'
+  constructor(message: string) { super(message) }
+}
+
+/** Thrown when a package name or version spec is not a plain npm spec. */
+export class InvalidPackageSpecError extends Error {
+  readonly code = 'invalid_package'
+  constructor(message: string) { super(message) }
+}
+
+// npm's own name rules (validate-npm-package-name, new packages): lowercase,
+// URL-safe, optional @scope/, at most 214 characters, no leading . or _.
+const PACKAGE_NAME_RE = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/
+// Versions, ranges and dist-tags. No quotes, %, !, backslash or shell
+// metacharacters beyond the range operators, which shellArg() quotes.
+const VERSION_SPEC_RE = /^[0-9A-Za-z.^~<>=|*+\- ]{1,64}$/
+
+export function validatePackageSpec(name: string, version: string): void {
+  if (typeof name !== 'string' || name.length === 0 || name.length > 214 || !PACKAGE_NAME_RE.test(name)) {
+    throw new InvalidPackageSpecError(
+      `Invalid package name ${JSON.stringify(name)}: expected an npm package name like "lodash" or "@scope/pkg".`
+    )
+  }
+  if (typeof version !== 'string' || !VERSION_SPEC_RE.test(version) || /\|\|?\s*$/.test(version)) {
+    throw new InvalidPackageSpecError(
+      `Invalid version ${JSON.stringify(version)}: expected a version, range or tag like "4.17.21", "^5.0.0" or "latest".`
+    )
+  }
+}
+
+/** On Windows npm.cmd runs through cmd.exe, which re-parses the command line:
+ *  quote the (already validated) argument so range operators like < > | stay
+ *  literal. Elsewhere there is no shell and the argument passes as-is. */
+function shellArg(arg: string): string {
+  return IS_WIN ? `"${arg}"` : arg
 }
 
 /** Thrown when a package exceeds size limits. */
