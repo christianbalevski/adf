@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Text } from 'ink'
 import { useTheme } from '../../app/theme'
 import { WHEEL_STEP, useKeys } from '../../app/keys'
-import { useActions, useStore } from '../../state/store'
+import { useActions, useStore, useTuiSelector } from '../../state/store'
 import { useAgent, useLoops } from '../../state/hooks'
 import { List } from '../../ui/List'
 import { Table } from '../../ui/Table'
@@ -10,17 +10,22 @@ import { formatClock, previewJson, truncate } from '../../ui/text'
 import type { DaemonClient } from '../../api/client'
 import type { AdfLogEntry } from '../../api/types'
 import { LinesView } from './LinesView'
-import { plain, valueLines, type Line } from './format'
+import { blank, heading, plain, valueLines, type Line } from './format'
+import { SERVER_STOPPED_TEXT, servedText, serverText, siteOf, type Site } from '../../web/model'
+import { copySiteUrl, openSite } from '../../web/ops'
 import { useDaemonData } from './hooks'
 import { useInspectState } from './state'
 import { adapterLines, identityLines, mcpLines, runtimeLines, usageLines } from './diag-lines'
 
 interface TabProps { agentId: string; width: number; height: number; focused: boolean }
 
-function DiagTab<T>({ agentId, width, height, focused, load, build, hint }: TabProps & {
+function DiagTab<T>({ agentId, width, height, focused, load, build, hint, prefix, onKey }: TabProps & {
   load: (client: DaemonClient) => Promise<T>
   build: (data: T) => Line[]
   hint?: string
+  /** Lines above the loaded data (Status: the agent's website). */
+  prefix?: Line[]
+  onKey?: (input: string, key: { ctrl: boolean; meta: boolean }) => boolean
 }) {
   const theme = useTheme()
   const [inspect] = useInspectState()
@@ -28,13 +33,14 @@ function DiagTab<T>({ agentId, width, height, focused, load, build, hint }: TabP
   useKeys((input, key) => {
     if (key.ctrl || key.meta) return false
     if (input === 'r') { reload(); return true }
-    return false
+    return onKey?.(input, key) ?? false
   }, { layer: 'main', active: focused })
   const lines = useMemo(() => {
-    if (error) return [plain(`Could not load: ${error}`, 'error'), plain('r retries.', 'muted')]
-    if (data === undefined) return []
-    return inspect.json ? valueLines(data, true) : build(data)
-  }, [data, error, inspect.json, build])
+    const head = prefix && !inspect.json ? prefix : []
+    if (error) return [...head, plain(`Could not load: ${error}`, 'error'), plain('r retries.', 'muted')]
+    if (data === undefined) return head
+    return inspect.json ? valueLines(data, true) : [...head, ...build(data)]
+  }, [data, error, inspect.json, build, prefix])
   return (
     <Box flexDirection="column" width={width} height={height}>
       <LinesView lines={lines} width={width} height={Math.max(1, height - 1)} active={focused} emptyText={loading ? 'Loading…' : 'Nothing to show.'} />
@@ -46,9 +52,36 @@ function DiagTab<T>({ agentId, width, height, focused, load, build, hint }: TabP
 }
 
 export function RuntimeTab(props: TabProps) {
+  const store = useStore()
   const loops = useLoops(props.agentId)
   const build = useMemo(() => (d: Awaited<ReturnType<DaemonClient['agentRuntime']>>) => runtimeLines(d, loops), [loops])
-  return <DiagTab {...props} load={c => c.agentRuntime(props.agentId)} build={build} />
+  // The agent's website first: nothing at all when it serves nothing.
+  const web = useTuiSelector(s => s.web)
+  const config = useTuiSelector(s => s.agents[props.agentId]?.config)
+  const site = siteOf(store.getState(), props.agentId)
+  const prefix = useMemo(() => (site ? siteLines(site) : undefined), [web, config, props.agentId])
+  const onKey = (input: string, key: { ctrl: boolean; meta: boolean }) => {
+    if (!site || key.ctrl || key.meta) return false
+    if (input === 'w') { void openSite(store, props.agentId); return true }
+    if (input === 'W') { void copySiteUrl(store, props.agentId); return true }
+    return false
+  }
+  return <DiagTab {...props} load={c => c.agentRuntime(props.agentId)} build={build} prefix={prefix} onKey={onKey} hint={site ? 'w open site · W copy URL' : undefined} />
+}
+
+/** Inspect › Status: where the agent's site is and what it serves. */
+export function siteLines(site: Site): Line[] {
+  const out: Line[] = [heading('Website')]
+  if (site.url) {
+    out.push([{ text: '  url      ', tone: 'key' }, { text: site.url, tone: 'accent' }, { text: '   w open · W copy', tone: 'muted' }])
+    for (const url of site.lanUrls) out.push([{ text: '  lan      ', tone: 'key' }, { text: url, tone: 'text' }])
+  } else {
+    out.push([{ text: '  url      ', tone: 'key' }, { text: site.server ? SERVER_STOPPED_TEXT : 'unknown: the daemon does not report its web server', tone: 'warn' }, { text: site.server ? '   w starts it and opens the site' : '', tone: 'muted' }])
+  }
+  out.push([{ text: '  server   ', tone: 'key' }, { text: serverText(site.server), tone: site.url ? 'success' : 'muted' }])
+  out.push([{ text: '  serves   ', tone: 'key' }, { text: servedText(site) }])
+  out.push(blank())
+  return out
 }
 
 export function UsageTab(props: TabProps) {

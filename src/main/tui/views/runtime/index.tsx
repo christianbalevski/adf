@@ -24,6 +24,7 @@ import { blank, heading, jsonLines, plain, redactSecrets, treeLines, type Line }
 import { EVENT_KEYS } from '../inspect/event-keys'
 import type { ViewDefinition, ViewProps } from '../types'
 import { RUNTIME_TABS, RUNTIME_VIEW, useRuntimeState } from './state'
+import { toggleWebServer } from '../../web/ops'
 import { runtimeCommands } from './commands'
 
 interface TabProps { width: number; height: number; focused: boolean }
@@ -113,7 +114,7 @@ function NetworkTab(props: TabProps) {
     <ReportTab
       {...props}
       kind="network"
-      hint="m mesh · s server · R restart"
+      hint="m mesh · s web server on/off · R restart"
       onKey={(input, _key, reload) => {
         const client = store.client
         if (input === 'm') {
@@ -123,12 +124,17 @@ function NetworkTab(props: TabProps) {
           }, err => actions.toast(`Network: ${err instanceof Error ? err.message : String(err)}`, 'error'))
           return true
         }
-        if (input === 's' || input === 'R') {
+        // The web server (serves agent sites / APIs, receives mesh messages):
+        // starting needs no confirm, stopping asks (same as /web and the header badge).
+        if (input === 's') {
+          void toggleWebServer(store).then(reload)
+          return true
+        }
+        if (input === 'R') {
           void client.meshServer().then(server => {
-            const running = serverRunning(server)
-            if (input === 'R') void ask('Restart the mesh server', 'Open connections drop and reconnect.', () => client.meshServerAction('restart'), 'Mesh server restarted', reload)
-            else void ask(running ? 'Stop the mesh server' : 'Start the mesh server', running ? 'Remote peers and served routes go offline.' : 'The mesh server starts listening.', () => client.meshServerAction(running ? 'stop' : 'start'), running ? 'Mesh server stopped' : 'Mesh server started', reload)
-          }, err => actions.toast(`Mesh server: ${err instanceof Error ? err.message : String(err)}`, 'error'))
+            if (!serverRunning(server)) { void toggleWebServer(store, true).then(reload); return }
+            void ask('Restart the web server', 'Open connections drop and reconnect.', () => client.meshServerAction('restart'), 'Web server restarted', () => { reload(); void actions.refreshWeb() })
+          }, err => actions.toast(`Web server: ${err instanceof Error ? err.message : String(err)}`, 'error'))
           return true
         }
         return false
@@ -192,8 +198,8 @@ const runtime: ViewDefinition = {
         { keys: 'enter', label: 'Identity: the identity dialog · Sign-in: the sign-in dialog' },
         { keys: 'c r u', label: 'Identity: create / restore / unlock (when offered)' },
         { keys: 'm', label: 'Network: mesh on / off (asks)' },
-        { keys: 's', label: 'Network: mesh server start / stop (asks)' },
-        { keys: 'R', label: 'Network: restart the mesh server (asks)' },
+        { keys: 's', label: 'Network: web server (serves agent sites, APIs, mesh delivery) start / stop (stopping asks)' },
+        { keys: 'R', label: 'Network: restart the web server (asks)' },
       ],
     },
     { title: 'Events (every agent’s live umbilical events)', keys: EVENT_KEYS },

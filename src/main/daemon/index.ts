@@ -277,11 +277,14 @@ const daemon = new DaemonHost({
       port: meshServer.getPort(),
       host: meshServer.getHost(),
     }),
+    // Start/stop persist, so a user's choice survives restart (default: on).
     startServer: async () => {
+      settings.set('meshServerEnabled', true)
       await meshServer.start()
       return { success: meshServer.isRunning(), running: meshServer.isRunning(), port: meshServer.getPort(), host: meshServer.getHost() }
     },
     stopServer: async () => {
+      settings.set('meshServerEnabled', false)
       await meshServer.stop()
       return { success: true, running: meshServer.isRunning(), port: meshServer.getPort(), host: meshServer.getHost() }
     },
@@ -428,7 +431,7 @@ withSource('system:daemon', () => {
       }, 5_000).unref?.()
 
       const maxDepth = (settings.get('maxDirectoryScanDepth') as number | undefined) ?? 5
-      meshServer.start().catch(err => console.error('[MeshServer] Failed to start:', err))
+      ensureMeshServer()
 
       // Sweep closed WAL sidecars in tracked dirs, deferred until after
       // autostart so open agents are skipped (parity with Studio cleanup).
@@ -487,6 +490,28 @@ function registerAgentWithMesh(event: RuntimeAgentLoadedEvent): void {
   if (event.agent.adapterManager) {
     meshManager.setAdapterManager(event.filePath, event.agent.adapterManager)
   }
+  ensureMeshServer()
+}
+
+// The mesh server serves agent web/API routes and mesh delivery, and is on by
+// default (Studio parity). MeshServer.start() skips while no reachable agent is
+// registered — true at boot, before autostart loads anything — so (re)try as
+// agents register. Debounced so an autostart burst binds once, after the agents
+// that decide the host (loopback vs LAN) are known. A LAN/public agent arriving
+// while bound to loopback rebinds to all interfaces.
+let meshServerTimer: ReturnType<typeof setTimeout> | null = null
+function ensureMeshServer(): void {
+  if (settings.get('meshServerEnabled') === false) return
+  if (meshServerTimer) clearTimeout(meshServerTimer)
+  meshServerTimer = setTimeout(() => {
+    meshServerTimer = null
+    const wantsLan = !process.env.MESH_HOST && (meshManager.hasAgentOfTier('lan') || meshManager.hasAgentOfTier('public'))
+    const rebind = meshServer.isRunning() && wantsLan && meshServer.getHost() === '127.0.0.1'
+    if (meshServer.isRunning() && !rebind) return
+    const run = rebind ? meshServer.stop().then(() => meshServer.start()) : meshServer.start()
+    run.catch(err => console.error('[MeshServer] Failed to start:', err))
+  }, 500)
+  meshServerTimer.unref?.()
 }
 
 // Compute defaults come from the shared single source of truth — a local copy

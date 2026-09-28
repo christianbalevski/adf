@@ -3,8 +3,8 @@
 // each key through layers in order until a handler returns true:
 //
 //   1. overlay  — the topmost open overlay only
-//   2. zone     — the focused zone: input | sidebar | main (the active view)
-//   3. view     — the active view's always-on keys (any zone except input)
+//   2. zone     — the focused zone: input | sidebar | main (the active view) | tabs (header tab bar)
+//   3. view     — the active view's always-on keys (sidebar and main only)
 //   4. global   — shell keys (view hotkeys, help, palette, quit, focus cycle)
 //
 // Components register with `useKeys(handler, { layer, active })`. A handler
@@ -107,8 +107,8 @@ export function createKeyRouter(): KeyRouter {
     dispatch(input, key, context) {
       const order: KeyLayer[] = context.overlayOpen
         ? ['overlay', 'global']
-        : context.focus === 'input'
-          ? ['input', 'global']
+        : context.focus === 'input' || context.focus === 'tabs'
+          ? [context.focus, 'global']
           : [context.focus, 'view', 'global']
       for (const layer of order) {
         // Newest registration first within a layer. Only the top overlay is

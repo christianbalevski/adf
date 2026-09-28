@@ -31,6 +31,13 @@ export function validConfig(id: string, handle: string): Record<string, unknown>
           { name: 'researcher', goal: 'Research whatever main hands over and report back.', enabled: true, autostart: false },
         ]
       : [],
+    // agent-1 serves a site + API (as in mock-daemon.ts) and has host access.
+    ...(handle === 'agent-1'
+      ? {
+          serving: { public: { enabled: true, index: 'index.html' }, shared: { enabled: false, patterns: [] }, api: [{ method: 'GET', path: '/api/status', lambda: 'lib/api.ts:status' }, { method: 'WS', path: '/live', lambda: 'lib/ws.ts:onMessage' }] },
+          compute: { ...(base.compute as Record<string, unknown>), host_access: true },
+        }
+      : {}),
   }
 }
 

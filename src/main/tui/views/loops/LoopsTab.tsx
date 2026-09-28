@@ -177,7 +177,7 @@ function LoopDetail({ loop, agentId, width, rows, now, lastAt, timers }: { loop:
       ? `${config?.autonomous ? 'autonomous' : 'turn-based'}${config?.autostart ? ', autostart' : ''}`
       : `${info.enabled ? 'enabled' : 'disabled'}, ${info.config?.autonomous ? 'autonomous' : 'ends turn on text reply'}, ${info.config?.autostart ? 'autostart' : 'no autostart'}${info.config?.compact_threshold ? `, compacts at ${info.config.compact_threshold}` : ''}`, undefined],
     [info.isMain ? 'tools' : info.effectiveTools ? 'tools (live)' : 'tools', toolList, undefined],
-    ['timers', ts.length ? ts.map(t => `#${t.id} ${describeTimer(t, now)}, next ${formatWhen(t.next_wake_at, now)}`).join(' · ') : 'none (t adds one)', ts.length ? theme.color.info : theme.color.dim],
+    ['timers', ts.length ? ts.map(t => `${describeTimer(t, now)}, next ${formatWhen(t.next_wake_at, now)}`).join(' · ') : 'none (t adds one)', ts.length ? theme.color.info : theme.color.dim],
     ['triggers', trig.length ? trig.map(t => `${t.type}${t.enabled ? '' : ' (off)'}`).join(', ') : 'none', trig.length ? theme.color.info : theme.color.dim],
     ['last', lastAt ? `${formatWhen(lastAt, now)} (${formatAgo(lastAt, now)} ago), ${info.entryCount} entries` : `${info.entryCount} entries`, undefined],
   ]

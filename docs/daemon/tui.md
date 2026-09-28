@@ -42,8 +42,8 @@ The TUI treats loops as first class everywhere:
   history.
 - The Loops view creates, edits, enables, disables, schedules and deletes
   inner loops. It also shows every timer and trigger with the loop it wakes.
-- Approvals, questions, notices and wakes (for example "Woken by timer #1") are
-  filed under the loop they belong to.
+- Approvals, questions, notices and wakes (for example "Woken by timer (every
+  1h) · run 3") are filed under the loop they belong to.
 
 ### Example: a nightly memory consolidator
 
@@ -88,8 +88,9 @@ and how to start it.
 | `--theme <name>` | `adf` (dark, default), `adf-light`, `adf-contrast`, `adf-mono` |
 | `--mono`, `--no-color` | No color |
 | `--ascii` | ASCII glyphs for consoles without box-drawing or braille characters |
-| `--no-alt-screen` | Render in the main screen buffer instead of the alternate screen (mouse capture stays off there) |
-| `--no-mouse` | No mouse capture: the terminal selects text and scrolls as usual (see [Mouse](#mouse)) |
+| `--no-alt-screen` | Render in the main screen buffer instead of the alternate screen (mouse mode stays off there) |
+| `--mouse` | Mouse mode: the wheel scrolls what is under the pointer, clicks focus panes and header tabs (see [Mouse](#mouse)) |
+| `--no-mouse` | Native mouse, the default: drag selects, right-click pastes, the wheel scrolls the focused pane |
 | `--no-kitty` | Never turn on the kitty keyboard protocol (see [Shift+Enter](#shiftenter)) |
 | `-h`, `--help` | Show the help |
 
@@ -101,7 +102,7 @@ and how to start it.
 | `ADF_TUI_ASCII=1` | Same as `--ascii` |
 | `ADF_EDITOR`, `VISUAL`, `EDITOR` | External editor, in that order. Default: `notepad` on Windows, else `nano`, then `vi` |
 | `ADF_TUI_FULL_HEIGHT=1` | Windows: use the bottom terminal row too (see [Windows](#windows)) |
-| `ADF_TUI_MOUSE=0` / `=1` | Mouse capture off / on, over the saved `/mouse` choice |
+| `ADF_TUI_MOUSE=0` / `=1` | Native mouse / mouse mode, over the saved `/mouse` choice |
 | `ADF_TUI_KITTY=0` | Same as `--no-kitty` |
 | `ADF_TUI_SHIFT_ENTER=1` | Show `Shift+Enter` in the hints from the start (your terminal sends it through a keybinding) |
 | `ADF_TUI_PREFS=<path>` | Where the sidebar and mouse choices are kept (default `<config dir>/adf-studio/tui-prefs.json`; `off` keeps them for the session only) |
@@ -113,9 +114,9 @@ Every other `npm run adf -- <command>` is the unchanged one-shot [CLI](cli.md).
 ## Layout
 
 ```text
- ◆ ADF   1 Fleet   2 Chat   3 Files   4 Loops   5 Inspect   6 Runtime     !1 pending  ● live  127.0.0.1:7385
+ ◆ ADF   1 Fleet   2 Chat   3 Files   4 Loops   5 Inspect   6 Runtime  ● web :7295  !1 pending  ● live  127.0.0.1:7385
  FLEET                   2 │ agent-1 ›  ● main !  ○ consolidator  ○ researcher             Shift+←/→
- ▾ ⠹ agent-1 thinki… !1 «1 │ main loop: the agent itself, talks to you · 2 inner loops
+ ▾ ⠹ agent-1 thinki… !1 «1 │ host ✓ · Merging API notes into mind.md · web 127.0.0.1:7295/agents/agent-1/
    ⠹ ↻main        thinking │
    ○ ↻consolidator   in 1h │  › What did we decide about the standings API?
    ○ ↻researcher           │  ● We keep v2 and add a since cursor.
@@ -135,11 +136,19 @@ Every other `npm run adf -- <command>` is the unchanged one-shot [CLI](cli.md).
  agent-1 › ↻ main  ⠹ thinking  mock-model   Esc interrupt · Shift+Enter newline · Shift+←/Shift+→ loop · ↑/↓ scroll
 ```
 
-- **Header:** the ADF wordmark, the views with their hotkeys, pending
-  approvals and questions across the fleet, the live connection (`live`, or
-  `offline` when the daemon does not answer) and the daemon URL. On narrow
-  terminals the URL shrinks to its port and then goes before the view names
-  shorten (`1 Flt 2 Chat 3 File 4 Loop 5 Insp 6 Rt`).
+- **Header:** the ADF wordmark, the views with their hotkeys (the tab bar:
+  `Esc` focuses it, see [Tab bar](#tab-bar)), the web server (`● web :7295`
+  running, `○ web off` stopped; see [Agent websites](#agent-websites)),
+  pending approvals and questions across the fleet, the live connection
+  (`live`, or `offline` when the daemon does not answer) and the daemon URL.
+  On narrow terminals the URL shrinks to its port and goes, then a plain owner
+  badge, then the web badge, before the view names shorten
+  (`1 Flt 2 Chat 3 File 4 Loop 5 Insp 6 Rt`).
+- **Chat info line** (under the loop tabs): a sign-in warning, a disabled
+  loop, `host ✓` when the agent has host access, the agent's own status line
+  (its `adf_meta` `status`, live), an inner loop's goal, its schedule (`wakes
+  every 1h · next 14:30`), the agent's website and `autonomous`. When the pane
+  is narrow the least important pieces drop off and the status line is cut.
 - **Daemon offline:** when nothing answers at the daemon URL, the Fleet view
   says so, with the URL it tried, how to start the daemon (`npm run daemon`),
   `ADF_DAEMON_URL` / `--url` / `/url`, and the retry countdown.
@@ -165,12 +174,12 @@ transcript of the loop it concerns.
 
 | Key | View | What it shows |
 |-----|------|---------------|
-| `1` | **Fleet** | A daemon line (pid, uptime, providers, mesh, WebSocket, compute), an agent table (state, loops running/total, approvals, inbox, model, tokens, timers, last activity, mesh) and the selected agent's loops with their schedule and goal. Start, stop, interrupt, load `.adf` files, autostart. |
+| `1` | **Fleet** | A daemon line (pid, uptime, providers, mesh, WebSocket, compute), an agent table (state, loops running/total, approvals, inbox, model, tokens, timers, last activity, mesh, web) and the selected agent's status line, website and loops with their schedule and goal. Start, stop, interrupt, open the website, load `.adf` files, autostart. |
 | `2` | **Chat** | One conversation per agent › loop. Loop tabs, a virtualized transcript (history pages load as you scroll up; live events stream in), collapsible thinking and tool calls, inter-loop messages, wake markers, and an approval/question card. A turn footer shows elapsed time, tokens and the model. |
 | `3` | **Files** | The agent document, mind and files as a tree with a viewer (syntax colouring, search, hex for binaries). Edit in your `$EDITOR` with a diff confirm and a concurrent-change check. Create, move, delete, protection, authorized. Read-only Inbox, Outbox and Meta tabs. A badge names the loop that last wrote a file. |
 | `4` | **Loops** | Tabs: **Loops** (every loop with status, messages, tools, model, flags, what wakes it; create from templates, edit, enable/disable, send, schedule, clear, delete), **Timers** (this agent's or every agent's timers, with the loop each one wakes), **Triggers** (all trigger types, the loop each target wakes, enable/disable, edit targets), **History** (a loop's persisted entries with tokens, filters and paging). |
-| `5` | **Inspect** | The selected agent only (the tab bar reads `agent-1 › …`). Tabs: **Status** (state, loops, triggers, WebSocket), **Config** (tree or JSON; edit in `$EDITOR` with schema validation and a confirm), **Usage** (by model), **MCP**, **Adapters**, **Identities** (metadata only), **Logs**, **Tables**, **Events** (this agent's live umbilical events). Secrets are redacted everywhere. |
-| `6` | **Runtime** | The daemon, across every agent (`daemon › …`). Tabs: **Status** (health, version, uptime, pid, every agent's loops), **Identity** (owner identity; `Enter` opens its dialog), **Sign-in** (ChatGPT / Grok and API-key providers; `Enter` signs in), **Providers** (and which agents use them), **Usage** (all agents, by model), **Network** (mesh, LAN, WebSocket; `m` mesh on/off, `s` server start/stop, `R` restart, each asks), **Compute** (container runtime and containers), **MCP** and **Adapters** (registered with the daemon), **Settings** (redacted), **Events** (every agent's live umbilical events). |
+| `5` | **Inspect** | The selected agent only (the tab bar reads `agent-1 › …`). Tabs: **Status** (the website first when the agent serves one, then state, loops, triggers, WebSocket), **Config** (tree or JSON; edit in `$EDITOR` with schema validation and a confirm), **Usage** (by model), **MCP**, **Adapters**, **Identities** (metadata only), **Logs**, **Tables**, **Events** (this agent's live umbilical events). Secrets are redacted everywhere. |
+| `6` | **Runtime** | The daemon, across every agent (`daemon › …`). Tabs: **Status** (health, version, uptime, pid, every agent's loops), **Identity** (owner identity; `Enter` opens its dialog), **Sign-in** (ChatGPT / Grok and API-key providers; `Enter` signs in), **Providers** (and which agents use them), **Usage** (all agents, by model), **Network** (mesh, the web server, agent websites, LAN, WebSocket; `m` mesh on/off (asks), `s` web server start / stop (stopping asks), `R` restart (asks)), **Compute** (container runtime and containers), **MCP** and **Adapters** (registered with the daemon), **Settings** (redacted), **Events** (every agent's live umbilical events). |
 
 ## Keys
 
@@ -182,22 +191,42 @@ of it.
 | Keys | Action |
 |------|--------|
 | `Ctrl+K`, `Ctrl+P` | Command palette (also `:` when the prompt is not focused) |
-| `Tab`, `Shift+Tab` | Cycle focus: sidebar → main → prompt (a hidden sidebar is skipped). Entering Chat focuses the prompt |
+| `Tab`, `Shift+Tab` | Cycle focus: sidebar → main → prompt (a hidden sidebar is skipped). Entering Chat focuses the prompt. From the tab bar, `Tab` goes to the first pane |
 | `Ctrl+B` | Hide / show the fleet sidebar: full-width view (also `/sidebar`; remembered) |
 | `1`–`6`, `Alt+1`–`Alt+6` | Switch view: 1 Fleet 2 Chat 3 Files 4 Loops 5 Inspect 6 Runtime (bare digits when the prompt is not focused) |
 | `Shift+←`, `Shift+→` | Previous / next loop of the selected agent, from anywhere (also `Ctrl+←/→`, except in a prompt with text) |
 | `Alt+←`, `Alt+→`, `Alt+B`, `Alt+F` | In the prompt: word left / right (also `Ctrl+←/→` while there is text) |
 | `/` | Slash command (focuses the prompt). Inside a list or viewer `/` filters or searches instead |
 | `?` | Full help (when the prompt is not focused) |
-| `Esc` | Close a dialog or the completion menu · leave the sidebar · in Chat, interrupt the running turn. It never leaves the prompt (`Tab` does), so typing never turns into view shortcuts |
-| `Esc Esc` | In Chat, clear the prompt |
+| `Esc` | In this order, the first that applies: close a dialog or the completion menu · end a view's own mode (a filter, search, the file viewer, a table row) · in Chat, interrupt the running turn · then focus the [tab bar](#tab-bar) (from the sidebar, the main pane, or an empty prompt) |
+| `Esc Esc` | Clear a prompt that has text (a third `Esc` then goes to the tab bar) |
 | `Ctrl+C` | Cancel a dialog · clear a non-empty prompt · press twice to quit |
 | `Enter` | Send the prompt to the selected agent › loop (or run the `/command`) |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J`, trailing `\` | Newline in the prompt. Shift+Enter needs a terminal that tells it from Enter: see [Shift+Enter](#shiftenter) |
 | `Ctrl+↑`, `Ctrl+↓` in the prompt | Prompt history (per agent › loop in Chat). `↑` / `↓` also walk it from the first / last line of text |
 | `↑`, `↓` in the prompt | Chat with an empty prompt: scroll the transcript (`Home` / `End`: top / follow). Otherwise move in the text or the completion menu |
-| Mouse wheel | Scroll what is under the pointer (transcript, lists, viewer, events, help, palette). A click focuses a pane. See [Mouse](#mouse) |
+| Mouse | Drag selects text, right-click pastes, the wheel scrolls the focused pane. `/mouse on` for pointer scrolling and clicks. See [Mouse](#mouse) |
 | `Tab` in the prompt | Accept a completion: `/commands`, their arguments, `@file` paths in Chat |
+
+### Tab bar
+
+`Esc` moves focus up to the view tabs in the header once nothing else takes
+it: dialogs, menus and a view's own modes (a filter, the file viewer, a
+running chat turn) come first. In a prompt with text, `Esc` twice clears it
+and the next `Esc` goes up. The tab under the cursor turns teal and
+underlined, and the status bar shows the tab keys.
+
+| Keys | Action |
+|------|--------|
+| `←`, `→` (`h`, `l`) | Previous / next view; the view switches as the cursor moves, like any tab strip (`Home`, `End`: first, last) |
+| `Enter`, `↓` | Into the view (Chat: its prompt) |
+| `1`–`6` | Jump straight into a view |
+| `Tab`, `Shift+Tab` | Back into the panes (first / last) |
+| `w` | Web server on / off (stopping asks) |
+| `?`, `:`, `/`, `Ctrl+K` | As everywhere |
+
+In mouse mode a click on a tab switches views and a click on the web badge
+turns the server on or off.
 
 ### Dialogs
 
@@ -240,6 +269,7 @@ The same legend is in `?` / `/help`.
 | `s` | Start the agent |
 | `x` | Stop and unload the agent (asks; the `.adf` file is kept) |
 | `a` | Interrupt the turns running now (asks): each loop goes idle and keeps working |
+| `w`, `W` | Open the agent's website in the browser (starts the web server first if it is stopped) · copy its URL |
 | `n` | New agent from a template (sets up your owner identity first if needed) |
 | `o` | Load an `.adf` (Tab completes paths, `Ctrl+R` require review, `Ctrl+S` start after load) |
 | `i` | Owner identity: status and actions (`I` hides the identity banner) |
@@ -253,7 +283,7 @@ The same legend is in `?` / `/help`.
 |------|--------|
 | `Enter` | Send to the selected loop (queued while it runs) |
 | `Shift+←`, `Shift+→` (`Ctrl+←/→` on an empty prompt; `[`, `]`, `←`, `→` in the transcript) | Previous / next loop tab |
-| `↑`, `↓` with an empty prompt | Scroll the transcript line by line (`Home`, `End`: top, follow live). Once the prompt has text they edit it |
+| `↑`, `↓` with an empty prompt | Scroll the transcript line by line (`Home`, `End`: top, follow live). Once the prompt has text a single `↑`/`↓` edits it, while the wheel's burst of arrows still scrolls |
 | `Ctrl+↑`, `Ctrl+↓` | Prompt history of this agent › loop |
 | `↑`, `↓` (`j`, `k`) in the transcript | Select a transcript item (`Tab` from the prompt) |
 | `Enter`, `Space` | Expand or collapse the selected item (thinking, tool call, notice) |
@@ -261,6 +291,7 @@ The same legend is in `?` / `/help`.
 | `Home` (`g`), `End` (`G`) | Top, loading older history · follow live |
 | `t` | Expand or collapse all thinking |
 | `c` | Copy the selected item, else the last reply |
+| `w` | Open the agent's website (when it serves one) |
 | `y` | Approve the pending tool call: press twice, or once with that approval selected in the transcript · resume a suspended agent |
 | `n` | Deny, with an optional reason · shut a suspended agent down (asks) |
 | `v` | Full details of the tool call |
@@ -317,7 +348,8 @@ The same legend is in `?` / `/help`.
 | Keys | Action |
 |------|--------|
 | `←`, `→` (`[`, `]`) | Tabs |
-| Config: `e` | Edit in `$EDITOR` (validated, changed keys confirmed) |
+| Status: `w`, `W` | Open the agent's website · copy its URL |
+| Config: `e` | Edit in `$EDITOR` (validated, changed keys confirmed; also `/config edit`) |
 | Logs: `f` · Tables: `Enter`, `n`, `p` | Follow · row detail, next / previous page |
 | Events | As in Runtime › Events, locked to this agent (`l` still narrows to the selected loop) |
 | `r` | Reload |
@@ -330,7 +362,7 @@ The same legend is in `?` / `/help`.
 | `r` | Reload the page |
 | Identity: `Enter` · `c`, `r`, `u` | Identity dialog · create, restore, unlock (when offered) |
 | Sign-in: `Enter` | The sign-in dialog |
-| Network: `m`, `s`, `R` | Mesh on/off, mesh server start/stop, restart the server (each asks) |
+| Network: `m`, `s`, `R` | Mesh on/off (asks), web server start / stop (stopping asks), restart it (asks) |
 | Events: `↑`, `↓`, wheel · `End` (`G`) | Scroll (stops following) · follow the newest again |
 | Events: `t`, `a`, `l`, `/` | Filter by type (e.g. `tool. -turn.delta`), agent, loop, text |
 | Events: `Space`, `f`, `Enter`, `c`, `x` | Pause, follow, full event, clear, reset filters |
@@ -360,7 +392,11 @@ sent to an agent.
 | `/login [chatgpt\|grok]`, `/logout <chatgpt\|grok>` | Sign the daemon in (browser / device code) or out (asks) |
 | `/json [on\|off]` | Raw JSON in Inspect and Runtime pages |
 | `/sidebar [on\|off]` | Show or hide the fleet sidebar (`Ctrl+B`; remembered) |
-| `/mouse [on\|off]` | Mouse capture (off: the terminal selects text as usual; remembered) |
+| `/mouse [on\|off]` | Mouse mode (on: pointer scrolling and clicks; off, the default: native select, copy, paste; remembered) |
+| `/web [on\|off]` | The web server that serves agent websites and APIs: status, start, stop (asks) |
+| `/open-site [agent]` (`/site`), `/copy-site [agent]` | Open an agent's website in the browser (starts the web server if stopped) · copy its URL |
+| `/model [[provider/]model \| inherit]` | Change the selected agent › loop's model: main changes the agent config, an inner loop gets its own override (`inherit` clears it). No argument: a picker (provider with sign-in state, then model, type to filter) |
+| `/config [edit]` | The selected agent's config (Inspect › Config); `edit` opens it in `$EDITOR` |
 | `/terminal-setup` (`/terminal`) | Whether this terminal sends Shift+Enter, and the keybinding that makes it |
 | `/agents [interrupt\|abort <agent> [loop] \| refresh]` | Fleet overview; interrupt an agent's running turns (`abort` is the hard stop: that loop stays stopped until the agent is reloaded) |
 | `/new [name]` | New agent: name, template, optional provider and model, start now. Opens its chat |
@@ -427,16 +463,55 @@ as before. `--no-kitty` or `ADF_TUI_KITTY=0` never turns it on.
 
 ### Mouse
 
-In the alternate screen (the default) the TUI turns on mouse reporting (button
-and wheel events only, never pointer motion): the wheel scrolls the transcript,
-list, viewer, event tail, help or palette under the pointer, and a click
-focuses the sidebar, main pane or prompt. Capture is off whenever the TUI
-does not own the terminal (quit, crash, `$EDITOR`).
+By default the terminal keeps its mouse: **drag selects text**, `Ctrl+C` /
+`Ctrl+Shift+C` (or the terminal's own copy) copies it, **right-click pastes**,
+and `Ctrl+V` pastes into the prompt. In the alternate screen the TUI turns on
+alternate scroll mode (`DECSET 1007`): the wheel sends `↑`/`↓`, so it scrolls
+the focused pane (Windows Terminal, iTerm2, VS Code and most xterm-likes
+support it). In Chat the wheel scrolls the transcript even while the prompt
+has text (a burst of arrows scrolls; a single `↑` still edits). Windows
+Terminal and VS Code copy on `Ctrl+C` when text is selected and do not pass
+the key on, so a selection never counts towards quitting.
 
-While capture is on, the terminal's own selection needs **Shift+drag** (Windows
-Terminal, VS Code, iTerm2 with Option, most Linux terminals). `/mouse off` (or
-`--no-mouse`, `ADF_TUI_MOUSE=0`) hands the mouse back to the terminal; the
-choice is remembered.
+**Mouse mode** (`/mouse on`, `--mouse`, `ADF_TUI_MOUSE=1`; remembered) turns
+on mouse reporting instead (buttons and wheel, never pointer motion): the
+wheel scrolls the transcript, list, viewer, event tail, help or palette under
+the pointer, a click focuses the sidebar, main pane or prompt, and clicks on
+the header switch views or toggle the web server. Selecting text then needs
+**Shift+drag** in most terminals. `/mouse off` returns to the native mouse.
+
+Both modes are off whenever the TUI does not own the terminal (quit, crash,
+`$EDITOR`).
+
+## Agent websites
+
+Agents can serve web pages and APIs through the daemon's **web server** (the
+mesh HTTP server, default `127.0.0.1:7295`; it takes the next free port when
+that one is busy, and the TUI always shows the port it is bound to). An agent
+with `serving.public` (its `public/` folder, `index.html` by default),
+`serving.shared` patterns or `serving.api` routes (lambdas, WebSocket too) is
+at `http://<host>:<port>/agents/<handle>/`. Agents that serve nothing show
+nothing.
+
+- **Fleet:** a `WEB` column (`site`, `api`, `files`) when the table is wide
+  enough, and a line under the selected agent: the link, the LAN link when the
+  server listens on every interface, and what it serves (`public/
+  (index.html) · 2 API routes incl. 1 WS`). `w` opens it, `W` copies it.
+- **Inspect › Status** starts with a Website block (url, LAN urls, server,
+  what it serves); `w` / `W` there too.
+- **Chat:** the info line carries `web 127.0.0.1:7295/agents/<handle>/`; `w`
+  in the transcript opens it.
+- `/open-site [agent]`, `/copy-site [agent]` and the palette ("Open agent
+  website", "Copy agent website URL") work from anywhere.
+
+When the server is stopped the same places say `web server stopped — start
+it`, and `w` starts it (no confirm) and then opens the site. The header shows
+`● web :7295` or `○ web off`; `w` on the [tab bar](#tab-bar), `/web on|off`,
+the palette ("Start web server", "Stop web server…") and Runtime › Network `s`
+turn it on or off. Stopping always asks: it takes every agent site and API
+offline and stops mesh delivery over HTTP. The TUI re-reads the server state
+on connect, when agents load or their config changes, and every 20 seconds
+(Studio or the CLI may change it).
 
 ## Owner identity and new agents
 
@@ -549,8 +624,8 @@ Other notes:
 - Newlines in the prompt: `Shift+Enter` on Windows Terminal 1.25+ (older: the
   `sendInput` action in [Shift+Enter](#shiftenter)), `Alt+Enter`, `Ctrl+J` or
   a trailing `\`.
-- Select text with `Shift+drag` while mouse capture is on (`/mouse off` turns
-  it off).
+- Drag selects text and right-click pastes (the default); in mouse mode
+  (`/mouse on`) select with `Shift+drag`.
 - The external editor defaults to `notepad`.
 
 ## Known gaps

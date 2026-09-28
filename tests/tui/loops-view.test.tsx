@@ -61,7 +61,8 @@ describe('loops manager', () => {
     expect(frame).toContain('mock / mock-model')
     await tui.press(KEY.down)
     const detail = await tui.waitFor('Consolidate memories into mind.md')
-    expect(detail).toMatch(/timers\s+#1 every 1h/)
+    expect(detail).toMatch(/timers\s+every 1h/)
+    expect(detail).not.toMatch(/timers\s+#1/)
     expect(store.getState().selectedLoop[AGENT_1_ID]).toBe('consolidator')
   })
 

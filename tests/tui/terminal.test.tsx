@@ -12,7 +12,7 @@ import { App } from '../../src/main/tui/app/App'
 import { createTheme } from '../../src/main/tui/app/theme'
 import { DaemonClient } from '../../src/main/tui/api/client'
 import { createTuiStore, type TuiStore } from '../../src/main/tui/state/store'
-import { MOUSE_OFF, MOUSE_ON, installTerminalModes, isMouseGarbage, newlineKey, parseMouse, terminalCaps } from '../../src/main/tui/app/terminal'
+import { ALT_SCROLL_OFF, ALT_SCROLL_ON, MOUSE_OFF, MOUSE_ON, installTerminalModes, isMouseGarbage, newlineKey, parseMouse, setMouseWanted, terminalCaps } from '../../src/main/tui/app/terminal'
 import { defaultPrefsPath, getPrefs, loadPrefs, resetPrefs, savePrefs } from '../../src/main/tui/app/prefs'
 import { readLayout } from '../../src/main/tui/app/layout'
 import { tabWindow } from '../../src/main/tui/ui/Tabs'
@@ -116,6 +116,26 @@ describe('terminal modes', () => {
     expect(stdout.written.at(-1)).toBe(MOUSE_OFF)
     expect(terminalCaps().mouseActive).toBe(false)
     expect(stdin.raw).toEqual([true, false, true])
+  })
+
+  it('by default leaves the mouse to the terminal and turns on alternate scroll (wheel → ↑/↓), restored on hand-back', () => {
+    const stdin = new FakeTty()
+    const stdout = new FakeTty()
+    const uninstall = installTerminalModes({ stdin: stdin as never, stdout: stdout as never, mouse: false, altScreen: true })
+    stdin.setRawMode(true)
+    expect(stdout.written).toEqual([ALT_SCROLL_ON])
+    expect(terminalCaps()).toMatchObject({ mouseActive: false, altScrollActive: true })
+    stdin.setRawMode(false)
+    expect(stdout.written).toEqual([ALT_SCROLL_ON, ALT_SCROLL_OFF])
+    stdin.setRawMode(true)
+    // /mouse on swaps alternate scroll for full mouse reporting, /mouse off swaps back.
+    setMouseWanted(true)
+    expect(stdout.written.at(-1)).toBe(MOUSE_ON + ALT_SCROLL_OFF)
+    setMouseWanted(false)
+    expect(stdout.written.at(-1)).toBe(MOUSE_OFF + ALT_SCROLL_ON)
+    uninstall()
+    expect(stdout.written.at(-1)).toBe(ALT_SCROLL_OFF)
+    expect(terminalCaps().altScrollActive).toBe(false)
   })
 
   it('keeps the mouse off outside the alternate screen', () => {
@@ -242,6 +262,20 @@ describe('mouse and scrolling', () => {
     await tui.press(KEY.ctrlUp)
     await tui.waitFor(f => f.includes('› hello there') && !/newer rows? below/.test(f))
     // With text in the box ↑ keeps editing / walking history, not scrolling.
+    await tui.press(KEY.up)
+    expect(tui.lastFrame()).not.toMatch(/newer rows? below/)
+  })
+
+  it('a wheel burst (alternate scroll: several ↑ in one read) scrolls even with text in the composer; a lone ↑ still edits', async () => {
+    const { tui } = await mountChat({ history: 80 })
+    await tui.waitFor('answer 79')
+    await tui.type('draft stays')
+    await tui.waitFor('draft stays')
+    await tui.press(KEY.up + KEY.up + KEY.up)
+    await tui.waitFor(f => /3 newer rows below/.test(f))
+    expect(tui.lastFrame()).toContain('draft stays')
+    await tui.press(KEY.down + KEY.down + KEY.down)
+    await tui.waitFor(f => !/newer rows? below/.test(f))
     await tui.press(KEY.up)
     expect(tui.lastFrame()).not.toMatch(/newer rows? below/)
   })

@@ -5,11 +5,11 @@ import { useShell } from './shell-context'
 import { elementRect, rectContains, useKeyRouter, useKeys } from './keys'
 import { noteShiftEnter, parseMouse } from './terminal'
 import { readLayout, setSidebarHidden } from './layout'
-import { Header } from './Header'
+import { Header, createHeaderHits } from './Header'
 import { FleetSidebar } from '../views/fleet/Sidebar'
 import { StatusBar } from './StatusBar'
 import { Toasts } from './Toasts'
-import { Prompt } from './Prompt'
+import { Prompt, isPromptEmpty, isPromptMenuOpen } from './Prompt'
 import { OverlayHost } from './OverlayHost'
 import { openPalette } from './palette'
 import { createQuitGuard, QUIT_WINDOW_MS } from '../commands/builtin/quit'
@@ -17,12 +17,15 @@ import { useStore, useTuiSelector } from '../state/store'
 import { useActiveView, useFocus, useOverlays, useToasts } from '../state/hooks'
 import type { FocusZone } from '../state/types'
 import { MAIN_LOOP } from '../api/types'
+import { toggleWebServer } from '../web/ops'
 
 /** Below this width the sidebar collapses (Tab still reaches main + prompt). Ctrl+B hides it at any width. */
 export const SIDEBAR_MIN_COLUMNS = 70
 const PROMPT_ROWS = 3
 const RESIZE_SETTLE_MS = 150
 const CLEAR_SCREEN = '\u001b[2J\u001b[H'
+/** Two Esc presses within this window clear a prompt that has text. */
+export const DOUBLE_ESC_MS = 600
 
 class ViewErrorBoundary extends Component<{ viewId: string; children?: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null }
@@ -97,8 +100,11 @@ export function Shell() {
   const sidebarRef = useRef<DOMElement>(null)
   const promptRef = useRef<DOMElement>(null)
   const sidebarHidden = useTuiSelector(s => readLayout(s).sidebarHidden)
+  const headerRef = useRef<DOMElement>(null)
+  const headerHits = useMemo(() => createHeaderHits(), [])
   const metrics = useBoxMetrics(viewRef as RefObject<DOMElement>)
   const quitGuard = useMemo(() => createQuitGuard(), [])
+  const lastEscAt = useRef(0)
 
   const view = views.find(v => v.id === activeView) ?? views[0]
   const showSidebar = !!view && !view.fullWidth && !sidebarHidden && columns >= SIDEBAR_MIN_COLUMNS
@@ -114,8 +120,11 @@ export function Shell() {
   const zones: FocusZone[] = [...(showSidebar ? ['sidebar' as const] : []), 'main', ...(promptShown ? ['input' as const] : [])]
 
   useEffect(() => {
-    if (!zones.includes(focus)) store.actions.setFocus('main')
+    if (focus !== 'tabs' && !zones.includes(focus)) store.actions.setFocus('main')
   }, [focus, showSidebar, promptShown])
+
+  /** Where a view is entered from the tab bar: Chat's prompt, else its main pane. */
+  const enterZone = (id: string): FocusZone => (id === 'chat' && views.find(v => v.id === id)?.prompt !== false ? 'input' : 'main')
 
   useInput((input, key) => {
     const state = store.getState()
@@ -125,6 +134,15 @@ export function Shell() {
     if (mouse) {
       if (mouse.kind === 'wheel') router.wheel(mouse, { overlayOpen })
       else if (mouse.kind === 'press' && mouse.button === 0 && !overlayOpen) {
+        // The header: a tab switches views, the web badge starts / stops the web server.
+        const header = elementRect(headerRef.current)
+        if (header && mouse.y === header.y) {
+          const x = mouse.x - header.x
+          const tab = headerHits.tabs.find(t => x >= t.x0 && x < t.x1)
+          if (tab) { store.actions.setView(tab.id); return }
+          if (headerHits.web && x >= headerHits.web.x0 && x < headerHits.web.x1) { void toggleWebServer(store); return }
+          return
+        }
         // A click focuses the pane under the pointer.
         const zone: FocusZone | null = rectContains(elementRect(promptRef.current), mouse.x, mouse.y) ? 'input'
           : rectContains(elementRect(sidebarRef.current), mouse.x, mouse.y) ? 'sidebar'
@@ -136,6 +154,27 @@ export function Shell() {
     if (key.return && key.shift) noteShiftEnter()
     router.dispatch(input, key, { focus: state.focus, overlayOpen })
   })
+
+  // The tab bar (Esc from a view with nothing left to cancel): ←/→ switch views
+  // as the cursor moves (like any tab strip), Enter / ↓ go into the view.
+  useKeys((input, key) => {
+    if (key.ctrl || key.meta || key.shift) return false
+    const at = Math.max(0, views.findIndex(v => v.id === store.getState().activeView))
+    const go = (index: number) => {
+      const next = views[(index + views.length) % views.length]
+      if (next) { store.actions.setView(next.id); store.actions.setFocus('tabs') }
+      return true
+    }
+    if (key.leftArrow || input === 'h') return go(at - 1)
+    if (key.rightArrow || input === 'l') return go(at + 1)
+    if (key.home) return go(0)
+    if (key.end) return go(views.length - 1)
+    if (key.return || key.downArrow || input === 'j') { store.actions.setFocus(enterZone(views[at]?.id ?? '')); return true }
+    if (key.upArrow || input === 'k') return true
+    if (input === 'w') { void toggleWebServer(store); return true }
+    if (key.escape) return true
+    return false
+  }, { layer: 'tabs' })
 
   useKeys((input, key) => {
     const state = store.getState()
@@ -151,6 +190,8 @@ export function Shell() {
     if (key.ctrl && (input === 'k' || input === 'p')) { openPalette(store); return true }
     if (key.ctrl && !key.meta && input === 'b') { setSidebarHidden(store); return true }
     if (key.tab) {
+      // From the tab bar, Tab carries on into the panes as if it sat before the first one.
+      if (state.focus === 'tabs') { store.actions.setFocus(key.shift ? zones[zones.length - 1] : zones[0]); return true }
       const at = zones.indexOf(state.focus)
       const next = zones[(at + (key.shift ? zones.length - 1 : 1)) % zones.length]
       store.actions.setFocus(next)
@@ -159,9 +200,23 @@ export function Shell() {
     // Loop switch: Shift+←/→ everywhere (stock macOS keeps Ctrl+←/→ for
     // Spaces); Ctrl+←/→ too, except in a prompt with text (word jumps there).
     if ((key.ctrl || key.shift) && !key.meta && (key.leftArrow || key.rightArrow)) { cycleLoop(store, key.leftArrow ? -1 : 1); return true }
-    // Esc leaves the sidebar; it never leaves the prompt (Tab / Shift+Tab do),
-    // so typing is never turned into view shortcuts.
-    if (key.escape && state.focus === 'sidebar') { store.actions.setFocus('main'); return true }
+    // Esc that nothing before took (dialogs, menus, a view's own mode, chat's
+    // interrupt): a prompt with text needs Esc twice to clear; otherwise focus
+    // goes up to the tab bar.
+    if (key.escape) {
+      if (state.focus === 'input') {
+        if (isPromptMenuOpen()) return false
+        if (!isPromptEmpty()) {
+          const now = Date.now()
+          if (now - lastEscAt.current < DOUBLE_ESC_MS) { lastEscAt.current = 0; store.actions.prefillPrompt('') }
+          else lastEscAt.current = now
+          return true
+        }
+      }
+      lastEscAt.current = 0
+      store.actions.setFocus('tabs')
+      return true
+    }
     const hotkey = views.find(v => v.key === input)
     if (hotkey && key.meta) { store.actions.setView(hotkey.id); return true }
     if (state.focus === 'input') return false
@@ -180,7 +235,9 @@ export function Shell() {
 
   return (
     <Box flexDirection="column" width={columns} height={rows}>
-      <Header width={columns} />
+      <Box ref={headerRef} width={columns} height={1} flexShrink={0}>
+        <Header width={columns} hits={headerHits} />
+      </Box>
       <Box flexDirection="row" height={bodyHeight} width={columns}>
         {showSidebar ? (
           <Box ref={sidebarRef} width={sidebarWidth} height={bodyHeight} flexShrink={0}>

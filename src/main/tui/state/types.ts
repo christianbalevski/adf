@@ -198,8 +198,42 @@ export interface Toast {
   ttlMs: number
 }
 
-/** Where keystrokes go. The shell owns the transitions (Tab / Esc / hotkeys). */
-export type FocusZone = 'sidebar' | 'main' | 'input'
+/**
+ * Where keystrokes go. The shell owns the transitions (Tab / Esc / hotkeys).
+ * `tabs` is the view tab bar in the header (Esc reaches it when the view and
+ * the prompt have nothing left to cancel).
+ */
+export type FocusZone = 'sidebar' | 'main' | 'input' | 'tabs'
+
+/** The daemon's mesh HTTP server: it serves every agent's website / API under `/agents/<handle>/`. */
+export interface WebServerStatus {
+  running: boolean
+  /** The port it is bound to (or will bind to when started). */
+  port: number
+  /** Bind address: `127.0.0.1` (this machine) or `0.0.0.0` (the LAN too). */
+  host: string
+}
+
+/** What the mesh reports about one agent (`GET /network/mesh` agents[]): what it serves, its status line. */
+export interface MeshAgentInfo {
+  handle?: string
+  publicEnabled: boolean
+  apiRoutes: number
+  sharedCount: number
+  /** The agent's own one-line status (adf_meta `status`), when it set one. */
+  status?: string
+}
+
+export interface WebState {
+  /** null: the daemon does not report its web server. */
+  server: WebServerStatus | null
+  /** IPv4 LAN addresses, read while the server binds beyond loopback. */
+  lan: string[]
+  /** By agent id; agents not on the mesh fall back to their config. */
+  agents: Record<string, MeshAgentInfo>
+  error?: string
+  at: number
+}
 
 export interface Overlay {
   id: string
@@ -229,6 +263,8 @@ export interface TuiState {
   identity: IdentityStatus | null
   /** `GET /runtime/auth`: ChatGPT / Grok sign-in + provider registrations; null until read. */
   auth: AuthDiagnostics | null
+  /** The mesh web server + what each agent serves (`GET /network/mesh`); null until read. */
+  web: WebState | null
   agents: Record<string, AgentEntry>
   /** Agent ids in display order. */
   agentOrder: string[]

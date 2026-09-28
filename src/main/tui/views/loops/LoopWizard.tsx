@@ -298,7 +298,7 @@ export function LoopWizard({ overlay, close, width, height }: OverlayProps) {
           footer={
             <Box flexDirection="column" marginTop={1}>
               {draft.kind !== 'none' ? <Text color={schedule.error ? theme.color.error : theme.color.info}>{truncate(`Schedule: ${schedule.error ?? schedule.preview}`, inner)}</Text> : null}
-              {props.mode === 'edit' && existingTimers.length > 0 ? <Text color={theme.color.muted}>{truncate(`Existing: ${existingTimers.map(t => `#${t.id} ${describeTimer(t)}`).join(', ')}`, inner)}</Text> : null}
+              {props.mode === 'edit' && existingTimers.length > 0 ? <Text color={theme.color.muted}>{truncate(`Existing: ${existingTimers.map(t => describeTimer(t)).join(', ')}`, inner)}</Text> : null}
               {warning ? <Text color={theme.color.warn}>{truncate(`${theme.glyph.warn} ${warning}`, inner)}</Text> : null}
             </Box>
           }

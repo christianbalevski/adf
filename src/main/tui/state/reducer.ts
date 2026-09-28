@@ -37,6 +37,7 @@ import {
   type TranscriptItem,
   type TranscriptKey,
   type TuiState,
+  type WebState,
 } from './types'
 
 export const MAX_ACTIVITY = 500
@@ -77,6 +78,7 @@ export type TuiAction =
   | { type: 'daemon/switch'; url: string }
   | { type: 'identity/set'; identity: IdentityStatus | null }
   | { type: 'auth/set'; auth: AuthDiagnostics | null }
+  | { type: 'web/set'; web: WebState | null }
 
 export function initialState(daemonUrl: string, activeView = 'fleet'): TuiState {
   return {
@@ -85,6 +87,7 @@ export function initialState(daemonUrl: string, activeView = 'fleet'): TuiState 
     daemonReachable: null,
     identity: null,
     auth: null,
+    web: null,
     agents: {},
     agentOrder: [],
     selectedAgentId: null,
@@ -148,6 +151,8 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
       return { ...state, identity: action.identity }
     case 'auth/set':
       return { ...state, auth: action.auth }
+    case 'web/set':
+      return { ...state, web: action.web }
     case 'daemon/reachable':
       return state.daemonReachable === action.reachable ? state : { ...state, daemonReachable: action.reachable }
     case 'agents/loaded': {

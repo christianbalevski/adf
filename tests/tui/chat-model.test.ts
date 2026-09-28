@@ -85,7 +85,7 @@ describe('chat event digest', () => {
     expect(waiting.next.markers).toEqual({})
     const { next } = digestEvents(INITIAL_CHAT_STATE, [fired], (_id, timerId) => timers.find(t => t.id === timerId) ?? 'unknown')
     const markers = next.markers[transcriptKey(AGENT, 'consolidator')]
-    expect(markers?.[0].text).toContain('Woken by timer #1 (every 1h, "consolidate")')
+    expect(markers?.[0].text).toContain('Woken by timer (every 1h, "consolidate")')
   })
 
   it('merges markers into the transcript by time', () => {

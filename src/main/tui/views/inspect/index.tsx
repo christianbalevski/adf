@@ -16,6 +16,7 @@ import { EventsTab } from './EventsTab'
 import { ConfigTab } from './ConfigTab'
 import { AdaptersTab, IdentityTab, LogsTab, McpTab, RuntimeTab, TablesTab, UsageTab } from './DiagTabs'
 import { ThemeOverlay } from './overlays'
+import { MODEL_OVERLAY, ModelOverlay } from './model-picker'
 import { EVENT_KEYS } from './event-keys'
 
 function InspectView({ width: paneWidth, height, focused }: ViewProps) {
@@ -80,7 +81,8 @@ const inspect: ViewDefinition = {
     {
       title: 'Other tabs',
       keys: [
-        { keys: 'e', label: 'Config: edit in $EDITOR (validated, changed keys confirmed)' },
+        { keys: 'e', label: 'Config: edit in $EDITOR (validated, changed keys confirmed; also /config edit)' },
+        { keys: 'w', label: 'Status: open the agent’s website (W copies its URL)' },
         { keys: 'enter', label: 'Logs / Tables: details · row' },
         { keys: 'f', label: 'Logs: follow' },
         { keys: 'n p', label: 'Tables: next / previous page' },
@@ -95,6 +97,7 @@ const inspect: ViewDefinition = {
   ...inspectCommands,
   overlays: {
     'inspect.theme': ThemeOverlay,
+    [MODEL_OVERLAY]: ModelOverlay,
   },
 }
 

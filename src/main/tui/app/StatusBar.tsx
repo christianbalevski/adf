@@ -18,6 +18,14 @@ export const GLOBAL_HINTS: KeyHintSpec[] = [
   { keys: 'ctrl+c', label: 'quit' },
 ]
 
+/** While the header tab bar has focus (Esc). */
+export const TAB_BAR_HINTS: KeyHintSpec[] = [
+  { keys: 'left right', label: 'view' },
+  { keys: 'enter', label: 'open' },
+  { keys: '1-6', label: 'jump' },
+  { keys: 'w', label: 'web server' },
+]
+
 /** Bottom bar: agent › loop, live state, model, token tally, then key hints. */
 export function StatusBar({ width }: { width: number }) {
   const theme = useTheme()
@@ -69,7 +77,9 @@ export function StatusBar({ width }: { width: number }) {
   )
 
   const focusHint: KeyHintSpec = { keys: 'tab', label: `focus: ${focus}` }
-  const hints = [...viewHints, focusHint, ...GLOBAL_HINTS.filter(h => h.keys !== 'tab')]
+  const hints = focus === 'tabs'
+    ? [...TAB_BAR_HINTS, ...GLOBAL_HINTS.filter(h => h.keys !== 'tab')]
+    : [...viewHints, focusHint, ...GLOBAL_HINTS.filter(h => h.keys !== 'tab')]
   return (
     <Box width={width} height={1} justifyContent="space-between" backgroundColor={theme.color.surface}>
       <Box flexShrink={0} width={leftWidth}>{left}</Box>

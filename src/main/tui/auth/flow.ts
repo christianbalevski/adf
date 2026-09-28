@@ -24,6 +24,11 @@ export function setAuthFlowSeams(next: Partial<Seams> | null): void {
   seams = next ? { openBrowser, ...next } : { openBrowser }
 }
 
+/** Open `url` in the default browser (cli/auth-flow's opener: rundll32 on Windows, never cmd). Best effort. */
+export function openUrl(url: string): void {
+  seams.openBrowser(url)
+}
+
 export interface SignInHandlers {
   onChatGpt?: (info: ChatGptStartInfo) => void
   onGrok?: (info: GrokStartInfo) => void

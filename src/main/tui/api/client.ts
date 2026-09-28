@@ -305,6 +305,11 @@ export class DaemonClient {
     return this.post(`/network/server/${action}`)
   }
 
+  /** `{ addresses: { hostname, addresses: [{ iface, address, family }] } }` (web/model `parseLan`). */
+  lanAddresses(): Promise<Record<string, unknown>> {
+    return this.get('/network/mesh/lan-addresses')
+  }
+
   // --- subscription provider sign-in (ChatGPT, Grok) ------------------------
   // Sign-in flows themselves (browser, callback server, polling) live in
   // cli/auth-flow.ts over `request`; these are the plain reads and sign-out.

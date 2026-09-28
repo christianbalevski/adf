@@ -12,6 +12,7 @@ import { setMouse, setSidebarHidden } from '../../app/layout'
 import { TERMINAL_SETUP_OVERLAY } from '../../app/terminal-setup'
 import { identityActions, identityCommand, newAgentCommand } from './identity'
 import { authActions, authCommand, loginCommand, logoutCommand } from './auth'
+import { copySiteCommand, openSiteCommand, webActions, webCommand } from './web'
 
 export { createQuitGuard, QUIT_WINDOW_MS } from './quit'
 export { THEMES, applyTheme, findTheme, nextThemeName } from './themes'
@@ -177,7 +178,7 @@ const sidebar: SlashCommand = {
 const mouse: SlashCommand = {
   name: 'mouse',
   args: '[on|off]',
-  description: 'Mouse capture: the wheel scrolls what is under the pointer (off: the terminal selects text as usual)',
+  description: 'Mouse mode: the wheel scrolls what is under the pointer, clicks focus panes and tabs (off, the default: drag selects, right-click pastes)',
   complete: partial => ['on', 'off'].filter(v => v.startsWith(partial.trim())),
   run: ctx => { setMouse(ctx.store, onOff(ctx.args[0])) },
 }
@@ -220,6 +221,9 @@ const commands: SlashCommand[] = [
   terminalSetup,
   identityCommand,
   newAgentCommand,
+  webCommand,
+  openSiteCommand,
+  copySiteCommand,
 ]
 
 const actions: PaletteAction[] = [
@@ -228,11 +232,12 @@ const actions: PaletteAction[] = [
   { id: 'shell.theme.next', title: 'Next color theme', group: 'Actions', keywords: ['theme', 'color', 'light', 'dark', 'mono'], run: ctx => { ctx.actions.pushOverlay({ kind: 'inspect.theme', props: { name: 'next' } }) } },
   { id: 'shell.json', title: 'Toggle raw JSON in Inspect and Runtime', group: 'Actions', keywords: ['json', 'raw'], run: ctx => json.run(ctx) },
   { id: 'shell.sidebar', title: 'Show / hide the sidebar', hint: 'full-width view, remembered', group: 'Actions', shortcut: 'ctrl+b', keywords: ['sidebar', 'fleet', 'full screen', 'fullscreen', 'zen', 'collapse', 'layout'], run: ctx => { setSidebarHidden(ctx.store) } },
-  { id: 'shell.mouse', title: 'Mouse capture on / off', hint: 'off: the terminal selects text', group: 'Actions', keywords: ['mouse', 'wheel', 'scroll', 'select', 'copy'], run: ctx => { setMouse(ctx.store) } },
+  { id: 'shell.mouse', title: 'Mouse mode on / off', hint: 'off: native select, copy and paste', group: 'Actions', keywords: ['mouse', 'wheel', 'scroll', 'select', 'copy'], run: ctx => { setMouse(ctx.store) } },
   { id: 'shell.terminal-setup', title: 'Terminal setup: Shift+Enter newline', group: 'Actions', keywords: ['shift enter', 'newline', 'keyboard', 'terminal', 'kitty', 'vscode', 'windows terminal'], run: ctx => { ctx.actions.pushOverlay({ kind: TERMINAL_SETUP_OVERLAY }) } },
   { id: 'shell.quit', title: 'Quit TUI (agents keep running)', group: 'Actions', shortcut: 'ctrl+c', keywords: ['exit', 'leave'], run: ctx => ctx.exit() },
   ...identityActions,
   ...authActions,
+  ...webActions,
 ]
 
 export const BUILTIN_COMMANDS: CommandContribution = { commands, actions }

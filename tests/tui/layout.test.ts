@@ -10,15 +10,23 @@ const TITLES = ['Fleet', 'Chat', 'Files', 'Loops', 'Inspect', 'Runtime']
 
 describe('header layout', () => {
   it('keeps full view names at 80 columns by shrinking the host first', () => {
-    expect(headerLayout(120, TITLES, '● live'.length, '127.0.0.1:7385')).toEqual({ tabs: 'full', host: '127.0.0.1:7385', compact: false })
-    expect(headerLayout(80, TITLES, '● live'.length, '127.0.0.1:7385')).toEqual({ tabs: 'full', host: '', compact: false })
+    expect(headerLayout(120, TITLES, '● live'.length, '127.0.0.1:7385')).toEqual({ tabs: 'full', host: '127.0.0.1:7385', compact: false, web: false })
+    expect(headerLayout(80, TITLES, '● live'.length, '127.0.0.1:7385')).toEqual({ tabs: 'full', host: '', compact: false, web: false })
     // The plain owner badge yields before the six view names shorten.
     const withBadge = { full: 'owner z6Mk…2doK  ● live'.length, compact: '● live'.length }
-    expect(headerLayout(80, TITLES, withBadge, '127.0.0.1:7385')).toEqual({ tabs: 'full', host: '', compact: true })
+    expect(headerLayout(80, TITLES, withBadge, '127.0.0.1:7385')).toEqual({ tabs: 'full', host: '', compact: true, web: false })
     expect(headerLayout(120, TITLES, withBadge, '127.0.0.1:7385')).toMatchObject({ tabs: 'full', compact: false })
     expect(headerLayout(80, TITLES, '!1 pending  ● live'.length, '127.0.0.1:7385').tabs).toBe('short')
     expect(headerLayout(70, TITLES, '● offline'.length, '127.0.0.1:7385').tabs).toBe('short')
     expect(headerLayout(40, TITLES, '● live'.length, '127.0.0.1:7385').tabs).toBe('key')
+  })
+
+  it('shows the web server badge while there is room and drops it first', () => {
+    const web = '● web :7295'.length
+    expect(headerLayout(120, TITLES, '● live'.length, '127.0.0.1:7385', web)).toEqual({ tabs: 'full', host: '127.0.0.1:7385', compact: false, web: true })
+    // At 80 columns it goes (after the host) before any view name shortens.
+    expect(headerLayout(80, TITLES, '● live'.length, '127.0.0.1:7385', web)).toEqual({ tabs: 'full', host: '', compact: false, web: false })
+    expect(headerLayout(100, TITLES, '● live'.length, '127.0.0.1:7385', web)).toMatchObject({ web: true, host: ':7385' })
   })
 })
 

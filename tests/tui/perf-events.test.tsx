@@ -59,7 +59,8 @@ describe('event tail performance', () => {
     push(store, 5000)
     await tui.waitFor('Umbilical')
     // Focus the main pane (the events list).
-    await tui.press('\u001b')
+    store.actions.setFocus('main')
+    await tui.waitFor(() => store!.getState().focus === 'main')
     const samples: number[] = []
     for (let i = 0; i < 20; i++) samples.push(await timeKey(tui, UP))
     const streaming = setInterval(() => push(store!, 5), 10)

@@ -88,9 +88,20 @@ export function ConfigTab({ agentId, label, width, height, focused }: { agentId:
   const actions = useActions()
   const { suspendTerminal } = useApp()
   const agent = useAgent(agentId)
-  const [inspect] = useInspectState()
+  const [inspect, update] = useInspectState()
   const [busy, setBusy] = useState(false)
   const config = agent?.config
+
+  const edit = () => {
+    setBusy(true)
+    void editConfigFlow(agentId, label, actions, suspendTerminal).finally(() => setBusy(false))
+  }
+  // /config edit: open the editor once per request.
+  useEffect(() => {
+    if (!inspect.editRequest || busy) return
+    update({ editRequest: undefined })
+    edit()
+  }, [inspect.editRequest])
 
   useEffect(() => {
     if (!config) void actions.loadConfig(agentId)
@@ -98,11 +109,7 @@ export function ConfigTab({ agentId, label, width, height, focused }: { agentId:
 
   useKeys((input, key) => {
     if (key.ctrl || key.meta || busy) return false
-    if (input === 'e') {
-      setBusy(true)
-      void editConfigFlow(agentId, label, actions, suspendTerminal).finally(() => setBusy(false))
-      return true
-    }
+    if (input === 'e') { edit(); return true }
     if (input === 'r') { void actions.loadConfig(agentId).then(c => { if (c) actions.toast('Config reloaded', 'info', 1500) }); return true }
     return false
   }, { layer: 'main', active: focused })

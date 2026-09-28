@@ -6,16 +6,25 @@
 //   Shift+Enter arrives as `CSI 13;2 u` and the composer can tell it from
 //   Enter. ink itself turns it off on exit, crash (signal-exit) and while an
 //   editor has the terminal (suspendTerminal); we only watch its writes.
-// - SGR mouse reporting (1000 + 1006: buttons and wheel, no motion) so the
-//   wheel scrolls the region under the pointer. It follows raw mode: ink
-//   drops raw mode on exit and around suspendTerminal (editor handoff), so
-//   mouse capture is off exactly when the TUI is not reading the terminal.
-//   A process 'exit' hook turns it off after a crash too.
+// - Default (no mouse capture): the terminal keeps its mouse, so drag selects
+//   text, Ctrl+C / Ctrl+Shift+C copy it and right-click pastes. Alternate
+//   scroll mode (DECSET 1007) makes the wheel send ↑/↓ in the alternate
+//   screen, so it scrolls the FOCUSED pane through the normal arrow keys.
+// - Opt-in mouse mode (/mouse on, --mouse, pref): SGR mouse reporting (1000 +
+//   1006: buttons and wheel, no motion) so the wheel scrolls the region under
+//   the pointer and clicks focus panes / switch header tabs (Shift+drag then
+//   selects text in most terminals).
+// Both follow raw mode: ink drops raw mode on exit and around suspendTerminal
+// (editor handoff), so the modes are off exactly when the TUI is not reading
+// the terminal. A process 'exit' hook turns them off after a crash too.
 
 import { useSyncExternalStore } from 'react'
 
 export const MOUSE_ON = '\u001b[?1000h\u001b[?1006h'
 export const MOUSE_OFF = '\u001b[?1006l\u001b[?1000l'
+/** Alternate scroll mode: the wheel sends ↑/↓ in the alternate screen (native selection stays). */
+export const ALT_SCROLL_ON = '\u001b[?1007h'
+export const ALT_SCROLL_OFF = '\u001b[?1007l'
 const KITTY_ON = /\u001b\[>\d+u/
 const KITTY_OFF = '\u001b[<u'
 
@@ -29,11 +38,13 @@ export interface TerminalCaps {
   /** Mouse capture requested (pref / flag), and whether it is live right now. */
   mouseWanted: boolean
   mouseActive: boolean
+  /** Alternate scroll mode (wheel → ↑/↓) is live: the default when mouse capture is off. */
+  altScrollActive: boolean
   /** Only in the alternate screen do pointer rows map onto the frame. */
   altScreen: boolean
 }
 
-let caps: TerminalCaps = { kitty: false, shiftEnterSeen: false, shiftEnterForced: false, mouseWanted: false, mouseActive: false, altScreen: false }
+let caps: TerminalCaps = { kitty: false, shiftEnterSeen: false, shiftEnterForced: false, mouseWanted: false, mouseActive: false, altScrollActive: false, altScreen: false }
 const listeners = new Set<() => void>()
 let out: { write(data: string): unknown } | null = null
 let rawMode = false
@@ -72,10 +83,16 @@ export function noteShiftEnter(): void {
 }
 
 function syncMouse(): void {
-  const wanted = caps.mouseWanted && caps.altScreen && rawMode
-  if (wanted === caps.mouseActive || !out) return
-  try { out.write(wanted ? MOUSE_ON : MOUSE_OFF) } catch { /* stream closed */ }
-  set({ mouseActive: wanted })
+  if (!out) return
+  const live = caps.altScreen && rawMode
+  const mouse = caps.mouseWanted && live
+  const altScroll = !caps.mouseWanted && live
+  let seq = ''
+  if (mouse !== caps.mouseActive) seq += mouse ? MOUSE_ON : MOUSE_OFF
+  if (altScroll !== caps.altScrollActive) seq += altScroll ? ALT_SCROLL_ON : ALT_SCROLL_OFF
+  if (!seq) return
+  try { out.write(seq) } catch { /* stream closed */ }
+  set({ mouseActive: mouse, altScrollActive: altScroll })
 }
 
 /** Turn mouse capture on or off for this session (/mouse). */
@@ -100,7 +117,7 @@ export interface InstallOptions {
 export function installTerminalModes(options: InstallOptions): () => void {
   const { stdin, stdout } = options
   out = { write: data => originalWrite(data) }
-  caps = { kitty: false, shiftEnterSeen: false, shiftEnterForced: !!options.shiftEnterForced, mouseWanted: options.mouse, mouseActive: false, altScreen: options.altScreen }
+  caps = { kitty: false, shiftEnterSeen: false, shiftEnterForced: !!options.shiftEnterForced, mouseWanted: options.mouse, mouseActive: false, altScrollActive: false, altScreen: options.altScreen }
   rawMode = false
 
   const originalWrite = stdout.write.bind(stdout) as (data: string | Uint8Array, ...rest: unknown[]) => boolean
@@ -125,17 +142,19 @@ export function installTerminalModes(options: InstallOptions): () => void {
   }
 
   // Crash / hard exit: never leave the user's shell reporting mouse events.
-  const onExit = () => { if (caps.mouseActive) { try { originalWrite(MOUSE_OFF) } catch { /* closed */ } } }
+  const restore = () => (caps.mouseActive ? MOUSE_OFF : '') + (caps.altScrollActive ? ALT_SCROLL_OFF : '')
+  const onExit = () => { const seq = restore(); if (seq) { try { originalWrite(seq) } catch { /* closed */ } } }
   process.on('exit', onExit)
 
   return () => {
     process.off('exit', onExit)
-    if (caps.mouseActive) { try { originalWrite(MOUSE_OFF) } catch { /* closed */ } }
+    const seq = restore()
+    if (seq) { try { originalWrite(seq) } catch { /* closed */ } }
     ;(stdout as unknown as { write: typeof originalWrite }).write = originalWrite
     if (originalSetRawMode) (stdin as unknown as { setRawMode: typeof originalSetRawMode }).setRawMode = originalSetRawMode
     rawMode = false
     out = null
-    set({ mouseActive: false, kitty: false })
+    set({ mouseActive: false, altScrollActive: false, kitty: false })
   }
 }
 

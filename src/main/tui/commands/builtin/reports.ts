@@ -5,6 +5,7 @@
 import type { DaemonClient } from '../../api/client'
 import { MAIN_LOOP } from '../../api/types'
 import type { TuiState } from '../../state/types'
+import { SERVER_STOPPED_TEXT, parseServer, servedText, serverText, siteOf } from '../../web/model'
 import {
   blank,
   formatDuration,
@@ -173,15 +174,24 @@ export const REPORTS: Record<ReportKind, Report> = {
 
   network: {
     title: 'Network',
-    async load(client) {
+    async load(client, state) {
       const [d, server] = await Promise.all([client.network(), settle(client.meshServer())])
       const safe = redactSecrets(d) as Record<string, unknown>
       const { agents, ...rest } = safe
       const mesh = (safe.mesh ?? {}) as Record<string, unknown>
       const lines: Line[] = [heading('Mesh')]
       lines.push(indent([{ text: 'mesh        ', tone: 'key' }, meshOn(mesh) ? { text: 'on', tone: 'success' } : { text: 'off', tone: 'muted' }, { text: `  port ${String(mesh.port ?? '-')}${mesh.lan ? ` ${'·'} LAN` : ''}`, tone: 'muted' }]))
-      if (server.value) lines.push(indent([{ text: 'server      ', tone: 'key' }, { text: serverLabel(server.value), tone: serverRunning(server.value) ? 'success' : 'muted' }]))
-      lines.push(indent(plain('m mesh on/off · s server start/stop · R restart the server (each asks first)', 'accent')))
+      if (server.value) lines.push(indent([{ text: 'web server  ', tone: 'key' }, { text: serverText(parseServer(server.value)), tone: serverRunning(server.value) ? 'success' : 'warn' }, { text: '  serves agent sites / APIs, receives mesh messages', tone: 'muted' }]))
+      lines.push(indent(plain(`m mesh on/off (asks) · s web server ${server.value && serverRunning(server.value) ? 'stop (asks)' : 'start'} · R restart`, 'accent')))
+      // Agent websites, with the live server state (the report's own read wins over the store's).
+      const live = parseServer(server.value)
+      const view = { ...state, web: state.web ? { ...state.web, server: live ?? state.web.server } : live ? { server: live, lan: [], agents: {}, at: Date.now() } : null }
+      const sites = state.agentOrder.map(id => siteOf(view, id)).filter(site => !!site)
+      if (sites.length) {
+        lines.push(blank(), heading(`Agent websites (${sites.length})`))
+        for (const site of sites) lines.push(indent([{ text: site.handle.padEnd(14), tone: 'key' }, site.url ? { text: site.url, tone: 'accent' } : { text: SERVER_STOPPED_TEXT, tone: 'warn' }, { text: `  ${servedText(site)}`, tone: 'muted' }]))
+        lines.push(indent(plain('Open one: Fleet w · /open-site <agent> · Ctrl+K "Open agent website"', 'muted')))
+      }
       lines.push(blank(), ...treeLines(rest))
       if (Array.isArray(agents)) {
         lines.push(blank(), heading('Agents on the mesh'))
@@ -263,9 +273,4 @@ export function meshOn(mesh: Record<string, unknown>): boolean {
 
 export function serverRunning(server: Record<string, unknown>): boolean {
   return server.running === true || server.status === 'running'
-}
-
-function serverLabel(server: Record<string, unknown>): string {
-  const where = server.port ? ` on port ${String(server.port)}` : ''
-  return serverRunning(server) ? `running${where}` : `stopped${where}`
 }

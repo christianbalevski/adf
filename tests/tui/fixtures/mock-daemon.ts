@@ -12,7 +12,8 @@ export const AGENT_2_ID = '0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d'
 
 interface Block { type: string; text?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: string; is_error?: boolean }
 interface Row { seq: number; role: 'user' | 'assistant'; content_json: Block[]; model?: string; created_at: number }
-interface MockLoop { name: string; goal: string; enabled: boolean; autostart?: boolean; tools?: string[]; status: 'idle' | 'running' }
+interface MockLoop { name: string; goal: string; enabled: boolean; autostart?: boolean; tools?: string[]; status: 'idle' | 'running'; model?: { provider: string; model_id: string } }
+interface MockServing { public?: { enabled: boolean; index?: string }; shared?: { enabled: boolean; patterns?: string[] }; api?: Array<{ method: string; path: string; lambda: string }> }
 interface MockAgent {
   id: string
   handle: string
@@ -25,7 +26,16 @@ interface MockAgent {
   timers: Array<Record<string, unknown>>
   tasks: Array<Record<string, unknown>>
   asks: Array<{ requestId: string; question: string; loop?: string }>
+  provider: string
+  /** What the agent serves through the daemon's web server (config.serving). */
+  serving?: MockServing
+  /** adf_meta `status`: the agent's own one-line status. */
+  status?: string
+  hostAccess?: boolean
 }
+
+/** The daemon's mesh web server (GET /network/server). */
+export interface MockWebServer { running: boolean; port: number; host: string }
 
 export interface MockEvent {
   event_type: string
@@ -45,6 +55,8 @@ export interface MockDaemon {
   dropEventStreams(): void
   /** Requests seen, e.g. `GET /agents`, `GET /events?since=3`. */
   requests: string[]
+  /** The web server state; mutate it to simulate Studio / the CLI starting or stopping it. */
+  web: MockWebServer
   close(): Promise<void>
 }
 
@@ -52,6 +64,8 @@ export interface MockDaemonOptions {
   port?: number
   /** Delay between scripted turn events. Default 40ms. */
   stepMs?: number
+  /** Initial web server state. Default running on 127.0.0.1:7295. */
+  web?: Partial<MockWebServer>
 }
 
 let seqCounter = 1
@@ -99,6 +113,16 @@ function seedAgents(): Map<string, MockAgent> {
       { id: 'task_approve_1', tool: 'msg_send', args: JSON.stringify({ to: 'agent-2', content: 'hello' }), status: 'pending_approval', created_at: t + 5000, approval_meta: { reason: 'restricted' } },
     ],
     asks: [],
+    provider: 'mock',
+    serving: {
+      public: { enabled: true, index: 'index.html' },
+      api: [
+        { method: 'GET', path: '/api/status', lambda: 'lib/api.ts:status' },
+        { method: 'WS', path: '/live', lambda: 'lib/ws.ts:onMessage' },
+      ],
+    },
+    status: 'Merging API notes into mind.md',
+    hostAccess: true,
   }
   const agent2: MockAgent = {
     id: AGENT_2_ID,
@@ -112,6 +136,7 @@ function seedAgents(): Map<string, MockAgent> {
     timers: [],
     tasks: [],
     asks: [],
+    provider: 'mock',
   }
   return new Map([[agent1.id, agent1], [agent2.id, agent2]])
 }
@@ -124,6 +149,7 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
   const streams = new Set<{ res: ServerResponse; agentId?: string }>()
   const requests: string[] = []
   let cursor = 0
+  const web: MockWebServer = { running: true, port: 7295, host: '127.0.0.1', ...options.web }
 
   const emit = (input: MockEvent) => {
     const agentId = input.agent_id ?? null
@@ -156,7 +182,7 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
       status: l.status,
       enabled: l.enabled,
       isMain: false,
-      config: { name: l.name, goal: l.goal, enabled: l.enabled, ...(l.autostart !== undefined ? { autostart: l.autostart } : {}), ...(l.tools ? { tools: l.tools } : {}) },
+      config: { name: l.name, goal: l.goal, enabled: l.enabled, ...(l.autostart !== undefined ? { autostart: l.autostart } : {}), ...(l.tools ? { tools: l.tools } : {}), ...(l.model ? { model: l.model } : {}) },
       entryCount: agent.history[l.name]?.length ?? 0,
       effectiveTools: l.enabled ? [...(l.tools ?? []), 'loop_compact', 'loop_clear'] : null,
     })),
@@ -214,7 +240,55 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
       return
     }
     if (url.pathname === '/runtime/usage') return send(200, { totals: { input: 0, output: 0, total: 0 }, byProvider: [], byModel: [] })
-    if (url.pathname === '/runtime/providers') return send(200, { providers: [], agentUsage: [] })
+    if (url.pathname === '/runtime/providers') {
+      return send(200, {
+        providers: [
+          { id: 'mock', type: 'openai-compatible', name: 'Mock', baseUrl: 'http://mock', defaultModel: 'mock-model', requestDelayMs: 0, credentialStorage: 'app', hasApiKey: true, params: [] },
+          { id: 'mock-sub', type: 'chatgpt-subscription', name: 'Mock Subscription', baseUrl: '', defaultModel: '', requestDelayMs: 0, credentialStorage: 'app', hasApiKey: false, params: [] },
+        ],
+        agentUsage: [...agents.values()].map(a => ({ agentId: a.id, handle: a.handle, name: a.name, providerId: a.provider, modelId: a.model, source: 'app', credentialStorage: null })),
+      })
+    }
+    if (url.pathname === '/runtime/models') {
+      const provider = url.searchParams.get('provider')
+      return send(200, { provider, models: provider === 'mock' ? ['mock-model', 'mock-large', 'mock-mini'] : ['sub-model-a', 'sub-model-b'] })
+    }
+    if (url.pathname === '/runtime/network') {
+      return send(200, {
+        host: [],
+        mesh: { enabledSetting: true, lan: false, port: web.port, status: null },
+        websocket: { activeConnections: 0, inboundConnections: 0, outboundConnections: 0 },
+        agents: [...agents.values()].map(a => ({ agentId: a.id, handle: a.handle, name: a.name, receive: true, sendMode: null, network: null, wsConnectionsConfigured: 0, servingRoutes: a.serving?.api?.length ?? 0, publicServingEnabled: a.serving?.public?.enabled ?? false })),
+      })
+    }
+    // The daemon's mesh web server: /agents/<handle>/ serves each agent's site.
+    if (url.pathname === '/network/server') return send(200, { ...web })
+    if (url.pathname === '/network/server/start' && method === 'POST') { web.running = true; return send(200, { success: true, ...web }) }
+    if (url.pathname === '/network/server/stop' && method === 'POST') { web.running = false; return send(200, { success: true, ...web }) }
+    if (url.pathname === '/network/server/restart' && method === 'POST') { web.running = true; return send(200, { success: true, ...web }) }
+    if (url.pathname === '/network/mesh/lan-addresses') {
+      return send(200, { addresses: { hostname: 'mock-host', addresses: [{ iface: 'eth0', address: '192.168.1.20', family: 'IPv4', mac: '00:00:00:00:00:01' }, { iface: 'eth0', address: 'fd00::20', family: 'IPv6', mac: '00:00:00:00:00:01' }] } })
+    }
+    if (url.pathname === '/network/mesh') {
+      return send(200, {
+        meshEnabled: true,
+        meshServerRunning: web.running,
+        meshServer: { ...web },
+        agents: [...agents.values()].map(a => ({
+          filePath: `/agents/${a.handle}.adf`,
+          handle: a.handle,
+          agentId: a.id,
+          state: 'idle',
+          ...(a.status ? { status: a.status } : {}),
+          participating: true,
+          canReceive: true,
+          visibility: 'localhost',
+          apiRouteCount: a.serving?.api?.length ?? 0,
+          publicEnabled: a.serving?.public?.enabled ?? false,
+          sharedCount: a.serving?.shared?.patterns?.length ?? 0,
+        })),
+      })
+    }
     if (url.pathname === '/runtime/auth') return send(200, { chatgpt: { authenticated: false }, grok: { authenticated: false }, providers: [] })
     if (parts[0] !== 'agents') return notFound('route')
     if (parts.length === 1 && method === 'GET') return send(200, [...agents.values()].map(summary))
@@ -228,6 +302,14 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
       case 'GET ': return send(200, { id: agent.id, filePath: `/agents/${agent.handle}.adf`, config: configOf(agent) })
       case 'GET status': return send(200, status(agent))
       case 'GET config': return send(200, { agentId: agent.id, config: configOf(agent) })
+      case 'PUT config': {
+        const model = (body?.model ?? {}) as { provider?: string; model_id?: string }
+        if (typeof model.model_id === 'string') agent.model = model.model_id
+        if (typeof model.provider === 'string') agent.provider = model.provider
+        if (body && 'serving' in body) agent.serving = body.serving as MockServing
+        emit({ event_type: 'config.changed', agent_id: agent.id, payload: { changed_keys: ['model'] } })
+        return send(200, { agentId: agent.id, config: configOf(agent), success: true })
+      }
       case 'POST start': agent.state = 'idle'; return send(200, { success: true, loaded: false, startupTriggered: false, agent: status(agent) })
       case 'POST stop':
       case 'POST unload': return send(200, { success: true })
@@ -300,6 +382,7 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
         for (const key of ['goal', 'enabled', 'autostart', 'tools'] as const) {
           if (body && body[key] !== undefined) { (loop as unknown as Record<string, unknown>)[key] = body[key]; updated.push(key) }
         }
+        if (body && 'model' in body) { loop.model = (body.model ?? undefined) as MockLoop['model']; updated.push('model') }
         if (updated.length === 0) return send(400, { error: 'Nothing to update' })
         emit({ event_type: 'config.changed', agent_id: agent.id, payload: { changed_keys: ['loops'] } })
         return send(200, { agentId: agent.id, loop: loopInfos(agent).find(l => l.name === loop.name), updated, excludedTools: [] })
@@ -383,6 +466,7 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
     agents,
     emit,
     requests,
+    web,
     dropEventStreams() {
       for (const stream of streams) stream.res.destroy()
       streams.clear()
@@ -400,8 +484,10 @@ function configOf(agent: MockAgent) {
     id: agent.id,
     name: agent.name,
     handle: agent.handle,
-    model: { provider: 'mock', model_id: agent.model },
-    loops: agent.loops.map(l => ({ name: l.name, goal: l.goal, enabled: l.enabled, autostart: l.autostart, tools: l.tools })),
+    model: { provider: agent.provider, model_id: agent.model },
+    loops: agent.loops.map(l => ({ name: l.name, goal: l.goal, enabled: l.enabled, autostart: l.autostart, tools: l.tools, ...(l.model ? { model: l.model } : {}) })),
+    ...(agent.serving ? { serving: agent.serving } : {}),
+    ...(agent.hostAccess ? { compute: { enabled: true, host_access: true } } : {}),
   }
 }
 

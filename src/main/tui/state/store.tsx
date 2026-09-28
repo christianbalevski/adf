@@ -37,7 +37,9 @@ import {
   type ToastLevel,
   type TuiState,
   type UserItem,
+  type WebState,
 } from './types'
+import { bindsAll, parseLan, parseMeshAgents, parseServer, serverText } from '../web/model'
 
 export interface ConfirmOptions {
   title: string
@@ -111,6 +113,11 @@ export interface TuiActions {
   /** Sign the daemon out of a subscription provider (toast), then refresh. */
   logoutSubscription(provider: SubscriptionProvider): Promise<boolean>
 
+  /** Re-read the mesh web server + what each agent serves (`GET /network/mesh`) into `state.web`. Quiet on failure. */
+  refreshWeb(): Promise<WebState | null>
+  /** Start / stop the web server (no confirm here: callers ask before stopping); toasts the resulting state. */
+  setWebServer(on: boolean): Promise<boolean>
+
   // owner identity + agent creation. Dialogs show these failures inline, so
   // they come back as an Outcome (with the daemon's `code`), not a toast.
   // The seed phrase is returned to the caller of createIdentity only: it never
@@ -162,6 +169,9 @@ export interface CreateStoreOptions {
 }
 
 const REFRESH_DEBOUNCE_MS = 120
+/** After agent load / config events: the daemon starts its web server ~500ms after agents register. */
+const WEB_EVENT_DEBOUNCE_MS = 900
+const WEB_POLL_MS = 20_000
 
 /** viewState slot the shell prompt watches for `prefillPrompt`. */
 export const PROMPT_PREFILL_KEY = 'shell.prompt.prefill'
@@ -177,6 +187,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   const toastTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const debounced = new Map<string, ReturnType<typeof setTimeout>>()
   let stream: EventStream | null = null
+  let webTick: ReturnType<typeof setInterval> | null = null
   let stopped = false
   /** Set when the daemon was unreachable; the next successful open resyncs. */
   let needsResync = false
@@ -582,6 +593,44 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       return !!result
     },
 
+    async refreshWeb() {
+      const c = client
+      let server = null as WebState['server']
+      let agents: WebState['agents'] = {}
+      let error: string | undefined
+      try {
+        const mesh = await c.meshStatus()
+        server = parseServer(mesh.meshServer)
+        agents = parseMeshAgents(mesh.agents)
+      } catch (err) {
+        if (stale(c) || (err instanceof DaemonError && err.unreachable)) return state.web
+        error = describe(err)
+      }
+      if (!server) {
+        try { server = parseServer(await c.meshServer()) } catch (err) {
+          if (stale(c) || (err instanceof DaemonError && err.unreachable)) return state.web
+          error ??= describe(err)
+        }
+      }
+      let lan: string[] = []
+      if (server?.running && bindsAll(server.host)) lan = parseLan(await c.lanAddresses().catch(() => null))
+      if (stale(c)) return state.web
+      const web: WebState = { server, lan, agents, ...(server ? {} : { error }), at: Date.now() }
+      dispatch({ type: 'web/set', web })
+      return web
+    },
+
+    async setWebServer(on) {
+      const result = await run(on ? 'Start web server' : 'Stop web server', c => c.meshServerAction(on ? 'start' : 'stop'))
+      const web = await actions.refreshWeb()
+      if (!result) return false
+      const server = web?.server ?? parseServer(result)
+      const ok = !!server && server.running === on
+      if (on) toast(ok ? `Web server ${serverText(server)} — agent sites are up` : `Web server did not start${typeof result.error === 'string' ? `: ${result.error}` : ''}`, ok ? 'success' : 'error')
+      else toast(ok ? 'Web server stopped — agent sites, APIs and mesh delivery are offline' : 'Web server is still running', ok ? 'success' : 'warn')
+      return ok
+    },
+
     async refreshIdentity() {
       const c = client
       try {
@@ -700,8 +749,11 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       case 'agent.loaded':
       case 'agent.unloaded':
         debounce('agents', () => { void actions.refreshAgents() }, 250)
+        // The daemon (re)starts / rebinds its web server as agents register.
+        debounce('web', () => { void actions.refreshWeb() }, WEB_EVENT_DEBOUNCE_MS)
         return
     }
+    if (event.event_type.startsWith('mesh.')) debounce('web', () => { void actions.refreshWeb() }, WEB_EVENT_DEBOUNCE_MS)
     if (!agentId || !state.agents[agentId]) return
     const loop = eventLoop(event)
     const key = transcriptKey(agentId, loop)
@@ -720,8 +772,13 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
         const keys = Array.isArray(event.payload?.changed_keys) ? event.payload.changed_keys as string[] : []
         if (keys.length === 0 || keys.includes('loops')) debounce(`loops:${agentId}`, () => { void actions.refreshLoops(agentId) })
         if (state.agents[agentId]?.config) debounce(`config:${agentId}`, () => { void actions.loadConfig(agentId) })
+        if (keys.length === 0 || keys.includes('serving') || keys.includes('messaging')) debounce('web', () => { void actions.refreshWeb() }, WEB_EVENT_DEBOUNCE_MS)
         break
       }
+      case 'tool.completed':
+        // An agent setting its status line (adf_meta `status`) shows in chat and the fleet.
+        if (typeof event.payload?.name === 'string' && /^sys_(set|delete)_meta$/.test(event.payload.name)) debounce('web', () => { void actions.refreshWeb() }, 300)
+        break
       case 'llm.failed':
       case 'agent.error':
         // A failed call may be an expired or missing subscription sign-in.
@@ -760,12 +817,15 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
           }
         },
       }).start()
+      // Studio or the CLI may start / stop the web server: no event says so.
+      if (webTick) clearInterval(webTick)
+      webTick = setInterval(() => { if (!stopped) void actions.refreshWeb() }, WEB_POLL_MS)
     }
-    await Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents()])
+    await Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
   }
 
   async function resync() {
-    await Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents()])
+    await Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
     for (const key of Object.keys(state.transcripts)) {
       const at = key.indexOf('\u0000')
       const agentId = key.slice(0, at)
@@ -777,6 +837,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     stopped = true
     stream?.close()
     stream = null
+    if (webTick) { clearInterval(webTick); webTick = null }
     pendingFrames = []
     for (const timer of toastTimers.values()) clearTimeout(timer)
     for (const timer of debounced.values()) clearTimeout(timer)

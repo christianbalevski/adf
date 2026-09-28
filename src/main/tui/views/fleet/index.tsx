@@ -26,6 +26,8 @@ import { LoadDialog } from './LoadDialog'
 import { useFleetData, useFleetPoller, useLastActivity, type FleetData } from './data'
 import { agentName, describeAgent, describeLoop, describeSchedule, formatIn, formatUptime, liveTimers, nextRunByLoop, timerLoop } from './model'
 import { interruptAgent, openChat, refreshFleet, runAutostart, startAgent, stopAgent } from './ops'
+import { SERVER_STOPPED_TEXT, servedText, siteKind, siteOf, type Site } from '../../web/model'
+import { copySiteUrl, openSite } from '../../web/ops'
 
 type MeshInfo = RuntimeOverview['network']['agents'][number]
 
@@ -46,6 +48,10 @@ function FleetView({ width, height, focused }: ViewProps) {
   // Empty fleet + identity not ready: onboarding replaces the empty table.
   const onboarding = agents.length === 0 && !!identity && identity.status !== 'ready'
   const banner = !onboarding && needsAttention(identity) && bannerHidden !== bannerKeyOf(identity) ? identity : null
+  // Agent websites: re-render when the web server or what agents serve changes.
+  useTuiSelector(s => s.web)
+  const sites: Record<string, Site | null> = Object.fromEntries(agents.map(a => [a.summary.id, siteOf(store.getState(), a.summary.id)]))
+  const statusOf = (id: string) => store.getState().web?.agents[id]?.status
 
   useKeys((input, key) => {
     const agent = agents[selectedIndex]
@@ -74,11 +80,14 @@ function FleetView({ width, height, focused }: ViewProps) {
     if (input === 's') { void startAgent(store, agent.summary.id); return true }
     if (input === 'x') { void stopAgent(store, agent.summary.id); return true }
     if (input === 'a') { void interruptAgent(store, agent.summary.id); return true }
+    if (input === 'w') { void openSite(store, agent.summary.id); return true }
+    if (input === 'W') { void copySiteUrl(store, agent.summary.id); return true }
     return false
   }, { layer: 'main', active: focused })
 
   const inner = Math.max(20, width - 2)
-  const detailRows = selected ? Math.min(Math.max(3, (selected.loops?.length ?? 1) + 2), Math.max(3, Math.floor(height / 3))) : 0
+  const selectedSite = selected ? sites[selected.summary.id] ?? null : null
+  const detailRows = selected ? Math.min(Math.max(3, (selected.loops?.length ?? 1) + 2 + (selectedSite ? 1 : 0)), Math.max(3, Math.floor(height / 3))) : 0
   const tableRows = Math.max(2, height - 4 - detailRows - 1 - (banner ? 1 : 0))
 
   if (offline && agents.length === 0) return <DaemonOffline width={width} height={height} />
@@ -105,11 +114,11 @@ function FleetView({ width, height, focused }: ViewProps) {
         getKey={a => a.summary.id}
         selectedIndex={agents.length ? selectedIndex : undefined}
         emptyText="No agents loaded — n new agent, o load an .adf, A autostart tracked directories"
-        columns={columnsFor(inner, theme, data, lastActivity, needs)}
+        columns={columnsFor(inner, theme, data, lastActivity, needs, sites)}
       />
       {selected ? (
         <Box flexDirection="column" marginTop={1} height={detailRows} overflow="hidden">
-          <AgentDetails agent={selected} need={needs[selected.summary.id] ?? null} loop={selectedLoop} timers={data.agents[selected.summary.id]?.timers} mesh={data.runtime?.network.agents.find(a => a.agentId === selected.summary.id)} width={inner} rows={detailRows} />
+          <AgentDetails agent={selected} need={needs[selected.summary.id] ?? null} loop={selectedLoop} timers={data.agents[selected.summary.id]?.timers} mesh={data.runtime?.network.agents.find(a => a.agentId === selected.summary.id)} site={selectedSite} status={statusOf(selected.summary.id)} width={inner} rows={detailRows} />
         </Box>
       ) : null}
       <Box flexGrow={1} />
@@ -126,6 +135,7 @@ const DASHBOARD_KEYS: KeyHintSpec[] = [
   { keys: 's', label: 'start' },
   { keys: 'x', label: 'stop' },
   { keys: 'a', label: 'interrupt' },
+  { keys: 'w', label: 'website' },
   { keys: 'n', label: 'new agent' },
   { keys: 'o', label: 'load .adf' },
   { keys: 'A', label: 'autostart' },
@@ -210,7 +220,7 @@ function DaemonLine({ data, width }: { data: FleetData; width: number }) {
   )
 }
 
-function columnsFor(width: number, theme: Theme, data: FleetData, lastActivity: Record<string, number>, needs: Record<string, SubscriptionProvider | null>): TableColumn<AgentEntry>[] {
+function columnsFor(width: number, theme: Theme, data: FleetData, lastActivity: Record<string, number>, needs: Record<string, SubscriptionProvider | null>, sites: Record<string, Site | null>): TableColumn<AgentEntry>[] {
   const extras = (a: AgentEntry) => data.agents[a.summary.id]
   const mesh = (a: AgentEntry): MeshInfo | undefined => data.runtime?.network.agents.find(m => m.agentId === a.summary.id)
   const cols: Array<TableColumn<AgentEntry> & { minWidth?: number; priority: number }> = [
@@ -224,9 +234,11 @@ function columnsFor(width: number, theme: Theme, data: FleetData, lastActivity: 
     { key: 'timers', title: 'TIMERS', width: 6, align: 'right', priority: 2, value: a => (extras(a)?.timers ? String(liveTimers(extras(a)?.timers).length) : '·'), color: () => theme.color.muted },
     { key: 'last', title: 'LAST', width: 5, align: 'right', priority: 3, value: a => (lastActivity[a.summary.id] ? formatAgo(lastActivity[a.summary.id]) : '—'), color: () => theme.color.dim },
     { key: 'mesh', title: 'MESH', width: 5, priority: 4, value: a => { const m = mesh(a); return !m ? '·' : m.receive ? 'recv' : 'off' }, color: a => (mesh(a)?.receive ? theme.color.live : theme.color.dim) },
+    // What the agent serves on the web; amber while the web server is stopped.
+    { key: 'web', title: 'WEB', width: 5, priority: 4, value: a => { const site = sites[a.summary.id]; return site ? siteKind(site) : '·' }, color: a => { const site = sites[a.summary.id]; return !site ? theme.color.dim : site.url ? theme.color.live : theme.color.warn } },
   ]
-  // Drop the least important columns until the table fits.
-  let shown = cols
+  // Drop the least important columns until the table fits; WEB only when some agent serves.
+  let shown = Object.values(sites).some(Boolean) ? cols : cols.filter(c => c.key !== 'web')
   for (let p = 4; p >= 1; p--) {
     const need = shown.reduce((n, c) => n + (c.width ?? c.minWidth ?? 6) + 1, 2)
     if (need <= width) break
@@ -247,7 +259,7 @@ function tokensOf(a: AgentEntry, usageTotal: number | undefined): string {
   return total > 0 ? formatCount(total) : '—'
 }
 
-function AgentDetails({ agent, need, loop, timers, mesh, width, rows }: { agent: AgentEntry; need: SubscriptionProvider | null; loop: string; timers?: Timer[]; mesh?: MeshInfo; width: number; rows: number }) {
+function AgentDetails({ agent, need, loop, timers, mesh, site, status, width, rows }: { agent: AgentEntry; need: SubscriptionProvider | null; loop: string; timers?: Timer[]; mesh?: MeshInfo; site: Site | null; status?: string; width: number; rows: number }) {
   const theme = useTheme()
   const next = nextRunByLoop(timers)
   const byLoop = new Map<string, Timer[]>()
@@ -267,12 +279,14 @@ function AgentDetails({ agent, need, loop, timers, mesh, width, rows }: { agent:
     <Box flexDirection="column" width={width}>
       <Text wrap="truncate-end">
         <Text bold color={theme.color.text}>{agentName(agent)}</Text>
+        {status ? <Text color={theme.color.muted}>  {status}</Text> : null}
         <Text color={theme.color.dim}>  {meta}</Text>
       </Text>
+      {site ? <SiteLine site={site} /> : null}
       {need ? <Text color={theme.color.warn} wrap="truncate-end">{theme.glyph.warn} {authNeedText(need)}</Text> : null}
       {agent.loopsError ? <Text color={theme.color.warn} wrap="truncate-end">loops: {agent.loopsError}</Text> : null}
       {loops.length === 0 && !agent.loopsError ? <Text color={theme.color.dim}>reading loops…</Text> : null}
-      {loops.slice(0, Math.max(1, rows - 1)).map(l => {
+      {loops.slice(0, Math.max(1, rows - 1 - (site ? 1 : 0))).map(l => {
         const d = describeLoop(agent, l)
         const isSel = l.info.name === loop
         const schedule = (byLoop.get(l.info.name) ?? []).map(describeSchedule).join(', ')
@@ -297,6 +311,23 @@ function AgentDetails({ agent, need, loop, timers, mesh, width, rows }: { agent:
   )
 }
 
+/** `web  http://127.0.0.1:7295/agents/agent-1/  public/ (index.html) · 1 API route  w open · W copy`. */
+function SiteLine({ site }: { site: Site }) {
+  const theme = useTheme()
+  const sep = ` ${theme.glyph.sep} `
+  return (
+    <Text wrap="truncate-end">
+      <Text color={theme.color.muted}>web  </Text>
+      {site.url
+        ? <Text color={theme.color.live} underline>{site.url}</Text>
+        : <Text color={theme.color.warn}>{SERVER_STOPPED_TEXT} (w)</Text>}
+      {site.lanUrls.length ? <Text color={theme.color.dim}>{sep}LAN {site.lanUrls[0]}{site.lanUrls.length > 1 ? ` +${site.lanUrls.length - 1}` : ''}</Text> : null}
+      <Text color={theme.color.dim}>{sep}{servedText(site)}</Text>
+      {site.url ? <Text color={theme.color.dim}>{sep}w open{sep}W copy</Text> : null}
+    </Text>
+  )
+}
+
 const fleet: ViewDefinition = {
   id: 'fleet',
   title: 'Fleet',
@@ -314,6 +345,8 @@ const fleet: ViewDefinition = {
       { keys: 's', label: 'Start the agent' },
       { keys: 'x', label: 'Stop and unload the agent (asks; the .adf is kept)' },
       { keys: 'a', label: 'Abort the turns running now (asks)' },
+      { keys: 'w', label: 'Open the agent’s website (starts the web server if it is stopped)' },
+      { keys: 'W', label: 'Copy the agent’s website URL' },
       { keys: 'o', label: 'Load an .adf (Tab completes, ^R require review, ^S start after load)' },
       { keys: 'A', label: 'Autostart: scan tracked directories (asks)' },
       { keys: 'r', label: 'Refresh agents, timers, inbox and the daemon line' },

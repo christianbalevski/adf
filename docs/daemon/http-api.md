@@ -284,11 +284,16 @@ Returns mesh HTTP server status.
 
 ### `POST /network/server/start`
 
-Starts the mesh HTTP server.
+Starts the mesh HTTP server and persists `meshServerEnabled: true`.
+
+The mesh server (agent web/API routes at `/agents/:handle/*` and mesh
+delivery) is on by default: the daemon starts it once the first reachable agent
+registers, and rebinds to all interfaces when a `lan`/`public` agent appears.
 
 ### `POST /network/server/stop`
 
-Stops the mesh HTTP server.
+Stops the mesh HTTP server and persists `meshServerEnabled: false`, so it stays
+off across daemon restarts until started again.
 
 ### `POST /network/server/restart`
 

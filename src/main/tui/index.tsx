@@ -32,7 +32,7 @@ export interface TuiOptions {
   ascii?: boolean
   theme?: string
   altScreen: boolean
-  /** false: no mouse capture this session (--no-mouse, ADF_TUI_MOUSE=0). */
+  /** true: mouse mode this session (--mouse, ADF_TUI_MOUSE=1); default native selection. */
   mouse?: boolean
   /** false: never enable the kitty keyboard protocol (--no-kitty, ADF_TUI_KITTY=0). */
   kitty?: boolean
@@ -66,8 +66,11 @@ Options:
   --theme <name>       adf (dark) | adf-light | adf-contrast | adf-mono (also ADF_TUI_THEME)
   --mono               No color (also NO_COLOR=1)
   --ascii              ASCII glyphs (also ADF_TUI_ASCII=1)
-  --no-alt-screen      Render in the main screen buffer (also turns mouse capture off)
-  --no-mouse           No mouse capture: the terminal selects text as usual (also ADF_TUI_MOUSE=0, /mouse)
+  --no-alt-screen      Render in the main screen buffer (also turns mouse mode off)
+  --mouse              Mouse mode: the wheel scrolls what is under the pointer, clicks focus panes and
+                       tabs (Shift+drag selects text). Default off: drag selects, right-click pastes, the
+                       wheel scrolls the focused pane (also ADF_TUI_MOUSE=1, /mouse on|off)
+  --no-mouse           Native mouse (the default; also ADF_TUI_MOUSE=0)
   --no-kitty           Never enable the kitty keyboard protocol (Shift+Enter; also ADF_TUI_KITTY=0)
   -h, --help           Show this help`
 }
@@ -158,8 +161,8 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
   const store = createTuiStore({ client, initialView: options.view })
   const prefs = loadPrefs(defaultPrefsPath(io.env))
   if (prefs.sidebar === false) store.actions.setViewState(LAYOUT_STATE_KEY, { sidebarHidden: true })
-  // Mouse: on by default in the alternate screen; the flag / env win over the saved choice.
-  const mouse = options.mouse ?? (io.env.ADF_TUI_MOUSE === '0' ? false : io.env.ADF_TUI_MOUSE === '1' ? true : prefs.mouse ?? true)
+  // Mouse mode is opt-in (the terminal keeps native select / copy / paste); the flag / env win over the saved choice.
+  const mouse = options.mouse ?? (io.env.ADF_TUI_MOUSE === '0' ? false : io.env.ADF_TUI_MOUSE === '1' ? true : prefs.mouse ?? false)
   const kitty = options.kitty ?? io.env.ADF_TUI_KITTY !== '0'
   const uninstallModes = installTerminalModes({
     stdin: io.stdin,

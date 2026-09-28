@@ -6,7 +6,7 @@ import { MAIN_LOOP, type AskEntry, type TaskEntry, type Timer, type UmbilicalEve
 import { isBusyState } from '../../state/reducer'
 import { transcriptKey, type AgentEntry, type LoopState, type TranscriptItem } from '../../state/types'
 import { parseBlocks } from '../../ui/Markdown'
-import { formatEveryMs, oneLine, wrappedHeight } from '../../ui/text'
+import { displayWidth, formatEveryMs, oneLine, truncate, wrappedHeight } from '../../ui/text'
 
 export const CHAT_VIEW = 'chat'
 
@@ -177,7 +177,7 @@ export function markerFor(event: UmbilicalEvent, timers: Timer[]): { loop: strin
       const timer = timers.find(t => t.id === Number(p.timer_id))
       const loop = event.loop ? evLoop : timer?.loop ?? MAIN_LOOP
       const what = timer ? ` (${describeSchedule(timer)}${timer.payload ? `, "${oneLine(timer.payload).slice(0, 60)}"` : ''})` : ''
-      return { loop, marker: { id, at, text: `Woken by timer #${String(p.timer_id ?? '?')}${what} ${'·'} run ${String(p.run_count ?? '?')}` } }
+      return { loop, marker: { id, at, text: `Woken by timer${what} ${'·'} run ${String(p.run_count ?? '?')}` } }
     }
     case 'trigger.fired':
       if (p.scope === 'system') return null
@@ -500,4 +500,50 @@ export function setClipboardWriter(writer: ClipboardWriter | null): void {
 
 export function copyToClipboard(text: string): Promise<boolean> {
   return clipboardWriter(text)
+}
+
+// --- the info line under the loop tabs --------------------------------------------
+
+/** One piece of the chat info line. Lower `priority` survives a narrow pane; `order` is where it shows. */
+export interface InfoSegment {
+  key: string
+  text: string
+  order: number
+  priority: number
+  /** May be cut (with an ellipsis) to what is left, down to `INFO_FLEX_MIN` columns. */
+  flex?: boolean
+}
+
+export const INFO_FLEX_MIN = 12
+
+/** Keep the most important segments that fit `width` (joined by a 3-column separator), shown in `order`. */
+export function fitInfoSegments(segments: InfoSegment[], width: number, sepWidth = 3): InfoSegment[] {
+  const kept: InfoSegment[] = []
+  let used = 0
+  for (const seg of [...segments].sort((a, b) => a.priority - b.priority)) {
+    const gap = kept.length ? sepWidth : 0
+    const w = displayWidth(seg.text)
+    if (used + gap + w <= width) { kept.push(seg); used += gap + w; continue }
+    const room = width - used - gap
+    if (seg.flex && room >= INFO_FLEX_MIN) { kept.push({ ...seg, text: truncate(seg.text, room) }); used += gap + room }
+  }
+  return kept.sort((a, b) => a.order - b.order)
+}
+
+/** `14:30` today, `Tue 14:30` within a week, else `3 Oct 14:30`. */
+export function formatNextFire(at: number, now = Date.now()): string {
+  const d = new Date(at)
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  if (d.toDateString() === new Date(now).toDateString()) return hm
+  if (at > now && at - now < 6 * 86_400_000) return `${d.toLocaleDateString('en-US', { weekday: 'short' })} ${hm}`
+  return `${d.getDate()} ${d.toLocaleDateString('en-US', { month: 'short' })} ${hm}`
+}
+
+/** `wakes every 1h · next 14:30` for a loop's live timers (no timer ids: the Timers tab has those). */
+export function wakesText(timers: Timer[], now = Date.now(), sep = '·'): string {
+  const live = timers.filter(t => !t.expired)
+  if (!live.length) return ''
+  const schedules = [...new Set(live.map(describeSchedule))].join(', ')
+  const next = Math.min(...live.map(t => t.next_wake_at).filter(n => Number.isFinite(n) && n > 0))
+  return `wakes ${schedules}${Number.isFinite(next) ? ` ${sep} next ${formatNextFire(next, now)}` : ''}`
 }

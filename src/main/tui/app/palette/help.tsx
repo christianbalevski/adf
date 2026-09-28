@@ -5,7 +5,7 @@ import { Box, Text } from 'ink'
 import { useTheme } from '../theme'
 import { useShell } from '../shell-context'
 import { useKeys, keyLabel } from '../keys'
-import { CONFIRM_KEYS, GLYPHS, SHELL_KEYS, SIDEBAR_KEYS } from '../shell-keys'
+import { CONFIRM_KEYS, GLYPHS, SHELL_KEYS, SIDEBAR_KEYS, TAB_BAR_KEYS } from '../shell-keys'
 import { useStore, type TuiStore } from '../../state/store'
 import { createScope, type CommandRegistry } from '../../commands/registry'
 import type { SlashCommand } from '../../commands/types'
@@ -89,6 +89,8 @@ export function helpLines(views: ViewDefinition[], registry: CommandRegistry, st
   const lines: Line[] = [heading('Loops'), ...LOOPS_EXPLAINER.map(t => plain(`  ${t}`, 'muted')), blank()]
   lines.push(heading('Shell keys'))
   for (const k of SHELL_KEYS) lines.push(keyLine(k.keys, k.label))
+  lines.push(blank(), heading('Tab bar: the views in the header (Esc to focus)'))
+  for (const k of TAB_BAR_KEYS) lines.push(keyLine(k.keys, k.label))
   lines.push(blank(), heading('Sidebar: the fleet tree (Tab to focus)'))
   for (const k of SIDEBAR_KEYS) lines.push(keyLine(k.keys, k.label))
   lines.push(blank(), heading('Dialogs'))

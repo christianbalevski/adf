@@ -19,7 +19,7 @@ Run it: `npm run adf` (no command) · `npm run adf -- tui --view loops` ·
 | commands / palette / inspect (the selected agent) | `views/inspect/**`, `commands/builtin/**`, `app/palette.tsx` | `inspect` / `5` |
 | runtime (the daemon, every agent) | `views/runtime/**` (pages from `commands/builtin/reports.ts`) | `runtime` / `6` |
 
-Shared (foundation — change deliberately, keep every view working): `api/**`, `state/**`, `identity/**` (owner identity + new agent dialogs), `auth/**` (provider sign-in), `app/**` (except
+Shared (foundation — change deliberately, keep every view working): `api/**`, `state/**`, `identity/**` (owner identity + new agent dialogs), `auth/**` (provider sign-in), `web/**` (agent websites + the web server toggle), `app/**` (except
 `app/palette.tsx`), `ui/**`, `commands/types.ts`, `commands/registry.ts`,
 `views/types.ts`, `views/registry.ts`, `index.tsx`, `interop.ts`, `package.json`
 (this dir), `CONTRACT.md`, and everything outside `src/main/tui` (daemon, CLI,
@@ -74,7 +74,7 @@ interface ViewDefinition {
   commands?: SlashCommand[]; actions?: PaletteAction[]
   overlays?: Record<string, ComponentType<OverlayProps>>  // kind '<id>.<name>'
 }
-interface ViewProps { width: number; height: number; focused: boolean }   // focused = main zone
+interface ViewProps { width: number; height: number; focused: boolean }   // focused = main zone (false while the tab bar has focus)
 interface SidebarProps { width: number; height: number; focused: boolean }
 interface PromptConfig {
   placeholder?: string | ((scope: CommandScope) => string)
@@ -128,11 +128,11 @@ interface CommandContext {
 first registration of a name wins and collisions are listed in
 `registry.conflicts` (a test asserts it is empty). Reserved names: builtins
 `help ? quit exit q view agent a refresh r theme url auth login logout json
-identity new sidebar mouse terminal-setup terminal`; `runtime status usage
+identity new sidebar mouse terminal-setup terminal web open-site site copy-site`; `runtime status usage
 providers network compute settings events` belong to runtime; `loop main loops timers timer triggers history`
 belong to loops; `abort interrupt clear compact trigger copy thinking` to
 chat; `agents start stop unload load switch sw autostart` to fleet; `files
-open edit doc document mind new-file rm mv` to files; `inspect` to
+open edit doc document mind new-file rm mv` to files; `inspect model config` to
 inspect. Pick new names inside your domain (`/loop …`, `/file …`,
 `/task …`). Unknown `/x` is reported, never sent to an agent.
 
@@ -160,7 +160,8 @@ setViewState · prefillPrompt · ensureTranscript · loadTranscript · loadOlder
 sendChat(text, {agentId?, loop?}) · clearLoopHistory · compactLoop ·
 createLoop · updateLoop · setLoopEnabled · deleteLoop · scheduleLoop ·
 resolveTask · answerAsk(agentId, requestId, answer, loop?) · respondSuspend ·
-notice(agentId, loop, text, level?) · setDaemonUrl(url, token?) ·
+notice(agentId, loop, text, level?) · setDaemonUrl(url, token?) · refreshWeb ·
+setWebServer(on) ·
 run(label, client => …)`. `store.client` is a getter: `setDaemonUrl` swaps it. Every daemon-calling
 action reports its outcome (toast or transcript item); `run` wraps any other
 client call with the same policy.
@@ -181,9 +182,22 @@ inline by the daemon's `code`. **The seed phrase is returned to the caller of
 `createIdentity` only**: keep it in component state, never in state, overlay
 props, toasts, transcripts, logs or the clipboard.
 
+Agent websites (`web/`): `refreshWeb` (on connect, resync, agent load /
+unload, `config.changed` of serving, `mesh.*`, an agent's `sys_set_meta`, and
+every 20s) reads `GET /network/mesh` (`meshServer` + per-agent
+`publicEnabled / apiRouteCount / sharedCount / status`; falls back to `GET
+/network/server`) and, on a `0.0.0.0` bind, `GET /network/mesh/lan-addresses`
+into `state.web`. `setWebServer(on)` POSTs start / stop and toasts the state
+(no confirm: `web/ops.ts` `toggleWebServer` asks before stopping).
+`web/model.ts` `siteOf(state, agentId)` → `Site | null` (null = serves
+nothing: show nothing) with `url` (the actual bound port; null while
+stopped), `lanUrls`, what it serves; `web/ops.ts` `openSite` / `copySiteUrl`
+start a stopped server first and open via `auth/flow.ts` `openUrl` (the CLI's
+browser opener).
+
 State (`state/types.ts`): `TuiState { daemonUrl, connection, daemonReachable,
 identity (GET /identity status, null on daemons without it), auth (GET
-/runtime/auth), agents: Record<id, AgentEntry>, agentOrder, selectedAgentId, selectedLoop,
+/runtime/auth), web (mesh web server + what agents serve, null until read), agents: Record<id, AgentEntry>, agentOrder, selectedAgentId, selectedLoop,
 transcripts: Record<TranscriptKey, Transcript>, activeView, focus, overlays,
 toasts, activity, lastEvents, viewState }`. `AgentEntry { summary, status?,
 executorState?, loops?: LoopState[], config?, pendingTasks, pendingAsks,
@@ -213,7 +227,7 @@ body, unreachable }`. Types in `api/types.ts` are type-imported from the daemon
 - daemon: `health runtime providers authStatus runtimeSettings runtimeMcp
   runtimeAdapters network usage models settings setting putSetting`
   · compute / mesh: `computeStatus computeContainers meshStatus setMesh(on)
-  meshServer meshServerAction(start|stop|restart)`
+  meshServer meshServerAction(start|stop|restart) lanAddresses`
   · `withBaseUrl(url, token?)` (same transport, other daemon)
 - sign-in: `subscriptionStatus(provider) logoutSubscription(provider)`
   (`authStatus` = GET /runtime/auth)
@@ -271,8 +285,8 @@ hbar ellipsis collapsed expanded spinner[]` with ASCII fallbacks
 
 The shell owns the only `useInput` and routes each key through layers until a
 handler returns `true`: **overlay** (top dialog only) → **focused zone**
-(`input` | `sidebar` | `main`) → **view** (active view, skipped while the
-prompt has focus) → **global**. Register with `useKeys(handler, { layer,
+(`input` | `sidebar` | `main` | `tabs`, the header tab bar) → **view** (active
+view, skipped while the prompt or the tab bar has focus) → **global**. Register with `useKeys(handler, { layer,
 active })`; return `true` only for keys you consumed.
 
 Reserved by the shell (never consume these unless in a text-entry mode); the
@@ -282,9 +296,17 @@ and `:` (palette), `Ctrl+B` (hide / show the sidebar, `app/layout.ts`), `Shift+�
 selected agent; in a prompt with text Ctrl+←/→ jump words),
 `Tab`/`Shift+Tab` (focus cycle; a hidden sidebar is skipped), digits `1`–`9` and `Alt+digit` (views), `?`
 (help), `/` (prompt with slash; lists may claim `/` to filter while focused),
-`Esc` (closes dialogs and the completion menu; leaves the sidebar but never
-the prompt — views may claim `Esc` first, e.g. chat interrupts a running turn
-from `view` and `input` layers). `setView('chat')` focuses the prompt.
+`Esc`: dialogs and the completion menu take it first, then the focused
+zone / view (a filter, the file viewer, chat's interrupt from `view` and
+`input` layers) — return `true` only when your view used it. Unclaimed, the
+shell (global layer) moves focus to the tab bar (`tabs`) from the sidebar,
+the main pane or an empty prompt; a prompt with text needs `Esc` twice to
+clear (`DOUBLE_ESC_MS`), then the next `Esc` goes up. On the tab bar `←/→`
+switch views live (`setView` then `setFocus('tabs')`), `Enter`/`↓` enter the
+view (Chat: `input`, else `main`), digits jump in, `Tab`/`Shift+Tab` go to
+the first / last pane, `w` toggles the web server. `setView('chat')` focuses
+the prompt. Status-bar hints switch to `TAB_BAR_HINTS` while `tabs` has focus;
+the list is `TAB_BAR_KEYS` in `app/shell-keys.ts`.
 
 View-local conventions: `↑↓`/`j k` move, `Enter` open/act, `Space` toggle,
 `n` new, `e` edit, `d`/`Del` delete (always via `actions.confirm`), `r`
@@ -299,10 +321,15 @@ follows raw mode (`app/terminal.ts`), so nothing else is needed.
 Terminal modes (`app/terminal.ts`, installed by `index.tsx`): the kitty
 keyboard protocol (flag 1) when the terminal answers ink's `CSI ? u` query, so
 Shift+Enter arrives as `key.return && key.shift` (TextInput inserts a newline;
-Ctrl+J also arrives as `ctrl` + `j`). SGR mouse reporting (1000 + 1006) in the
-alternate screen: the shell parses reports before any key handler (they never
-reach a prompt) and routes wheel notches to the innermost region under the
-pointer. Make a box scrollable with `useWheel(ref, delta => …, { layer })`
+Ctrl+J also arrives as `ctrl` + `j`). Default mouse: native (drag select,
+right-click paste) plus alternate scroll mode (DECSET 1007) in the alternate
+screen, so the wheel arrives as ↑/↓ for the focused pane (chat coalesces a
+burst of arrows from one read into a transcript scroll even over text; a lone
+arrow is replayed to the prompt). Opt-in mouse mode (`/mouse on`, `--mouse`,
+pref): SGR mouse reporting (1000 + 1006); the shell parses reports before any
+key handler (they never reach a prompt), routes wheel notches to the
+innermost region under the pointer, focuses the clicked pane and handles
+header clicks (tabs, web badge; `HeaderHits` from `app/Header.tsx`). Make a box scrollable with `useWheel(ref, delta => …, { layer })`
 (`delta` -1 up / +1 down per notch, move `WHEEL_STEP` rows; `layer: 'overlay'`
 inside dialogs). `List`, `ScrollView`, `LinesView`, the sidebar, the files
 viewer, the palette and the chat transcript already do. Chat also scrolls
@@ -310,7 +337,7 @@ its transcript with ↑/↓ while the prompt is empty (`isPromptEmpty()`); promp
 history is Ctrl+↑/↓.
 
 Persisted choices (`app/prefs.ts`, `<config dir>/adf-studio/tui-prefs.json`
-or `ADF_TUI_PREFS`): sidebar hidden, mouse capture, one-time tips. Nothing
+or `ADF_TUI_PREFS`): sidebar hidden, mouse mode (default off), one-time tips. Nothing
 secret goes there.
 
 ## 10. Runtime notes
@@ -327,8 +354,11 @@ secret goes there.
 - Tests run in worker threads (`vitest.config.ts` project `tui`): the forks
   pool's workers die at teardown on Windows.
 - Test tools: `tests/tui/fixtures/mock-daemon.ts` (`startMockDaemon()` →
-  agent-1 with loops main/consolidator/researcher, agent-2; scripted streaming
-  turns; `emit()`, `dropEventStreams()`), `tests/tui/fixtures/render.tsx`
+  agent-1 with loops main/consolidator/researcher, a website (public/ + GET
+  and WS routes), host access and a status line, agent-2 serving nothing;
+  scripted streaming turns; `emit()`, `dropEventStreams()`; the web server
+  as `mock.web` / option `web: {running, host, port}`; providers + models;
+  `PUT config`), `tests/tui/fixtures/render.tsx`
   (`renderTui(<App …/>, {columns, rows})` → `press`, `raw`, `type`, `waitFor`,
   `resize`; mouse: write `\u001b[<64;x;yM` wheel reports, see
   `tests/tui/terminal.test.tsx`); see `tests/tui/shell.test.tsx` for the pattern.

@@ -6,13 +6,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { Box, Text, type DOMElement } from 'ink'
 import { useTheme } from '../../app/theme'
-import { WHEEL_STEP, keyLabel, useKeys, useWheel, type KeyHandler } from '../../app/keys'
+import { WHEEL_STEP, keyLabel, useKeyRouter, useKeys, useWheel, type KeyHandler } from '../../app/keys'
 import { newlineKey } from '../../app/terminal'
 import { useActions, useClient, useStore, useTuiSelector, shallowEqual } from '../../state/store'
 import { useAuthNeed, useLoop, useSelectedAgent, useSelectedLoop, useTranscript, useViewState } from '../../state/hooks'
 import { authNeedText } from '../../auth/model'
+import { shortUrl, siteOf, type Site } from '../../web/model'
+import { openSite } from '../../web/ops'
 import { transcriptKey, type AgentEntry, type LoopState, type TranscriptItem, type TuiState } from '../../state/types'
-import { oneLine, truncate } from '../../ui/text'
+import { displayWidth, oneLine, truncate } from '../../ui/text'
 import { MAIN_LOOP, type Timer } from '../../api/types'
 import type { CommandScope } from '../../commands/types'
 import type { PromptCompletion, ViewDefinition, ViewProps } from '../types'
@@ -32,8 +34,10 @@ import {
   INITIAL_CHAT_STATE,
   copyToClipboard,
   cycleLoop,
-  describeSchedule,
   digestEvents,
+  fitInfoSegments,
+  wakesText,
+  type InfoSegment,
   isExpandable,
   itemHeight,
   itemText,
@@ -56,9 +60,7 @@ import {
 /** Loop kinds of activity that count as "something new happened here". */
 const UNSEEN_EVENTS = new Set(['turn.delta', 'turn.completed', 'tool.started', 'hil.requested', 'ask.requested', 'agent.error', 'message.received', 'timer.fired', 'loop.compacted'])
 
-const DOUBLE_ESC_MS = 600
 const APPROVE_ARM_MS = 2500
-let lastInputEscAt = 0
 
 function agentLabel(agent: AgentEntry | undefined): string {
   return agent ? agent.summary.handle || agent.summary.name || agent.summary.id : ''
@@ -144,6 +146,10 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
   }, [agentId, loopName])
 
   const transcripts = useTuiSelector(s => s.transcripts)
+  // The agent's status line (adf_meta status, via the mesh) and website, live.
+  const agentStatus = useTuiSelector(s => (agentId ? s.web?.agents[agentId]?.status : undefined))
+  useTuiSelector(s => s.web?.server)
+  const site = siteOf(store.getState(), agentId)
 
   // --- derived --------------------------------------------------------------
 
@@ -274,6 +280,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
     if (k.return || input === ' ') { toggle(); return true }
     if (input === 't') { patch(prev => ({ showThinking: !prev.showThinking })); actions.toast(`Thinking ${chat.showThinking ? 'collapsed' : 'expanded'}`, 'info', 1500); return true }
     if (input === 'c') { void copy(); return true }
+    if (input === 'w') { void openSite(store, agentId); return true }
     const card = topCard(dockModel)
     if (input === 'y' || input === 'n' || input === 'v') {
       const target = approveTarget()
@@ -313,6 +320,9 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
 
   // The wheel scrolls the transcript whichever pane has focus.
   const transcriptRef = useRef<DOMElement>(null)
+  const router = useKeyRouter()
+  const pendingArrow = useRef<{ input: string; key: Parameters<KeyHandler>[1]; delta: number; count: number; empty: boolean } | null>(null)
+  const replaying = useRef(false)
   useWheel(transcriptRef, delta => scrollBy(-delta * WHEEL_STEP), { active: !!agentId })
 
   // Runs before the prompt's own keys. Ctrl/Shift+←/→ are left to the prompt
@@ -325,23 +335,33 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
     if (k.pageDown) { scrollBy(-Math.max(1, viewport - 2)); return true }
     // Sending jumps back to the live end, wherever the transcript was scrolled.
     if (k.return && !k.shift && !k.meta && !k.ctrl && !isPromptEmpty() && !isPromptMenuOpen() && offset > 0) follow()
+    if (replaying.current) return false
+    // The wheel (alternate scroll mode) arrives as several ↑/↓ in one read. An
+    // arrow waits for the rest of its read: a burst (or any arrow over an empty
+    // composer) scrolls the transcript; a lone arrow over text is a key (caret /
+    // history) and is replayed to the prompt.
+    if (!k.ctrl && !k.meta && !k.shift && !isPromptMenuOpen() && (k.upArrow || k.downArrow)) {
+      const step = k.upArrow ? 1 : -1
+      const pending = pendingArrow.current
+      if (pending) { pending.delta += step; pending.count++; return true }
+      pendingArrow.current = { input: _input, key: k, delta: step, count: 1, empty: isPromptEmpty() }
+      setImmediate(() => {
+        const p = pendingArrow.current
+        pendingArrow.current = null
+        if (!p) return
+        if (p.count > 1 || p.empty) { if (p.delta) scrollBy(p.delta); return }
+        replaying.current = true
+        try { router.dispatch(p.input, p.key, { focus: 'input', overlayOpen: store.getState().overlays.length > 0 }) } finally { replaying.current = false }
+      })
+      return true
+    }
     if (!k.ctrl && !k.meta && !k.shift && isPromptEmpty() && !isPromptMenuOpen()) {
-      if (k.upArrow) { scrollBy(1); return true }
-      if (k.downArrow) { if (offset > 0) scrollBy(-1); return true }
       if (k.home) { scrollBy(win.total); return true }
       if (k.end) { follow(); return true }
     }
-    if (k.escape) {
-      if (isPromptMenuOpen()) return false
-      if (running) return interrupt()
-      if (Date.now() - lastInputEscAt < DOUBLE_ESC_MS) {
-        lastInputEscAt = 0
-        actions.prefillPrompt('')
-        return true
-      }
-      lastInputEscAt = Date.now()
-      return true
-    }
+    // Esc interrupts a running turn; otherwise the shell takes it (twice clears
+    // the text, an empty prompt goes up to the tab bar).
+    if (k.escape && !isPromptMenuOpen() && running) return interrupt()
     return false
   }
 
@@ -358,18 +378,25 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
 
   const label = agentLabel(agent)
   const loopTimers = (timers[agentId] ?? []).filter(t => !t.expired && (t.loop ?? MAIN_LOOP) === loopName)
-  const info = loopInfoLine(loop?.info.isMain !== false && loopName === MAIN_LOOP, loop, loopTimers, agent, g.sep)
+  const infoSegments = fitInfoSegments(
+    infoLineSegments({ isMain: loop?.info.isMain !== false && loopName === MAIN_LOOP, loop, timers: loopTimers, agent, status: agentStatus, site, authNeed: authNeed ? authNeedText(authNeed) : null, glyph: g }),
+    width,
+    displayWidth(` ${g.sep} `),
+  )
   const model = loop?.info.config?.model?.model_id ?? agent.config?.model?.model_id ?? agent.lastModel
   const visible = items.slice(win.start, win.end + 1)
 
   return (
     <Box flexDirection="column" width={paneWidth} height={height} paddingX={1}>
       <LoopTabs agentLabel={label} tabs={tabs} selected={loopName} unseen={unseen} pending={pendingLoops} width={width} />
-      {authNeed ? (
-        <Text wrap="truncate-end"><Text bold color={theme.color.warn}>{g.warn} {authNeedText(authNeed)}</Text><Text color={theme.color.dim}> {g.sep} {info}</Text></Text>
-      ) : (
-        <Text wrap="truncate-end" color={loop && !loop.info.enabled ? theme.color.warn : theme.color.dim}>{info}</Text>
-      )}
+      <Text wrap="truncate-end">
+        {infoSegments.length === 0 ? ' ' : infoSegments.map((seg, i) => (
+          <Text key={seg.key}>
+            {i > 0 ? <Text color={theme.color.dim}> {g.sep} </Text> : null}
+            <Text {...infoStyle(seg.key, theme)}>{seg.text}</Text>
+          </Text>
+        ))}
+      </Text>
       <Box ref={transcriptRef} height={paneHeight} width={width} flexDirection="column" overflow="hidden">
         {items.length === 0 ? (
           <Box height={paneHeight} flexDirection="column" justifyContent="flex-end">
@@ -417,21 +444,48 @@ function useMergedItems(items: TranscriptItem[], markers: ChatState['markers'][s
   return out
 }
 
-function loopInfoLine(isMain: boolean, loop: LoopState | undefined, timers: Timer[], agent: AgentEntry, sep: string): string {
-  const parts: string[] = []
-  const schedule = timers.map(t => `${describeSchedule(t)} (timer #${t.id})`).join(', ')
-  if (isMain) {
-    const inner = (agent.loops ?? []).filter(l => !l.info.isMain).length
-    parts.push('main loop: the agent itself, talks to you')
-    if (inner > 0) parts.push(`${inner} inner loop${inner === 1 ? '' : 's'}`)
-    if (agent.unreadInbox > 0) parts.push(`${agent.unreadInbox} new inbox`)
-  } else if (loop) {
-    if (!loop.info.enabled) parts.push(`disabled: /loop on ${loop.info.name} to enable`)
-    parts.push(`goal: ${oneLine(loop.info.goal || '(none)')}`)
-    if (loop.info.config?.autonomous) parts.push('autonomous')
+/**
+ * The line under the loop tabs, most important first when narrow: sign-in
+ * warning, disabled loop, host access, the loop's schedule, the agent's own
+ * status line, the inner loop's goal, the website, autonomous, new inbox.
+ */
+export function infoLineSegments(input: {
+  isMain: boolean
+  loop: LoopState | undefined
+  timers: Timer[]
+  agent: AgentEntry
+  status?: string
+  site: Site | null
+  authNeed: string | null
+  glyph: { warn: string; check: string; sep: string }
+  now?: number
+}): InfoSegment[] {
+  const { isMain, loop, agent, glyph } = input
+  const out: InfoSegment[] = []
+  if (input.authNeed) out.push({ key: 'auth', text: `${glyph.warn} ${input.authNeed}`, order: 0, priority: 0, flex: true })
+  if (!isMain && loop && !loop.info.enabled) out.push({ key: 'disabled', text: `disabled: /loop on ${loop.info.name} to enable`, order: 1, priority: 1 })
+  if (agent.config?.compute?.host_access === true) out.push({ key: 'host', text: `host ${glyph.check}`, order: 2, priority: 2 })
+  const wakes = wakesText(input.timers, input.now, glyph.sep)
+  if (wakes) out.push({ key: 'wakes', text: wakes, order: 5, priority: 3 })
+  if (input.status) out.push({ key: 'status', text: oneLine(input.status), order: 3, priority: isMain ? 4 : 5, flex: true })
+  if (!isMain && loop) out.push({ key: 'goal', text: `goal: ${oneLine(loop.info.goal || '(none)')}`, order: 4, priority: 4, flex: true })
+  if (input.site) out.push({ key: 'web', text: input.site.url ? `web ${shortUrl(input.site.url)}` : 'web server stopped (w)', order: 6, priority: 6 })
+  if (!isMain && loop?.info.config?.autonomous) out.push({ key: 'autonomous', text: 'autonomous', order: 7, priority: 7 })
+  if (isMain && agent.unreadInbox > 0) out.push({ key: 'inbox', text: `${agent.unreadInbox} new inbox`, order: 8, priority: 8 })
+  return out
+}
+
+function infoStyle(key: string, theme: ReturnType<typeof useTheme>): { color?: string; bold?: boolean; underline?: boolean } {
+  switch (key) {
+    case 'auth': return { color: theme.color.warn, bold: true }
+    case 'disabled': return { color: theme.color.warn }
+    case 'host': return { color: theme.color.success }
+    case 'status': return { color: theme.color.muted }
+    case 'wakes': return { color: theme.color.info }
+    case 'web': return { color: theme.color.live }
+    case 'inbox': return { color: theme.color.info }
+    default: return { color: theme.color.dim }
   }
-  if (schedule) parts.push(`wakes ${schedule}`)
-  return parts.join(` ${sep} `)
 }
 
 // --- prompt integration ---------------------------------------------------------
@@ -508,6 +562,7 @@ const chat: ViewDefinition = {
         loopKeys,
         { keys: 'c', label: 'copy' },
         { keys: 't', label: readChatState(scope).showThinking ? 'hide thinking' : 'thinking' },
+        ...(siteOf(state, scope.agentId) ? [{ keys: 'w', label: 'website' }] : []),
       ]
     }
     return [
@@ -534,6 +589,7 @@ const chat: ViewDefinition = {
         { keys: 'home end', label: 'Top, loading older history (g) · follow live (G)' },
         { keys: 't', label: 'Expand / collapse all thinking' },
         { keys: 'c', label: 'Copy the selected item, else the last reply' },
+        { keys: 'w', label: 'Open the agent’s website (when it serves one; starts the web server if stopped)' },
         { keys: 'esc', label: 'Interrupt this loop’s running turn: it goes idle and keeps working (not a stop)' },
         { keys: 'esc esc', label: 'Clear the prompt' },
         { keys: 'tab shift+tab', label: 'Leave the prompt for the transcript / sidebar (Esc never does)' },

@@ -39,6 +39,8 @@ export interface InspectState {
   json: boolean
   events: EventFilters
   logsFollow: boolean
+  /** /config edit: the Config tab opens $EDITOR once for this request (a timestamp). */
+  editRequest?: number
 }
 
 export const DEFAULT_INSPECT_STATE: InspectState = {
