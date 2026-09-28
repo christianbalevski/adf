@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* global console, process, fetch, setTimeout */
-// Smoke test for an installed `agent-document-format` package: the `adf` on
+// Smoke test for an installed `@agentdocumentformat/cli` package: the `adf` on
 // PATH prints its version, boots a daemon on a spare port with throwaway
 // settings/data (never the user's), and answers `adf agents`. Then, with no
 // daemon running, `adf agents` must start one in the background by itself

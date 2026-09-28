@@ -1,4 +1,4 @@
-# agent-document-format
+# @agentdocumentformat/cli
 
 The ADF (Agent Document Format) daemon, CLI and terminal UI. An ADF agent is a single `.adf` file: config, memory, files and history in one document. This package runs your agents headless from a terminal, with no desktop app. For the desktop app (ADF Studio), see the [releases](https://github.com/christianbalevski/adf/releases).
 
@@ -7,7 +7,7 @@ The ADF (Agent Document Format) daemon, CLI and terminal UI. An ADF agent is a s
 Requires Node.js 22 or newer.
 
 ```bash
-npm i -g agent-document-format
+npm i -g @agentdocumentformat/cli
 adf
 ```
 

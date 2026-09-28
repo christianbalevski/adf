@@ -4,10 +4,10 @@ This guide starts the ADF daemon, the headless ADF runtime that serves an API, t
 
 ## Install from npm
 
-The quickest route, with no source checkout and no Electron: the [`agent-document-format`](https://www.npmjs.com/package/agent-document-format) package ships the daemon, the CLI and the TUI as one `adf` command. It needs Node.js 22 or newer. Native modules (SQLite, the OS keychain) install from prebuilt binaries for Windows x64, macOS (arm64/x64) and Linux (x64/arm64, glibc), so no compiler is needed.
+The quickest route, with no source checkout and no Electron: the [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli) package ships the daemon, the CLI and the TUI as one `adf` command. It needs Node.js 22 or newer. Native modules (SQLite, the OS keychain) install from prebuilt binaries for Windows x64, macOS (arm64/x64) and Linux (x64/arm64, glibc), so no compiler is needed.
 
 ```bash
-npm i -g agent-document-format
+npm i -g @agentdocumentformat/cli
 adf
 ```
 
@@ -36,7 +36,7 @@ Auto-start only happens for a daemon URL on this machine (loopback); `--no-daemo
 
 Everywhere this guide says `npm run daemon`, use `adf daemon`; for `npm run adf -- <command>`, use `adf <command>`. The environment variables below apply unchanged. The npm daemon reads the same default settings file and OS-keychain owner identity as Studio on the same machine; point `ADF_DAEMON_SETTINGS` / `ADF_USER_DATA_DIR` elsewhere to keep it separate.
 
-To start it at login instead of on first use, use your platform's service manager (systemd user unit, launchd agent, or a Windows scheduled task) with `adf daemon` as the command. Upgrade with `npm install -g agent-document-format@latest`.
+To start it at login instead of on first use, use your platform's service manager (systemd user unit, launchd agent, or a Windows scheduled task) with `adf daemon` as the command. Upgrade with `npm install -g @agentdocumentformat/cli@latest`.
 
 The rest of this guide runs the daemon from a source checkout.
 

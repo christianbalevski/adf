@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* global console */
-// Builds the `agent-document-format` npm package (daemon + CLI + TUI, no
+// Builds the `@agentdocumentformat/cli` npm package (daemon + CLI + TUI, no
 // Electron) into dist/npm. `npm run build:npm`, then `npm pack ./dist/npm`
 // or `npm publish ./dist/npm`.
 //
@@ -14,7 +14,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const pkgSrc = join(root, 'packages', 'agent-document-format')
+const pkgSrc = join(root, 'packages', 'cli')
 const out = join(root, 'dist', 'npm')
 const rootPkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'))
 
@@ -139,7 +139,7 @@ for (const file of Object.keys(result.metafile.outputs)) {
     throw new Error(`build-npm: ${file} imports electron statically — a Studio-only module leaked into the daemon/CLI graph`)
   }
 }
-console.log(`[build-npm] agent-document-format@${rootPkg.version} -> ${out}`)
+console.log(`[build-npm] @agentdocumentformat/cli@${rootPkg.version} -> ${out}`)
 console.log(`[build-npm] ${(bytes / 1024 / 1024).toFixed(1)} MB JS, ${Object.keys(result.metafile.outputs).length} files, ${bundledPkgs.size} packages bundled, ${Date.now() - started} ms`)
 if (!existsSync(join(out, 'dist', 'adf.mjs')) || statSync(join(out, 'dist', 'adf.mjs')).size === 0) {
   throw new Error('build-npm: dist/adf.mjs missing')

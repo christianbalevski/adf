@@ -1,5 +1,5 @@
 {
-  "name": "agent-document-format",
+  "name": "@agentdocumentformat/cli",
   "version": "0.0.0-template",
   "description": "ADF (Agent Document Format) daemon, CLI and terminal UI. Run your agents headless: `adf daemon`, then `adf`.",
   "type": "module",
@@ -27,6 +27,9 @@
     "mcp",
     "agent-document-format"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "author": "Christian Balevski",
   "homepage": "https://github.com/christianbalevski/adf#readme",
   "bugs": {

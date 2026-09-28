@@ -138,7 +138,7 @@ jobs:
           --notes-file release-notes.md
           --draft=false
 
-  # --- npm package: agent-document-format (daemon + CLI + TUI, no Electron) ---
+  # --- npm package: @agentdocumentformat/cli (daemon + CLI + TUI, no Electron) ---
   # Independent of the Studio jobs above: a failure here never blocks the
   # Studio release, and vice versa. Built once, smoke-tested from the tarball
   # on every OS (native deps must install from prebuilt binaries), then
@@ -176,7 +176,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: npm-tarball
-          path: agent-document-format-*.tgz
+          path: agentdocumentformat-cli-*.tgz
           if-no-files-found: error
 
   npm-smoke:
@@ -204,7 +204,7 @@ jobs:
       # must come from prebuilt binaries, as they will for users.
       - name: Install globally from the tarball
         shell: bash
-        run: npm install -g ./agent-document-format-*.tgz
+        run: npm install -g ./agentdocumentformat-cli-*.tgz
         env:
           npm_config_build_from_source: 'false'
       - name: Smoke test
@@ -232,4 +232,4 @@ jobs:
           name: npm-tarball
       - name: Publish
         shell: bash
-        run: npm publish ./agent-document-format-*.tgz --access public
+        run: npm publish ./agentdocumentformat-cli-*.tgz --access public

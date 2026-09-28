@@ -79,10 +79,10 @@ To test the publish path itself, `GH_TOKEN=$(gh auth token) npm run release`
 uploads to a draft from your machine — but it only attaches *your* OS's
 installer, so let CI produce real multi-platform releases.
 
-## npm package (`agent-document-format`)
+## npm package (`@agentdocumentformat/cli`)
 
 The same tag also releases the terminal-only package (daemon + CLI + TUI,
-`npm i -g agent-document-format` → `adf`). The `npm-build` → `npm-smoke` →
+`npm i -g @agentdocumentformat/cli` → `adf`). The `npm-build` → `npm-smoke` →
 `npm-publish` jobs in `release.yml` bundle it (`npm run build:npm`, output in
 `dist/npm`, version = root `package.json`), install the tarball on Linux,
 macOS and Windows (Node 22 and 24), boot a daemon, and publish with
@@ -96,7 +96,7 @@ One-time setup:
 1. `npm login`, then claim the name by publishing the first version by hand
    (trusted publishers can only be added to a package that exists):
    `npm run build:npm && npm publish ./dist/npm --access public`.
-2. On npmjs.com: **agent-document-format → Settings → Trusted Publisher →
+2. On npmjs.com: **@agentdocumentformat/cli → Settings → Trusted Publisher →
    GitHub Actions**, with organization/user `christianbalevski`, repository
    `adf`, workflow filename `release.yml` (no environment). Until this is
    set, `npm-publish` fails with an authentication error; the Studio release
@@ -104,7 +104,7 @@ One-time setup:
 
 Local check: `npm run build:npm && npm pack ./dist/npm`, then install the
 tarball with an isolated prefix (`npm_config_prefix=/tmp/adf-prefix npm i -g
-./agent-document-format-*.tgz`) and run `node scripts/npm-smoke.mjs` with that
+./agentdocumentformat-cli-*.tgz`) and run `node scripts/npm-smoke.mjs` with that
 prefix on `PATH`.
 
 ## Code signing

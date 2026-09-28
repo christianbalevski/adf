@@ -41,10 +41,10 @@ The [Quick start](#quick-start) below is for developers running ADF from source;
 
 ## Install the daemon, CLI and TUI from npm
 
-For terminal-only use (servers, SSH sessions, no desktop app), install the [`agent-document-format`](https://www.npmjs.com/package/agent-document-format) package. It needs Node.js 22 or newer; native modules install from prebuilt binaries, so no compiler is needed.
+For terminal-only use (servers, SSH sessions, no desktop app), install the [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli) package. It needs Node.js 22 or newer; native modules install from prebuilt binaries, so no compiler is needed.
 
 ```bash
-npm i -g agent-document-format
+npm i -g @agentdocumentformat/cli
 adf
 ```
 
