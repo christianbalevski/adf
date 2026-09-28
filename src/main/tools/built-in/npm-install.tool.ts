@@ -4,7 +4,12 @@ import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { SandboxPackagesService } from '../../services/sandbox-packages.service'
-import { NativeAddonError, SizeLimitError } from '../../services/sandbox-packages.service'
+import {
+  NativeAddonError,
+  SizeLimitError,
+  InstallScriptError,
+  InvalidPackageSpecError
+} from '../../services/sandbox-packages.service'
 
 const inputSchema = z.object({
   name: z
@@ -28,7 +33,8 @@ export class NpmInstallTool implements Tool {
   readonly name = 'npm_install'
   readonly description =
     'Install an npm package for use in code execution (sys_code / sys_lambda). ' +
-    'Pure JavaScript packages only — native addons are blocked. ' +
+    'Pure JavaScript packages only — native addons are blocked, and install scripts never run ' +
+    '(packages that need one to build are rejected). ' +
     'The package becomes available to import starting next turn. ' +
     'Example: npm_install({ name: "vega-lite", version: "^5.21.0" })'
   readonly inputSchema = inputSchema
@@ -95,7 +101,8 @@ export class NpmInstallTool implements Tool {
           name,
           version: result.version,
           size_mb: result.size_mb,
-          already_installed: result.already_installed
+          already_installed: result.already_installed,
+          ...(result.scripts_skipped ? { scripts_skipped: result.scripts_skipped } : {})
         }),
         isError: false
       }
@@ -106,6 +113,16 @@ export class NpmInstallTool implements Tool {
             success: false,
             error: 'native_addon',
             message: 'Package requires native code and cannot run in the sandbox.'
+          }),
+          isError: true
+        }
+      }
+      if (error instanceof InstallScriptError || error instanceof InvalidPackageSpecError) {
+        return {
+          content: JSON.stringify({
+            success: false,
+            error: error.code,
+            message: error.message
           }),
           isError: true
         }

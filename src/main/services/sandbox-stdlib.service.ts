@@ -135,7 +135,7 @@ export class SandboxStdlibService {
     try {
       const { stdout, stderr } = await execFileAsync(
         NPM_BIN,
-        ['install', '--save', '--no-audit', '--no-fund', `${name}@${version}`],
+        ['install', '--save', '--ignore-scripts', '--no-audit', '--no-fund', `${name}@${version}`],
         {
           cwd: installDir,
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
