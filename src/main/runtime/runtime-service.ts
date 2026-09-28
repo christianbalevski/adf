@@ -5,7 +5,7 @@ import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { resolveDefaultProvider } from '../adf/apply-default-provider'
 import { templateFilePath } from '../adf/agent-templates'
-import { unlockWorkspaceEnvelopes } from './identity-provisioner'
+import { canProvisionWorkspaceIdentity, ensureWorkspaceIdentity, unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { encrypt } from '../crypto/identity-crypto'
 import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { withDeadline } from '../utils/concurrency'
@@ -19,6 +19,7 @@ import type {
   FileProtectionLevel,
   InboxMessage,
   InboxStatus,
+  LoopConfig,
   LoopEntry,
   LoopTokenUsage,
   MetaProtectionLevel,
@@ -48,9 +49,13 @@ import {
   type CreateHeadlessAgentOptions,
   type HeadlessAgent,
 } from './headless'
-import { detectLockedEnvelopes, type AgentRuntimeBuilder } from './agent-runtime-builder'
+import { CREDENTIALS_UNLOCK_HINT, detectLockedEnvelopes, type AgentRuntimeBuilder } from './agent-runtime-builder'
 import type { AssembledAgentBase, HostAttachment } from './assemble-agent'
-import { stripLoopNameMarker } from './loop-pool'
+import { LoopPoolError, stripLoopNameMarker } from './loop-pool'
+import { LOOP_AUTOSTART_MESSAGE, type LoopDeleteResult, type LoopInfo, type LoopSendResult } from '../adf/loop-pool.types'
+import { LoopConfigSchema } from '../adf/adf-schema'
+import { MAIN_LOOP, listAvailableLoopTools, validateLoopToolList } from '../adf/derive-loop-config'
+import { DEFAULT_NEW_LOOP_TOOLS } from '../../shared/types/adf-v02.types'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { RuntimeGate } from './runtime-gate'
 import { withSource } from './execution-context'
@@ -61,6 +66,48 @@ import { mapWithConcurrency } from '../utils/concurrency'
 
 /** Max agents loading concurrently during autostart. */
 const AUTOSTART_CONCURRENCY = 5
+
+/** `degraded` text for an agent whose sealed envelopes this process cannot open. */
+function lockedCredentialsReason(filePath: string, locked: string[]): string {
+  return `daemon cannot unlock credentials for ${filePath} — sealed envelopes remain locked (${locked.join(', ')}). ` +
+    `Envelope-sealed adapter/MCP credentials will resolve to null. ${CREDENTIALS_UNLOCK_HINT} ` +
+    'Loaded agents re-check automatically once it is ready.'
+}
+
+/** MCP servers whose per-agent credentials live in the keystore (`mcp:<pkg|name>:*`). */
+function mcpServersWithSealedCredentials(workspace: AdfWorkspace): string[] {
+  try {
+    const servers = workspace.getAgentConfig().mcp?.servers ?? []
+    return servers
+      .filter(server => [server.npm_package, server.pypi_package, server.name]
+        .some(key => key && workspace.listIdentityPurposes(`mcp:${key}:`).length > 0))
+      .map(server => server.name)
+  } catch {
+    return []
+  }
+}
+
+/** Outcome of re-checking one degraded agent's sealed credentials. */
+export interface RuntimeCredentialRefresh {
+  agentId: string
+  filePath: string | null
+  /** True when every envelope is open now and `degraded` was cleared. */
+  unlocked: boolean
+  /** Envelopes still sealed (empty when unlocked). */
+  stillLocked: string[]
+  /** Channel adapters restarted with their real credentials. */
+  adaptersRestarted: string[]
+  /** MCP servers with sealed per-agent credentials that connected without them; restart the agent to reconnect them. */
+  mcpRestartNeeded: string[]
+}
+
+/** One loop that left an auth `error` after a provider sign-in. */
+export interface RuntimeAuthRecovery {
+  agentId: string
+  filePath: string | null
+  loop: string
+  notice: string
+}
 
 export interface RuntimeSettingsStore {
   get(key: string): unknown
@@ -140,11 +187,81 @@ export interface RuntimeAgentStartResult {
 
 export interface RuntimeAgentLoopPage {
   agentId: string
+  /** Cognition loop the page was read from (`main` when not requested). */
+  loop: string
   total: number
   limit: number
   offset: number
   entries: LoopEntry[]
 }
+
+/** A caller-visible loop API failure; `statusCode` is the HTTP status to answer with. */
+export class RuntimeLoopError extends Error {
+  constructor(message: string, readonly statusCode: 400 | 404 | 409 | 502) {
+    super(message)
+    this.name = 'RuntimeLoopError'
+  }
+}
+
+/** One cognition loop as the owner sees it: live status plus its declaration. */
+export interface RuntimeAgentLoopInfo extends LoopInfo {
+  /** The side loop's declaration; `null` for main (its config is the agent's). */
+  config: LoopConfig | null
+  /** Rows in this loop's `adf_loop` stream. */
+  entryCount: number
+  /** Tools the loop's executor actually holds; `null` for main or a loop with no live runtime. */
+  effectiveTools: string[] | null
+}
+
+/** Owner-supplied loop declaration; absent fields take the `loop_manage` defaults. */
+export interface RuntimeLoopCreateInput {
+  name: string
+  goal: string
+  enabled?: boolean
+  autostart?: boolean
+  autonomous?: boolean
+  model?: LoopConfig['model']
+  compact_threshold?: number | null
+  tools?: string[]
+}
+
+/** `null` on `model` / `compact_threshold` removes the override (the loop inherits main's). */
+export type RuntimeLoopPatch = Partial<Omit<LoopConfig, 'name' | 'model' | 'compact_threshold'>> & {
+  model?: LoopConfig['model'] | null
+  compact_threshold?: LoopConfig['compact_threshold'] | null
+}
+
+export interface RuntimeAgentAsk {
+  requestId: string
+  question: string
+  /** The loop whose turn is waiting on the answer. */
+  loop: string
+}
+
+export interface RuntimeLoopCreateResult {
+  agentId: string
+  loop: RuntimeAgentLoopInfo
+  effectiveTools: string[]
+  /** Requested tools the host has disabled: carried by name, not granted yet. */
+  excludedTools: string[]
+  /** The autostart kickoff, when one was sent. */
+  kickoff: LoopSendResult | null
+}
+
+export interface RuntimeLoopUpdateResult {
+  agentId: string
+  loop: RuntimeAgentLoopInfo
+  updated: string[]
+  excludedTools: string[]
+}
+
+export interface RuntimeLoopDeleteResult extends LoopDeleteResult {
+  agentId: string
+  name: string
+}
+
+const LOOP_PATCH_FIELDS = ['goal', 'enabled', 'autostart', 'autonomous', 'model', 'compact_threshold', 'tools'] as const
+const LOOP_CLEARABLE_FIELDS = new Set<string>(['model', 'compact_threshold'])
 
 export interface RuntimeAgentFileContent {
   agentId: string
@@ -218,6 +335,8 @@ export interface RuntimeTimerMutationOptions {
   warm?: boolean
   payload?: string
   locked?: boolean
+  /** Cognition loop an agent-scope wake dispatches to. Create only; absent = main. */
+  loop?: string
 }
 
 export interface RuntimeAgentAdaptersDiagnostics {
@@ -383,7 +502,7 @@ export class RuntimeService extends EventEmitter {
       // starting adapters/MCP with credentials that resolve to null.
       const lockedEnvelopes = detectLockedEnvelopes(workspace)
       const degradedReason = lockedEnvelopes.length > 0
-        ? `daemon cannot unlock credentials for ${canonicalPath} — sealed envelopes remain locked (${lockedEnvelopes.join(', ')}). Envelope-sealed adapter/MCP credentials will resolve to null. Start Studio once or configure daemon identity.`
+        ? lockedCredentialsReason(canonicalPath, lockedEnvelopes)
         : null
       if (degradedReason) {
         console.error(`[RuntimeService] ${degradedReason}`)
@@ -487,6 +606,102 @@ export class RuntimeService extends EventEmitter {
   }
 
   /**
+   * Re-run the envelope unlock (the same hook the load path uses) for every
+   * loaded agent that is `degraded` on sealed credentials. Called when the
+   * owner identity becomes ready and on the daemon's periodic re-check, so an
+   * agent loaded before `adf identity restore/unlock` (or before Studio added
+   * a slot) recovers without a reload. The unlock is synchronous DB work on
+   * the agent's root workspace — no loop rows are touched, so it cannot
+   * interleave with a turn. Each cleared agent is logged (console + adf_logs)
+   * and announced as `agent.credentials.unlocked`; locked-credentials stub
+   * adapters are restarted with the real factory; MCP servers that connected
+   * without their sealed env are reported as needing an agent restart.
+   */
+  async refreshAgentCredentials(reason: string): Promise<RuntimeCredentialRefresh[]> {
+    const results: RuntimeCredentialRefresh[] = []
+    for (const managed of Array.from(this.agents.values())) {
+      if (!managed.degraded || this.agents.get(managed.id) !== managed) continue
+      const workspace = managed.agent.workspace
+      const label = managed.filePath ?? managed.id
+      unlockWorkspaceEnvelopes(workspace)
+      const stillLocked = detectLockedEnvelopes(workspace)
+      if (stillLocked.length > 0) {
+        const next = lockedCredentialsReason(label, stillLocked)
+        if (next !== managed.degraded) {
+          managed.degraded = next
+          console.warn(`[RuntimeService] ${next}`)
+          try { workspace.insertLog('warn', 'runtime', 'credentials_locked', null, next.slice(0, 500)) } catch { /* non-fatal */ }
+        }
+        results.push({ agentId: managed.id, filePath: managed.filePath, unlocked: false, stillLocked, adaptersRestarted: [], mcpRestartNeeded: [] })
+        continue
+      }
+
+      managed.degraded = undefined
+      let adaptersRestarted: string[] = []
+      const adapterManager = managed.agent.adapterManager
+      if (this.agentRuntimeBuilder && adapterManager) {
+        try {
+          adaptersRestarted = await this.agentRuntimeBuilder.restartLockedAdapters(adapterManager, workspace)
+        } catch (err) {
+          console.error(`[RuntimeService] Adapter restart after credential unlock failed for ${label}:`, err)
+        }
+      }
+      const mcpRestartNeeded = mcpServersWithSealedCredentials(workspace)
+      const message = `Credentials unlocked for ${managed.config.name} (${reason}); degraded cleared.` +
+        (adaptersRestarted.length ? ` Restarted adapters: ${adaptersRestarted.join(', ')}.` : '') +
+        (mcpRestartNeeded.length
+          ? ` MCP servers ${mcpRestartNeeded.join(', ')} connected without their sealed credentials — restart the agent to reconnect them.`
+          : '')
+      console.log(`[RuntimeService] ${message}`)
+      try { workspace.insertLog('info', 'runtime', 'credentials_unlocked', null, message.slice(0, 500)) } catch { /* non-fatal */ }
+      withSource('system:lifecycle', managed.id, () => {
+        emitUmbilicalEvent({
+          event_type: 'agent.credentials.unlocked',
+          agentId: managed.id,
+          payload: { filePath: managed.filePath, reason, adaptersRestarted, mcpRestartNeeded, message },
+        })
+      })
+      results.push({ agentId: managed.id, filePath: managed.filePath, unlocked: true, stillLocked: [], adaptersRestarted, mcpRestartNeeded })
+    }
+    return results
+  }
+
+  /** True when any loaded agent is degraded on sealed credentials. */
+  hasDegradedAgents(): boolean {
+    for (const managed of this.agents.values()) if (managed.degraded) return true
+    return false
+  }
+
+  /**
+   * A subscription sign-in completed: every loop (main + side) of every
+   * loaded agent that sits in `error` on an auth failure from a provider of
+   * `providerType` leaves it via the executor's own exit (setState('idle')).
+   * No turn is re-run; the next trigger works normally. Other error reasons
+   * and other provider types are left alone. Each recovery is logged and
+   * announced (`agent.recovered`).
+   */
+  recoverAuthErroredAgents(providerType: string, signInLabel: string): RuntimeAuthRecovery[] {
+    const recovered: RuntimeAuthRecovery[] = []
+    const notice = `recovered after ${signInLabel} sign-in`
+    for (const managed of this.agents.values()) {
+      const executors: Array<{ loop: string; executor: RuntimeAgent['executor'] }> = [
+        { loop: MAIN_LOOP, executor: managed.agent.executor },
+        ...managed.agent.loopPool.getRuntimes().map(runtime => ({ loop: runtime.name, executor: runtime.executor })),
+      ]
+      for (const { loop, executor } of executors) {
+        if (executor.getErrorReason() !== 'auth') continue
+        if (executor.getProvider()?.providerType !== providerType) continue
+        const loopNotice = `${managed.config.name}${loop === MAIN_LOOP ? '' : ` (loop ${loop})`} ${notice}`
+        const ok = withSource('system:lifecycle', managed.id, () => executor.recoverFromAuthError(loopNotice))
+        if (!ok) continue
+        console.log(`[RuntimeService] ${loopNotice}`)
+        recovered.push({ agentId: managed.id, filePath: managed.filePath, loop, notice: loopNotice })
+      }
+    }
+    return recovered
+  }
+
+  /**
    * Run a dispatch on one of this agent's cognition loops. `loop` (or the
    * dispatch's own `loop`) selects the executor; absent means main, so every
    * pre-loops caller is unchanged. Rejects when the loop is unknown or
@@ -567,9 +782,36 @@ export class RuntimeService extends EventEmitter {
     await this.unloadAgent(agentId)
   }
 
-  async abortAgent(agentId: string): Promise<void> {
+  /** Abort the current turn of one loop (default main) without unloading. */
+  async abortAgent(agentId: string, loop?: string): Promise<void> {
     const managed = this.requireAgent(agentId)
-    managed.agent.executor.abort()
+    const loopName = this.requireLoopName(managed, loop)
+    if (loopName === MAIN_LOOP) {
+      managed.agent.executor.abort()
+      return
+    }
+    const runtime = managed.agent.loopPool.getRuntime(loopName)
+    if (!runtime) throw new RuntimeLoopError(`Loop "${loopName}" has no running executor (it is disabled or stopping).`, 409)
+    runtime.executor.abort()
+  }
+
+  /**
+   * Interrupt one loop's running turn (default main) and leave its executor
+   * idle and still accepting work — Studio's fleet-map teardown. Unlike
+   * abortAgent this never stops the executor. No-op when nothing is running.
+   */
+  interruptAgent(agentId: string, loop?: string): { interrupted: boolean; loop: string } {
+    const managed = this.requireAgent(agentId)
+    const loopName = this.requireLoopName(managed, loop)
+    const executor = loopName === MAIN_LOOP
+      ? managed.agent.executor
+      : managed.agent.loopPool.getRuntime(loopName)?.executor
+    if (!executor) throw new RuntimeLoopError(`Loop "${loopName}" has no running executor (it is disabled or stopping).`, 409)
+    const state = executor.getState()
+    if (state === 'stopped' || state === 'error') throw new RuntimeLoopError(`Cannot interrupt: loop "${loopName}" is ${state}.`, 409)
+    if (!executor.isTurnActive()) return { interrupted: false, loop: loopName }
+    executor.endTurnAndSetState('idle')
+    return { interrupted: true, loop: loopName }
   }
 
   async autostartFromDirectories(
@@ -722,15 +964,177 @@ export class RuntimeService extends EventEmitter {
     return this.toStatus(managed)
   }
 
-  getAgentLoop(agentId: string, opts: { limit?: number; offset?: number } = {}): RuntimeAgentLoopPage {
+  getAgentLoop(agentId: string, opts: { limit?: number; offset?: number; loop?: string } = {}): RuntimeAgentLoopPage {
     const managed = this.requireAgent(agentId)
-    const total = managed.agent.workspace.getLoopCount()
+    const loop = this.requireLoopName(managed, opts.loop)
+    const workspace = managed.agent.workspace.forLoop(loop)
+    const total = workspace.getLoopCount()
     const limit = clampInteger(opts.limit ?? 50, 1, 500)
     const offset = opts.offset === undefined
       ? Math.max(0, total - limit)
       : clampInteger(opts.offset, 0, Math.max(0, total))
-    const entries = managed.agent.workspace.getLoopPaginated(limit, offset)
-    return { agentId: managed.id, total, limit, offset, entries }
+    const entries = workspace.getLoopPaginated(limit, offset)
+    return { agentId: managed.id, loop, total, limit, offset, entries }
+  }
+
+  // --- Cognition loops (docs/design/agent-loops-mvp.md) ----------------------
+  //
+  // Every mutation goes through the agent's LoopPool — the one path that
+  // validates, attenuates, persists and archives — never through a raw config
+  // write. Validation mirrors `loop_manage` so the owner gets the same rules
+  // (and the same sentences) the agent does.
+
+  listAgentLoops(agentId: string): { agentId: string; loops: RuntimeAgentLoopInfo[] } {
+    const managed = this.requireAgent(agentId)
+    return {
+      agentId: managed.id,
+      loops: managed.agent.loopPool.listLoops().map(info => this.toLoopInfo(managed, info)),
+    }
+  }
+
+  getAgentLoopInfo(agentId: string, name: string): RuntimeAgentLoopInfo {
+    const managed = this.requireAgent(agentId)
+    const loop = this.requireLoopName(managed, name)
+    return this.loopInfoByName(managed, loop)
+  }
+
+  async createAgentLoop(agentId: string, input: RuntimeLoopCreateInput): Promise<RuntimeLoopCreateResult> {
+    const managed = this.requireAgent(agentId)
+    const pool = managed.agent.loopPool
+    if (!input || typeof input.name !== 'string') throw new RuntimeLoopError('name is required', 400)
+    if (input.name === MAIN_LOOP) throw new RuntimeLoopError('"main" is the implicit host loop and cannot be created.', 409)
+    if (pool.hasLoop(input.name)) throw new RuntimeLoopError(`A loop named "${input.name}" already exists.`, 409)
+    const host = managed.agent.workspace.getAgentConfig()
+    const available = new Set(listAvailableLoopTools(host))
+    const candidate = {
+      name: input.name,
+      goal: input.goal,
+      enabled: input.enabled ?? true,
+      autostart: input.autostart ?? true,
+      ...(input.autonomous !== undefined ? { autonomous: input.autonomous } : {}),
+      ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.compact_threshold !== undefined ? { compact_threshold: input.compact_threshold } : {}),
+      tools: input.tools ?? DEFAULT_NEW_LOOP_TOOLS.filter(name => available.has(name)),
+    }
+    const { config, disabled } = this.validateLoopDeclaration(host, candidate)
+    const created = await this.withLoopErrors(() => pool.createLoop(config))
+    managed.config = managed.agent.workspace.getAgentConfig()
+
+    let kickoff: LoopSendResult | null = null
+    if (config.enabled && config.autostart) {
+      kickoff = await this.withLoopErrors(() => pool.sendToLoop(MAIN_LOOP, config.name, LOOP_AUTOSTART_MESSAGE, true))
+    }
+    return {
+      agentId: managed.id,
+      loop: this.loopInfoByName(managed, config.name),
+      effectiveTools: created.effectiveTools,
+      excludedTools: disabled,
+      kickoff,
+    }
+  }
+
+  async updateAgentLoop(agentId: string, name: string, patch: RuntimeLoopPatch): Promise<RuntimeLoopUpdateResult> {
+    const managed = this.requireAgent(agentId)
+    const pool = managed.agent.loopPool
+    if (name === MAIN_LOOP) {
+      throw new RuntimeLoopError('main is the implicit host loop — change its instructions, model or tools through the agent config.', 409)
+    }
+    const existing = pool.getLoop(name)
+    if (!existing) throw new RuntimeLoopError(`No inner loop named "${name}".`, 404)
+    const incoming = (patch ?? {}) as Record<string, unknown>
+    if (typeof incoming.name === 'string' && incoming.name !== name) {
+      throw new RuntimeLoopError('Loops cannot be renamed — the name binds the executor to its stream.', 400)
+    }
+    const outgoing: Record<string, unknown> = {}
+    const cleared: string[] = []
+    for (const field of LOOP_PATCH_FIELDS) {
+      if (incoming[field] === null && LOOP_CLEARABLE_FIELDS.has(field)) cleared.push(field)
+      else if (incoming[field] !== undefined) outgoing[field] = incoming[field]
+    }
+    const updated = [...Object.keys(outgoing), ...cleared]
+    if (updated.length === 0) {
+      throw new RuntimeLoopError(`Nothing to update — name at least one of: ${LOOP_PATCH_FIELDS.join(', ')}.`, 400)
+    }
+    const host = managed.agent.workspace.getAgentConfig()
+    const candidate: Record<string, unknown> = { ...existing, ...outgoing, name }
+    for (const field of cleared) delete candidate[field]
+    const { config, disabled } = this.validateLoopDeclaration(host, candidate)
+    const validated = config as unknown as Record<string, unknown>
+    const validatedPatch: Record<string, unknown> = {}
+    for (const field of updated) validatedPatch[field] = validated[field]
+    await this.withLoopErrors(() => pool.updateLoop(name, validatedPatch as Partial<LoopConfig>))
+    managed.config = managed.agent.workspace.getAgentConfig()
+    return { agentId: managed.id, loop: this.loopInfoByName(managed, name), updated, excludedTools: disabled }
+  }
+
+  async deleteAgentLoop(agentId: string, name: string): Promise<RuntimeLoopDeleteResult> {
+    const managed = this.requireAgent(agentId)
+    const pool = managed.agent.loopPool
+    if (name === MAIN_LOOP) throw new RuntimeLoopError('main is the agent itself and cannot be deleted.', 409)
+    if (!pool.getLoop(name)) throw new RuntimeLoopError(`No inner loop named "${name}".`, 404)
+    const result = await this.withLoopErrors(() => pool.deleteLoop(name))
+    managed.config = managed.agent.workspace.getAgentConfig()
+    return { agentId: managed.id, name, ...result }
+  }
+
+  private requireLoopName(managed: ManagedRuntimeAgent, loop: string | undefined): string {
+    const name = loop || MAIN_LOOP
+    if (!managed.agent.loopPool.hasLoop(name)) {
+      throw new RuntimeLoopError(`No loop named "${name}" on this agent.`, 404)
+    }
+    return name
+  }
+
+  private loopInfoByName(managed: ManagedRuntimeAgent, name: string): RuntimeAgentLoopInfo {
+    const info = managed.agent.loopPool.listLoops().find(l => l.name === name)
+    if (!info) throw new RuntimeLoopError(`No loop named "${name}" on this agent.`, 404)
+    return this.toLoopInfo(managed, info)
+  }
+
+  private toLoopInfo(managed: ManagedRuntimeAgent, info: LoopInfo): RuntimeAgentLoopInfo {
+    const pool = managed.agent.loopPool
+    const runtime = info.isMain ? undefined : pool.getRuntime(info.name)
+    return {
+      ...info,
+      config: info.isMain ? null : pool.getLoop(info.name) ?? null,
+      entryCount: managed.agent.workspace.forLoop(info.name).getLoopCount(),
+      effectiveTools: runtime ? runtime.derived.tools.filter(t => t.enabled).map(t => t.name) : null,
+    }
+  }
+
+  /** `loop_manage`'s validation: schema, then the host-relative tool check. */
+  private validateLoopDeclaration(host: AgentConfig, candidate: Record<string, unknown>): { config: LoopConfig; disabled: string[] } {
+    const parsed = LoopConfigSchema.safeParse(candidate)
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map(issue => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+        .join('; ')
+      throw new RuntimeLoopError(`Invalid loop config — ${issues}`, 400)
+    }
+    const config = parsed.data as unknown as LoopConfig
+    const requested = config.tools ?? []
+    if (requested.length === 0) return { config, disabled: [] }
+    const { unknown, disabled, prohibited } = validateLoopToolList(host, requested)
+    if (unknown.length > 0 || prohibited.length > 0) {
+      const parts: string[] = []
+      if (unknown.length > 0) parts.push(`no such tool on this agent: ${unknown.join(', ')}`)
+      if (prohibited.length > 0) parts.push(`never grantable to a loop: ${prohibited.join(', ')}`)
+      throw new RuntimeLoopError(
+        `Cannot grant those tools — ${parts.join('; ')}. Available: ${listAvailableLoopTools(host).join(', ') || '(none)'}.`,
+        400,
+      )
+    }
+    return { config, disabled }
+  }
+
+  /** Pool refusals are deliberate, caller-safe sentences: answer them as conflicts. */
+  private async withLoopErrors<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run()
+    } catch (err) {
+      if (err instanceof LoopPoolError) throw new RuntimeLoopError(err.message, 409)
+      throw err
+    }
   }
 
   getAgentConfig(agentId: string): { agentId: string; config: AgentConfig } {
@@ -816,17 +1220,20 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, success: true }
   }
 
-  getAgentChat(agentId: string, limit = 200): { agentId: string; chatHistory: { version: number; uiLog: unknown[]; llmMessages: unknown[]; total: number; earlierCount: number } | null } {
+  getAgentChat(agentId: string, limit = 200, loop?: string): { agentId: string; loop: string; chatHistory: { version: number; uiLog: unknown[]; llmMessages: unknown[]; total: number; earlierCount: number } | null } {
     const managed = this.requireAgent(agentId)
-    const total = managed.agent.workspace.getLoopCount()
-    if (total === 0) return { agentId: managed.id, chatHistory: null }
+    const loopName = this.requireLoopName(managed, loop)
+    const workspace = managed.agent.workspace.forLoop(loopName)
+    const total = workspace.getLoopCount()
+    if (total === 0) return { agentId: managed.id, loop: loopName, chatHistory: null }
     const clampedLimit = clampInteger(limit, 1, 500)
     const offset = Math.max(0, total - clampedLimit)
     const loopEntries = offset > 0
-      ? managed.agent.workspace.getLoopPaginated(clampedLimit, offset)
-      : managed.agent.workspace.getLoop()
+      ? workspace.getLoopPaginated(clampedLimit, offset)
+      : workspace.getLoop()
     return {
       agentId: managed.id,
+      loop: loopName,
       chatHistory: {
         version: 1,
         uiLog: parseLoopToDisplay(loopEntries),
@@ -839,8 +1246,20 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  async clearAgentChat(agentId: string): Promise<{ agentId: string; success: true }> {
+  async clearAgentChat(agentId: string, loop?: string): Promise<{ agentId: string; loop: string; success: true }> {
     const managed = this.requireAgent(agentId)
+    const loopName = this.requireLoopName(managed, loop)
+    if (loopName !== MAIN_LOOP) {
+      // Same reset Studio's clear does for an inner-loop tab (IPC DOC_CLEAR_CHAT).
+      const runtime = managed.agent.loopPool.getRuntime(loopName)
+      await managed.agent.workspace.forLoop(loopName).clearLoop({
+        onCommitted: () => {
+          runtime?.session.reset()
+          runtime?.executor.resetContextState()
+        }
+      })
+      return { agentId: managed.id, loop: loopName, success: true }
+    }
     // The session reset rides the clear's onCommitted hook: it runs in the same
     // tick as the loop-table COMMIT, so a turn dispatched while clearLoop was
     // awaiting its backup/compression cannot land between the wipe and the
@@ -855,7 +1274,7 @@ export class RuntimeService extends EventEmitter {
         managed.agent.executor.resetContextState()
       }
     })
-    return { agentId: managed.id, success: true }
+    return { agentId: managed.id, loop: MAIN_LOOP, success: true }
   }
 
   getAgentFiles(agentId: string): { agentId: string; files: ReturnType<AdfWorkspace['listFiles']> } {
@@ -955,18 +1374,22 @@ export class RuntimeService extends EventEmitter {
 
   async addAgentTimer(agentId: string, opts: RuntimeTimerMutationOptions): Promise<{ agentId: string; success: true; id: number }> {
     const managed = this.requireAgent(agentId)
+    // Absent = main. An unknown loop would persist a timer that fires into a
+    // stream that does not exist (same rule as Studio's timer add).
+    const loop = opts.loop ? this.requireLoopName(managed, opts.loop) : undefined
     const timer = await buildTimerMutation(opts)
-    const id = managed.agent.workspace.addTimer(timer.schedule, timer.nextWakeAt, opts.payload, opts.scope ?? ['agent'], opts.lambda, opts.warm, opts.locked)
+    const id = managed.agent.workspace.addTimer(timer.schedule, timer.nextWakeAt, opts.payload, opts.scope ?? ['agent'], opts.lambda, opts.warm, opts.locked, loop)
     return { agentId: managed.id, success: true, id }
   }
 
   async updateAgentTimer(agentId: string, opts: RuntimeTimerMutationOptions & { id: number }): Promise<{ agentId: string; success: boolean }> {
     const managed = this.requireAgent(agentId)
+    // `loop` present = move the timer to that loop (main = the default, stored as none).
+    const loop = opts.loop !== undefined ? this.requireLoopName(managed, opts.loop) : undefined
     const timer = await buildTimerMutation(opts)
-    return {
-      agentId: managed.id,
-      success: managed.agent.workspace.updateTimer(opts.id, timer.schedule, timer.nextWakeAt, opts.payload, opts.scope ?? ['agent'], opts.lambda, opts.warm, opts.locked),
-    }
+    const success = managed.agent.workspace.updateTimer(opts.id, timer.schedule, timer.nextWakeAt, opts.payload, opts.scope ?? ['agent'], opts.lambda, opts.warm, opts.locked)
+    if (success && loop !== undefined) managed.agent.workspace.setTimerLoop(opts.id, loop === MAIN_LOOP ? null : loop)
+    return { agentId: managed.id, success }
   }
 
   deleteAgentTimer(agentId: string, id: number): { agentId: string; success: boolean } {
@@ -1092,17 +1515,46 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  getAgentAsks(agentId: string): { agentId: string; asks: Array<{ requestId: string; question: string }> } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, asks: managed.agent.executor.getPendingAsks() }
+  /** Main's executor plus every running inner loop's: asks can come from any loop. */
+  private askExecutors(managed: ManagedRuntimeAgent): Array<{ loop: string; executor: ManagedRuntimeAgent['agent']['executor'] }> {
+    const out: Array<{ loop: string; executor: ManagedRuntimeAgent['agent']['executor'] }> = [{ loop: MAIN_LOOP, executor: managed.agent.executor }]
+    for (const info of managed.agent.loopPool.listLoops()) {
+      if (info.name === MAIN_LOOP) continue
+      const runtime = managed.agent.loopPool.getRuntime(info.name)
+      if (runtime) out.push({ loop: info.name, executor: runtime.executor })
+    }
+    return out
   }
 
-  answerAgentAsk(agentId: string, requestId: string, answer: string): { agentId: string; requestId: string; answered: boolean } {
+  getAgentAsks(agentId: string): { agentId: string; asks: RuntimeAgentAsk[] } {
     const managed = this.requireAgent(agentId)
-    const exists = managed.agent.executor.getPendingAsks().some(ask => ask.requestId === requestId)
-    if (!exists) throw new Error(`Ask request "${requestId}" not found`)
-    managed.agent.executor.resolveAsk(requestId, answer)
-    return { agentId: managed.id, requestId, answered: true }
+    const asks = this.askExecutors(managed).flatMap(({ loop, executor }) => executor.getPendingAsks().map(ask => ({ ...ask, loop })))
+    return { agentId: managed.id, asks }
+  }
+
+  /** Request ids are per executor, so `loop` disambiguates; absent = the first loop holding that id. */
+  answerAgentAsk(agentId: string, requestId: string, answer: string, loop?: string): { agentId: string; requestId: string; loop: string; answered: boolean } {
+    const managed = this.requireAgent(agentId)
+    const holder = this.askExecutors(managed).find(entry =>
+      (loop === undefined || entry.loop === loop) && entry.executor.getPendingAsks().some(ask => ask.requestId === requestId))
+    if (!holder) throw new Error(`Ask request "${requestId}" not found${loop ? ` in loop "${loop}"` : ''}`)
+    holder.executor.resolveAsk(requestId, answer)
+    return { agentId: managed.id, requestId, loop: holder.loop, answered: true }
+  }
+
+  /** Compact one loop's history now (Studio's /compact). Refused mid-turn. */
+  async compactAgentLoop(agentId: string, loop?: string): Promise<{ agentId: string; loop: string; success: true }> {
+    const managed = this.requireAgent(agentId)
+    const loopName = this.requireLoopName(managed, loop)
+    const executor = loopName === MAIN_LOOP ? managed.agent.executor : managed.agent.loopPool.getRuntime(loopName)?.executor
+    if (!executor) throw new RuntimeLoopError(`Loop "${loopName}" has no running executor (it is disabled or stopping).`, 409)
+    const result = await executor.compactNow(`manual: owner /compact${loopName === MAIN_LOOP ? '' : ` (${loopName})`}`)
+    if (!result.success) {
+      const error = result.error ?? 'Compaction failed.'
+      // A summariser/provider failure is upstream, not a state conflict.
+      throw new RuntimeLoopError(error, error.startsWith('Compaction failed:') ? 502 : 409)
+    }
+    return { agentId: managed.id, loop: loopName, success: true }
   }
 
   resolveAgentSuspend(agentId: string, resume: boolean): { agentId: string; resume: boolean; resolved: boolean } {
@@ -1216,7 +1668,19 @@ export class RuntimeService extends EventEmitter {
 
   generateAgentIdentityKeys(agentId: string): { agentId: string; success: true; did: string } {
     const managed = this.requireAgent(agentId)
-    const result = managed.agent.workspace.generateIdentityKeys(managed.derivedKey)
+    const workspace = managed.agent.workspace
+    // A key-less file goes through the host's full provisioning (envelopes,
+    // sealed key, owner/runtime stamps, attestations), never a plain key the
+    // owner never certified. A host without the owner key refuses instead.
+    if (!managed.derivedKey && workspace.getIdentityRow('crypto:signing:private_key') === null) {
+      if (!canProvisionWorkspaceIdentity()) {
+        throw new Error('No owner identity on this host — create or restore it first (`adf identity`), then generate keys.')
+      }
+      ensureWorkspaceIdentity(workspace)
+      const provisioned = workspace.getDid()
+      if (provisioned) return { agentId: managed.id, success: true, did: provisioned }
+    }
+    const result = workspace.generateIdentityKeys(managed.derivedKey)
     // Fresh agent DID under this app's ownership → issue delegation attestations.
     const ownerIdentity = this.settings?.getOwnerIdentity?.()
     if (ownerIdentity) {

@@ -126,6 +126,11 @@ export class FileSettingsStore implements ProviderSettingsStore {
     this.save([key])
   }
 
+  delete(key: string): void {
+    delete this.data[key]
+    this.save([key])
+  }
+
   update(values: Record<string, unknown>): void {
     for (const [key, value] of Object.entries(values)) {
       this.data[key] = mergeSettingsValue(this.data[key], key, value)

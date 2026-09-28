@@ -1,12 +1,16 @@
 # Daemon CLI
 
-The repository includes a CLI client for the daemon HTTP API. It is useful for local scripts, smoke checks, and terminal-first operation. The CLI is a client: start the daemon before running commands that access agents or runtime state.
+The repository includes a CLI client for the daemon HTTP API. It is useful for local scripts, smoke checks, and terminal-first operation. The CLI is a client of the daemon; when the daemon URL is on this machine and nothing answers there, `adf` starts the daemon in the background first (see [Background daemon](#background-daemon)).
 
-Run it with:
+Run it with `adf <command>` (the [npm package](getting-started.md#install-from-npm)) or, from a source checkout:
 
 ```bash
 npm run adf -- <command>
 ```
+
+With no command, `npm run adf` opens the interactive terminal UI instead: the
+whole fleet, every agent's loops, chat, approvals, files and live events. See
+[ADF TUI](tui.md).
 
 Show the built-in command list without contacting the daemon:
 
@@ -26,12 +30,17 @@ The CLI talks to `http://127.0.0.1:7385` by default.
 | `--url=<daemon-url>` | Same as `--url` |
 | `-u <daemon-url>` | Short form URL override |
 | `--json` | Print raw JSON responses instead of formatted tables |
+| `--no-daemon` | Never start the daemon automatically (also `ADF_NO_AUTOSTART=1`) |
+| `--version`, `-v` | Print the version |
 
 You can also set:
 
 ```bash
 ADF_DAEMON_URL=http://127.0.0.1:7385 npm run adf -- agents
 ```
+
+When the daemon requires a token (`ADF_DAEMON_TOKEN`), set the same variable
+for the CLI; it is sent as `Authorization: Bearer <token>`.
 
 ## Common Commands
 
@@ -54,6 +63,35 @@ curl -X POST http://127.0.0.1:7385/agents/load \
   -d '{"filePath":"/absolute/path/to/example.adf"}'
 ```
 
+## Background daemon
+
+`adf` (the TUI) and every command that talks to the daemon first check
+`<url>/health`. When nothing answers and the URL is loopback (`127.0.0.1`,
+`localhost`, `::1`), `adf` starts `adf daemon` for that port in the
+background, waits until it answers (`Starting the ADF daemon…`), and goes on.
+The daemon is detached: it keeps running after the command or the TUI exits
+and after the terminal closes. It is never started for a remote URL, with
+`--no-daemon` / `ADF_NO_AUTOSTART=1`, or while ADF Studio runs on the same
+settings (Studio and the daemon would run the same agents twice; `adf` says
+so and what to do).
+
+| Command | Purpose |
+|---------|---------|
+| `daemon` | Run the daemon in the foreground (`--port`, `--host`, `--settings`; Ctrl+C stops it) |
+| `daemon start [--force]` | Start it in the background; `--force` skips the Studio check |
+| `daemon status` | Running or not, pid, uptime, version, data dir and log file (exit 3 when not running) |
+| `daemon stop` | Graceful stop (`POST /daemon/shutdown`, loopback only): agents unloaded, compute containers stopped. Never a hard kill |
+| `daemon restart` | Stop, then start in the background |
+| `daemon logs [-f] [-n <lines>]` | The background daemon's log, `<data dir>/logs/adf-daemon.log` |
+
+Each takes `--port <n>` or `--url <url>` (default: `ADF_DAEMON_URL`, then
+`ADF_DAEMON_PORT`, then `http://127.0.0.1:7385`). The data dir is the folder
+of the daemon's settings file (`ADF_DAEMON_SETTINGS`, else the Studio
+settings location, or `ADF_USER_DATA_DIR`); the pid file is
+`adf-daemon.pid` there (`adf-daemon-<port>.pid` for other ports,
+`ADF_DAEMON_PIDFILE` overrides). From a source checkout the start also runs
+`scripts/rebuild-for-node.mjs`, as `npm run daemon` does.
+
 ## Command Reference
 
 | Command | Purpose |
@@ -63,7 +101,9 @@ curl -X POST http://127.0.0.1:7385/agents/load \
 | `start <agent>` | Start an agent and fire startup when applicable |
 | `stop <agent>` | Stop and unload an agent |
 | `unload <agent>` | Alias for `stop` |
-| `abort <agent>` | Abort the current turn without unloading the agent |
+| `loops <agent>` | List the agent's loops: `main` plus its inner (side) loops, the parallel threads with their own history (e.g. a memory consolidator on a timer) |
+| `interrupt <agent> [--loop <name>]` | End the running turn of main (or an inner loop); it goes idle and keeps accepting chats, timers and triggers |
+| `abort <agent> [--loop <name>]` | Hard-abort the current turn without unloading; that loop stays stopped until the agent is reloaded (prefer `interrupt`) |
 | `runtime` | Show daemon-level runtime diagnostics |
 | `runtime <agent>` | Show per-agent runtime diagnostics |
 | `providers` | Show provider configuration and agent provider resolution |
@@ -98,7 +138,55 @@ curl -X POST http://127.0.0.1:7385/agents/load \
 | `adapters <agent>` | Show one agent's adapter state |
 | `events` | Follow all daemon SSE events |
 | `events <agent>` | Follow SSE events for one agent |
-| `chat <agent> <message>` | Send chat and print the accepted turn ID |
+| `chat <agent> [--loop <name>] <message>` | Send chat to main (or an inner loop) and print the accepted turn ID |
+| `identity` | Show the owner identity status (`none`, `locked`, `restore-needed`, `ready`) |
+| `identity new` | Create an owner identity and show its 12-word seed phrase once |
+| `identity restore` | Restore the owner identity from its seed phrase (hidden prompt) |
+| `identity unlock` / `identity lock` | Unlock/lock a passphrase-file identity (no OS keychain) |
+| `templates` | List the agent templates `new` can use |
+| `new [name] [--template <id>] [--provider <id>] [--model <id>] [--dir <path>] [--start]` | Create an agent from a template, sealed with the owner identity |
+
+## Owner Identity
+
+Agents are created and sealed under your **owner identity**, the same one ADF
+Studio uses. It is derived from a 12-word seed phrase: the same phrase in
+Studio and in the CLI is the same owner, so agents made in either open in both.
+
+```bash
+npm run adf -- identity            # status
+npm run adf -- identity new        # first time on this machine
+npm run adf -- identity restore    # you already have a phrase (from Studio or another machine)
+```
+
+- `identity new` prints the 12 words **once** — write them down, in order. Type
+  `yes` to confirm you saved them (Studio's "I have written it down"). The
+  daemon never shows the phrase again; anyone with it can act as you.
+- `identity restore` asks for the phrase at a hidden prompt (it never goes
+  through argv or shell history; piping it on stdin also works). If this
+  machine already has an owner (for example from Studio), the phrase must
+  belong to that owner or it is refused — switch owners in Studio instead.
+- On the same machine as Studio there is usually nothing to do: Studio and the
+  daemon share the phrase through the OS keychain, so `adf identity` already
+  reports `ready`.
+- Where no OS keychain is usable (e.g. a headless Linux server), the phrase is
+  kept in a passphrase-protected file next to the daemon settings. `new` and
+  `restore` ask for a passphrase; after a daemon restart run `adf identity
+  unlock` (or start the daemon with `ADF_OWNER_PASSPHRASE` /
+  `ADF_OWNER_PASSPHRASE_FILE`).
+
+## Create an Agent
+
+```bash
+npm run adf -- templates
+npm run adf -- new agent-1 --template standard --start
+```
+
+`new` makes the agent exactly like Studio's "new agent": an instance of the
+template (default: your default template), a fresh identity sealed to your
+owner key with owner/runtime attestations, marked reviewed, its directory
+tracked, and loaded in the daemon (`--start` also starts it). Without a name
+you get a generated one; without `--dir`, agents go to Studio's agents folder
+(`agentsFolder` setting, else `~/Documents/adf-agents`).
 
 ## Auth
 
@@ -172,6 +260,8 @@ Inspect one agent:
 
 ```bash
 npm run adf -- runtime agent-id
+npm run adf -- loops agent-id
+npm run adf -- chat agent-id --loop consolidator "Consolidate today's notes"
 npm run adf -- files agent-id
 npm run adf -- file agent-id README.md
 npm run adf -- inbox agent-id
@@ -207,11 +297,13 @@ Use another daemon URL:
 npm run adf -- --url http://127.0.0.1:7390 agents
 ```
 
-## Stop vs Abort
+## Stop vs Interrupt vs Abort
 
 `stop` and `unload` unload the agent from the daemon runtime. Use them when you want the daemon to release the agent, adapters, MCP clients, sandbox workers, and mesh registration.
 
-`abort` cancels the current turn but keeps the agent loaded. Use it when a turn is stuck or no longer needed but the agent should remain available for later triggers or chat.
+`interrupt` ends the current turn and leaves that loop `idle`. Use it when a turn is stuck or no longer needed: the agent stays available for later triggers, timers and chat. `--loop <name>` targets an inner loop instead of main.
+
+`abort` cancels the current turn but also leaves that loop's executor `stopped`: it runs nothing more (chat, triggers, timers) until the agent is stopped and loaded again. Keep it for a loop that must not run again this session.
 
 `stop` uses the assembled agent's normal asynchronous teardown. It refuses new dispatches, stops trigger intake, lets tracked dispatches finish during the five-second grace period, and then aborts remaining work before releasing resources. `abort` is deliberately narrower: it immediately aborts the executor's current turn without unloading the assembled agent.
 

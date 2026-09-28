@@ -7,6 +7,7 @@ import { withDeadline } from '../utils/concurrency'
 import {
   createDaemonHttpApi,
   type DaemonComputeService,
+  type DaemonHttpApiOptions,
   type DaemonNetworkService,
   type DaemonPackageService,
   type DaemonPythonPackageService,
@@ -32,6 +33,10 @@ export interface DaemonHostOptions {
   mcpPythonPackageService?: DaemonPythonPackageService
   adapterPackageService?: DaemonPackageService
   sandboxPackageService?: DaemonSandboxPackageService
+  identity?: DaemonHttpApiOptions['identity']
+  agentFactory?: DaemonHttpApiOptions['agentFactory']
+  /** POST /daemon/shutdown handler (see DaemonHttpApiOptions.requestShutdown). */
+  requestShutdown?: () => void
   /**
    * Hooks run FIRST during stop(), before the HTTP server closes and before
    * agent unload — for durability-critical flushes (token usage) that a hang
@@ -87,6 +92,9 @@ export class DaemonHost {
   private readonly mcpPythonPackageService?: DaemonPythonPackageService
   private readonly adapterPackageService?: DaemonPackageService
   private readonly sandboxPackageService?: DaemonSandboxPackageService
+  private readonly identity?: DaemonHttpApiOptions['identity']
+  private readonly agentFactory?: DaemonHttpApiOptions['agentFactory']
+  private readonly requestShutdown?: () => void
   private readonly onShutdownStart: Array<() => void | Promise<void>>
   private readonly onShutdown: Array<() => void | Promise<void>>
   private readonly shouldInstallSignalHandlers: boolean
@@ -110,6 +118,9 @@ export class DaemonHost {
     this.mcpPythonPackageService = opts.mcpPythonPackageService
     this.adapterPackageService = opts.adapterPackageService
     this.sandboxPackageService = opts.sandboxPackageService
+    this.identity = opts.identity
+    this.agentFactory = opts.agentFactory
+    this.requestShutdown = opts.requestShutdown
     this.onShutdownStart = opts.onShutdownStart ?? []
     this.onShutdown = opts.onShutdown ?? []
     this.shouldInstallSignalHandlers = opts.installSignalHandlers ?? true
@@ -140,6 +151,9 @@ export class DaemonHost {
       mcpPythonPackageService: this.mcpPythonPackageService,
       adapterPackageService: this.adapterPackageService,
       sandboxPackageService: this.sandboxPackageService,
+      identity: this.identity,
+      agentFactory: this.agentFactory,
+      requestShutdown: this.requestShutdown,
     })
     await this.server.listen({ host: this.host, port: this.port })
     this.writePidFile()

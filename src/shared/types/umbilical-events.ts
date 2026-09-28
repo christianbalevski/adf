@@ -20,6 +20,12 @@ export const UMBILICAL_EVENT_TYPES = [
   'agent.unloaded',
   'agent.state.changed',
   'agent.error',
+  // An auth-bricked loop left `error` because its provider's sign-in
+  // completed (no turn is re-run; the next trigger works normally).
+  'agent.recovered',
+  // Sealed credential envelopes re-checked after the owner identity became
+  // ready (or on the periodic re-check): the agent's `degraded` was recomputed.
+  'agent.credentials.unlocked',
 
   // --- turn --------------------------------------------------------------
   'turn.completed',
@@ -171,6 +177,8 @@ export interface UmbilicalEventEnvelope<P = Record<string, unknown>> {
   timestamp: number
   source: string
   agent_id?: string | null
+  /** Inner (side) loop that produced the event. Absent = main, or not loop-scoped. */
+  loop?: string
   payload: P
   /** Reserved: detached signature over the envelope. Unused in Phase 0. */
   sig?: string

@@ -15,6 +15,7 @@ const PAIRS = [
   ["sqlite-vec", "sqlite-vec-darwin-x64"],
   ["esbuild", "@esbuild/darwin-x64"],
   ["@lydell/node-pty", "@lydell/node-pty-darwin-x64"],
+  ["@napi-rs/keyring", "@napi-rs/keyring-darwin-x64"],
 ];
 
 // Pin each install to the exact version the parent package declares so the

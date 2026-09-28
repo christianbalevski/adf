@@ -90,6 +90,7 @@ Each SSE frame carries a transport wrapper around the canonical umbilical envelo
 | `event.seq` | Monotonic **per-agent** sequence number, persisted across restarts. `0` when the event has no owning agent. |
 | `event.source` | Provenance: `agent:<turn>`, `lambda:<file>:<fn>`, `system:<subsystem>`. A first-class field, not folded into `payload`. |
 | `event.agent_id` | Owning agent id, or `null` for daemon-scope events. |
+| `event.loop` | Inner cognition loop that produced the event (see [Cognition loops](#cognition-loops)). Absent for `main` and for events that are not loop-scoped. |
 | `event.sig` | Reserved for a detached envelope signature. Not currently populated. |
 
 Do not use `cursor` for ordering or deduplication across daemon restarts — use `event.agent_id` + `event.seq`.
@@ -149,6 +150,9 @@ Returns one setting value. Missing values are returned as `null`.
 ### `PUT /settings/:key`
 
 Sets one setting value. The request body must contain a `value` field.
+Key material and identity keys (`ownerMnemonic`, `ownerDid`, `runtimeDid`,
+runtime/daemon keys and delegations, `trustedDaemonEncKeys`, ...) are refused
+with `403`; the owner identity changes only through `/identity`.
 
 ```bash
 curl -X PUT http://127.0.0.1:7385/settings/meshEnabled \
@@ -183,9 +187,17 @@ Returns a compact daemon summary with per-agent status, adapter state, MCP state
 }
 ```
 
+### `POST /daemon/shutdown`
+
+Stops the daemon gracefully, the same bounded shutdown as Ctrl+C / SIGTERM:
+agents are unloaded, compute containers stopped, then the process exits.
+Loopback callers only (`403 loopback_only` otherwise); answers `202
+{ "accepted": true, "pid": … }` before shutting down. `adf daemon stop` uses
+it; on Windows it is the only graceful way to stop a detached daemon.
+
 ### `GET /runtime`
 
-Returns daemon-level runtime diagnostics: settings summary, provider resolution, auth state, MCP registrations, adapter registrations, network diagnostics, compute status, and loaded agent status.
+Returns daemon-level runtime diagnostics: settings summary, provider resolution, auth state, MCP registrations, adapter registrations, network diagnostics, compute status, and loaded agent status. `daemon` carries `uptime`, `pid`, `version` (`ADF_VERSION`, else the npm package version; `null` when unknown), `node` and `platform`.
 
 ### `GET /runtime/providers`
 
@@ -309,6 +321,150 @@ Counts tokens for one text string.
 
 Counts tokens for multiple strings. The request body is the same as `/runtime/token-count`, except it uses `texts`.
 
+## Owner Identity
+
+The owner identity (a DID derived from a 12-word BIP-39 seed phrase) is what
+new agents are sealed and attested under — the same identity ADF Studio uses.
+The same phrase in Studio and in the daemon is the same owner.
+
+Storage: the OS keychain (service `ADF`, account `owner-mnemonic`, shared with
+Studio on the same machine), or — when no keychain is usable — a
+passphrase-encrypted file `owner-secrets.json` next to the daemon settings.
+The daemon has its own runtime key (`daemonRuntimeDid` in settings); it never
+writes Studio's `runtimeDid`/runtime keys.
+
+The owner DID is recorded as seed-derived (`ownerDidSeedDerived: true`). When
+ADF Studio on the same machine cannot read the phrase (passphrase-file
+storage), it never mints a replacement owner or restamps agents: it shows
+"Restore your identity" and takes the same 12 words (Settings → Identity).
+
+Routes that move secrets (`create`, `restore`, `unlock`) answer loopback
+callers only (`403`, `code: "loopback_only"` otherwise), on top of
+`ADF_DAEMON_TOKEN`. The seed phrase appears in the `POST /identity/create`
+response and nowhere else. Errors are `{ "error": "...", "code": "..." }`.
+
+### `GET /identity`
+
+```json
+{
+  "status": "ready",
+  "ownerDid": "did:key:z6Mk...",
+  "runtimeDid": "did:key:z6Mk...",
+  "storage": "keychain",
+  "backupConfirmed": true,
+  "passphraseRequired": false,
+  "message": "Owner identity ready."
+}
+```
+
+| `status` | Meaning | Next step |
+|----------|---------|-----------|
+| `none` | No owner on this machine | `POST /identity/create` or `/identity/restore` |
+| `locked` | Passphrase file not unlocked | `POST /identity/unlock` |
+| `restore-needed` | This machine has an owner DID (e.g. from Studio) but the daemon lacks its phrase | `POST /identity/restore` with that owner's phrase |
+| `ready` | Agents can be created and sealed | — |
+
+`passphraseRequired: true` means file storage: `create`/`restore`/`unlock`
+need a `passphrase` (8+ characters when creating the file).
+
+Agents loaded while the identity was not ready carry `degraded`
+(`CREDENTIALS_LOCKED`) in `GET /agents/:id/status`. Whenever the identity
+becomes ready (create, restore, unlock, boot, or a phrase Studio put in the
+shared keychain) the daemon re-runs the envelope unlock for every loaded
+agent — no reload — and, while any agent stays degraded, re-checks once a
+minute. Each agent that unlocks gets `degraded` cleared, its locked adapters
+restarted, an `adf_logs` row (`credentials_unlocked`), and an
+`agent.credentials.unlocked` event (see [umbilical events](../guides/umbilical-events.md)).
+
+### `POST /identity/create`
+
+Body (optional): `{ "passphrase": "..." }` (file storage only). Only when
+`status` is `none`; otherwise `409 identity_exists`.
+
+`201`, `Cache-Control: no-store`:
+
+```json
+{
+  "mnemonic": "word1 word2 ... word12",
+  "words": ["word1", "word2", "...", "word12"],
+  "identity": { "status": "ready", "backupConfirmed": false, "...": "..." }
+}
+```
+
+Show the words to the user once and ask them to write them down; then call
+`POST /identity/confirm-backup` (Studio's "I have written it down").
+
+### `POST /identity/restore`
+
+```json
+{ "mnemonic": "word1 word2 ... word12", "passphrase": "optional, file storage" }
+```
+
+`200 { "identity": { ... } }`. `400 invalid_mnemonic`, `400
+passphrase_required`, `403 wrong_passphrase`, `409 owner_mismatch` when the
+phrase belongs to a different owner than the one this machine already has
+(switch owners in Studio instead).
+
+### `POST /identity/unlock`
+
+`{ "passphrase": "..." }` → `200 { "identity": { ... } }`. `403
+wrong_passphrase`; `400 not_file_storage` with keychain storage; `409
+nothing_to_unlock` when no file exists yet. The daemon can also unlock at boot
+from `ADF_OWNER_PASSPHRASE` or `ADF_OWNER_PASSPHRASE_FILE`.
+
+### `POST /identity/lock`
+
+File storage only: forget the decrypted secrets. `200 { "identity": { ... } }`.
+
+### `POST /identity/confirm-backup`
+
+Marks the phrase as written down (`backupConfirmed: true`, shared with Studio).
+
+## Creating Agents
+
+### `GET /templates`
+
+Templates new agents can be made from (`409 identity_not_ready` until the
+identity is ready).
+
+```json
+{
+  "templates": [
+    { "id": "standard", "name": "Standard", "templateDescription": "...", "reviewed": true, "shipped": "standard", "modelProvider": "anthropic", "modelId": "..." }
+  ],
+  "defaultId": "standard",
+  "folder": "/path/to/userData/templates",
+  "defaultDirectory": "/home/me/Documents/adf-agents"
+}
+```
+
+### `POST /agents/create`
+
+Studio's "new agent", headless: template instance → sealed identity with
+owner/runtime stamps and attestations → marked reviewed → directory tracked →
+loaded (and started with `start: true`).
+
+```json
+{ "name": "agent-1", "directory": "/abs/dir", "template": "standard", "provider": "anthropic", "model": "claude-...", "start": false }
+```
+
+All fields optional. `name`: a file name (≤64 chars; generated when omitted).
+`directory`: absolute, existing (default `agentsFolder`, else
+`~/Documents/adf-agents`). `provider` must be a configured provider id.
+
+`201`:
+
+```json
+{ "agentId": "abc123", "name": "agent-1", "filePath": "/abs/dir/agent-1.adf", "did": "did:key:z6Mk...", "started": false }
+```
+
+| Status | `code` | When |
+|--------|--------|------|
+| `400` | `bad_request` | Invalid name/directory/provider/body |
+| `409` | `identity_not_ready` | Owner identity not ready; body includes `identity` (status) so a client can offer create/restore/unlock |
+| `409` | `name_taken` | The file already exists |
+| `422` | `template_missing` / `template_unreviewed` | Template gone, or someone else's and not reviewed |
+
 ## Agents
 
 Most `:id` agent parameters can be an agent ID, handle, or name. IDs are safest for scripts; handles are convenient for humans.
@@ -378,6 +534,7 @@ Query parameters:
 |-----------|---------|-------------|
 | `limit` | `50` | Number of entries, clamped between `1` and `500` |
 | `offset` | last page | Zero-based offset into loop history |
+| `loop` | `main` | Cognition loop whose stream to read; unknown loops answer `404` |
 
 Example:
 
@@ -390,6 +547,7 @@ Response:
 ```json
 {
   "agentId": "agent-id",
+  "loop": "main",
   "total": 42,
   "limit": 20,
   "offset": 0,
@@ -461,6 +619,109 @@ Review failure:
   "filePath": "/path/to/agents/example-agent.adf"
 }
 ```
+
+## Cognition loops
+
+An agent has one or more **cognition loops**: parallel chat sessions (threads)
+with their own history, sharing the agent's file, identity and credentials.
+`main` is the implicit host loop — the one you talk to by default. **Inner
+loops** (declared in `AgentConfig.loops`) are interior workers with their own
+goal and a subset of the agent's tools — e.g. a `consolidator` that tidies
+memory on a recurring basis, a `researcher`, a `critic`. A timer or trigger
+target with a `loop` field is how an inner loop runs on a schedule. Design:
+[docs/design/agent-loops-mvp.md](../design/agent-loops-mvp.md).
+
+Every mutation below goes through the agent's loop pool — the same path the
+`loop_manage` tool takes — so validation, tool attenuation, owner locks
+(`locked_fields: ['loops']`), and archive-on-delete hold for HTTP callers too.
+Loop-scoped reads elsewhere take a `loop` query parameter (absent = `main`,
+unknown = `404`): `GET /agents/:id/loop`, `GET /agents/:id/chat`,
+`DELETE /agents/:id/chat`. `POST /agents/:id/chat` takes `loop` in the body,
+and `POST /agents/:id/timers` takes `loop` to schedule an inner loop.
+
+Errors: `400` invalid declaration (bad name, unknown or never-grantable tool,
+rename attempt, empty patch), `404` unknown agent or loop, `409` refusal
+(duplicate name, `main` is not managed here, loop cap reached, `loops` locked
+by the owner, chat to a disabled loop).
+
+### `GET /agents/:id/loops`
+
+Lists `main` first, then inner loops in config order.
+
+```json
+{
+  "agentId": "agent-id",
+  "loops": [
+    { "name": "main", "goal": "…", "status": "idle", "enabled": true, "isMain": true, "config": null, "entryCount": 42, "effectiveTools": null },
+    {
+      "name": "consolidator",
+      "goal": "Consolidate memories into mind.md.",
+      "status": "running",
+      "enabled": true,
+      "isMain": false,
+      "config": { "name": "consolidator", "goal": "Consolidate memories into mind.md.", "enabled": true, "autostart": false, "tools": ["loop_send", "loop_list", "sys_set_state"] },
+      "entryCount": 7,
+      "effectiveTools": ["loop_send", "loop_list", "sys_set_state", "loop_compact", "loop_clear"]
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `status` | `idle` or `running` (live, in-memory) |
+| `config` | The inner loop's `LoopConfig`; `null` for `main` (its config is the agent's) |
+| `entryCount` | Rows in the loop's own stream |
+| `effectiveTools` | Tools the loop's executor actually holds after attenuation; `null` for `main` or a loop with no live runtime (disabled) |
+
+### `POST /agents/:id/loops`
+
+Creates an inner loop. Body is a `LoopConfig`; only `name` and `goal` are
+required. Defaults match `loop_manage`: `enabled: true`, `autostart: true`,
+`tools` = `loop_send` + `loop_list` + `sys_set_state` (filtered to what this
+agent can grant). An enabled autostart loop is kicked off at once through the
+ordinary `loop_send` path. Returns `201`:
+
+```json
+{
+  "agentId": "agent-id",
+  "loop": { "name": "consolidator", "status": "idle", "enabled": true, "isMain": false, "config": {}, "entryCount": 0, "effectiveTools": [] },
+  "effectiveTools": ["loop_send", "loop_list", "sys_set_state"],
+  "excludedTools": [],
+  "kickoff": null
+}
+```
+
+`excludedTools` lists requested tools the agent has disabled — carried by name,
+granted once the owner enables them. `kickoff` is the `LoopSendResult`
+(`{ delivered, woke, reason? }`) when an autostart kickoff was sent.
+
+### `GET /agents/:id/loops/:name`
+
+Returns `{ "agentId": "…", "loop": LoopInfo }`.
+
+### `PATCH /agents/:id/loops/:name`
+
+Patches an inner loop. Any of `goal`, `enabled`, `autostart`, `autonomous`,
+`model`, `compact_threshold`, `tools`; present keys replace wholesale.
+`"model": null` / `"compact_threshold": null` remove the override, so the loop
+inherits main's model / compaction threshold again. The loop is re-derived at once; `enabled: false` stops a running loop now (its
+turn is aborted and flushed). Loops cannot be renamed. Returns
+`{ agentId, loop, updated: string[], excludedTools }`.
+
+### `DELETE /agents/:id/loops/:name`
+
+Stops the loop (mid-turn included), archives its stream to `adf_audit` under
+`loop:<name>`, drops its timers (locked timers are kept), then removes it.
+Returns the pool's `LoopDeleteResult`:
+
+```json
+{ "agentId": "agent-id", "name": "consolidator", "archivedEntries": 7, "interruptedTurn": false }
+```
+
+There is no owner "send to loop" endpoint: `POST /agents/:id/chat` with
+`loop` is the owner's voice into any loop. Loop-to-loop messages
+(`[from loop:<name>]`) are the agents' own `loop_send` tool.
 
 ## Agent Resources
 
@@ -556,11 +817,11 @@ Writes `mind.md`.
 
 ### `GET /agents/:id/chat`
 
-Returns a display-oriented chat history derived from recent loop rows. Optional `limit` defaults to `200`.
+Returns a display-oriented chat history derived from recent loop rows. Optional `limit` defaults to `200`; optional `loop` (default `main`) picks the cognition loop. The response carries `loop`.
 
 ### `DELETE /agents/:id/chat`
 
-Clears persisted loop/chat history and resets the in-memory session.
+Clears persisted loop/chat history and resets the in-memory session. Optional `loop` query (default `main`) clears one loop's stream only — never all of them. Returns `{ agentId, loop, success }`.
 
 ### `GET /agents/:id/files`
 
@@ -698,9 +959,17 @@ Adds a timer. The body matches Studio timer creation: `mode` is one of `once_at`
 }
 ```
 
+Optional `loop` names the cognition loop an agent-scope wake dispatches to (absent = `main`; unknown = `404`). This is how an inner loop runs on a schedule — e.g. an hourly consolidator:
+
+```json
+{ "mode": "interval", "every_ms": 3600000, "scope": ["agent"], "loop": "consolidator", "payload": "consolidate" }
+```
+
+A system-scope-only timer carries no loop. The timer list returns each timer's `loop`.
+
 ### `PUT /agents/:id/timers/:timerId`
 
-Updates an existing timer using the same body as timer creation.
+Updates an existing timer using the same body as timer creation. With `loop` the timer moves to that loop in place (same id; `"main"` moves it back to main; unknown loop `404`). Without `loop` it keeps the loop it has.
 
 ### `DELETE /agents/:id/timers/:timerId`
 
@@ -1006,7 +1275,8 @@ decided). A task swept this way is terminal, so a later resolve on it returns
 
 ### `GET /agents/:id/asks`
 
-Lists pending `ask` requests.
+Lists pending `ask` requests of every loop (main and each running inner
+loop). `loop` names the loop whose turn is waiting on the answer.
 
 ```json
 {
@@ -1014,7 +1284,8 @@ Lists pending `ask` requests.
   "asks": [
     {
       "requestId": "request-id",
-      "question": "Proceed?"
+      "question": "Proceed?",
+      "loop": "main"
     }
   ]
 }
@@ -1028,9 +1299,14 @@ Request body:
 
 ```json
 {
-  "answer": "yes"
+  "answer": "yes",
+  "loop": "researcher"
 }
 ```
+
+`loop` is optional. Request ids are numbered per loop, so pass the `loop` from
+`GET /asks` when two loops ask at once; without it the first loop holding the
+id is answered.
 
 Response:
 
@@ -1038,6 +1314,7 @@ Response:
 {
   "agentId": "agent-id",
   "requestId": "request-id",
+  "loop": "researcher",
   "answered": true
 }
 ```
@@ -1174,7 +1451,10 @@ Alias for `POST /agents/:id/stop`.
 
 ### `POST /agents/:id/abort`
 
-Aborts the current turn without unloading the agent.
+Aborts the current turn without unloading the agent. This is a hard stop: the
+executor is left `stopped` and does not run further turns, triggers or timers
+until the agent is reloaded. To end a turn and keep the agent working, use
+`POST /agents/:id/interrupt`.
 
 Response:
 
@@ -1182,6 +1462,42 @@ Response:
 {
   "success": true
 }
+```
+
+### Aborting one loop's turn
+
+`POST /agents/:id/abort` aborts main's current turn. With `?loop=<name>` (or a
+`{ "loop": "<name>" }` body) it aborts that inner loop's turn instead; unknown
+loop `404`, a disabled loop (no live executor) `409`.
+
+### `POST /agents/:id/interrupt`
+
+Ends the running turn of main (or of an inner loop with `?loop=<name>` / a
+`{ "loop": "<name>" }` body) and sets that executor `idle`, the same teardown
+as Studio's fleet map. Unlike `abort`, the executor is not stopped: later chats,
+triggers and timers keep running. Clients should use this for "Esc to
+interrupt"; `abort` is the hard stop.
+
+```json
+{ "success": true, "interrupted": true, "loop": "main" }
+```
+
+`interrupted` is `false` when nothing was running. Unknown loop `404`; a
+disabled loop, or a stopped/errored executor, `409`.
+
+### `POST /agents/:id/compact`
+
+Compacts one loop's history now: the same summarize-and-replace the agent's
+own compaction runs, on demand (Studio's `/compact`). `?loop=<name>` (or a
+`{ "loop": "<name>" }` body) picks an inner loop; absent = main. Emits
+`loop.compacted` (`loop.compaction_failed` on failure). While it runs the loop
+counts as mid-turn: triggers queue and chats are replayed after it. Refused
+with `409` while that loop is mid-turn or already compacting, when there is
+nothing to compact, or for a disabled loop; unknown loop `404`; `502` when the
+summarization call fails (history is preserved).
+
+```json
+{ "agentId": "agent-id", "loop": "researcher", "success": true }
 ```
 
 ### `POST /agents/:id/chat`
@@ -1192,9 +1508,12 @@ Request body:
 
 ```json
 {
-  "text": "hello daemon"
+  "text": "hello daemon",
+  "loop": "researcher"
 }
 ```
+
+`loop` is optional (absent = `main`). An unknown loop answers `404` and a disabled loop `409`, before any turn is queued.
 
 Response status is `202 Accepted`:
 
@@ -1367,6 +1686,12 @@ matches where the daemon is:
 
 Open `authUrl` in a browser, then poll `GET /auth/chatgpt/status`.
 
+When any sign-in completes (loopback, relay, or Grok device flow), every
+loaded agent loop sitting in `error` on an authentication failure from a
+provider of that type (`chatgpt-subscription` / `grok-subscription`) returns
+to `idle` and emits `agent.recovered`. The failed turn is not re-run; errors
+with other causes are left alone.
+
 **Relay response.** `redirectUri` is required and must be a loopback URL — the
 daemon holds the PKCE verifier while you serve the callback yourself:
 
@@ -1405,7 +1730,8 @@ Response:
 ```json
 {
   "success": true,
-  "status": { "authenticated": true, "email": "you@example.com", "expiresAt": 1760000000000 }
+  "status": { "authenticated": true, "email": "you@example.com", "expiresAt": 1760000000000 },
+  "recovered": [{ "agentId": "...", "filePath": "...", "loop": "main", "notice": "agent-1 recovered after ChatGPT sign-in" }]
 }
 ```
 

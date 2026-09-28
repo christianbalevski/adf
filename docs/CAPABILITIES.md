@@ -206,7 +206,7 @@ This is the part that makes ADF agents cheap to keep running. An agent can write
 ## Running without the app
 
 - **Headless daemon** — the same runtime under plain Node.js for servers, with an HTTP API and Server-Sent Events stream.
-- **Command-line client** — list, start, stop, chat, approve, answer, inspect files and messages, follow events, manage auth.
+- **Command-line client** — list, start, stop, chat, approve, answer, inspect files and messages, follow events, manage auth; with no command it opens an interactive terminal UI for the whole fleet and every agent's loops.
 - **Full HTTP API** — agents, chat, files, timers, identity, tasks, compute, network, settings, with an OpenAPI document.
 - **Subscription sign-in over SSH** — device-code and relay flows so a remote daemon can use a ChatGPT or xAI subscription without exposing credentials.
 - **Review gate** — the daemon only autostarts agents you have reviewed.
@@ -353,13 +353,14 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 
 ## Daemon, API, and CLI
 
-*Full reference: [Daemon Overview](daemon/index.md) · [HTTP API](daemon/http-api.md) · [CLI](daemon/cli.md) · [Runtime Architecture](daemon/runtime-architecture.md)*
+*Full reference: [Daemon Overview](daemon/index.md) · [HTTP API](daemon/http-api.md) · [CLI](daemon/cli.md) · [TUI](daemon/tui.md) · [Runtime Architecture](daemon/runtime-architecture.md)*
 
 - **Runtime service** — in-memory agent map keyed by canonical path, no double-loading, dispatch-object boundary (never calls a turn directly).
 - **Event bus** — monotonic cursor, bounded ring, SSE replay from a cursor.
 - **Endpoints** — lifecycle (load, autostart, review, start, stop, abort, state), content (chat, loop, logs, config, document, mind, files, inbox, outbox, timers, meta, tables), identity and credentials, tasks and asks, runtime diagnostics, auth, compute and package admin, network and mesh, settings.
 - **Localhost-trusted, tokened beyond that** — no auth on the default loopback bind; setting `ADF_DAEMON_TOKEN` turns on bearer-token auth for every route but `/health`, and the daemon refuses to bind to a non-loopback host without it. The SSRF guard blocks agents from reaching the API either way.
 - **CLI** — agents, status, start/stop/abort, runtime, providers, auth, settings, network, usage, config, files, inbox/outbox, timers, tasks/approve/deny, asks/answer, identities, mcp, adapters, events, chat, with `--url` and `--json`.
+- **Terminal UI** — `npm run adf` with no command: the fleet as a tree of agents and their loops, per-loop chat with streaming replies and inline approvals, side loops created from templates (memory consolidator, researcher, critic, reflector) and put on a schedule, files and mind with `$EDITOR` round-trips, live umbilical events, a command palette and themes ([TUI](daemon/tui.md)).
 - **Known gaps** — no cross-process lock between Studio and daemon on the same file or mesh port; file-change triggers are limited headless.
 
 ## Settings and persistence

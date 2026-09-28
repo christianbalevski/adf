@@ -38,7 +38,7 @@ import { approvalHub, notificationKey, summarizeApprovalArgs, summarizeQuestion 
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { assembleContextBreakdown, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
-import { withSource } from './execution-context'
+import { withLoop, withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
 import { SystemDispatchQueue, SystemDispatchDroppedError } from './system-dispatch-limits'
@@ -420,6 +420,21 @@ export function isAuthError(error: unknown, message: string): boolean {
 }
 
 /**
+ * The concrete fix for an auth brick. Subscription providers need a sign-in,
+ * not an API key; a completed sign-in recovers the agent automatically.
+ */
+export function authFixHint(provider: Pick<LLMProvider, 'providerType'> | null | undefined): string {
+  switch (provider?.providerType) {
+    case 'chatgpt-subscription':
+      return 'Sign in to ChatGPT: `adf auth login chatgpt` (or /login chatgpt in the TUI, or Settings → Providers in Studio). The agent recovers once sign-in completes.'
+    case 'grok-subscription':
+      return 'Sign in to Grok: `adf auth login grok` (or /login grok in the TUI, or Settings → Providers in Studio). The agent recovers once sign-in completes.'
+    default:
+      return 'Check the API key, account balance, and plan limits in Settings → Providers, then try again.'
+  }
+}
+
+/**
  * Serialize the full diagnostic view of a provider/turn error for the UI error
  * inspector (the loop entry is the short message; clicking it opens this).
  * Includes the status/response-body fields preserved by the provider layer.
@@ -519,6 +534,8 @@ export class AgentExecutor extends EventEmitter {
   // the queue, because the system-scope path returns before the turn's
   // finally-block drain.
   private activeAgentTurnCount = 0
+  // compactNow holds an agent-scope turn slot for its whole summarizer call.
+  private manualCompactionActive = false
   private _interruptRestart = false
   // Owner-initiated end of the in-flight turn. Routes the resulting AbortError
   // to the requested lifecycle state instead of 'error' — this interruption
@@ -1512,7 +1529,12 @@ export class AgentExecutor extends EventEmitter {
   ): Promise<void> {
     const turnId = nanoid(10)
     try {
-      return await withSource(`agent:${turnId}`, this.config.id, () => this.executeTurnImpl(dispatch, opts, turnId))
+      // Bind every turn to its own loop, main included: a turn dispatched from
+      // an inner loop's async context (loop_send wake, trigger) must not
+      // inherit that loop's name.
+      const loop = this.umbilicalLoop()
+      const run = () => this.executeTurnImpl(dispatch, opts, turnId)
+      return await withSource(`agent:${turnId}`, this.config.id, () => loop ? withLoop(loop, run) : run())
     } finally {
       this.activeTurnCount--
       if (dispatch.scope !== 'system') {
@@ -1608,14 +1630,73 @@ export class AgentExecutor extends EventEmitter {
    *    asked to compact.
    */
   async compactNow(reason: string): Promise<{ success: boolean; error?: string }> {
+    if (this.manualCompactionActive) {
+      return { success: false, error: 'A compaction is already in progress.' }
+    }
     if (this.isTurnActive()) {
       return { success: false, error: 'The agent is mid-turn — try again when it settles.' }
     }
     if (!this.restoreSessionFromLoop()) {
       return { success: false, error: 'There is nothing to compact.' }
     }
-    await this.forceCompact(reason)
-    return { success: true }
+    // Claim a turn slot synchronously, exactly as executeTurn does, and hold
+    // it across the summarizer await. Without the claim this path only
+    // CHECKED for a turn: a trigger landing mid-summarization started a real
+    // turn, and forceCompact then reset the session under it — the double-
+    // compaction failure class (aom 2026-09-03). Held, the concurrent-turn
+    // guard sees activeAgentTurnCount > 1: triggers queue, a chat takes the
+    // interrupt path (replayed below), the idle sweep leaves the session
+    // alone, and a second compactNow is refused above.
+    this.activeTurnCount++
+    this.activeAgentTurnCount++
+    this.manualCompactionActive = true
+    // The summarizer call is passed this.abortController's signal. No turn is
+    // active, so it is normally already null; null it explicitly so a chat
+    // interrupt (which aborts the in-flight turn call) can never cut the
+    // compaction off midway — the chat waits and is replayed after.
+    this.abortController = null
+    const failedBefore = this.compactionFailedThisTurn
+    this.compactionFailedThisTurn = false
+    try {
+      this.emitEvent({
+        type: 'context_injected',
+        payload: { category: 'System', content: `Compacting conversation history (${reason})...` },
+        timestamp: Date.now()
+      })
+      await this.forceCompact(reason)
+      // forceCompact swallows summarizer failures (history preserved, logged,
+      // loop.compaction_failed emitted); surface them to the caller too.
+      if (this.compactionFailedThisTurn) {
+        return {
+          success: false,
+          error: `Compaction failed: ${this.lastCompactionFailureDetail ?? 'summarizer error'}. History preserved.`,
+        }
+      }
+      return { success: true }
+    } finally {
+      this.compactionFailedThisTurn = failedBefore
+      this.manualCompactionActive = false
+      // Release mirrors runClaimedTurn/executeTurnImpl's finally: a chat that
+      // arrived mid-compaction set pendingInterrupt (+_interruptRestart, with
+      // nothing to abort) — replay it; otherwise drain queued triggers.
+      this._interruptRestart = false
+      const interrupt = this.pendingInterrupt
+      this.pendingInterrupt = null
+      if (interrupt && this.state !== 'stopped') {
+        this._skipNextTriggerEvent = isEchoedChat(interrupt)
+        this.scheduleReentrantTurn(interrupt)
+      }
+      this.activeTurnCount--
+      this.activeAgentTurnCount--
+      if (!interrupt && this.activeAgentTurnCount === 0 && this.state === 'idle') {
+        this.drainPendingTriggers()
+      }
+      if (this.activeTurnCount === 0 && this.onTurnSettled) {
+        try { this.onTurnSettled() } catch (error) {
+          console.error('[AgentExecutor] onTurnSettled hook threw:', error)
+        }
+      }
+    }
   }
 
   /**
@@ -1663,7 +1744,7 @@ export class AgentExecutor extends EventEmitter {
     const fnName = lastColon > 0 ? dispatch.lambda!.slice(lastColon + 1) : 'main'
     emitUmbilicalEvent({
       event_type: 'lambda.failed',
-      agentId: this.config.id,
+      agentId: this.config.id, loop: this.umbilicalLoop(),
       source: lambda ? `lambda:${lambda}` : 'lambda:(none)',
       payload: {
         lambda_path: filePath, function_name: fnName, kind: 'system_scope',
@@ -1747,6 +1828,12 @@ export class AgentExecutor extends EventEmitter {
     // the trigger and the timer never both fire.
     if (this.state === 'error' && eventType !== 'chat') {
       const recoverable = this._errorReason !== null && this._errorReason !== 'auth'
+      // A manual compaction holds a slot but is not a recovery turn: queue the
+      // trigger so it can still spend itself as the recovery attempt after.
+      if (recoverable && !opts?.nested && this.manualCompactionActive) {
+        this.queuePendingTrigger(dispatch, eventType)
+        return
+      }
       // activeAgentTurnCount is claimed before executeTurnImpl, so > 1 means a
       // recovery turn is already in flight — don't stack a second one.
       if (!recoverable || (!opts?.nested && this.activeAgentTurnCount > 1)) return
@@ -2081,7 +2168,7 @@ export class AgentExecutor extends EventEmitter {
             }
             const providerLabel = this.provider.name || this.provider.providerId || 'provider'
             const friendly = `Your ${providerLabel} provider isn't authenticated. ` +
-              `Check the API key, account balance, and plan limits in Settings → Providers, then try again.` +
+              authFixHint(this.provider) +
               (validation.error ? `\n\nProvider response: ${validation.error}` : '')
             this.enterErrorState('auth')
             this.emitEvent({
@@ -3116,12 +3203,13 @@ export class AgentExecutor extends EventEmitter {
         this.providerValidated = false
         this.enterErrorState('auth')
         try { this.session.getWorkspace().insertLog('error', 'executor', 'provider_credentials_invalid', null, errorMsg.slice(0, 300)) } catch { /* non-fatal */ }
-        this.persistTurnError(`${providerLabel} provider isn't authenticated: ${errorMsg}`)
+        const fixHint = authFixHint(this.provider)
+        this.persistTurnError(`${providerLabel} provider isn't authenticated: ${errorMsg} — ${fixHint}`)
         this.emitEvent({
           type: 'error',
           payload: {
             error: `Your ${providerLabel} provider isn't authenticated. ` +
-              `Check the API key, account balance, and plan limits in Settings → Providers, then try again.\n\nDetails: ${errorMsg}`,
+              `${fixHint}\n\nDetails: ${errorMsg}`,
             details: errorDetails
           },
           timestamp: Date.now()
@@ -3948,7 +4036,7 @@ export class AgentExecutor extends EventEmitter {
     const { source, ...rest } = data
     emitUmbilicalEvent({
       event_type: data.stop_reason === 'error' ? 'llm.failed' : 'llm.completed',
-      agentId: this.config.id,
+      agentId: this.config.id, loop: this.umbilicalLoop(),
       payload: { ...rest, call_source: source },
     })
   }
@@ -4626,6 +4714,25 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
+   * Leave an `auth` brick because the credentials were fixed outside the
+   * agent (e.g. a subscription sign-in completed). Same exit the recovery
+   * trigger path uses — setState('idle'), so state_changed reaches the
+   * manager/UI — but runs no turn: the next trigger works normally, and the
+   * provider re-preflights on it. Logged and announced (`agent.recovered`).
+   * Returns false (no-op) unless this executor is bricked on auth.
+   */
+  recoverFromAuthError(notice: string): boolean {
+    if (this.state !== 'error' || this._errorReason !== 'auth') return false
+    this.providerValidated = false
+    this._recoveryAttempts = 0
+    this._lastRecoveryAttemptAt = null
+    try { this.session.getWorkspace().insertLog('info', 'executor', 'auth_recovered', null, notice.slice(0, 300)) } catch { /* non-fatal */ }
+    this.setState('idle')
+    this.emitRuntimeEvent('agent.recovered', { reason: 'auth', state: 'idle', notice })
+    return true
+  }
+
+  /**
    * Estimate the token size of the request that is ABOUT to be sent, so the
    * loop can compact *before* the call instead of letting the provider reject
    * an over-window request.
@@ -5037,10 +5144,10 @@ export class AgentExecutor extends EventEmitter {
         ...(id ? { id } : {}),
         input: stripInternalToolFlags(input),
       }
-      emitUmbilicalEvent({ event_type: 'tool.started', agentId: this.config.id, payload: base })
+      emitUmbilicalEvent({ event_type: 'tool.started', agentId: this.config.id, loop: this.umbilicalLoop(), payload: base })
       emitUmbilicalEvent({
         event_type: result.isError ? 'tool.failed' : 'tool.completed',
-        agentId: this.config.id,
+        agentId: this.config.id, loop: this.umbilicalLoop(),
         payload: { ...base, result: { content: result.content, isError: result.isError }, isError: result.isError },
       })
     } catch { /* observability must never break the loop */ }
@@ -5056,7 +5163,7 @@ export class AgentExecutor extends EventEmitter {
     try {
       emitUmbilicalEvent({
         event_type: 'tool.started',
-        agentId: this.config.id,
+        agentId: this.config.id, loop: this.umbilicalLoop(),
         payload: {
           filePath: this.session.getWorkspace().getFilePath(),
           name,
@@ -5076,7 +5183,7 @@ export class AgentExecutor extends EventEmitter {
     try {
       emitUmbilicalEvent({
         event_type: 'tool.failed',
-        agentId: this.config.id,
+        agentId: this.config.id, loop: this.umbilicalLoop(),
         payload: {
           filePath: this.session.getWorkspace().getFilePath(),
           name,
@@ -5128,6 +5235,19 @@ export class AgentExecutor extends EventEmitter {
     }
   }
 
+  /**
+   * This executor's loop name for umbilical stamping. Main returns 'main'
+   * explicitly (emitUmbilicalEvent leaves it off the envelope) so it is never
+   * mistaken for "not given" and filled from an inherited inner-loop context.
+   */
+  private umbilicalLoop(): string | undefined {
+    try {
+      return this.session.getWorkspace().getLoopName() || 'main'
+    } catch {
+      return undefined
+    }
+  }
+
   /** Umbilical emission from executor state transitions — never fatal. */
   private emitRuntimeEvent(eventType: string, payload: Record<string, unknown>): void {
     try {
@@ -5135,7 +5255,7 @@ export class AgentExecutor extends EventEmitter {
       // IPC/HTTP callback (resolveHilTask/resolveAsk/resolveSuspend) run with no
       // withSource scope, so the async-local agent id is null and the event
       // would otherwise be dropped by the per-agent bus.
-      emitUmbilicalEvent({ event_type: eventType, agentId: this.config.id, payload })
+      emitUmbilicalEvent({ event_type: eventType, agentId: this.config.id, loop: this.umbilicalLoop(), payload })
     } catch { /* best-effort */ }
   }
 
@@ -5149,6 +5269,7 @@ export class AgentExecutor extends EventEmitter {
     const rawPayload = (event.payload as Record<string, unknown>) ?? {}
     const payload = { filePath: this.session.getWorkspace().getFilePath(), ...rawPayload }
     const agentId = this.config.id
+    const loop = this.umbilicalLoop()
     switch (event.type) {
       // tool_call_start / tool_call_result deliberately do NOT map onto the
       // umbilical here. `ToolRegistry.executeTool` is the choke point that emits
@@ -5157,13 +5278,13 @@ export class AgentExecutor extends EventEmitter {
       // that never reach the registry (ask intercept, disabled tool, HIL denial,
       // async task references) go through emitSyntheticToolEvents instead.
       case 'turn_complete':
-        emitUmbilicalEvent({ event_type: 'turn.completed', agentId, timestamp: event.timestamp, payload })
+        emitUmbilicalEvent({ event_type: 'turn.completed', agentId, loop, timestamp: event.timestamp, payload })
         break
       case 'state_changed':
-        emitUmbilicalEvent({ event_type: 'agent.state.changed', agentId, timestamp: event.timestamp, payload })
+        emitUmbilicalEvent({ event_type: 'agent.state.changed', agentId, loop, timestamp: event.timestamp, payload })
         break
       case 'error':
-        emitUmbilicalEvent({ event_type: 'agent.error', agentId, timestamp: event.timestamp, payload: { event } })
+        emitUmbilicalEvent({ event_type: 'agent.error', agentId, loop, timestamp: event.timestamp, payload: { event } })
         break
       case 'context_injected': {
         // A system prompt / dynamic-instructions / loop_inject payload was added
@@ -5176,6 +5297,7 @@ export class AgentExecutor extends EventEmitter {
         emitUmbilicalEvent({
           event_type: 'context.injected',
           agentId,
+          loop,
           timestamp: event.timestamp,
           payload: {
             filePath: payload.filePath,

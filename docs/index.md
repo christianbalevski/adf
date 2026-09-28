@@ -24,6 +24,7 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 - [Daemon Getting Started](daemon/getting-started.md) — Run the daemon, load agents, chat, inspect loop state, and autostart
 - [Daemon HTTP API](daemon/http-api.md) — Endpoint reference for headless clients
 - [Daemon CLI](daemon/cli.md) — Terminal client for agent control, resources, diagnostics, events, and chat
+- [ADF TUI](daemon/tui.md) — Interactive terminal UI: your fleet, each agent's loops (chat sessions), approvals, files and live events
 - [Daemon Runtime Settings](daemon/runtime-settings.md) — Direct JSON settings, example schema, and settings API usage
 - [Daemon Runtime Architecture](daemon/runtime-architecture.md) — RuntimeService, AgentRuntimeBuilder, triggers, MCP, adapters, compute, and mesh
 - [Daemon Operations](daemon/operations.md) — Settings, ports, process management, compatibility, and troubleshooting

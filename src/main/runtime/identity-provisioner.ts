@@ -18,6 +18,22 @@ export interface WorkspaceIdentityHooks {
   ensureIdentity: (workspace: AdfWorkspace) => void
   /** D10 unwrap cascade with this install's keys (runtime slot → owner recovery + re-wrap). */
   unlockEnvelopes: (workspace: AdfWorkspace) => void
+  /**
+   * False while the host holds no owner key (a daemon before `adf identity`):
+   * ensureIdentity is then unlock-only, and callers must not fall back to
+   * minting plain, unattested keys. Absent = always able (Studio).
+   */
+  canProvision?: () => boolean
+}
+
+/** Whether the registered host can mint owner-attested identities right now (true when no hooks: legacy behavior). */
+export function canProvisionWorkspaceIdentity(): boolean {
+  if (!hooks?.canProvision) return true
+  try {
+    return hooks.canProvision()
+  } catch {
+    return false
+  }
 }
 
 let hooks: WorkspaceIdentityHooks | null = null

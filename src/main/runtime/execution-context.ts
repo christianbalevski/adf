@@ -22,6 +22,8 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 export interface ExecutionContext {
   source: string
   agentId?: string   // resolved agent runtime id when known
+  /** Cognition loop the work runs on (see withLoop). Absent = main / not loop-scoped. */
+  loop?: string
 }
 
 const store = new AsyncLocalStorage<ExecutionContext>()
@@ -31,7 +33,21 @@ export function withSource<T>(source: string, agentId: string | undefined, fn: (
 export function withSource<T>(source: string, agentIdOrFn: string | undefined | (() => T), maybeFn?: () => T): T {
   const agentId = typeof agentIdOrFn === 'function' ? undefined : agentIdOrFn
   const fn = typeof agentIdOrFn === 'function' ? agentIdOrFn : maybeFn!
-  return store.run({ source, agentId }, fn)
+  // A nested origin (a lambda called from a loop's turn) inherits the loop,
+  // but only within the same agent — another agent's work is not this loop's.
+  const parent = store.getStore()
+  const loop = parent?.loop && (agentId === undefined || agentId === parent.agentId) ? parent.loop : undefined
+  return store.run(loop ? { source, agentId, loop } : { source, agentId }, fn)
+}
+
+/** Run `fn` with the current context bound to a cognition loop. */
+export function withLoop<T>(loop: string, fn: () => T): T {
+  const parent = store.getStore()
+  return store.run({ source: parent?.source ?? 'system:unknown', agentId: parent?.agentId, loop }, fn)
+}
+
+export function currentLoop(): string | undefined {
+  return store.getStore()?.loop
 }
 
 export function currentSource(): string {

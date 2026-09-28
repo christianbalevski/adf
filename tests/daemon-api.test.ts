@@ -44,6 +44,23 @@ afterEach(async () => {
 })
 
 describe('daemon HTTP API', () => {
+  it('stops gracefully on POST /daemon/shutdown from this machine only', async () => {
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    let requested = 0
+    const server = createDaemonHttpApi(runtime, { requestShutdown: () => { requested++ } })
+    servers.push(server)
+    const remote = await server.inject({ method: 'POST', url: '/daemon/shutdown', remoteAddress: '10.0.0.9' })
+    expect(remote.statusCode).toBe(403)
+    const local = await server.inject({ method: 'POST', url: '/daemon/shutdown', remoteAddress: '127.0.0.1' })
+    expect(local.statusCode).toBe(202)
+    expect(local.json()).toMatchObject({ accepted: true, pid: process.pid })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(requested).toBe(1)
+    const without = createDaemonHttpApi(runtime)
+    servers.push(without)
+    expect((await without.inject({ method: 'POST', url: '/daemon/shutdown', remoteAddress: '127.0.0.1' })).statusCode).toBe(405)
+  })
+
   it('serves the static OpenAPI document', async () => {
     const runtime = new RuntimeService({ enforceReviewGate: false })
     const server = createDaemonHttpApi(runtime)

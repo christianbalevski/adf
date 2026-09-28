@@ -21,6 +21,7 @@
     { "name": "Runtime" },
     { "name": "Auth" },
     { "name": "Agents" },
+    { "name": "Loops" },
     { "name": "Resources" },
     { "name": "Identity" },
     { "name": "Credentials" },
@@ -63,6 +64,18 @@
         }
       }
     },
+    "/daemon/shutdown": {
+      "post": {
+        "tags": ["Health"],
+        "summary": "Stop the daemon gracefully (loopback only)",
+        "description": "Runs the same bounded shutdown as Ctrl+C / SIGTERM: agents are unloaded and compute containers stopped, then the process exits. Used by adf daemon stop.",
+        "operationId": "shutdownDaemon",
+        "responses": {
+          "202": { "description": "Shutdown accepted; the daemon exits shortly" },
+          "403": { "description": "Not called from this machine (loopback_only)" }
+        }
+      }
+    },
     "/agents/{id}/timers/{timerId}": {
       "put": {
         "tags": ["Resources"],
@@ -96,6 +109,379 @@
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/identity": {
+      "get": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Owner identity status (no secrets)",
+        "operationId": "getOwnerIdentity",
+        "responses": {
+          "200": {
+            "description": "Owner identity status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityStatus"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/identity/create": {
+      "post": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Create an owner identity; returns the 12-word seed phrase ONCE (loopback only)",
+        "operationId": "createOwnerIdentity",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityPassphraseBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Identity created. `mnemonic`/`words` appear in this response only; the daemon never returns them again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Passphrase missing or too short (file storage); codes `passphrase_required`, `weak_passphrase`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not on the daemon host (loopback only); code `loopback_only`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An identity already exists or needs restore/unlock; code `identity_exists`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/identity/restore": {
+      "post": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Restore the owner identity from its seed phrase (loopback only)",
+        "operationId": "restoreOwnerIdentity",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityRestoreBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner identity status after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityStatusEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid phrase or missing passphrase; codes `invalid_mnemonic`, `passphrase_required`, `weak_passphrase`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Loopback only (`loopback_only`) or wrong passphrase (`wrong_passphrase`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The phrase belongs to a different owner than this machine's; code `owner_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/identity/unlock": {
+      "post": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Unlock a passphrase-file identity (no OS keychain; loopback only)",
+        "operationId": "unlockOwnerIdentity",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityPassphraseBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner identity status after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityStatusEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Keychain storage (`not_file_storage`) or no passphrase (`passphrase_required`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Loopback only (`loopback_only`) or wrong passphrase (`wrong_passphrase`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No identity file yet; code `nothing_to_unlock`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity/lock": {
+      "post": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Lock a passphrase-file identity",
+        "operationId": "lockOwnerIdentity",
+        "responses": {
+          "200": {
+            "description": "Owner identity status after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityStatusEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Keychain storage; code `not_file_storage`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity/confirm-backup": {
+      "post": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Record that the user wrote the seed phrase down",
+        "operationId": "confirmOwnerBackup",
+        "responses": {
+          "200": {
+            "description": "Owner identity status after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityStatusEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Identity not ready; code `not_ready`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "List agent templates new agents can be created from",
+        "operationId": "listTemplates",
+        "responses": {
+          "200": {
+            "description": "Templates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateList"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Owner identity not ready; `identity` carries the status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/agents/create": {
+      "post": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Create an agent from a template with a sealed, owner-attested identity (Studio parity), then load it",
+        "operationId": "createAgent",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Agent created and loaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateAgentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input; code `bad_request`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`, with `identity`) or the file exists (`name_taken`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Template missing or unreviewed; codes `template_missing`, `template_unreviewed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
         }
       }
     },
@@ -1241,12 +1627,45 @@
       "post": {
         "tags": ["Agents"],
         "summary": "Abort the current turn without unloading the agent",
+        "description": "Aborts main's turn, or the named inner loop's turn with ?loop=<name>.",
         "operationId": "abortAgent",
-        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopQuery" }],
         "responses": {
           "200": { "$ref": "#/components/responses/Success" },
           "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" },
           "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/interrupt": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Interrupt the running turn and leave the loop idle",
+        "description": "Ends main's running turn (or the named inner loop's with ?loop=<name>) and sets that executor idle; it keeps accepting chats, triggers and timers. Unlike /abort it never stops the executor. Returns { success, interrupted, loop }; interrupted is false when nothing was running.",
+        "operationId": "interruptAgent",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopQuery" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/compact": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Compact one loop's history now",
+        "description": "Summarize-and-replace on demand for main, or the named inner loop with ?loop=<name>. Emits loop.compacted. Triggers queue and chats replay after it. 409 mid-turn or already compacting, when there is nothing to compact, or for a disabled loop; 502 when summarization fails (history preserved).",
+        "operationId": "compactAgentLoop",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopQuery" }],
+        "responses": {
+          "200": { "description": "Compacted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" }
         }
       }
     },
@@ -1257,7 +1676,8 @@
         "operationId": "getAgentChat",
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
-          { "$ref": "#/components/parameters/LimitQuery" }
+          { "$ref": "#/components/parameters/LimitQuery" },
+          { "$ref": "#/components/parameters/LoopQuery" }
         ],
         "responses": {
           "200": { "description": "Chat history", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
@@ -1296,7 +1716,7 @@
         "tags": ["Resources"],
         "summary": "Clear persisted chat/loop history",
         "operationId": "clearAgentChat",
-        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopQuery" }],
         "responses": {
           "200": { "$ref": "#/components/responses/Success" },
           "404": { "$ref": "#/components/responses/NotFound" },
@@ -1341,7 +1761,8 @@
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
           { "$ref": "#/components/parameters/LimitQuery" },
-          { "$ref": "#/components/parameters/OffsetQuery" }
+          { "$ref": "#/components/parameters/OffsetQuery" },
+          { "$ref": "#/components/parameters/LoopQuery" }
         ],
         "responses": {
           "200": {
@@ -1354,6 +1775,68 @@
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/loops": {
+      "get": {
+        "tags": ["Loops"],
+        "summary": "List cognition loops (main plus inner loops) with live status and declarations",
+        "operationId": "listAgentLoops",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "description": "Loops", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoopListResponse" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "tags": ["Loops"],
+        "summary": "Create an inner loop through the agent's loop pool",
+        "description": "Same validation and defaults as the loop_manage tool: enabled and autostart default true, tools default to loop_send + loop_list + sys_set_state (filtered to what the host can grant). An enabled autostart loop is kicked off immediately.",
+        "operationId": "createAgentLoop",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoopCreateBody" } } } },
+        "responses": {
+          "201": { "description": "Loop created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/loops/{name}": {
+      "get": {
+        "tags": ["Loops"],
+        "summary": "Read one loop",
+        "operationId": "getAgentLoopInfo",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopNamePath" }],
+        "responses": {
+          "200": { "description": "Loop", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "patch": {
+        "tags": ["Loops"],
+        "summary": "Patch an inner loop (enabled:false stops it immediately)",
+        "operationId": "updateAgentLoop",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopNamePath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoopPatchBody" } } } },
+        "responses": {
+          "200": { "description": "Loop updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "tags": ["Loops"],
+        "summary": "Stop, archive to adf_audit, then remove an inner loop",
+        "operationId": "deleteAgentLoop",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopNamePath" }],
+        "responses": {
+          "200": { "description": "Loop deleted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" }
         }
       }
     },
@@ -2673,6 +3156,19 @@
         "required": false,
         "schema": { "type": "integer", "minimum": 0 }
       },
+      "LoopQuery": {
+        "name": "loop",
+        "in": "query",
+        "required": false,
+        "description": "Cognition loop to address. Absent = main. Unknown loops answer 404.",
+        "schema": { "type": "string" }
+      },
+      "LoopNamePath": {
+        "name": "name",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
       "FilePathQuery": {
         "name": "filePath",
         "in": "query",
@@ -2779,6 +3275,264 @@
       }
     },
     "schemas": {
+      "IdentityStatus": {
+        "type": "object",
+        "required": [
+          "status",
+          "ownerDid",
+          "runtimeDid",
+          "storage",
+          "backupConfirmed",
+          "passphraseRequired",
+          "message"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "none",
+              "locked",
+              "restore-needed",
+              "ready"
+            ]
+          },
+          "ownerDid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtimeDid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "This daemon's own runtime DID (never Studio's)."
+          },
+          "storage": {
+            "type": "string",
+            "enum": [
+              "keychain",
+              "file"
+            ]
+          },
+          "backupConfirmed": {
+            "type": "boolean"
+          },
+          "passphraseRequired": {
+            "type": "boolean",
+            "description": "File storage not unlocked: create/restore/unlock take a passphrase."
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "IdentityStatusEnvelope": {
+        "type": "object",
+        "required": [
+          "identity"
+        ],
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/IdentityStatus"
+          }
+        }
+      },
+      "IdentityPassphraseBody": {
+        "type": "object",
+        "properties": {
+          "passphrase": {
+            "type": "string",
+            "minLength": 8
+          }
+        }
+      },
+      "IdentityRestoreBody": {
+        "type": "object",
+        "required": [
+          "mnemonic"
+        ],
+        "properties": {
+          "mnemonic": {
+            "type": "string",
+            "description": "12-word BIP-39 phrase (case/whitespace-insensitive)."
+          },
+          "passphrase": {
+            "type": "string"
+          }
+        }
+      },
+      "IdentityCreateResponse": {
+        "type": "object",
+        "required": [
+          "mnemonic",
+          "words",
+          "identity"
+        ],
+        "properties": {
+          "mnemonic": {
+            "type": "string"
+          },
+          "words": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 12,
+            "maxItems": 12
+          },
+          "identity": {
+            "$ref": "#/components/schemas/IdentityStatus"
+          }
+        }
+      },
+      "IdentityErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          }
+        }
+      },
+      "TemplateList": {
+        "type": "object",
+        "required": [
+          "templates",
+          "defaultId"
+        ],
+        "properties": {
+          "templates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "reviewed"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "templateDescription": {
+                  "type": "string"
+                },
+                "warning": {
+                  "type": "string"
+                },
+                "shipped": {
+                  "type": "string"
+                },
+                "reviewed": {
+                  "type": "boolean"
+                },
+                "modelProvider": {
+                  "type": "string"
+                },
+                "modelId": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "defaultId": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "defaultDirectory": {
+            "type": "string",
+            "description": "Where POST /agents/create puts agents without `directory`."
+          }
+        }
+      },
+      "CreateAgentBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "File name (<=64 chars). Omitted: a generated adjective-plant name."
+          },
+          "directory": {
+            "type": "string",
+            "description": "Absolute, existing directory. Default: settings.agentsFolder, else ~/Documents/adf-agents."
+          },
+          "template": {
+            "type": "string",
+            "description": "Template id (GET /templates). Default: settings.defaultTemplateId, else `standard`."
+          },
+          "provider": {
+            "type": "string",
+            "description": "App provider id (must exist in settings.providers)."
+          },
+          "model": {
+            "type": "string"
+          },
+          "start": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "CreateAgentResponse": {
+        "type": "object",
+        "required": [
+          "agentId",
+          "name",
+          "filePath",
+          "did",
+          "started"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "did": {
+            "type": "string"
+          },
+          "started": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AgentCreateErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "identity": {
+            "$ref": "#/components/schemas/IdentityStatus"
+          }
+        }
+      },
       "AnyJson": {
         "description": "Arbitrary JSON value."
       },
@@ -3265,7 +4019,70 @@
         "type": "object",
         "required": ["text"],
         "properties": {
-          "text": { "type": "string" }
+          "text": { "type": "string" },
+          "loop": { "type": "string", "description": "Cognition loop to talk to. Absent = main. Unknown loop: 404; disabled loop: 409." }
+        }
+      },
+      "LoopConfig": {
+        "type": "object",
+        "required": ["name", "goal", "enabled"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$" },
+          "goal": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "autostart": { "type": "boolean" },
+          "autonomous": { "type": "boolean" },
+          "model": { "type": "object", "additionalProperties": true },
+          "compact_threshold": { "type": ["integer", "null"] },
+          "tools": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "LoopInfo": {
+        "type": "object",
+        "required": ["name", "goal", "status", "enabled", "isMain", "config", "entryCount", "effectiveTools"],
+        "properties": {
+          "name": { "type": "string" },
+          "goal": { "type": "string" },
+          "status": { "type": "string", "enum": ["idle", "running"] },
+          "enabled": { "type": "boolean" },
+          "isMain": { "type": "boolean" },
+          "config": { "oneOf": [{ "$ref": "#/components/schemas/LoopConfig" }, { "type": "null" }] },
+          "entryCount": { "type": "number" },
+          "effectiveTools": { "oneOf": [{ "type": "array", "items": { "type": "string" } }, { "type": "null" }] }
+        }
+      },
+      "LoopListResponse": {
+        "type": "object",
+        "required": ["agentId", "loops"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "loops": { "type": "array", "items": { "$ref": "#/components/schemas/LoopInfo" } }
+        }
+      },
+      "LoopCreateBody": {
+        "type": "object",
+        "required": ["name", "goal"],
+        "properties": {
+          "name": { "type": "string" },
+          "goal": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "autostart": { "type": "boolean" },
+          "autonomous": { "type": "boolean" },
+          "model": { "type": "object", "additionalProperties": true },
+          "compact_threshold": { "type": ["integer", "null"] },
+          "tools": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "LoopPatchBody": {
+        "type": "object",
+        "properties": {
+          "goal": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "autostart": { "type": "boolean" },
+          "autonomous": { "type": "boolean" },
+          "model": { "type": "object", "additionalProperties": true },
+          "compact_threshold": { "type": ["integer", "null"] },
+          "tools": { "type": "array", "items": { "type": "string" } }
         }
       },
       "ChatAcceptedResponse": {
@@ -3381,7 +4198,8 @@
           "lambda": { "type": "string" },
           "warm": { "type": "boolean" },
           "payload": { "type": "string" },
-          "locked": { "type": "boolean" }
+          "locked": { "type": "boolean" },
+          "loop": { "type": "string", "description": "Create only: cognition loop the agent-scope wake targets. Absent = main. Unknown loop: 404. Ignored on update (a timer keeps its loop)." }
         },
         "additionalProperties": false
       },
@@ -3470,9 +4288,10 @@
       },
       "LoopPage": {
         "type": "object",
-        "required": ["agentId", "total", "limit", "offset", "entries"],
+        "required": ["agentId", "loop", "total", "limit", "offset", "entries"],
         "properties": {
           "agentId": { "type": "string" },
+          "loop": { "type": "string" },
           "total": { "type": "number" },
           "limit": { "type": "number" },
           "offset": { "type": "number" },

@@ -254,6 +254,21 @@ slot → same agent, same DID, no claim. Complements the existing owner-DID
 restamp; the registry's duplicate-DID detection (below) covers the case where the
 *original* machine still runs the source file.
 
+### 5.4a Headless owner (daemon/CLI)
+A user who never runs Studio may put the owner key in the daemon deliberately
+(`adf identity new` / `restore`). The daemon then holds the mnemonic — in the
+OS keychain entry `ADF / owner-mnemonic` (shared with Studio on the same
+machine: Studio mirrors into it, and imports from it when it has the owner DID
+but cannot read its own copy), or, without a keychain, a passphrase-encrypted
+file (scrypt + AES-256-GCM, 0600) next to the daemon settings. It runs the
+same provisioning as Studio (§5.1) with its **own** runtime key
+(`daemonRuntimeDid` / `daemonRuntimeDelegation`, runtime encryption key =
+the daemon's `runtime-enc-key`), never Studio's. Owner public fields are only
+written for the same owner DID; a phrase for a different owner is refused.
+Without an owner key the daemon mints nothing: `sys_create_adf` children are
+created DID-less, and Studio's sweep seals + stamps + attests any plain-key
+file from older daemons once it is reviewed.
+
 ### 5.5 Duplicate detection
 The fleet registry flags two live files presenting the same `adf_did` — possible
 only for same-owner copies once envelopes land (foreign copies can't unwrap and

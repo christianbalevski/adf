@@ -1,0 +1,36 @@
+{
+  "name": "agent-document-format",
+  "version": "0.0.0-template",
+  "description": "ADF (Agent Document Format) daemon, CLI and terminal UI. Run your agents headless: `adf daemon`, then `adf`.",
+  "type": "module",
+  "bin": {
+    "adf": "dist/adf.mjs"
+  },
+  "files": [
+    "dist/",
+    "resources/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "adf",
+    "agent",
+    "agents",
+    "ai",
+    "llm",
+    "daemon",
+    "cli",
+    "tui",
+    "mcp",
+    "agent-document-format"
+  ],
+  "author": "Christian Balevski",
+  "homepage": "https://github.com/christianbalevski/adf#readme",
+  "bugs": {
+    "url": "https://github.com/christianbalevski/adf/issues"
+  },
+  "comment": "Template: scripts/build-npm.mjs fills version, license, repository and dependencies and writes the publishable package to dist/npm."
+}

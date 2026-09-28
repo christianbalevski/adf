@@ -79,6 +79,30 @@ To test the publish path itself, `GH_TOKEN=$(gh auth token) npm run release`
 uploads to a draft from your machine — but it only attaches *your* OS's
 installer, so let CI produce real multi-platform releases.
 
+## npm package (`agent-document-format`)
+
+The same tag also releases the terminal-only package (daemon + CLI + TUI,
+`npm i -g agent-document-format` → `adf`). The `npm-build` → `npm-smoke` →
+`npm-publish` jobs in `release.yml` bundle it (`npm run build:npm`, output in
+`dist/npm`, version = root `package.json`), install the tarball on Linux,
+macOS and Windows (Node 22 and 24), boot a daemon, and publish with
+`npm publish --provenance --access public`. They run independently of the
+Studio jobs.
+
+One-time setup:
+
+1. `npm login`, then claim the name by publishing the first version by hand:
+   `npm run build:npm && npm publish ./dist/npm --access public` (or let CI
+   do it once step 2 is done).
+2. Create an npm **granular access token** with publish rights on
+   `agent-document-format` and add it as the repo secret `NPM_TOKEN`. Until
+   the secret exists, `npm-publish` logs a notice and skips.
+
+Local check: `npm run build:npm && npm pack ./dist/npm`, then install the
+tarball with an isolated prefix (`npm_config_prefix=/tmp/adf-prefix npm i -g
+./agent-document-format-*.tgz`) and run `node scripts/npm-smoke.mjs` with that
+prefix on `PATH`.
+
 ## Code signing
 
 **macOS** builds are signed with a Developer ID Application certificate and

@@ -1,11 +1,16 @@
-import { readFileSync } from 'node:fs'
+// Imported, not read from disk: bundles (the npm package) carry it inline.
+import openApiSpec from '../../../docs/daemon/openapi.json'
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify'
 import { nanoid } from 'nanoid'
 import { z } from 'zod'
 import {
+  RuntimeLoopError,
   RuntimeReviewRequiredError,
   type AdfDisplayState,
+  type RuntimeLoopCreateInput,
+  type RuntimeLoopPatch,
   type RuntimeService,
+  type RuntimeAuthRecovery,
 } from '../runtime/runtime-service'
 import { AdapterInstanceConfigSchema } from '../adf/adf-schema'
 import {
@@ -25,9 +30,12 @@ import type { McpServerRegistration, ProviderConfig } from '../../shared/types/i
 import type { AdapterInstanceConfig, AdapterRegistration } from '../../shared/types/channel-adapter.types'
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { getLanAddresses } from '../utils/network'
+import { registerIdentityRoutes, type IdentityRouteDeps } from './identity-routes'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
+  /** Reported by GET /runtime (default: ADF_VERSION, else npm_package_version). */
+  version?: string
   computeService?: DaemonComputeService
   settingsStore?: DaemonSettingsStore
   eventBus?: DaemonEventBus
@@ -37,6 +45,17 @@ export interface DaemonHttpApiOptions {
   mcpPythonPackageService?: DaemonPythonPackageService
   adapterPackageService?: DaemonPackageService
   sandboxPackageService?: DaemonSandboxPackageService
+  /** Owner identity (GET/POST /identity*). */
+  identity?: IdentityRouteDeps['identity']
+  /** Template-based agent creation (GET /templates, POST /agents/create). */
+  agentFactory?: IdentityRouteDeps['agentFactory']
+  /**
+   * POST /daemon/shutdown (loopback only): run the daemon's graceful,
+   * bounded shutdown, the same path as Ctrl+C / SIGTERM (agents unloaded,
+   * compute containers stopped). `adf daemon stop` uses it; on Windows it is
+   * the only graceful way to stop a detached daemon.
+   */
+  requestShutdown?: () => void
 }
 
 export interface DaemonComputeService {
@@ -166,6 +185,16 @@ interface NetworkRecentToolsQuery {
 interface LoopQuery {
   limit?: string
   offset?: string
+  /** Cognition loop to read; absent = main. */
+  loop?: string
+}
+
+interface ChatClearQuery {
+  loop?: string
+}
+
+interface LoopNameParams extends AgentIdParams {
+  name: string
 }
 
 interface LogsQuery {
@@ -228,6 +257,8 @@ interface TaskResolveBody {
 
 interface AskRespondBody {
   answer?: string
+  /** The loop that asked (GET /asks lists it); absent = the first loop holding the id. */
+  loop?: string
 }
 
 interface SuspendRespondBody {
@@ -425,6 +456,8 @@ interface TimerMutationBody {
   warm?: boolean
   payload?: string
   locked?: boolean
+  /** Create only: cognition loop the agent-scope wake targets; absent = main. */
+  loop?: string
 }
 
 interface ReviewQuery {
@@ -435,15 +468,8 @@ interface ReviewAcceptBody {
   filePath?: string
 }
 
-let cachedOpenApiSpec: unknown | null = null
-
 function getOpenApiSpec(): unknown {
-  if (!cachedOpenApiSpec) {
-    cachedOpenApiSpec = JSON.parse(
-      readFileSync(new URL('../../../docs/daemon/openapi.json', import.meta.url), 'utf-8'),
-    )
-  }
-  return cachedOpenApiSpec
+  return openApiSpec
 }
 
 // Key material must never leave the process over HTTP — same deny-list as
@@ -458,7 +484,22 @@ const SETTINGS_SECRET_KEYS = ['ownerMnemonic', 'runtimePrivateKey', 'runtimeEncP
 // mcp-credential-identity.md) — and the owner's key material must not be
 // overwritable. The owner manages these keys through Studio; internal daemon
 // code calls the settings store directly and is unaffected.
-const SETTINGS_WRITE_DENY_KEYS = [...SETTINGS_SECRET_KEYS, 'trustedDaemonEncKeys']
+const SETTINGS_WRITE_DENY_KEYS = [
+  ...SETTINGS_SECRET_KEYS,
+  'trustedDaemonEncKeys',
+  // Owner/runtime identity: changed only through /identity (daemon) or Studio.
+  'ownerDid',
+  'ownerEncPublicKey',
+  'runtimeDid',
+  'runtimeEncPublicKey',
+  'runtimeDelegation',
+  'legacyOwnerDids',
+  'legacyRuntimeDids',
+  'daemonRuntimeDid',
+  'daemonRuntimeDelegation',
+  // A forged "seed-derived" flag would stop Studio's legacy migration.
+  'ownerDidSeedDerived',
+]
 
 // Placeholder returned in place of providers[].apiKey on GET; writes that echo
 // it back keep the stored key instead of clobbering it with the placeholder.
@@ -507,6 +548,22 @@ function redactSettings(all: Record<string, unknown> | null): Record<string, unk
   return redacted
 }
 
+/**
+ * A subscription sign-in completed: loops bricked on an auth error from that
+ * provider type leave `error` (logged + `agent.recovered` per loop). Never
+ * throws — the sign-in itself already succeeded.
+ */
+function recoverAfterSignIn(runtime: RuntimeService, providerType: string, label: string): RuntimeAuthRecovery[] {
+  try {
+    const recovered = runtime.recoverAuthErroredAgents(providerType, label)
+    if (recovered.length > 0) console.log(`[ADF Daemon] ${label} sign-in recovered ${recovered.length} loop(s) from auth errors`)
+    return recovered
+  } catch (err) {
+    console.error(`[ADF Daemon] Auth-error recovery after ${label} sign-in failed:`, err)
+    return []
+  }
+}
+
 export function createDaemonHttpApi(
   runtime: RuntimeService,
   opts: DaemonHttpApiOptions = {},
@@ -544,6 +601,19 @@ export function createDaemonHttpApi(
   server.get('/openapi.json', async () => getOpenApiSpec())
 
   server.get('/health', async () => ({ ok: true }))
+
+  server.post('/daemon/shutdown', async (request, reply) => {
+    const remote = request.socket?.remoteAddress ?? ''
+    if (!(remote === '::1' || remote.startsWith('127.') || remote.startsWith('::ffff:127.'))) {
+      return reply.code(403).send({ error: 'The daemon can only be stopped from this machine (loopback).', code: 'loopback_only' })
+    }
+    if (!opts.requestShutdown) return methodNotAllowed(reply, 'Shutdown is not available on this daemon.')
+    // Answer first; the shutdown closes this server.
+    setTimeout(() => opts.requestShutdown?.(), 50)
+    return reply.code(202).send({ accepted: true, pid: process.pid })
+  })
+
+  registerIdentityRoutes(server, { identity: opts.identity, agentFactory: opts.agentFactory })
 
   server.get<{ Querystring: EventsQuery }>('/events', async (request, reply) => {
     if (!opts.eventBus) return unavailable(reply, 'Event bus is not configured.')
@@ -909,6 +979,9 @@ export function createDaemonHttpApi(
       daemon: {
         uptime: process.uptime(),
         pid: process.pid,
+        version: opts.version ?? process.env.ADF_VERSION ?? process.env.npm_package_version ?? null,
+        node: process.version,
+        platform: `${process.platform}-${process.arch}`,
       },
       settings: buildRuntimeSettingsDiagnostics(opts.settingsStore),
       providers: buildProviderDiagnostics(runtime, opts.settingsStore),
@@ -1088,7 +1161,10 @@ export function createDaemonHttpApi(
 
     const flow = await getChatGptAuthManager().startAuthFlowDetached()
     flow.completion
-      .then(() => console.log('[ADF Daemon] ChatGPT auth completed.'))
+      .then(() => {
+        console.log('[ADF Daemon] ChatGPT auth completed.')
+        recoverAfterSignIn(runtime, 'chatgpt-subscription', 'ChatGPT')
+      })
       .catch(err => console.error('[ADF Daemon] ChatGPT auth failed:', err))
     return {
       started: true,
@@ -1110,7 +1186,8 @@ export function createDaemonHttpApi(
       return badRequest(reply, err instanceof Error ? err.message : String(err))
     }
     console.log('[ADF Daemon] ChatGPT auth completed (relay).')
-    return { success: true, status: getChatGptAuthManager().getAuthStatus() }
+    const recovered = recoverAfterSignIn(runtime, 'chatgpt-subscription', 'ChatGPT')
+    return { success: true, status: getChatGptAuthManager().getAuthStatus(), recovered }
   })
 
   server.post('/auth/chatgpt/logout', async () => {
@@ -1126,7 +1203,10 @@ export function createDaemonHttpApi(
     // polls xAI in the background until approval.
     const flow = await getGrokAuthManager().startAuthFlowDetached()
     flow.completion
-      .then(() => console.log('[ADF Daemon] Grok auth completed.'))
+      .then(() => {
+        console.log('[ADF Daemon] Grok auth completed.')
+        recoverAfterSignIn(runtime, 'grok-subscription', 'Grok')
+      })
       .catch(err => console.error('[ADF Daemon] Grok auth failed:', err))
     return {
       started: true,
@@ -1162,7 +1242,61 @@ export function createDaemonHttpApi(
     const offset = parseOptionalInteger(request.query.offset)
     if (request.query.limit !== undefined && limit === undefined) return badRequest(reply, 'limit must be an integer')
     if (request.query.offset !== undefined && offset === undefined) return badRequest(reply, 'offset must be an integer')
-    return runtime.getAgentLoop(request.params.id, { limit, offset })
+    try {
+      return runtime.getAgentLoop(request.params.id, { limit, offset, loop: request.query.loop })
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  // Cognition loops: `main` plus the agent's inner loops (AgentConfig.loops).
+  // Mutations go through the agent's LoopPool — validation, attenuation,
+  // persistence and archive-on-delete are the pool's contract, not this route's.
+  server.get<{ Params: AgentIdParams }>('/agents/:id/loops', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    try {
+      return runtime.listAgentLoops(request.params.id)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  server.post<{ Params: AgentIdParams; Body: RuntimeLoopCreateInput }>('/agents/:id/loops', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!isRecord(request.body)) return badRequest(reply, 'Request body must be a loop object.')
+    try {
+      return reply.code(201).send(await runtime.createAgentLoop(request.params.id, request.body as RuntimeLoopCreateInput))
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  server.get<{ Params: LoopNameParams }>('/agents/:id/loops/:name', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    try {
+      return { agentId: request.params.id, loop: runtime.getAgentLoopInfo(request.params.id, request.params.name) }
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  server.patch<{ Params: LoopNameParams; Body: RuntimeLoopPatch }>('/agents/:id/loops/:name', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!isRecord(request.body)) return badRequest(reply, 'Request body must be a loop patch object.')
+    try {
+      return await runtime.updateAgentLoop(request.params.id, request.params.name, request.body as RuntimeLoopPatch)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  server.delete<{ Params: LoopNameParams }>('/agents/:id/loops/:name', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    try {
+      return await runtime.deleteAgentLoop(request.params.id, request.params.name)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
   })
 
   server.get<{ Params: AgentIdParams; Querystring: LogsQuery }>('/agents/:id/logs', async (request, reply) => {
@@ -1307,13 +1441,17 @@ export function createDaemonHttpApi(
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const limit = parseOptionalInteger(request.query.limit)
     if (request.query.limit !== undefined && limit === undefined) return badRequest(reply, 'limit must be an integer')
-    return runtime.getAgentChat(request.params.id, limit)
+    try {
+      return runtime.getAgentChat(request.params.id, limit, request.query.loop)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
   })
 
-  server.delete<{ Params: AgentIdParams }>('/agents/:id/chat', async (request, reply) => {
+  server.delete<{ Params: AgentIdParams; Querystring: ChatClearQuery }>('/agents/:id/chat', async (request, reply) => {
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
-      return await runtime.clearAgentChat(request.params.id)
+      return await runtime.clearAgentChat(request.params.id, request.query.loop)
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -1562,8 +1700,10 @@ export function createDaemonHttpApi(
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const answer = request.body?.answer
     if (typeof answer !== 'string') return badRequest(reply, 'answer is required')
+    const loop = request.body?.loop
+    if (loop !== undefined && (typeof loop !== 'string' || !loop)) return badRequest(reply, 'loop must be a non-empty string')
     try {
-      return runtime.answerAgentAsk(request.params.id, request.params.requestId, answer)
+      return runtime.answerAgentAsk(request.params.id, request.params.requestId, answer, loop)
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -1960,11 +2100,35 @@ export function createDaemonHttpApi(
     }
   })
 
-  server.post<{ Params: AgentIdParams }>('/agents/:id/abort', async (request, reply) => {
+  server.post<{ Params: AgentIdParams; Querystring: ChatClearQuery; Body: { loop?: string } | undefined }>('/agents/:id/abort', async (request, reply) => {
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
-      await runtime.abortAgent(request.params.id)
-      return { success: true }
+      const loop = request.query.loop ?? (isRecord(request.body) && typeof request.body.loop === 'string' ? request.body.loop : undefined)
+      await runtime.abortAgent(request.params.id, loop)
+      return { success: true, ...(loop ? { loop } : {}) }
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  // End one loop's running turn and leave it idle (the executor keeps running).
+  server.post<{ Params: AgentIdParams; Querystring: ChatClearQuery; Body: { loop?: string } | undefined }>('/agents/:id/interrupt', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    try {
+      const loop = request.query.loop ?? (isRecord(request.body) && typeof request.body.loop === 'string' ? request.body.loop : undefined)
+      const result = runtime.interruptAgent(request.params.id, loop)
+      return { success: true, ...result }
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  // Compact one loop's history now (Studio's /compact). 409 while that loop is mid-turn.
+  server.post<{ Params: AgentIdParams; Querystring: ChatClearQuery; Body: { loop?: string } | undefined }>('/agents/:id/compact', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    try {
+      const loop = request.query.loop ?? (isRecord(request.body) && typeof request.body.loop === 'string' ? request.body.loop : undefined)
+      return await runtime.compactAgentLoop(request.params.id, loop)
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -1974,6 +2138,18 @@ export function createDaemonHttpApi(
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const text = request.body?.text
     if (!text) return badRequest(reply, 'text is required')
+    const loop = request.body?.loop
+    if (loop !== undefined) {
+      if (typeof loop !== 'string' || !loop) return badRequest(reply, 'loop must be a non-empty string')
+      // The turn runs after the 202, so refuse an unknown or disabled loop
+      // here rather than accepting a turn that can only fail in the log.
+      try {
+        const info = runtime.getAgentLoopInfo(request.params.id, loop)
+        if (!info.enabled) return conflict(reply, `Loop "${loop}" is disabled — enable it before chatting with it.`)
+      } catch (err) {
+        return handleRuntimeError(reply, err)
+      }
+    }
 
     const turnId = `turn_${nanoid(12)}`
     queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop))
@@ -2587,6 +2763,9 @@ function isTaskResolveAction(value: string): value is 'approve' | 'deny' | 'pend
 }
 
 function handleRuntimeError(reply: FastifyReply, err: unknown) {
+  if (err instanceof RuntimeLoopError) {
+    return reply.code(err.statusCode).send({ error: err.message })
+  }
   if (err instanceof RuntimeReviewRequiredError) {
     return reply.code(403).send({
       error: err.message,
@@ -2607,3 +2786,12 @@ function writeSseEvent(stream: NodeJS.WritableStream, envelope: DaemonEventEnvel
   stream.write(`event: ${envelope.event.event_type}\n`)
   stream.write(`data: ${JSON.stringify(envelope)}\n\n`)
 }
+
+// Response shapes of the diagnostics builders, for typed clients (the TUI).
+export type DaemonProviderDiagnostics = ReturnType<typeof buildProviderDiagnostics>
+export type DaemonAuthDiagnostics = Awaited<ReturnType<typeof buildAuthDiagnostics>>
+export type DaemonRuntimeSettingsDiagnostics = ReturnType<typeof buildRuntimeSettingsDiagnostics>
+export type DaemonMcpDiagnostics = ReturnType<typeof buildMcpSettingsDiagnostics>
+export type DaemonAdapterDiagnostics = ReturnType<typeof buildAdapterSettingsDiagnostics>
+export type DaemonNetworkDiagnostics = ReturnType<typeof buildNetworkDiagnostics>
+export type DaemonUsageDiagnostics = ReturnType<typeof buildRuntimeUsageDiagnostics>

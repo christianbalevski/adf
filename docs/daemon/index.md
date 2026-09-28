@@ -9,6 +9,7 @@ Studio remains the visual IDE for authoring, configuring, and observing agents. 
 - [Getting Started](getting-started.md) - Start the daemon, load an agent, chat, inspect status, and autostart agents
 - [HTTP API](http-api.md) - Endpoint reference for agents, loop inspection, review, settings, compute, and ChatGPT auth
 - [CLI](cli.md) - Terminal client for agent control, resources, diagnostics, events, and chat
+- [TUI](tui.md) - Interactive terminal UI for the fleet and every agent's loops (chat sessions)
 - [Runtime Settings](runtime-settings.md) - Direct JSON settings, example schema, providers, MCP, adapters, compute, and mesh
 - [Runtime Architecture](runtime-architecture.md) - RuntimeService, AgentRuntimeBuilder, triggers, MCP, adapters, compute, and mesh serving
 - [Lifecycle Assembly Contract](lifecycle-assembly.md) - Shared profiles, dispatch boundary, ownership, startup, transfer, and shutdown

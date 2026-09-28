@@ -14,7 +14,7 @@
  */
 
 import type { DaemonEventBus } from '../daemon/event-bus'
-import { currentSourceOrUnknown, currentAgentId } from './execution-context'
+import { currentSourceOrUnknown, currentAgentId, currentLoop } from './execution-context'
 import { getUmbilicalBus, type UmbilicalEvent } from './umbilical-bus'
 
 let daemonEventBus: DaemonEventBus | null = null
@@ -37,14 +37,26 @@ export interface EmitUmbilicalInput {
   source?: string
   /** Explicit timestamp. Defaults to Date.now(). */
   timestamp?: number
+  /**
+   * Cognition loop that produced the event. Pass 'main' for an explicit main
+   * (never filled from context). Absent: the async context's loop, but only
+   * when the event is for the context's own agent. Only inner loops are
+   * stamped onto the envelope; main stays absent.
+   */
+  loop?: string
   payload?: Record<string, unknown>
 }
 
 export function emitUmbilicalEvent(input: EmitUmbilicalInput): void {
   const source = input.source ?? currentSourceOrUnknown()
-  const agentId = input.agentId ?? currentAgentId() ?? null
+  const contextAgentId = currentAgentId()
+  const agentId = input.agentId ?? contextAgentId ?? null
   const timestamp = input.timestamp ?? Date.now()
   const payload = input.payload ?? {}
+  // Another agent's event (e.g. mesh delivery into agent-2 from agent-1's
+  // inner-loop turn) must not carry the sender's loop.
+  const loop = input.loop ?? (agentId !== null && agentId === contextAgentId ? currentLoop() : undefined)
+  const loopField = loop && loop !== 'main' ? { loop } : {}
 
   // Temporary diagnostic — remove after the "nothing fires" issue is understood.
   if (process.env.ADF_UMBILICAL_TRACE === '1') {
@@ -59,6 +71,7 @@ export function emitUmbilicalEvent(input: EmitUmbilicalInput): void {
     timestamp,
     source,
     agent_id: agentId,
+    ...loopField,
     payload,
   }
 
@@ -70,6 +83,7 @@ export function emitUmbilicalEvent(input: EmitUmbilicalInput): void {
         timestamp,
         source,
         agent_id: agentId,
+        ...loopField,
         payload,
       })
     } else if (!_missingBusWarned.has(agentId)) {

@@ -29,6 +29,7 @@ const IDENTITY_CRITICAL_KEYS = new Set([
   'runtimeDelegation',
   'legacyOwnerDids',
   'legacyRuntimeDids',
+  'ownerDidSeedDerived',
 ])
 
 const FLUSH_RETRY_DELAY_MS = 1000

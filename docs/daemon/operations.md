@@ -352,4 +352,4 @@ npm run adf -- mcp agent-id
 - The `/events` stream uses an in-memory ring buffer, not durable event storage.
 - File-change triggers are incomplete in headless operation.
 - No built-in authentication on the daemon HTTP API.
-- No cross-process lock prevents Studio and daemon from opening the same `.adf`.
+- No cross-process lock prevents Studio and daemon from opening the same `.adf`. `adf` does refuse to *auto-start* a daemon while Studio runs on the same settings (Studio process, or a mesh server answering with this install's runtime id), but a daemon started by hand (`adf daemon`, `npm run daemon`) is not checked.

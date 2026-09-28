@@ -1,0 +1,560 @@
+// Chat: one conversation per (agent, loop). Loop tabs on top, a virtualized
+// transcript (history backfill + live events), the approval/ask dock and a
+// turn footer. The shell's prompt is the composer; this view adds per-loop
+// behaviour to it (answering asks, Esc to interrupt, queued sends).
+
+import { useEffect, useRef, useState } from 'react'
+import { Box, Text, type DOMElement } from 'ink'
+import { useTheme } from '../../app/theme'
+import { WHEEL_STEP, keyLabel, useKeys, useWheel, type KeyHandler } from '../../app/keys'
+import { newlineKey } from '../../app/terminal'
+import { useActions, useClient, useStore, useTuiSelector, shallowEqual } from '../../state/store'
+import { useAuthNeed, useLoop, useSelectedAgent, useSelectedLoop, useTranscript, useViewState } from '../../state/hooks'
+import { authNeedText } from '../../auth/model'
+import { transcriptKey, type AgentEntry, type LoopState, type TranscriptItem, type TuiState } from '../../state/types'
+import { oneLine, truncate } from '../../ui/text'
+import { MAIN_LOOP, type Timer } from '../../api/types'
+import type { CommandScope } from '../../commands/types'
+import type { PromptCompletion, ViewDefinition, ViewProps } from '../types'
+import { TranscriptItemView } from './Transcript'
+import { LoopTabs } from './LoopTabs'
+import { Dock, dockHeight, topCard, type DockModel } from './Dock'
+import { Footer } from './Footer'
+import { ApprovalDetailsOverlay, DENY_OVERLAY, DETAILS_OVERLAY, DenyOverlay } from './overlays'
+import { chatCommands, readChatState } from './commands'
+import { isPromptEmpty, isPromptMenuOpen } from '../../app/Prompt'
+import {
+  CHAT_VIEW,
+  FOLLOW,
+  applyMention,
+  completeMention,
+  mentionAt,
+  INITIAL_CHAT_STATE,
+  copyToClipboard,
+  cycleLoop,
+  describeSchedule,
+  digestEvents,
+  isExpandable,
+  itemHeight,
+  itemText,
+  lastReply,
+  loopRunning,
+  loopStateLabel,
+  loopTabs,
+  offsetOf,
+  pendingAsksFor,
+  pendingTasksFor,
+  posAt,
+  queuedItems,
+  revealOffset,
+  windowAt,
+  withMarkers,
+  type ChatState,
+  type TimerLookup,
+} from './model'
+
+/** Loop kinds of activity that count as "something new happened here". */
+const UNSEEN_EVENTS = new Set(['turn.delta', 'turn.completed', 'tool.started', 'hil.requested', 'ask.requested', 'agent.error', 'message.received', 'timer.fired', 'loop.compacted'])
+
+const DOUBLE_ESC_MS = 600
+const APPROVE_ARM_MS = 2500
+let lastInputEscAt = 0
+
+function agentLabel(agent: AgentEntry | undefined): string {
+  return agent ? agent.summary.handle || agent.summary.name || agent.summary.id : ''
+}
+
+/** Registers one commit after mount, so it sits above the shell prompt's own input handler. */
+function LateKeys({ handler, layer }: { handler: KeyHandler; layer: 'input' }) {
+  useKeys(handler, { layer })
+  return null
+}
+
+function ChatView({ width: paneWidth, height, focused }: ViewProps) {
+  // One column of air on each side, like the other views.
+  const width = Math.max(10, paneWidth - 2)
+  const theme = useTheme()
+  const g = theme.glyph
+  const store = useStore()
+  const actions = useActions()
+  const client = useClient()
+  const agent = useSelectedAgent()
+  const authNeed = useAuthNeed(agent?.summary.id)
+  const agentId = agent?.summary.id ?? null
+  const loopName = useSelectedLoop()
+  const loop = useLoop(agentId, loopName)
+  const transcript = useTranscript(agentId, loopName)
+  const [chat, setChat] = useViewState<ChatState>(CHAT_VIEW, INITIAL_CHAT_STATE)
+  const key = agentId ? transcriptKey(agentId, loopName) : ''
+  const mountedAt = useRef(Date.now())
+  const [late, setLate] = useState(false)
+  useEffect(() => { setLate(true) }, [])
+
+  // --- data -----------------------------------------------------------------
+
+  useEffect(() => {
+    if (agentId) void actions.ensureTranscript(agentId, loopName)
+  }, [agentId, loopName])
+
+  const [timers, setTimers] = useState<Record<string, Timer[]>>({})
+  const refetchTimers = (id: string) => {
+    client.timers(id).then(result => setTimers(prev => ({ ...prev, [id]: result.timers }))).catch(() => {
+      setTimers(prev => (prev[id] ? prev : { ...prev, [id]: [] }))
+    })
+  }
+  const loopCount = agent?.loops?.length ?? 0
+  useEffect(() => { if (agentId) refetchTimers(agentId) }, [agentId, loopCount])
+
+  const lastEvents = useTuiSelector(s => s.lastEvents)
+  const digested = useRef<ChatState['digested'] | null>(null)
+  const timerAttempts = useRef(new Set<string>())
+  useEffect(() => {
+    const current = (store.getState().viewState[CHAT_VIEW] as ChatState | undefined) ?? INITIAL_CHAT_STATE
+    if (!digested.current) digested.current = current.digested
+    const lookup: TimerLookup = (id, timerId) => {
+      const found = timers[id]?.find(t => t.id === timerId)
+      if (found) return found
+      const attempt = `${id}:${timerId}`
+      if (!timerAttempts.current.has(attempt)) {
+        timerAttempts.current.add(attempt)
+        refetchTimers(id)
+        return 'wait'
+      }
+      return 'unknown'
+    }
+    const { next } = digestEvents({ ...current, digested: digested.current }, lastEvents, lookup)
+    digested.current = next.digested
+    if (next.markers !== current.markers || next.turns !== current.turns) setChat(prev => ({ ...prev, markers: next.markers, turns: next.turns, digested: next.digested }))
+  }, [lastEvents, timers])
+
+  // Unseen activity in the loops not on screen.
+  const latest = useTuiSelector(s => {
+    const out: Record<string, number> = {}
+    if (!agentId) return out
+    for (const a of s.activity) if (a.agentId === agentId && a.loop !== loopName && UNSEEN_EVENTS.has(a.type)) out[a.loop] = a.at
+    return out
+  }, shallowEqual)
+  useEffect(() => {
+    if (!agentId) return
+    const k = transcriptKey(agentId, loopName)
+    return () => {
+      const at = Date.now()
+      setChat(prev => ({ ...prev, seen: { ...prev.seen, [k]: at } }))
+    }
+  }, [agentId, loopName])
+
+  const transcripts = useTuiSelector(s => s.transcripts)
+
+  // --- derived --------------------------------------------------------------
+
+  const tabs = loopTabs(agent)
+  const running = loopRunning(agent, loop) || transcript.live
+  const state = loopStateLabel(agent, loop, loopName)
+  const turn = chat.turns[key]
+  const turnStart = running ? (turn && turn.endedAt === undefined ? turn.startedAt : mountedAt.current) : null
+  const tasks = pendingTasksFor(agent, loopName)
+  const asks = pendingAsksFor(agent, loopName, transcripts)
+  const queued = queuedItems(transcript.items, running, turnStart)
+  const queuedIds = new Set(queued.map(q => q.id))
+  const dockModel: DockModel = { tasks, asks, suspended: loopName === MAIN_LOOP && agent?.executorState === 'suspended', queued }
+  const unseen = new Set(Object.entries(latest).filter(([name, at]) => at > (chat.seen[agentId ? transcriptKey(agentId, name) : ''] ?? 0)).map(([name]) => name))
+  const pendingLoops = new Set((agent?.pendingTasks ?? []).filter(t => t.status === 'pending_approval').map(t => (typeof t.origin === 'string' && t.origin.startsWith('loop:') ? t.origin.slice(5) : MAIN_LOOP)))
+
+  const markers = chat.markers[key]
+  const older: TranscriptItem[] = transcript.oldestOffset > 0
+    ? [{ id: 'chat:older', at: 0, local: true, kind: 'notice', level: 'info', text: transcript.loading ? `loading earlier history${g.ellipsis}` : `${transcript.oldestOffset} earlier rows ${g.sep} scroll up or Home to load` }]
+    : []
+  const items = useMergedItems(transcript.items, markers, older)
+
+  const heightCache = useRef(new WeakMap<TranscriptItem, { w: number; f: string; h: number }>())
+  const isExpanded = (item: TranscriptItem) => !!chat.expanded[`${key}|${item.id}`]
+  const heights = items.map(item => {
+    const expanded = isExpanded(item)
+    const f = `${expanded ? 1 : 0}${chat.showThinking ? 1 : 0}${queuedIds.has(item.id) ? 1 : 0}`
+    const cached = heightCache.current.get(item)
+    if (cached && cached.w === width && cached.f === f) return cached.h
+    const h = Math.max(1, itemHeight(item, width, { expanded, showThinking: chat.showThinking }))
+    heightCache.current.set(item, { w: width, f, h })
+    return h
+  })
+  const keys = items.map(item => item.id)
+
+  const infoRows = 1
+  const dockRows = agentId ? dockHeight(dockModel, width) : 0
+  const paneHeight = Math.max(2, height - 1 - infoRows - 1 - dockRows)
+  const offset = offsetOf(chat.scroll[key], keys, heights)
+  const scrolled = offset > 0
+  const viewport = Math.max(1, paneHeight - (scrolled ? 1 : 0))
+  const win = windowAt(heights, offset, viewport)
+  const selectedId = chat.selected[key] ?? null
+  const topVisible = win.start === 0 && heights.slice(0, win.end + 1).reduce((a, b) => a + b, 0) - win.clip <= viewport
+
+  const loadOlderGuard = useRef('')
+  useEffect(() => {
+    if (!agentId || !scrolled || !topVisible || transcript.loading || transcript.oldestOffset <= 0) return
+    const guard = `${key}:${transcript.oldestOffset}`
+    if (loadOlderGuard.current === guard) return
+    loadOlderGuard.current = guard
+    void actions.loadOlder(agentId, loopName)
+  }, [scrolled, topVisible, transcript.oldestOffset, transcript.loading, key])
+
+  // --- actions --------------------------------------------------------------
+
+  const patch = (fn: (prev: ChatState) => Partial<ChatState>) => setChat(prev => ({ ...prev, ...fn(prev) }))
+  const scrollTo = (nextOffset: number) => patch(prev => ({ scroll: { ...prev.scroll, [key]: posAt(nextOffset, keys, heights, viewport) } }))
+  const follow = () => patch(prev => ({ scroll: { ...prev.scroll, [key]: FOLLOW }, selected: { ...prev.selected, [key]: null } }))
+  const scrollBy = (delta: number) => {
+    const max = Math.max(0, win.total - viewport)
+    if (delta > 0 && offset >= max && agentId) void actions.loadOlder(agentId, loopName)
+    const next = Math.max(0, Math.min(max, offset + delta))
+    if (next === 0) follow()
+    else scrollTo(next)
+  }
+  const select = (delta: number) => {
+    if (items.length === 0) return
+    const at = selectedId ? keys.indexOf(selectedId) : -1
+    let index = at < 0 ? (delta < 0 ? Math.max(0, win.end) : items.length) : at + delta
+    if (index >= items.length) { follow(); return }
+    if (index < 0) {
+      index = 0
+      if (agentId) void actions.loadOlder(agentId, loopName)
+    }
+    const nextOffset = revealOffset(index, heights, offset, viewport)
+    patch(prev => ({
+      selected: { ...prev.selected, [key]: keys[index] },
+      scroll: { ...prev.scroll, [key]: posAt(nextOffset, keys, heights, viewport) },
+    }))
+  }
+  const selectedItem = selectedId ? items.find(item => item.id === selectedId) : undefined
+  const toggle = () => {
+    const target = selectedItem ?? [...items].reverse().find(isExpandable)
+    if (!target || !isExpandable(target)) return
+    const k = `${key}|${target.id}`
+    patch(prev => ({ expanded: { ...prev.expanded, [k]: !prev.expanded[k] }, selected: { ...prev.selected, [key]: target.id } }))
+  }
+  const switchLoop = (delta: number) => {
+    if (!agentId || tabs.length < 2) return
+    actions.selectLoop(agentId, cycleLoop(tabs, loopName, delta))
+  }
+  const copy = async () => {
+    const text = selectedItem ? itemText(selectedItem) : lastReply(transcript.items)
+    if (!text) { actions.toast('Nothing to copy yet', 'warn'); return }
+    const ok = await copyToClipboard(text)
+    actions.toast(ok ? `Copied ${text.length} chars` : `Clipboard unavailable: ${truncate(oneLine(text), 120)}`, ok ? 'success' : 'warn')
+  }
+  const approveTarget = () => {
+    if (selectedItem?.kind === 'hil' && selectedItem.status === 'pending') return { taskId: selectedItem.taskId, tool: selectedItem.tool }
+    const task = tasks[0]
+    return task ? { taskId: task.id, tool: task.tool } : null
+  }
+  const interrupt = () => {
+    if (!agentId) return false
+    void actions.interrupt(agentId, loopName)
+    return true
+  }
+  // `y` approves at once only on a selected pending approval; otherwise it
+  // arms and a second `y` approves, so a stray keypress never runs a tool.
+  const armed = useRef<{ taskId: string; at: number } | null>(null)
+
+  // --- keys -----------------------------------------------------------------
+
+  useKeys((input, k) => {
+    if (!agentId) return false
+    if ((k.ctrl || k.shift) && k.leftArrow) { switchLoop(-1); return true }
+    if ((k.ctrl || k.shift) && k.rightArrow) { switchLoop(1); return true }
+    if (k.ctrl || k.meta) return false
+    if (k.leftArrow || input === '[') { switchLoop(-1); return true }
+    if (k.rightArrow || input === ']') { switchLoop(1); return true }
+    if (k.upArrow || input === 'k') { select(-1); return true }
+    if (k.downArrow || input === 'j') { select(1); return true }
+    if (k.pageUp) { scrollBy(Math.max(1, viewport - 2)); return true }
+    if (k.pageDown) { scrollBy(-Math.max(1, viewport - 2)); return true }
+    if (k.home || input === 'g') { scrollBy(win.total); return true }
+    if (k.end || input === 'G') { follow(); return true }
+    if (k.return || input === ' ') { toggle(); return true }
+    if (input === 't') { patch(prev => ({ showThinking: !prev.showThinking })); actions.toast(`Thinking ${chat.showThinking ? 'collapsed' : 'expanded'}`, 'info', 1500); return true }
+    if (input === 'c') { void copy(); return true }
+    const card = topCard(dockModel)
+    if (input === 'y' || input === 'n' || input === 'v') {
+      const target = approveTarget()
+      if (target) {
+        if (input === 'y') {
+          const explicit = selectedItem?.kind === 'hil' && selectedItem.status === 'pending' && selectedItem.taskId === target.taskId
+          const prior = armed.current
+          if (explicit || (prior && prior.taskId === target.taskId && Date.now() - prior.at < APPROVE_ARM_MS)) {
+            armed.current = null
+            void actions.resolveTask(agentId, target.taskId, 'approve')
+          } else {
+            armed.current = { taskId: target.taskId, at: Date.now() }
+            actions.toast(`Press y again to approve ${target.tool} (${target.taskId})`, 'warn', APPROVE_ARM_MS)
+          }
+        } else actions.pushOverlay({ kind: input === 'n' ? DENY_OVERLAY : DETAILS_OVERLAY, props: { agentId, taskId: target.taskId, tool: target.tool } })
+        return true
+      }
+      if (card === 'suspend' && input === 'y') { void actions.respondSuspend(agentId, true); return true }
+      if (card === 'suspend' && input === 'n') {
+        void actions.confirm({ title: 'Shut down', message: `Shut ${agentLabel(agent)} down instead of resuming?`, danger: true })
+          .then(ok => { if (ok) void actions.respondSuspend(agentId, false) })
+        return true
+      }
+      return false
+    }
+    if (input === 'a' && card === 'ask') { actions.setFocus('input'); return true }
+    return false
+  }, { layer: 'main', active: focused })
+
+  // Esc interrupts from the transcript too (the prompt's own layer is below).
+  useKeys((_input, k) => {
+    // From the sidebar Esc just leaves the sidebar (shell); it never interrupts.
+    if (!k.escape || store.getState().focus === 'sidebar') return false
+    if (running) return interrupt()
+    return false
+  }, { layer: 'view' })
+
+  // The wheel scrolls the transcript whichever pane has focus.
+  const transcriptRef = useRef<DOMElement>(null)
+  useWheel(transcriptRef, delta => scrollBy(-delta * WHEEL_STEP), { active: !!agentId })
+
+  // Runs before the prompt's own keys. Ctrl/Shift+←/→ are left to the prompt
+  // (word jumps) and the shell (loop switch). An empty composer has nothing
+  // to move through, so ↑/↓ Home/End scroll the transcript there; once there
+  // is text they edit it (history: Ctrl+↑/↓).
+  const inputKeys: KeyHandler = (_input, k) => {
+    if (!agentId) return false
+    if (k.pageUp) { scrollBy(Math.max(1, viewport - 2)); return true }
+    if (k.pageDown) { scrollBy(-Math.max(1, viewport - 2)); return true }
+    // Sending jumps back to the live end, wherever the transcript was scrolled.
+    if (k.return && !k.shift && !k.meta && !k.ctrl && !isPromptEmpty() && !isPromptMenuOpen() && offset > 0) follow()
+    if (!k.ctrl && !k.meta && !k.shift && isPromptEmpty() && !isPromptMenuOpen()) {
+      if (k.upArrow) { scrollBy(1); return true }
+      if (k.downArrow) { if (offset > 0) scrollBy(-1); return true }
+      if (k.home) { scrollBy(win.total); return true }
+      if (k.end) { follow(); return true }
+    }
+    if (k.escape) {
+      if (isPromptMenuOpen()) return false
+      if (running) return interrupt()
+      if (Date.now() - lastInputEscAt < DOUBLE_ESC_MS) {
+        lastInputEscAt = 0
+        actions.prefillPrompt('')
+        return true
+      }
+      lastInputEscAt = Date.now()
+      return true
+    }
+    return false
+  }
+
+  // --- render ---------------------------------------------------------------
+
+  if (!agent || !agentId) {
+    return (
+      <Box flexDirection="column" padding={1} width={paneWidth} height={height}>
+        <Text color={theme.color.muted}>No agent selected.</Text>
+        <Text color={theme.color.dim}>Pick one in the sidebar (Tab), with /agent &lt;handle&gt;, or from the Fleet view (1).</Text>
+      </Box>
+    )
+  }
+
+  const label = agentLabel(agent)
+  const loopTimers = (timers[agentId] ?? []).filter(t => !t.expired && (t.loop ?? MAIN_LOOP) === loopName)
+  const info = loopInfoLine(loop?.info.isMain !== false && loopName === MAIN_LOOP, loop, loopTimers, agent, g.sep)
+  const model = loop?.info.config?.model?.model_id ?? agent.config?.model?.model_id ?? agent.lastModel
+  const visible = items.slice(win.start, win.end + 1)
+
+  return (
+    <Box flexDirection="column" width={paneWidth} height={height} paddingX={1}>
+      <LoopTabs agentLabel={label} tabs={tabs} selected={loopName} unseen={unseen} pending={pendingLoops} width={width} />
+      {authNeed ? (
+        <Text wrap="truncate-end"><Text bold color={theme.color.warn}>{g.warn} {authNeedText(authNeed)}</Text><Text color={theme.color.dim}> {g.sep} {info}</Text></Text>
+      ) : (
+        <Text wrap="truncate-end" color={loop && !loop.info.enabled ? theme.color.warn : theme.color.dim}>{info}</Text>
+      )}
+      <Box ref={transcriptRef} height={paneHeight} width={width} flexDirection="column" overflow="hidden">
+        {items.length === 0 ? (
+          <Box height={paneHeight} flexDirection="column" justifyContent="flex-end">
+            <Text color={theme.color.muted}>
+              {transcript.loading || !transcript.loaded ? `Loading ${loopName}${g.ellipsis}` : `No messages in ${loopName} yet ${g.sep} type below to talk to ${loopName === MAIN_LOOP ? label : `the ${loopName} loop`}`}
+            </Text>
+          </Box>
+        ) : (
+          <Box height={viewport} width={width} flexDirection="column" overflow="hidden" justifyContent="flex-end">
+            <Box flexDirection="column" flexShrink={0} marginBottom={-win.clip}>
+              {visible.map(item => (
+                <TranscriptItemView
+                  key={item.id}
+                  item={item}
+                  width={width}
+                  selected={focused && item.id === selectedId}
+                  expanded={isExpanded(item)}
+                  showThinking={chat.showThinking}
+                  queued={queuedIds.has(item.id)}
+                />
+              ))}
+            </Box>
+          </Box>
+        )}
+        {scrolled ? (
+          <Text wrap="truncate-end" color={theme.color.accent}>{g.expanded} {offset} newer row{offset === 1 ? '' : 's'} below {g.sep} End to follow live</Text>
+        ) : null}
+      </Box>
+      {/* Keyed by width: after some resize sequences ink reuses a stale layout
+          for the card and drops its title line; a fresh subtree lays out clean. */}
+      <Dock key={`dock:${width}`} model={dockModel} width={width} focused={focused} agentLabel={loopName === MAIN_LOOP ? label : `${label} ${g.pointer} ${loopName}`} />
+      <Footer width={width} running={running} state={state} turn={turn} since={mountedAt.current} model={model} error={transcript.error} />
+      {late ? <LateKeys handler={inputKeys} layer="input" /> : null}
+    </Box>
+  )
+}
+
+function useMergedItems(items: TranscriptItem[], markers: ChatState['markers'][string] | undefined, older: TranscriptItem[]): TranscriptItem[] {
+  const cache = useRef<{ items: TranscriptItem[]; markers: unknown; older: string; out: TranscriptItem[] } | null>(null)
+  const olderKey = older.map(o => (o.kind === 'notice' ? o.text : '')).join()
+  const c = cache.current
+  if (c && c.items === items && c.markers === markers && c.older === olderKey) return c.out
+  const out = [...older, ...withMarkers(items, markers)]
+  cache.current = { items, markers, older: olderKey, out }
+  return out
+}
+
+function loopInfoLine(isMain: boolean, loop: LoopState | undefined, timers: Timer[], agent: AgentEntry, sep: string): string {
+  const parts: string[] = []
+  const schedule = timers.map(t => `${describeSchedule(t)} (timer #${t.id})`).join(', ')
+  if (isMain) {
+    const inner = (agent.loops ?? []).filter(l => !l.info.isMain).length
+    parts.push('main loop: the agent itself, talks to you')
+    if (inner > 0) parts.push(`${inner} inner loop${inner === 1 ? '' : 's'}`)
+    if (agent.unreadInbox > 0) parts.push(`${agent.unreadInbox} new inbox`)
+  } else if (loop) {
+    if (!loop.info.enabled) parts.push(`disabled: /loop on ${loop.info.name} to enable`)
+    parts.push(`goal: ${oneLine(loop.info.goal || '(none)')}`)
+    if (loop.info.config?.autonomous) parts.push('autonomous')
+  }
+  if (schedule) parts.push(`wakes ${schedule}`)
+  return parts.join(` ${sep} `)
+}
+
+// --- prompt integration ---------------------------------------------------------
+
+function pendingAskFor(state: TuiState, agentId: string | null, loop: string) {
+  if (!agentId) return undefined
+  return pendingAsksFor(state.agents[agentId], loop, state.transcripts)[0]
+}
+
+function placeholder(scope: CommandScope): string {
+  const state = scope.state()
+  const agent = scope.agentId ? state.agents[scope.agentId] : undefined
+  if (!agent || !scope.agentId) return 'Select an agent (Tab → sidebar) or type /help'
+  const label = agentLabel(agent)
+  const target = scope.loop === MAIN_LOOP ? label : `${label} › ${scope.loop}`
+  if (pendingAskFor(state, scope.agentId, scope.loop)) return `Answer ${label}'s question · Enter sends the answer`
+  const loopState = agent.loops?.find(l => l.info.name === scope.loop)
+  if (loopState && !loopState.info.enabled) return `${scope.loop} is disabled · /loop on ${scope.loop} to enable it`
+  if (loopRunning(agent, loopState)) return `Message ${target} · queued until the turn ends · Esc interrupts`
+  return `Message ${target}   / commands · ${keyLabel(newlineKey())} newline`
+}
+
+// `@path` completion over the agent's files; the list is cached briefly per agent.
+const FILES_TTL_MS = 10_000
+const fileCache = new Map<string, { at: number; paths: Promise<string[]> }>()
+
+async function completeFiles(value: string, cursor: number, scope: CommandScope): Promise<PromptCompletion[]> {
+  const mention = mentionAt(value, cursor)
+  if (!mention || !scope.agentId) return []
+  const agentId = scope.agentId
+  let cached = fileCache.get(agentId)
+  if (!cached || Date.now() - cached.at > FILES_TTL_MS) {
+    cached = { at: Date.now(), paths: scope.client.files(agentId).then(r => r.files.map(f => f.path)).catch(() => []) }
+    fileCache.set(agentId, cached)
+  }
+  const paths = await cached.paths
+  return completeMention(mention.partial, paths, 6).map(path => {
+    const applied = applyMention(value, cursor, path)
+    return { value: applied.value, cursor: applied.cursor, label: `@${path}`, description: 'agent file' }
+  })
+}
+
+const chat: ViewDefinition = {
+  id: CHAT_VIEW,
+  title: 'Chat',
+  key: '2',
+  component: ChatView,
+  prompt: {
+    placeholder,
+    onSubmit: async (text, ctx) => {
+      const ask = pendingAskFor(ctx.state(), ctx.agentId, ctx.loop)
+      if (!ask || !ctx.agentId) return false
+      await ctx.actions.answerAsk(ctx.agentId, ask.requestId, text, ask.loop ?? ctx.loop)
+      return true
+    },
+    historyKey: scope => (scope.agentId ? transcriptKey(scope.agentId, scope.loop) : 'none'),
+    draftKey: scope => (scope.agentId ? `chat:${transcriptKey(scope.agentId, scope.loop)}` : 'chat'),
+    complete: completeFiles,
+  },
+  // Hints follow the focused zone: the composer, or the transcript.
+  keyHints: scope => {
+    const state = scope.state()
+    const agent = scope.agentId ? state.agents[scope.agentId] : undefined
+    if (!agent) return [{ keys: 'shift+tab', label: 'sidebar: pick an agent' }, { keys: '/', label: 'commands' }]
+    const running = loopRunning(agent, agent.loops?.find(l => l.info.name === scope.loop))
+    const loopKeys = { keys: 'shift+left shift+right', label: 'loop' }
+    if (state.focus === 'main') {
+      const pending = pendingTasksFor(agent, scope.loop).length > 0
+      return [
+        ...(running ? [{ keys: 'esc', label: 'interrupt' }] : []),
+        ...(pending ? [{ keys: 'y', label: 'approve (twice)' }, { keys: 'n', label: 'deny' }] : []),
+        { keys: 'up down', label: 'select' },
+        { keys: 'enter', label: 'expand' },
+        loopKeys,
+        { keys: 'c', label: 'copy' },
+        { keys: 't', label: readChatState(scope).showThinking ? 'hide thinking' : 'thinking' },
+      ]
+    }
+    return [
+      running ? { keys: 'esc', label: 'interrupt' } : { keys: 'enter', label: 'send' },
+      { keys: newlineKey(), label: 'newline' },
+      loopKeys,
+      { keys: 'up down', label: 'scroll' },
+      // Digits type into the composer; say how to reach the other views.
+      { keys: 'alt+1-6', label: 'views' },
+      { keys: 'ctrl+up', label: 'history' },
+    ]
+  },
+  helpKeys: [
+    {
+      keys: [
+        { keys: 'enter', label: 'Send to the selected loop (queued while it runs)' },
+        { keys: 'shift+left shift+right', label: 'Previous / next loop tab (also Ctrl+←/→ on an empty prompt; [ ] and ← → in the transcript)' },
+        { keys: 'up down', label: 'In the transcript (Tab from the prompt): select an item (j k)' },
+        { keys: 'enter space', label: 'Expand / collapse the selected item (thinking, tool call, notice)' },
+        { keys: 'pgup pgdn', label: 'Scroll (also while typing); the mouse wheel scrolls too' },
+        { keys: 'up down', label: 'With an empty prompt: scroll the transcript line by line (Home / End: top / follow live)' },
+        { keys: 'ctrl+up ctrl+down', label: 'Prompt history of this agent › loop (↑ ↓ too once the prompt has text, on its first / last line)' },
+        { keys: 'shift+enter alt+enter', label: 'Newline in the prompt (Ctrl+J, or \\ then Enter; /terminal-setup for Shift+Enter)' },
+        { keys: 'home end', label: 'Top, loading older history (g) · follow live (G)' },
+        { keys: 't', label: 'Expand / collapse all thinking' },
+        { keys: 'c', label: 'Copy the selected item, else the last reply' },
+        { keys: 'esc', label: 'Interrupt this loop’s running turn: it goes idle and keeps working (not a stop)' },
+        { keys: 'esc esc', label: 'Clear the prompt' },
+        { keys: 'tab shift+tab', label: 'Leave the prompt for the transcript / sidebar (Esc never does)' },
+        { keys: '@', label: 'In the prompt: complete an agent file path (Tab)' },
+      ],
+    },
+    {
+      title: 'Approvals and questions (the card under the transcript)',
+      keys: [
+        { keys: 'y', label: 'Approve: press twice, or once on a selected approval · resume a suspended agent' },
+        { keys: 'n', label: 'Deny, with an optional reason · shut a suspended agent down (asks)' },
+        { keys: 'v', label: 'Full details of the tool call' },
+        { keys: 'a', label: 'Answer the agent’s question (the prompt sends the answer)' },
+      ],
+    },
+  ],
+  overlays: {
+    [DENY_OVERLAY]: DenyOverlay,
+    [DETAILS_OVERLAY]: ApprovalDetailsOverlay,
+  },
+  ...chatCommands,
+}
+
+export default chat

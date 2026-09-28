@@ -1090,7 +1090,10 @@ export class AdfWorkspace {
   /** Emit an umbilical event from a workspace choke point. Never throws. */
   private emitUmbilical(eventType: string, payload: Record<string, unknown>): void {
     try {
-      emitUmbilicalEvent({ event_type: eventType, agentId: this.ownAgentId(), payload })
+      // A forLoop() view stamps its loop: owner actions (clear, compact,
+      // loop delete) run with no loop in the async context.
+      const loop = this.boundLoop && this.boundLoop !== MAIN_LOOP ? { loop: this.boundLoop } : {}
+      emitUmbilicalEvent({ event_type: eventType, agentId: this.ownAgentId(), ...loop, payload })
     } catch { /* emit is best-effort */ }
   }
 
@@ -1866,6 +1869,10 @@ export class AdfWorkspace {
 
   updateTimer(id: number, schedule: TimerSchedule, nextWakeAt: number, payload?: string, scope?: string[], lambda?: string, warm?: boolean, locked?: boolean): boolean {
     return this.db.updateTimer(id, schedule, nextWakeAt, payload, scope, lambda, warm, locked)
+  }
+
+  setTimerLoop(id: number, loop: string | null): boolean {
+    return this.db.setTimerLoop(id, loop)
   }
 
   deleteTimer(id: number): boolean {

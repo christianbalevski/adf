@@ -2,6 +2,44 @@
 
 This guide starts the ADF daemon, the headless ADF runtime that serves an API, then connects to its local HTTP API, loads an agent, sends a chat turn, and inspects runtime state without opening Studio.
 
+## Install from npm
+
+The quickest route, with no source checkout and no Electron: the [`agent-document-format`](https://www.npmjs.com/package/agent-document-format) package ships the daemon, the CLI and the TUI as one `adf` command. It needs Node.js 22 or newer. Native modules (SQLite, the OS keychain) install from prebuilt binaries for Windows x64, macOS (arm64/x64) and Linux (x64/arm64, glibc), so no compiler is needed.
+
+```bash
+npm i -g agent-document-format
+adf
+```
+
+That is all: `adf` opens the TUI and, when no daemon answers at the local daemon URL, starts one in the background first (a `Starting the ADF daemon…` line, then the TUI). Quitting the TUI leaves the daemon and its agents running. One-shot commands do the same:
+
+```bash
+adf agents                 # one-shot CLI; `adf help` lists every command
+adf identity               # owner identity status; `adf identity create|restore`
+adf --url http://127.0.0.1:7400 agents   # or ADF_DAEMON_URL; starts a daemon on port 7400 if needed
+```
+
+Manage the background daemon with:
+
+```bash
+adf daemon status          # running? pid, uptime, version, log file
+adf daemon logs -f         # its log (<data dir>/logs/adf-daemon.log); -n 200 for more lines
+adf daemon stop            # graceful: agents unloaded, compute containers stopped
+adf daemon restart
+adf daemon start           # start it without opening anything
+adf daemon                 # or run it in the foreground (Ctrl+C stops it); --port, --host, --settings
+```
+
+Auto-start only happens for a daemon URL on this machine (loopback); `--no-daemon` or `ADF_NO_AUTOSTART=1` turns it off. The background daemon is detached from the terminal (it survives closing it; no console window on Windows) and writes a pid file next to its settings (`adf-daemon.pid`, or `adf-daemon-<port>.pid` off the default port; `ADF_DAEMON_PIDFILE` overrides).
+
+**ADF Studio:** Studio and the daemon would run the same agents from the same files, so `adf` does not start a daemon while Studio runs on the same settings (it checks for Studio's process and for a mesh server answering with this install's runtime id) and says so. Quit Studio first, or keep using Studio. `adf daemon start --force` overrides the check.
+
+Everywhere this guide says `npm run daemon`, use `adf daemon`; for `npm run adf -- <command>`, use `adf <command>`. The environment variables below apply unchanged. The npm daemon reads the same default settings file and OS-keychain owner identity as Studio on the same machine; point `ADF_DAEMON_SETTINGS` / `ADF_USER_DATA_DIR` elsewhere to keep it separate.
+
+To start it at login instead of on first use, use your platform's service manager (systemd user unit, launchd agent, or a Windows scheduled task) with `adf daemon` as the command. Upgrade with `npm install -g agent-document-format@latest`.
+
+The rest of this guide runs the daemon from a source checkout.
+
 ## Prerequisites
 
 Before running the daemon:
@@ -88,6 +126,35 @@ The response includes the settings file path and the loaded JSON settings:
 The daemon settings store reads and writes JSON directly. It does not provide the Studio settings UI, but it uses the same key names.
 
 You do not need to open Studio to configure the daemon. See [Runtime Settings](runtime-settings.md) for a direct settings file example and the supported shape.
+
+## Set Up Your Owner Identity
+
+New agents are sealed under your owner identity — the same 12-word seed phrase
+identity ADF Studio uses, so the same phrase makes you the same owner in both.
+
+```bash
+npm run adf -- identity            # none | locked | restore-needed | ready
+npm run adf -- identity new        # create one; write the 12 words down (shown once)
+npm run adf -- identity restore    # or restore the phrase you already have
+```
+
+On a machine where Studio is already set up, the daemon picks the phrase up
+from the OS keychain and reports `ready` with no steps. Without a usable OS
+keychain (headless Linux), the phrase is stored in a passphrase-encrypted file
+next to the daemon settings; unlock it after restarts with
+`npm run adf -- identity unlock`, or start the daemon with
+`ADF_OWNER_PASSPHRASE` / `ADF_OWNER_PASSPHRASE_FILE`.
+
+Then create agents from a template:
+
+```bash
+npm run adf -- templates
+npm run adf -- new agent-1 --start
+```
+
+Until the identity is ready, `adf new` is refused, and child agents spawned by
+agents (`sys_create_adf`) are created without identity keys rather than with
+unsealed ones.
 
 ## Load an Agent
 

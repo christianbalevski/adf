@@ -869,6 +869,27 @@ export class AgentRuntimeBuilder {
     return { manager }
   }
 
+  /**
+   * After sealed credentials unlock: replace every locked-credentials stub
+   * adapter with the real one (stop the stub, then reconcile starts the
+   * enabled adapter with its registered factory). Returns the types restarted.
+   */
+  async restartLockedAdapters(manager: ChannelAdapterManager, workspace: AdfWorkspace): Promise<string[]> {
+    const locked = manager.getStates()
+      .filter(state => state.status === 'error' && state.error?.startsWith(LOCKED_ADAPTER_ERROR_PREFIX))
+      .map(state => state.type)
+    if (locked.length === 0) return []
+    for (const type of locked) await manager.stopAdapter(type)
+    await manager.reconcile({
+      registrations: this.getAdapterRegistrations(),
+      adaptersConfig: workspace.getAgentConfig().adapters,
+      workspace,
+      derivedKey: null,
+      resolveFactory: (type, reg) => this.resolveAdapterFactory(type, reg),
+    })
+    return locked
+  }
+
   private async resolveAdapterFactory(
     adapterType: string,
     registration: AdapterRegistration,
@@ -971,13 +992,20 @@ export function adapterCredentialsLocked(
   }
 }
 
+/** Error prefix of the locked-credentials stub adapter (recognized for restart after unlock). */
+export const LOCKED_ADAPTER_ERROR_PREFIX = 'credentials locked'
+
+/** What the owner does to unlock sealed credentials on a daemon. */
+export const CREDENTIALS_UNLOCK_HINT =
+  'Make the owner identity available: `adf identity restore` (seed phrase) or `adf identity unlock` (passphrase file), or /identity in the TUI.'
+
 /**
  * Stub adapter whose start() rejects with a clear "credentials locked"
  * message: startAdapter records the error status/log without ever attempting
  * a real connection.
  */
 export function createLockedCredentialsAdapter(adapterType: string): ChannelAdapter {
-  const error = `credentials locked — envelope-sealed credentials for "${adapterType}" cannot be decrypted in this process. Start Studio once or configure daemon identity.`
+  const error = `${LOCKED_ADAPTER_ERROR_PREFIX} — envelope-sealed credentials for "${adapterType}" cannot be decrypted in this process. ${CREDENTIALS_UNLOCK_HINT} The adapter restarts automatically once they unlock.`
   return {
     start: async () => { throw new Error(error) },
     stop: async () => {},

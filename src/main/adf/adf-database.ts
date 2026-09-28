@@ -4068,6 +4068,11 @@ export class AdfDatabase {
     return result.changes > 0
   }
 
+  /** Re-point a timer at another loop (null = main). */
+  setTimerLoop(id: number, loop: string | null): boolean {
+    return this.db.prepare('UPDATE adf_timers SET loop = ? WHERE id = ?').run(loop, id).changes > 0
+  }
+
   deleteTimer(id: number): boolean {
     const result = this.stmts.deleteTimer!.run(id)
     return result.changes > 0

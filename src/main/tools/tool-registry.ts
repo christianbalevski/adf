@@ -122,6 +122,7 @@ export class ToolRegistry {
     // tool, this is what the stall report names. No-op when the monitor is off.
     markActivity('tool', name)
     const agentId = context?.agentId
+    const loop = ToolRegistry.safeLoopName(workspace)
     const base: Record<string, unknown> = {
       ...(ToolRegistry.safeFilePath(workspace) ? { filePath: ToolRegistry.safeFilePath(workspace) } : {}),
       name,
@@ -129,7 +130,7 @@ export class ToolRegistry {
       input: stripInternalToolFlags(input),
     }
     if (!context?.suppressStarted) {
-      ToolRegistry.emitToolEvent('tool.started', base, agentId)
+      ToolRegistry.emitToolEvent('tool.started', base, agentId, loop)
     }
 
     let result: ToolResult
@@ -142,7 +143,7 @@ export class ToolRegistry {
         ...base,
         result: { content: `Tool "${name}" execution failed: ${String(error)}`, isError: true },
         isError: true,
-      }, agentId)
+      }, agentId, loop)
       throw error
     }
 
@@ -151,7 +152,7 @@ export class ToolRegistry {
       ...base,
       result: { content: ToolRegistry.truncateForEvent(result.content), isError },
       isError,
-    }, agentId)
+    }, agentId, loop)
     return result
   }
 
@@ -164,6 +165,15 @@ export class ToolRegistry {
     }
   }
 
+  /** The workspace's cognition loop (a forLoop() view), if any. Never throws. */
+  private static safeLoopName(workspace: AdfWorkspace): string | undefined {
+    try {
+      return typeof workspace?.getLoopName === 'function' ? workspace.getLoopName() : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   private static truncateForEvent(content: string): string {
     if (typeof content !== 'string') return content
     if (Buffer.byteLength(content, 'utf-8') <= MAX_EVENT_RESULT_BYTES) return content
@@ -171,9 +181,9 @@ export class ToolRegistry {
   }
 
   /** Emission is observability — it must never break a tool call. */
-  private static emitToolEvent(eventType: string, payload: Record<string, unknown>, agentId?: string): void {
+  private static emitToolEvent(eventType: string, payload: Record<string, unknown>, agentId?: string, loop?: string): void {
     try {
-      emitUmbilicalEvent({ event_type: eventType, payload, ...(agentId ? { agentId } : {}) })
+      emitUmbilicalEvent({ event_type: eventType, payload, ...(agentId ? { agentId } : {}), ...(loop ? { loop } : {}) })
     } catch { /* best-effort */ }
   }
 
