@@ -86,17 +86,21 @@ The same tag also releases the terminal-only package (daemon + CLI + TUI,
 `npm-publish` jobs in `release.yml` bundle it (`npm run build:npm`, output in
 `dist/npm`, version = root `package.json`), install the tarball on Linux,
 macOS and Windows (Node 22 and 24), boot a daemon, and publish with
-`npm publish --provenance --access public`. They run independently of the
-Studio jobs.
+`npm publish --access public` through npm **trusted publishing**: the job
+authenticates with GitHub's OIDC token, so there is no npm token secret, and
+npm attaches provenance automatically. They run independently of the Studio
+jobs.
 
 One-time setup:
 
-1. `npm login`, then claim the name by publishing the first version by hand:
-   `npm run build:npm && npm publish ./dist/npm --access public` (or let CI
-   do it once step 2 is done).
-2. Create an npm **granular access token** with publish rights on
-   `agent-document-format` and add it as the repo secret `NPM_TOKEN`. Until
-   the secret exists, `npm-publish` logs a notice and skips.
+1. `npm login`, then claim the name by publishing the first version by hand
+   (trusted publishers can only be added to a package that exists):
+   `npm run build:npm && npm publish ./dist/npm --access public`.
+2. On npmjs.com: **agent-document-format → Settings → Trusted Publisher →
+   GitHub Actions**, with organization/user `christianbalevski`, repository
+   `adf`, workflow filename `release.yml` (no environment). Until this is
+   set, `npm-publish` fails with an authentication error; the Studio release
+   is unaffected.
 
 Local check: `npm run build:npm && npm pack ./dist/npm`, then install the
 tarball with an isolated prefix (`npm_config_prefix=/tmp/adf-prefix npm i -g

@@ -142,7 +142,7 @@ jobs:
   # Independent of the Studio jobs above: a failure here never blocks the
   # Studio release, and vice versa. Built once, smoke-tested from the tarball
   # on every OS (native deps must install from prebuilt binaries), then
-  # published — only when the NPM_TOKEN secret exists.
+  # published via npm trusted publishing (OIDC, no token secret).
   npm-build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -214,27 +214,22 @@ jobs:
     needs: npm-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # npm trusted publishing (OIDC): no token secret. The package's npmjs.com
+    # settings must list this repo + release.yml as a trusted publisher.
     permissions:
       contents: read
-      id-token: write # npm provenance
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      id-token: write
     steps:
-      - name: Skip without NPM_TOKEN
-        if: env.NPM_TOKEN == ''
-        run: echo "::notice::NPM_TOKEN secret not set — skipping npm publish"
       - uses: actions/setup-node@v5
-        if: env.NPM_TOKEN != ''
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+      - name: Update npm
+        run: npm install -g npm@latest
       - uses: actions/download-artifact@v4
-        if: env.NPM_TOKEN != ''
         with:
           name: npm-tarball
       - name: Publish
-        if: env.NPM_TOKEN != ''
         shell: bash
-        run: npm publish ./agent-document-format-*.tgz --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish ./agent-document-format-*.tgz --access public
