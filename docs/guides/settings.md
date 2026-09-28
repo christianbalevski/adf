@@ -94,7 +94,7 @@ Setup:
 1. Add a provider and pick **ChatGPT** under Subscriptions
 2. Click **Sign in with ChatGPT** — this opens your browser for OAuth authentication
 3. After signing in, the provider shows your email and authentication status
-4. Select a model from the dropdown (e.g., `gpt-5.6-sol`, `gpt-5.4-mini`)
+4. Select a model from the dropdown (e.g., `gpt-6-sol`, `gpt-5.6-luna`)
 
 Notes:
 - Authentication is app-wide within Studio — all agents using this provider share the same session. The daemon keeps its own separate session (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
@@ -103,7 +103,7 @@ Notes:
 - The API key and Base URL fields are not used — authentication is handled entirely via OAuth
 - These models are reasoning models — temperature and topP settings are not supported and are automatically omitted
 
-Available models: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`
+Available models: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`
 
 Note on gpt-5.6 reasoning traces: the codex backend ships reasoning summaries in an "experimental" headline-only format — each section is a bold headline whose body is an empty `<!-- -->` placeholder that is never filled server-side. adf strips the placeholders and shows the headlines; the full chain-of-thought is not available from the backend.
 

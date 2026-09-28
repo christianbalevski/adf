@@ -22,7 +22,7 @@ describe('ChatGPT subscription request headers', () => {
     expect(String(url)).toBe('https://chatgpt.com/backend-api/codex/responses')
     const headers = new Headers(init?.headers)
     expect(headers.get('originator')).toBe('codex_cli_rs')
-    expect(headers.get('version')).toBe('0.153.0')
+    expect(headers.get('version')).toBe('0.155.0')
     expect(headers.get('Authorization')).toBe('Bearer test-token')
     expect(headers.get('ChatGPT-Account-ID')).toBe('test-account')
     expect(JSON.parse(String(init?.body))).toMatchObject({
