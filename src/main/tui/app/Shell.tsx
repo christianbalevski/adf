@@ -1,15 +1,19 @@
-import { Component, useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react'
-import { Box, Text, useApp, useBoxMetrics, useInput, useStdout, useWindowSize, type DOMElement } from 'ink'
+import { Component, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react'
+import { Box, Text, useApp, useBoxMetrics, useInput, useStdin, useStdout, useWindowSize, type DOMElement } from 'ink'
 import { useTheme } from './theme'
 import { useShell } from './shell-context'
 import { elementRect, rectContains, useKeyRouter, useKeys } from './keys'
-import { noteShiftEnter, parseMouse } from './terminal'
+import { noteRawInput, noteShiftEnter, parseMouse } from './terminal'
+import { createMouseController } from './selection'
+import { getScreenText, setHighlight, setRepaint } from './screen'
+import { copyToClipboard, readClipboard } from './clipboard'
+import { insertIntoFocusedInput } from '../ui/TextInput'
 import { readLayout, setSidebarHidden } from './layout'
 import { Header, createHeaderHits } from './Header'
 import { FleetSidebar } from '../views/fleet/Sidebar'
 import { StatusBar } from './StatusBar'
 import { Toasts } from './Toasts'
-import { Prompt, isPromptEmpty, isPromptMenuOpen } from './Prompt'
+import { Prompt, insertIntoPrompt, isPromptEmpty, isPromptMenuOpen } from './Prompt'
 import { OverlayHost } from './OverlayHost'
 import { openPalette } from './palette'
 import { createQuitGuard, QUIT_WINDOW_MS } from '../commands/builtin/quit'
@@ -126,6 +130,78 @@ export function Shell() {
   /** Where a view is entered from the tab bar: Chat's prompt, else its main pane. */
   const enterZone = (id: string): FocusZone => (id === 'chat' && views.find(v => v.id === id)?.prompt !== false ? 'input' : 'main')
 
+  const live = useRef({ columns: windowColumns, rows: windowRows, promptShown })
+  live.current = { columns: windowColumns, rows: windowRows, promptShown }
+
+  // Every keypress's raw bytes, recorded before any handler runs (ink folds
+  // Backspace / Ctrl+Backspace together; see terminal.ts lastRawInput).
+  const { internal_eventEmitter: stdinEvents } = useStdin() as unknown as { internal_eventEmitter?: NodeJS.EventEmitter }
+  useLayoutEffect(() => {
+    if (!stdinEvents) return
+    const onInput = (data: unknown) => noteRawInput(typeof data === 'string' ? data : String(data))
+    stdinEvents.prependListener('input', onInput)
+    return () => { stdinEvents.removeListener('input', onInput) }
+  }, [stdinEvents])
+
+  // Clearing the selection highlight = ink writes its whole frame again.
+  useEffect(() => {
+    setRepaint(() => write(''))
+    return () => setRepaint(null)
+  }, [write])
+
+  // Mouse mode: presses, drags and releases (the wheel is routed by the key router).
+  const mouseCtl = useMemo(() => createMouseController({
+    now: () => Date.now(),
+    screen: getScreenText,
+    paneAt: (x, y) => {
+      const full = { x0: 0, y0: 0, x1: live.current.columns, y1: live.current.rows }
+      if (store.getState().overlays.length > 0) return full
+      for (const ref of [promptRef, sidebarRef, viewRef]) {
+        const rect = elementRect(ref.current)
+        if (rect && rectContains(rect, x, y)) return { x0: rect.x, y0: rect.y, x1: rect.x + rect.width, y1: rect.y + rect.height }
+      }
+      return full
+    },
+    pressHandled: mouse => {
+      if (store.getState().overlays.length > 0) return false
+      // The header: a tab switches views, the web badge starts / stops the web server.
+      const header = elementRect(headerRef.current)
+      if (!header || mouse.y !== header.y) return false
+      const x = mouse.x - header.x
+      const tab = headerHits.tabs.find(t => x >= t.x0 && x < t.x1)
+      if (tab) store.actions.setView(tab.id)
+      else if (headerHits.web && x >= headerHits.web.x0 && x < headerHits.web.x1) void toggleWebServer(store)
+      return true
+    },
+    click: mouse => {
+      const state = store.getState()
+      if (state.overlays.length > 0) return
+      // A region under the pointer (a transcript item) may use the click; the
+      // pane under it takes focus, except that the prompt keeps it for a used click.
+      const used = router.click(mouse)
+      const zone: FocusZone | null = rectContains(elementRect(promptRef.current), mouse.x, mouse.y) ? 'input'
+        : rectContains(elementRect(sidebarRef.current), mouse.x, mouse.y) ? 'sidebar'
+          : rectContains(elementRect(viewRef.current), mouse.x, mouse.y) ? 'main' : null
+      if (zone && zone !== state.focus && !(used && state.focus === 'input')) store.actions.setFocus(zone)
+    },
+    rightClick: () => {
+      void readClipboard().then(text => {
+        if (!text) { store.actions.toast('Nothing to paste: the clipboard is empty or unreadable (Ctrl+V / Cmd+V pastes too)', 'warn', 2500); return }
+        const clean = text.replace(/\r\n?/g, '\n')
+        if (store.getState().overlays.length > 0) { insertIntoFocusedInput(clean); return }
+        if (!promptShown) return
+        if (store.getState().focus !== 'input') store.actions.setFocus('input')
+        insertIntoPrompt(clean)
+      })
+    },
+    highlight: setHighlight,
+    copy: text => {
+      void copyToClipboard(text).then(ok => {
+        store.actions.toast(ok ? `Copied ${text.length} char${text.length === 1 ? '' : 's'}` : 'Clipboard unavailable', ok ? 'success' : 'warn', 1500)
+      })
+    },
+  }), [])
+
   useInput((input, key) => {
     const state = store.getState()
     const overlayOpen = state.overlays.length > 0
@@ -133,24 +209,11 @@ export function Shell() {
     const mouse = input.startsWith('[<') ? parseMouse(input) : null
     if (mouse) {
       if (mouse.kind === 'wheel') router.wheel(mouse, { overlayOpen })
-      else if (mouse.kind === 'press' && mouse.button === 0 && !overlayOpen) {
-        // The header: a tab switches views, the web badge starts / stops the web server.
-        const header = elementRect(headerRef.current)
-        if (header && mouse.y === header.y) {
-          const x = mouse.x - header.x
-          const tab = headerHits.tabs.find(t => x >= t.x0 && x < t.x1)
-          if (tab) { store.actions.setView(tab.id); return }
-          if (headerHits.web && x >= headerHits.web.x0 && x < headerHits.web.x1) { void toggleWebServer(store); return }
-          return
-        }
-        // A click focuses the pane under the pointer.
-        const zone: FocusZone | null = rectContains(elementRect(promptRef.current), mouse.x, mouse.y) ? 'input'
-          : rectContains(elementRect(sidebarRef.current), mouse.x, mouse.y) ? 'sidebar'
-            : rectContains(elementRect(viewRef.current), mouse.x, mouse.y) ? 'main' : null
-        if (zone && zone !== state.focus) store.actions.setFocus(zone)
-      }
+      else mouseCtl.handle(mouse)
       return
     }
+    // Any key lets go of a mouse selection.
+    mouseCtl.clear()
     if (key.return && key.shift) noteShiftEnter()
     router.dispatch(input, key, { focus: state.focus, overlayOpen })
   })

@@ -10,6 +10,7 @@ export const RUNTIME_VIEW = 'runtime'
 
 export const RUNTIME_TABS = [
   { id: 'status', title: 'Status', description: 'Daemon health, version, uptime and every agent’s loops' },
+  { id: 'folders', title: 'Folders', description: 'Tracked agent folders: a add, d stop tracking, r rescan' },
   { id: 'identity', title: 'Identity', description: 'Owner identity: status; Enter to create, restore, unlock or lock' },
   { id: 'auth', title: 'Sign-in', description: 'Provider sign-ins (ChatGPT, Grok) and API-key providers; Enter to sign in' },
   { id: 'providers', title: 'Providers', description: 'LLM providers and which agents use them' },
@@ -59,6 +60,6 @@ export function useRuntimeState(): [RuntimeState, (patch: Patch) => void] {
 export function findRuntimeTab(name: string): RuntimeTab | undefined {
   const wanted = name.trim().toLowerCase()
   if (!wanted) return undefined
-  const aliases: Record<string, RuntimeTab> = { daemon: 'status', owner: 'identity', login: 'auth', signin: 'auth', 'sign-in': 'auth', model: 'usage', mesh: 'network', containers: 'compute', umbilical: 'events', event: 'events' }
+  const aliases: Record<string, RuntimeTab> = { daemon: 'status', owner: 'identity', login: 'auth', signin: 'auth', 'sign-in': 'auth', model: 'usage', mesh: 'network', containers: 'compute', umbilical: 'events', event: 'events', tracked: 'folders', dirs: 'folders', directories: 'folders', folder: 'folders' }
   return RUNTIME_TABS.find(t => t.id === wanted)?.id ?? aliases[wanted] ?? RUNTIME_TABS.find(t => t.id.startsWith(wanted))?.id
 }

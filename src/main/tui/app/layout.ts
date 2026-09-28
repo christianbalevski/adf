@@ -39,8 +39,8 @@ export function setMouse(store: LayoutStore, on?: boolean): boolean {
   const caps = terminalCaps()
   store.actions.toast(
     next
-      ? caps.altScreen ? 'Mouse mode on: the wheel scrolls what is under the pointer, clicks focus panes and tabs · Shift+drag selects text · /mouse off' : 'Mouse wanted, but only works in the alternate screen (not with --no-alt-screen)'
-      : 'Mouse mode off: drag selects text, right-click pastes, the wheel scrolls the focused pane',
+      ? caps.altScreen ? 'Mouse mode on: click expands, drag selects and copies, right-click pastes, the wheel scrolls what is under the pointer · /mouse off' : 'Mouse wanted, but only works in the alternate screen (not with --no-alt-screen)'
+      : 'Mouse mode off: the terminal selects, copies and pastes; the wheel scrolls the focused pane · /mouse on',
     'info',
     3000,
   )

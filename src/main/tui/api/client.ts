@@ -70,6 +70,11 @@ import {
   type TaskListResult,
   type TaskResolveInput,
   type TaskResolveResult,
+  type TaskAlwaysApproveResult,
+  type TrackedDirsList,
+  type TrackDirResult,
+  type UntrackDirResult,
+  type TaskApproveAllResult,
   type TaskResult,
   type TaskStatus,
   type TimerInput,
@@ -629,6 +634,34 @@ export class DaemonClient {
 
   resolveTask(agentId: string, taskId: string, input: TaskResolveInput): Promise<TaskResolveResult> {
     return this.post(`/agents/${enc(agentId)}/tasks/${enc(taskId)}/resolve`, input)
+  }
+
+  /** Approve ▸ Always approve: un-restricts the pending request's tool on the
+   *  host config, then approves it. DaemonError status 409 when the request is
+   *  a protection override / one-shot approval / locked declaration. */
+  alwaysApproveTask(agentId: string, taskId: string): Promise<TaskAlwaysApproveResult> {
+    return this.post(`/agents/${enc(agentId)}/tasks/${enc(taskId)}/always-approve`, {})
+  }
+
+  /** Approve every pending gated approval (all loops, or just `loop`); protection overrides are skipped. */
+  approveAllTasks(agentId: string, loop?: string): Promise<TaskApproveAllResult> {
+    return this.post(`/agents/${enc(agentId)}/tasks/approve-all`, loop ? { loop } : {})
+  }
+
+  // --- tracked agent folders (Studio's tracked directories) -----------------
+
+  trackedDirs(): Promise<TrackedDirsList> {
+    return this.get('/tracked-dirs')
+  }
+
+  /** Track an absolute folder now and autostart its agents (review gate applies). 409 when already tracked. */
+  trackDir(path: string): Promise<TrackDirResult> {
+    return this.post('/tracked-dirs', { path })
+  }
+
+  /** Stop tracking (files are never deleted). `unload` also unloads the agents loaded from under it. */
+  untrackDir(path: string, options: { unload?: boolean } = {}): Promise<UntrackDirResult> {
+    return this.del('/tracked-dirs', { path, unload: options.unload })
   }
 
   asks(agentId: string): Promise<AskListResult> {

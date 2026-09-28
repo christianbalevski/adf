@@ -1,17 +1,18 @@
 // The card under the transcript for whatever the loop is blocked on —
 // a tool approval, a question for the owner, a suspend — plus queued sends.
 
-import type { ReactNode } from 'react'
-import { Box, Text } from 'ink'
+import { useRef, type ReactNode } from 'react'
+import { Box, Text, type DOMElement } from 'ink'
 import { useTheme } from '../../app/theme'
-import { KeyHints } from '../../ui/KeyHint'
-import { oneLine, previewJson, truncate, wrappedHeight } from '../../ui/text'
-import type { AskEntry, TaskEntry } from '../../api/types'
+import { elementRect, keyLabel, useClick } from '../../app/keys'
+import { displayWidth, oneLine, previewJson, truncate, wrappedHeight } from '../../ui/text'
+import type { AskEntry, TaskEntry, TaskListEntry } from '../../api/types'
 import type { TranscriptItem } from '../../state/types'
 import { parseArgs } from './model'
+import { alwaysBlocked } from './approvals'
 
 export interface DockModel {
-  tasks: TaskEntry[]
+  tasks: TaskListEntry[]
   asks: AskEntry[]
   suspended: boolean
   queued: TranscriptItem[]
@@ -45,14 +46,62 @@ export function dockHeight(model: DockModel, width: number): number {
   }
 }
 
-export function Dock({ model, width, focused, agentLabel }: { model: DockModel; width: number; focused: boolean; agentLabel: string }) {
+export type DockAction = 'approve' | 'always' | 'reject' | 'feedback' | 'details' | 'resume' | 'shutdown'
+
+interface DockButton { keys: string; label: string; action: DockAction; off?: string }
+
+/**
+ * The card's actions as a row of buttons: keys in the transcript (Shift+Tab
+ * from the composer), clicks in mouse mode (a click is explicit: no second
+ * press). A button that is not allowed shows greyed with why.
+ */
+function ActionRow({ buttons: all, focused, width, onAction }: { buttons: DockButton[]; focused: boolean; width: number; onAction?: (action: DockAction) => void }) {
+  const theme = useTheme()
+  const ref = useRef<DOMElement>(null)
+  const sep = ` ${theme.glyph.sep} `
+  const prefix = focused ? '' : 'Shift+Tab: '
+  // Whole buttons only: the ones that do not fit are left off (all are in /help).
+  const spans: Array<{ x0: number; x1: number; button: DockButton }> = []
+  let x = displayWidth(prefix)
+  for (const [i, button] of all.entries()) {
+    const text = button.off ? `${button.label}: one-time only` : `${keyLabel(button.keys)} ${button.label}`
+    const start = x + (i > 0 ? displayWidth(sep) : 0)
+    if (start + displayWidth(text) > width) break
+    spans.push({ x0: start, x1: start + displayWidth(text), button })
+    x = start + displayWidth(text)
+  }
+  const buttons = spans.map(s => s.button)
+  useClick(ref, event => {
+    const rect = elementRect(ref.current)
+    if (!rect || !onAction) return false
+    const hit = spans.find(s => event.x - rect.x >= s.x0 && event.x - rect.x < s.x1)
+    if (!hit) return false
+    onAction(hit.button.action)
+    return true
+  }, { active: !!onAction })
+  return (
+    <Box ref={ref}>
+      <Text wrap="truncate-end">
+        {prefix ? <Text color={theme.color.dim}>{prefix}</Text> : null}
+        {buttons.map((button, i) => (
+          <Text key={button.action}>
+            {i > 0 ? <Text color={theme.color.dim}>{sep}</Text> : null}
+            {button.off
+              ? <Text color={theme.color.dim}>{button.label}: one-time only</Text>
+              : <><Text bold color={focused ? theme.color.accent : theme.color.muted}>{keyLabel(button.keys)}</Text><Text color={focused ? theme.color.muted : theme.color.dim}> {button.label}</Text></>}
+          </Text>
+        ))}
+      </Text>
+    </Box>
+  )
+}
+
+export function Dock({ model, width, focused, agentLabel, onAction }: { model: DockModel; width: number; focused: boolean; agentLabel: string; onAction?: (action: DockAction) => void }) {
   const theme = useTheme()
   const g = theme.glyph
   const card = topCard(model)
   const inner = Math.max(8, width - 4)
-  const act = (hints: Array<{ keys: string; label: string }>) => (
-    focused ? <KeyHints hints={hints} /> : <Text wrap="truncate-end" color={theme.color.dim}>Shift+Tab: {hints.map(h => `${h.keys} ${h.label}`).join(` ${theme.glyph.sep} `)}</Text>
-  )
+  const act = (buttons: DockButton[]) => <ActionRow buttons={buttons} focused={focused} width={inner} onAction={onAction} />
   const border = (color: string | undefined, children: ReactNode) => (
     <Box width={width} flexDirection="column" borderStyle={theme.ascii ? 'classic' : 'round'} borderColor={color} paddingX={1}>{children}</Box>
   )
@@ -79,7 +128,13 @@ export function Dock({ model, width, focused, agentLabel }: { model: DockModel; 
             </Text>
             <Text wrap="truncate-end" color={theme.color.muted}>{previewJson(parseArgs(task.args), inner)}</Text>
             {reason ? <Text wrap="truncate-end" color={theme.color.dim}>{truncate(reason, inner)}</Text> : null}
-            {act([{ keys: 'y', label: 'approve (twice)' }, { keys: 'n', label: 'deny' }, { keys: 'v', label: 'details' }])}
+            {act([
+              { keys: 'y', label: 'approve', action: 'approve' },
+              { keys: 'a', label: 'always', action: 'always', off: alwaysBlocked(task) ?? undefined },
+              { keys: 'n', label: 'reject', action: 'reject' },
+              { keys: 'f', label: 'feedback', action: 'feedback' },
+              { keys: 'v', label: 'details', action: 'details' },
+            ].sort((a, b) => (a.off ? 1 : 0) - (b.off ? 1 : 0)) as DockButton[])}
           </>
         ))
       })() : null}
@@ -95,7 +150,7 @@ export function Dock({ model, width, focused, agentLabel }: { model: DockModel; 
       {card === 'suspend' ? border(theme.color.warn, (
         <>
           <Text bold color={theme.color.warn}>{g.warn} {agentLabel} is suspended and waiting for you</Text>
-          {act([{ keys: 'y', label: 'resume' }, { keys: 'n', label: 'shut down' }])}
+          {act([{ keys: 'y', label: 'resume', action: 'resume' }, { keys: 'n', label: 'shut down', action: 'shutdown' }])}
         </>
       )) : null}
     </Box>

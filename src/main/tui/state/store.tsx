@@ -105,6 +105,10 @@ export interface TuiActions {
 
   // HIL
   resolveTask(agentId: string, taskId: string, action: TaskAction, reason?: string): Promise<void>
+  /** "Always approve": un-restrict the tool for this agent (persistent) and approve this call. The daemon refuses protection overrides. */
+  alwaysApproveTask(agentId: string, taskId: string): Promise<boolean>
+  /** Approve every pending gated call (never protection overrides) of the agent, or of one loop. */
+  approveAllTasks(agentId: string, loop?: string): Promise<void>
   answerAsk(agentId: string, requestId: string, answer: string, loop?: string): Promise<void>
   respondSuspend(agentId: string, resume: boolean): Promise<void>
 
@@ -559,7 +563,23 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
 
     async resolveTask(agentId, taskId, action, reason) {
       const result = await run(action === 'approve' ? 'Approve' : 'Deny', c => c.resolveTask(agentId, taskId, { action, ...(reason ? { reason } : {}) }))
-      if (result) toast(`${action === 'approve' ? 'Approved' : action === 'deny' ? 'Denied' : 'Updated'} ${taskId}`, 'success')
+      if (result) toast(`${action === 'approve' ? 'Approved' : action === 'deny' ? (reason ? 'Rejected with feedback' : 'Rejected') : 'Updated'} ${taskId}`, 'success')
+      await actions.refreshHil(agentId)
+    },
+
+    async alwaysApproveTask(agentId, taskId) {
+      const result = await run('Always approve', c => c.alwaysApproveTask(agentId, taskId))
+      if (result) toast(`Always approving ${result.tool}: it will not ask again (Inspect › Config › tools to undo)`, 'success', 5000)
+      await actions.refreshHil(agentId)
+      return !!result
+    },
+
+    async approveAllTasks(agentId, loop) {
+      const result = await run('Approve all', c => c.approveAllTasks(agentId, loop))
+      if (result) {
+        const skipped = result.skippedProtection ? ` · ${result.skippedProtection} protection override${result.skippedProtection === 1 ? '' : 's'} still need${result.skippedProtection === 1 ? 's' : ''} you one by one` : ''
+        toast(`Approved ${result.approved} call${result.approved === 1 ? '' : 's'}${skipped}`, result.skippedProtection ? 'warn' : 'success', 5000)
+      }
       await actions.refreshHil(agentId)
     },
 

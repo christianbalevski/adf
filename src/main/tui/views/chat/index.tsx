@@ -6,10 +6,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Box, Text, type DOMElement } from 'ink'
 import { useTheme } from '../../app/theme'
-import { WHEEL_STEP, keyLabel, useKeyRouter, useKeys, useWheel, type KeyHandler } from '../../app/keys'
+import { WHEEL_STEP, elementRect, keyLabel, useClick, useKeyRouter, useKeys, useWheel, type KeyHandler } from '../../app/keys'
 import { newlineKey } from '../../app/terminal'
+import { viewsHint } from '../../app/StatusBar'
 import { useActions, useClient, useStore, useTuiSelector, shallowEqual } from '../../state/store'
-import { useAuthNeed, useLoop, useSelectedAgent, useSelectedLoop, useTranscript, useViewState } from '../../state/hooks'
+import { useAuthNeed, useFocus, useLoop, useSelectedAgent, useSelectedLoop, useTranscript, useViewState } from '../../state/hooks'
 import { authNeedText } from '../../auth/model'
 import { shortUrl, siteOf, type Site } from '../../web/model'
 import { openSite } from '../../web/ops'
@@ -20,9 +21,11 @@ import type { CommandScope } from '../../commands/types'
 import type { PromptCompletion, ViewDefinition, ViewProps } from '../types'
 import { TranscriptItemView } from './Transcript'
 import { LoopTabs } from './LoopTabs'
-import { Dock, dockHeight, topCard, type DockModel } from './Dock'
+import { Dock, dockHeight, topCard, type DockAction, type DockModel } from './Dock'
 import { Footer } from './Footer'
 import { ApprovalDetailsOverlay, DENY_OVERLAY, DETAILS_OVERLAY, DenyOverlay } from './overlays'
+import { alwaysApprove, rejectWithFeedback } from './approvals'
+import type { TaskListEntry } from '../../api/types'
 import { chatCommands, readChatState } from './commands'
 import { isPromptEmpty, isPromptMenuOpen } from '../../app/Prompt'
 import {
@@ -45,15 +48,16 @@ import {
   loopRunning,
   loopStateLabel,
   loopTabs,
+  navigate,
   offsetOf,
   pendingAsksFor,
   pendingTasksFor,
   posAt,
   queuedItems,
-  revealOffset,
   windowAt,
   withMarkers,
   type ChatState,
+  type ScrollPos,
   type TimerLookup,
 } from './model'
 
@@ -87,6 +91,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
   const loop = useLoop(agentId, loopName)
   const transcript = useTranscript(agentId, loopName)
   const [chat, setChat] = useViewState<ChatState>(CHAT_VIEW, INITIAL_CHAT_STATE)
+  const focusZone = useFocus()
   const key = agentId ? transcriptKey(agentId, loopName) : ''
   const mountedAt = useRef(Date.now())
   const [late, setLate] = useState(false)
@@ -216,27 +221,53 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
     if (next === 0) follow()
     else scrollTo(next)
   }
-  const select = (delta: number) => {
+  // ↑/↓ move the selection item by item; a selected item taller than the view
+  // scrolls inside itself first (half a view per press).
+  const select = (dir: -1 | 1) => {
     if (items.length === 0) return
     const at = selectedId ? keys.indexOf(selectedId) : -1
-    let index = at < 0 ? (delta < 0 ? Math.max(0, win.end) : items.length) : at + delta
-    if (index >= items.length) { follow(); return }
-    if (index < 0) {
-      index = 0
-      if (agentId) void actions.loadOlder(agentId, loopName)
-    }
-    const nextOffset = revealOffset(index, heights, offset, viewport)
+    const nav = navigate(heights, at, offset, viewport, dir, Math.max(1, Math.floor(viewport / 2)), win.end)
+    if (nav.loadOlder && agentId) void actions.loadOlder(agentId, loopName)
+    if (nav.index === 'follow') { follow(); return }
+    const index = nav.index
     patch(prev => ({
       selected: { ...prev.selected, [key]: keys[index] },
-      scroll: { ...prev.scroll, [key]: posAt(nextOffset, keys, heights, viewport) },
+      scroll: { ...prev.scroll, [key]: posAt(nav.offset, keys, heights, viewport) },
     }))
   }
+  const clearSelection = () => {
+    if (!selectedId) return false
+    patch(prev => ({ selected: { ...prev.selected, [key]: null } }))
+    return true
+  }
   const selectedItem = selectedId ? items.find(item => item.id === selectedId) : undefined
+  const toggleItem = (target: TranscriptItem) => {
+    const k = `${key}|${target.id}`
+    const expandable = isExpandable(target)
+    // Expanding grows the item downwards: keep its first row on screen (it
+    // would otherwise scroll up out of view at the live end).
+    let scroll: ScrollPos | undefined
+    const index = keys.indexOf(target.id)
+    if (expandable && !chat.expanded[k] && index >= 0) {
+      const grown = heights.slice()
+      grown[index] = Math.max(1, itemHeight(target, width, { expanded: true, showThinking: chat.showThinking }))
+      let below = 0
+      for (let i = index + 1; i < grown.length; i++) below += grown[i]
+      const top = below + grown[index]
+      // Scrolled off the live end the "newer rows below" line takes a row.
+      const vp = Math.max(1, paneHeight - 1)
+      if (top > offset + viewport) scroll = posAt(top - vp, keys, grown, vp)
+    }
+    patch(prev => ({
+      ...(expandable ? { expanded: { ...prev.expanded, [k]: !prev.expanded[k] } } : {}),
+      ...(scroll ? { scroll: { ...prev.scroll, [key]: scroll } } : {}),
+      selected: { ...prev.selected, [key]: target.id },
+    }))
+  }
   const toggle = () => {
     const target = selectedItem ?? [...items].reverse().find(isExpandable)
     if (!target || !isExpandable(target)) return
-    const k = `${key}|${target.id}`
-    patch(prev => ({ expanded: { ...prev.expanded, [k]: !prev.expanded[k] }, selected: { ...prev.selected, [key]: target.id } }))
+    toggleItem(target)
   }
   const switchLoop = (delta: number) => {
     if (!agentId || tabs.length < 2) return
@@ -249,9 +280,30 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
     actions.toast(ok ? `Copied ${text.length} chars` : `Clipboard unavailable: ${truncate(oneLine(text), 120)}`, ok ? 'success' : 'warn')
   }
   const approveTarget = () => {
-    if (selectedItem?.kind === 'hil' && selectedItem.status === 'pending') return { taskId: selectedItem.taskId, tool: selectedItem.tool }
+    if (selectedItem?.kind === 'hil' && selectedItem.status === 'pending') {
+      const taskId = selectedItem.taskId
+      return { taskId, tool: selectedItem.tool, task: tasks.find(t => t.id === taskId) }
+    }
     const task = tasks[0]
-    return task ? { taskId: task.id, tool: task.tool } : null
+    return task ? { taskId: task.id, tool: task.tool, task } : null
+  }
+  // The approval card's actions: keys (y / a armed, see below) and clicks.
+  const dockAction = (action: DockAction) => {
+    if (!agentId) return
+    if (action === 'resume') { void actions.respondSuspend(agentId, true); return }
+    if (action === 'shutdown') {
+      void actions.confirm({ title: 'Shut down', message: `Shut ${agentLabel(agent)} down instead of resuming?`, danger: true })
+        .then(ok => { if (ok) void actions.respondSuspend(agentId, false) })
+      return
+    }
+    const target = approveTarget()
+    if (!target) return
+    const task = target.task ?? { id: target.taskId, tool: target.tool, args: '{}', status: 'pending_approval', created_at: 0 } as TaskListEntry
+    if (action === 'approve') void actions.resolveTask(agentId, target.taskId, 'approve')
+    else if (action === 'always') void alwaysApprove(actions, agentId, agentLabel(agent), task)
+    else if (action === 'reject') void actions.resolveTask(agentId, target.taskId, 'deny')
+    else if (action === 'feedback') rejectWithFeedback(actions, agentId, task)
+    else actions.pushOverlay({ kind: DETAILS_OVERLAY, props: { agentId, taskId: target.taskId, tool: target.tool } })
   }
   const interrupt = () => {
     if (!agentId) return false
@@ -260,9 +312,34 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
   }
   // `y` approves at once only on a selected pending approval; otherwise it
   // arms and a second `y` approves, so a stray keypress never runs a tool.
-  const armed = useRef<{ taskId: string; at: number } | null>(null)
+  const armed = useRef<{ taskId: string; key: string; at: number } | null>(null)
 
   // --- keys -----------------------------------------------------------------
+
+  // The wheel without mouse mode (alternate scroll) arrives as several ↑/↓ in
+  // one read. An arrow waits for the rest of its read: a burst scrolls the
+  // transcript by lines; a single arrow moves the item selection (transcript
+  // focused, or an empty composer) or, over composer text, is replayed to the
+  // prompt as a key (caret / history).
+  const router = useKeyRouter()
+  const pendingArrow = useRef<{ input: string; key: Parameters<KeyHandler>[1]; delta: number; count: number; items: boolean } | null>(null)
+  const replaying = useRef(false)
+  const queueArrow = (input: string, k: Parameters<KeyHandler>[1], items: boolean): true => {
+    const step = k.upArrow ? 1 : -1
+    const pending = pendingArrow.current
+    if (pending) { pending.delta += step; pending.count++; return true }
+    pendingArrow.current = { input, key: k, delta: step, count: 1, items }
+    setImmediate(() => {
+      const p = pendingArrow.current
+      pendingArrow.current = null
+      if (!p) return
+      if (p.count > 1) { if (p.delta) scrollBy(p.delta); return }
+      if (p.items) { select(p.delta > 0 ? -1 : 1); return }
+      replaying.current = true
+      try { router.dispatch(p.input, p.key, { focus: 'input', overlayOpen: store.getState().overlays.length > 0 }) } finally { replaying.current = false }
+    })
+    return true
+  }
 
   useKeys((input, k) => {
     if (!agentId) return false
@@ -271,8 +348,10 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
     if (k.ctrl || k.meta) return false
     if (k.leftArrow || input === '[') { switchLoop(-1); return true }
     if (k.rightArrow || input === ']') { switchLoop(1); return true }
-    if (k.upArrow || input === 'k') { select(-1); return true }
-    if (k.downArrow || input === 'j') { select(1); return true }
+    if (k.upArrow || k.downArrow) return queueArrow(input, k, true)
+    if (input === 'k') { select(-1); return true }
+    if (input === 'j') { select(1); return true }
+    if (k.escape && clearSelection()) return true
     if (k.pageUp) { scrollBy(Math.max(1, viewport - 2)); return true }
     if (k.pageDown) { scrollBy(-Math.max(1, viewport - 2)); return true }
     if (k.home || input === 'g') { scrollBy(win.total); return true }
@@ -282,30 +361,27 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
     if (input === 'c') { void copy(); return true }
     if (input === 'w') { void openSite(store, agentId); return true }
     const card = topCard(dockModel)
-    if (input === 'y' || input === 'n' || input === 'v') {
+    if (card === 'hil' && (input === 'y' || input === 'a')) {
       const target = approveTarget()
-      if (target) {
-        if (input === 'y') {
-          const explicit = selectedItem?.kind === 'hil' && selectedItem.status === 'pending' && selectedItem.taskId === target.taskId
-          const prior = armed.current
-          if (explicit || (prior && prior.taskId === target.taskId && Date.now() - prior.at < APPROVE_ARM_MS)) {
-            armed.current = null
-            void actions.resolveTask(agentId, target.taskId, 'approve')
-          } else {
-            armed.current = { taskId: target.taskId, at: Date.now() }
-            actions.toast(`Press y again to approve ${target.tool} (${target.taskId})`, 'warn', APPROVE_ARM_MS)
-          }
-        } else actions.pushOverlay({ kind: input === 'n' ? DENY_OVERLAY : DETAILS_OVERLAY, props: { agentId, taskId: target.taskId, tool: target.tool } })
-        return true
+      if (!target) return false
+      // A stray key never approves: y / a act at once only on a selected
+      // pending approval; otherwise the first press arms and a second one acts.
+      const explicit = selectedItem?.kind === 'hil' && selectedItem.status === 'pending' && selectedItem.taskId === target.taskId
+      const prior = armed.current
+      if (explicit || (prior && prior.taskId === target.taskId && prior.key === input && Date.now() - prior.at < APPROVE_ARM_MS)) {
+        armed.current = null
+        dockAction(input === 'y' ? 'approve' : 'always')
+      } else {
+        armed.current = { taskId: target.taskId, key: input, at: Date.now() }
+        actions.toast(`Press ${input} again to ${input === 'y' ? 'approve' : 'always approve'} ${target.tool} (${target.taskId})`, 'warn', APPROVE_ARM_MS)
       }
-      if (card === 'suspend' && input === 'y') { void actions.respondSuspend(agentId, true); return true }
-      if (card === 'suspend' && input === 'n') {
-        void actions.confirm({ title: 'Shut down', message: `Shut ${agentLabel(agent)} down instead of resuming?`, danger: true })
-          .then(ok => { if (ok) void actions.respondSuspend(agentId, false) })
-        return true
-      }
-      return false
+      return true
     }
+    if (card === 'hil' && (input === 'n' || input === 'f' || input === 'v')) {
+      dockAction(input === 'n' ? 'reject' : input === 'f' ? 'feedback' : 'details')
+      return true
+    }
+    if (card === 'suspend' && (input === 'y' || input === 'n')) { dockAction(input === 'y' ? 'resume' : 'shutdown'); return true }
     if (input === 'a' && card === 'ask') { actions.setFocus('input'); return true }
     return false
   }, { layer: 'main', active: focused })
@@ -320,44 +396,44 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
 
   // The wheel scrolls the transcript whichever pane has focus.
   const transcriptRef = useRef<DOMElement>(null)
-  const router = useKeyRouter()
-  const pendingArrow = useRef<{ input: string; key: Parameters<KeyHandler>[1]; delta: number; count: number; empty: boolean } | null>(null)
-  const replaying = useRef(false)
   useWheel(transcriptRef, delta => scrollBy(-delta * WHEEL_STEP), { active: !!agentId })
+
+  // Mouse mode: a click on an item selects it; on a tool call, thinking,
+  // context or approval it also expands / collapses it. The prompt keeps focus.
+  const itemRefs = useRef(new Map<string, DOMElement>())
+  useClick(transcriptRef, event => {
+    const box = elementRect(transcriptRef.current)
+    if (!box || event.y >= box.y + viewport) return false
+    for (const [id, el] of itemRefs.current) {
+      const rect = elementRect(el)
+      if (!rect || event.y < rect.y || event.y >= rect.y + rect.height) continue
+      const target = items.find(item => item.id === id)
+      if (!target) return false
+      toggleItem(target)
+      return true
+    }
+    return false
+  }, { active: !!agentId })
 
   // Runs before the prompt's own keys. Ctrl/Shift+←/→ are left to the prompt
   // (word jumps) and the shell (loop switch). An empty composer has nothing
-  // to move through, so ↑/↓ Home/End scroll the transcript there; once there
-  // is text they edit it (history: Ctrl+↑/↓).
-  const inputKeys: KeyHandler = (_input, k) => {
+  // to move through, so ↑/↓ select transcript items there (Enter / Space
+  // expand the selected one, Esc lets go of it) and Home/End scroll; once
+  // there is text they edit it (history: Ctrl+↑/↓).
+  const inputKeys: KeyHandler = (input, k) => {
     if (!agentId) return false
     if (k.pageUp) { scrollBy(Math.max(1, viewport - 2)); return true }
     if (k.pageDown) { scrollBy(-Math.max(1, viewport - 2)); return true }
     // Sending jumps back to the live end, wherever the transcript was scrolled.
     if (k.return && !k.shift && !k.meta && !k.ctrl && !isPromptEmpty() && !isPromptMenuOpen() && offset > 0) follow()
     if (replaying.current) return false
-    // The wheel (alternate scroll mode) arrives as several ↑/↓ in one read. An
-    // arrow waits for the rest of its read: a burst (or any arrow over an empty
-    // composer) scrolls the transcript; a lone arrow over text is a key (caret /
-    // history) and is replayed to the prompt.
-    if (!k.ctrl && !k.meta && !k.shift && !isPromptMenuOpen() && (k.upArrow || k.downArrow)) {
-      const step = k.upArrow ? 1 : -1
-      const pending = pendingArrow.current
-      if (pending) { pending.delta += step; pending.count++; return true }
-      pendingArrow.current = { input: _input, key: k, delta: step, count: 1, empty: isPromptEmpty() }
-      setImmediate(() => {
-        const p = pendingArrow.current
-        pendingArrow.current = null
-        if (!p) return
-        if (p.count > 1 || p.empty) { if (p.delta) scrollBy(p.delta); return }
-        replaying.current = true
-        try { router.dispatch(p.input, p.key, { focus: 'input', overlayOpen: store.getState().overlays.length > 0 }) } finally { replaying.current = false }
-      })
-      return true
-    }
-    if (!k.ctrl && !k.meta && !k.shift && isPromptEmpty() && !isPromptMenuOpen()) {
+    const plain = !k.ctrl && !k.meta && !k.shift && !isPromptMenuOpen()
+    if (plain && (k.upArrow || k.downArrow)) return queueArrow(input, k, isPromptEmpty())
+    if (plain && isPromptEmpty()) {
       if (k.home) { scrollBy(win.total); return true }
       if (k.end) { follow(); return true }
+      if (selectedItem && (k.return || input === ' ')) { toggle(); return true }
+      if (k.escape && clearSelection()) return true
     }
     // Esc interrupts a running turn; otherwise the shell takes it (twice clears
     // the text, an empty prompt goes up to the tab bar).
@@ -385,6 +461,8 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
   )
   const model = loop?.info.config?.model?.model_id ?? agent.config?.model?.model_id ?? agent.lastModel
   const visible = items.slice(win.start, win.end + 1)
+  // The selection shows while the transcript or the composer drives it.
+  const showSelection = focused || focusZone === 'input'
 
   return (
     <Box flexDirection="column" width={paneWidth} height={height} paddingX={1}>
@@ -408,15 +486,16 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
           <Box height={viewport} width={width} flexDirection="column" overflow="hidden" justifyContent="flex-end">
             <Box flexDirection="column" flexShrink={0} marginBottom={-win.clip}>
               {visible.map(item => (
-                <TranscriptItemView
-                  key={item.id}
-                  item={item}
-                  width={width}
-                  selected={focused && item.id === selectedId}
-                  expanded={isExpanded(item)}
-                  showThinking={chat.showThinking}
-                  queued={queuedIds.has(item.id)}
-                />
+                <Box key={item.id} flexShrink={0} ref={el => { if (el) itemRefs.current.set(item.id, el); else itemRefs.current.delete(item.id) }}>
+                  <TranscriptItemView
+                    item={item}
+                    width={width}
+                    selected={showSelection && item.id === selectedId}
+                    expanded={isExpanded(item)}
+                    showThinking={chat.showThinking}
+                    queued={queuedIds.has(item.id)}
+                  />
+                </Box>
               ))}
             </Box>
           </Box>
@@ -427,7 +506,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
       </Box>
       {/* Keyed by width: after some resize sequences ink reuses a stale layout
           for the card and drops its title line; a fresh subtree lays out clean. */}
-      <Dock key={`dock:${width}`} model={dockModel} width={width} focused={focused} agentLabel={loopName === MAIN_LOOP ? label : `${label} ${g.pointer} ${loopName}`} />
+      <Dock key={`dock:${width}`} model={dockModel} width={width} focused={focused} agentLabel={loopName === MAIN_LOOP ? label : `${label} ${g.pointer} ${loopName}`} onAction={dockAction} />
       <Footer width={width} running={running} state={state} turn={turn} since={mountedAt.current} model={model} error={transcript.error} />
       {late ? <LateKeys handler={inputKeys} layer="input" /> : null}
     </Box>
@@ -550,29 +629,24 @@ const chat: ViewDefinition = {
     const state = scope.state()
     const agent = scope.agentId ? state.agents[scope.agentId] : undefined
     if (!agent) return [{ keys: 'shift+tab', label: 'sidebar: pick an agent' }, { keys: '/', label: 'commands' }]
-    const running = loopRunning(agent, agent.loops?.find(l => l.info.name === scope.loop))
-    const loopKeys = { keys: 'shift+left shift+right', label: 'loop' }
+    const loopKeys = { keys: 'shift+left right', label: 'loop' }
+    // Less is more: the rest is in /help. "Esc interrupts" shows in the turn
+    // footer, the newline key in the composer placeholder.
     if (state.focus === 'main') {
       const pending = pendingTasksFor(agent, scope.loop).length > 0
       return [
-        ...(running ? [{ keys: 'esc', label: 'interrupt' }] : []),
-        ...(pending ? [{ keys: 'y', label: 'approve (twice)' }, { keys: 'n', label: 'deny' }] : []),
+        ...(pending ? [{ keys: 'y', label: 'approve' }] : []),
         { keys: 'up down', label: 'select' },
         { keys: 'enter', label: 'expand' },
-        loopKeys,
         { keys: 'c', label: 'copy' },
-        { keys: 't', label: readChatState(scope).showThinking ? 'hide thinking' : 'thinking' },
-        ...(siteOf(state, scope.agentId) ? [{ keys: 'w', label: 'website' }] : []),
+        loopKeys,
       ]
     }
     return [
-      running ? { keys: 'esc', label: 'interrupt' } : { keys: 'enter', label: 'send' },
-      { keys: newlineKey(), label: 'newline' },
       loopKeys,
-      { keys: 'up down', label: 'scroll' },
       // Digits type into the composer; say how to reach the other views.
-      { keys: 'alt+1-6', label: 'views' },
-      { keys: 'ctrl+up', label: 'history' },
+      viewsHint(),
+      { keys: 'ctrl+up down', label: 'history' },
     ]
   },
   helpKeys: [
@@ -580,13 +654,13 @@ const chat: ViewDefinition = {
       keys: [
         { keys: 'enter', label: 'Send to the selected loop (queued while it runs)' },
         { keys: 'shift+left shift+right', label: 'Previous / next loop tab (also Ctrl+←/→ on an empty prompt; [ ] and ← → in the transcript)' },
-        { keys: 'up down', label: 'In the transcript (Tab from the prompt): select an item (j k)' },
-        { keys: 'enter space', label: 'Expand / collapse the selected item (thinking, tool call, notice)' },
-        { keys: 'pgup pgdn', label: 'Scroll (also while typing); the mouse wheel scrolls too' },
-        { keys: 'up down', label: 'With an empty prompt: scroll the transcript line by line (Home / End: top / follow live)' },
+        { keys: 'up down', label: 'Select the previous / next transcript item (message, reply, thinking, tool call, notice, approval, marker): from an empty prompt or the transcript (j k). An item taller than the view scrolls inside first' },
+        { keys: 'enter space', label: 'Expand / collapse the selected item (tool call input + result, thinking, context, approval, wake). Mouse mode: click the item' },
+        { keys: 'esc', label: 'Let go of the selected item (before interrupting)' },
+        { keys: 'pgup pgdn', label: 'Scroll by pages (also while typing); the mouse wheel scrolls by lines' },
+        { keys: 'home end', label: 'With an empty prompt: top, loading older history · follow live (g G in the transcript)' },
         { keys: 'ctrl+up ctrl+down', label: 'Prompt history of this agent › loop (↑ ↓ too once the prompt has text, on its first / last line)' },
         { keys: 'shift+enter alt+enter', label: 'Newline in the prompt (Ctrl+J, or \\ then Enter; /terminal-setup for Shift+Enter)' },
-        { keys: 'home end', label: 'Top, loading older history (g) · follow live (G)' },
         { keys: 't', label: 'Expand / collapse all thinking' },
         { keys: 'c', label: 'Copy the selected item, else the last reply' },
         { keys: 'w', label: 'Open the agent’s website (when it serves one; starts the web server if stopped)' },
@@ -599,10 +673,12 @@ const chat: ViewDefinition = {
     {
       title: 'Approvals and questions (the card under the transcript)',
       keys: [
-        { keys: 'y', label: 'Approve: press twice, or once on a selected approval · resume a suspended agent' },
-        { keys: 'n', label: 'Deny, with an optional reason · shut a suspended agent down (asks)' },
+        { keys: 'y', label: 'Approve: press twice, or once on a selected approval · resume a suspended agent. Mouse mode: click the card’s buttons' },
+        { keys: 'a', label: 'Always approve this tool for the agent (twice, then confirm; it won’t ask again). Not offered for protection overrides: those are one-time only · on a question card: answer it' },
+        { keys: 'n', label: 'Reject · shut a suspended agent down (asks)' },
+        { keys: 'f', label: 'Reject with feedback: the agent sees your text' },
         { keys: 'v', label: 'Full details of the tool call' },
-        { keys: 'a', label: 'Answer the agent’s question (the prompt sends the answer)' },
+        { keys: '/approve', label: '/approve [all|always] · /reject [feedback]: the same from the prompt' },
       ],
     },
   ],

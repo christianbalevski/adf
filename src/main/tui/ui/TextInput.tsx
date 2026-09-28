@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Box, Text, usePaste } from 'ink'
 import { useTheme } from '../app/theme'
 import { useKeys, type Key, type KeyLayer } from '../app/keys'
-import { isMouseGarbage } from '../app/terminal'
+import { isMouseGarbage, lastRawInput } from '../app/terminal'
+import { applyEdit, editAction, lineEnd as lineEndOf, lineStart as lineStartOf, wordLeft as wordLeftOf, wordRight as wordRightOf } from './edit'
 
 export interface TextInputApi {
   value: string
@@ -34,6 +35,19 @@ export interface TextInputProps {
   mask?: string
   /** With `mask`: leave whitespace visible (a seed phrase shows its word boundaries). */
   maskKeepSpaces?: boolean
+  /** Receives the editing API each render (the shell prompt: right-click paste). */
+  apiRef?: { current: TextInputApi | null }
+}
+
+// The focused (unmasked) input, for right-click paste into dialogs.
+let focusedInput: TextInputApi | null = null
+let focusedOwner: object | null = null
+
+/** Insert text at the caret of the focused text box. False when none is focused. */
+export function insertIntoFocusedInput(text: string): boolean {
+  if (!focusedInput) return false
+  focusedInput.insert(text)
+  return true
 }
 
 /**
@@ -42,8 +56,10 @@ export interface TextInputProps {
  * Ctrl+J or a trailing `\` insert a newline.
  * History: Ctrl+↑/↓ anywhere; ↑/↓ on the first / last line too (a view may
  * claim ↑/↓ on an empty box first: chat scrolls its transcript).
- * Editing: ←→ Home/End Ctrl+A/E, word jumps Alt+←/→ Alt+B/F (and Ctrl+←/→
- * while there is text), Ctrl+W word, Ctrl+U line, Ctrl+C clears a non-empty box.
+ * Editing (ui/edit.ts): ←→, Home/End Ctrl+A/E Cmd+←/→ (line), word jumps
+ * Alt+←/→ Alt+B/F (and Ctrl+←/→ while there is text), delete a word left
+ * Ctrl+Backspace Alt+Backspace Ctrl+W, a word right Ctrl+Delete Alt+D, to the
+ * line start Cmd+Backspace Ctrl+U; Ctrl+C clears a non-empty box.
  * Shift+←/→ (and Ctrl+←/→ on an empty box) fall through to the shell's loop switch.
  */
 export function TextInput(props: TextInputProps) {
@@ -80,25 +96,16 @@ export function TextInput(props: TextInputProps) {
     insert: text => update(value.slice(0, cursor) + text + value.slice(cursor), cursor + text.length),
     clear: () => update('', 0),
   }
+  if (props.apiRef) props.apiRef.current = api
+  const self = useRef({})
+  if (focused && !disabled && !mask) { focusedInput = api; focusedOwner = self.current }
+  else if (focusedOwner === self.current) { focusedInput = null; focusedOwner = null }
+  useEffect(() => () => { if (focusedOwner === self.current) { focusedInput = null; focusedOwner = null } }, [])
 
-  const wordLeft = (pos: number) => {
-    let i = pos
-    while (i > 0 && /\s/.test(value[i - 1])) i--
-    while (i > 0 && !/\s/.test(value[i - 1])) i--
-    return i
-  }
-  const wordRight = (pos: number) => {
-    let i = pos
-    while (i < value.length && /\s/.test(value[i])) i++
-    while (i < value.length && !/\s/.test(value[i])) i++
-    return i
-  }
-
-  const lineStart = (pos: number) => value.lastIndexOf('\n', pos - 1) + 1
-  const lineEnd = (pos: number) => {
-    const end = value.indexOf('\n', pos)
-    return end < 0 ? value.length : end
-  }
+  const wordLeft = (pos: number) => wordLeftOf(value, pos)
+  const wordRight = (pos: number) => wordRightOf(value, pos)
+  const lineStart = (pos: number) => lineStartOf(value, pos)
+  const lineEnd = (pos: number) => lineEndOf(value, pos)
 
   const recall = (direction: -1 | 1) => {
     if (history.length === 0) return false
@@ -120,7 +127,8 @@ export function TextInput(props: TextInputProps) {
   }
 
   const submit = () => {
-    if (value.endsWith('\\')) {
+    // A trailing `\` continues the line, except on a /command (a Windows path: `/track C:\dir\`).
+    if (value.endsWith('\\') && !value.startsWith('/')) {
       update(`${value.slice(0, -1)}\n`)
       return
     }
@@ -151,14 +159,18 @@ export function TextInput(props: TextInputProps) {
       return true
     }
     if ((key.leftArrow || key.rightArrow) && key.shift) return false
+    const edit = editAction(input, key, lastRawInput())
+    if (edit) {
+      const next = applyEdit(edit, value, cursor)
+      if (next.value !== value) { historyIndex.current = null; update(next.value, next.cursor) } else setCursor(next.cursor)
+      return true
+    }
     const wordJump = key.meta || (key.ctrl && value.length > 0)
     if (key.leftArrow && wordJump) { setCursor(wordLeft(cursor)); return true }
     if (key.rightArrow && wordJump) { setCursor(wordRight(cursor)); return true }
     if (key.meta && !key.ctrl && (input === 'b' || input === 'f')) { setCursor(input === 'b' ? wordLeft(cursor) : wordRight(cursor)); return true }
     if (key.leftArrow && !key.ctrl) { setCursor(c => Math.max(0, c - 1)); return true }
     if (key.rightArrow && !key.ctrl) { setCursor(c => Math.min(value.length, c + 1)); return true }
-    if (key.home || (key.ctrl && input === 'a')) { setCursor(lineStart(cursor)); return true }
-    if (key.end || (key.ctrl && input === 'e')) { setCursor(lineEnd(cursor)); return true }
     if (key.upArrow) {
       const start = lineStart(cursor)
       if (start === 0) return recall(-1)
@@ -181,16 +193,6 @@ export function TextInput(props: TextInputProps) {
     if (key.delete) {
       if (cursor >= value.length) return true
       update(value.slice(0, cursor) + value.slice(cursor + 1), cursor)
-      return true
-    }
-    if (key.ctrl && input === 'w') {
-      const before = value.slice(0, cursor).replace(/\S+\s*$/, '')
-      update(before + value.slice(cursor), before.length)
-      return true
-    }
-    if (key.ctrl && input === 'u') {
-      const start = lineStart(cursor)
-      update(value.slice(0, start) + value.slice(cursor), start)
       return true
     }
     if (key.ctrl || key.meta || key.escape || key.tab) return false

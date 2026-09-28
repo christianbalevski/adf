@@ -11,10 +11,11 @@ import { useSelectedAgent, useSelectedAgentId, useSelectedLoop } from '../../sta
 import { TabStrip } from '../../ui/Tabs'
 import type { ViewDefinition, ViewProps } from '../types'
 import { inspectCommands } from './commands'
-import { TABS, useInspectState } from './state'
+import { TABS, readInspectState, useInspectState } from './state'
 import { EventsTab } from './EventsTab'
 import { ConfigTab } from './ConfigTab'
 import { AdaptersTab, IdentityTab, LogsTab, McpTab, RuntimeTab, TablesTab, UsageTab } from './DiagTabs'
+import { TasksTab } from './TasksTab'
 import { ThemeOverlay } from './overlays'
 import { MODEL_OVERLAY, ModelOverlay } from './model-picker'
 import { EVENT_KEYS } from './event-keys'
@@ -53,6 +54,7 @@ function InspectView({ width: paneWidth, height, focused }: ViewProps) {
       case 'identity': body = <IdentityTab key={agentId} {...props} />; break
       case 'logs': body = <LogsTab key={agentId} {...props} />; break
       case 'tables': body = <TablesTab key={agentId} {...props} />; break
+      case 'tasks': body = <TasksTab key={agentId} {...props} />; break
     }
   }
 
@@ -70,12 +72,20 @@ const inspect: ViewDefinition = {
   title: 'Inspect',
   key: '5',
   component: InspectView,
-  keyHints: [
-    { keys: 'left right', label: 'tab' },
-    { keys: 'enter', label: 'detail' },
-    { keys: 'r', label: 'refresh' },
-    { keys: 'e', label: 'edit config' },
-  ],
+  keyHints: scope => (readInspectState(scope.state()).tab === 'tasks'
+    ? [
+        { keys: 'enter', label: 'detail' },
+        { keys: 'f', label: 'filter' },
+        { keys: 'y', label: 'approve' },
+        { keys: 'n', label: 'reject' },
+        { keys: 'a', label: 'always' },
+      ]
+    : [
+        { keys: 'left right', label: 'tab' },
+        { keys: 'enter', label: 'detail' },
+        { keys: 'r', label: 'refresh' },
+        { keys: 'e', label: 'edit config' },
+      ]),
   helpKeys: [
     { keys: [{ keys: 'left right', label: `The selected agent’s tabs: ${TABS.map(t => t.title).join(' ')} ([ ])` }] },
     {
@@ -87,6 +97,18 @@ const inspect: ViewDefinition = {
         { keys: 'f', label: 'Logs: follow' },
         { keys: 'n p', label: 'Tables: next / previous page' },
         { keys: 'r', label: 'Reload' },
+      ],
+    },
+    {
+      title: 'Tasks (approvals and async tool calls; also /tasks)',
+      keys: [
+        { keys: 'f', label: 'Filter: pending · active (+ running) · all' },
+        { keys: '/', label: 'Search tool, status, reason, loop, origin, args' },
+        { keys: 'enter esc', label: 'Detail (args, result, error, timestamps) · back' },
+        { keys: 'y n', label: 'Approve · reject the highlighted call waiting for approval' },
+        { keys: 'a', label: 'Always approve its tool (confirmed; not offered for one-time approvals)' },
+        { keys: 'N', label: 'Reject with feedback (the agent sees the text)' },
+        { keys: 'A', label: 'Approve all waiting calls (confirmed; protection overrides skipped)' },
       ],
     },
     {

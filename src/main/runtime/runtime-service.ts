@@ -288,6 +288,15 @@ export interface RuntimeAgentTasksOptions {
   limit?: number
 }
 
+/** A task row as the owner API returns it. pending_approval rows carry the
+ *  live "Always approve" affordance; the server re-checks on the call. */
+export type RuntimeTaskEntry = TaskEntry & {
+  canAlwaysApprove?: boolean
+  alwaysApproveBlockedReason?: string
+}
+
+const NO_LIVE_APPROVAL_REASON = 'No live approval request is waiting on this task (approve or deny it instead)'
+
 /** Display states an agent can be moved to (adf-v02 `AGENT_STATES`). */
 export type AdfDisplayState = AdfAgentState
 
@@ -1450,25 +1459,117 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  getAgentTasks(agentId: string, opts: RuntimeAgentTasksOptions = {}): { agentId: string; tasks: TaskEntry[] } {
+  getAgentTasks(agentId: string, opts: RuntimeAgentTasksOptions = {}): { agentId: string; tasks: RuntimeTaskEntry[] } {
     const managed = this.requireAgent(agentId)
     const tasks = opts.status
       ? managed.agent.workspace.getTasksByStatus(opts.status)
       : managed.agent.workspace.getAllTasks(clampInteger(opts.limit ?? 200, 1, 1000))
-    return { agentId: managed.id, tasks }
+    return { agentId: managed.id, tasks: tasks.map(task => this.withApprovalAffordance(managed, task)) }
   }
 
-  getAgentTask(agentId: string, taskId: string): { agentId: string; task: TaskEntry } | null {
+  getAgentTask(agentId: string, taskId: string): { agentId: string; task: RuntimeTaskEntry } | null {
     const managed = this.requireAgent(agentId)
     const task = managed.agent.workspace.getTask(taskId)
-    return task ? { agentId: managed.id, task } : null
+    return task ? { agentId: managed.id, task: this.withApprovalAffordance(managed, task) } : null
+  }
+
+  /**
+   * The executor (main or an inner loop) whose pending HIL map holds this
+   * request. Task ids are globally unique (`task_<nanoid>`), so the first hit
+   * is the only one.
+   */
+  private approvalHolder(managed: ManagedRuntimeAgent, taskId: string): { loop: string; executor: ManagedRuntimeAgent['agent']['executor'] } | undefined {
+    return this.askExecutors(managed).find(entry => entry.executor.getPendingApprovalMeta(taskId) !== undefined)
+  }
+
+  /** pending_approval rows gain the live "Always approve" affordance
+   *  (Studio's ApprovalControls) — derived from the executor holding the
+   *  request, never persisted. A row no executor is waiting on (deferred
+   *  on_tool_call task, pre-restart leftover) can only be resolved. */
+  private withApprovalAffordance(managed: ManagedRuntimeAgent, task: TaskEntry): RuntimeTaskEntry {
+    if (task.status !== 'pending_approval') return task
+    const meta = this.approvalHolder(managed, task.id)?.executor.getPendingApprovalMeta(task.id)
+    if (!meta) return { ...task, canAlwaysApprove: false, alwaysApproveBlockedReason: NO_LIVE_APPROVAL_REASON }
+    const locked = managed.config.tools?.find(t => t.name === task.tool)?.locked === true
+    if (meta.canAlwaysApprove === false || locked) {
+      return { ...task, canAlwaysApprove: false, alwaysApproveBlockedReason: meta.alwaysApproveBlockedReason ?? 'Tool declaration is locked' }
+    }
+    return { ...task, canAlwaysApprove: true }
+  }
+
+  /**
+   * "Always approve" (Studio's Approve ▸ Always approve): drop the HIL gate on
+   * the HOST tool declaration (enabled, un-restricted), persist + propagate it
+   * through setAgentConfig (the same path PUT /config takes), then approve the
+   * pending request. The tool name comes from the pending request, never the
+   * client. Refused (409) for protection overrides, synthetic one-shot
+   * approvals and locked declarations — the backend is the authority, the UI
+   * only hides the option.
+   */
+  async alwaysApproveAgentTask(agentId: string, taskId: string): Promise<{
+    agentId: string
+    taskId: string
+    loop: string
+    tool: string
+    resolution: unknown
+    task: RuntimeTaskEntry | null
+  }> {
+    const managed = this.requireAgent(agentId)
+    const task = managed.agent.workspace.getTask(taskId)
+    if (!task) throw new RuntimeLoopError(`Unknown task "${taskId}"`, 404)
+    if (task.status !== 'pending_approval') {
+      throw new RuntimeLoopError(`Task "${taskId}" is in status "${task.status}" - only pending_approval tasks can be always-approved`, 409)
+    }
+    const holder = this.approvalHolder(managed, taskId)
+    const meta = holder?.executor.getPendingApprovalMeta(taskId)
+    if (!holder || !meta) throw new RuntimeLoopError(`Task "${taskId}": ${NO_LIVE_APPROVAL_REASON}`, 409)
+    const toolName = holder.executor.getPendingApprovals().find(a => a.requestId === taskId)?.name ?? task.tool
+
+    const config = managed.config
+    const decl = config.tools?.find(t => t.name === toolName)
+    if (meta.canAlwaysApprove === false || decl?.locked === true) {
+      throw new RuntimeLoopError(meta.alwaysApproveBlockedReason ?? 'Tool declaration is locked', 409)
+    }
+
+    const tools = config.tools ? [...config.tools] : []
+    const idx = tools.findIndex(t => t.name === toolName)
+    if (idx >= 0) tools[idx] = { ...tools[idx], enabled: true, restricted: false }
+    else tools.push({ name: toolName, enabled: true, visible: true, restricted: false })
+    await this.setAgentConfig(managed.id, { ...config, tools })
+
+    const resolved = await this.resolveAgentTask(managed.id, taskId, { action: 'approve' })
+    return { agentId: managed.id, taskId, loop: holder.loop, tool: toolName, resolution: resolved.resolution, task: resolved.task }
+  }
+
+  /**
+   * "Approve all": every pending GATED approval (reason 'restricted') on the
+   * agent's executors — or only `loop`'s. Protection overrides are never
+   * included; the executor enforces that filter itself.
+   */
+  approveAllAgentTasks(agentId: string, loop?: string): { agentId: string; loop?: string; approved: number; skippedProtection: number } {
+    const managed = this.requireAgent(agentId)
+    const executors = this.askExecutors(managed)
+    let targets = executors
+    if (loop !== undefined) {
+      const loopName = this.requireLoopName(managed, loop)
+      targets = executors.filter(entry => entry.loop === loopName)
+      if (targets.length === 0) throw new RuntimeLoopError(`Loop "${loopName}" has no running executor (it is disabled or stopping).`, 409)
+    }
+    let approved = 0
+    let skippedProtection = 0
+    for (const { executor } of targets) {
+      const result = executor.approveAllGatedHilTasks()
+      approved += result.approved
+      skippedProtection += result.skippedProtection
+    }
+    return { agentId: managed.id, ...(loop !== undefined ? { loop: targets[0].loop } : {}), approved, skippedProtection }
   }
 
   async resolveAgentTask(agentId: string, taskId: string, opts: RuntimeTaskResolveOptions): Promise<{
     agentId: string
     taskId: string
     resolution: unknown
-    task: TaskEntry | null
+    task: RuntimeTaskEntry | null
   }> {
     const managed = this.requireAgent(agentId)
     const input = {
@@ -1478,8 +1579,27 @@ export class RuntimeService extends EventEmitter {
       modified_args: opts.modifiedArgs,
     }
 
+    // The main call handler's onHilApproved is bound to MAIN's executor, so a
+    // request parked by an inner loop's executor must be answered on that
+    // executor directly (same status writes as handleTaskResolve).
+    const holder = this.approvalHolder(managed, taskId)
     let resolution: unknown
-    if (managed.agent.adfCallHandler) {
+    if (holder && holder.loop !== MAIN_LOOP) {
+      const workspace = managed.agent.workspace
+      if (opts.action === 'approve') {
+        workspace.updateTaskStatus(taskId, 'running')
+        holder.executor.resolveHilTask(taskId, true, opts.modifiedArgs)
+        resolution = { task_id: taskId, status: 'approved' }
+      } else if (opts.action === 'deny') {
+        const reason = opts.reason ?? 'Denied'
+        workspace.updateTaskStatus(taskId, 'denied', undefined, reason)
+        holder.executor.resolveHilTask(taskId, false, undefined, opts.reason)
+        resolution = { task_id: taskId, status: 'denied', reason }
+      } else {
+        workspace.updateTaskStatus(taskId, 'pending_approval')
+        resolution = { task_id: taskId, status: 'pending_approval' }
+      }
+    } else if (managed.agent.adfCallHandler) {
       const result = await managed.agent.adfCallHandler.resolveTask(input)
       if (result.error) throw new Error(result.error)
       resolution = parseMaybeJson(result.result)
@@ -1499,7 +1619,8 @@ export class RuntimeService extends EventEmitter {
       } else if (opts.action === 'deny') {
         const reason = opts.reason ?? 'Denied'
         managed.agent.workspace.updateTaskStatus(taskId, 'denied', undefined, reason)
-        managed.agent.executor.resolveHilTask(taskId, false)
+        // Reason rides along as feedback: the agent reads it in the tool error.
+        managed.agent.executor.resolveHilTask(taskId, false, undefined, opts.reason)
         resolution = { task_id: taskId, status: 'denied', reason }
       } else {
         managed.agent.workspace.updateTaskStatus(taskId, 'pending_approval')
@@ -1511,7 +1632,7 @@ export class RuntimeService extends EventEmitter {
       agentId: managed.id,
       taskId,
       resolution,
-      task: managed.agent.workspace.getTask(taskId),
+      task: this.getAgentTask(managed.id, taskId)?.task ?? null,
     }
   }
 
@@ -2182,6 +2303,11 @@ export class RuntimeService extends EventEmitter {
     } finally {
       workspace.dispose()
     }
+  }
+
+  /** The .adf files an autostart scan of `dirs` would consider (same walk, same depth rule). */
+  scanAdfFiles(dirs: string[], maxDepth = 5): string[] {
+    return this.collectAdfFiles(dirs, maxDepth)
   }
 
   private collectAdfFiles(trackedDirs: string[], maxDepth: number): string[] {

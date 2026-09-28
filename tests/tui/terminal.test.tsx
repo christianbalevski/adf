@@ -35,6 +35,7 @@ const KITTY = {
 const KEY = { enter: '\r', tab: '\t', up: '\u001b[A', down: '\u001b[B', ctrlUp: '\u001b[1;5A', end: '\u001b[F', shiftRight: '\u001b[1;2C', ctrlB: '\u0002' }
 const wheel = (x: number, y: number, up: boolean) => `\u001b[<${up ? 64 : 65};${x + 1};${y + 1}M`
 const click = (x: number, y: number) => `\u001b[<0;${x + 1};${y + 1}M`
+const release = (x: number, y: number) => `\u001b[<0;${x + 1};${y + 1}m`
 
 class FakeTty extends EventEmitter {
   isTTY = true
@@ -241,21 +242,26 @@ describe('mouse and scrolling', () => {
     await tui.press(wheel(3, 5, true))
     await tui.press(wheel(3, 5, true))
     expect(tui.lastFrame()).not.toMatch(/newer rows? below/)
-    // A click in the transcript focuses the main pane; in the prompt, the prompt.
-    await tui.press(click(70, 10))
-    await tui.waitFor(() => store.getState().focus === 'main')
-    await tui.press(click(70, 31))
+    // A click on a transcript item selects it and the prompt keeps focus; a
+    // click on the sidebar focuses it; in the prompt, the prompt.
+    await tui.press(click(70, 10) + release(70, 10))
+    await tui.waitFor(f => f.includes('▌'))
+    expect(store.getState().focus).toBe('input')
+    await tui.press(click(3, 5) + release(3, 5))
+    await tui.waitFor(() => store.getState().focus === 'sidebar')
+    await tui.press(click(70, 31) + release(70, 31))
     await tui.waitFor(() => store.getState().focus === 'input')
   })
 
-  it('with an empty prompt ↑/↓ scroll the transcript; Ctrl+↑ recalls history', async () => {
+  it('with an empty prompt ↑/↓ select transcript items; Ctrl+↑ recalls history', async () => {
     const { tui, mock } = await mountChat({ history: 80 })
     await tui.waitFor('answer 79')
     await tui.press(KEY.up)
+    await tui.waitFor(f => f.includes('▌● answer 79'))
     await tui.press(KEY.up)
-    await tui.waitFor(f => /2 newer rows below/.test(f))
+    await tui.waitFor(f => f.includes('▌› question 78') && !f.includes('▌● answer 79'))
     await tui.press(KEY.end)
-    await tui.waitFor(f => !/newer rows? below/.test(f))
+    await tui.waitFor(f => !/newer rows? below/.test(f) && !f.includes('▌'))
     await tui.type('hello there')
     await tui.press(KEY.enter)
     await tui.waitFor(() => lastUserText(mock) === 'hello there')

@@ -1492,6 +1492,110 @@
         }
       }
     },
+    "/tracked-dirs": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "List tracked agent folders (settings.trackedDirectories)",
+        "operationId": "listTrackedDirs",
+        "responses": {
+          "200": {
+            "description": "Tracked folders",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["maxDepth", "directories"],
+                  "properties": {
+                    "maxDepth": { "type": "integer" },
+                    "directories": { "type": "array", "items": { "$ref": "#/components/schemas/TrackedDirEntry" } }
+                  }
+                }
+              }
+            }
+          },
+          "503": { "description": "No settings store", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Track a folder now and autostart its agents (review gate applies)",
+        "operationId": "trackDir",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["path"],
+                "properties": { "path": { "type": "string", "description": "Absolute path to an existing directory" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Tracked; autostart report for the folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["entry", "directories", "absorbed", "autostart", "needsReview"],
+                  "properties": {
+                    "entry": { "$ref": "#/components/schemas/TrackedDirEntry" },
+                    "directories": { "type": "array", "items": { "type": "string" } },
+                    "absorbed": { "type": "array", "items": { "type": "string" }, "description": "Tracked subfolders the new folder replaced" },
+                    "autostart": { "$ref": "#/components/schemas/AutostartReport" },
+                    "needsReview": { "type": "array", "items": { "type": "object", "additionalProperties": true }, "description": "Autostart skips with reason 'unreviewed'" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "405": { "description": "Settings store is read-only", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "409": { "description": "Already tracked (any spelling) or covered by a tracked parent; body.coveredBy names it", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "No settings store", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["Agents"],
+        "summary": "Untrack a folder (files are never deleted)",
+        "operationId": "untrackDir",
+        "parameters": [
+          { "name": "path", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "unload", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true", "false"], "default": "false" }, "description": "Also unload the agents loaded from under the folder" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Untracked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["removed", "directories", "unloaded"],
+                  "properties": {
+                    "removed": { "type": "string" },
+                    "directories": { "type": "array", "items": { "type": "string" } },
+                    "unloaded": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["agentId", "filePath", "name"],
+                        "properties": { "agentId": { "type": "string" }, "filePath": { "type": "string" }, "name": { "type": "string" } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "description": "Not a tracked folder", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "405": { "description": "Settings store is read-only", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "No settings store", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
     "/agents/review": {
       "get": {
         "tags": ["Review"],
@@ -2892,6 +2996,89 @@
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
           },
           "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/tasks/{taskId}/always-approve": {
+      "post": {
+        "tags": ["Human In The Loop"],
+        "summary": "Always approve: un-restrict the pending request's tool and approve it",
+        "description": "Studio's Approve ▸ Always approve. The HOST tool declaration (taken from the pending request, never the client) becomes enabled:true, restricted:false and is persisted/propagated like PUT /agents/{id}/config; then the request is approved. Refused (409) for protection overrides, one-shot synthetic approvals and locked declarations. Works for requests held by main or an inner loop.",
+        "operationId": "alwaysApproveAgentTask",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/TaskIdPath" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tool un-restricted and request approved",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskAlwaysApproveResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown agent or unknown task",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "409": {
+            "description": "Task is not pending_approval, no live request is waiting on it, or always-approve is not allowed (error = the blocked reason)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/tasks/approve-all": {
+      "post": {
+        "tags": ["Human In The Loop"],
+        "summary": "Approve every pending gated approval",
+        "description": "Studio's Approve all: approves every pending restricted-tool approval on main and each running inner loop (or only `loop`). Protection overrides are never included; they are counted in skippedProtection.",
+        "operationId": "approveAllAgentTasks",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "loop", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "loop": { "type": "string", "description": "Only this loop's approvals" } },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["agentId", "approved", "skippedProtection"],
+                  "properties": {
+                    "agentId": { "type": "string" },
+                    "loop": { "type": "string" },
+                    "approved": { "type": "integer" },
+                    "skippedProtection": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": {
+            "description": "Unknown agent or loop",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "409": {
+            "description": "The loop has no running executor",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
         }
       }
     },
@@ -4448,16 +4635,41 @@
           "completed_at": { "type": ["number", "null"] },
           "origin": { "type": "string" },
           "requires_authorization": { "type": "boolean" },
-          "executor_managed": { "type": "boolean" }
+          "executor_managed": { "type": "boolean" },
+          "approval_meta": { "type": "object", "additionalProperties": true, "description": "Durable HIL metadata: { reason: 'restricted' | 'protection', protection? }" },
+          "canAlwaysApprove": { "type": "boolean", "description": "pending_approval rows only: whether POST …/always-approve would be accepted (live, from the executor holding the request)" },
+          "alwaysApproveBlockedReason": { "type": "string", "description": "Why canAlwaysApprove is false" }
         },
         "additionalProperties": true
+      },
+      "TrackedDirEntry": {
+        "type": "object",
+        "required": ["path", "exists", "agentCount", "loadedCount"],
+        "properties": {
+          "path": { "type": "string" },
+          "exists": { "type": "boolean" },
+          "agentCount": { "type": "integer", "description": ".adf files an autostart scan finds (maxDirectoryScanDepth)" },
+          "loadedCount": { "type": "integer", "description": "Agents loaded in this daemon from under the folder" }
+        }
+      },
+      "TaskAlwaysApproveResponse": {
+        "type": "object",
+        "required": ["agentId", "taskId", "loop", "tool", "resolution", "task"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "taskId": { "type": "string" },
+          "loop": { "type": "string", "description": "Loop whose executor held the request" },
+          "tool": { "type": "string", "description": "Tool whose host declaration was un-restricted" },
+          "resolution": {},
+          "task": { "oneOf": [{ "$ref": "#/components/schemas/Task" }, { "type": "null" }] }
+        }
       },
       "TaskResolveBody": {
         "type": "object",
         "required": ["action"],
         "properties": {
           "action": { "type": "string", "enum": ["approve", "deny", "pending_approval"] },
-          "reason": { "type": "string" },
+          "reason": { "type": "string", "description": "On deny: stored as the task error and handed back to the agent as the owner's feedback" },
           "modifiedArgs": { "type": "object", "additionalProperties": true },
           "modified_args": { "type": "object", "additionalProperties": true }
         }

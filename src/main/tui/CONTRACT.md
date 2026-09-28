@@ -130,10 +130,10 @@ first registration of a name wins and collisions are listed in
 `help ? quit exit q view agent a refresh r theme url auth login logout json
 identity new sidebar mouse terminal-setup terminal web open-site site copy-site`; `runtime status usage
 providers network compute settings events` belong to runtime; `loop main loops timers timer triggers history`
-belong to loops; `abort interrupt clear compact trigger copy thinking` to
+belong to loops; `abort interrupt clear compact trigger copy thinking approve reject` to
 chat; `agents start stop unload load switch sw autostart` to fleet; `files
-open edit doc document mind new-file rm mv` to files; `inspect model config` to
-inspect. Pick new names inside your domain (`/loop …`, `/file …`,
+open edit doc document mind new-file rm mv` to files; `inspect model config tasks` to
+inspect; `track untrack` to fleet. Pick new names inside your domain (`/loop …`, `/file …`,
 `/task …`). Unknown `/x` is reported, never sent to an agent.
 
 ## 5. Store (`state/`)
@@ -159,7 +159,9 @@ setFocus · pushOverlay · popOverlay · confirm · toast · dismissToast ·
 setViewState · prefillPrompt · ensureTranscript · loadTranscript · loadOlder ·
 sendChat(text, {agentId?, loop?}) · clearLoopHistory · compactLoop ·
 createLoop · updateLoop · setLoopEnabled · deleteLoop · scheduleLoop ·
-resolveTask · answerAsk(agentId, requestId, answer, loop?) · respondSuspend ·
+resolveTask(agentId, taskId, action, reason?) (a deny reason reaches the agent as
+feedback) · alwaysApproveTask · approveAllTasks(agentId, loop?) ·
+answerAsk(agentId, requestId, answer, loop?) · respondSuspend ·
 notice(agentId, loop, text, level?) · setDaemonUrl(url, token?) · refreshWeb ·
 setWebServer(on) ·
 run(label, client => …)`. `store.client` is a getter: `setDaemonUrl` swaps it. Every daemon-calling
@@ -245,8 +247,11 @@ body, unreachable }`. Types in `api/types.ts` are type-imported from the daemon
   setFileAuthorized inbox clearInbox outbox timers createTimer({…, loop})
   updateTimer (a `loop` moves the timer) deleteTimer meta setMeta deleteMeta identities (metadata only)
   logs logsAfter tables table umbilicalReplay`
-- HIL: `tasks task resolveTask asks (each with its loop) answerAsk(…, loop?)
+- HIL: `tasks task (pending entries carry canAlwaysApprove /
+  alwaysApproveBlockedReason) resolveTask alwaysApproveTask(id, taskId)
+  approveAllTasks(id, loop?) asks (each with its loop) answerAsk(…, loop?)
   respondSuspend`
+- tracked folders: `trackedDirs trackDir(path) untrackDir(path, {unload?})`
 - diagnostics: `agentRuntime agentTriggers agentMcp agentAdapters agentWs`
 - escape hatch: `request<T>(method, path, {query, body})`
 
@@ -321,24 +326,51 @@ follows raw mode (`app/terminal.ts`), so nothing else is needed.
 Terminal modes (`app/terminal.ts`, installed by `index.tsx`): the kitty
 keyboard protocol (flag 1) when the terminal answers ink's `CSI ? u` query, so
 Shift+Enter arrives as `key.return && key.shift` (TextInput inserts a newline;
-Ctrl+J also arrives as `ctrl` + `j`). Default mouse: native (drag select,
-right-click paste) plus alternate scroll mode (DECSET 1007) in the alternate
-screen, so the wheel arrives as ↑/↓ for the focused pane (chat coalesces a
-burst of arrows from one read into a transcript scroll even over text; a lone
-arrow is replayed to the prompt). Opt-in mouse mode (`/mouse on`, `--mouse`,
-pref): SGR mouse reporting (1000 + 1006); the shell parses reports before any
-key handler (they never reach a prompt), routes wheel notches to the
-innermost region under the pointer, focuses the clicked pane and handles
-header clicks (tabs, web badge; `HeaderHits` from `app/Header.tsx`). Make a box scrollable with `useWheel(ref, delta => …, { layer })`
-(`delta` -1 up / +1 down per notch, move `WHEEL_STEP` rows; `layer: 'overlay'`
-inside dialogs). `List`, `ScrollView`, `LinesView`, the sidebar, the files
-viewer, the palette and the chat transcript already do. Chat also scrolls
-its transcript with ↑/↓ while the prompt is empty (`isPromptEmpty()`); prompt
-history is Ctrl+↑/↓.
+Ctrl+J also arrives as `ctrl` + `j`). The shell records every keypress's raw
+bytes first (`lastRawInput()`): ink folds Backspace (DEL) and Ctrl+Backspace
+(BS) together and reads a legacy `CSI 1;9D` (Cmd+←) as Alt+←; `ui/edit.ts`
+maps the composer's line-editing keys from key + raw bytes.
+
+Mouse mode is the default (`/mouse off`, `--no-mouse`, pref turn it off): SGR
+mouse reporting with drags (1002 + 1006). The shell parses reports before any
+key handler (they never reach a prompt): wheel notches go to the innermost
+`useWheel` region under the pointer; presses, drags and releases go to the
+selection controller (`app/selection.ts`): a drag highlights cells inside the
+pane it started in and copies on release (double-click word, triple-click
+line), a plain click goes to the innermost `useClick(ref, event => used)`
+region (chat: select + expand an item; the approval card's buttons) and then
+focuses the pane (the prompt keeps focus when the click was used), header
+clicks switch tabs / toggle the web server (`HeaderHits` from
+`app/Header.tsx`), right-click pastes the clipboard into the prompt (or the
+focused dialog input). The cells come from `app/screen.ts`: every TUI write
+is mirrored into an in-process `@xterm/headless` terminal (a runtime
+dependency, bundled into the npm package); the highlight is painted as
+reverse video straight to the terminal after each frame and cleared by
+ink's full repaint; it drops itself when the text under it moves. Tests set
+`setScreenText(frameScreen(frame, cols))` and swap the clipboard with
+`setClipboardWriter` / `setClipboardReader` (`app/clipboard.ts`: native tools,
+OSC 52 fallback and over SSH, `ADF_TUI_CLIPBOARD=osc52`). With mouse mode off
+the terminal keeps its mouse and alternate scroll mode (DECSET 1007) sends
+the wheel as ↑/↓ for the focused pane: chat coalesces a burst of arrows from
+one read into a line scroll (never an item move, even over composer text; a
+lone arrow selects an item or is replayed to the prompt).
+
+Make a box scrollable with `useWheel(ref, delta => …, { layer })` (`delta` -1
+up / +1 down per notch, move `WHEEL_STEP` rows; `layer: 'overlay'` inside
+dialogs). `List`, `ScrollView`, `LinesView`, the sidebar, the files viewer,
+the palette and the chat transcript already do. Chat moves an item selection
+with ↑/↓ while the prompt is empty (`isPromptEmpty()`) or the transcript has
+focus (Enter / Space expand, Esc lets go, a taller-than-view item scrolls
+inside first: `navigate()` in `views/chat/model.ts`); prompt history is
+Ctrl+↑/↓.
 
 Persisted choices (`app/prefs.ts`, `<config dir>/adf-studio/tui-prefs.json`
-or `ADF_TUI_PREFS`): sidebar hidden, mouse mode (default off), one-time tips. Nothing
-secret goes there.
+or `ADF_TUI_PREFS`): sidebar hidden, mouse mode (default on; `/mouse off`
+is remembered), one-time tips. Nothing secret goes there.
+
+Status bar: a view's first `MAX_VIEW_HINTS` (5) `keyHints`, then `Tab` focus
+and `Ctrl+K` palette (`GLOBAL_HINTS`). Put the primary keys first; the rest
+belong in `helpKeys` (/help, which filters as you type).
 
 ## 10. Runtime notes
 

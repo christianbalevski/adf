@@ -6,6 +6,7 @@
 import { useViewState } from '../../state/hooks'
 import type { TuiActions } from '../../state/store'
 import type { TuiState } from '../../state/types'
+import type { TaskFilter } from './tasks'
 
 export const INSPECT_VIEW = 'inspect'
 
@@ -18,6 +19,7 @@ export const TABS = [
   { id: 'identity', title: 'Identities', description: 'The agent’s identity entries (metadata only, never values)' },
   { id: 'logs', title: 'Logs', description: 'Agent log tail with follow' },
   { id: 'tables', title: 'Tables', description: 'Local tables: list and browse rows' },
+  { id: 'tasks', title: 'Tasks', description: 'The agent’s tasks: approvals and async tool calls; approve / reject here' },
   { id: 'events', title: 'Events', description: 'This agent’s live umbilical events (every agent: Runtime › Events)' },
 ] as const
 
@@ -39,6 +41,8 @@ export interface InspectState {
   json: boolean
   events: EventFilters
   logsFollow: boolean
+  /** Tasks tab: which statuses show (f cycles). */
+  tasksFilter: TaskFilter
   /** /config edit: the Config tab opens $EDITOR once for this request (a timestamp). */
   editRequest?: number
 }
@@ -48,6 +52,7 @@ export const DEFAULT_INSPECT_STATE: InspectState = {
   json: false,
   events: { types: '', agent: 'selected', loop: 'all', follow: true },
   logsFollow: true,
+  tasksFilter: 'all',
 }
 
 export function readInspectState(state: TuiState): InspectState {
@@ -77,6 +82,6 @@ export function useInspectState(): [InspectState, (patch: Partial<Omit<InspectSt
 export function findTab(name: string): InspectTab | undefined {
   const wanted = name.trim().toLowerCase()
   if (!wanted) return undefined
-  const aliases: Record<string, InspectTab> = { umbilical: 'events', event: 'events', status: 'diag', runtime: 'diag', diagnostics: 'diag', identities: 'identity', log: 'logs', table: 'tables', db: 'tables' }
+  const aliases: Record<string, InspectTab> = { umbilical: 'events', event: 'events', status: 'diag', runtime: 'diag', diagnostics: 'diag', identities: 'identity', log: 'logs', table: 'tables', db: 'tables', task: 'tasks', approvals: 'tasks', hil: 'tasks' }
   return (TABS.find(t => t.id === wanted)?.id) ?? aliases[wanted] ?? TABS.find(t => t.id.startsWith(wanted))?.id
 }

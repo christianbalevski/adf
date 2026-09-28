@@ -31,6 +31,7 @@ import type { AdapterInstanceConfig, AdapterRegistration } from '../../shared/ty
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { getLanAddresses } from '../utils/network'
 import { registerIdentityRoutes, type IdentityRouteDeps } from './identity-routes'
+import { listTrackedDirs, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
@@ -56,6 +57,12 @@ export interface DaemonHttpApiOptions {
    * the only graceful way to stop a detached daemon.
    */
   requestShutdown?: () => void
+  /**
+   * Called after POST/DELETE /tracked-dirs persisted a new
+   * settings.trackedDirectories list, so the live daemon (mesh tracked roots)
+   * treats it as tracked now — Studio's meshManager.setTrackedDirectories.
+   */
+  onTrackedDirectoriesChanged?: (dirs: string[]) => void
 }
 
 export interface DaemonComputeService {
@@ -253,6 +260,11 @@ interface TaskResolveBody {
   reason?: string
   modifiedArgs?: Record<string, unknown>
   modified_args?: Record<string, unknown>
+}
+
+interface TaskApproveAllBody {
+  /** Only this loop's pending approvals; absent = every loop. */
+  loop?: string
 }
 
 interface AskRespondBody {
@@ -1691,6 +1703,31 @@ export function createDaemonHttpApi(
     }
   })
 
+  // Studio's Approve ▸ Always approve. The tool comes from the pending request,
+  // never the body; protection overrides, one-shot approvals and locked
+  // declarations are refused with 409 + the blocked reason.
+  server.post<{ Params: TaskIdParams }>('/agents/:id/tasks/:taskId/always-approve', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    try {
+      return await runtime.alwaysApproveAgentTask(request.params.id, request.params.taskId)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  // Studio's "Approve all": gated approvals only — protection overrides are
+  // skipped by the executor and counted in skippedProtection.
+  server.post<{ Params: AgentIdParams; Body: TaskApproveAllBody; Querystring: { loop?: string } }>('/agents/:id/tasks/approve-all', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    const loop = request.body?.loop ?? request.query?.loop
+    if (loop !== undefined && (typeof loop !== 'string' || !loop)) return badRequest(reply, 'loop must be a non-empty string')
+    try {
+      return runtime.approveAllAgentTasks(request.params.id, loop)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
   server.get<{ Params: AgentIdParams }>('/agents/:id/asks', async (request, reply) => {
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentAsks(request.params.id)
@@ -2050,6 +2087,41 @@ export function createDaemonHttpApi(
       return runtime.acceptReview(filePath)
     } catch (err) {
       return handleRuntimeError(reply, err)
+    }
+  })
+
+  // --- Tracked agent folders (Studio's TRACKED_DIRS_*) ----------------------
+  // settings.trackedDirectories is written through the internal store (it is
+  // not a secret/identity key), then the live daemon is told via
+  // onTrackedDirectoriesChanged so the mesh sees the new roots immediately.
+  const trackedDirsError = (reply: FastifyReply, err: unknown) => {
+    if (err instanceof TrackedDirError) return reply.code(err.statusCode).send({ error: err.message, ...(err.details ?? {}) })
+    return handleRuntimeError(reply, err)
+  }
+
+  server.get('/tracked-dirs', async (_request, reply) => {
+    if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
+    return listTrackedDirs(runtime, opts.settingsStore)
+  })
+
+  server.post<{ Body: { path?: unknown } }>('/tracked-dirs', async (request, reply) => {
+    if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
+    try {
+      const result = await trackDir(runtime, opts.settingsStore, request.body?.path, opts.onTrackedDirectoriesChanged)
+      return reply.code(201).send(result)
+    } catch (err) {
+      return trackedDirsError(reply, err)
+    }
+  })
+
+  server.delete<{ Querystring: { path?: string; unload?: string } }>('/tracked-dirs', async (request, reply) => {
+    if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
+    const unload = request.query.unload
+    if (unload !== undefined && unload !== 'true' && unload !== 'false') return badRequest(reply, 'unload must be true or false')
+    try {
+      return await untrackDir(runtime, opts.settingsStore, request.query.path, { unload: unload === 'true' }, opts.onTrackedDirectoriesChanged)
+    } catch (err) {
+      return trackedDirsError(reply, err)
     }
   })
 

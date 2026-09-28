@@ -197,6 +197,8 @@ export interface PathCompletionOptions {
   list?: (dir: string) => DirEntryLite[]
   /** Separator appended to a completed directory when the input has none yet. */
   separator?: string
+  /** Complete directories only (the "Track a folder" dialog); default: dirs + .adf files. */
+  dirsOnly?: boolean
 }
 
 export interface PathCompletion {
@@ -243,7 +245,7 @@ export function completePath(input: string, options: PathCompletionOptions = {})
   const dirAbs = expandPath(dirPart || '.', options)
   const norm = (s: string) => (ignoreCase ? s.toLowerCase() : s)
   const matches = list(dirAbs)
-    .filter(e => e.dir || /\.adf$/i.test(e.name))
+    .filter(e => e.dir || (!options.dirsOnly && /\.adf$/i.test(e.name)))
     .filter(e => !e.name.startsWith('.') || base.startsWith('.'))
     .filter(e => norm(e.name).startsWith(norm(base)))
     .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1))

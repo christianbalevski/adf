@@ -12,6 +12,7 @@ import type {
   IdentityStatus,
   LoopInfo,
   TaskEntry,
+  TaskListEntry,
   UmbilicalEvent,
 } from '../api/types'
 
@@ -76,6 +77,10 @@ export interface ToolItem extends ItemBase {
   status: 'running' | 'ok' | 'error'
   result?: string
   completedAt?: number
+  /** Ran in the background (`_async: true`): the loop got a task reference, the real result arrives later. */
+  async?: boolean
+  /** The task reference an async call returned at once (`{"task_id":…,"status":"running"}`). */
+  taskRef?: string
 }
 
 /** A visible runtime/state change (state transitions, compaction, clears, triggers, reconnects). */
@@ -175,8 +180,8 @@ export interface AgentEntry {
   loops?: LoopState[]
   loopsError?: string
   config?: AgentConfig
-  /** Pending approvals (tasks in pending_approval). */
-  pendingTasks: TaskEntry[]
+  /** Pending approvals (tasks in pending_approval), with whether "always approve" is allowed. */
+  pendingTasks: TaskListEntry[]
   pendingAsks: AskEntry[]
   /** Tokens seen on llm.completed since the TUI connected. */
   tokens: TokenTally

@@ -325,7 +325,7 @@ Human-in-the-loop approvals. `request_id` and `task_id` are the same value (the
 
 | Event | Payload |
 |---|---|
-| `hil.requested` | `{ request_id, task_id, tool, reason, input }` |
+| `hil.requested` | `{ request_id, task_id, tool, reason, input, can_always_approve, always_approve_blocked_reason? }` |
 | `hil.resolved` | `{ request_id, task_id, approved, feedback?, timed_out?, orphaned? }` |
 
 `reason` is one of:

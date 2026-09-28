@@ -14,6 +14,8 @@ interface Block { type: string; text?: string; id?: string; name?: string; input
 interface Row { seq: number; role: 'user' | 'assistant'; content_json: Block[]; model?: string; created_at: number }
 interface MockLoop { name: string; goal: string; enabled: boolean; autostart?: boolean; tools?: string[]; status: 'idle' | 'running'; model?: { provider: string; model_id: string } }
 interface MockServing { public?: { enabled: boolean; index?: string }; shared?: { enabled: boolean; patterns?: string[] }; api?: Array<{ method: string; path: string; lambda: string }> }
+interface MockToolDecl { name: string; enabled: boolean; visible?: boolean; restricted?: boolean; locked?: boolean }
+interface MockApprovalMeta { reason?: string; protection?: { level?: string }; canAlwaysApprove?: boolean; can_always_approve?: boolean; alwaysApproveBlockedReason?: string }
 interface MockAgent {
   id: string
   handle: string
@@ -24,7 +26,16 @@ interface MockAgent {
   history: Record<string, Row[]>
   files: Array<{ path: string; content: string; protection: string }>
   timers: Array<Record<string, unknown>>
+  /**
+   * Tasks as adf_tasks rows. A pending_approval row's `approval_meta` drives
+   * the "Always approve" affordance: `reason: 'protection'` or
+   * `canAlwaysApprove: false` (+ optional `alwaysApproveBlockedReason`) makes
+   * it one-time only — GET /tasks reports canAlwaysApprove:false and
+   * /always-approve answers 409, like the real daemon.
+   */
   tasks: Array<Record<string, unknown>>
+  /** config.tools; absent until something (always-approve) writes it. */
+  tools?: MockToolDecl[]
   asks: Array<{ requestId: string; question: string; loop?: string }>
   provider: string
   /** What the agent serves through the daemon's web server (config.serving). */
@@ -57,6 +68,10 @@ export interface MockDaemon {
   requests: string[]
   /** The web server state; mutate it to simulate Studio / the CLI starting or stopping it. */
   web: MockWebServer
+  /** settings.trackedDirectories, live (GET/POST/DELETE /tracked-dirs mutate it). */
+  trackedDirs: string[]
+  /** Fake folders that "exist" for POST /tracked-dirs; add a path to make it trackable. */
+  existingDirs: Set<string>
   close(): Promise<void>
 }
 
@@ -66,6 +81,30 @@ export interface MockDaemonOptions {
   stepMs?: number
   /** Initial web server state. Default running on 127.0.0.1:7295. */
   web?: Partial<MockWebServer>
+  /** Initial tracked folders. Default [MOCK_AGENTS_DIR] (where the seeded agents live). */
+  trackedDirs?: string[]
+  /** Extra fake folders that exist (MOCK_AGENTS_DIR and MOCK_SPARE_DIR always do). */
+  existingDirs?: string[]
+}
+
+/** Seeded agents' files are /agents/<handle>.adf, so this folder "holds" them. */
+export const MOCK_AGENTS_DIR = '/agents'
+/** An existing, untracked, empty fake folder — ready for POST /tracked-dirs. */
+export const MOCK_SPARE_DIR = '/home/owner/agent-lab'
+
+function normDir(p: string): string {
+  return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() || '/'
+}
+
+/** `child` is `dir` itself or beneath it (case/separator-insensitive, like the daemon on Windows). */
+function isUnder(dir: string, child: string): boolean {
+  const d = normDir(dir)
+  const c = normDir(child)
+  return c === d || c.startsWith(d === '/' ? '/' : `${d}/`)
+}
+
+function isAbsolutePath(p: string): boolean {
+  return p.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\\\')
 }
 
 let seqCounter = 1
@@ -150,6 +189,8 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
   const requests: string[] = []
   let cursor = 0
   const web: MockWebServer = { running: true, port: 7295, host: '127.0.0.1', ...options.web }
+  const trackedDirs: string[] = [...(options.trackedDirs ?? [MOCK_AGENTS_DIR])]
+  const existingDirs = new Set<string>([MOCK_AGENTS_DIR, MOCK_SPARE_DIR, ...(options.existingDirs ?? [])])
 
   const emit = (input: MockEvent) => {
     const agentId = input.agent_id ?? null
@@ -290,6 +331,56 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
       })
     }
     if (url.pathname === '/runtime/auth') return send(200, { chatgpt: { authenticated: false }, grok: { authenticated: false }, providers: [] })
+    // Tracked agent folders (settings.trackedDirectories). Paths are fake:
+    // "exists" means listed in `existingDirs`; agents count by their
+    // /agents/<handle>.adf filePath.
+    if (url.pathname === '/tracked-dirs') {
+      const agentsUnder = (dir: string) => [...agents.values()].filter(a => isUnder(dir, `/agents/${a.handle}.adf`))
+      const entry = (dir: string) => {
+        const exists = existingDirs.has(dir)
+        const n = exists ? agentsUnder(dir).length : 0
+        return { path: dir, exists, agentCount: n, loadedCount: n }
+      }
+      if (method === 'GET') return send(200, { maxDepth: 5, directories: trackedDirs.map(entry) })
+      if (method === 'POST') {
+        const raw = typeof body?.path === 'string' ? body.path.trim() : ''
+        if (!raw) return send(400, { error: 'path is required' })
+        if (!isAbsolutePath(raw)) return send(400, { error: 'path must be an absolute path.' })
+        if (!existingDirs.has(raw)) return send(400, { error: `path does not exist: ${raw}` })
+        const coveredBy = trackedDirs.find(d => isUnder(d, raw))
+        if (coveredBy !== undefined) {
+          return send(409, { error: normDir(coveredBy) === normDir(raw) ? `Already tracked: ${coveredBy}` : `Already tracked through its parent folder ${coveredBy}`, coveredBy })
+        }
+        const absorbed = trackedDirs.filter(d => isUnder(raw, d))
+        trackedDirs.splice(0, trackedDirs.length, ...trackedDirs.filter(d => !absorbed.includes(d)), raw)
+        const found = agentsUnder(raw)
+        return send(201, {
+          entry: entry(raw),
+          directories: [...trackedDirs],
+          absorbed,
+          autostart: { scanned: found.length, started: [], skipped: found.map(a => ({ filePath: `/agents/${a.handle}.adf`, name: a.name, reason: 'already_loaded', agentId: a.id })), failed: [] },
+          needsReview: [],
+        })
+      }
+      if (method === 'DELETE') {
+        const raw = url.searchParams.get('path') ?? ''
+        const unload = url.searchParams.get('unload')
+        if (!raw) return send(400, { error: 'path is required' })
+        if (unload !== null && unload !== 'true' && unload !== 'false') return send(400, { error: 'unload must be true or false' })
+        const match = trackedDirs.find(d => normDir(d) === normDir(raw))
+        if (match === undefined) return send(404, { error: `Not a tracked folder: ${raw}` })
+        trackedDirs.splice(trackedDirs.indexOf(match), 1)
+        const unloaded: Array<{ agentId: string; filePath: string; name: string }> = []
+        if (unload === 'true') {
+          for (const a of agentsUnder(match)) {
+            agents.delete(a.id)
+            unloaded.push({ agentId: a.id, filePath: `/agents/${a.handle}.adf`, name: a.name })
+            emit({ event_type: 'agent.unloaded', agent_id: a.id })
+          }
+        }
+        return send(200, { removed: match, directories: [...trackedDirs], unloaded })
+      }
+    }
     if (parts[0] !== 'agents') return notFound('route')
     if (parts.length === 1 && method === 'GET') return send(200, [...agents.values()].map(summary))
 
@@ -430,17 +521,51 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
       case 'GET tasks': {
         if (parts[3]) {
           const task = agent.tasks.find(t => t.id === parts[3])
-          return task ? send(200, { agentId: agent.id, task }) : notFound('task')
+          return task ? send(200, { agentId: agent.id, task: taskEntry(agent, task) }) : notFound('task')
         }
         const wanted = url.searchParams.get('status')
-        return send(200, { agentId: agent.id, tasks: agent.tasks.filter(t => !wanted || t.status === wanted) })
+        return send(200, { agentId: agent.id, tasks: agent.tasks.filter(t => !wanted || t.status === wanted).map(t => taskEntry(agent, t)) })
       }
       case 'POST tasks': {
+        // Studio's "Approve all": gated approvals only; protection overrides are skipped.
+        if (parts[3] === 'approve-all') {
+          const loop = typeof body?.loop === 'string' ? body.loop : url.searchParams.get('loop') ?? undefined
+          if (loop !== undefined && !hasLoop(agent, loop)) return notFound(`loop "${loop}"`)
+          let approved = 0
+          let skippedProtection = 0
+          for (const task of agent.tasks) {
+            if (task.status !== 'pending_approval') continue
+            if (loop !== undefined && ((task.loop as string | undefined) ?? 'main') !== loop) continue
+            if (approvalMetaOf(task).reason === 'protection') { skippedProtection++; continue }
+            task.status = 'completed'
+            approved++
+            emit({ event_type: 'hil.resolved', agent_id: agent.id, loop: task.loop as string | undefined, payload: { request_id: task.id, task_id: task.id, approved: true } })
+          }
+          return send(200, { agentId: agent.id, ...(loop !== undefined ? { loop } : {}), approved, skippedProtection })
+        }
         const task = agent.tasks.find(t => t.id === parts[3])
         if (!task) return notFound('task')
-        task.status = body?.action === 'approve' ? 'completed' : 'denied'
-        emit({ event_type: 'hil.resolved', agent_id: agent.id, payload: { request_id: task.id, task_id: task.id, approved: body?.action === 'approve' } })
-        return send(200, { agentId: agent.id, taskId: task.id, resolution: { action: body?.action }, task })
+        const taskLoop = task.loop as string | undefined
+        // Approve ▸ Always approve: tool comes from the task, never the body.
+        if (parts[4] === 'always-approve') {
+          if (task.status !== 'pending_approval') return send(409, { error: `Task "${task.id}" is in status "${String(task.status)}" - only pending_approval tasks can be always-approved` })
+          const entry = taskEntry(agent, task)
+          if (entry.canAlwaysApprove === false) return send(409, { error: entry.alwaysApproveBlockedReason })
+          const tool = String(task.tool)
+          const tools = agent.tools ??= []
+          const decl = tools.find(t => t.name === tool)
+          if (decl) { decl.enabled = true; decl.restricted = false } else tools.push({ name: tool, enabled: true, visible: true, restricted: false })
+          emit({ event_type: 'config.changed', agent_id: agent.id, payload: { changed_keys: ['tools'] } })
+          task.status = 'completed'
+          emit({ event_type: 'hil.resolved', agent_id: agent.id, loop: taskLoop, payload: { request_id: task.id, task_id: task.id, approved: true } })
+          return send(200, { agentId: agent.id, taskId: task.id, loop: taskLoop ?? 'main', tool, resolution: { task_id: task.id, status: 'approved' }, task: taskEntry(agent, task) })
+        }
+        const approve = body?.action === 'approve'
+        const reason = typeof body?.reason === 'string' && body.reason ? body.reason : undefined
+        task.status = approve ? 'completed' : 'denied'
+        if (!approve) task.error = reason ?? 'Denied'
+        emit({ event_type: 'hil.resolved', agent_id: agent.id, loop: taskLoop, payload: { request_id: task.id, task_id: task.id, approved: approve, ...(!approve && reason ? { feedback: reason } : {}) } })
+        return send(200, { agentId: agent.id, taskId: task.id, resolution: { action: body?.action }, task: taskEntry(agent, task) })
       }
       case 'GET asks': return send(200, { agentId: agent.id, asks: agent.asks })
       case 'POST asks': {
@@ -467,6 +592,8 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
     emit,
     requests,
     web,
+    trackedDirs,
+    existingDirs,
     dropEventStreams() {
       for (const stream of streams) stream.res.destroy()
       streams.clear()
@@ -488,7 +615,30 @@ function configOf(agent: MockAgent) {
     loops: agent.loops.map(l => ({ name: l.name, goal: l.goal, enabled: l.enabled, autostart: l.autostart, tools: l.tools, ...(l.model ? { model: l.model } : {}) })),
     ...(agent.serving ? { serving: agent.serving } : {}),
     ...(agent.hostAccess ? { compute: { enabled: true, host_access: true } } : {}),
+    ...(agent.tools ? { tools: agent.tools } : {}),
   }
+}
+
+function approvalMetaOf(task: Record<string, unknown>): MockApprovalMeta {
+  const meta = task.approval_meta
+  return meta && typeof meta === 'object' ? meta as MockApprovalMeta : {}
+}
+
+/** A task row as GET /tasks returns it: pending_approval rows gain the live
+ *  "Always approve" affordance (same rules as runtime-service). */
+function taskEntry(agent: MockAgent, task: Record<string, unknown>): Record<string, unknown> & { canAlwaysApprove?: boolean; alwaysApproveBlockedReason?: string } {
+  if (task.status !== 'pending_approval') return task
+  const meta = approvalMetaOf(task)
+  if (meta.reason === 'protection') {
+    return { ...task, canAlwaysApprove: false, alwaysApproveBlockedReason: meta.alwaysApproveBlockedReason ?? `Target is locked (${meta.protection?.level ?? 'locked'})` }
+  }
+  if (meta.canAlwaysApprove === false || meta.can_always_approve === false) {
+    return { ...task, canAlwaysApprove: false, alwaysApproveBlockedReason: meta.alwaysApproveBlockedReason ?? 'One-time approval only for this request' }
+  }
+  if (agent.tools?.find(t => t.name === task.tool)?.locked === true) {
+    return { ...task, canAlwaysApprove: false, alwaysApproveBlockedReason: 'Tool declaration is locked' }
+  }
+  return { ...task, canAlwaysApprove: true }
 }
 
 function writeFrame(res: ServerResponse, frame: { cursor: number; event: Record<string, unknown> }) {

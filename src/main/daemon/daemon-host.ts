@@ -37,6 +37,8 @@ export interface DaemonHostOptions {
   agentFactory?: DaemonHttpApiOptions['agentFactory']
   /** POST /daemon/shutdown handler (see DaemonHttpApiOptions.requestShutdown). */
   requestShutdown?: () => void
+  /** See DaemonHttpApiOptions.onTrackedDirectoriesChanged. */
+  onTrackedDirectoriesChanged?: (dirs: string[]) => void
   /**
    * Hooks run FIRST during stop(), before the HTTP server closes and before
    * agent unload — for durability-critical flushes (token usage) that a hang
@@ -95,6 +97,7 @@ export class DaemonHost {
   private readonly identity?: DaemonHttpApiOptions['identity']
   private readonly agentFactory?: DaemonHttpApiOptions['agentFactory']
   private readonly requestShutdown?: () => void
+  private readonly onTrackedDirectoriesChanged?: (dirs: string[]) => void
   private readonly onShutdownStart: Array<() => void | Promise<void>>
   private readonly onShutdown: Array<() => void | Promise<void>>
   private readonly shouldInstallSignalHandlers: boolean
@@ -121,6 +124,7 @@ export class DaemonHost {
     this.identity = opts.identity
     this.agentFactory = opts.agentFactory
     this.requestShutdown = opts.requestShutdown
+    this.onTrackedDirectoriesChanged = opts.onTrackedDirectoriesChanged
     this.onShutdownStart = opts.onShutdownStart ?? []
     this.onShutdown = opts.onShutdown ?? []
     this.shouldInstallSignalHandlers = opts.installSignalHandlers ?? true
@@ -154,6 +158,7 @@ export class DaemonHost {
       identity: this.identity,
       agentFactory: this.agentFactory,
       requestShutdown: this.requestShutdown,
+      onTrackedDirectoriesChanged: this.onTrackedDirectoriesChanged,
     })
     await this.server.listen({ host: this.host, port: this.port })
     this.writePidFile()

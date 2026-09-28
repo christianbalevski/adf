@@ -178,7 +178,7 @@ const sidebar: SlashCommand = {
 const mouse: SlashCommand = {
   name: 'mouse',
   args: '[on|off]',
-  description: 'Mouse mode: the wheel scrolls what is under the pointer, clicks focus panes and tabs (off, the default: drag selects, right-click pastes)',
+  description: 'Mouse mode (on, the default: click expands, drag selects + copies, right-click pastes, the wheel scrolls under the pointer; off: the terminal’s own mouse); remembered',
   complete: partial => ['on', 'off'].filter(v => v.startsWith(partial.trim())),
   run: ctx => { setMouse(ctx.store, onOff(ctx.args[0])) },
 }
@@ -232,7 +232,7 @@ const actions: PaletteAction[] = [
   { id: 'shell.theme.next', title: 'Next color theme', group: 'Actions', keywords: ['theme', 'color', 'light', 'dark', 'mono'], run: ctx => { ctx.actions.pushOverlay({ kind: 'inspect.theme', props: { name: 'next' } }) } },
   { id: 'shell.json', title: 'Toggle raw JSON in Inspect and Runtime', group: 'Actions', keywords: ['json', 'raw'], run: ctx => json.run(ctx) },
   { id: 'shell.sidebar', title: 'Show / hide the sidebar', hint: 'full-width view, remembered', group: 'Actions', shortcut: 'ctrl+b', keywords: ['sidebar', 'fleet', 'full screen', 'fullscreen', 'zen', 'collapse', 'layout'], run: ctx => { setSidebarHidden(ctx.store) } },
-  { id: 'shell.mouse', title: 'Mouse mode on / off', hint: 'off: native select, copy and paste', group: 'Actions', keywords: ['mouse', 'wheel', 'scroll', 'select', 'copy'], run: ctx => { setMouse(ctx.store) } },
+  { id: 'shell.mouse', title: 'Mouse mode on / off', hint: 'off: the terminal’s own select, copy and paste', group: 'Actions', keywords: ['mouse', 'wheel', 'scroll', 'select', 'copy'], run: ctx => { setMouse(ctx.store) } },
   { id: 'shell.terminal-setup', title: 'Terminal setup: Shift+Enter newline', group: 'Actions', keywords: ['shift enter', 'newline', 'keyboard', 'terminal', 'kitty', 'vscode', 'windows terminal'], run: ctx => { ctx.actions.pushOverlay({ kind: TERMINAL_SETUP_OVERLAY }) } },
   { id: 'shell.quit', title: 'Quit TUI (agents keep running)', group: 'Actions', shortcut: 'ctrl+c', keywords: ['exit', 'leave'], run: ctx => ctx.exit() },
   ...identityActions,

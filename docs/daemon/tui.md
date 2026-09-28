@@ -89,8 +89,8 @@ and how to start it.
 | `--mono`, `--no-color` | No color |
 | `--ascii` | ASCII glyphs for consoles without box-drawing or braille characters |
 | `--no-alt-screen` | Render in the main screen buffer instead of the alternate screen (mouse mode stays off there) |
-| `--mouse` | Mouse mode: the wheel scrolls what is under the pointer, clicks focus panes and header tabs (see [Mouse](#mouse)) |
-| `--no-mouse` | Native mouse, the default: drag selects, right-click pastes, the wheel scrolls the focused pane |
+| `--mouse` | Mouse mode, the default: a click expands, drag selects and copies, right-click pastes, the wheel scrolls what is under the pointer (see [Mouse](#mouse)) |
+| `--no-mouse` | The terminal's own mouse (its selection; the wheel scrolls the focused pane) |
 | `--no-kitty` | Never turn on the kitty keyboard protocol (see [Shift+Enter](#shiftenter)) |
 | `-h`, `--help` | Show the help |
 
@@ -102,7 +102,8 @@ and how to start it.
 | `ADF_TUI_ASCII=1` | Same as `--ascii` |
 | `ADF_EDITOR`, `VISUAL`, `EDITOR` | External editor, in that order. Default: `notepad` on Windows, else `nano`, then `vi` |
 | `ADF_TUI_FULL_HEIGHT=1` | Windows: use the bottom terminal row too (see [Windows](#windows)) |
-| `ADF_TUI_MOUSE=0` / `=1` | Native mouse / mouse mode, over the saved `/mouse` choice |
+| `ADF_TUI_MOUSE=0` / `=1` | The terminal's own mouse / mouse mode, over the saved `/mouse` choice |
+| `ADF_TUI_CLIPBOARD=osc52` | Copy only through the terminal (OSC 52), not pbcopy / clip / wl-copy / xclip (WSL, containers, nested sessions; over SSH OSC 52 is used anyway) |
 | `ADF_TUI_KITTY=0` | Same as `--no-kitty` |
 | `ADF_TUI_SHIFT_ENTER=1` | Show `Shift+Enter` in the hints from the start (your terminal sends it through a keybinding) |
 | `ADF_TUI_PREFS=<path>` | Where the sidebar and mouse choices are kept (default `<config dir>/adf-studio/tui-prefs.json`; `off` keeps them for the session only) |
@@ -127,13 +128,13 @@ Every other `npm run adf -- <command>` is the unchanged one-shot [CLI](cli.md).
                            │ ╭───────────────────────────────────────────────────────────────────────╮
                            │ │ ! agent-1 wants to run msg_send                                       │
                            │ │ {"to":"agent-2","content":"hello"}                                    │
-                           │ │ Tab to the transcript, then y approve (twice) · n deny · v details    │
+                           │ │ Shift+Tab: y approve · a always · n reject · f feedback · v details   │
                            │ ╰───────────────────────────────────────────────────────────────────────╯
                            │ ⠹ thinking… 0s · mock-model · esc to interrupt
                            │╭─────────────────────────────────────────────────────────────────────────╮
                            ││ › Message agent-1 · queued until the turn ends · Esc interrupts          │
                            │╰─────────────────────────────────────────────────────────────────────────╯
- agent-1 › ↻ main  ⠹ thinking  mock-model   Esc interrupt · Shift+Enter newline · Shift+←/Shift+→ loop · ↑/↓ scroll
+ agent-1 › ↻ main  ⠹ thinking  mock-model   Shift+←/→ loop · Alt+1-6 views · Ctrl+↑/↓ history · Tab focus · Ctrl+K palette
 ```
 
 - **Header:** the ADF wordmark, the views with their hotkeys (the tab bar:
@@ -163,7 +164,10 @@ Every other `npm run adf -- <command>` is the unchanged one-shot [CLI](cli.md).
 - **Prompt:** send a message to the selected agent › loop, or run a `/command`.
 - **Toasts** above the status bar report the outcome of every action.
 - **Status bar:** the selected agent › loop, its state, model and token tally,
-  then the active view's keys.
+  then a few keys: the active view's main ones (at most five), `Tab` focus and
+  `Ctrl+K` palette. Everything else is in `/help` (`?`). In Chat's prompt:
+  loop, views (`Alt+1-6`; on macOS, where Option does not send Alt by
+  default, `Esc` then a digit), prompt history, `Tab`, `Ctrl+K`.
 
 Nothing happens silently. Every assistant message, thinking block, tool call,
 approval, question, wake and notice is shown. Every action the TUI takes
@@ -196,16 +200,20 @@ of it.
 | `1`–`6`, `Alt+1`–`Alt+6` | Switch view: 1 Fleet 2 Chat 3 Files 4 Loops 5 Inspect 6 Runtime (bare digits when the prompt is not focused) |
 | `Shift+←`, `Shift+→` | Previous / next loop of the selected agent, from anywhere (also `Ctrl+←/→`, except in a prompt with text) |
 | `Alt+←`, `Alt+→`, `Alt+B`, `Alt+F` | In the prompt: word left / right (also `Ctrl+←/→` while there is text) |
+| `Home`, `End`, `Ctrl+A`, `Ctrl+E`, `Cmd+←`, `Cmd+→` | In the prompt: start / end of the line |
+| `Ctrl+Backspace`, `Alt+Backspace` (`Option+Backspace`), `Ctrl+W` | In the prompt: delete the word before the caret |
+| `Ctrl+Delete`, `Alt+D` | In the prompt: delete the word after the caret |
+| `Cmd+Backspace`, `Ctrl+U` | In the prompt: delete to the start of the line (the whole line with the caret at its end; at a line start it joins the previous line). Terminal.app sends nothing for `Cmd+Backspace`: use `Ctrl+U` there |
 | `/` | Slash command (focuses the prompt). Inside a list or viewer `/` filters or searches instead |
 | `?` | Full help (when the prompt is not focused) |
-| `Esc` | In this order, the first that applies: close a dialog or the completion menu · end a view's own mode (a filter, search, the file viewer, a table row) · in Chat, interrupt the running turn · then focus the [tab bar](#tab-bar) (from the sidebar, the main pane, or an empty prompt) |
+| `Esc` | In this order, the first that applies: close a dialog or the completion menu · end a view's own mode (a filter, search, the file viewer, a table row, a selected chat item) · in Chat, interrupt the running turn · then focus the [tab bar](#tab-bar) (from the sidebar, the main pane, or an empty prompt) |
 | `Esc Esc` | Clear a prompt that has text (a third `Esc` then goes to the tab bar) |
 | `Ctrl+C` | Cancel a dialog · clear a non-empty prompt · press twice to quit |
 | `Enter` | Send the prompt to the selected agent › loop (or run the `/command`) |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J`, trailing `\` | Newline in the prompt. Shift+Enter needs a terminal that tells it from Enter: see [Shift+Enter](#shiftenter) |
 | `Ctrl+↑`, `Ctrl+↓` in the prompt | Prompt history (per agent › loop in Chat). `↑` / `↓` also walk it from the first / last line of text |
-| `↑`, `↓` in the prompt | Chat with an empty prompt: scroll the transcript (`Home` / `End`: top / follow). Otherwise move in the text or the completion menu |
-| Mouse | Drag selects text, right-click pastes, the wheel scrolls the focused pane. `/mouse on` for pointer scrolling and clicks. See [Mouse](#mouse) |
+| `↑`, `↓` in the prompt | Chat with an empty prompt: select the previous / next transcript item (`Enter` expands it, `Home` / `End`: top / follow). Otherwise move in the text or the completion menu |
+| Mouse | Mouse mode (default): the wheel scrolls what is under the pointer, a click selects (and expands a tool call or thinking), drag selects and copies, double-click a word, triple-click a line, right-click pastes. `Shift+drag` (`Option+drag` in iTerm2, `Fn+drag` in Terminal.app) is the terminal's own selection; `/mouse off` hands the mouse back. See [Mouse](#mouse) |
 | `Tab` in the prompt | Accept a completion: `/commands`, their arguments, `@file` paths in Chat |
 
 ### Tab bar
@@ -275,6 +283,7 @@ The same legend is in `?` / `/help`.
 | `i` | Owner identity: status and actions (`I` hides the identity banner) |
 | `c`, `r`, `u` | With no agents and no ready identity: create, restore, unlock the owner identity |
 | `A` | Autostart: scan the tracked directories (asks) |
+| `f` | Track a folder of agents (see [Tracked folders](#tracked-folders)) |
 | `r` | Refresh |
 
 ### Chat
@@ -283,19 +292,20 @@ The same legend is in `?` / `/help`.
 |------|--------|
 | `Enter` | Send to the selected loop (queued while it runs) |
 | `Shift+←`, `Shift+→` (`Ctrl+←/→` on an empty prompt; `[`, `]`, `←`, `→` in the transcript) | Previous / next loop tab |
-| `↑`, `↓` with an empty prompt | Scroll the transcript line by line (`Home`, `End`: top, follow live). Once the prompt has text a single `↑`/`↓` edits it, while the wheel's burst of arrows still scrolls |
+| `↑`, `↓` with an empty prompt, or (`j`, `k`) in the transcript | Select the previous / next item: your message, a reply, thinking, a tool call, a notice, an approval, a question, an inter-loop message, a wake marker. The selected item gets a bar down its left edge (`▌`, `>` in ASCII) and stays in view; one taller than the view scrolls inside itself first, then the selection moves on. `↓` past the newest item follows live again. Once the prompt has text a single `↑`/`↓` edits it |
+| `Enter`, `Space` | Expand or collapse the selected item (tool call input and result, thinking, context, approval, wake) |
+| `Esc` | Let go of the selected item (before interrupting) |
 | `Ctrl+↑`, `Ctrl+↓` | Prompt history of this agent › loop |
-| `↑`, `↓` (`j`, `k`) in the transcript | Select a transcript item (`Tab` from the prompt) |
-| `Enter`, `Space` | Expand or collapse the selected item (thinking, tool call, notice) |
-| `PgUp`, `PgDn`, mouse wheel | Scroll (also while typing) |
+| `PgUp`, `PgDn`, mouse wheel | Scroll by lines (also while typing); a wheel burst never moves the selection |
 | `Home` (`g`), `End` (`G`) | Top, loading older history · follow live |
 | `t` | Expand or collapse all thinking |
 | `c` | Copy the selected item, else the last reply |
 | `w` | Open the agent's website (when it serves one) |
-| `y` | Approve the pending tool call: press twice, or once with that approval selected in the transcript · resume a suspended agent |
-| `n` | Deny, with an optional reason · shut a suspended agent down (asks) |
+| `y` | Approve the pending tool call: press twice, or once with that approval selected in the transcript (or click `approve` on the card) · resume a suspended agent |
+| `a` | Always approve that tool for this agent: press twice (or once on a selected approval), then confirm; it won't ask again (undo in Inspect › Config). Not offered for protection overrides or other one-time approvals (greyed `always: one-time only`; the daemon refuses them too) · on a question card: answer it (the prompt then sends the answer) |
+| `n` | Reject the call · shut a suspended agent down (asks) |
+| `f` | Reject with feedback: a text box; the agent sees your text |
 | `v` | Full details of the tool call |
-| `a` | Answer the agent's question (the prompt then sends the answer) |
 | `Esc` | Interrupt this loop's running turn: it ends and the loop goes idle (it is not stopped) |
 | `@` in the prompt | Complete an agent file path (Tab) |
 
@@ -392,7 +402,7 @@ sent to an agent.
 | `/login [chatgpt\|grok]`, `/logout <chatgpt\|grok>` | Sign the daemon in (browser / device code) or out (asks) |
 | `/json [on\|off]` | Raw JSON in Inspect and Runtime pages |
 | `/sidebar [on\|off]` | Show or hide the fleet sidebar (`Ctrl+B`; remembered) |
-| `/mouse [on\|off]` | Mouse mode (on: pointer scrolling and clicks; off, the default: native select, copy, paste; remembered) |
+| `/mouse [on\|off]` | Mouse mode (on, the default: click expands, drag selects and copies, right-click pastes, the wheel scrolls under the pointer; off: the terminal's own mouse; remembered) |
 | `/web [on\|off]` | The web server that serves agent websites and APIs: status, start, stop (asks) |
 | `/open-site [agent]` (`/site`), `/copy-site [agent]` | Open an agent's website in the browser (starts the web server if stopped) · copy its URL |
 | `/model [[provider/]model \| inherit]` | Change the selected agent › loop's model: main changes the agent config, an inner loop gets its own override (`inherit` clears it). No argument: a picker (provider with sign-in state, then model, type to filter) |
@@ -405,12 +415,15 @@ sent to an agent.
 | `/load [path.adf] [--review] [--start]` | Load an `.adf` (no path opens the dialog) |
 | `/switch <agent>[/loop]` (`/sw`) | Jump to an agent or one of its loops (fuzzy) and open Chat |
 | `/autostart [dir…]` | Scan tracked directories and start reviewed autostart agents (asks) |
+| `/track [dir]`, `/untrack <dir>` | Track a folder of agents (no argument: the dialog) · stop tracking it (asks; files untouched, `u` also unloads its agents) |
 | `/interrupt` (`/abort`) | Interrupt the selected loop's running turn; the loop goes idle and keeps working |
 | `/clear` | Clear the selected loop's history (asks) |
 | `/compact` | Summarize the selected loop's history now to free context (not mid-turn) |
 | `/trigger <type> [json]` | Fire an ADF event into the selected loop |
 | `/copy [n]` | Copy the last (or n-th last) reply of the selected loop |
 | `/thinking` | Expand or collapse thinking blocks |
+| `/approve [all\|always]` | Approve the selected loop's pending tool call · `all`: every gated call (never protection overrides) · `always`: always approve that tool (asks) |
+| `/reject [feedback]` | Reject the selected loop's pending tool call; the agent sees the feedback |
 | `/files`, `/doc`, `/mind` | Browse files; show the document; show the mind |
 | `/open <path>`, `/edit <path>` | Open in the viewer; edit in `$EDITOR` (fuzzy path; `document`, `mind` work too) |
 | `/new-file [path]`, `/rm <path>`, `/mv <from> <to>` | Create (opens `$EDITOR`), delete (asks), rename or move a file |
@@ -422,7 +435,8 @@ sent to an agent.
 | `/loops`, `/timers [all]`, `/triggers`, `/history [loop]` | Open the Loops view on that tab |
 | `/timer add [--loop <name>] \| edit <id> \| rm <id>` | Create, edit or delete a timer (a timer with a loop runs that loop on a schedule) |
 | `/events [types…] [--agent] [--loop] [--all]` | Every agent's live umbilical events (Runtime › Events), e.g. `/events tool. -turn.delta --loop` |
-| `/inspect [tab]` | Inspect the selected agent on a tab (`status`, `config`, `usage`, `mcp`, `adapters`, `identity`, `logs`, `tables`, `events`) |
+| `/inspect [tab]` | Inspect the selected agent on a tab (`status`, `config`, `usage`, `mcp`, `adapters`, `identity`, `logs`, `tables`, `tasks`, `events`) |
+| `/tasks [pending\|active\|all]` | Inspect › Tasks with that filter (see [Tasks](#tasks)) |
 
 ## Command palette
 
@@ -463,22 +477,43 @@ as before. `--no-kitty` or `ADF_TUI_KITTY=0` never turns it on.
 
 ### Mouse
 
-By default the terminal keeps its mouse: **drag selects text**, `Ctrl+C` /
-`Ctrl+Shift+C` (or the terminal's own copy) copies it, **right-click pastes**,
-and `Ctrl+V` pastes into the prompt. In the alternate screen the TUI turns on
-alternate scroll mode (`DECSET 1007`): the wheel sends `↑`/`↓`, so it scrolls
-the focused pane (Windows Terminal, iTerm2, VS Code and most xterm-likes
-support it). In Chat the wheel scrolls the transcript even while the prompt
-has text (a burst of arrows scrolls; a single `↑` still edits). Windows
-Terminal and VS Code copy on `Ctrl+C` when text is selected and do not pass
-the key on, so a selection never counts towards quitting.
+**Mouse mode is the default** (mouse reporting: buttons, drags and the
+wheel, never bare pointer motion). The TUI does its own text selection, so
+copy and paste keep working without a modifier:
 
-**Mouse mode** (`/mouse on`, `--mouse`, `ADF_TUI_MOUSE=1`; remembered) turns
-on mouse reporting instead (buttons and wheel, never pointer motion): the
-wheel scrolls the transcript, list, viewer, event tail, help or palette under
-the pointer, a click focuses the sidebar, main pane or prompt, and clicks on
-the header switch views or toggle the web server. Selecting text then needs
-**Shift+drag** in most terminals. `/mouse off` returns to the native mouse.
+- **Drag** highlights text (reverse video) inside the pane where the drag
+  started, so the sidebar never sneaks into a chat selection. Releasing
+  copies it and shows `Copied N chars`. **Double-click** takes a word,
+  **triple-click** the line. The highlight goes with the next key or click,
+  or when the text under it moves.
+- **Click** a transcript item to select it; a tool call, thinking, context or
+  approval also expands or collapses. The prompt keeps focus. A click on
+  another pane focuses it; clicks on the header switch views or toggle the
+  web server; the approval card's actions are buttons.
+- **Right-click** pastes the clipboard into the prompt (or the open dialog's
+  text box). `Cmd+V` / `Ctrl+V` / `Ctrl+Shift+V` paste as always (the
+  terminal sends the text itself, whatever the mouse mode).
+- **The wheel** scrolls the transcript, list, viewer, event tail, help or
+  palette under the pointer.
+- The terminal's own selection is still there: **Shift+drag** (Windows
+  Terminal, VS Code, most xterm-likes), **Option+drag** in iTerm2,
+  **Fn+drag** in Terminal.app (or turn off View › Allow Mouse Reporting,
+  `Cmd+R`).
+
+Copying uses the system clipboard (`pbcopy`, `clip.exe`, `wl-copy` / `xclip`
+/ `xsel`) and falls back to the terminal's own (OSC 52, which also reaches
+your local clipboard over SSH; iTerm2 needs "Applications in terminal may
+access clipboard"). `ADF_TUI_CLIPBOARD=osc52` always uses OSC 52. Pasting
+reads `pbpaste`, `Get-Clipboard` or `wl-paste` / `xclip -o`.
+
+**`/mouse off`** (`--no-mouse`, `ADF_TUI_MOUSE=0`; remembered) hands the
+mouse back to the terminal: its own drag-select, copy (`Ctrl+C` /
+`Ctrl+Shift+C`; Windows Terminal and VS Code copy on `Ctrl+C` with a
+selection and do not pass the key on) and right-click paste. The TUI then
+turns on alternate scroll mode (`DECSET 1007`) in the alternate screen: the
+wheel sends `↑`/`↓`, so it scrolls the focused pane; in Chat a burst of arrows
+scrolls the transcript even while the prompt has text, and never moves the
+item selection (a single `↑` still selects or edits). No clicks to expand.
 
 Both modes are off whenever the TUI does not own the terminal (quit, crash,
 `$EDITOR`).
@@ -576,11 +611,48 @@ details and its Chat say `ChatGPT not signed in — /login chatgpt`.
 ## Approvals and questions
 
 A pending tool approval shows as a card under the transcript of the loop that
-asked, and as `!n` in the header, sidebar and fleet table. `y` approves, `n`
-denies with an optional reason, `v` shows the full call. A question from the
+asked, and as `!n` in the header, sidebar and fleet table. As in ADF Studio:
+`y` approves, `a` always approves (the tool stops asking for this agent; it
+confirms first), `n` rejects, `f` rejects with feedback the agent sees, `v`
+shows the full call. `y` and `a` need a second press unless that approval is
+selected in the transcript, so typed text never approves; in mouse mode the
+card's actions are buttons. "Always approve" is never offered for protection
+overrides and other one-time approvals (the card shows `always: one-time
+only`), and the daemon refuses it too. `/approve [all|always]` and `/reject
+[feedback]` do the same from the prompt. A question from the
 agent shows the same way; while one is pending, what you type in the prompt is
 sent as the answer, to the loop that asked. A suspended agent offers `y` to
 resume and `n` to shut down (asks first).
+
+## Tasks
+
+Inspect › Tasks (`/tasks [pending|active|all]`, palette "Show tasks") lists
+the selected agent's tasks (tool calls waiting for your approval, async tool
+calls and their outcomes) newest first, with status, tool, loop, age, origin
+and the agent's `_reason`. It updates live as approvals arrive and resolve
+(`r` reloads). `f` cycles the filter: pending (pending + awaiting approval) ·
+active (+ running) · all; `/` searches; Enter opens the full call (arguments,
+result or error, timestamps, approval rule) and Esc goes back. On a
+highlighted row waiting for approval: `y` approves, `n` rejects, `N` rejects
+with feedback the agent sees, `a` always approves its tool (confirmed; not
+offered for protection overrides or one-time approvals). `A` approves every
+waiting call except protection overrides (confirmed).
+
+## Tracked folders
+
+Track a folder of agents: on the Fleet press `f` (or `/track [dir]`, or the
+palette's "Track a folder…"). Tab completes folders. The daemon remembers the
+folder and loads its reviewed autostart agents right away and at every start,
+the same as Studio's tracked directories. Agents that were never reviewed are
+listed in the result; load them with `/load <file> --review`. Already-tracked
+folders, and folders inside a tracked parent, are refused with the reason.
+
+Stop tracking with `/untrack <dir>` (Tab lists tracked folders) or `d` on
+Runtime › Folders. It asks first and never touches files. Press `u` in the
+dialog to also unload that folder's agents; by default they keep running.
+
+Runtime › Folders (`/runtime folders`) lists every tracked folder: whether it
+exists, agents found, and agents loaded. `a` adds, `d` removes, `r` rescans.
 
 ## Themes
 
@@ -624,8 +696,9 @@ Other notes:
 - Newlines in the prompt: `Shift+Enter` on Windows Terminal 1.25+ (older: the
   `sendInput` action in [Shift+Enter](#shiftenter)), `Alt+Enter`, `Ctrl+J` or
   a trailing `\`.
-- Drag selects text and right-click pastes (the default); in mouse mode
-  (`/mouse on`) select with `Shift+drag`.
+- Drag selects and copies, right-click pastes (mouse mode, the default);
+  `Shift+drag` is Windows Terminal's own selection. `Ctrl+Backspace` deletes a
+  word in the prompt.
 - The external editor defaults to `notepad`.
 
 ## Known gaps

@@ -10,13 +10,23 @@ import { KeyHints, type KeyHintSpec } from '../ui/KeyHint'
 import { displayWidth, formatCount, truncate } from '../ui/text'
 import { MAIN_LOOP } from '../api/types'
 
+/** Less is more: a view's few primary keys, then these two. Everything else is in /help (? or Ctrl+K). */
 export const GLOBAL_HINTS: KeyHintSpec[] = [
-  { keys: 'ctrl+k', label: 'palette' },
   { keys: 'tab', label: 'focus' },
-  { keys: 'ctrl+b', label: 'sidebar' },
-  { keys: '?', label: 'help' },
-  { keys: 'ctrl+c', label: 'quit' },
+  { keys: 'ctrl+k', label: 'palette' },
 ]
+
+/** At most this many of a view's own hints show in the bar. */
+export const MAX_VIEW_HINTS = 5
+
+/**
+ * How to reach the other views from a prompt. Alt+digit needs a terminal that
+ * sends Option as Meta, which stock macOS terminals do not: there it is Esc
+ * (the tab bar) then a digit.
+ */
+export function viewsHint(platform: NodeJS.Platform = process.platform): KeyHintSpec {
+  return platform === 'darwin' ? { keys: 'esc', label: '1-6 views' } : { keys: 'alt+1-6', label: 'views' }
+}
 
 /** While the header tab bar has focus (Esc). */
 export const TAB_BAR_HINTS: KeyHintSpec[] = [
@@ -76,10 +86,9 @@ export function StatusBar({ width }: { width: number }) {
     <Text color={theme.color.muted}> no agent selected</Text>
   )
 
-  const focusHint: KeyHintSpec = { keys: 'tab', label: `focus: ${focus}` }
   const hints = focus === 'tabs'
     ? [...TAB_BAR_HINTS, ...GLOBAL_HINTS.filter(h => h.keys !== 'tab')]
-    : [...viewHints, focusHint, ...GLOBAL_HINTS.filter(h => h.keys !== 'tab')]
+    : [...viewHints.slice(0, MAX_VIEW_HINTS), ...GLOBAL_HINTS]
   return (
     <Box width={width} height={1} justifyContent="space-between" backgroundColor={theme.color.surface}>
       <Box flexShrink={0} width={leftWidth}>{left}</Box>

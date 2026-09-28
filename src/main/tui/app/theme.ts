@@ -50,6 +50,8 @@ export interface ThemeGlyphs {
   loop: string
   sep: string
   vbar: string
+  /** The selected-item gutter (chat transcript): a half block, '>' in ASCII. */
+  mark: string
   hbar: string
   ellipsis: string
   collapsed: string
@@ -107,6 +109,7 @@ const UNICODE_GLYPHS: ThemeGlyphs = {
   loop: '↻',
   sep: '·',
   vbar: '│',
+  mark: '▌',
   hbar: '─',
   ellipsis: '…',
   collapsed: '▸',
@@ -127,6 +130,7 @@ const ASCII_GLYPHS: ThemeGlyphs = {
   loop: '@',
   sep: '|',
   vbar: '|',
+  mark: '>',
   hbar: '-',
   ellipsis: '...',
   collapsed: '+',

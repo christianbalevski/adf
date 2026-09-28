@@ -1,10 +1,13 @@
 // Full keys + commands reference, grouped by view. Built from the registry,
 // so every view's commands and palette actions show up without edits here.
 
+import { useState } from 'react'
 import { Box, Text } from 'ink'
 import { useTheme } from '../theme'
 import { useShell } from '../shell-context'
 import { useKeys, keyLabel } from '../keys'
+import { isMouseGarbage } from '../terminal'
+import { openPalette } from '../palette'
 import { CONFIRM_KEYS, GLYPHS, SHELL_KEYS, SIDEBAR_KEYS, TAB_BAR_KEYS } from '../shell-keys'
 import { useStore, type TuiStore } from '../../state/store'
 import { createScope, type CommandRegistry } from '../../commands/registry'
@@ -145,24 +148,87 @@ export function helpLines(views: ViewDefinition[], registry: CommandRegistry, st
   return lines
 }
 
+function lineString(line: Line): string {
+  return line.map(s => s.text).join('')
+}
+
+/** Split a line's segments so every case-insensitive occurrence of `query` is its own marked segment. */
+function markMatches(line: Line, query: string): Line {
+  const q = query.toLowerCase()
+  const out: Line = []
+  for (const seg of line) {
+    const lower = seg.text.toLowerCase()
+    let at = 0
+    for (let i = lower.indexOf(q); q && i >= 0; i = lower.indexOf(q, i + q.length)) {
+      if (i > at) out.push({ ...seg, text: seg.text.slice(at, i) })
+      out.push({ ...seg, text: seg.text.slice(i, i + q.length), mark: true })
+      at = i + q.length
+    }
+    if (at < seg.text.length) out.push({ ...seg, text: seg.text.slice(at) })
+  }
+  return out
+}
+
+/**
+ * The help lines that mention `query` (case-insensitive), each under its
+ * section heading, matches marked. A matching heading keeps its whole section.
+ */
+export function filterHelpLines(lines: Line[], query: string): Line[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return lines
+  const out: Line[] = []
+  let heading: Line | null = null
+  let headingShown = false
+  let wholeSection = false
+  for (const line of lines) {
+    const isHeading = line[0]?.tone === 'heading'
+    if (isHeading) {
+      heading = line
+      headingShown = false
+      wholeSection = lineString(line).toLowerCase().includes(q)
+      if (wholeSection) { if (out.length) out.push(blank()); out.push(markMatches(line, q)); headingShown = true }
+      continue
+    }
+    if (lineString(line).trim() === '') continue
+    if (!wholeSection && !lineString(line).toLowerCase().includes(q)) continue
+    if (!headingShown && heading) { if (out.length) out.push(blank()); out.push(heading); headingShown = true }
+    out.push(markMatches(line, q))
+  }
+  return out
+}
+
 export function HelpOverlay({ close, width, height }: OverlayProps) {
   const theme = useTheme()
   const store = useStore()
   const { views, registry, exit } = useShell()
+  const [query, setQuery] = useState('')
+  // Type to filter. Esc clears the filter, then closes; Ctrl+K swaps to the palette.
   useKeys((input, key) => {
-    if (key.escape || input === 'q' || input === '?' || key.return || (key.ctrl && input === 'c')) { close(); return true }
+    if (key.ctrl && input === 'k') { close(); openPalette(store); return true }
+    if (key.ctrl && input === 'c') { close(); return true }
+    if (key.escape) { if (query) setQuery(''); else close(); return true }
+    if (key.return) { close(); return true }
+    if (key.backspace || key.delete) { setQuery(q => q.slice(0, -1)); return true }
+    if (key.ctrl && input === 'u') { setQuery(''); return true }
+    if (input === '?' && !query) { close(); return true }
+    if (input && !key.ctrl && !key.meta && !key.tab && !/[\r\n\u001b]/.test(input) && !isMouseGarbage(input)) { setQuery(q => q + input); return true }
     return false
   }, { layer: 'overlay' })
   const dialogWidth = Math.max(30, Math.min(width - 4, 96))
   const inner = dialogWidth - 4
-  const bodyHeight = Math.max(4, height - 7)
-  const lines = helpLines(views, registry, store, exit, store.getState().activeView)
+  const bodyHeight = Math.max(4, height - 8)
+  const all = helpLines(views, registry, store, exit, store.getState().activeView)
+  const lines = filterHelpLines(all, query)
   return (
-    <Modal title="ADF keys & commands" width={dialogWidth} hints={[{ keys: 'up down', label: 'scroll' }, { keys: 'pgup pgdn', label: 'page' }, { keys: 'esc', label: 'close' }]}>
+    <Modal title="ADF keys & commands" width={dialogWidth} hints={[{ keys: 'up down', label: 'scroll' }, { keys: 'pgup pgdn', label: 'page' }, { keys: 'esc', label: query ? 'clear' : 'close' }, { keys: 'ctrl+k', label: 'palette' }]}>
+      <Text wrap="truncate-end">
+        <Text color={theme.color.accent}>Search: </Text>
+        {query ? <Text color={theme.color.text}>{query}</Text> : <Text color={theme.color.dim}>type to filter keys and commands</Text>}
+        {query ? <Text color={theme.color.dim}>  {lines.length === 0 ? 'no match' : ''}</Text> : null}
+      </Text>
       <Box flexDirection="column" height={bodyHeight}>
-        <LinesView lines={wrapLines(lines, inner)} width={inner} height={bodyHeight} keyLayer="overlay" />
+        <LinesView key={query} lines={lines.length ? wrapLines(lines, inner) : [plain('  Nothing matches. Esc clears the search.', 'dim')]} width={inner} height={bodyHeight} keyLayer="overlay" />
       </Box>
-      <Text color={theme.color.dim} wrap="truncate-end">Ctrl+K searches all of this.</Text>
     </Modal>
   )
 }

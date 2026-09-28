@@ -26,6 +26,30 @@ export function emptyTranscript(): Transcript {
   return { items: [], loaded: false, loading: false, total: 0, oldestOffset: 0, live: false }
 }
 
+/** The call asked to run in the background (`_async: true`, or the string the runtime also accepts). */
+export function isAsyncInput(input: unknown): boolean {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return false
+  const flag = (input as Record<string, unknown>)._async
+  return flag === true || flag === 'true'
+}
+
+/** The immediate result of a backgrounded call: `{"task_id":…,"status":"running"|"pending_approval",…}`. */
+export function isTaskRef(text: string | undefined): boolean {
+  if (!text || !text.startsWith('{') || !text.includes('task_id')) return false
+  try {
+    const value = JSON.parse(text) as { task_id?: unknown; status?: unknown }
+    return typeof value.task_id === 'string' && (value.status === 'running' || value.status === 'pending_approval')
+  } catch {
+    return false
+  }
+}
+
+/** The question of an `ask` call's input. */
+export function askQuestion(input: unknown): string {
+  const q = input && typeof input === 'object' ? (input as { question?: unknown }).question : undefined
+  return typeof q === 'string' ? q : ''
+}
+
 /** Persisted loop rows → transcript items, via the same parser Studio renders with. */
 export function historyToItems(entries: LoopEntry[]): TranscriptItem[] {
   const items: TranscriptItem[] = []
@@ -67,6 +91,7 @@ export function historyToItems(entries: LoopEntry[]): TranscriptItem[] {
           name: typeof meta.name === 'string' ? meta.name : 'tool',
           input: meta.input,
           status: 'running',
+          ...(isAsyncInput(meta.input) ? { async: true } : {}),
         }
         if (tool.toolUseId) toolsById.set(tool.toolUseId, tool)
         items.push(tool)
@@ -80,6 +105,12 @@ export function historyToItems(entries: LoopEntry[]): TranscriptItem[] {
           call.status = status
           call.result = entry.content
           call.completedAt = entry.timestamp
+          // A backgrounded call's row holds only the task reference; the real
+          // result arrives later as tool.completed with the same tool_use id.
+          if (!meta.isError && isTaskRef(entry.content)) {
+            call.async = true
+            call.taskRef = entry.content
+          }
         } else {
           items.push({ ...base, kind: 'tool', toolUseId: useId, name: typeof meta.name === 'string' ? meta.name : 'tool', input: undefined, status, result: entry.content, completedAt: entry.timestamp })
         }
@@ -96,13 +127,28 @@ export function historyToItems(entries: LoopEntry[]): TranscriptItem[] {
  * (optimistic sends, streaming text, running tools) or forever when history
  * never will (HIL, asks, notices, local errors).
  */
-export function mergeHistory(existing: TranscriptItem[], history: TranscriptItem[]): TranscriptItem[] {
+export function mergeHistory(existing: TranscriptItem[], incoming: TranscriptItem[]): TranscriptItem[] {
+  // A backgrounded call's persisted result is only its task reference. The
+  // real result came live (tool.completed with the same tool_use id) and is
+  // not in the loop, so it is carried over instead of reverting to the ref.
+  const finished = new Map<string, ToolItem>()
+  for (const item of existing) {
+    if (item.kind === 'tool' && item.toolUseId && item.status !== 'running' && item.result !== undefined) finished.set(item.toolUseId, item)
+  }
+  const history = incoming.map(item => {
+    if (item.kind !== 'tool' || item.taskRef === undefined || !item.toolUseId) return item
+    const live = finished.get(item.toolUseId)
+    if (!live || live.result === item.taskRef) return item
+    return { ...item, status: live.status, result: live.result, completedAt: live.completedAt }
+  })
   const historyTools = new Set<string>()
   const historyTexts = new Map<string, number>()
   const countText = (key: string) => historyTexts.set(key, (historyTexts.get(key) ?? 0) + 1)
   for (const item of history) {
     if (item.kind === 'tool' && item.toolUseId) historyTools.add(item.toolUseId)
     if (item.kind === 'user' || item.kind === 'assistant' || item.kind === 'thinking') countText(`${item.kind}:${item.text.trim()}`)
+    // An `ask` call in history shows its question; the live ask card for it goes.
+    if (item.kind === 'tool' && item.name === 'ask') countText(`ask:${askQuestion(item.input).trim()}`)
   }
   const consume = (key: string): boolean => {
     const n = historyTexts.get(key) ?? 0
@@ -121,6 +167,8 @@ export function mergeHistory(existing: TranscriptItem[], history: TranscriptItem
         return !consume(`${item.kind}:${item.text.trim()}`)
       case 'context':
         return false
+      case 'ask':
+        return !consume(`ask:${item.question.trim()}`)
       default:
         return true
     }
@@ -214,6 +262,21 @@ export function applyEventToItems(items: TranscriptItem[], event: UmbilicalEvent
       const toolUseId = str(p.id)
       if (toolUseId && items.some(item => item.kind === 'tool' && item.toolUseId === toolUseId)) return items
       const tool: ToolItem = { id: localId(), at, local: true, kind: 'tool', toolUseId, name: str(p.name) ?? 'tool', input: p.input, status: 'running' }
+      if (tool.name === 'ask') {
+        // The runtime emits an ask's tool.* pair once it is answered; the ask
+        // card (ask.requested) becomes that call in place, as history shows it.
+        const question = askQuestion(p.input).trim()
+        let card = -1
+        for (let i = items.length - 1; i >= 0; i--) {
+          const item = items[i]
+          if (item.kind === 'ask' && item.question.trim() === question) { card = i; break }
+        }
+        if (card >= 0) {
+          const next = items.slice()
+          next[card] = { ...tool, id: items[card].id, at: items[card].at }
+          return next
+        }
+      }
       return cap([...finalizeStreaming(items), tool])
     }
     case 'tool.completed':

@@ -7,8 +7,24 @@ import { useTheme, type Theme } from '../../app/theme'
 import { Markdown } from '../../ui/Markdown'
 import { Spinner } from '../../ui/Spinner'
 import { oneLine, previewJson, truncate } from '../../ui/text'
-import type { TranscriptItem } from '../../state/types'
-import { EXPANDED_TOOL_LINES, isRuntimeText, prettyJson, triggerLabel } from './model'
+import { askQuestion } from '../../state/transcript'
+import type { ToolItem, TranscriptItem } from '../../state/types'
+import {
+  EXPANDED_TOOL_LINES,
+  askAnswer,
+  capLines,
+  isAsyncTool,
+  isExpandable,
+  isRuntimeText,
+  prettyJson,
+  sayText,
+  shownTaskRef,
+  statusLineText,
+  toolArgs,
+  toolReason,
+  toolView,
+  triggerLabel,
+} from './model'
 
 export interface ItemViewProps {
   item: TranscriptItem
@@ -19,18 +35,134 @@ export interface ItemViewProps {
   queued: boolean
 }
 
-function capLines(text: string, max: number): { text: string; more: number } {
-  const lines = text.split('\n')
-  if (lines.length <= max) return { text, more: 0 }
-  return { text: lines.slice(0, max).join('\n'), more: lines.length - max }
-}
-
 function lineCount(text: string): number {
   return text ? text.split('\n').length : 0
 }
 
-function Gutter({ selected, theme }: { selected: boolean; theme: Theme }) {
-  return <Text color={theme.color.accent} bold inverse={theme.mono && selected}>{selected ? theme.glyph.vbar : ' '}</Text>
+/**
+ * A tool call, as Studio's loop shows it: `say` is an assistant message, `ask`
+ * the ask card, a successful status / state change one quiet line, anything
+ * else a row led by the agent's `_reason` (tool name after it), falling back
+ * to the name + a compact args preview. Expanded, every kind shows the full
+ * input (`_reason` / `_async` included), the task reference of an async call
+ * and the result. Heights: `itemHeight` in model.ts, kept in step with this.
+ */
+function ToolBody({ item, w, expanded }: { item: ToolItem; w: number; expanded: boolean }) {
+  const theme = useTheme()
+  const g = theme.glyph
+  const view = toolView(item)
+  const failed = item.status === 'error'
+  const status = item.status === 'running'
+    ? <Spinner color={theme.color.tool} />
+    : <Text color={failed ? theme.color.error : theme.color.success}>{failed ? g.cross : g.check}</Text>
+  const asyncBadge = isAsyncTool(item) ? <Text color={theme.color.dim}> [async]</Text> : null
+
+  if (expanded && isExpandable(item)) {
+    const input = capLines(prettyJson(item.input), EXPANDED_TOOL_LINES)
+    const ref = shownTaskRef(item)
+    const task = ref !== undefined ? capLines(ref, EXPANDED_TOOL_LINES) : null
+    const result = capLines(item.result ?? '', EXPANDED_TOOL_LINES)
+    return (
+      <Box flexDirection="column" width={w}>
+        <Text wrap="truncate-end">
+          {status}
+          <Text bold color={theme.color.tool}> {item.name}</Text>
+          {asyncBadge}
+          <Text color={theme.color.dim}> {item.toolUseId ?? ''}</Text>
+        </Text>
+        {input.text ? (
+          <Box flexDirection="column" paddingLeft={2}>
+            <Text color={theme.color.dim}>input</Text>
+            <Box paddingLeft={2}><Text wrap="wrap" color={theme.color.muted}>{input.text}{input.more ? `\n${g.ellipsis} ${input.more} more lines` : ''}</Text></Box>
+          </Box>
+        ) : null}
+        {task ? (
+          <Box flexDirection="column" paddingLeft={2}>
+            <Text color={theme.color.dim}>task (returned at once)</Text>
+            <Box paddingLeft={2}><Text wrap="wrap" color={theme.color.muted}>{task.text || ' '}{task.more ? `\n${g.ellipsis} ${task.more} more lines` : ''}</Text></Box>
+          </Box>
+        ) : null}
+        {item.result !== undefined ? (
+          <Box flexDirection="column" paddingLeft={2}>
+            <Text color={theme.color.dim}>result</Text>
+            <Box paddingLeft={2}><Text wrap="wrap" color={failed ? theme.color.error : theme.color.text}>{result.text || '(empty)'}{result.more ? `\n${g.ellipsis} ${result.more} more lines` : ''}</Text></Box>
+          </Box>
+        ) : null}
+      </Box>
+    )
+  }
+
+  switch (view) {
+    case 'say':
+      return (
+        <Box flexDirection="row" width={w}>
+          <Text color={item.status === 'running' ? theme.color.live : theme.color.assistant}>{g.dot} </Text>
+          <Box width={w - 2} flexDirection="column">
+            <Markdown text={sayText(item) || ' '} color={theme.color.assistant} />
+            {failed ? (
+              <Text wrap="truncate-end" color={theme.color.error}>
+                {g.cross} say failed: {truncate(oneLine(item.result ?? '') || '(no detail)', Math.max(4, w - 20))}<Text color={theme.color.dim}> (Enter)</Text>
+              </Text>
+            ) : null}
+          </Box>
+        </Box>
+      )
+    case 'ask': {
+      const pending = item.status === 'running'
+      const answer = askAnswer(item)
+      const reason = toolReason(item)
+      return (
+        <Box flexDirection="column" width={w} borderStyle={theme.ascii ? 'classic' : 'single'} borderLeft borderRight={false} borderTop={false} borderBottom={false} borderColor={pending ? theme.color.warn : theme.color.dim} paddingLeft={1}>
+          <Text wrap="truncate-end">
+            <Text bold color={pending ? theme.color.warn : theme.color.muted}>? {pending ? 'the agent asks you' : 'the agent asked'}</Text>
+            {reason ? <Text color={theme.color.dim}> {g.sep} {reason}</Text> : null}
+          </Text>
+          <Text wrap="wrap" color={theme.color.text}>{askQuestion(item.input) || ' '}</Text>
+          {answer !== undefined ? (
+            <Text wrap="truncate-end" color={failed ? theme.color.error : theme.color.user}>{failed ? g.cross : g.pointer} {oneLine(answer) || '(empty)'}</Text>
+          ) : null}
+        </Box>
+      )
+    }
+    case 'status':
+      return (
+        <Text wrap="truncate-end" color={theme.color.muted}>
+          {g.hbar} {statusLineText(item, g.sep, g.arrow)}
+          {toolReason(item) ? <Text color={theme.color.dim}>  {toolReason(item)}</Text> : null}
+        </Text>
+      )
+    case 'row':
+      break
+  }
+
+  const reason = toolReason(item)
+  const result = item.result ?? ''
+  const more = lineCount(result) - 1
+  return (
+    <Box flexDirection="column" width={w}>
+      {reason ? (
+        <Text wrap="truncate-end">
+          {status}
+          <Text color={theme.color.text}> {truncate(reason, Math.max(8, w - 4 - item.name.length - (asyncBadge ? 8 : 0)))}</Text>
+          <Text color={theme.color.tool}>  {item.name}</Text>
+          {asyncBadge}
+        </Text>
+      ) : (
+        <Text wrap="truncate-end">
+          {status}
+          <Text bold color={theme.color.tool}> {item.name}</Text>
+          {asyncBadge}
+          <Text color={theme.color.dim}> {previewJson(toolArgs(item.input), Math.max(8, w - item.name.length - 6 - (asyncBadge ? 8 : 0)))}</Text>
+        </Text>
+      )}
+      {item.result !== undefined ? (
+        <Text wrap="truncate-end" color={failed ? theme.color.error : theme.color.muted}>
+          {'  '}{g.arrow} {truncate(oneLine(result.split('\n')[0] ?? '') || '(empty)', Math.max(4, w - 20))}
+          {more > 0 ? <Text color={theme.color.dim}> (+{more} line{more === 1 ? '' : 's'}, Enter)</Text> : null}
+        </Text>
+      ) : null}
+    </Box>
+  )
 }
 
 function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemViewProps, 'selected'>) {
@@ -99,54 +231,8 @@ function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemView
         </Box>
       )
     }
-    case 'tool': {
-      const status = item.status === 'running'
-        ? <Spinner color={theme.color.tool} />
-        : <Text color={item.status === 'error' ? theme.color.error : theme.color.success}>{item.status === 'error' ? g.cross : g.check}</Text>
-      const args = previewJson(item.input, Math.max(8, w - item.name.length - 6))
-      if (!expanded) {
-        const result = item.result ?? ''
-        const more = lineCount(result) - 1
-        return (
-          <Box flexDirection="column" width={w}>
-            <Text wrap="truncate-end">
-              {status}
-              <Text bold color={theme.color.tool}> {item.name}</Text>
-              <Text color={theme.color.dim}> {args}</Text>
-            </Text>
-            {item.result !== undefined ? (
-              <Text wrap="truncate-end" color={item.status === 'error' ? theme.color.error : theme.color.muted}>
-                {'  '}{g.arrow} {truncate(oneLine(result.split('\n')[0] ?? '') || '(empty)', Math.max(4, w - 20))}
-                {more > 0 ? <Text color={theme.color.dim}> (+{more} line{more === 1 ? '' : 's'}, Enter)</Text> : null}
-              </Text>
-            ) : null}
-          </Box>
-        )
-      }
-      const input = capLines(prettyJson(item.input), EXPANDED_TOOL_LINES)
-      const result = capLines(item.result ?? '', EXPANDED_TOOL_LINES)
-      return (
-        <Box flexDirection="column" width={w}>
-          <Text wrap="truncate-end">
-            {status}
-            <Text bold color={theme.color.tool}> {item.name}</Text>
-            <Text color={theme.color.dim}> {item.toolUseId ?? ''}</Text>
-          </Text>
-          {input.text ? (
-            <Box flexDirection="column" paddingLeft={2}>
-              <Text color={theme.color.dim}>input</Text>
-              <Box paddingLeft={2}><Text wrap="wrap" color={theme.color.muted}>{input.text}{input.more ? `\n… ${input.more} more lines` : ''}</Text></Box>
-            </Box>
-          ) : null}
-          {item.result !== undefined ? (
-            <Box flexDirection="column" paddingLeft={2}>
-              <Text color={theme.color.dim}>result</Text>
-              <Box paddingLeft={2}><Text wrap="wrap" color={item.status === 'error' ? theme.color.error : theme.color.text}>{result.text || '(empty)'}{result.more ? `\n… ${result.more} more lines` : ''}</Text></Box>
-            </Box>
-          ) : null}
-        </Box>
-      )
-    }
+    case 'tool':
+      return <ToolBody item={item} w={w} expanded={expanded} />
     case 'hil': {
       const tone = item.status === 'pending' ? theme.color.warn : item.status === 'approved' ? theme.color.success : theme.color.error
       return (
@@ -202,12 +288,29 @@ function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemView
 export const TranscriptItemView = memo(function TranscriptItemView(props: ItemViewProps) {
   const theme = useTheme()
   const gap = props.item.kind === 'notice' || (props.item.kind === 'context' && !props.expanded) ? 0 : 1
+  // The selected item gets a bar down its whole left edge (a shape, not just a
+  // color: reads in every theme, mono and ASCII), so a tall item scrolled
+  // part-way still shows it is the selected one.
   return (
     <Box flexDirection="row" width={props.width} marginBottom={gap} flexShrink={0}>
-      <Gutter selected={props.selected} theme={theme} />
-      <Box flexDirection="column" width={props.width - 1}>
+      <Box
+        flexDirection="column"
+        width={props.width}
+        paddingLeft={props.selected ? 0 : 1}
+        borderStyle={props.selected ? markBorder(theme) : undefined}
+        borderLeft={props.selected}
+        borderTop={false}
+        borderRight={false}
+        borderBottom={false}
+        borderColor={theme.color.accent}
+      >
         <ItemBody {...props} width={props.width - 1} />
       </Box>
     </Box>
   )
 })
+
+function markBorder(theme: Theme) {
+  const m = theme.glyph.mark
+  return { topLeft: m, top: ' ', topRight: ' ', left: m, bottomLeft: m, bottom: ' ', bottomRight: ' ', right: ' ' }
+}

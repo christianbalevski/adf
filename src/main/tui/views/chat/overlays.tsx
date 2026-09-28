@@ -11,6 +11,7 @@ import { TextInput } from '../../ui/TextInput'
 import type { OverlayProps } from '../types'
 import { parseArgs, prettyJson } from './model'
 import { taskReason } from './Dock'
+import { alwaysApprove, alwaysBlocked } from './approvals'
 
 export const DENY_OVERLAY = 'chat.deny'
 export const DETAILS_OVERLAY = 'chat.approval'
@@ -32,12 +33,12 @@ export function DenyOverlay(props: OverlayProps) {
   const [reason, setReason] = useState('')
   return (
     <Modal
-      title={`Deny ${tool}`}
+      title={`Reject ${tool} with feedback`}
       width={Math.min(props.width - 4, 72)}
       onClose={props.close}
-      hints={[{ keys: 'enter', label: 'deny' }, { keys: 'esc', label: 'cancel' }]}
+      hints={[{ keys: 'enter', label: 'reject' }, { keys: 'esc', label: 'cancel' }]}
     >
-      <Text color={theme.color.muted}>Optional reason — the agent sees it as feedback:</Text>
+      <Text color={theme.color.muted}>Tell the agent why, or what to do instead (it sees this text):</Text>
       <Box borderStyle={theme.ascii ? 'classic' : 'single'} borderColor={theme.color.border} paddingX={1}>
         <TextInput
           value={reason}
@@ -45,7 +46,7 @@ export function DenyOverlay(props: OverlayProps) {
           focused
           keyLayer="overlay"
           maxRows={3}
-          placeholder="why not? (Enter to deny without a reason)"
+          placeholder="feedback for the agent (Enter rejects; empty = no feedback)"
           onSubmit={text => {
             props.close()
             void actions.resolveTask(agentId, taskId, 'deny', text.trim() || undefined)
@@ -72,7 +73,9 @@ export function ApprovalDetailsOverlay(props: OverlayProps) {
   useKeys((input, key) => {
     if (key.escape) { props.close(); return true }
     if (input === 'y' && task) { props.close(); void actions.resolveTask(agentId, taskId, 'approve'); return true }
-    if (input === 'n' && task) { props.close(); actions.pushOverlay({ kind: DENY_OVERLAY, props: { agentId, taskId, tool } }); return true }
+    if (input === 'a' && task) { props.close(); void alwaysApprove(actions, agentId, agent?.summary.handle || agent?.summary.name || agentId, task); return true }
+    if (input === 'n' && task) { props.close(); void actions.resolveTask(agentId, taskId, 'deny'); return true }
+    if (input === 'f' && task) { props.close(); actions.pushOverlay({ kind: DENY_OVERLAY, props: { agentId, taskId, tool } }); return true }
     if (key.downArrow || input === 'j') { setTop(t => Math.min(maxTop, t + 1)); return true }
     if (key.upArrow || input === 'k') { setTop(t => Math.max(0, t - 1)); return true }
     if (key.pageDown) { setTop(t => Math.min(maxTop, t + room)); return true }
@@ -85,9 +88,10 @@ export function ApprovalDetailsOverlay(props: OverlayProps) {
     <Modal
       title={`Approval · ${tool}`}
       width={dialogWidth}
-      hints={task ? [{ keys: 'y', label: 'approve' }, { keys: 'n', label: 'deny' }, { keys: 'up down', label: 'scroll' }, { keys: 'esc', label: 'close' }] : [{ keys: 'esc', label: 'close' }]}
+      hints={task ? [{ keys: 'y', label: 'approve' }, ...(alwaysBlocked(task) ? [] : [{ keys: 'a', label: 'always' }]), { keys: 'n', label: 'reject' }, { keys: 'f', label: 'feedback' }, { keys: 'esc', label: 'close' }] : [{ keys: 'esc', label: 'close' }]}
     >
       <Text color={theme.color.muted} wrap="truncate-end">task {taskId}{task?.origin ? ` · from ${task.origin}` : ''}</Text>
+      {task && alwaysBlocked(task) ? <Text color={theme.color.dim} wrap="truncate-end">Always approve is not offered: {alwaysBlocked(task)}</Text> : null}
       {reason ? <Text color={theme.color.warn} wrap="wrap">{reason}</Text> : null}
       <Box flexDirection="column" marginTop={1}>
         {lines.slice(top, top + room).map((line, i) => <Text key={top + i} color={theme.color.text}>{line || ' '}</Text>)}

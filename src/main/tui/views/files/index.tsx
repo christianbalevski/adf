@@ -132,10 +132,9 @@ function keyHints(scope: CommandScope): KeyHintSpec[] {
     return [
       { keys: 'up down', label: 'scroll' },
       { keys: '/', label: 'search' },
-      { keys: 'n N', label: 'next/prev' },
-      ...(state.tab === 'files' ? [{ keys: 'e', label: 'edit in $EDITOR' }] : []),
       { keys: 'esc', label: 'back' },
-      { keys: '[ ]', label: 'tabs' },
+      ...(state.tab === 'files' ? [{ keys: 'e', label: 'edit' }] : []),
+      { keys: 'n N', label: 'next/prev' },
     ]
   }
   if (state.tab !== 'files') {
@@ -148,15 +147,13 @@ function keyHints(scope: CommandScope): KeyHintSpec[] {
     ]
   }
   return [
+    // The status bar shows the first few; the rest are in /help.
     { keys: 'enter', label: 'open' },
     { keys: 'e', label: 'edit' },
     { keys: 'n', label: 'new' },
-    { keys: 'm', label: 'move' },
-    { keys: 'd', label: 'delete' },
-    { keys: 'p', label: 'protect' },
-    { keys: 'a', label: 'authorize' },
     { keys: '/', label: 'filter' },
     { keys: '[ ]', label: 'tabs' },
+    { keys: 'd', label: 'delete' },
   ]
 }
 

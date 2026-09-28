@@ -7,6 +7,7 @@ import type { CommandContext, CommandContribution, CommandScope, SlashCommand } 
 import { MAIN_LOOP } from '../../api/types'
 import { agentName, completeAgents, completePath, describeAgent, expandPath, findAgent, parseAgentLoopRef } from './model'
 import { abortAgent, interruptAgent, loadAgent, openChat, refreshFleet, runAutostart, startAgent, stopAgent } from './ops'
+import { askUntrack, completeFolder, completeTrackedFolders, loadFolders, TRACK_OVERLAY, trackFolder } from './folders'
 
 export const LOAD_OVERLAY = 'fleet.load'
 
@@ -150,11 +151,52 @@ export const autostartCommand: SlashCommand = {
   },
 }
 
+export const trackCommand: SlashCommand = {
+  name: 'track',
+  args: '[dir]',
+  description: 'Track a folder of agents (its reviewed autostart agents load now and at every daemon start); no dir: folder picker',
+  complete: partial => {
+    const { value, candidates } = completeFolder(partial)
+    if (candidates.length <= 1) return value !== partial ? [value] : []
+    const cut = Math.max(partial.lastIndexOf('/'), partial.lastIndexOf('\\'))
+    const dir = cut >= 0 ? partial.slice(0, cut + 1) : ''
+    return candidates.map(c => dir + c)
+  },
+  run: async ctx => {
+    const path = ctx.rest.trim()
+    if (!path) { ctx.actions.pushOverlay({ kind: TRACK_OVERLAY }); return }
+    await trackFolder(ctx.store, expandPath(path), { toastProblems: true })
+  },
+}
+
+export const untrackCommand: SlashCommand = {
+  name: 'untrack',
+  args: '<dir>',
+  description: 'Stop tracking a folder (asks; files are not touched; optionally unload its agents)',
+  complete: (partial, scope) => completeTrackedFolders(scope.store, partial),
+  run: async ctx => {
+    const wanted = ctx.rest.trim().replace(/^"(.*)"$/, '$1')
+    if (!wanted) { ctx.print('Usage: /untrack <dir> (Tab lists tracked folders; Runtime › Folders shows them)', 'warn'); return }
+    let tracked: string[]
+    try {
+      tracked = (await loadFolders(ctx.store)).map(d => d.path)
+    } catch (err) {
+      ctx.print(`Untrack: ${err instanceof Error ? err.message : String(err)}`, 'error')
+      return
+    }
+    // The stored spelling when it matches, else the daemon matches any spelling of the same folder.
+    const match = tracked.find(p => p === wanted) ?? tracked.find(p => p.toLowerCase() === wanted.toLowerCase())
+    askUntrack(ctx.store, match ?? expandPath(wanted))
+  },
+}
+
 const hasAgent = (scope: CommandScope) => !!scope.agentId
 
 export const fleetCommands: CommandContribution = {
-  commands: [agentsCommand, startCommand, stopCommand, loadCommand, switchCommand, autostartCommand],
+  commands: [agentsCommand, startCommand, stopCommand, loadCommand, switchCommand, autostartCommand, trackCommand, untrackCommand],
   actions: [
+    { id: 'fleet.track', title: 'Track a folder…', group: 'Fleet', shortcut: 'f', keywords: ['folder', 'directory', 'tracked', 'add', 'watch'], run: ctx => { ctx.actions.pushOverlay({ kind: TRACK_OVERLAY }) } },
+    { id: 'fleet.untrack', title: 'Untrack folder…', group: 'Fleet', keywords: ['folder', 'directory', 'tracked', 'remove', 'stop tracking'], run: ctx => { ctx.actions.prefillPrompt('/untrack ') } },
     { id: 'fleet.load', title: 'Load agent file (.adf)…', group: 'Fleet', shortcut: 'o', keywords: ['open', 'add'], run: ctx => { ctx.actions.pushOverlay({ kind: LOAD_OVERLAY }) } },
     { id: 'fleet.start', title: 'Start selected agent', group: 'Fleet', shortcut: 's', available: hasAgent, run: async ctx => { if (ctx.agentId) await startAgent(ctx.store, ctx.agentId) } },
     { id: 'fleet.stop', title: 'Stop + unload selected agent…', group: 'Fleet', shortcut: 'x', available: hasAgent, run: async ctx => { if (ctx.agentId) await stopAgent(ctx.store, ctx.agentId) } },

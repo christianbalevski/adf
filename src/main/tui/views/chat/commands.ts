@@ -4,7 +4,8 @@ import { MAIN_LOOP } from '../../api/types'
 import type { CommandContext, CommandContribution, CommandScope } from '../../commands/types'
 import { transcriptKey } from '../../state/types'
 import { oneLine, truncate } from '../../ui/text'
-import { CHAT_VIEW, INITIAL_CHAT_STATE, copyToClipboard, loopTabs, cycleLoop, type ChatState } from './model'
+import { CHAT_VIEW, INITIAL_CHAT_STATE, copyToClipboard, loopTabs, cycleLoop, pendingTasksFor, type ChatState } from './model'
+import { alwaysApprove } from './approvals'
 
 /** Dispatchable ADF event types (docs/daemon/http-api.md, POST /agents/:id/trigger). */
 export const TRIGGER_TYPES = ['startup', 'timer', 'inbox', 'outbox', 'file_change', 'chat', 'tool_call', 'task_create', 'task_complete', 'log_entry', 'llm_call']
@@ -46,6 +47,33 @@ async function fireTrigger(ctx: CommandContext) {
   const body = { type, ...(data !== undefined ? { data } : {}), target: { scope: 'agent', ...(ctx.loop !== MAIN_LOOP ? { loop: ctx.loop } : {}) } }
   const result = await ctx.actions.run('Trigger', c => c.trigger(agentId, body))
   if (result) ctx.print(`Trigger ${type} queued for ${ctx.loop} (${result.turnId})`, 'success')
+}
+
+function agentName(ctx: CommandContext): string {
+  const summary = ctx.agentId ? ctx.state().agents[ctx.agentId]?.summary : undefined
+  return summary?.handle || summary?.name || ctx.agentId || ''
+}
+
+/** /approve [all|always]: the selected loop's first pending approval (typing the command is the explicit act). */
+async function approveCommand(ctx: CommandContext) {
+  const agentId = ctx.agentId
+  if (!agentId) return
+  const mode = ctx.args[0]?.toLowerCase()
+  if (mode === 'all') { await ctx.actions.approveAllTasks(agentId, ctx.loop); return }
+  const task = pendingTasksFor(ctx.state().agents[agentId], ctx.loop)[0]
+  if (!task) { ctx.print(`Nothing waiting for approval in ${ctx.loop}`, 'info'); return }
+  if (mode === 'always') { await alwaysApprove(ctx.actions, agentId, agentName(ctx), task); return }
+  if (mode) { ctx.print('Usage: /approve [all|always]', 'warn'); return }
+  await ctx.actions.resolveTask(agentId, task.id, 'approve')
+}
+
+/** /reject [feedback]: reject the selected loop's first pending approval; the agent sees the feedback. */
+async function rejectCommand(ctx: CommandContext) {
+  const agentId = ctx.agentId
+  if (!agentId) return
+  const task = pendingTasksFor(ctx.state().agents[agentId], ctx.loop)[0]
+  if (!task) { ctx.print(`Nothing waiting for approval in ${ctx.loop}`, 'info'); return }
+  await ctx.actions.resolveTask(agentId, task.id, 'deny', ctx.rest.trim() || undefined)
 }
 
 function stepLoop(ctx: CommandContext, delta: number) {
@@ -102,6 +130,21 @@ export const chatCommands: CommandContribution = {
       description: 'Expand or collapse thinking blocks in chat (t)',
       run: toggleThinking,
     },
+    {
+      name: 'approve',
+      args: '[all|always]',
+      description: 'Approve the selected loop’s pending tool call · all: every gated call (never protection overrides) · always: always approve that tool (asks)',
+      available: hasAgent,
+      complete: partial => ['all', 'always'].filter(v => v.startsWith(partial.trim())),
+      run: approveCommand,
+    },
+    {
+      name: 'reject',
+      args: '[feedback]',
+      description: 'Reject the selected loop’s pending tool call; the agent sees the feedback',
+      available: hasAgent,
+      run: rejectCommand,
+    },
   ],
   actions: [
     { id: 'chat.abort', title: 'Interrupt running turn', group: 'Chat', shortcut: 'esc', available: hasAgent, run: ctx => ctx.actions.interrupt(ctx.agentId ?? undefined, ctx.loop) },
@@ -112,5 +155,9 @@ export const chatCommands: CommandContribution = {
     { id: 'chat.trigger', title: 'Fire a trigger into this loop…', group: 'Chat', available: hasAgent, run: ctx => ctx.actions.prefillPrompt('/trigger ') },
     { id: 'chat.compact', title: 'Compact this loop’s history now', group: 'Chat', keywords: ['summarize', 'context', 'tokens'], available: hasAgent, run: async ctx => { if (ctx.agentId) await ctx.actions.compactLoop(ctx.agentId, ctx.loop) } },
     { id: 'chat.clear', title: 'Clear this loop’s history…', group: 'Chat', available: hasAgent, run: ctx => ctx.actions.prefillPrompt('/clear') },
+    { id: 'chat.approve', title: 'Approve the pending tool call', group: 'Chat', keywords: ['hil', 'approval', 'allow'], available: hasAgent, run: ctx => approveCommand({ ...ctx, args: [] }) },
+    { id: 'chat.approve-all', title: 'Approve all pending tool calls', hint: 'never protection overrides', group: 'Chat', keywords: ['hil', 'approval', 'allow'], available: hasAgent, run: ctx => approveCommand({ ...ctx, args: ['all'] }) },
+    { id: 'chat.approve-always', title: 'Always approve this tool…', group: 'Chat', keywords: ['hil', 'approval', 'trust'], available: hasAgent, run: ctx => approveCommand({ ...ctx, args: ['always'] }) },
+    { id: 'chat.reject', title: 'Reject the pending tool call with feedback…', group: 'Chat', keywords: ['hil', 'deny', 'approval'], available: hasAgent, run: ctx => ctx.actions.prefillPrompt('/reject ') },
   ],
 }

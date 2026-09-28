@@ -1,10 +1,10 @@
 // Pure helpers for the chat view: per-loop view state, row heights, trigger
 // labels, loop-scoped HIL filters, @path mentions and the clipboard.
 
-import { spawn } from 'node:child_process'
-import { MAIN_LOOP, type AskEntry, type TaskEntry, type Timer, type UmbilicalEvent } from '../../api/types'
+import { MAIN_LOOP, type AskEntry, type TaskEntry, type TaskListEntry, type Timer, type UmbilicalEvent } from '../../api/types'
 import { isBusyState } from '../../state/reducer'
-import { transcriptKey, type AgentEntry, type LoopState, type TranscriptItem } from '../../state/types'
+import { askQuestion, isAsyncInput } from '../../state/transcript'
+import { transcriptKey, type AgentEntry, type LoopState, type ToolItem, type TranscriptItem } from '../../state/types'
 import { parseBlocks } from '../../ui/Markdown'
 import { displayWidth, formatEveryMs, oneLine, truncate, wrappedHeight } from '../../ui/text'
 
@@ -105,7 +105,7 @@ export function taskLoop(task: TaskEntry): string {
   return m ? m[1] : MAIN_LOOP
 }
 
-export function pendingTasksFor(agent: AgentEntry | undefined, loop: string): TaskEntry[] {
+export function pendingTasksFor(agent: AgentEntry | undefined, loop: string): TaskListEntry[] {
   return (agent?.pendingTasks ?? []).filter(task => task.status === 'pending_approval' && taskLoop(task) === loop)
 }
 
@@ -309,6 +309,83 @@ export function markdownHeight(text: string, width: number): number {
 
 export const EXPANDED_TOOL_LINES = 400
 
+// --- tool presentation (Studio AgentLoop parity) -------------------------------------
+
+/** At most `max` lines of `text`, and how many were cut. */
+export function capLines(text: string, max: number): { text: string; more: number } {
+  const lines = text.split('\n')
+  if (lines.length <= max) return { text, more: 0 }
+  return { text: lines.slice(0, max).join('\n'), more: lines.length - max }
+}
+
+/** An async call's task reference, when its real result has replaced it (shown as its own section). */
+export function shownTaskRef(item: ToolItem): string | undefined {
+  return item.taskRef !== undefined && item.taskRef !== item.result ? item.taskRef : undefined
+}
+
+/** Runtime flags on a call's input: shown in the expanded input, never in the one-line args preview. */
+const TOOL_FLAGS = ['_reason', '_async'] as const
+
+function inputRecord(input: unknown): Record<string, unknown> | null {
+  return input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : null
+}
+
+/** Why the agent made the call (`_reason`), trimmed; '' when absent. */
+export function toolReason(item: ToolItem): string {
+  const raw = inputRecord(item.input)?._reason
+  if (raw === undefined || raw === null) return ''
+  return oneLine(typeof raw === 'string' ? raw : String(raw))
+}
+
+/** The call ran in the background (`_async: true` on the input, or a task-reference result). */
+export function isAsyncTool(item: ToolItem): boolean {
+  return !!item.async || isAsyncInput(item.input)
+}
+
+/** Input without `_reason` / `_async`, for the collapsed args preview. */
+export function toolArgs(input: unknown): unknown {
+  const record = inputRecord(input)
+  if (!record) return input
+  const rest = { ...record }
+  for (const flag of TOOL_FLAGS) delete rest[flag]
+  return rest
+}
+
+/**
+ * How a tool item renders: `say` as an assistant message, `ask` as the ask
+ * card, a successful `sys_set_meta status` / `sys_set_state` as a one-line
+ * status, everything else as a tool row.
+ */
+export type ToolView = 'say' | 'ask' | 'status' | 'row'
+
+export function toolView(item: ToolItem): ToolView {
+  if (item.name === 'say') return 'say'
+  if (item.name === 'ask') return 'ask'
+  if (item.status === 'ok' && statusLineText(item)) return 'status'
+  return 'row'
+}
+
+/** The text a `say` call shows: its message, else its input. */
+export function sayText(item: ToolItem): string {
+  const message = inputRecord(item.input)?.message
+  return typeof message === 'string' ? message : prettyJson(item.input)
+}
+
+/** The owner's answer inside an `ask` call's result. */
+export function askAnswer(item: ToolItem): string | undefined {
+  if (item.result === undefined) return undefined
+  return item.result.startsWith('Human answered: ') ? item.result.slice('Human answered: '.length) : item.result
+}
+
+/** `status · <value>` for sys_set_meta key=status, `state → <state>` for sys_set_state; '' otherwise. */
+export function statusLineText(item: ToolItem, sep = '·', arrow = '→'): string {
+  const input = inputRecord(item.input)
+  if (!input) return ''
+  if (item.name === 'sys_set_meta' && input.key === 'status' && typeof input.value === 'string' && input.value.trim()) return `status ${sep} ${oneLine(input.value)}`
+  if (item.name === 'sys_set_state' && typeof input.state === 'string' && input.state.trim()) return `state ${arrow} ${input.state.trim()}`
+  return ''
+}
+
 export function prettyJson(value: unknown): string {
   if (value === undefined) return ''
   if (typeof value === 'string') return value
@@ -328,16 +405,30 @@ export function itemHeight(item: TranscriptItem, width: number, flags: RenderFla
     case 'thinking':
       return (flags.expanded || flags.showThinking ? 1 + wrappedHeight(item.text || ' ', w - 2) : 1) + 1
     case 'tool': {
-      if (!flags.expanded) return 1 + (item.result !== undefined ? 1 : 0) + 1
-      const input = prettyJson(item.input)
-      const result = item.result ?? ''
-      const cap = (text: string) => Math.min(EXPANDED_TOOL_LINES + 1, wrappedHeight(text, w - 4))
-      return 1 + (input ? 1 + cap(input) : 0) + (item.result !== undefined ? 1 + cap(result || ' ') : 0) + 1
+      const view = toolView(item)
+      if (flags.expanded && isExpandable(item)) {
+        // Sections are indented 2 + 2 columns inside the body.
+        const cap = (text: string) => {
+          const capped = capLines(text, EXPANDED_TOOL_LINES)
+          return wrappedHeight(capped.text, w - 2) + (capped.more ? 1 : 0)
+        }
+        const input = prettyJson(item.input)
+        const ref = shownTaskRef(item)
+        return 1 + (input ? 1 + cap(input) : 0) + (ref !== undefined ? 1 + cap(ref || ' ') : 0) + (item.result !== undefined ? 1 + cap(item.result || ' ') : 0) + 1
+      }
+      switch (view) {
+        case 'say': return markdownHeight(sayText(item) || ' ', w) + (item.status === 'error' ? 1 : 0) + 1
+        case 'ask': return 1 + wrappedHeight(askQuestion(item.input) || ' ', w) + (item.result !== undefined ? 1 : 0) + 1
+        case 'status': return 1 + 1
+        case 'row': return 1 + (item.result !== undefined ? 1 : 0) + 1
+      }
+      return 2
     }
     case 'hil':
       return 2 + (item.reason ? 1 : 0) + (item.feedback ? 1 : 0) + (flags.expanded ? wrappedHeight(prettyJson(item.input), w - 4) : 0) + 1
     case 'ask':
-      return 1 + wrappedHeight(item.question || ' ', w - 2) + (item.answer ? 1 : 0) + 1
+      // Left border + 1 padding inside the body: the text gets `w` columns.
+      return 1 + wrappedHeight(item.question || ' ', w) + (item.answer ? 1 : 0) + 1
     case 'notice':
       return 1
     case 'context':
@@ -350,6 +441,8 @@ export function itemHeight(item: TranscriptItem, width: number, flags: RenderFla
 export function isExpandable(item: TranscriptItem): boolean {
   switch (item.kind) {
     case 'tool':
+      // A say is a message; only a failed one has details to open.
+      return toolView(item) !== 'say' || item.status === 'error'
     case 'thinking':
     case 'context':
     case 'hil':
@@ -364,7 +457,15 @@ export function isExpandable(item: TranscriptItem): boolean {
 /** Plain text of an item, for copying. */
 export function itemText(item: TranscriptItem): string {
   switch (item.kind) {
-    case 'tool': return [`${item.name} ${prettyJson(item.input)}`, item.result ?? ''].filter(Boolean).join('\n\n')
+    case 'tool':
+      switch (toolView(item)) {
+        case 'say': return sayText(item)
+        case 'ask': {
+          const answer = askAnswer(item)
+          return answer ? `${askQuestion(item.input)}\n\n${answer}` : askQuestion(item.input)
+        }
+        default: return [`${item.name} ${prettyJson(item.input)}`, item.result ?? ''].filter(Boolean).join('\n\n')
+      }
     case 'hil': return `${item.tool} ${prettyJson(item.input)}`
     case 'ask': return item.answer ? `${item.question}\n\n${item.answer}` : item.question
     default: return item.text
@@ -375,6 +476,7 @@ export function lastReply(items: TranscriptItem[]): string | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
     if (item.kind === 'assistant' && item.text.trim()) return item.text
+    if (item.kind === 'tool' && item.name === 'say' && sayText(item).trim()) return sayText(item)
   }
   return undefined
 }
@@ -435,6 +537,67 @@ export function revealOffset(index: number, heights: number[], offset: number, v
   return offset
 }
 
+/** Where ↑/↓ item navigation lands. */
+export interface NavResult {
+  /** The item to select; 'follow' = past the newest item (back to the live end, no selection). */
+  index: number | 'follow'
+  offset: number
+  /** Moved up past the oldest loaded item: page in older history. */
+  loadOlder?: boolean
+}
+
+/**
+ * ↑/↓ over transcript items (`dir` -1 = up / older, +1 = down / newer).
+ * A selected item taller than the viewport scrolls by `step` rows inside
+ * itself first; only once its edge is on screen does the selection move to
+ * the neighbour. Moving up into a tall item shows its bottom, moving down its
+ * top. With nothing selected, ↑ picks the newest item on screen and ↓ goes
+ * back to the live end. `offset` counts rows hidden below the viewport.
+ */
+export function navigate(heights: number[], selected: number, offset: number, viewport: number, dir: -1 | 1, step: number, visibleEnd = heights.length - 1): NavResult {
+  const n = heights.length
+  if (n === 0) return { index: 'follow', offset: 0 }
+  const total = heights.reduce((a, b) => a + b, 0)
+  const clamp = (value: number) => Math.max(0, Math.min(value, Math.max(0, total - viewport)))
+  const below = (i: number) => { let sum = 0; for (let j = i + 1; j < n; j++) sum += heights[j]; return sum }
+  const place = (i: number, up: boolean): number => {
+    const bottom = below(i)
+    const top = bottom + heights[i]
+    if (heights[i] > viewport) return clamp(up ? bottom : top - viewport)
+    if (bottom < offset) return clamp(bottom)
+    if (top > offset + viewport) return clamp(top - viewport)
+    return offset
+  }
+  if (selected < 0 || selected >= n) {
+    if (dir > 0) return { index: 'follow', offset: 0 }
+    const i = Math.max(0, Math.min(n - 1, visibleEnd))
+    return { index: i, offset: place(i, true) }
+  }
+  const bottom = below(selected)
+  const top = bottom + heights[selected]
+  if (dir < 0) {
+    // Scroll up inside the selected item while its top is above the viewport.
+    if (top > offset + viewport) return { index: selected, offset: clamp(Math.min(top - viewport, offset + step)) }
+    if (selected === 0) return { index: 0, offset, loadOlder: true }
+    return { index: selected - 1, offset: place(selected - 1, true) }
+  }
+  if (bottom < offset) return { index: selected, offset: clamp(Math.max(bottom, offset - step)) }
+  if (selected >= n - 1) return { index: 'follow', offset: 0 }
+  return { index: selected + 1, offset: place(selected + 1, false) }
+}
+
+/** The item a viewport row shows (row 0 = top of the viewport), or -1. */
+export function itemAtRow(heights: number[], offset: number, viewport: number, row: number): number {
+  if (row < 0 || row >= viewport) return -1
+  // Rows counted up from the bottom of the content.
+  let fromBottom = offset + (viewport - 1 - row)
+  for (let i = heights.length - 1; i >= 0; i--) {
+    if (fromBottom < heights[i]) return i
+    fromBottom -= heights[i]
+  }
+  return -1
+}
+
 // --- @path mentions -----------------------------------------------------------------
 
 /** The `@partial` token ending at the cursor, if any. */
@@ -461,46 +624,9 @@ export function applyMention(value: string, cursor: number, path: string): { val
   return { value: next, cursor: m.start + path.length + 2 }
 }
 
-// --- clipboard ---------------------------------------------------------------------
+// --- clipboard (app/clipboard.ts; re-exported for existing callers) --------------------
 
-type ClipboardWriter = (text: string) => Promise<boolean>
-
-function pipeTo(command: string, args: string[], data: Buffer): Promise<boolean> {
-  return new Promise(resolve => {
-    try {
-      const child = spawn(command, args, { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
-      child.on('error', () => resolve(false))
-      child.on('close', code => resolve(code === 0))
-      child.stdin.end(data)
-    } catch {
-      resolve(false)
-    }
-  })
-}
-
-const systemClipboard: ClipboardWriter = async text => {
-  if (process.platform === 'win32') {
-    // clip.exe reads UTF-16LE with a BOM losslessly.
-    return pipeTo('clip', [], Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]))
-  }
-  const data = Buffer.from(text, 'utf8')
-  if (process.platform === 'darwin') return pipeTo('pbcopy', [], data)
-  for (const [cmd, args] of [['wl-copy', []], ['xclip', ['-selection', 'clipboard']], ['xsel', ['--clipboard', '--input']]] as const) {
-    if (await pipeTo(cmd, [...args], data)) return true
-  }
-  return false
-}
-
-let clipboardWriter: ClipboardWriter = systemClipboard
-
-/** Tests swap the clipboard for a recorder. */
-export function setClipboardWriter(writer: ClipboardWriter | null): void {
-  clipboardWriter = writer ?? systemClipboard
-}
-
-export function copyToClipboard(text: string): Promise<boolean> {
-  return clipboardWriter(text)
-}
+export { copyToClipboard, setClipboardWriter } from '../../app/clipboard'
 
 // --- the info line under the loop tabs --------------------------------------------
 

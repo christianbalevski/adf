@@ -2,6 +2,7 @@ import { MAIN_LOOP } from '../../api/types'
 import type { CommandContribution, PaletteAction, SlashCommand } from '../../commands/types'
 import { findTab, patchInspectState, TABS, INSPECT_VIEW } from './state'
 import { MODEL_OVERLAY, applyModel, parseModelArg, providerChoices } from './model-picker'
+import { TASK_FILTERS, type TaskFilter } from './tasks'
 
 const inspect: SlashCommand = {
   name: 'inspect',
@@ -59,7 +60,27 @@ const config: SlashCommand = {
   },
 }
 
+const TASK_FILTER_ARGS: readonly TaskFilter[] = TASK_FILTERS
+
+const tasks: SlashCommand = {
+  name: 'tasks',
+  args: `[${TASK_FILTERS.join('|')}]`,
+  description: 'The selected agent’s tasks (Inspect › Tasks): approvals and async tool calls; y/n/a act on a call waiting for approval',
+  available: scope => !!scope.agentId,
+  complete: partial => TASK_FILTERS.filter(f => f.startsWith(partial.trim())),
+  run: ctx => {
+    if (!ctx.agentId) { ctx.print('No agent selected', 'warn'); return }
+    const wanted = ctx.args[0]?.toLowerCase()
+    const filter = wanted ? TASK_FILTER_ARGS.find(f => f.startsWith(wanted)) : undefined
+    if (wanted && !filter) { ctx.print(`Usage: /tasks [${TASK_FILTERS.join('|')}]`, 'warn'); return }
+    patchInspectState(ctx.actions, ctx.state(), { tab: 'tasks', ...(filter ? { tasksFilter: filter } : {}) })
+    ctx.actions.setView(INSPECT_VIEW)
+    ctx.actions.setFocus('main')
+  },
+}
+
 const actions: PaletteAction[] = [
+  { id: 'inspect.tasks', title: 'Show tasks', hint: 'the selected agent’s approvals and async tool calls', group: 'Inspect', keywords: ['tasks', 'hil', 'approval', 'approve', 'pending', 'adf_tasks'], available: scope => !!scope.agentId, run: ctx => tasks.run({ ...ctx, args: [], rest: '' }) },
   { id: 'inspect.model', title: 'Change model', hint: 'the selected agent › loop', group: 'Inspect', keywords: ['model', 'provider', 'llm', 'switch model'], available: scope => !!scope.agentId, run: ctx => { if (ctx.agentId) ctx.actions.pushOverlay({ kind: MODEL_OVERLAY, props: { agentId: ctx.agentId, loop: ctx.loop } }) } },
   { id: 'inspect.config.edit', title: 'Edit agent config in $EDITOR', group: 'Inspect', keywords: ['config', 'settings', 'edit'], available: scope => !!scope.agentId, run: ctx => config.run({ ...ctx, args: ['edit'] }) },
   {
@@ -86,4 +107,4 @@ const actions: PaletteAction[] = [
   })),
 ]
 
-export const inspectCommands: CommandContribution = { commands: [inspect, model, config], actions }
+export const inspectCommands: CommandContribution = { commands: [inspect, model, config, tasks], actions }

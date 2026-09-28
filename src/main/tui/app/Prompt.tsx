@@ -6,7 +6,7 @@ import { useShell } from './shell-context'
 import { PROMPT_PREFILL_KEY, useStore, useTuiSelector } from '../state/store'
 import { useActiveView, useSelectedAgent, useSelectedLoop, useViewState } from '../state/hooks'
 import { completeSlash, createScope, runSlash } from '../commands/registry'
-import { TextInput } from '../ui/TextInput'
+import { TextInput, type TextInputApi } from '../ui/TextInput'
 import { truncate } from '../ui/text'
 import { MAIN_LOOP } from '../api/types'
 import type { PromptCompletion } from '../views/types'
@@ -28,6 +28,14 @@ export function isPromptMenuOpen(): boolean {
 let promptEmpty = true
 export function isPromptEmpty(): boolean {
   return promptEmpty
+}
+
+// The prompt's editing API: right-click paste inserts at its caret.
+const promptApi: { current: TextInputApi | null } = { current: null }
+export function insertIntoPrompt(text: string): boolean {
+  if (!promptApi.current) return false
+  promptApi.current.insert(text)
+  return true
 }
 
 interface MenuItem {
@@ -165,6 +173,7 @@ export function Prompt({ width, focused }: { width: number; focused: boolean }) 
           placeholder={placeholder}
           history={history}
           focused={focused}
+          apiRef={promptApi}
           onKey={(_input, key, api) => {
             if (!menuOpen) return false
             // Esc closes the menu and keeps the prompt focused (Tab leaves the prompt).

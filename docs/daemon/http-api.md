@@ -1205,15 +1205,25 @@ Response:
       "id": "task-id",
       "status": "pending_approval",
       "tool": "fs_write",
-      "requires_authorization": true
+      "requires_authorization": true,
+      "canAlwaysApprove": true
     }
   ]
 }
 ```
 
+`pending_approval` rows also carry the live "Always approve" affordance,
+derived from the executor (main or inner loop) holding the request — never
+persisted:
+
+| Field | Meaning |
+|-------|---------|
+| `canAlwaysApprove` | `true` when `POST …/always-approve` would be accepted |
+| `alwaysApproveBlockedReason` | Why not, when `canAlwaysApprove` is `false`: `Target is locked (<level>)` (protection override), `One-time approval only for this request` (synthetic approval such as `mcp_oauth_signin`), `Tool declaration is locked`, or no live request waiting on the row (resolve it instead) |
+
 ### `GET /agents/:id/tasks/:taskId`
 
-Returns one task.
+Returns one task (same `canAlwaysApprove` fields as the list).
 
 ```json
 {
@@ -1243,7 +1253,7 @@ Allowed `action` values:
 | Action | Meaning |
 |--------|---------|
 | `approve` | Approve the task and allow it to continue |
-| `deny` | Deny the task, optionally with `reason` |
+| `deny` | Deny the task, optionally with `reason`. The reason is stored as the task's `error` and handed back to the agent as the owner's feedback (Studio's "Reject with feedback"): a blocking call's tool result reads `Tool call "<tool>" was rejected by authorizer. Feedback: <reason>` |
 | `pending_approval` | Mark a pending task as awaiting approval |
 
 The body also accepts `modified_args` for clients that use snake case.
@@ -1277,6 +1287,59 @@ shutdown: `running` tasks become `failed` (side effects unknown), and the
 executor's own `pending_approval` tasks become `cancelled` (no human ever
 decided). A task swept this way is terminal, so a later resolve on it returns
 `409`.
+
+A request parked by an inner loop's executor is answered on that executor;
+the call is the same.
+
+### `POST /agents/:id/tasks/:taskId/always-approve`
+
+Studio's Approve ▸ Always approve. Drops the HIL gate on the tool — the HOST
+declaration in `config.tools` becomes `enabled: true, restricted: false` (added
+if absent) — persists and propagates it exactly like `PUT /agents/:id/config`,
+then approves the pending request. No body; the tool is taken from the pending
+request, never from the client.
+
+Protections get one-time overrides only: the call is refused for protection
+overrides, synthetic one-shot approvals and locked declarations (re-checked
+against the live host config).
+
+Response:
+
+```json
+{
+  "agentId": "agent-id",
+  "taskId": "task-id",
+  "loop": "main",
+  "tool": "fs_write",
+  "resolution": { "task_id": "task-id", "status": "approved" },
+  "task": {}
+}
+```
+
+`loop` is the loop whose executor held the request. Inner loops never receive
+`restricted` tools (their derived toolset excludes them), so the un-restricted
+host tool reaches a loop only if that loop's `tools` allow-list names it.
+
+Status codes:
+
+| Status | Cause |
+|--------|-------|
+| `404` | Unknown agent or task |
+| `409` | Task not `pending_approval`; no live request waiting on it; or always-approve not allowed — `error` is the blocked reason (same text as `alwaysApproveBlockedReason`) |
+
+### `POST /agents/:id/tasks/approve-all`
+
+Studio's "Approve all": approves every pending gated (`restricted`) approval
+across main and every running inner loop. Protection overrides are never
+included (the executor enforces it) and are counted instead. Optional body
+`{ "loop": "<name>" }` (or `?loop=`) limits it to one loop.
+
+```json
+{ "agentId": "agent-id", "approved": 2, "skippedProtection": 1 }
+```
+
+With a loop, the response also echoes `"loop"`. `404` for an unknown agent or
+loop, `409` when that loop has no running executor.
 
 ### `GET /agents/:id/asks`
 
@@ -1424,6 +1487,80 @@ Skipped reasons:
 | `not_autostart` | The agent is not configured for autostart |
 | `password_protected` | The agent has encrypted identity data requiring human unlock |
 | `unreviewed` | The agent has not been accepted through the review gate |
+
+### Tracked agent folders
+
+Studio's tracked directories over HTTP. The list is settings
+`trackedDirectories` (`string[]`), the same key Studio writes and the daemon
+reads at boot for its autostart scan. The routes write it through the daemon's
+internal settings store; it is not a write-denied key. Tracking or untracking
+never creates, moves or deletes files. Scans use `maxDirectoryScanDepth`
+(default `5`).
+
+#### `GET /tracked-dirs`
+
+```json
+{
+  "maxDepth": 5,
+  "directories": [
+    { "path": "C:\\Users\\me\\Documents\\adf-agents", "exists": true, "agentCount": 3, "loadedCount": 2 }
+  ]
+}
+```
+
+`agentCount` is the number of `.adf` files an autostart scan finds under the
+folder, and `loadedCount` is how many of the agents loaded in this daemon live
+under it.
+
+#### `POST /tracked-dirs`
+
+Body: `{ "path": "<absolute folder>" }`. The folder is tracked right away:
+
+1. It must be an absolute path to an existing directory. It is stored
+   canonicalized: resolved, with symlinks and 8.3 names expanded and no
+   trailing separator.
+2. It is persisted to `trackedDirectories`. As in Studio, a new parent
+   replaces tracked subfolders it now covers (`absorbed`).
+3. The live daemon is updated, so the mesh uses the new tracked roots
+   immediately.
+4. The folder goes through the same autostart pass as daemon boot and
+   `POST /agents/autostart`, with the same review gate. Unreviewed agents are
+   not loaded and are listed in `needsReview`; accept them with
+   `POST /agents/review/accept`.
+
+`201` response:
+
+```json
+{
+  "entry": { "path": "/home/me/agents", "exists": true, "agentCount": 2, "loadedCount": 1 },
+  "directories": ["/home/me/agents"],
+  "absorbed": [],
+  "autostart": { "scanned": 2, "started": [], "skipped": [], "failed": [] },
+  "needsReview": [{ "filePath": "/home/me/agents/agent-2.adf", "name": "agent-2", "reason": "unreviewed", "agentId": "…" }]
+}
+```
+
+| Status | Cause |
+|--------|-------|
+| `400` | `path` missing, not absolute, missing on disk, or not a directory |
+| `405` | The settings store is read-only |
+| `409` | Already tracked, under any spelling (case and separators are normalized on Windows/macOS), or covered by a tracked parent. `coveredBy` names the tracked entry |
+| `503` | No settings store is configured |
+
+#### `DELETE /tracked-dirs?path=<folder>&unload=true|false`
+
+Stops tracking a folder. `path` matches the stored string exactly or names the
+same folder under another spelling. A folder that no longer exists on disk can
+still be untracked by its stored string. `unload` defaults to `false`, which
+leaves the folder's agents running. With `unload=true`, every loaded agent
+whose file is under the folder is unloaded; its files stay on disk.
+
+```json
+{ "removed": "/home/me/agents", "directories": [], "unloaded": [{ "agentId": "…", "filePath": "/home/me/agents/agent-1.adf", "name": "agent-1" }] }
+```
+
+`400`: `path` missing or `unload` not `true`/`false`. `404`: not a tracked
+folder. `405` and `503`: same as POST.
 
 ### `POST /agents/:id/start`
 

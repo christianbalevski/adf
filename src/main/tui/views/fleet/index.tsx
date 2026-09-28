@@ -23,6 +23,9 @@ import type { ViewDefinition, ViewProps } from '../types'
 import { fleetCommands, LOAD_OVERLAY } from './commands'
 import { agentGlyph } from './Sidebar'
 import { LoadDialog } from './LoadDialog'
+import { TrackDialog } from './TrackDialog'
+import { UntrackDialog } from './UntrackDialog'
+import { TRACK_OVERLAY, UNTRACK_OVERLAY } from './folders'
 import { useFleetData, useFleetPoller, useLastActivity, type FleetData } from './data'
 import { agentName, describeAgent, describeLoop, describeSchedule, formatIn, formatUptime, liveTimers, nextRunByLoop, timerLoop } from './model'
 import { interruptAgent, openChat, refreshFleet, runAutostart, startAgent, stopAgent } from './ops'
@@ -74,6 +77,7 @@ function FleetView({ width, height, focused }: ViewProps) {
     if (identityKey(store, identity, input, onboarding)) return true
     if (input === 'n') { openNewAgent(store); return true }
     if (input === 'o') { store.actions.pushOverlay({ kind: LOAD_OVERLAY }); return true }
+    if (input === 'f') { store.actions.pushOverlay({ kind: TRACK_OVERLAY }); return true }
     if (input === 'A') { void runAutostart(store); return true }
     if (input === 'r') { void refreshFleet(store); return true }
     if (!agent) return false
@@ -113,7 +117,7 @@ function FleetView({ width, height, focused }: ViewProps) {
         rows={agents}
         getKey={a => a.summary.id}
         selectedIndex={agents.length ? selectedIndex : undefined}
-        emptyText="No agents loaded — n new agent, o load an .adf, A autostart tracked directories"
+        emptyText="No agents loaded — n new agent · f track a folder · o load an .adf · A autostart tracked folders"
         columns={columnsFor(inner, theme, data, lastActivity, needs, sites)}
       />
       {selected ? (
@@ -138,6 +142,7 @@ const DASHBOARD_KEYS: KeyHintSpec[] = [
   { keys: 'w', label: 'website' },
   { keys: 'n', label: 'new agent' },
   { keys: 'o', label: 'load .adf' },
+  { keys: 'f', label: 'track folder' },
   { keys: 'A', label: 'autostart' },
   { keys: 'r', label: 'refresh' },
 ]
@@ -155,6 +160,8 @@ export function DaemonOffline({ width, height }: { width: number; height: number
       <Text> </Text>
       <Text color={theme.color.muted}>Start it in another terminal:</Text>
       <Text color={theme.color.accent}>  npm run daemon</Text>
+      <Text> </Text>
+      <Text wrap="wrap" color={theme.color.muted}>Once it is up: f track a folder of agents · o load an .adf · n new agent.</Text>
       <Text> </Text>
       <Text wrap="wrap" color={theme.color.muted}>Daemon elsewhere? Set ADF_DAEMON_URL, restart with --url &lt;url&gt;, or switch now with /url &lt;url&gt; (ADF_DAEMON_TOKEN or --token for a remote daemon).</Text>
       <Text> </Text>
@@ -348,11 +355,12 @@ const fleet: ViewDefinition = {
       { keys: 'w', label: 'Open the agent’s website (starts the web server if it is stopped)' },
       { keys: 'W', label: 'Copy the agent’s website URL' },
       { keys: 'o', label: 'Load an .adf (Tab completes, ^R require review, ^S start after load)' },
+      { keys: 'f', label: 'Track a folder of agents (Tab completes folders): its reviewed autostart agents load now and at every daemon start · /untrack <dir> stops' },
       { keys: 'A', label: 'Autostart: scan tracked directories (asks)' },
       { keys: 'r', label: 'Refresh agents, timers, inbox and the daemon line' },
     ],
   }],
-  overlays: { [LOAD_OVERLAY]: LoadDialog },
+  overlays: { [LOAD_OVERLAY]: LoadDialog, [TRACK_OVERLAY]: TrackDialog, [UNTRACK_OVERLAY]: UntrackDialog },
   ...fleetCommands,
 }
 

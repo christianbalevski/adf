@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DaemonClient } from '../../src/main/tui/api/client'
 import { EventStream, type ConnectionInfo } from '../../src/main/tui/api/sse'
 import { DaemonError, type DaemonEventFrame } from '../../src/main/tui/api/types'
-import { AGENT_1_ID, startMockDaemon, type MockDaemon } from './fixtures/mock-daemon'
+import { AGENT_1_ID, MOCK_AGENTS_DIR, MOCK_SPARE_DIR, startMockDaemon, type MockDaemon } from './fixtures/mock-daemon'
 
 let mock: MockDaemon
 let client: DaemonClient
@@ -63,6 +63,52 @@ describe('DaemonClient', () => {
     const deleted = await client.deleteLoop(AGENT_1_ID, 'critic')
     expect(deleted).toEqual({ agentId: AGENT_1_ID, name: 'critic', archivedEntries: 0, interruptedTurn: false })
     await expect(client.loop(AGENT_1_ID, 'critic')).rejects.toBeInstanceOf(DaemonError)
+  })
+
+  it('always-approves, refuses one-time approvals, denies with feedback and approves all', async () => {
+    const agent = mock.agents.get(AGENT_1_ID)!
+    agent.tasks.push(
+      { id: 'task_oneshot', tool: 'mcp_oauth_signin', args: '{}', status: 'pending_approval', created_at: 1, approval_meta: { reason: 'restricted', canAlwaysApprove: false } },
+      { id: 'task_protect', tool: 'fs_delete', args: '{}', status: 'pending_approval', created_at: 2, approval_meta: { reason: 'protection', protection: { level: 'no_delete' } } },
+      { id: 'task_gated', tool: 'fs_write', args: '{}', status: 'pending_approval', created_at: 3, approval_meta: { reason: 'restricted' } },
+      { id: 'task_deny', tool: 'fs_write', args: '{}', status: 'pending_approval', created_at: 4, approval_meta: { reason: 'restricted' } },
+    )
+    const { tasks } = await client.tasks(AGENT_1_ID, { status: 'pending_approval' })
+    const byId = new Map(tasks.map(t => [t.id, t]))
+    expect(byId.get('task_approve_1')?.canAlwaysApprove).toBe(true)
+    expect(byId.get('task_oneshot')).toEqual(expect.objectContaining({ canAlwaysApprove: false, alwaysApproveBlockedReason: 'One-time approval only for this request' }))
+    expect(byId.get('task_protect')).toEqual(expect.objectContaining({ canAlwaysApprove: false, alwaysApproveBlockedReason: 'Target is locked (no_delete)' }))
+
+    const always = await client.alwaysApproveTask(AGENT_1_ID, 'task_approve_1')
+    expect(always).toEqual(expect.objectContaining({ taskId: 'task_approve_1', loop: 'main', tool: 'msg_send', task: expect.objectContaining({ status: 'completed' }) }))
+    expect((await client.config(AGENT_1_ID)).config.tools).toEqual([expect.objectContaining({ name: 'msg_send', enabled: true, restricted: false })])
+    await expect(client.alwaysApproveTask(AGENT_1_ID, 'task_oneshot')).rejects.toMatchObject({ status: 409 })
+    await expect(client.alwaysApproveTask(AGENT_1_ID, 'task_protect')).rejects.toMatchObject({ status: 409 })
+
+    const denied = await client.resolveTask(AGENT_1_ID, 'task_deny', { action: 'deny', reason: 'use notes/ instead' })
+    expect(denied.task).toEqual(expect.objectContaining({ status: 'denied', error: 'use notes/ instead' }))
+
+    expect(await client.approveAllTasks(AGENT_1_ID)).toEqual({ agentId: AGENT_1_ID, approved: 2, skippedProtection: 1 })
+    expect(await client.approveAllTasks(AGENT_1_ID, 'researcher')).toEqual({ agentId: AGENT_1_ID, loop: 'researcher', approved: 0, skippedProtection: 0 })
+  })
+
+  it('lists, tracks and untracks agent folders', async () => {
+    const listed = await client.trackedDirs()
+    expect(listed.directories).toEqual([{ path: MOCK_AGENTS_DIR, exists: true, agentCount: 2, loadedCount: 2 }])
+
+    const tracked = await client.trackDir(MOCK_SPARE_DIR)
+    expect(tracked.entry).toEqual({ path: MOCK_SPARE_DIR, exists: true, agentCount: 0, loadedCount: 0 })
+    expect(tracked.directories).toEqual([MOCK_AGENTS_DIR, MOCK_SPARE_DIR])
+    expect(tracked.needsReview).toEqual([])
+    await expect(client.trackDir(MOCK_SPARE_DIR)).rejects.toMatchObject({ status: 409 })
+    await expect(client.trackDir('relative/dir')).rejects.toMatchObject({ status: 400 })
+    await expect(client.trackDir('/nope/missing')).rejects.toMatchObject({ status: 400 })
+
+    expect(await client.untrackDir(MOCK_SPARE_DIR)).toEqual({ removed: MOCK_SPARE_DIR, directories: [MOCK_AGENTS_DIR], unloaded: [] })
+    await expect(client.untrackDir(MOCK_SPARE_DIR)).rejects.toMatchObject({ status: 404 })
+    const unloaded = await client.untrackDir(MOCK_AGENTS_DIR, { unload: true })
+    expect(unloaded.unloaded.map(a => a.agentId)).toEqual([AGENT_1_ID, expect.any(String)])
+    expect(mock.trackedDirs).toEqual([])
   })
 
   it('reports an unreachable daemon distinctly from an HTTP error', async () => {

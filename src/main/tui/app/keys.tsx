@@ -36,6 +36,15 @@ interface WheelBinding {
   active: { current: boolean }
 }
 
+/** A plain left click (no drag) at a cell. Return true when the region used it. */
+export type ClickHandler = (event: MouseEvent) => boolean | void
+
+interface ClickBinding {
+  ref: RefObject<DOMElement | null>
+  handler: { current: ClickHandler }
+  active: { current: boolean }
+}
+
 export interface Rect { x: number; y: number; width: number; height: number }
 
 /** Absolute cell rectangle of a laid-out ink element (null before layout). */
@@ -67,13 +76,36 @@ export interface KeyRouter {
    * (hovered, not focused). Returns true when a region took it.
    */
   wheel(event: MouseEvent, context: { overlayOpen: boolean }): boolean
+  /** A clickable region (see `useClick`); main screen only. */
+  registerClick(binding: ClickBinding): () => void
+  /** Route a plain click to the innermost active region under it. True when a region used it. */
+  click(event: MouseEvent): boolean
 }
 
 export function createKeyRouter(): KeyRouter {
   const bindings: Binding[] = []
   const wheels: WheelBinding[] = []
+  const clicks: ClickBinding[] = []
   let nextId = 1
   return {
+    registerClick(binding) {
+      clicks.push(binding)
+      return () => {
+        const index = clicks.indexOf(binding)
+        if (index >= 0) clicks.splice(index, 1)
+      }
+    },
+    click(event) {
+      let best: { binding: ClickBinding; area: number } | null = null
+      for (const binding of clicks) {
+        if (!binding.active.current) continue
+        const rect = elementRect(binding.ref.current)
+        if (!rect || !rectContains(rect, event.x, event.y)) continue
+        const area = rect.width * rect.height
+        if (!best || area <= best.area) best = { binding, area }
+      }
+      return best ? best.binding.handler.current(event) === true : false
+    },
     registerWheel(binding) {
       wheels.push(binding)
       return () => {
@@ -175,6 +207,20 @@ export function useWheel(ref: RefObject<DOMElement | null>, onWheel: WheelHandle
   useEffect(() => router.registerWheel({ layer, ref, handler, active }), [router, layer, ref])
 }
 
+/**
+ * Make `ref`'s box clickable in mouse mode: `onClick` gets plain left clicks
+ * (a press and release without a drag; drags select text). Return true when
+ * the click did something: the shell then leaves the prompt focused if it was.
+ */
+export function useClick(ref: RefObject<DOMElement | null>, onClick: ClickHandler, options: { active?: boolean } = {}): void {
+  const router = useKeyRouter()
+  const handler = useRef(onClick)
+  const active = useRef(options.active !== false)
+  handler.current = onClick
+  active.current = options.active !== false
+  useEffect(() => router.registerClick({ ref, handler, active }), [router, ref])
+}
+
 // --- key helpers ---------------------------------------------------------------
 
 /**
@@ -190,6 +236,11 @@ export function keyLabel(spec: string): string {
       if (p === 'ctrl') return 'Ctrl+'
       if (p === 'alt' || p === 'meta') return 'Alt+'
       if (p === 'shift') return 'Shift+'
+      if (p === 'cmd' || p === 'super') return 'Cmd+'
+      if (p === 'backspace') return 'Backspace'
+      if (p === 'delete' || p === 'del') return 'Delete'
+      if (p === 'home') return 'Home'
+      if (p === 'end') return 'End'
       if (p === 'enter' || p === 'return') return 'Enter'
       if (p === 'esc' || p === 'escape') return 'Esc'
       if (p === 'tab') return 'Tab'

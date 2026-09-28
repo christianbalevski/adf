@@ -6,22 +6,26 @@
 //   Shift+Enter arrives as `CSI 13;2 u` and the composer can tell it from
 //   Enter. ink itself turns it off on exit, crash (signal-exit) and while an
 //   editor has the terminal (suspendTerminal); we only watch its writes.
-// - Default (no mouse capture): the terminal keeps its mouse, so drag selects
-//   text, Ctrl+C / Ctrl+Shift+C copy it and right-click pastes. Alternate
-//   scroll mode (DECSET 1007) makes the wheel send ↑/↓ in the alternate
-//   screen, so it scrolls the FOCUSED pane through the normal arrow keys.
-// - Opt-in mouse mode (/mouse on, --mouse, pref): SGR mouse reporting (1000 +
-//   1006: buttons and wheel, no motion) so the wheel scrolls the region under
-//   the pointer and clicks focus panes / switch header tabs (Shift+drag then
-//   selects text in most terminals).
+// - Mouse mode (the default; /mouse on|off, --mouse / --no-mouse, pref): SGR
+//   mouse reporting (1002 + 1006: buttons, drags and wheel, no bare motion).
+//   The wheel scrolls the region under the pointer, clicks focus panes, switch
+//   header tabs and expand transcript items, and the TUI does its own text
+//   selection (app/selection.ts over the screen mirror in app/screen.ts):
+//   drag highlights and copies, right-click pastes. Shift+drag (Option+drag
+//   in iTerm2) still reaches the terminal's own selection.
+// - Native (/mouse off): the terminal keeps its mouse, so drag selects text,
+//   Ctrl+C / Ctrl+Shift+C copy it and right-click pastes. Alternate scroll
+//   mode (DECSET 1007) makes the wheel send ↑/↓ in the alternate screen, so
+//   it scrolls the FOCUSED pane through the normal arrow keys.
 // Both follow raw mode: ink drops raw mode on exit and around suspendTerminal
 // (editor handoff), so the modes are off exactly when the TUI is not reading
 // the terminal. A process 'exit' hook turns them off after a crash too.
 
 import { useSyncExternalStore } from 'react'
 
-export const MOUSE_ON = '\u001b[?1000h\u001b[?1006h'
-export const MOUSE_OFF = '\u001b[?1006l\u001b[?1000l'
+/** Button-event tracking (1002: presses, releases, drags; implies 1000) in SGR encoding (1006). */
+export const MOUSE_ON = '\u001b[?1002h\u001b[?1006h'
+export const MOUSE_OFF = '\u001b[?1006l\u001b[?1002l\u001b[?1000l'
 /** Alternate scroll mode: the wheel sends ↑/↓ in the alternate screen (native selection stays). */
 export const ALT_SCROLL_ON = '\u001b[?1007h'
 export const ALT_SCROLL_OFF = '\u001b[?1007l'
@@ -48,6 +52,43 @@ let caps: TerminalCaps = { kitty: false, shiftEnterSeen: false, shiftEnterForced
 const listeners = new Set<() => void>()
 let out: { write(data: string): unknown } | null = null
 let rawMode = false
+/** Sees every write the TUI (ink) makes to the terminal: the screen mirror. */
+let writeTap: ((data: string) => void) | null = null
+let lastRaw = ''
+
+/** Register the one write tap (app/screen.ts); null removes it. */
+export function setWriteTap(tap: ((data: string) => void) | null): void {
+  writeTap = tap
+}
+
+/** Write straight to the terminal, past the tap (overlays, OSC 52). False when not installed. */
+export function writeTerminal(data: string): boolean {
+  if (!out) return false
+  try { out.write(data) } catch { return false }
+  return true
+}
+
+/**
+ * The raw bytes of the keypress being handled (the shell records each one
+ * before any key handler runs). ink folds some distinct keys together:
+ * Backspace (DEL) and Ctrl+Backspace (BS, `\u0008`) both arrive as
+ * `key.backspace`, and a legacy `CSI 1;9D` (Cmd+←) arrives as Alt+←.
+ */
+export function noteRawInput(data: string): void {
+  lastRaw = data
+}
+
+export function lastRawInput(): string {
+  return lastRaw
+}
+
+/** Cmd / Super + ←/→ (Home / End of the line) sent as a legacy `CSI 1;<mods>C|D` with the super bit (kitty, iTerm2, WezTerm, Ghostty). */
+export function superArrow(raw: string = lastRaw): 'left' | 'right' | null {
+  // eslint-disable-next-line no-control-regex
+  const m = /^\u001b\[1;(\d+)([CD])$/.exec(raw)
+  if (!m || ((Number(m[1]) - 1) & 8) === 0) return null
+  return m[2] === 'D' ? 'left' : 'right'
+}
 
 function set(patch: Partial<TerminalCaps>): void {
   const next = { ...caps, ...patch }
@@ -126,7 +167,9 @@ export function installTerminalModes(options: InstallOptions): () => void {
       if (data.includes(KITTY_OFF)) set({ kitty: false })
       else if (KITTY_ON.test(data)) set({ kitty: true })
     }
-    return originalWrite(data, ...rest)
+    const result = originalWrite(data, ...rest)
+    if (writeTap) { try { writeTap(typeof data === 'string' ? data : Buffer.from(data).toString('utf8')) } catch { /* the mirror never breaks output */ } }
+    return result
   }
   ;(stdout as unknown as { write: typeof patchedWrite }).write = patchedWrite
 
@@ -161,8 +204,8 @@ export function installTerminalModes(options: InstallOptions): () => void {
 // --- mouse input -------------------------------------------------------------------
 
 export interface MouseEvent {
-  /** 'wheel' (delta -1 up / +1 down), 'press', 'release'. */
-  kind: 'wheel' | 'press' | 'release'
+  /** 'wheel' (delta -1 up / +1 down), 'press', 'drag' (moved with a button held), 'release'. */
+  kind: 'wheel' | 'press' | 'drag' | 'release'
   /** Wheel: -1 = up (towards older / the top), +1 = down. */
   delta: number
   /** 0 left, 1 middle, 2 right (press / release). */
@@ -193,7 +236,8 @@ export function parseMouse(input: string): MouseEvent | null {
     const delta = base === 64 ? -1 : base === 65 ? 1 : 0
     return { kind: 'wheel', delta, button: -1, x, y, ...mods }
   }
-  // 32+ is motion (not requested); treat like a press so it is still swallowed.
+  // 32+ is motion with a button held (1002).
+  if (base & 32) return { kind: 'drag', delta: 0, button: base & 3, x, y, ...mods }
   return { kind: match[4] === 'm' ? 'release' : 'press', delta: 0, button: base & 3, x, y, ...mods }
 }
 

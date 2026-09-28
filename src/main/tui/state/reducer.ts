@@ -363,6 +363,9 @@ function applyEvent(state: TuiState, event: UmbilicalEvent): TuiState {
             status: 'pending_approval',
             created_at: event.timestamp,
             origin: loop === MAIN_LOOP ? undefined : `loop:${loop}`,
+            // "Always approve" is offered only when the daemon says so (never for protection overrides).
+            ...(typeof p.can_always_approve === 'boolean' ? { canAlwaysApprove: p.can_always_approve } : {}),
+            ...(typeof p.always_approve_blocked_reason === 'string' ? { alwaysApproveBlockedReason: p.always_approve_blocked_reason } : {}),
           }],
         })
       }

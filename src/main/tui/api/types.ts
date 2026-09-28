@@ -234,20 +234,33 @@ export type AgentUsage = RuntimeAgentUsage
 
 // --- HIL --------------------------------------------------------------------
 
+/**
+ * A task row as the daemon returns it. `pending_approval` rows also carry the
+ * live "Always approve" affordance (Studio's Approve ▸ Always approve): false
+ * for protection overrides, one-shot synthetic approvals, locked declarations
+ * and rows no executor is waiting on — `alwaysApproveBlockedReason` says why.
+ * The server re-checks on alwaysApproveTask; this only drives the UI.
+ */
+export type TaskListEntry = TaskEntry & {
+  canAlwaysApprove?: boolean
+  alwaysApproveBlockedReason?: string
+}
+
 export interface TaskListResult {
   agentId: string
-  tasks: TaskEntry[]
+  tasks: TaskListEntry[]
 }
 
 export interface TaskResult {
   agentId: string
-  task: TaskEntry
+  task: TaskListEntry
 }
 
 export type TaskAction = 'approve' | 'deny' | 'pending_approval'
 
 export interface TaskResolveInput {
   action: TaskAction
+  /** On deny: handed back to the agent as the owner's feedback (it reads it in the tool error). */
   reason?: string
   modifiedArgs?: Record<string, unknown>
 }
@@ -256,8 +269,38 @@ export interface TaskResolveResult {
   agentId: string
   taskId: string
   resolution: unknown
-  task: TaskEntry | null
+  task: TaskListEntry | null
 }
+
+/** POST /agents/:id/tasks/:taskId/always-approve — tool un-restricted on the host config, request approved. */
+export interface TaskAlwaysApproveResult {
+  agentId: string
+  taskId: string
+  /** Loop whose executor held the request ('main' or an inner loop). */
+  loop: string
+  /** Tool whose declaration was un-restricted (taken from the pending request, not the client). */
+  tool: string
+  resolution: unknown
+  task: TaskListEntry | null
+}
+
+/** POST /agents/:id/tasks/approve-all — gated approvals only; protection overrides are skipped. */
+export interface TaskApproveAllResult {
+  agentId: string
+  /** Echoed when the call was scoped to one loop. */
+  loop?: string
+  approved: number
+  skippedProtection: number
+}
+
+// --- tracked agent folders ------------------------------------------------
+
+export type {
+  TrackedDirEntry,
+  TrackedDirsList,
+  TrackDirResult,
+  UntrackDirResult,
+} from '../../daemon/tracked-dirs'
 
 export interface AskEntry {
   requestId: string

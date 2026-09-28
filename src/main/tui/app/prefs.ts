@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 export interface TuiPrefs {
   /** false = the fleet sidebar is hidden (Ctrl+B, /sidebar). */
   sidebar?: boolean
-  /** true = mouse mode (/mouse on, --mouse, ADF_TUI_MOUSE=1); absent / false = native mouse. */
+  /** false = the terminal's own mouse (/mouse off); absent / true = mouse mode with in-app selection. */
   mouse?: boolean
   /** Tips already shown once (e.g. `shiftEnter`). */
   tips?: Record<string, boolean>

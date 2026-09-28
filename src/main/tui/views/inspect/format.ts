@@ -8,6 +8,8 @@ export interface Segment {
   text: string
   tone?: Tone
   bold?: boolean
+  /** Highlighted (reverse video): a search match. */
+  mark?: boolean
 }
 
 export type Line = Segment[]

@@ -29,7 +29,7 @@ export function toneColor(theme: Theme, tone: Tone | undefined): string | undefi
 export function LineText({ line, width }: { line: Line; width: number }) {
   const theme = useTheme()
   let room = Math.max(1, width)
-  const parts: Array<{ text: string; tone?: Tone; bold?: boolean }> = []
+  const parts: Array<{ text: string; tone?: Tone; bold?: boolean; mark?: boolean }> = []
   for (const seg of line) {
     if (room <= 0) break
     const text = seg.text.length > room ? truncate(seg.text, room) : seg.text
@@ -39,7 +39,7 @@ export function LineText({ line, width }: { line: Line; width: number }) {
   return (
     <Text wrap="truncate-end">
       {parts.length === 0 ? ' ' : parts.map((seg, i) => (
-        <Text key={i} color={toneColor(theme, seg.tone)} bold={seg.bold || (theme.mono && seg.tone === 'heading')}>{seg.text}</Text>
+        <Text key={i} color={toneColor(theme, seg.tone)} bold={seg.bold || (theme.mono && seg.tone === 'heading')} inverse={seg.mark}>{seg.text}</Text>
       ))}
     </Text>
   )

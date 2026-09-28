@@ -240,6 +240,9 @@ const daemon = new DaemonHost({
   host,
   port,
   pidFile,
+  // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
+  // it must see the new list now, not at the next boot (Studio parity).
+  onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
   computeService: podmanService,
   settingsStore: settings,
   eventBus,

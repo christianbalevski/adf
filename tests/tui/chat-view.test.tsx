@@ -162,19 +162,66 @@ describe('chat view', () => {
     expect(mock.agents.get(AGENT_1_ID)!.tasks.find(t => t.id === 'task_approve_1')?.status).toBe('completed')
   })
 
-  it('denies with a reason and marks the inline approval card', async () => {
+  it('rejects with feedback (f) and marks the inline approval card', async () => {
     const { tui, mock } = await mountChat({ before: m => { m.agents.get(AGENT_1_ID)!.tasks = [] } })
     addPendingTask(mock, AGENT_1_ID, { id: 'task_2', tool: 'fs_write', args: { path: 'mind.md' } })
     await tui.waitFor('wants to run fs_write')
     expect(tui.lastFrame()).toContain('approval pending fs_write')
+    expect(tui.lastFrame()).toMatch(/y approve · a always · n reject · f feedback · v details/)
     await tui.press(KEY.shiftTab)
-    await tui.press('n')
-    await tui.waitFor('Deny fs_write')
+    await tui.press('f')
+    await tui.waitFor('Reject fs_write with feedback')
     await typeInPrompt(tui, 'not now')
     await tui.press(KEY.enter)
     const frame = await tui.waitFor('approval denied fs_write')
     expect(frame).not.toContain('wants to run fs_write')
     expect(mock.agents.get(AGENT_1_ID)!.tasks[0].status).toBe('denied')
+    expect(mock.agents.get(AGENT_1_ID)!.tasks[0].error).toBe('not now')
+  })
+
+  it('always approve: a twice, confirm; refused (greyed) for one-time-only approvals; buttons click', async () => {
+    const { tui, mock, store } = await mountChat({ before: m => { m.agents.get(AGENT_1_ID)!.tasks = [] } })
+    addPendingTask(mock, AGENT_1_ID, { id: 'task_4', tool: 'fs_write', args: { path: 'mind.md' } })
+    await tui.waitFor('wants to run fs_write')
+    await tui.press(KEY.shiftTab)
+    await tui.press('a')
+    await tui.waitFor('Press a again to always approve fs_write')
+    await tui.press('a')
+    await tui.waitFor('Always approve fs_write for agent-1?')
+    await tui.press('y')
+    await tui.waitFor(f => !f.includes('wants to run fs_write'))
+    expect(mock.agents.get(AGENT_1_ID)!.tasks[0].status).toBe('completed')
+    expect(mock.agents.get(AGENT_1_ID)!.tools?.find(t => t.name === 'fs_write')).toMatchObject({ restricted: false, enabled: true })
+
+    // A protection override: one-time only, "always" greyed with the reason.
+    const agent = mock.agents.get(AGENT_1_ID)!
+    addPendingTask(mock, AGENT_1_ID, { id: 'task_5', tool: 'fs_delete', args: { path: 'mind.md' } })
+    agent.tasks.find(t => t.id === 'task_5')!.approval_meta = { reason: 'protection', canAlwaysApprove: false, alwaysApproveBlockedReason: 'Target is locked (no_delete)' }
+    await store.actions.refreshHil(AGENT_1_ID)
+    await tui.waitFor(f => f.includes('wants to run fs_delete') && f.includes('always: one-time only'))
+    // Mouse mode: a click on "approve" approves at once (explicit).
+    const frame = tui.lastFrame()
+    const y = frame.split('\n').findIndex(l => l.includes('approve') && l.includes('reject'))
+    const x = frame.split('\n')[y].indexOf('y approve') + 2
+    await tui.press(`\u001b[<0;${x + 1};${y + 1}M\u001b[<0;${x + 1};${y + 1}m`)
+    await tui.waitFor(f => !f.includes('wants to run fs_delete'))
+    expect(agent.tasks.find(t => t.id === 'task_5')!.status).toBe('completed')
+  })
+
+  it('/reject with feedback and /approve from the prompt', async () => {
+    const { tui, mock } = await mountChat({ before: m => { m.agents.get(AGENT_1_ID)!.tasks = [] } })
+    addPendingTask(mock, AGENT_1_ID, { id: 'task_6', tool: 'fs_write', args: { path: 'a.md' } })
+    await tui.waitFor('wants to run fs_write')
+    await typeInPrompt(tui, '/reject use notes.md instead')
+    await tui.press(KEY.enter)
+    await tui.waitFor(f => !f.includes('wants to run fs_write'))
+    expect(mock.agents.get(AGENT_1_ID)!.tasks[0]).toMatchObject({ status: 'denied', error: 'use notes.md instead' })
+    addPendingTask(mock, AGENT_1_ID, { id: 'task_7', tool: 'fs_write', args: { path: 'b.md' } })
+    await tui.waitFor('wants to run fs_write')
+    await typeInPrompt(tui, '/approve')
+    await tui.press(KEY.enter)
+    await tui.waitFor(f => !f.includes('wants to run fs_write'))
+    expect(mock.agents.get(AGENT_1_ID)!.tasks.find(t => t.id === 'task_7')!.status).toBe('completed')
   })
 
   it('routes an inner loop’s approval to that loop’s tab', async () => {

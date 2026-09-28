@@ -8,6 +8,7 @@ import { VIEWS } from '../../src/main/tui/views/registry'
 import { collectCommands } from '../../src/main/tui/commands/registry'
 import { BUILTIN_COMMANDS, createQuitGuard, normalizeDaemonUrl } from '../../src/main/tui/commands/builtin/index'
 import { buildEntries, fuzzyScore, helpLines, needsArgs, rankEntries, recordRecentFile, scoreEntry } from '../../src/main/tui/app/palette'
+import { filterHelpLines } from '../../src/main/tui/app/palette/help'
 import { rememberRun, resetPaletteMemory } from '../../src/main/tui/app/palette/entries'
 import { lineText } from '../../src/main/tui/views/inspect/format'
 import { AGENT_1_ID, AGENT_2_ID, startMockDaemon, type MockDaemon } from './fixtures/mock-daemon'
@@ -167,6 +168,40 @@ describe('palette + help against the mock daemon', () => {
     await tui.press(KEY.pgdn)
     await tui.press(KEY.pgdn)
     await tui.waitFor(f => /\d+-\d+ of \d+/.test(f) && !f.includes('parallel chat sessions'))
+    await tui.press(KEY.esc)
+    await tui.waitFor(f => !f.includes('ADF keys & commands'))
+  }, 15000)
+
+  it('help filters as you type (matches marked), Esc clears then closes, Ctrl+K swaps to the palette', async () => {
+    const tui = await mount()
+    const all = helpLines(VIEWS, registry, store, noop)
+    const filtered = filterHelpLines(all, 'sidebar').map(lineText)
+    expect(filtered.length).toBeGreaterThan(2)
+    expect(filtered.join('\n')).toContain('/sidebar')
+    expect(filtered.join('\n')).not.toContain('parallel chat sessions')
+    // A matching heading keeps its section (Sidebar: the fleet tree → its keys).
+    expect(filtered.join('\n')).toContain('Type to filter agents and loops')
+    expect(filterHelpLines(all, 'zzqqxx')).toEqual([])
+
+    await tui.press('?')
+    await tui.waitFor(f => f.includes('ADF keys & commands') && f.includes('type to filter'))
+    await tui.type('mouse')
+    const frame = await tui.waitFor(f => f.includes('Search: mouse') && !f.includes('parallel chat sessions'))
+    expect(frame).toContain('/mouse')
+    await tui.press(KEY.esc)
+    await tui.waitFor(f => f.includes('type to filter') && f.includes('parallel chat sessions'))
+    // Ctrl+K from help: the palette, legacy (^K) and kitty (CSI 107;5u) alike.
+    await tui.press(KEY.ctrlK)
+    await tui.waitFor(f => f.includes('Command palette') && !f.includes('ADF keys & commands'))
+    await tui.type('runtime')
+    await tui.waitFor(f => f.includes('› runtime') && f.includes('Go to Runtime'))
+    expect(tui.lastFrame()).not.toContain('Go to Fleet')
+    await tui.press(KEY.esc)
+    await tui.press('\u001b[107;5u')
+    await tui.waitFor('Command palette')
+    await tui.press(KEY.esc)
+    await tui.press('?')
+    await tui.waitFor('ADF keys & commands')
     await tui.press(KEY.esc)
     await tui.waitFor(f => !f.includes('ADF keys & commands'))
   }, 15000)

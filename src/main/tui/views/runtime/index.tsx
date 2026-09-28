@@ -26,6 +26,7 @@ import type { ViewDefinition, ViewProps } from '../types'
 import { RUNTIME_TABS, RUNTIME_VIEW, useRuntimeState } from './state'
 import { toggleWebServer } from '../../web/ops'
 import { runtimeCommands } from './commands'
+import { FoldersTab } from './FoldersTab'
 
 interface TabProps { width: number; height: number; focused: boolean }
 
@@ -164,6 +165,7 @@ function RuntimeView({ width: paneWidth, height, focused }: ViewProps) {
   let body
   switch (tab) {
     case 'identity': body = <IdentityTab {...props} />; break
+    case 'folders': body = <FoldersTab {...props} />; break
     case 'auth': body = <ReportTab key="auth" {...props} kind="auth" hint="enter sign in" onKey={(input, key) => { if (!key.return && input !== 'l') return false; openAuth(store.actions); return true }} />; break
     case 'network': body = <NetworkTab key="network" {...props} />; break
     case 'events': body = <EventsTab {...props} scope="all" filters={state.events} update={events => update({ events })} json={json} />; break
@@ -197,6 +199,7 @@ const runtime: ViewDefinition = {
         { keys: 'r', label: 'Reload the page' },
         { keys: 'enter', label: 'Identity: the identity dialog · Sign-in: the sign-in dialog' },
         { keys: 'c r u', label: 'Identity: create / restore / unlock (when offered)' },
+        { keys: 'a d', label: 'Folders: track a folder (its reviewed autostart agents load now) / stop tracking the selected one (asks; files untouched, optionally unload its agents)' },
         { keys: 'm', label: 'Network: mesh on / off (asks)' },
         { keys: 's', label: 'Network: web server (serves agent sites, APIs, mesh delivery) start / stop (stopping asks)' },
         { keys: 'R', label: 'Network: restart the web server (asks)' },

@@ -32,7 +32,7 @@ export interface TuiOptions {
   ascii?: boolean
   theme?: string
   altScreen: boolean
-  /** true: mouse mode this session (--mouse, ADF_TUI_MOUSE=1); default native selection. */
+  /** Mouse mode this session: true (--mouse, ADF_TUI_MOUSE=1; the default), false (--no-mouse, ADF_TUI_MOUSE=0: the terminal's own mouse). */
   mouse?: boolean
   /** false: never enable the kitty keyboard protocol (--no-kitty, ADF_TUI_KITTY=0). */
   kitty?: boolean
@@ -67,10 +67,10 @@ Options:
   --mono               No color (also NO_COLOR=1)
   --ascii              ASCII glyphs (also ADF_TUI_ASCII=1)
   --no-alt-screen      Render in the main screen buffer (also turns mouse mode off)
-  --mouse              Mouse mode: the wheel scrolls what is under the pointer, clicks focus panes and
-                       tabs (Shift+drag selects text). Default off: drag selects, right-click pastes, the
-                       wheel scrolls the focused pane (also ADF_TUI_MOUSE=1, /mouse on|off)
-  --no-mouse           Native mouse (the default; also ADF_TUI_MOUSE=0)
+  --mouse              Mouse mode, the default: the wheel scrolls what is under the pointer, a click
+                       expands a tool call or thinking, drag selects and copies, right-click pastes
+                       (Shift+drag, Option+drag in iTerm2: the terminal's own selection)
+  --no-mouse           The terminal's own mouse (also ADF_TUI_MOUSE=0, /mouse off; remembered)
   --no-kitty           Never enable the kitty keyboard protocol (Shift+Enter; also ADF_TUI_KITTY=0)
   -h, --help           Show this help`
 }
@@ -146,6 +146,9 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
     import('react'), import('ink'), import('./app/App'), import('./commands/builtin/themes'), import('./state/store'),
     import('./app/theme'), import('./app/terminal'), import('./app/layout'),
   ])
+  // What is on screen, for mouse selection (alternate screen only). Best effort.
+  const { installScreenMirror } = await import('./app/screen')
+  const uninstallMirror = options.altScreen ? await installScreenMirror(io.stdout).catch(() => () => {}) : () => {}
   // tsx only applies tsconfig JSX settings when run with --tsconfig; the classic
   // transform then needs React in scope. Harmless under the automatic runtime.
   ;(globalThis as { React?: typeof React }).React ??= React
@@ -161,8 +164,8 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
   const store = createTuiStore({ client, initialView: options.view })
   const prefs = loadPrefs(defaultPrefsPath(io.env))
   if (prefs.sidebar === false) store.actions.setViewState(LAYOUT_STATE_KEY, { sidebarHidden: true })
-  // Mouse mode is opt-in (the terminal keeps native select / copy / paste); the flag / env win over the saved choice.
-  const mouse = options.mouse ?? (io.env.ADF_TUI_MOUSE === '0' ? false : io.env.ADF_TUI_MOUSE === '1' ? true : prefs.mouse ?? false)
+  // Mouse mode is the default (in-app selection keeps drag-to-copy); /mouse off is remembered. The flag / env win over the saved choice.
+  const mouse = options.mouse ?? (io.env.ADF_TUI_MOUSE === '0' ? false : io.env.ADF_TUI_MOUSE === '1' ? true : prefs.mouse ?? true)
   const kitty = options.kitty ?? io.env.ADF_TUI_KITTY !== '0'
   const uninstallModes = installTerminalModes({
     stdin: io.stdin,
@@ -222,6 +225,7 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
   } finally {
     clearTimeout(tipTimer)
     store.stop()
+    uninstallMirror()
     uninstallModes()
   }
   io.stdout.write(`Left the ADF TUI. Agents keep running in the daemon at ${client.baseUrl}.\n`)
