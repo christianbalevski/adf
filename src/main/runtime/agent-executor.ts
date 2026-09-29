@@ -530,9 +530,22 @@ export class AgentExecutor extends EventEmitter {
   private compactionPrompt: string
   private abortController: AbortController | null = null
   private pendingTriggers: (AdfEventDispatch | AdfBatchDispatch)[] = []
-  private pendingInterrupt: (AdfEventDispatch | AdfBatchDispatch) | null = null
-  /** turnIds of chat interrupts consumed into the running turn (takeAbsorbedTurnIds). */
+  /**
+   * Owner chats that arrived while a turn held the slot, oldest first. The
+   * first arrival interrupts the running turn; the rest only join the queue.
+   * The replay turn runs the head as its trigger and delivers the rest as
+   * consecutive user rows before its first model call. Only stop/unload
+   * (abort) and a hard `off` discard it, visibly (discardQueuedChats).
+   */
+  private pendingChats: (AdfEventDispatch | AdfBatchDispatch)[] = []
+  /** turnIds of chats delivered into a running turn; reported on its next
+   *  non-interrupted turn.completed / agent.error (takeAbsorbedTurnIds). */
   private absorbedTurnIds: string[] = []
+  /** turnId of the dispatch the current (outermost) turn is running. */
+  private runningTurnId: string | null = null
+  /** Loop notice for chats discarded while a turn still held the slot —
+   *  written once that turn has settled, so it never splits a tool batch. */
+  private pendingDiscardNotice: string | null = null
   // Turns running OR already committed to run (see isTurnActive). Not a state
   // machine — a counter, because error-recovery retries nest executeTurn calls
   // and a re-entrant successor claims its slot before its predecessor releases.
@@ -828,7 +841,8 @@ export class AgentExecutor extends EventEmitter {
     this._lastTargetState = targetState
     this._ownerStateTransitionRequested = true
     // Mirror the chat-interrupt teardown (executeTurnImpl's chat branch),
-    // minus pendingInterrupt/_interruptRestart — there is nothing to restart.
+    // minus _interruptRestart. Queued chats are kept: the turn's finally
+    // replays them after the transition.
     if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
     this.deltaQueue.length = 0
     this.drainPendingHilTasks()
@@ -892,7 +906,8 @@ export class AgentExecutor extends EventEmitter {
       this.state = 'idle'
       this.cancelScheduledRecovery('state_transition')
       this.pendingTriggers = []
-      this.pendingInterrupt = null
+      // Queued owner chats survive: whoever holds the slot (compaction, a
+      // scheduled replay) still delivers them.
       this.emitEvent({ type: 'state_changed', payload: { state: targetState }, timestamp: Date.now() })
     }
   }
@@ -1562,6 +1577,7 @@ export class AgentExecutor extends EventEmitter {
         // unrelated agent turn to run — drain it here instead.
         this.drainPendingTriggers()
       }
+      if (this.activeAgentTurnCount === 0) this.writeDiscardNotice()
       // True turn boundary: a successor scheduled by scheduleReentrantTurn has
       // already claimed its slot, so a zero here means nothing is queued behind
       // this turn. The loop pool consumes its pending wake here — a naive
@@ -1692,21 +1708,17 @@ export class AgentExecutor extends EventEmitter {
     } finally {
       this.compactionFailedThisTurn = failedBefore
       this.manualCompactionActive = false
-      // Release mirrors runClaimedTurn/executeTurnImpl's finally: a chat that
-      // arrived mid-compaction set pendingInterrupt (+_interruptRestart, with
-      // nothing to abort) — replay it; otherwise drain queued triggers.
+      // Release mirrors runClaimedTurn/executeTurnImpl's finally: chats that
+      // arrived mid-compaction queued (+_interruptRestart, with nothing to
+      // abort) — replay them all; otherwise drain queued triggers.
       this._interruptRestart = false
-      const interrupt = this.pendingInterrupt
-      this.pendingInterrupt = null
-      if (interrupt && this.state !== 'stopped') {
-        this._skipNextTriggerEvent = isEchoedChat(interrupt)
-        this.scheduleReentrantTurn(interrupt)
-      }
+      const replayed = this.state !== 'stopped' && this.replayQueuedChats()
       this.activeTurnCount--
       this.activeAgentTurnCount--
-      if (!interrupt && this.activeAgentTurnCount === 0 && this.state === 'idle') {
+      if (!replayed && this.activeAgentTurnCount === 0 && this.state === 'idle') {
         this.drainPendingTriggers()
       }
+      if (this.activeAgentTurnCount === 0) this.writeDiscardNotice()
       if (this.activeTurnCount === 0 && this.onTurnSettled) {
         try { this.onTurnSettled() } catch (error) {
           console.error('[AgentExecutor] onTurnSettled hook threw:', error)
@@ -1774,8 +1786,16 @@ export class AgentExecutor extends EventEmitter {
   private async executeTurnImpl(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: TurnOptions, turnId?: string): Promise<void> {
     // Global kill switch: noop any in-flight microtasks queued before EmergencyStop.
     if (RuntimeGate.stopped) return
-    // Hard stop: refuse all execution when the executor has been killed.
-    if (this.state === 'stopped') return
+    // Hard stop: refuse all execution when the executor has been killed. A
+    // chat refused here (sent after the stop, or a replay scheduled just
+    // before it) is reported like the rest of the stop's discards.
+    if (this.state === 'stopped') {
+      if (!opts?.nested && 'event' in dispatch && dispatch.event.type === 'chat') {
+        this.pendingChats.push(dispatch)
+        this.discardQueuedChats('stopped')
+      }
+      return
+    }
 
     // Protection-override denials are final only within a turn.
     this.deniedProtectionKeys.clear()
@@ -1914,9 +1934,11 @@ export class AgentExecutor extends EventEmitter {
     // listed before the agent target must not queue the agent's own wake.
     const anotherTurnActive = !opts?.nested && this.activeAgentTurnCount > 1
     if (anotherTurnActive || this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended') {
-      // User messages: abort current turn and restart with user's message
+      // User messages queue in arrival order. The first one aborts the current
+      // turn and restarts with the queue; a burst interrupts only once.
       if (eventType === 'chat') {
-        this.pendingInterrupt = dispatch
+        this.pendingChats.push(dispatch)
+        if (this._interruptRestart) return
         this._interruptRestart = true
         this.abortController?.abort()
         if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
@@ -1945,6 +1967,7 @@ export class AgentExecutor extends EventEmitter {
 
     const checkpointId = turnId ?? nanoid(10)
     this.beginTurnCheckpoint(checkpointId, dispatch, eventType, scope)
+    if (!opts?.nested) this.runningTurnId = dispatch.turnId ?? null
 
     this._isMessageTriggered = eventType === 'inbox'
     this.abortController = new AbortController()
@@ -2020,6 +2043,10 @@ export class AgentExecutor extends EventEmitter {
           timestamp: Date.now()
         })
       }
+      // Chats queued behind the trigger (the rest of an interrupting burst,
+      // or ones that arrived while this turn was being scheduled) join it as
+      // consecutive user rows, in arrival order, before the first model call.
+      if (!opts?.nested) this.deliverQueuedChatsAtTurnStart()
 
       // Seed from the persisted context baseline (API-reported input+output of
       // the last call, or the post-compaction/clear estimate — see
@@ -2953,10 +2980,7 @@ export class AgentExecutor extends EventEmitter {
             if (this.state === 'stopped' || this._interruptRestart || this._ownerStateTransitionRequested) break
 
             // Check for mid-batch user interrupt — inject between tool results
-            const midBatchInterrupt = this.consumeInterrupt()
-            if (midBatchInterrupt) {
-              toolResults.push(midBatchInterrupt)
-            }
+            toolResults.push(...this.consumeInterrupts())
 
             // If the tool signals end of turn, stop after submitting results
             if (result.endTurn) {
@@ -2999,10 +3023,7 @@ export class AgentExecutor extends EventEmitter {
 
           // Inject pending user interrupt into tool results (skip if restarting — interrupt survives to finally block)
           if (!this._interruptRestart) {
-            const interruptBlock = this.consumeInterrupt()
-            if (interruptBlock) {
-              toolResults.push(interruptBlock)
-            }
+            toolResults.push(...this.consumeInterrupts())
           }
 
           const toolResultsMsg: LLMMessage = {
@@ -3148,16 +3169,16 @@ export class AgentExecutor extends EventEmitter {
               // conversation doesn't end with an assistant message (some
               // providers don't support assistant message prefill). After two
               // text-only responses, escalate the nudge.
-              const interruptBlock = this.consumeInterrupt()
+              const interruptBlocks = this.consumeInterrupts()
               // A user interrupt is fresh input — answering it in prose is
               // legitimate, so it resets the narration counter.
-              if (interruptBlock) consecutiveTextOnly = 0
+              if (interruptBlocks.length > 0) consecutiveTextOnly = 0
               const nudge = consecutiveTextOnly >= 2
                 ? `[You have responded ${consecutiveTextOnly} times in a row without calling any tools. Do not reply with another status update. Either call a tool now to make progress, or yield by calling sys_set_state with state "idle".]`
                 : '[Continue working autonomously according to your instructions. Control your state with sys_set_state().]'
               this.session.addMessage({
                 role: 'user',
-                content: interruptBlock ? [interruptBlock] : [{ type: 'text', text: nudge }]
+                content: interruptBlocks.length > 0 ? interruptBlocks : [{ type: 'text', text: nudge }]
               })
             }
           }
@@ -3464,20 +3485,17 @@ export class AgentExecutor extends EventEmitter {
         this._interruptRestart = false
         this._ownerStateTransitionRequested = false
         this._lastTargetState = null
-        const interrupt = this.pendingInterrupt
-        this.pendingInterrupt = null
         this.emitEvent({
           type: 'turn_complete',
           payload: { content: [], interrupted: true },
           timestamp: Date.now()
         })
-        if (interrupt) {
-          // Only chat the sending UI echoed skips the restart's trigger
-          // event — a fleet-bar interrupt still needs it to reach the panel.
-          this._skipNextTriggerEvent = isEchoedChat(interrupt)
-          this.setState('idle')
-          this.scheduleReentrantTurn(interrupt)
-        }
+        // The cut-short request is in history and the replay answers it too:
+        // its id completes with the replay (absorbed_turn_ids).
+        if (!opts?.nested && dispatch.turnId) this.absorbedTurnIds.push(dispatch.turnId)
+        if (!opts?.nested) this.runningTurnId = null
+        this.setState('idle')
+        this.replayQueuedChats()
         return  // Skip normal cleanup
       }
 
@@ -3523,6 +3541,7 @@ export class AgentExecutor extends EventEmitter {
         this.completeTurnCheckpoint(checkpointId)
       }
 
+      if (!opts?.nested) this.runningTurnId = null
       this._isMessageTriggered = false
       this.abortController = null
 
@@ -3532,15 +3551,16 @@ export class AgentExecutor extends EventEmitter {
       if (this.state !== 'stopped') {
         if (this.state === 'error') {
           // Stay in error state so the UI reflects the failure. Discard
-          // queued triggers (API is likely broken), but keep pending
-          // interrupts so a user message can pull the agent out of error.
+          // queued triggers (API is likely broken), but replay queued owner
+          // chats — a user message is what pulls the agent out of error.
           this.pendingTriggers = []
+          this.replayQueuedChats()
         } else if (this._lastTargetState === 'off') {
           // Deferred sys_set_state('off') from a lambda or HIL approval that
           // arrived mid-turn. Honor it now: hard shutdown, drop everything.
           this.cancelScheduledRecovery('state_transition')
           this.pendingTriggers = []
-          this.pendingInterrupt = null
+          this.discardQueuedChats('off')
           this._lastTargetState = null
           this.setState('stopped')
           this.emitEvent({
@@ -3565,20 +3585,18 @@ export class AgentExecutor extends EventEmitter {
             this.pendingTriggers = []
             if (dropped > 0) this.emitRuntimeEvent('trigger.dropped', { reason: 'hibernate', dropped })
           }
-          this.pendingInterrupt = null
           this.emitEvent({
             type: 'state_changed',
             payload: { state: targetState },
             timestamp: Date.now()
           })
           this._lastTargetState = null
-          if (targetState === 'idle') this.drainPendingTriggers()
-        } else if (this.pendingInterrupt) {
-          // Unconsumed interrupt gets priority — process it as the next turn
-          const interrupt = this.pendingInterrupt
-          this.pendingInterrupt = null
+          // Owner chats are never part of the dropped backlog: they run next.
+          if (!this.replayQueuedChats() && targetState === 'idle') this.drainPendingTriggers()
+        } else if (this.pendingChats.length > 0) {
+          // Unconsumed chats get priority — they run as the next turn
           this.setState('idle')
-          this.scheduleReentrantTurn(interrupt)
+          this.replayQueuedChats()
         } else {
           this.setState('idle')
 
@@ -4197,7 +4215,7 @@ export class AgentExecutor extends EventEmitter {
     this._recoveryAttempts = 0
     this._lastRecoveryAttemptAt = null
     this.pendingTriggers = []
-    this.pendingInterrupt = null
+    this.discardQueuedChats('stopped')
     // Queued system dispatches never survive teardown — waking them here would
     // resurrect work the agent was stopped in the middle of.
     this.systemDispatchQueue.clear()
@@ -5299,7 +5317,9 @@ export class AgentExecutor extends EventEmitter {
       // that never reach the registry (ask intercept, disabled tool, HIL denial,
       // async task references) go through emitSyntheticToolEvents instead.
       case 'turn_complete':
-        emitUmbilicalEvent({ event_type: 'turn.completed', agentId, loop, timestamp: event.timestamp, payload: { ...payload, ...this.takeAbsorbedTurnIds() } })
+        // An interrupted turn answered nothing: its absorbed ids ride on to
+        // the replay that does.
+        emitUmbilicalEvent({ event_type: 'turn.completed', agentId, loop, timestamp: event.timestamp, payload: { ...payload, ...(rawPayload.interrupted === true ? {} : this.takeAbsorbedTurnIds()) } })
         break
       case 'state_changed':
         emitUmbilicalEvent({ event_type: 'agent.state.changed', agentId, loop, timestamp: event.timestamp, payload })
@@ -5727,27 +5747,120 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * Consume a pending user interrupt and return it as a text content block
-   * suitable for injection into the next user message.
+   * Take every queued owner chat, oldest first, for delivery into the running
+   * turn. Their ids complete with that turn (absorbed_turn_ids); `chat.delivered`
+   * says so right away, so a client stops showing them as queued.
    */
-  private consumeInterrupt(): ContentBlock | null {
-    const interrupt = this.pendingInterrupt
-    if (!interrupt) return null
-    this.pendingInterrupt = null
-    // Answered inside the running turn: its turn.completed names it.
-    if (interrupt.turnId) this.absorbedTurnIds.push(interrupt.turnId)
+  private takeQueuedChats(delivery: 'turn_start' | 'next_step'): (AdfEventDispatch | AdfBatchDispatch)[] {
+    const chats = this.pendingChats.splice(0)
+    if (chats.length === 0) return chats
+    const ids = chats.flatMap(chat => chat.turnId ? [chat.turnId] : [])
+    this.absorbedTurnIds.push(...ids)
+    this.emitRuntimeEvent('chat.delivered', { delivery, count: chats.length, turn_ids: ids })
+    return chats
+  }
 
-    let userText = 'The user has manually triggered you. Review the document and respond.'
-    if ('event' in interrupt && interrupt.event.type === 'chat' && interrupt.event.data) {
-      const chatData = interrupt.event.data as ChatEventData
-      const textBlock = chatData.message.content_json?.find((b: ContentBlock) => b.type === 'text')
-      if (textBlock && 'text' in textBlock) userText = textBlock.text
+  /** Deliver queued chats as consecutive user rows after the turn's trigger. */
+  private deliverQueuedChatsAtTurnStart(): void {
+    const chats = this.takeQueuedChats('turn_start')
+    if (chats.length === 0) return
+    // They queued while nothing was working (a scheduled successor, a manual
+    // compaction): delivering them here is the restart they asked for.
+    this._interruptRestart = false
+    for (const chat of chats) {
+      if (this.preAppendedRowAlreadyInSession(chat)) continue
+      const content = this.buildTriggerContent(chat)
+      const message: LLMMessage = { role: 'user', content }
+      this.session.addMessage(message, undefined, { skipLoop: isPreAppendedDispatch(chat), seq: preAppendedLoopSeq(chat) })
+      this.session.flushToLoop()
+      if (isEchoedChat(chat)) continue
+      this.emitEvent({
+        type: 'trigger_message',
+        payload: {
+          content: this.contentBlocksToText(content),
+          triggerType: 'chat',
+          ...(message.seq !== undefined ? { seq: message.seq } : {})
+        },
+        timestamp: Date.now()
+      })
     }
+  }
 
-    return {
-      type: 'text',
-      text: `[USER INTERRUPT — The user has sent a message while you were working. ` +
-            `Read and address it before continuing your current task.]\n\n${userText}`
+  /**
+   * Take every queued chat as a text block for injection into the next user
+   * message, oldest first. Unreachable while an interrupt is pending (every
+   * caller checks _interruptRestart first); kept so a queued chat can never
+   * be overwritten if that changes.
+   */
+  private consumeInterrupts(): ContentBlock[] {
+    return this.takeQueuedChats('next_step').map((interrupt) => {
+      let userText = 'The user has manually triggered you. Review the document and respond.'
+      if ('event' in interrupt && interrupt.event.type === 'chat' && interrupt.event.data) {
+        const chatData = interrupt.event.data as ChatEventData
+        const textBlock = chatData.message.content_json?.find((b: ContentBlock) => b.type === 'text')
+        if (textBlock && 'text' in textBlock) userText = textBlock.text
+      }
+      return {
+        type: 'text' as const,
+        text: `[USER INTERRUPT — The user has sent a message while you were working. ` +
+              `Read and address it before continuing your current task.]\n\n${userText}`
+      }
+    })
+  }
+
+  /** Run the oldest queued chat as the next turn; the rest ride it
+   *  (deliverQueuedChatsAtTurnStart). False when nothing is queued. */
+  private replayQueuedChats(): boolean {
+    const next = this.pendingChats.shift()
+    if (!next) return false
+    // Only chat the sending UI echoed skips the replay's trigger event — a
+    // fleet-bar or daemon chat still needs it to reach the panel.
+    this._skipNextTriggerEvent = isEchoedChat(next)
+    this.scheduleReentrantTurn(next)
+    return true
+  }
+
+  /**
+   * Stop/unload/off: the only paths that may drop queued owner chats, and
+   * never silently. `chat.discarded` names the undelivered ids (`turn_ids`)
+   * and the delivered ones whose turn was cut off (`unanswered_turn_ids`);
+   * a System notice goes to the live transcript, adf_logs and the loop.
+   */
+  private discardQueuedChats(reason: 'stopped' | 'off'): void {
+    const chats = this.pendingChats.splice(0)
+    const unanswered = this.absorbedTurnIds.splice(0)
+    if (this.runningTurnId && !unanswered.includes(this.runningTurnId)) unanswered.push(this.runningTurnId)
+    if (chats.length === 0 && unanswered.length === 0) return
+    const ids = chats.flatMap(chat => chat.turnId ? [chat.turnId] : [])
+    this.emitRuntimeEvent('chat.discarded', {
+      reason, count: chats.length, turn_ids: ids,
+      ...(unanswered.length > 0 ? { unanswered_turn_ids: unanswered } : {}),
+    })
+    if (chats.length === 0) return
+    const quoted = chats.map((chat) => {
+      const text = this.contentBlocksToText(this.buildTriggerContent(chat)).replace(/\s+/g, ' ').trim()
+      return JSON.stringify(text.length > 200 ? `${text.slice(0, 199)}…` : text)
+    })
+    const notice = `[System] ${chats.length} queued owner message${chats.length === 1 ? ' was' : 's were'} discarded undelivered ` +
+      `(${reason === 'off' ? 'agent turned off' : 'agent stopped'}): ${quoted.join(', ')}`
+    try {
+      this.session.getWorkspace().insertLog('warn', 'executor', 'chat_discarded', null, notice.slice(0, 500), { reason, turn_ids: ids })
+    } catch { /* observability is never fatal */ }
+    this.emitEvent({ type: 'context_injected', payload: { category: 'System', content: notice }, timestamp: Date.now() })
+    this.pendingDiscardNotice = this.pendingDiscardNotice ? `${this.pendingDiscardNotice}\n${notice}` : notice
+    if (this.activeAgentTurnCount === 0) this.writeDiscardNotice()
+  }
+
+  /** Persist the discard notice once no turn can still be writing rows. */
+  private writeDiscardNotice(): void {
+    const text = this.pendingDiscardNotice
+    if (!text) return
+    this.pendingDiscardNotice = null
+    try {
+      this.session.addMessage({ role: 'user', content: [{ type: 'text', text }] })
+      this.session.flushToLoop()
+    } catch (error) {
+      console.warn('[AgentExecutor] discard notice write failed:', error)
     }
   }
 

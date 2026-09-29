@@ -202,6 +202,7 @@ function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemView
             <Text wrap="wrap" color={theme.color.user}>
               {item.text}
               {queued ? <Text color={theme.color.warn}>  [queued]</Text> : null}
+              {item.discarded ? <Text color={theme.color.warn}>  [not delivered]</Text> : null}
               {!queued && item.pending && !item.accepted && item.local ? <Text color={theme.color.dim}>  [sending{g.ellipsis}]</Text> : null}
             </Text>
           </Box>

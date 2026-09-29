@@ -955,7 +955,7 @@ Example 200 (`application/json`):
 
 **Abort the current turn without unloading**
 
-A hard stop: the executor of main (or the named inner loop) is left `stopped` and runs no further turns, triggers or timers until the agent is reloaded. To end a turn and keep working, use /interrupt. Unknown loop 404; a loop with no running executor 409.
+A hard stop: the executor of main (or the named inner loop) is left `stopped` and runs no further turns, triggers or timers until the agent is reloaded. To end a turn and keep working, use /interrupt. Chats still queued behind the turn are discarded, never silently: a `chat.discarded` event names their `turnId`s and a System notice lands in the loop. Unknown loop 404; a loop with no running executor 409.
 
 Operation `abortAgent` · bearer token
 
@@ -1006,7 +1006,7 @@ Example 200 (`application/json`):
 
 **Interrupt the running turn and leave the loop idle**
 
-Ends main's (or the named loop's) running turn and sets that executor idle; it keeps accepting chats, triggers and timers. Unlike /abort it never stops the executor. `interrupted` is false when nothing was running; 409 when the loop is stopped or errored.
+Ends main's (or the named loop's) running turn and sets that executor idle; it keeps accepting chats, triggers and timers. Unlike /abort it never stops the executor, and chats queued behind the turn are kept and run next. `interrupted` is false when nothing was running; 409 when the loop is stopped or errored.
 
 Operation `interruptAgent` · bearer token
 
@@ -2524,7 +2524,7 @@ Example 200 (`application/json`):
 
 **Queue a user chat turn**
 
-The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn.
+The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped: the first interrupts the running turn, then the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`.
 
 Operation `chatAgent` · bearer token
 

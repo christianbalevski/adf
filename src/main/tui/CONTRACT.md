@@ -255,8 +255,11 @@ never drop). History comes from `GET /agents/:id/loop?loop=` (parsed by the
 same `parseLoopToDisplay` Studio uses); live events add streaming text, tools,
 HIL, asks and notices; `turn.completed` triggers a reconciling refetch. An
 owner message sent here keeps the chat 202's `turnId`: events with that
-`turn_id` mark it taken (no longer `[queued]`), its non-interrupted
-`turn.completed` (or `absorbed_turn_ids`) marks it answered.
+`turn_id` mark it taken (no longer `[queued]`), as does `chat.delivered`
+listing it in `turn_ids` (a burst delivered into another message's turn); its
+non-interrupted `turn.completed` (or `absorbed_turn_ids`) marks it answered.
+`chat.discarded` ends the wait: `turn_ids` → `discarded` (`[not delivered]`),
+`unanswered_turn_ids` → taken, not answered.
 **Never hide model output** — every item kind must be renderable.
 
 ## 6. Daemon client (`api/`)

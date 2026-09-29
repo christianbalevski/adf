@@ -334,6 +334,7 @@ const TRANSCRIPT_EVENTS = new Set([
   'agent.state.changed', 'loop.compacted', 'loop.compaction_failed', 'loop.compaction_superseded',
   'loop.cleared', 'loop.recovered', 'suspend.requested', 'suspend.resolved',
   'provider.retry_scheduled', 'provider.retry_cancelled', 'llm.failed', 'error.recovery_suppressed',
+  'chat.delivered', 'chat.discarded',
 ])
 
 function applyEvent(state: TuiState, event: UmbilicalEvent): TuiState {

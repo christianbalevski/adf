@@ -117,6 +117,32 @@ describe('chat turn correlation', () => {
     expect((items[2] as UserItem).answered).toBeUndefined()
   })
 
+  it('several queued messages all leave [queued]: replay turn_id, chat.delivered, then absorbed ids', () => {
+    // A burst of four while turn_a runs: a interrupts, b replays, c and d ride b.
+    let items: TranscriptItem[] = [user('a', 'turn_a'), user('b', 'turn_b'), user('c', 'turn_c'), user('d', 'turn_d')]
+    items = applyEventToItems(items, ev('agent.state.changed', { turn_id: 'turn_a' }, { state: 'thinking' }))
+    expect(queuedItems(items, true, 0).map(i => i.id)).toEqual(['b', 'c', 'd'])
+    items = applyEventToItems(items, ev('turn.completed', { turn_id: 'turn_a' }, { interrupted: true }))
+    items = applyEventToItems(items, ev('agent.state.changed', { turn_id: 'turn_b' }, { state: 'thinking' }))
+    expect(queuedItems(items, true, 0).map(i => i.id)).toEqual(['c', 'd'])
+    items = applyEventToItems(items, ev('chat.delivered', { turn_id: 'turn_b' }, { delivery: 'turn_start', count: 2, turn_ids: ['turn_c', 'turn_d'] }))
+    expect(queuedItems(items, true, 0)).toEqual([])
+    expect(items.some(i => i.kind === 'notice')).toBe(false)
+    items = applyEventToItems(items, ev('turn.completed', { turn_id: 'turn_b' }, { content: 'all four', absorbed_turn_ids: ['turn_a', 'turn_c', 'turn_d'] }))
+    for (const id of ['a', 'b', 'c', 'd']) expect(items.find(i => i.id === id)).toMatchObject({ answered: true, pending: false })
+  })
+
+  it('a stop ends the wait of every queued message and says so', () => {
+    let items: TranscriptItem[] = [user('a', 'turn_a'), user('b', 'turn_b'), user('c', 'turn_c')]
+    items = applyEventToItems(items, ev('agent.state.changed', { turn_id: 'turn_a' }, { state: 'thinking' }))
+    items = applyEventToItems(items, ev('chat.discarded', {}, { reason: 'stopped', count: 2, turn_ids: ['turn_b', 'turn_c'], unanswered_turn_ids: ['turn_a'] }))
+    expect(queuedItems(items, true, 0)).toEqual([])
+    expect(items.find(i => i.id === 'a')).toMatchObject({ taken: true, pending: false })
+    expect((items.find(i => i.id === 'a') as UserItem).discarded).toBeUndefined()
+    for (const id of ['b', 'c']) expect(items.find(i => i.id === id)).toMatchObject({ discarded: true, pending: false })
+    expect(items.find(i => i.kind === 'notice')).toMatchObject({ level: 'warn', text: '2 queued messages discarded undelivered (agent stopped)' })
+  })
+
   it('messages without a turnId (older daemon) keep the time-based queue rule', () => {
     const items: TranscriptItem[] = [user('old')]
     expect(queuedItems(items, true, 5).map(i => i.id)).toEqual(['old'])

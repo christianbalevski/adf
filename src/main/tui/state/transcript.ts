@@ -240,13 +240,20 @@ function resultText(value: unknown): string | undefined {
  * it. Any such event means the turn started (`taken`); its terminal event ends
  * it: `turn.completed` (not interrupted) marks the message answered, as does
  * listing it in `absorbed_turn_ids` (answered inside a running turn);
- * `agent.error` just ends the wait. Same array back when nothing matched.
+ * `agent.error` just ends the wait. `chat.delivered` takes the messages a
+ * burst queued behind the first; `chat.discarded` ends the wait of the ones
+ * a stop dropped (`turn_ids`) or cut off (`unanswered_turn_ids`). Same array
+ * back when nothing matched.
  */
 export function markOwnTurns(items: TranscriptItem[], event: UmbilicalEvent): TranscriptItem[] {
   const p = event.payload ?? {}
+  const ids = (value: unknown): string[] => Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []
   const terminal = event.event_type === 'turn.completed' || event.event_type === 'agent.error'
-  const absorbed = terminal && Array.isArray(p.absorbed_turn_ids) ? p.absorbed_turn_ids.filter((id): id is string => typeof id === 'string') : []
-  if (!event.turn_id && absorbed.length === 0) return items
+  const absorbed = terminal ? ids(p.absorbed_turn_ids) : []
+  const delivered = event.event_type === 'chat.delivered' ? ids(p.turn_ids) : []
+  const discarded = event.event_type === 'chat.discarded' ? ids(p.turn_ids) : []
+  const cutOff = event.event_type === 'chat.discarded' ? ids(p.unanswered_turn_ids) : []
+  if (!event.turn_id && absorbed.length + delivered.length + discarded.length + cutOff.length === 0) return items
   const answeredNow = event.event_type === 'turn.completed' && p.interrupted !== true
   let next: TranscriptItem[] | null = null
   for (let i = items.length - 1; i >= 0; i--) {
@@ -254,6 +261,9 @@ export function markOwnTurns(items: TranscriptItem[], event: UmbilicalEvent): Tr
     if (item.kind !== 'user' || !item.turnId || item.answered) continue
     let patch: Partial<UserItem> | null = null
     if (absorbed.includes(item.turnId)) patch = { taken: true, answered: true, pending: false }
+    else if (discarded.includes(item.turnId)) patch = { taken: true, pending: false, discarded: true }
+    else if (cutOff.includes(item.turnId)) patch = { taken: true, pending: false }
+    else if (delivered.includes(item.turnId)) patch = item.taken ? null : { taken: true }
     else if (item.turnId === event.turn_id) {
       if (terminal) patch = answeredNow ? { taken: true, answered: true, pending: false } : event.event_type === 'agent.error' ? { taken: true, pending: false } : null
       else if (!item.taken) patch = { taken: true }
@@ -417,6 +427,11 @@ export function noticeFor(event: UmbilicalEvent): { text: string; level: 'info' 
       return { text: `Model call failed${p.model ? ` (${String(p.model)})` : ''}`, level: 'warn' }
     case 'error.recovery_suppressed':
       return { text: 'Error recovery suppressed — triggers are being dropped', level: 'warn' }
+    case 'chat.discarded': {
+      const count = typeof p.count === 'number' ? p.count : 0
+      if (count === 0) return null
+      return { text: `${count} queued message${count === 1 ? '' : 's'} discarded undelivered (${p.reason === 'off' ? 'agent turned off' : 'agent stopped'})`, level: 'warn' }
+    }
     default:
       return null
   }

@@ -30,6 +30,12 @@ export const UMBILICAL_EVENT_TYPES = [
   // --- turn --------------------------------------------------------------
   'turn.completed',
 
+  // --- owner chats queued behind a running turn ---------------------------
+  // delivered → put into a running turn (their ids complete with it);
+  // discarded → dropped undelivered by stop/unload/off (never silently).
+  'chat.delivered',
+  'chat.discarded',
+
   // --- tools -------------------------------------------------------------
   'tool.started',
   'tool.completed',

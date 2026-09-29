@@ -272,15 +272,35 @@ no `loop` field.
 ## Chat turns and reading results
 
 `POST /agents/:id/chat {text, loop?}` queues the message as the owner's voice
-and answers `202 {accepted: true, turnId}`. The turn runs when the loop is
-free: a message sent mid-turn waits for the current turn (a chat interrupts a
-turn that is mid-thinking and is replayed right after). Every event of the turn
-that handles the request carries `turnId` as `event.turn_id`, from its first
+and answers `202 {accepted: true, turnId}`. Every event of the turn that
+handles the request carries `turnId` as `event.turn_id`, from its first
 `agent.state.changed` to `turn.completed` (`payload.interrupted: true` when it
-was cut short) or `agent.error`. A message the agent picked up inside a
-running turn (it arrived during tool use) is listed in that turn's
-`turn.completed` / `agent.error` payload as `absorbed_turn_ids`. `POST
-…/trigger` answers a `turnId` the same way.
+was cut short) or `agent.error`. `POST …/trigger` answers a `turnId` the same
+way.
+
+Messages sent while the loop is busy (mid-turn, or during a compaction) are
+never dropped. They queue in arrival order:
+
+- The first one interrupts the running turn; the rest of a burst only join the
+  queue, so a burst costs one interrupt.
+- The oldest queued message then runs as the next turn, under its own
+  `turnId`. Every other queued message joins that turn as a consecutive user
+  row, in order, before its first model call. A `chat.delivered` event (with
+  that turn's `turn_id`) lists their ids in `payload.turn_ids` at once, and
+  the turn's `turn.completed` lists them in `absorbed_turn_ids`.
+- The turn that was cut short ends with `turn.completed` +
+  `interrupted: true`. Its message is still in the history, so the replay
+  answers it too and lists its id in `absorbed_turn_ids`.
+- Only `POST …/abort`, unloading the agent or an `off` transition discard
+  queued messages. A `chat.discarded` event (`reason`, `turn_ids`, and
+  `unanswered_turn_ids` for messages whose turn was cut off) announces it, and
+  a System notice quoting them goes into the loop. `POST …/interrupt` keeps the
+  queue: it runs next.
+
+So every `turnId` ends on a `turn.completed` (as `turn_id` or in
+`absorbed_turn_ids`), an `agent.error`, or a `chat.discarded`. Queued messages
+exist only in memory until they are delivered: a daemon crash loses them, and
+their ids never complete.
 
 To get the answer:
 
@@ -311,7 +331,9 @@ export async function chat(agent: string, text: string, loop = 'main'): Promise<
   try {
     const { turnId } = await adf<{ turnId: string }>('POST', `/agents/${id}/chat`, loop === 'main' ? { text } : { text, loop })
     for await (const { event } of events) {
-      const mine = event.turn_id === turnId || (event.payload.absorbed_turn_ids as string[] | undefined)?.includes(turnId)
+      const listed = (key: string) => (event.payload[key] as string[] | undefined)?.includes(turnId)
+      if (event.event_type === 'chat.discarded' && (listed('turn_ids') || listed('unanswered_turn_ids'))) throw new Error('discarded: agent stopped')
+      const mine = event.turn_id === turnId || listed('absorbed_turn_ids')
       if (!mine) continue
       if (event.event_type === 'turn.completed' && !event.payload.interrupted) return String(event.payload.content ?? '')
       if (event.event_type === 'agent.error') throw new Error(JSON.stringify(event.payload))

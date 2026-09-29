@@ -47,8 +47,10 @@ consumer can file a scheduled wake under the side loop it starts.
 `POST /agents/:id/chat` or `/trigger` answered with (kept when an interrupting
 chat is replayed after the turn it cut short), else the runtime's own turn id
 (the one in `source: agent:<id>`). Lambdas and tools a turn runs inherit it.
-A chat the agent picked up inside a running turn is listed on that turn's
-`turn.completed` / `agent.error` payload as `absorbed_turn_ids`.
+A chat delivered into a turn other than its own (queued behind a busy loop,
+see `chat.*` below), and the request of a turn a chat cut short, are listed on
+the next non-interrupted `turn.completed` / `agent.error` payload as
+`absorbed_turn_ids`.
 
 `GET /events` wraps this envelope in a transport frame carrying a resume
 cursor: `{ cursor, event }`. `cursor` is a per-daemon-process counter used only
@@ -123,6 +125,28 @@ is observable.
 
 `turn.completed` fires when the LLM loop finishes a turn (end-of-turn signal or
 tool-driven stop). `content` is the final assistant text for this turn.
+`interrupted: true` marks a turn a chat or the owner cut short.
+`absorbed_turn_ids` lists the chats this turn answered besides its own.
+
+## `chat.*` — stable
+
+| Event | Payload |
+|---|---|
+| `chat.delivered` | `{ delivery: 'turn_start' \| 'next_step', count, turn_ids }` |
+| `chat.discarded` | `{ reason: 'stopped' \| 'off', count, turn_ids, unanswered_turn_ids? }` |
+
+Owner chats that arrive while a loop is busy queue in arrival order; nothing
+is dropped silently. The first one interrupts the running turn, and the oldest
+queued chat runs next under its own `turn_id`. `chat.delivered` fires inside
+that turn (carrying its `turn_id`) when the rest of the queue joins it as
+consecutive user rows: `turn_ids` are those chats' request ids (`count` also
+covers chats sent without one, e.g. from Studio). They complete with the turn
+(`absorbed_turn_ids`).
+
+`chat.discarded` fires when a stop, unload or `off` transition drops queued
+chats: `turn_ids` were never delivered; `unanswered_turn_ids` were delivered
+but their turn was cut off. A System notice quoting the dropped messages is
+also written to the loop and `adf_logs` (`chat_discarded`).
 
 `turn.delta` is **off by default** — streaming every flushed batch is high
 volume and most taps only want finished output. Enable it per agent:

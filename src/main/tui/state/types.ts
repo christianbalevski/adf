@@ -60,6 +60,8 @@ export interface UserItem extends ItemBase {
   taken?: boolean
   /** That turn completed (not interrupted): the agent answered this message. */
   answered?: boolean
+  /** Dropped undelivered by a stop/unload while it was queued (`chat.discarded`). */
+  discarded?: boolean
 }
 
 export interface AssistantItem extends ItemBase {
