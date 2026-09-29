@@ -10,7 +10,7 @@
 // never a hard kill by default.
 
 import { spawn, execFileSync } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, readSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, readSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -94,7 +94,16 @@ export function readPidFile(file: string): PidRecord | null {
 }
 
 export function processAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true } catch (err) { return (err as NodeJS.ErrnoException)?.code === 'EPERM' }
+  try { process.kill(pid, 0) } catch (err) { return (err as NodeJS.ErrnoException)?.code === 'EPERM' }
+  // kill(pid, 0) succeeds for a zombie (exited, not yet reaped); on Linux read
+  // its state so an exited daemon is not taken for a starting one.
+  if (process.platform === 'linux') {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8')
+      if (stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z')) return false
+    } catch { /* no /proc entry: fall through */ }
+  }
+  return true
 }
 
 function readJson(file: string): Record<string, unknown> | null {
@@ -189,10 +198,16 @@ export async function startDaemon(target: DaemonTarget, options: StartOptions = 
   }
   const existing = readPidFile(paths.pidFile)
   if (existing && processAlive(existing.pid) && !await isHealthy(target.url, fetchImpl)) {
-    // A daemon is starting (or wedged) under this pid file: wait for it instead of racing it.
-    log(`Waiting for the ADF daemon starting as pid ${existing.pid}…\n`)
-    await waitHealthy(target.url, fetchImpl, START_TIMEOUT_MS, () => processAlive(existing.pid))
-    return { pid: existing.pid, paths, ms: 0 }
+    // A daemon is starting, wedged, or shutting down under this pid file: wait
+    // for it instead of racing it. If it exits without answering (it was
+    // shutting down), start a fresh one below.
+    log(`Waiting for the ADF daemon pid ${existing.pid}…\n`)
+    const up = await waitHealthy(target.url, fetchImpl, START_TIMEOUT_MS, () => processAlive(existing.pid))
+    if (up) return { pid: existing.pid, paths, ms: 0 }
+    if (processAlive(existing.pid)) {
+      throw new DaemonStartError(`The daemon (pid ${existing.pid}) did not answer ${target.url}/health within ${START_TIMEOUT_MS / 1000}s.`, `Log: ${paths.logFile}`)
+    }
+    try { rmSync(paths.pidFile, { force: true }) } catch { /* the exiting daemon may have removed it */ }
   }
 
   mkdirSync(dirname(paths.logFile), { recursive: true })

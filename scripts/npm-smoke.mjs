@@ -89,7 +89,15 @@ try {
     // stops ADF's compute containers, which a real daemon may be using.
     else process.kill(-daemon.pid, process.env.CI ? 'SIGTERM' : 'SIGKILL')
   } catch { /* already gone */ }
-  await new Promise((r) => setTimeout(r, 1000))
+  // Wait for the first daemon to exit before the auto-start phase: a graceful
+  // stop can take several seconds (compute shutdown probes podman), and an
+  // exiting daemon's pid file must not be mistaken for a starting one.
+  if (daemon.exitCode === null && daemon.signalCode === null) {
+    await Promise.race([
+      new Promise((r) => daemon.once('exit', r)),
+      new Promise((r) => setTimeout(r, 30_000)),
+    ])
+  }
 }
 
 // Auto-start: nothing listens now; `adf agents` starts the daemon in the background.

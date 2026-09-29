@@ -247,9 +247,10 @@ describe('loops manager', () => {
     await tui.press(KEY.down)
     await tui.waitFor(() => store.getState().selectedLoop[AGENT_1_ID] === 'consolidator')
     await tui.press('h')
-    let frame = await tui.waitFor('History of agent-1')
+    await tui.waitFor('History of agent-1')
+    // The header renders before the rows load ("Loading…"): wait for the data.
+    let frame = await tui.waitFor('rows 1-2 of 2')
     expect(frame).toContain('consolidator')
-    expect(frame).toContain('rows 1-2 of 2')
     expect(frame).toContain('Merged 3 notes into mind.md.')
     await tui.press(KEY.enter)
     frame = await tui.waitFor('entry #')
