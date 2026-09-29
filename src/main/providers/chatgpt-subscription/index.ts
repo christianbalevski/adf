@@ -256,9 +256,11 @@ export function createChatGPTSubscriptionProvider(authManager: {
     // Subscription models require the Codex client identity and a compatible
     // `version` header. Too old a version fails with a misleading 400: on
     // 2026-09-28 gpt-6-sol/luna at 0.153.0 returned "not supported when using
-    // Codex with a ChatGPT account"; 0.155.0 completes successfully.
+    // Codex with a ChatGPT account"; 0.155.0 completes successfully. On 2026-09-29
+    // gpt-6.1-sol failed the same way through 0.158.0 (despite /models listing
+    // minimal_client_version 0.153.0) and succeeded at 0.159.1.
     headers.set('originator', 'codex_cli_rs')
-    headers.set('version', '0.155.0')
+    headers.set('version', '0.159.1')
 
     // Patch the request body (see patchCodexRequestBody for the rules,
     // including system-prompt dedupe between `instructions` and `input`).
@@ -408,6 +410,7 @@ export function createChatGPTSubscriptionProvider(authManager: {
 
 /** Known subscription models — returned by the hardcoded model list. */
 export const CHATGPT_SUBSCRIPTION_MODELS = [
+  'gpt-6.1-sol',
   'gpt-6-astra',
   'gpt-6-sol',
   'gpt-6-luna',
