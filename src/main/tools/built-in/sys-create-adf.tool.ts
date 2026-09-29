@@ -388,10 +388,6 @@ export class CreateAdfTool implements Tool {
 
       let options: CreateAgentOptions
       let templateData: TemplateData | null = null
-      // True when the template came from the Studio templates folder rather
-      // than the parent's own VFS: those files keep the identity the host
-      // provisions below instead of minting a second one.
-      let templateFromStudio = false
 
       if (template) {
         // Template-based creation
@@ -404,7 +400,6 @@ export class CreateAdfTool implements Tool {
         if (studio) {
           try {
             templateData = readTemplateFile(studio.filePath, { includeIdentityRows: false })
-            templateFromStudio = true
           } catch (err) {
             return {
               content: `The default agent template could not be read (${studio.filePath}): ${err instanceof Error ? err.message : String(err)}`,
@@ -487,12 +482,12 @@ export class CreateAdfTool implements Tool {
             db.executeSQL(indexSql)
           }
 
-          // Generate fresh identity keys (new DID, public/private keypair).
-          // Only for a parent-supplied template, whose copied identity rows
-          // belong to someone else. A Studio template contributed no identity
-          // rows, and the child already has the one ensureWorkspaceIdentity
-          // minted above — minting a second would retire it into DID history.
-          if (!templateFromStudio) newWorkspace.generateIdentityKeys(null)
+          // No second key mint here: template identity rows never include
+          // signing keys (readTemplate filters crypto:signing:*), so the child
+          // keeps the identity ensureWorkspaceIdentity provisioned above —
+          // sealed, owner-stamped, attested. A host without the owner key
+          // (daemon before `adf identity`) leaves the child DID-less rather
+          // than holding a plain, unattested key.
         }
 
         // Inject parent files
@@ -550,6 +545,7 @@ export class CreateAdfTool implements Tool {
 
         let result = `Agent created successfully.\nName: ${name}\nID: ${newConfig.id}\nPath: ${newPath}`
         if (did) result += `\nDID: ${did}`
+        else result += '\nDID: none — this host has no owner identity set up, so the child was created without identity keys (it gets them once the owner identity is available here, e.g. `adf identity` on a daemon).'
         if (template) result += `\nTemplate: ${template}`
         if (files?.length) result += `\nFiles injected: ${files.length}`
         result += `\nAutostarted: ${autostarted}`

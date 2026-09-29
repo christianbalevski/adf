@@ -6,13 +6,64 @@ The daemon is the headless ADF runtime that serves a local Fastify API for headl
 http://127.0.0.1:7385
 ```
 
-Unless configured otherwise, bind the daemon API to localhost only. The current API has no authentication layer.
+Unless configured otherwise, bind the daemon API to localhost only.
+
+## Authentication and cross-site protection
+
+A web page in the user's browser can send requests to `127.0.0.1:7385` (CSRF)
+or point its own hostname at it (DNS rebinding). Every request passes three
+checks, in this order:
+
+1. **Host allow-list.** The `Host` header must name this daemon: `127.0.0.1`,
+   `localhost` or `[::1]` with the bound port, or the bind address itself. A
+   daemon bound off loopback also accepts any IP literal on the bound port and
+   the names in `ADF_DAEMON_ALLOWED_HOSTS` (comma/space separated, `name` = any
+   port, `name:port`). Anything else: `403`, `code: "host_not_allowed"`.
+2. **No browser cross-site context.** A request carrying an `Origin` that is
+   not one of the allowed hosts (including `Origin: null`), or
+   `Sec-Fetch-Site: cross-site` / `same-site`, gets `403`,
+   `code: "cross_origin"`. The daemon never sends CORS headers, so preflighted
+   browser requests fail too. The CLI and terminal app send neither header.
+3. **Bearer token** on every route except `GET /health` (including
+   `/openapi.json` and the `/events` SSE stream, where it goes in the header:
+   clients use `fetch`, not `EventSource`):
+   `Authorization: Bearer <token>`, compared in constant time. Missing or
+   wrong: `401`, `code: "unauthorized"`, with an `error` telling the user to
+   update `adf` or run `adf daemon token`.
+
+**The token.** On first start the daemon mints a random per-install token into
+`<settings dir>/daemon-token` (mode 0600, next to `adf-settings.json` and
+`runtime-enc-key`; the settings dir follows `ADF_DAEMON_SETTINGS` /
+`ADF_USER_DATA_DIR`). A malformed file is simply replaced; the token guards
+nothing at rest. `ADF_DAEMON_TOKEN` overrides the file and is **required**
+when the daemon binds a non-loopback host.
+
+**Clients on the daemon's machine** (the `adf` CLI, the terminal app, `adf
+daemon start|stop|status`, auto-start) read the file from the same settings
+dir by themselves; the terminal app re-reads it once on a `401` (e.g. right
+after the daemon first started). The local token is only ever sent to loopback
+URLs, never to a remote daemon.
+
+**Remote clients.** On the daemon host run `adf daemon token` (prints only the
+token on stdout; its source on stderr), then on the client pass
+`--token <token>` or set `ADF_DAEMON_TOKEN`.
+
+**Loopback-only routes.** Independent of the token, these answer loopback
+callers only (`403`, `code: "loopback_only"`): `POST /identity/create`,
+`/identity/restore`, `/identity/unlock`, `/identity/lock`,
+`/identity/confirm-backup`, and `POST /daemon/shutdown`.
+
+**Compatibility.** An older `adf` talking to this daemon gets the clear `401`
+message above. A newer `adf` talking to an older daemon still works: the older
+daemon ignores the `Authorization` header unless it was started with
+`ADF_DAEMON_TOKEN`.
 
 ## Health
 
 ### `GET /health`
 
-Returns a basic liveness response.
+Returns a basic liveness response. The only route without a token (the Host
+and Origin checks still apply).
 
 ```json
 {
@@ -90,6 +141,7 @@ Each SSE frame carries a transport wrapper around the canonical umbilical envelo
 | `event.seq` | Monotonic **per-agent** sequence number, persisted across restarts. `0` when the event has no owning agent. |
 | `event.source` | Provenance: `agent:<turn>`, `lambda:<file>:<fn>`, `system:<subsystem>`. A first-class field, not folded into `payload`. |
 | `event.agent_id` | Owning agent id, or `null` for daemon-scope events. |
+| `event.loop` | Inner cognition loop that produced the event (see [Cognition loops](#cognition-loops)). Absent for `main` and for events that are not loop-scoped. |
 | `event.sig` | Reserved for a detached envelope signature. Not currently populated. |
 
 Do not use `cursor` for ordering or deduplication across daemon restarts — use `event.agent_id` + `event.seq`.
@@ -149,6 +201,9 @@ Returns one setting value. Missing values are returned as `null`.
 ### `PUT /settings/:key`
 
 Sets one setting value. The request body must contain a `value` field.
+Key material and identity keys (`ownerMnemonic`, `ownerDid`, `runtimeDid`,
+runtime/daemon keys and delegations, `trustedDaemonEncKeys`, ...) are refused
+with `403`; the owner identity changes only through `/identity`.
 
 ```bash
 curl -X PUT http://127.0.0.1:7385/settings/meshEnabled \
@@ -167,7 +222,7 @@ Response:
 
 ## Runtime Diagnostics
 
-Diagnostics endpoints are read-only and sanitize secrets. They are intended for CLI/TUI clients, operational checks, and debugging headless runtime wiring.
+Diagnostics endpoints are read-only and sanitize secrets. They are intended for the ADF CLI and terminal app, operational checks, and debugging headless runtime wiring.
 
 ### `GET /diagnostics`
 
@@ -183,9 +238,17 @@ Returns a compact daemon summary with per-agent status, adapter state, MCP state
 }
 ```
 
+### `POST /daemon/shutdown`
+
+Stops the daemon gracefully, the same bounded shutdown as Ctrl+C / SIGTERM:
+agents are unloaded, compute containers stopped, then the process exits.
+Loopback callers only (`403 loopback_only` otherwise); answers `202
+{ "accepted": true, "pid": … }` before shutting down. `adf daemon stop` uses
+it; on Windows it is the only graceful way to stop a detached daemon.
+
 ### `GET /runtime`
 
-Returns daemon-level runtime diagnostics: settings summary, provider resolution, auth state, MCP registrations, adapter registrations, network diagnostics, compute status, and loaded agent status.
+Returns daemon-level runtime diagnostics: settings summary, provider resolution, auth state, MCP registrations, adapter registrations, network diagnostics, compute status, and loaded agent status. `daemon` carries `uptime`, `pid`, `version` (`ADF_VERSION`, else the npm package version; `null` when unknown), `node` and `platform`.
 
 ### `GET /runtime/providers`
 
@@ -213,6 +276,44 @@ Returns sanitized provider registrations and how loaded agents resolve providers
   ]
 }
 ```
+
+### `POST /agents/:id/mcp/servers/:serverName/restart`
+
+Connects one configured MCP server of a running agent now, the same way the
+agent's own `mcp_restart` tool does (host or container routing, the agent's
+sealed credentials, tool discovery). Use it after `POST
+/agents/:id/mcp/servers` (the daemon connects attached servers at the next
+start otherwise) or to retry a failed server. Replies `{ agentId,
+serverName, success, toolsDiscovered, location, error?, hostDenied?,
+stderrTail? }`; `404` when the agent has no such server, `409` when the agent
+is not running here.
+
+### `POST /runtime/providers`
+
+Adds an API-key model provider for every agent on this daemon. The key goes
+to the daemon's secret store (the OS keychain, or the owner's
+passphrase-protected secret file where there is no keychain), never into the
+settings file, and is never returned. The settings entry carries
+`"apiKeyStorage": "secret-store"` and an empty `apiKey`; the daemon fills the
+key in when it resolves the provider, so agents, `/runtime/models` and
+diagnostics see an ordinary provider.
+
+```json
+{ "type": "openrouter", "name": "OpenRouter", "preset": "openrouter", "apiKey": "sk-or-…", "defaultModel": "anthropic/claude-sonnet-4" }
+```
+
+`type` is `anthropic`, `openai`, `openrouter` or `openai-compatible`
+(`baseUrl` required; `apiKey` optional, for local servers). Subscriptions
+(ChatGPT, Grok) sign in instead: `400 subscription_type`. The name is made
+unique (`OpenRouter 2`). The first provider becomes the default. Replies `201
+{ provider, defaultProviderId }` (`provider.hasApiKey`, no key), or `409
+secret_store_locked` while the secret store is locked or not set up yet (set
+up or unlock the owner identity first).
+
+### `DELETE /runtime/providers/:id`
+
+Removes the provider and deletes its stored key. The default moves to the
+next provider. `404` for an unknown id.
 
 ### `GET /runtime/auth`
 
@@ -272,11 +373,16 @@ Returns mesh HTTP server status.
 
 ### `POST /network/server/start`
 
-Starts the mesh HTTP server.
+Starts the mesh HTTP server and persists `meshServerEnabled: true`.
+
+The mesh server (agent web/API routes at `/agents/:handle/*` and mesh
+delivery) is on by default: the daemon starts it once the first reachable agent
+registers, and rebinds to all interfaces when a `lan`/`public` agent appears.
 
 ### `POST /network/server/stop`
 
-Stops the mesh HTTP server.
+Stops the mesh HTTP server and persists `meshServerEnabled: false`, so it stays
+off across daemon restarts until started again.
 
 ### `POST /network/server/restart`
 
@@ -308,6 +414,180 @@ Counts tokens for one text string.
 ### `POST /runtime/token-count/batch`
 
 Counts tokens for multiple strings. The request body is the same as `/runtime/token-count`, except it uses `texts`.
+
+## Owner Identity
+
+The owner identity (a DID derived from a 12-word BIP-39 seed phrase) is what
+new agents are sealed and attested under — the same identity ADF Studio uses.
+The same phrase in Studio and in the daemon is the same owner.
+
+Storage: the OS keychain (service `ADF`, account `owner-mnemonic`, shared with
+Studio on the same machine), or — when no keychain is usable — a
+passphrase-encrypted file `owner-secrets.json` next to the daemon settings.
+The daemon has its own runtime key (`daemonRuntimeDid` in settings); it never
+writes Studio's `runtimeDid`/runtime keys.
+
+The owner DID is recorded as seed-derived (`ownerDidSeedDerived: true`). When
+ADF Studio on the same machine cannot read the phrase (passphrase-file
+storage), it never mints a replacement owner or restamps agents: it shows
+"Restore your identity" and takes the same 12 words (Settings → Identity).
+
+Routes that move secrets or change identity state (`create`, `restore`,
+`unlock`, `lock`, `confirm-backup`) answer loopback callers only (`403`,
+`code: "loopback_only"` otherwise), on top of the bearer token. The seed phrase appears in the `POST /identity/create`
+response and nowhere else. Errors are `{ "error": "...", "code": "..." }`.
+
+### `GET /identity`
+
+```json
+{
+  "status": "ready",
+  "ownerDid": "did:key:z6Mk...",
+  "runtimeDid": "did:key:z6Mk...",
+  "storage": "keychain",
+  "backupConfirmed": true,
+  "passphraseRequired": false,
+  "message": "Owner identity ready."
+}
+```
+
+| `status` | Meaning | Next step |
+|----------|---------|-----------|
+| `none` | No owner on this machine | `POST /identity/create` or `/identity/restore` |
+| `locked` | Passphrase file not unlocked | `POST /identity/unlock` |
+| `restore-needed` | This machine has an owner DID (e.g. from Studio) but the daemon lacks its phrase | `POST /identity/restore` with that owner's phrase |
+| `ready` | Agents can be created and sealed | — |
+
+`passphraseRequired: true` means file storage: `create`/`restore`/`unlock`
+need a `passphrase` (8+ characters when creating the file).
+
+Agents loaded while the identity was not ready carry `degraded`
+(`CREDENTIALS_LOCKED`) in `GET /agents/:id/status`. Whenever the identity
+becomes ready (create, restore, unlock, boot, or a phrase Studio put in the
+shared keychain) the daemon re-runs the envelope unlock for every loaded
+agent — no reload — and, while any agent stays degraded, re-checks once a
+minute. Each agent that unlocks gets `degraded` cleared, its locked adapters
+restarted, an `adf_logs` row (`credentials_unlocked`), and an
+`agent.credentials.unlocked` event (see [umbilical events](../guides/umbilical-events.md)).
+
+### `POST /identity/create`
+
+Body (optional): `{ "passphrase": "..." }` (file storage only). Only when
+`status` is `none`; otherwise `409 identity_exists`.
+
+`201`, `Cache-Control: no-store`:
+
+```json
+{
+  "mnemonic": "word1 word2 ... word12",
+  "words": ["word1", "word2", "...", "word12"],
+  "identity": { "status": "ready", "backupConfirmed": false, "...": "..." }
+}
+```
+
+Show the words to the user once and ask them to write them down; then call
+`POST /identity/confirm-backup` (Studio's "I have written it down").
+
+### `POST /identity/restore`
+
+```json
+{ "mnemonic": "word1 word2 ... word12", "passphrase": "optional, file storage" }
+```
+
+`200 { "identity": { ... } }`. `400 invalid_mnemonic`, `400
+passphrase_required`, `403 wrong_passphrase`, `409 owner_mismatch` when the
+phrase belongs to a different owner than the one this machine already has
+(switch owners in Studio instead).
+
+### `POST /identity/unlock`
+
+`{ "passphrase": "..." }` → `200 { "identity": { ... } }`. `403
+wrong_passphrase`; `400 not_file_storage` with keychain storage; `409
+nothing_to_unlock` when no file exists yet. The daemon can also unlock at boot
+from `ADF_OWNER_PASSPHRASE` or `ADF_OWNER_PASSPHRASE_FILE`.
+
+### `POST /identity/lock`
+
+File storage only: forget the decrypted secrets. `200 { "identity": { ... } }`.
+
+### `POST /identity/confirm-backup`
+
+Marks the phrase as written down (`backupConfirmed: true`, shared with Studio).
+
+## Creating Agents
+
+### `GET /templates`
+
+Templates new agents can be made from (`409 identity_not_ready` until the
+identity is ready).
+
+```json
+{
+  "templates": [
+    { "id": "standard", "name": "Standard", "templateDescription": "...", "reviewed": true, "shipped": "standard", "modelProvider": "anthropic", "modelId": "..." }
+  ],
+  "defaultId": "standard",
+  "folder": "/path/to/userData/templates",
+  "defaultDirectory": "/home/me/Documents/adf-agents"
+}
+```
+
+### Managing Templates
+
+Studio's Settings > Agent templates over HTTP, on the same
+`<userData>/templates` folder and the same service. A template is an ordinary
+`.adf`; its id is the file stem. New agents get everything in a template
+except its identity and history. Every route answers `409
+identity_not_ready` (with `identity`) until the owner identity is ready, `404
+template_missing` for an unknown id, and `400 template_invalid` with the
+service's sentence when a write is refused.
+
+| Route | What it does |
+|-------|--------------|
+| `POST /templates` `{ name, fromId? }` | New template: blank, or a duplicate of `fromId` (no identity or history carried; the notes are). `201 { id, template }`. Names: letters, digits, spaces, `-`, `_`, ≤64 chars |
+| `GET /templates/:id` | `{ template, isDefault, defaultId, contents: { config, files: { readme, mind, soul }, extra: [{ path, size, mime }] } }` |
+| `PATCH /templates/:id` `{ name?, description?, warning? }` | Notes (shown wherever the template is offered, never copied into agents; `""` clears one, ≤500 chars) and/or rename (moves the file; `defaultId` follows). `{ id, template }`: `id` is the new one after a rename |
+| `DELETE /templates/:id` | Moves the file to `<userData>/templates-trash` (Studio: the OS trash). Never a hard delete. The default falls back to `standard`. `{ deleted, id, trashFolder, defaultId }` |
+| `POST /templates/:id/default` | Default for new agents (`settings.defaultTemplateId`). `{ defaultId }` |
+| `POST /templates/:id/reset` | A shipped template (`standard`, `sandboxed`, `full-access`, even renamed) back to the shipped version. `400` for a user template |
+| `GET /templates/:id/review` | `{ id, needsReview, reviewed, summary }`: the agent review summary (`AgentConfigSummary`: identity scenario, tools, MCP, triggers, network, …; `provider.status` is `unchecked` or `missing`, credentials are not probed) |
+| `POST /templates/:id/review/accept` `{ password? }` | Claims the file with a fresh identity under this owner, auto-locks `compute` (and ws / adapters / table protections when set), marks it reviewed. `400 password_required` / `403 wrong_password` for a password-protected file; `409 identity_not_ready` when the owner keys are unavailable |
+| `PUT /templates/:id/config` `{ config }` | Replace the agent config (validated with the config schema; the first issue is the `400` error) |
+| `PUT /templates/:id/files` `{ path, content }` | Write a seed file (`README.md`, `mind.md`, `soul.md`) or an extra file |
+| `DELETE /templates/:id/files?path=` | Remove an extra file (seed files: clear their text instead) |
+
+Review is per template: someone else's template (foreign or identity-less)
+shows `reviewed: false` and `POST /agents/create` refuses it (`422
+template_unreviewed`) until accepted. Studio-only: revealing the folder and
+adding host files through a file picker.
+
+### `POST /agents/create`
+
+Studio's "new agent", headless: template instance → sealed identity with
+owner/runtime stamps and attestations → marked reviewed → directory tracked →
+loaded (and started with `start: true`).
+
+```json
+{ "name": "agent-1", "directory": "/abs/dir", "template": "standard", "provider": "anthropic", "model": "claude-...", "start": false }
+```
+
+All fields optional. `name`: a file name (≤64 chars; generated when omitted).
+`directory`: absolute, existing (default `agentsFolder`, else
+`~/Documents/adf-agents`). `provider` must be a configured provider id.
+
+`201`:
+
+```json
+{ "agentId": "abc123", "name": "agent-1", "filePath": "/abs/dir/agent-1.adf", "did": "did:key:z6Mk...", "started": false }
+```
+
+| Status | `code` | When |
+|--------|--------|------|
+| `400` | `bad_request` | Invalid name/directory/provider/body |
+| `409` | `identity_not_ready` | Owner identity not ready; body includes `identity` (status) so a client can offer create/restore/unlock |
+| `409` | `name_taken` | The file already exists |
+| `422` | `template_missing` / `template_unreviewed` | Template gone, or someone else's and not reviewed |
+| `422` | `load_failed` | The file was created (reviewed, folder tracked) but could not load, e.g. no provider configured; the message has the load error. Fix it, then `POST /agents/load` |
 
 ## Agents
 
@@ -378,6 +658,7 @@ Query parameters:
 |-----------|---------|-------------|
 | `limit` | `50` | Number of entries, clamped between `1` and `500` |
 | `offset` | last page | Zero-based offset into loop history |
+| `loop` | `main` | Cognition loop whose stream to read; unknown loops answer `404` |
 
 Example:
 
@@ -390,6 +671,7 @@ Response:
 ```json
 {
   "agentId": "agent-id",
+  "loop": "main",
   "total": 42,
   "limit": 20,
   "offset": 0,
@@ -462,6 +744,109 @@ Review failure:
 }
 ```
 
+## Cognition loops
+
+An agent has one or more **cognition loops**: parallel chat sessions (threads)
+with their own history, sharing the agent's file, identity and credentials.
+`main` is the implicit host loop — the one you talk to by default. **Inner
+loops** (declared in `AgentConfig.loops`) are interior workers with their own
+goal and a subset of the agent's tools — e.g. a `consolidator` that tidies
+memory on a recurring basis, a `researcher`, a `critic`. A timer or trigger
+target with a `loop` field is how an inner loop runs on a schedule. Design:
+[docs/design/agent-loops-mvp.md](../design/agent-loops-mvp.md).
+
+Every mutation below goes through the agent's loop pool — the same path the
+`loop_manage` tool takes — so validation, tool attenuation, owner locks
+(`locked_fields: ['loops']`), and archive-on-delete hold for HTTP callers too.
+Loop-scoped reads elsewhere take a `loop` query parameter (absent = `main`,
+unknown = `404`): `GET /agents/:id/loop`, `GET /agents/:id/chat`,
+`DELETE /agents/:id/chat`. `POST /agents/:id/chat` takes `loop` in the body,
+and `POST /agents/:id/timers` takes `loop` to schedule an inner loop.
+
+Errors: `400` invalid declaration (bad name, unknown or never-grantable tool,
+rename attempt, empty patch), `404` unknown agent or loop, `409` refusal
+(duplicate name, `main` is not managed here, loop cap reached, `loops` locked
+by the owner, chat to a disabled loop).
+
+### `GET /agents/:id/loops`
+
+Lists `main` first, then inner loops in config order.
+
+```json
+{
+  "agentId": "agent-id",
+  "loops": [
+    { "name": "main", "goal": "…", "status": "idle", "enabled": true, "isMain": true, "config": null, "entryCount": 42, "effectiveTools": null },
+    {
+      "name": "consolidator",
+      "goal": "Consolidate memories into mind.md.",
+      "status": "running",
+      "enabled": true,
+      "isMain": false,
+      "config": { "name": "consolidator", "goal": "Consolidate memories into mind.md.", "enabled": true, "autostart": false, "tools": ["loop_send", "loop_list", "sys_set_state"] },
+      "entryCount": 7,
+      "effectiveTools": ["loop_send", "loop_list", "sys_set_state", "loop_compact", "loop_clear"]
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `status` | `idle` or `running` (live, in-memory) |
+| `config` | The inner loop's `LoopConfig`; `null` for `main` (its config is the agent's) |
+| `entryCount` | Rows in the loop's own stream |
+| `effectiveTools` | Tools the loop's executor actually holds after attenuation; `null` for `main` or a loop with no live runtime (disabled) |
+
+### `POST /agents/:id/loops`
+
+Creates an inner loop. Body is a `LoopConfig`; only `name` and `goal` are
+required. Defaults match `loop_manage`: `enabled: true`, `autostart: true`,
+`tools` = `loop_send` + `loop_list` + `sys_set_state` (filtered to what this
+agent can grant). An enabled autostart loop is kicked off at once through the
+ordinary `loop_send` path. Returns `201`:
+
+```json
+{
+  "agentId": "agent-id",
+  "loop": { "name": "consolidator", "status": "idle", "enabled": true, "isMain": false, "config": {}, "entryCount": 0, "effectiveTools": [] },
+  "effectiveTools": ["loop_send", "loop_list", "sys_set_state"],
+  "excludedTools": [],
+  "kickoff": null
+}
+```
+
+`excludedTools` lists requested tools the agent has disabled — carried by name,
+granted once the owner enables them. `kickoff` is the `LoopSendResult`
+(`{ delivered, woke, reason? }`) when an autostart kickoff was sent.
+
+### `GET /agents/:id/loops/:name`
+
+Returns `{ "agentId": "…", "loop": LoopInfo }`.
+
+### `PATCH /agents/:id/loops/:name`
+
+Patches an inner loop. Any of `goal`, `enabled`, `autostart`, `autonomous`,
+`model`, `compact_threshold`, `tools`; present keys replace wholesale.
+`"model": null` / `"compact_threshold": null` remove the override, so the loop
+inherits main's model / compaction threshold again. The loop is re-derived at once; `enabled: false` stops a running loop now (its
+turn is aborted and flushed). Loops cannot be renamed. Returns
+`{ agentId, loop, updated: string[], excludedTools }`.
+
+### `DELETE /agents/:id/loops/:name`
+
+Stops the loop (mid-turn included), archives its stream to `adf_audit` under
+`loop:<name>`, drops its timers (locked timers are kept), then removes it.
+Returns the pool's `LoopDeleteResult`:
+
+```json
+{ "agentId": "agent-id", "name": "consolidator", "archivedEntries": 7, "interruptedTurn": false }
+```
+
+There is no owner "send to loop" endpoint: `POST /agents/:id/chat` with
+`loop` is the owner's voice into any loop. Loop-to-loop messages
+(`[from loop:<name>]`) are the agents' own `loop_send` tool.
+
 ## Agent Resources
 
 These endpoints expose and mutate data stored in the loaded `.adf` file. Most mutating responses return `{ "success": true }` plus the `agentId` or operation-specific fields.
@@ -490,6 +875,29 @@ curl -X PUT http://127.0.0.1:7385/agents/agent-id/config \
 A changed `config.state` in the body does **not** move the running agent's live
 state — the config field is the persisted start state, not a live control. Use
 `POST /agents/:id/state` to move a loaded agent.
+
+### `GET /agents/:id/tools`
+
+The agent's tool catalog, sorted by name: every built-in tool main's registry
+holds, every MCP tool its servers advertise (`available_tools`), and every
+declared tool, each with its declared state and description. It is the list
+`sys_get_config` gives the agent. Read-only: change a tool by editing
+`config.tools` and `PUT /agents/:id/config` (the owner path; `locked` and
+`locked_fields` bind the agent's own `sys_update_config`, not the owner).
+
+```json
+{
+  "agentId": "agent-id",
+  "tools": [
+    { "name": "fs_read", "enabled": true, "visible": true, "restricted": false, "locked": false, "source": "builtin", "description": "Read a file…", "schema": {}, "restrictions": { "restricted": false, "locked": false } },
+    { "name": "mcp_github_search", "enabled": true, "visible": true, "restricted": true, "locked": false, "source": "mcp:github", "description": "…", "schema": {}, "restrictions": { "restricted": true, "locked": false } }
+  ]
+}
+```
+
+`visible` = shown in the LLM's active tool list (when enabled); `restricted` =
+callable by authorized code only, and an LLM call waits for owner approval;
+`locked` = the agent cannot change this entry.
 
 ### `POST /agents/:id/state`
 
@@ -556,11 +964,11 @@ Writes `mind.md`.
 
 ### `GET /agents/:id/chat`
 
-Returns a display-oriented chat history derived from recent loop rows. Optional `limit` defaults to `200`.
+Returns a display-oriented chat history derived from recent loop rows. Optional `limit` defaults to `200`; optional `loop` (default `main`) picks the cognition loop. The response carries `loop`.
 
 ### `DELETE /agents/:id/chat`
 
-Clears persisted loop/chat history and resets the in-memory session.
+Clears persisted loop/chat history and resets the in-memory session. Optional `loop` query (default `main`) clears one loop's stream only — never all of them. Returns `{ agentId, loop, success }`.
 
 ### `GET /agents/:id/files`
 
@@ -698,9 +1106,17 @@ Adds a timer. The body matches Studio timer creation: `mode` is one of `once_at`
 }
 ```
 
+Optional `loop` names the cognition loop an agent-scope wake dispatches to (absent = `main`; unknown = `404`). This is how an inner loop runs on a schedule — e.g. an hourly consolidator:
+
+```json
+{ "mode": "interval", "every_ms": 3600000, "scope": ["agent"], "loop": "consolidator", "payload": "consolidate" }
+```
+
+A system-scope-only timer carries no loop. The timer list returns each timer's `loop`.
+
 ### `PUT /agents/:id/timers/:timerId`
 
-Updates an existing timer using the same body as timer creation.
+Updates an existing timer using the same body as timer creation. With `loop` the timer moves to that loop in place (same id; `"main"` moves it back to main; unknown loop `404`). Without `loop` it keeps the loop it has.
 
 ### `DELETE /agents/:id/timers/:timerId`
 
@@ -756,7 +1172,40 @@ Lists identity metadata without secret values.
 
 ### Identity and Credential Mutation
 
-The daemon exposes loaded-agent identity storage directly for headless clients. Secret-bearing endpoints return values because they are intended for localhost automation; do not expose the daemon API on an untrusted interface.
+The daemon exposes loaded-agent identity storage for headless clients. Values
+go in, never out: every read returns **metadata only**, and stored values and
+key material (`crypto:signing:*`, `crypto:envelope:*`, owner/runtime keys)
+never leave the process by any route. One stored value is described as:
+
+```json
+{
+  "purpose": "adapter:telegram:BOT_TOKEN",
+  "present": true,
+  "storage": "sealed",
+  "sealed": true,
+  "locked": false,
+  "length": 46,
+  "code_access": false
+}
+```
+
+`storage` is `sealed` (envelope-encrypted), `plain`, `password` (legacy
+whole-file password) or `null` (absent). `locked`: stored but not readable in
+this process (its envelope or password is locked). `length` is `null` for key
+material (`crypto:*`) and for locked values. No timestamp is stored.
+
+**Writes while locked.** While the agent's credentials envelope is locked (or
+foreign) on this daemon, a credential `PUT` is refused with `409`,
+`code: "credentials_locked"`: a plain write would destroy a sealed value it
+cannot read, or store a new one unsealed. Unlock first (`adf identity
+unlock|restore`, `/identity` in the terminal app), or send `"replace": true`:
+the owner's explicit override. A locked sealed value is then discarded unread,
+the new value is stored plain and sealed automatically once the envelope
+unlocks, and the replace is logged to the agent's `adf_logs` (event
+`credential_replaced`, target = the purpose). The response carries
+`"replaced": true` when an old value was discarded. `replace` is not accepted
+for key material (`crypto:*`, `400`). Agent code (`set_identity`, shell
+export) has no such override and stays refused while locked.
 
 Identity endpoints:
 
@@ -764,8 +1213,8 @@ Identity endpoints:
 |--------|------|-------------|
 | `GET` | `/agents/:id/identity?prefix=...` | List identity purposes, optionally filtered by prefix |
 | `GET` | `/agents/:id/identity/entries` | List identity metadata without secret values |
-| `GET` | `/agents/:id/identity/:purpose` | Read one decrypted identity value |
-| `PUT` | `/agents/:id/identity/:purpose` | Set one identity value with `{ "value": "..." }` |
+| `GET` | `/agents/:id/identity/:purpose` | Metadata of one stored value (`{ agentId, purpose, present, storage, sealed, locked, length, code_access }`), never the value |
+| `PUT` | `/agents/:id/identity/:purpose` | Set one identity value with `{ "value": "...", "replace"?: true }` |
 | `DELETE` | `/agents/:id/identity/:purpose` | Delete one identity value |
 | `DELETE` | `/agents/:id/identity-prefix?prefix=...` | Delete identity values by purpose prefix |
 | `PATCH` | `/agents/:id/identity/:purpose/code-access` | Set code access with `{ "codeAccess": true }` |
@@ -782,8 +1231,8 @@ Provider credential endpoints:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/agents/:id/providers/:providerId/credential` | Store `provider:{providerId}:apiKey` with `{ "value": "..." }` |
-| `GET` | `/agents/:id/providers/:providerId/credentials` | Return stored provider credentials and provider config overrides |
+| `PUT` | `/agents/:id/providers/:providerId/credential` | Store `provider:{providerId}:apiKey` with `{ "value": "...", "replace"?: true }` |
+| `GET` | `/agents/:id/providers/:providerId/credentials` | `{ agentId, providerId, credentials: { apiKey: <metadata> }, providerConfig? }`: credential metadata (no values) and provider config overrides |
 | `POST` | `/agents/:id/providers` | Upsert an ADF provider config with `{ "provider": { ... } }` |
 | `DELETE` | `/agents/:id/providers/:providerId` | Remove provider config and `provider:{providerId}:*` identity rows |
 
@@ -791,8 +1240,8 @@ MCP credential endpoints:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/agents/:id/mcp/credentials` | Store `mcp:{npmPackage}:{envKey}` with `{ "npmPackage": "...", "envKey": "...", "value": "..." }` |
-| `GET` | `/agents/:id/mcp/credentials?npmPackage=...` | Return all credentials for an MCP package namespace |
+| `PUT` | `/agents/:id/mcp/credentials` | Store `mcp:{npmPackage}:{envKey}` with `{ "npmPackage": "...", "envKey": "...", "value": "...", "replace"?: true }` |
+| `GET` | `/agents/:id/mcp/credentials?npmPackage=...` | `{ agentId, npmPackage, credentials: { <envKey>: <metadata> } }` for an MCP package namespace (no values) |
 | `POST` | `/agents/:id/mcp/servers` | Attach an ADF `McpServerConfig` with `{ "server": { ... } }` |
 | `DELETE` | `/agents/:id/mcp/servers/:serverName?credentialNamespace=...` | Remove server config and matching MCP identity rows |
 
@@ -800,8 +1249,8 @@ Adapter credential endpoints:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/agents/:id/adapters/credentials` | Store `adapter:{adapterType}:{envKey}` with `{ "adapterType": "...", "envKey": "...", "value": "..." }` |
-| `GET` | `/agents/:id/adapters/credentials?adapterType=...` | Return all credentials for an adapter type |
+| `PUT` | `/agents/:id/adapters/credentials` | Store `adapter:{adapterType}:{envKey}` with `{ "adapterType": "...", "envKey": "...", "value": "...", "replace"?: true }` |
+| `GET` | `/agents/:id/adapters/credentials?adapterType=...` | `{ agentId, adapterType, credentials: { <envKey>: <metadata> } }` for an adapter type (no values) |
 | `POST` | `/agents/:id/adapters` | Attach/update an adapter config with `{ "adapterType": "...", "config": { ... } }` |
 | `DELETE` | `/agents/:id/adapters/:adapterType` | Remove adapter config and `adapter:{adapterType}:*` identity rows |
 
@@ -931,15 +1380,25 @@ Response:
       "id": "task-id",
       "status": "pending_approval",
       "tool": "fs_write",
-      "requires_authorization": true
+      "requires_authorization": true,
+      "canAlwaysApprove": true
     }
   ]
 }
 ```
 
+`pending_approval` rows also carry the live "Always approve" affordance,
+derived from the executor (main or inner loop) holding the request — never
+persisted:
+
+| Field | Meaning |
+|-------|---------|
+| `canAlwaysApprove` | `true` when `POST …/always-approve` would be accepted |
+| `alwaysApproveBlockedReason` | Why not, when `canAlwaysApprove` is `false`: `Target is locked (<level>)` (protection override), `One-time approval only for this request` (synthetic approval such as `mcp_oauth_signin`), `Tool declaration is locked`, or no live request waiting on the row (resolve it instead) |
+
 ### `GET /agents/:id/tasks/:taskId`
 
-Returns one task.
+Returns one task (same `canAlwaysApprove` fields as the list).
 
 ```json
 {
@@ -969,7 +1428,7 @@ Allowed `action` values:
 | Action | Meaning |
 |--------|---------|
 | `approve` | Approve the task and allow it to continue |
-| `deny` | Deny the task, optionally with `reason` |
+| `deny` | Deny the task, optionally with `reason`. The reason is stored as the task's `error` and handed back to the agent as the owner's feedback (Studio's "Reject with feedback"): a blocking call's tool result reads `Tool call "<tool>" was rejected by authorizer. Feedback: <reason>` |
 | `pending_approval` | Mark a pending task as awaiting approval |
 
 The body also accepts `modified_args` for clients that use snake case.
@@ -1004,9 +1463,63 @@ executor's own `pending_approval` tasks become `cancelled` (no human ever
 decided). A task swept this way is terminal, so a later resolve on it returns
 `409`.
 
+A request parked by an inner loop's executor is answered on that executor;
+the call is the same.
+
+### `POST /agents/:id/tasks/:taskId/always-approve`
+
+Studio's Approve ▸ Always approve. Drops the HIL gate on the tool — the HOST
+declaration in `config.tools` becomes `enabled: true, restricted: false` (added
+if absent) — persists and propagates it exactly like `PUT /agents/:id/config`,
+then approves the pending request. No body; the tool is taken from the pending
+request, never from the client.
+
+Protections get one-time overrides only: the call is refused for protection
+overrides, synthetic one-shot approvals and locked declarations (re-checked
+against the live host config).
+
+Response:
+
+```json
+{
+  "agentId": "agent-id",
+  "taskId": "task-id",
+  "loop": "main",
+  "tool": "fs_write",
+  "resolution": { "task_id": "task-id", "status": "approved" },
+  "task": {}
+}
+```
+
+`loop` is the loop whose executor held the request. Inner loops never receive
+`restricted` tools (their derived toolset excludes them), so the un-restricted
+host tool reaches a loop only if that loop's `tools` allow-list names it.
+
+Status codes:
+
+| Status | Cause |
+|--------|-------|
+| `404` | Unknown agent or task |
+| `409` | Task not `pending_approval`; no live request waiting on it; or always-approve not allowed — `error` is the blocked reason (same text as `alwaysApproveBlockedReason`) |
+
+### `POST /agents/:id/tasks/approve-all`
+
+Studio's "Approve all": approves every pending gated (`restricted`) approval
+across main and every running inner loop. Protection overrides are never
+included (the executor enforces it) and are counted instead. Optional body
+`{ "loop": "<name>" }` (or `?loop=`) limits it to one loop.
+
+```json
+{ "agentId": "agent-id", "approved": 2, "skippedProtection": 1 }
+```
+
+With a loop, the response also echoes `"loop"`. `404` for an unknown agent or
+loop, `409` when that loop has no running executor.
+
 ### `GET /agents/:id/asks`
 
-Lists pending `ask` requests.
+Lists pending `ask` requests of every loop (main and each running inner
+loop). `loop` names the loop whose turn is waiting on the answer.
 
 ```json
 {
@@ -1014,7 +1527,8 @@ Lists pending `ask` requests.
   "asks": [
     {
       "requestId": "request-id",
-      "question": "Proceed?"
+      "question": "Proceed?",
+      "loop": "main"
     }
   ]
 }
@@ -1028,9 +1542,14 @@ Request body:
 
 ```json
 {
-  "answer": "yes"
+  "answer": "yes",
+  "loop": "researcher"
 }
 ```
+
+`loop` is optional. Request ids are numbered per loop, so pass the `loop` from
+`GET /asks` when two loops ask at once; without it the first loop holding the
+id is answered.
 
 Response:
 
@@ -1038,6 +1557,7 @@ Response:
 {
   "agentId": "agent-id",
   "requestId": "request-id",
+  "loop": "researcher",
   "answered": true
 }
 ```
@@ -1143,6 +1663,123 @@ Skipped reasons:
 | `password_protected` | The agent has encrypted identity data requiring human unlock |
 | `unreviewed` | The agent has not been accepted through the review gate |
 
+### Tracked agent folders
+
+Studio's tracked directories over HTTP. The list is settings
+`trackedDirectories` (`string[]`), the same key Studio writes and the daemon
+reads at boot for its autostart scan. The routes write it through the daemon's
+internal settings store; it is not a write-denied key. Tracking or untracking
+never creates, moves or deletes files. Scans use `maxDirectoryScanDepth`
+(default `5`).
+
+#### `GET /tracked-dirs`
+
+```json
+{
+  "maxDepth": 5,
+  "directories": [
+    { "path": "C:\\Users\\me\\Documents\\adf-agents", "exists": true, "agentCount": 3, "loadedCount": 2 }
+  ]
+}
+```
+
+`agentCount` is the number of `.adf` files an autostart scan finds under the
+folder, and `loadedCount` is how many of the agents loaded in this daemon live
+under it.
+
+#### `POST /tracked-dirs`
+
+Body: `{ "path": "<absolute folder>" }`. The folder is tracked right away:
+
+1. It must be an absolute path to an existing directory. It is stored
+   canonicalized: resolved, with symlinks and 8.3 names expanded and no
+   trailing separator.
+2. It is persisted to `trackedDirectories`. As in Studio, a new parent
+   replaces tracked subfolders it now covers (`absorbed`).
+3. The live daemon is updated, so the mesh uses the new tracked roots
+   immediately.
+4. The folder goes through the same autostart pass as daemon boot and
+   `POST /agents/autostart`, with the same review gate. Unreviewed agents are
+   not loaded and are listed in `needsReview`; accept them with
+   `POST /agents/review/accept`.
+
+`201` response:
+
+```json
+{
+  "entry": { "path": "/home/me/agents", "exists": true, "agentCount": 2, "loadedCount": 1 },
+  "directories": ["/home/me/agents"],
+  "absorbed": [],
+  "autostart": { "scanned": 2, "started": [], "skipped": [], "failed": [] },
+  "needsReview": [{ "filePath": "/home/me/agents/agent-2.adf", "name": "agent-2", "reason": "unreviewed", "agentId": "…" }],
+  "agents": [{ "filePath": "/home/me/agents/agent-2.adf", "name": "agent-2", "status": "needs_review", "autostart": true, "reviewed": false }]
+}
+```
+
+`agents` is every agent in the folder with its status after the autostart
+pass (same shape as `GET /tracked-dirs/agents`, with load errors attached).
+
+| Status | Cause |
+|--------|-------|
+| `400` | `path` missing, not absolute, missing on disk, or not a directory |
+| `405` | The settings store is read-only |
+| `409` | Already tracked, under any spelling (case and separators are normalized on Windows/macOS), or covered by a tracked parent. `coveredBy` names the tracked entry |
+| `503` | No settings store is configured |
+
+#### `GET /tracked-dirs/agents?path=<tracked folder>`
+
+The agents of one tracked folder and what each needs: `{ path, agents:
+FolderAgent[] }`, where `FolderAgent` is `{ filePath, name, agentId?, status,
+autostart, reviewed, error? }` and `status` is one of `loaded`,
+`needs_review` (never reviewed on this daemon: `POST /agents/review/accept`),
+`not_autostart` (reviewed, loads on request), `stopped` (should have loaded
+but did not; `error` has the load error when known), `password_protected` or
+`unreadable` (`error` says why). `400` without `path`, `404` when the folder
+is not tracked.
+
+#### `GET /tracked-dirs/agents/all`
+
+Every tracked folder with its agents, in one read (the TUI's fleet lists
+agents that are not running next to the loaded ones):
+
+```json
+{
+  "maxDepth": 5,
+  "folders": [
+    {
+      "path": "/home/me/agents", "exists": true, "agentCount": 2, "loadedCount": 1,
+      "agents": [
+        { "filePath": "/home/me/agents/agent-1.adf", "name": "agent-1", "agentId": "…", "status": "loaded", "autostart": true, "reviewed": true },
+        { "filePath": "/home/me/agents/agent-2.adf", "name": "agent-2", "agentId": "…", "status": "stopped", "autostart": true, "reviewed": true, "error": "Provider \"anthropic\" not found." }
+      ]
+    }
+  ]
+}
+```
+
+`agents` has the same shape as `GET /tracked-dirs/agents`. Each `.adf` is
+peeked read-only for its config; the result is cached per file by the
+modification time and size of the file and its `-wal`, so polling this route
+opens only files that changed. A peek never modifies the file (sidecars it
+creates are removed). The last load error an autostart pass hit (daemon boot,
+`POST /agents/autostart`, `POST /tracked-dirs`) is kept as `error` until the
+agent loads. `503` without a settings store.
+
+#### `DELETE /tracked-dirs?path=<folder>&unload=true|false`
+
+Stops tracking a folder. `path` matches the stored string exactly or names the
+same folder under another spelling. A folder that no longer exists on disk can
+still be untracked by its stored string. `unload` defaults to `false`, which
+leaves the folder's agents running. With `unload=true`, every loaded agent
+whose file is under the folder is unloaded; its files stay on disk.
+
+```json
+{ "removed": "/home/me/agents", "directories": [], "unloaded": [{ "agentId": "…", "filePath": "/home/me/agents/agent-1.adf", "name": "agent-1" }] }
+```
+
+`400`: `path` missing or `unload` not `true`/`false`. `404`: not a tracked
+folder. `405` and `503`: same as POST.
+
 ### `POST /agents/:id/start`
 
 Triggers the startup event if the agent's configured `start_in_state` is `active`.
@@ -1174,13 +1811,98 @@ Alias for `POST /agents/:id/stop`.
 
 ### `POST /agents/:id/abort`
 
-Aborts the current turn without unloading the agent.
+Aborts the current turn without unloading the agent. This is a hard stop: the
+executor is left `stopped` and does not run further turns, triggers or timers
+until the agent is reloaded. To end a turn and keep the agent working, use
+`POST /agents/:id/interrupt`.
 
 Response:
 
 ```json
 {
   "success": true
+}
+```
+
+### Aborting one loop's turn
+
+`POST /agents/:id/abort` aborts main's current turn. With `?loop=<name>` (or a
+`{ "loop": "<name>" }` body) it aborts that inner loop's turn instead; unknown
+loop `404`, a disabled loop (no live executor) `409`.
+
+### `POST /agents/:id/interrupt`
+
+Ends the running turn of main (or of an inner loop with `?loop=<name>` / a
+`{ "loop": "<name>" }` body) and sets that executor `idle`, the same teardown
+as Studio's fleet map. Unlike `abort`, the executor is not stopped: later chats,
+triggers and timers keep running. Clients should use this for "Esc to
+interrupt"; `abort` is the hard stop.
+
+```json
+{ "success": true, "interrupted": true, "loop": "main" }
+```
+
+`interrupted` is `false` when nothing was running. Unknown loop `404`; a
+disabled loop, or a stopped/errored executor, `409`.
+
+### `POST /agents/:id/compact`
+
+Compacts one loop's history now: the same summarize-and-replace the agent's
+own compaction runs, on demand (Studio's `/compact`). `?loop=<name>` (or a
+`{ "loop": "<name>" }` body) picks an inner loop; absent = main. Emits
+`loop.compacted` (`loop.compaction_failed` on failure). While it runs the loop
+counts as mid-turn: triggers queue and chats are replayed after it. Refused
+with `409` while that loop is mid-turn or already compacting, when there is
+nothing to compact, or for a disabled loop; unknown loop `404`; `502` when the
+summarization call fails (history is preserved).
+
+```json
+{ "agentId": "agent-id", "loop": "researcher", "success": true }
+```
+
+### `GET /agents/:id/context`
+
+One loop's context usage: what the next request would carry, split into
+categories, against the threshold that loop auto-compacts at (Studio's context
+breakdown). `?loop=<name>` picks an inner loop (absent = main); `?items=<n>`
+caps the biggest items listed per category (default 12, max 200).
+
+The figures are the loop executor's own: system prompt and tool schemas are
+measured with the provider's tokenizer when the executor rebuilds them;
+conversation (compaction summary included) and dynamic instructions are
+estimated per read. Categories do not overlap and sum to `totalTokens`:
+`system` (the system prompt minus its injected files), `files` ({{path}}
+injections), `tools` (built-in schemas), one `mcp:<server>` per MCP server,
+`dynamic`, `messages`; sorted biggest first.
+
+`compactThreshold` resolves like the executor: the loop's own
+`compact_threshold`, else the agent's `context.compact_threshold`, else the
+(loop's or agent's) model's, else 100000; `compactThresholdSource` says which
+(`loop` · `agent` · `model` · `default`). `agentCompactThreshold` is the main
+loop's, for comparison. There is no model context-window catalog: the
+threshold is the scale.
+
+`available: false` (and empty `categories`, `null` totals) when the loop has no
+live executor: disabled, never woken, or put to sleep. Unknown agent or loop
+`404`; bad `items` `400`.
+
+```json
+{
+  "agentId": "agent-id",
+  "loop": "main",
+  "available": true,
+  "model": { "provider": "anthropic", "modelId": "claude-sonnet-4-5" },
+  "compactThreshold": 100000,
+  "compactThresholdSource": "default",
+  "agentCompactThreshold": 100000,
+  "totalTokens": 26140,
+  "percent": 26,
+  "categories": [
+    { "id": "mcp:github", "key": "mcp", "label": "MCP github", "tokens": 9120, "count": 26,
+      "items": [{ "name": "create_pull_request", "tokens": 478 }], "note": "Tool schemas from the github MCP server." },
+    { "id": "messages", "key": "messages", "label": "Conversation", "tokens": 5000, "items": [], "note": "…" }
+  ],
+  "breakdown": { "system_prompt_tokens": 7040, "tools_total_tokens": 14000, "messages_tokens": 5000, "…": "Studio's ContextBreakdown" }
 }
 ```
 
@@ -1192,9 +1914,12 @@ Request body:
 
 ```json
 {
-  "text": "hello daemon"
+  "text": "hello daemon",
+  "loop": "researcher"
 }
 ```
+
+`loop` is optional (absent = `main`). An unknown loop answers `404` and a disabled loop `409`, before any turn is queued.
 
 Response status is `202 Accepted`:
 
@@ -1367,6 +2092,12 @@ matches where the daemon is:
 
 Open `authUrl` in a browser, then poll `GET /auth/chatgpt/status`.
 
+When any sign-in completes (loopback, relay, or Grok device flow), every
+loaded agent loop sitting in `error` on an authentication failure from a
+provider of that type (`chatgpt-subscription` / `grok-subscription`) returns
+to `idle` and emits `agent.recovered`. The failed turn is not re-run; errors
+with other causes are left alone.
+
 **Relay response.** `redirectUri` is required and must be a loopback URL — the
 daemon holds the PKCE verifier while you serve the callback yourself:
 
@@ -1405,7 +2136,8 @@ Response:
 ```json
 {
   "success": true,
-  "status": { "authenticated": true, "email": "you@example.com", "expiresAt": 1760000000000 }
+  "status": { "authenticated": true, "email": "you@example.com", "expiresAt": 1760000000000 },
+  "recovered": [{ "agentId": "...", "filePath": "...", "loop": "main", "notice": "agent-1 recovered after ChatGPT sign-in" }]
 }
 ```
 
@@ -1667,9 +2399,14 @@ Common errors:
 | Status | Shape | Cause |
 |--------|-------|-------|
 | `400` | `{ "error": "..." }` | Invalid request body or query |
+| `401` | `{ "error": "...", "code": "unauthorized" }` | Missing or wrong bearer token (see [Authentication](#authentication-and-cross-site-protection)) |
+| `403` | `{ "error": "...", "code": "host_not_allowed" }` | `Host` header not in the allow-list (DNS rebinding protection) |
+| `403` | `{ "error": "...", "code": "cross_origin" }` | Foreign `Origin`, or `Sec-Fetch-Site: cross-site/same-site` |
+| `403` | `{ "error": "...", "code": "loopback_only" }` | Identity secret/state route or shutdown called from another machine |
 | `403` | `{ "error": "...", "code": "AGENT_REVIEW_REQUIRED" }` | Review gate blocked loading |
 | `404` | `{ "error": "Unknown agent ..." }` | Agent ID is not loaded |
 | `409` | `{ "error": "..." }` | Target resource is in a state that does not permit the operation (e.g. resolving a non-pending task) |
+| `409` | `{ "error": "...", "code": "credentials_locked" }` | Credential write while the agent's credentials envelope is locked here (unlock, or retry with `"replace": true`) |
 | `405` | `{ "error": "..." }` | Settings store is read-only |
 | `503` | `{ "error": "..." }` | Optional service is not configured |
 | `500` | `{ "error": "..." }` | Runtime error |

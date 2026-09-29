@@ -145,6 +145,7 @@ import { MAIN_LOOP } from '../adf/derive-loop-config'
 import { stripLoopNameMarker } from '../runtime/loop-pool'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { setChildTrustRegistrar } from '../runtime/child-trust'
+import { openSharedMnemonicStore } from '../services/owner-secret-store'
 import { AdfDatabase } from '../adf/adf-database'
 import { resolveDefaultProvider, applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { generateAgentName } from '../../shared/utils/agent-names'
@@ -1796,6 +1797,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const cur = (settings.get('openrouterMandatoryReasoningModels') as string[]) ?? []
     if (!cur.includes(modelId)) settings.set('openrouterMandatoryReasoningModels', [...cur, modelId])
   })
+
+  // Share the owner phrase with the CLI/daemon on this machine through one OS
+  // keychain entry: mirrored on create/restore/boot, imported from when this
+  // install has the owner DID but cannot read its own copy.
+  settings.getOwnerIdentity().setSharedMnemonicStore(openSharedMnemonicStore())
 
   // Generate owner + runtime DIDs on first launch
   const { ownerDid, runtimeDid } = settings.ensureRuntimeIdentity()
@@ -8879,9 +8885,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return { success: true }
   })
 
-  ipcMain.handle(IPC.IDENTITY_OWNER_IMPORT, async (_event, mnemonic: string) => {
+  ipcMain.handle(IPC.IDENTITY_OWNER_IMPORT, async (_event, mnemonic: string, expectedOwnerDid?: string) => {
     try {
-      const result = settings.getOwnerIdentity().importMnemonic(mnemonic)
+      const result = settings.getOwnerIdentity().importMnemonic(mnemonic, {
+        expectedOwnerDid: typeof expectedOwnerDid === 'string' && expectedOwnerDid ? expectedOwnerDid : undefined
+      })
       return { success: true, ...result }
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }

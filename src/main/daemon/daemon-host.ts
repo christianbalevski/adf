@@ -7,6 +7,7 @@ import { withDeadline } from '../utils/concurrency'
 import {
   createDaemonHttpApi,
   type DaemonComputeService,
+  type DaemonHttpApiOptions,
   type DaemonNetworkService,
   type DaemonPackageService,
   type DaemonPythonPackageService,
@@ -15,11 +16,20 @@ import {
   type DaemonWsService,
 } from './http-api'
 import type { DaemonEventBus } from './event-bus'
+import { daemonHostAllowList, isLoopbackName, parseAllowedHostsEnv } from './request-guard'
 
 export interface DaemonHostOptions {
   runtime: RuntimeService
   host?: string
   port?: number
+  /**
+   * Bearer token required on every route but GET /health (daemon/index.ts:
+   * ADF_DAEMON_TOKEN, else the install's daemon-token file). Absent =
+   * ADF_DAEMON_TOKEN only.
+   */
+  token?: string | null
+  /** Extra allowed Host names for non-loopback binds (ADF_DAEMON_ALLOWED_HOSTS; default: that env var). */
+  allowedHosts?: string[]
   pidFile?: string
   logger?: boolean
   shutdownAgentTimeoutMs?: number
@@ -32,6 +42,14 @@ export interface DaemonHostOptions {
   mcpPythonPackageService?: DaemonPythonPackageService
   adapterPackageService?: DaemonPackageService
   sandboxPackageService?: DaemonSandboxPackageService
+  identity?: DaemonHttpApiOptions['identity']
+  agentFactory?: DaemonHttpApiOptions['agentFactory']
+  /** See DaemonHttpApiOptions.providerKeys. */
+  providerKeys?: DaemonHttpApiOptions['providerKeys']
+  /** POST /daemon/shutdown handler (see DaemonHttpApiOptions.requestShutdown). */
+  requestShutdown?: () => void
+  /** See DaemonHttpApiOptions.onTrackedDirectoriesChanged. */
+  onTrackedDirectoriesChanged?: (dirs: string[]) => void
   /**
    * Hooks run FIRST during stop(), before the HTTP server closes and before
    * agent unload — for durability-critical flushes (token usage) that a hang
@@ -68,13 +86,15 @@ function envShutdownTimeoutMs(): number | undefined {
 }
 
 function isLoopbackHost(host: string): boolean {
-  return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host.startsWith('127.')
+  return isLoopbackName(host)
 }
 
 export class DaemonHost {
   private readonly runtime: RuntimeService
   private readonly host: string
   private readonly port: number
+  private readonly token: string | null
+  private readonly allowedHosts: string[]
   private readonly pidFile?: string
   private readonly logger: boolean
   private readonly shutdownAgentTimeoutMs: number
@@ -87,6 +107,11 @@ export class DaemonHost {
   private readonly mcpPythonPackageService?: DaemonPythonPackageService
   private readonly adapterPackageService?: DaemonPackageService
   private readonly sandboxPackageService?: DaemonSandboxPackageService
+  private readonly identity?: DaemonHttpApiOptions['identity']
+  private readonly providerKeys?: DaemonHttpApiOptions['providerKeys']
+  private readonly agentFactory?: DaemonHttpApiOptions['agentFactory']
+  private readonly requestShutdown?: () => void
+  private readonly onTrackedDirectoriesChanged?: (dirs: string[]) => void
   private readonly onShutdownStart: Array<() => void | Promise<void>>
   private readonly onShutdown: Array<() => void | Promise<void>>
   private readonly shouldInstallSignalHandlers: boolean
@@ -98,6 +123,8 @@ export class DaemonHost {
     this.runtime = opts.runtime
     this.host = opts.host ?? '127.0.0.1'
     this.port = opts.port ?? 7385
+    this.token = opts.token ?? process.env.ADF_DAEMON_TOKEN ?? null
+    this.allowedHosts = opts.allowedHosts ?? parseAllowedHostsEnv(process.env.ADF_DAEMON_ALLOWED_HOSTS)
     this.pidFile = opts.pidFile
     this.logger = opts.logger ?? false
     this.shutdownAgentTimeoutMs = opts.shutdownAgentTimeoutMs ?? envShutdownTimeoutMs() ?? DEFAULT_AGENT_UNLOAD_TIMEOUT_MS
@@ -110,6 +137,11 @@ export class DaemonHost {
     this.mcpPythonPackageService = opts.mcpPythonPackageService
     this.adapterPackageService = opts.adapterPackageService
     this.sandboxPackageService = opts.sandboxPackageService
+    this.identity = opts.identity
+    this.providerKeys = opts.providerKeys
+    this.agentFactory = opts.agentFactory
+    this.requestShutdown = opts.requestShutdown
+    this.onTrackedDirectoriesChanged = opts.onTrackedDirectoriesChanged
     this.onShutdownStart = opts.onShutdownStart ?? []
     this.onShutdown = opts.onShutdown ?? []
     this.shouldInstallSignalHandlers = opts.installSignalHandlers ?? true
@@ -118,9 +150,10 @@ export class DaemonHost {
   async start(): Promise<DaemonHostAddress> {
     if (this.server) return { host: this.host, port: this.port }
 
-    // Binding beyond loopback without auth would expose settings and full
-    // agent control to the network.
-    if (!isLoopbackHost(this.host) && !process.env.ADF_DAEMON_TOKEN) {
+    // Binding beyond loopback needs a token the operator chose and hands to
+    // remote clients (the per-install file token is for this machine).
+    const loopback = isLoopbackHost(this.host)
+    if (!loopback && !process.env.ADF_DAEMON_TOKEN) {
       throw new Error(
         `Refusing to bind daemon to non-loopback host ${this.host} without authentication. ` +
         'Set ADF_DAEMON_TOKEN to enable bearer-token auth, or bind to 127.0.0.1.',
@@ -140,6 +173,16 @@ export class DaemonHost {
       mcpPythonPackageService: this.mcpPythonPackageService,
       adapterPackageService: this.adapterPackageService,
       sandboxPackageService: this.sandboxPackageService,
+      identity: this.identity,
+      providerKeys: this.providerKeys,
+      agentFactory: this.agentFactory,
+      requestShutdown: this.requestShutdown,
+      onTrackedDirectoriesChanged: this.onTrackedDirectoriesChanged,
+      security: {
+        token: this.token,
+        allowedHosts: () => daemonHostAllowList(this.host, this.boundPort(), loopback ? [] : this.allowedHosts),
+        ipLiteralPort: () => (loopback ? null : this.boundPort()),
+      },
     })
     await this.server.listen({ host: this.host, port: this.port })
     this.writePidFile()
@@ -154,6 +197,12 @@ export class DaemonHost {
     if (this.stopping) return this.stopping
     this.stopping = this.stopOnce()
     return this.stopping
+  }
+
+  /** The listening port (differs from `port` when it was 0). */
+  private boundPort(): number {
+    const address = this.server?.server.address()
+    return address && typeof address === 'object' ? address.port : this.port
   }
 
   getServer(): FastifyInstance | null {

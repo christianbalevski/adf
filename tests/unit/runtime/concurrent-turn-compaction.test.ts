@@ -45,6 +45,12 @@ class SlowCompactionProvider implements LLMProvider {
   readonly modelId = 'slow-compaction-model-v1'
   compactionCalls = 0
   compactionDelayMs = 60
+  /** Input tokens each ordinary turn call reports. */
+  turnInputTokens = 205_000
+  /** Summarizer calls throw instead of returning a summary. */
+  failCompaction = false
+  /** Call order: 'compaction:start' / 'compaction:end' / 'turn'. */
+  calls: string[] = []
   /** Runs inside the summarizer call, before it returns. */
   onCompaction?: (n: number) => Promise<void>
 
@@ -55,8 +61,14 @@ class SlowCompactionProvider implements LLMProvider {
         : Array.isArray(m.content) && m.content.some(b => b.type === 'text' && b.text?.includes('<transcript>')))
     if (isCompaction) {
       const n = ++this.compactionCalls
-      await sleep(this.compactionDelayMs)
-      await this.onCompaction?.(n)
+      this.calls.push('compaction:start')
+      try {
+        await sleep(this.compactionDelayMs)
+        await this.onCompaction?.(n)
+        if (this.failCompaction) throw new Error('summarizer exploded')
+      } finally {
+        this.calls.push('compaction:end')
+      }
       return {
         id: `compaction-${n}`,
         content: [{ type: 'text', text: `summary #${n}` }],
@@ -64,11 +76,12 @@ class SlowCompactionProvider implements LLMProvider {
         usage: { input_tokens: 14_000, output_tokens: 200 },
       }
     }
+    this.calls.push('turn')
     return {
       id: 'reply',
       content: [{ type: 'text', text: 'ok' }],
       stop_reason: 'end_turn',
-      usage: { input_tokens: 205_000, output_tokens: 10 },
+      usage: { input_tokens: this.turnInputTokens, output_tokens: 10 },
     }
   }
 
@@ -199,6 +212,161 @@ describe('AgentExecutor — concurrent turns and compaction', () => {
       const log = workspace.getLogs().find(l => l.event === 'compaction_superseded')
       expect(log).toBeDefined()
       expect(log!.level).toBe('warn')
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+})
+
+/**
+ * Manual compaction (Studio /compact, POST /agents/:id/compact) runs outside
+ * the turn loop. compactNow claims a turn slot for the whole summarizer call,
+ * so nothing else can run on — or reset — the session while it is in flight.
+ */
+describe('AgentExecutor.compactNow — claims the turn slot', () => {
+  beforeEach(() => {
+    clearAllUmbilicalBuses()
+  })
+
+  async function warmAgent(name: string) {
+    const provider = new SlowCompactionProvider()
+    provider.turnInputTokens = 1_000 // stay far below the auto-compact threshold
+    const built = await buildAgent(name, provider)
+    await built.agent.executor.executeTurn(chatDispatch('warm'))
+    provider.calls.length = 0
+    return { provider, ...built }
+  }
+
+  /** Exactly one turn call, and it follows the compaction. */
+  function expectTurnAfterCompaction(calls: string[]) {
+    expect(calls).toEqual(['compaction:start', 'compaction:end', 'turn'])
+  }
+
+  it('refuses a second concurrent compactNow without a second LLM call', async () => {
+    const { agent, provider, workspace } = await warmAgent('manual-concurrent')
+    try {
+      const [a, b] = await Promise.all([
+        agent.executor.compactNow('manual: a'),
+        agent.executor.compactNow('manual: b'),
+      ])
+      expect(a).toEqual({ success: true })
+      expect(b.success).toBe(false)
+      expect(b.error).toMatch(/already in progress/)
+      expect(provider.compactionCalls).toBe(1)
+      expect(loopTexts(workspace).filter(t => t.includes('[Loop Compacted')).length).toBe(1)
+      expect(agent.executor.isTurnActive()).toBe(false)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('reports mid-compaction as an active turn and emits a visible notice', async () => {
+    const { agent, provider } = await warmAgent('manual-visible')
+    try {
+      const notices: string[] = []
+      agent.executor.on('event', (e: { type: string; payload?: { content?: unknown } }) => {
+        if (e.type === 'context_injected' && typeof e.payload?.content === 'string') notices.push(e.payload.content)
+      })
+      let activeDuring: boolean | undefined
+      provider.onCompaction = async () => { activeDuring = agent.executor.isTurnActive() }
+      expect(await agent.executor.compactNow('manual: visible')).toEqual({ success: true })
+      expect(activeDuring).toBe(true)
+      expect(notices.some(n => n.startsWith('Compacting conversation history'))).toBe(true)
+      expect(agent.executor.isTurnActive()).toBe(false)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('queues a trigger that arrives mid-compaction and runs it after', async () => {
+    const { agent, provider, workspace } = await warmAgent('manual-trigger')
+    try {
+      workspace.addToInbox({ from: 'telegram:1', content: 'hello', source: 'telegram', received_at: Date.now(), status: 'unread' })
+      let triggerTurn: Promise<void> | undefined
+      provider.onCompaction = async () => { triggerTurn = agent.executor.executeTurn(inboxDispatch('mid')) }
+
+      expect(await agent.executor.compactNow('manual: trigger')).toEqual({ success: true })
+      await triggerTurn
+      await waitFor(() => !agent.executor.isTurnActive())
+
+      expectTurnAfterCompaction(provider.calls)
+      const texts = loopTexts(workspace)
+      const summaryAt = texts.findIndex(t => t.includes('[Loop Compacted'))
+      const triggerAt = texts.findIndex(t => t.includes('[Inbox notification]'))
+      expect(summaryAt).toBeGreaterThanOrEqual(0)
+      expect(triggerAt).toBeGreaterThan(summaryAt)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('replays a chat that arrives mid-compaction without aborting the compaction', async () => {
+    const { agent, provider, workspace } = await warmAgent('manual-chat')
+    try {
+      let chatTurn: Promise<void> | undefined
+      provider.onCompaction = async () => { chatTurn = agent.executor.executeTurn(chatDispatch('mid-compaction chat')) }
+
+      expect(await agent.executor.compactNow('manual: chat')).toEqual({ success: true })
+      await chatTurn
+      await waitFor(() => !agent.executor.isTurnActive())
+
+      expectTurnAfterCompaction(provider.calls)
+      const texts = loopTexts(workspace)
+      const summaryAt = texts.findIndex(t => t.includes('[Loop Compacted'))
+      expect(summaryAt).toBeGreaterThanOrEqual(0)
+      expect(texts[summaryAt]).toContain('summary #1')
+      expect(texts.findIndex(t => t.includes('mid-compaction chat'))).toBeGreaterThan(summaryAt)
+      expect(agent.executor.getState()).toBe('idle')
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('releases the claim when summarization fails and reports the failure', async () => {
+    const { agent, provider, workspace } = await warmAgent('manual-fail')
+    try {
+      provider.failCompaction = true
+      const result = await agent.executor.compactNow('manual: fail')
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/summarizer exploded/)
+      expect(agent.executor.isTurnActive()).toBe(false)
+      expect(loopTexts(workspace).some(t => t.includes('[Loop Compacted'))).toBe(false)
+
+      // The slot is free: a turn runs, and a retry compacts.
+      await agent.executor.executeTurn(chatDispatch('after failure'))
+      expect(provider.calls.filter(c => c === 'turn').length).toBe(1)
+      provider.failCompaction = false
+      expect(await agent.executor.compactNow('manual: retry')).toEqual({ success: true })
+      expect(agent.executor.isTurnActive()).toBe(false)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('applies to a side loop executor the same way', async () => {
+    const { agent, provider } = await warmAgent('manual-side-loop')
+    try {
+      await agent.loopPool.createLoop({ name: 'reflector', goal: 'Notice what main missed.', enabled: true })
+      const runtime = agent.loopPool.getRuntime('reflector')!
+      const side = runtime.executor
+      await side.executeTurn(chatDispatch('side warm'))
+      provider.calls.length = 0
+
+      let chatTurn: Promise<void> | undefined
+      provider.onCompaction = async () => { chatTurn = side.executeTurn(chatDispatch('side mid chat')) }
+      const [a, b] = await Promise.all([side.compactNow('manual: side a'), side.compactNow('manual: side b')])
+      expect(a).toEqual({ success: true })
+      expect(b.success).toBe(false)
+      expect(provider.compactionCalls).toBe(1)
+      await chatTurn
+      await waitFor(() => !side.isTurnActive())
+
+      expectTurnAfterCompaction(provider.calls)
+      const texts = loopTexts(runtime.workspace)
+      const summaryAt = texts.findIndex(t => t.includes('[Loop Compacted'))
+      expect(summaryAt).toBeGreaterThanOrEqual(0)
+      expect(texts.findIndex(t => t.includes('side mid chat'))).toBeGreaterThan(summaryAt)
+      expect(agent.executor.isTurnActive()).toBe(false)
     } finally {
       await agent.disposeAsync()
     }

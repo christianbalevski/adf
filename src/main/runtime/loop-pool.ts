@@ -374,7 +374,8 @@ function poolError(action: string, error: unknown): Error {
 }
 
 /** A deliberate, model-facing failure — passes through poolError untouched. */
-class LoopPoolError extends Error {}
+/** A deliberate, caller-safe refusal (duplicate, locked, cap, unknown loop). */
+export class LoopPoolError extends Error {}
 
 function refuse(message: string): never {
   throw new LoopPoolError(message)

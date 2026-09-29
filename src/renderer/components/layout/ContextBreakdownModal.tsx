@@ -4,7 +4,7 @@ import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
 import { MAIN_LOOP, selectLoopSlice, useAgentStore } from '../../stores/agent.store'
 import { loopColor } from '../../utils/loop-color'
-import type { AgentConfig } from '../../../shared/types/adf-v02.types'
+import { resolveHostThreshold, resolveLoopThreshold } from '../../../shared/utils/context-breakdown'
 import type { ContextBreakdown, ContextBreakdownToolGroup } from '../../../shared/types/ipc.types'
 import { formatTokenCount } from '../../utils/token-estimate'
 import { formatUsd } from '../../utils/format-usd'
@@ -13,26 +13,9 @@ import { formatUsd } from '../../utils/format-usd'
 export const formatTokens = formatTokenCount
 export { formatUsd }
 
-/** The host loop's auto-compact trigger point — the executor's own resolution order. */
-export function resolveHostThreshold(config: AgentConfig | null | undefined): number {
-  return config?.context?.compact_threshold ?? config?.model?.compact_threshold ?? 100000
-}
-
-/**
- * …and one inner loop's. `derive-loop-config` writes an explicit per-loop
- * `compact_threshold` into the derived `context`; absent that, the loop
- * inherits the host's `context` value — which still SHADOWS a
- * `compact_threshold` riding inside a per-loop `model` override, exactly as it
- * does at derive time. Mirrored here so the gauge scales against the number the
- * loop's own executor will actually compact at.
- */
-export function resolveLoopThreshold(config: AgentConfig | null | undefined, loop?: string): number {
-  if (!loop || loop === MAIN_LOOP) return resolveHostThreshold(config)
-  const declared = config?.loops?.find((l) => l.name === loop)
-  if (!declared) return resolveHostThreshold(config)
-  if (declared.compact_threshold != null) return declared.compact_threshold
-  return config?.context?.compact_threshold ?? (declared.model ?? config?.model)?.compact_threshold ?? 100000
-}
+// The executor's compact-threshold resolution order (host and per loop) is
+// shared with the daemon's GET /agents/:id/context (the terminal app's /context).
+export { resolveHostThreshold, resolveLoopThreshold }
 
 /** Cycled through for per-{{file}} bar segments — blue-family shades so they
  *  read as subdivisions of the system prompt, distinct from the other parts. */

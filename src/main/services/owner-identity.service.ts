@@ -24,6 +24,17 @@ import { daemonEncKeyLabel } from '../daemon/daemon-enc-key'
 import { appendAdfAttestation, createAttestation, issueOwnerAttestation, verifyAttestation } from './attestation.service'
 import { getReviewedIds } from './agent-review'
 import type { SettingsService } from './settings.service'
+import type { SharedMnemonicStore } from './owner-secret-store'
+
+/**
+ * The slice of settings the identity service needs. SettingsService (Studio,
+ * safeStorage-backed) and the daemon's DaemonIdentitySettings (keychain or
+ * passphrase file) both provide it.
+ */
+export type OwnerIdentitySettings = Pick<
+  SettingsService,
+  'get' | 'set' | 'getSecret' | 'setSecret' | 'secretStatus' | 'isSafeStorageAvailable'
+>
 
 export interface OwnerIdentityStatus {
   ownerDid: string
@@ -31,6 +42,12 @@ export interface OwnerIdentityStatus {
   hasMnemonic: boolean
   /** A mnemonic blob exists but cannot be decrypted (keychain denied/changed). */
   mnemonicLocked: boolean
+  /**
+   * The owner DID on record comes from a seed phrase this install cannot read
+   * (e.g. created by the headless daemon into its passphrase file). Nothing is
+   * minted; the user restores it with the same 12 words.
+   */
+  restoreRequired: boolean
   backupConfirmed: boolean
   legacyOwnerDids: string[]
   legacyRuntimeDids: string[]
@@ -40,6 +57,13 @@ export interface OwnerIdentityStatus {
   runtimeDelegationValid: boolean
 }
 
+/**
+ * Settings flag: `ownerDid` was derived from a BIP-39 phrase (set by Studio
+ * and the daemon whenever they mint, import or adopt one). Legacy label-only
+ * DIDs never carry it; see OwnerIdentityService.ownerIsSeedDerived.
+ */
+export const OWNER_SEED_DERIVED_KEY = 'ownerDidSeedDerived'
+
 export interface RestampResult {
   restamped: number
   attested: number
@@ -47,7 +71,76 @@ export interface RestampResult {
 }
 
 export class OwnerIdentityService {
-  constructor(private settings: SettingsService) {}
+  private sharedMnemonic: SharedMnemonicStore | null = null
+  private readonly manageTrustedDaemonSlots: boolean
+
+  constructor(
+    private settings: OwnerIdentitySettings,
+    opts: {
+      /**
+       * Enroll/revoke `daemon:*` credentials slots from `trustedDaemonEncKeys`.
+       * Studio only: it owns that list. A daemon reading a different settings
+       * file would otherwise strip slots Studio added.
+       */
+      manageTrustedDaemonSlots?: boolean
+    } = {}
+  ) {
+    this.manageTrustedDaemonSlots = opts.manageTrustedDaemonSlots ?? true
+  }
+
+  /**
+   * Studio: the OS-keychain entry the daemon reads the owner phrase from.
+   * Studio mirrors its phrase into it, and imports from it when it has an
+   * owner DID but cannot read its own copy (same machine, identity created or
+   * restored in the CLI/daemon). Never set in the daemon, whose settings
+   * adapter already reads that entry directly.
+   */
+  setSharedMnemonicStore(store: SharedMnemonicStore | null): void {
+    this.sharedMnemonic = store
+  }
+
+  /** Copy the phrase into the shared keychain entry when it differs. Never throws. */
+  private mirrorToSharedStore(mnemonic: string): void {
+    if (!this.sharedMnemonic) return
+    try {
+      if (this.sharedMnemonic.read() !== mnemonic) this.sharedMnemonic.write(mnemonic)
+    } catch (err) {
+      console.warn('[OwnerIdentity] Could not mirror the owner phrase into the OS keychain:', err instanceof Error ? err.message : err)
+    }
+  }
+
+  /**
+   * Take the owner phrase from the shared keychain entry when this install
+   * cannot read its own. Only a phrase that derives the owner DID already on
+   * record is taken (or any valid phrase on a fresh install with no owner
+   * DID yet). Returns the adopted phrase, or null.
+   */
+  private importFromSharedStore(currentOwnerDid: string | undefined): string | null {
+    if (!this.sharedMnemonic) return null
+    // Without safeStorage, setSecret would write the phrase to the settings
+    // file in plaintext. Keep Studio's previous behavior instead.
+    if (!this.settings.isSafeStorageAvailable()) return null
+    let phrase: string | null
+    try {
+      phrase = this.sharedMnemonic.read()
+    } catch {
+      return null
+    }
+    if (!phrase || !validateMnemonic(phrase)) return null
+    const owner = deriveOwnerIdentity(phrase)
+    if (currentOwnerDid && owner.did !== currentOwnerDid) {
+      console.warn(`[OwnerIdentity] The OS keychain holds the phrase for ${owner.did}, not this install's owner ${currentOwnerDid} — not importing it.`)
+      return null
+    }
+    this.settings.setSecret('ownerMnemonic', phrase)
+    if (!currentOwnerDid) {
+      this.settings.set('ownerDid', owner.did)
+      this.settings.set('ownerSeedBackupConfirmed', false)
+    }
+    this.markSeedDerived()
+    console.log(`[OwnerIdentity] Imported owner phrase for ${owner.did} from the OS keychain`)
+    return phrase
+  }
 
   // =========================================================================
   // Identity bootstrap + migration
@@ -65,21 +158,30 @@ export class OwnerIdentityService {
    */
   ensureIdentity(): { ownerDid: string; runtimeDid: string; migrated: boolean } {
     const existingOwnerDid = this.settings.get('ownerDid') as string | undefined
-    const mnemonic = this.settings.getSecret('ownerMnemonic')
+    // Own copy first; else the phrase the CLI/daemon put in the OS keychain
+    // (same owner DID only — see importFromSharedStore).
+    const mnemonic = this.settings.getSecret('ownerMnemonic') ?? this.importFromSharedStore(existingOwnerDid)
 
     if (mnemonic) {
       // Already migrated. Sanity-check determinism; never crash the app over it.
       const ownerDid = this.settings.get('ownerDid') as string
-      const runtimeDid = this.settings.get('runtimeDid') as string
       try {
         const derived = deriveOwnerIdentity(mnemonic)
         if (derived.did !== ownerDid) {
           console.warn(`[OwnerIdentity] Stored ownerDid ${ownerDid} does not match mnemonic-derived ${derived.did}`)
+        } else {
+          // Backfill for installs from before the marker existed.
+          this.markSeedDerived()
         }
       } catch (err) {
         console.warn('[OwnerIdentity] Failed to derive owner identity from stored mnemonic:', err)
       }
       this.ensureEncryptionKeys()
+      // Backfill only: a phrase adopted from the keychain on a fresh install
+      // arrives without a runtime key of this install's own.
+      this.ensureRuntimeKey()
+      this.mirrorToSharedStore(mnemonic)
+      const runtimeDid = this.settings.get('runtimeDid') as string
       return { ownerDid, runtimeDid, migrated: false }
     }
 
@@ -97,6 +199,25 @@ export class OwnerIdentityService {
       )
       return {
         ownerDid: existingOwnerDid ?? '',
+        runtimeDid: (this.settings.get('runtimeDid') as string | undefined) ?? '',
+        migrated: false
+      }
+    }
+
+    // A seed-derived owner whose phrase this install cannot read (created by
+    // the headless daemon/CLI into its passphrase file, or settings carried
+    // over from another machine) is NOT a legacy label-only DID. Minting here
+    // would silently replace the owner and restamp every local agent. Leave it
+    // alone; getStatus() reports restoreRequired and the UI asks for the
+    // 12 words (Settings → Identity → Restore).
+    if (existingOwnerDid && this.ownerIsSeedDerived()) {
+      console.warn(
+        `[OwnerIdentity] Owner ${existingOwnerDid} comes from a seed phrase this install cannot read ` +
+        '(e.g. created by the ADF daemon/CLI with a passphrase-protected identity file). ' +
+        'NOT minting a new owner — restore it with its 12 words (Settings → Identity → Restore identity).'
+      )
+      return {
+        ownerDid: existingOwnerDid,
         runtimeDid: (this.settings.get('runtimeDid') as string | undefined) ?? '',
         migrated: false
       }
@@ -121,10 +242,12 @@ export class OwnerIdentityService {
     const owner = deriveOwnerIdentity(newMnemonic)
     this.settings.setSecret('ownerMnemonic', newMnemonic)
     this.settings.set('ownerDid', owner.did)
+    this.settings.set(OWNER_SEED_DERIVED_KEY, true)
     this.settings.set('ownerSeedBackupConfirmed', false)
 
     const runtimeDid = this.mintRuntimeKey(owner.privateKeyPkcs8, owner.did)
     this.ensureEncryptionKeys()
+    this.mirrorToSharedStore(newMnemonic)
 
     console.log(`[OwnerIdentity] ${isUpgrade ? 'Migrated to' : 'Created'} key-backed identity — owner ${owner.did}, runtime ${runtimeDid}`)
 
@@ -182,6 +305,60 @@ export class OwnerIdentityService {
     )
     this.settings.set('runtimeDelegation', delegation)
     return runtimeDid
+  }
+
+  /**
+   * Make sure this install has a runtime signing key certified by the current
+   * owner: mint one when absent, re-sign the delegation when it is missing,
+   * invalid, or issued by another owner. Needs the owner key; a locked
+   * runtime key is never replaced. Returns the runtime DID, or null.
+   */
+  ensureRuntimeKey(): string | null {
+    const ownerDid = this.getOwnerDid()
+    const mnemonic = this.settings.getSecret('ownerMnemonic')
+    if (!ownerDid || !mnemonic) return null
+    let ownerKey: Buffer
+    try {
+      const owner = deriveOwnerIdentity(mnemonic)
+      // Inconsistent store (see ensureIdentity's sanity warning): signing a
+      // delegation here would certify under the wrong key.
+      if (owner.did !== ownerDid) return this.getRuntimeDid() || null
+      ownerKey = owner.privateKeyPkcs8
+    } catch {
+      return null
+    }
+    const keyStatus = this.settings.secretStatus('runtimePrivateKey')
+    if (keyStatus === 'locked') return this.getRuntimeDid() || null
+    const runtimeDid = this.getRuntimeDid()
+    if (!runtimeDid || keyStatus === 'absent') return this.mintRuntimeKey(ownerKey, ownerDid)
+    const delegation = this.getRuntimeDelegation()
+    if (!delegation || delegation.issuer !== ownerDid || !verifyAttestation(delegation, { expectedSubject: runtimeDid })) {
+      this.settings.set('runtimeDelegation', createAttestation(
+        { issuer: ownerDid, subject: runtimeDid, role: 'runtime', issued_at: new Date().toISOString() },
+        ownerKey
+      ))
+    }
+    return runtimeDid
+  }
+
+  /** Record that `ownerDid` is seed-derived (idempotent; no write when already set). */
+  private markSeedDerived(): void {
+    if (this.settings.get(OWNER_SEED_DERIVED_KEY) !== true) this.settings.set(OWNER_SEED_DERIVED_KEY, true)
+  }
+
+  /**
+   * Whether the owner DID on record comes from a seed phrase (as opposed to a
+   * pre-mnemonic, label-only legacy DID). The explicit flag, or — for installs
+   * from before it — any value that only ever exists next to a seed-derived
+   * owner: its encryption public key, a runtime delegation it signed, or the
+   * backup flag written when the phrase was minted.
+   */
+  ownerIsSeedDerived(): boolean {
+    if (this.settings.get(OWNER_SEED_DERIVED_KEY) === true) return true
+    return typeof this.settings.get('ownerEncPublicKey') === 'string'
+      || !!this.settings.get('runtimeDelegation')
+      || !!this.settings.get('daemonRuntimeDelegation')
+      || typeof this.settings.get('ownerSeedBackupConfirmed') === 'boolean'
   }
 
   // =========================================================================
@@ -251,11 +428,14 @@ export class OwnerIdentityService {
 
   getStatus(): OwnerIdentityStatus {
     const runtimeDelegation = this.getRuntimeDelegation()
+    const hasMnemonic = !!this.settings.getSecret('ownerMnemonic')
+    const mnemonicLocked = this.settings.secretStatus('ownerMnemonic') === 'locked'
     return {
       ownerDid: this.getOwnerDid(),
       runtimeDid: this.getRuntimeDid(),
-      hasMnemonic: !!this.settings.getSecret('ownerMnemonic'),
-      mnemonicLocked: this.settings.secretStatus('ownerMnemonic') === 'locked',
+      hasMnemonic,
+      mnemonicLocked,
+      restoreRequired: !hasMnemonic && !mnemonicLocked && !!this.getOwnerDid() && this.ownerIsSeedDerived(),
       backupConfirmed: !!this.settings.get('ownerSeedBackupConfirmed'),
       legacyOwnerDids: (this.settings.get('legacyOwnerDids') as string[] | undefined) ?? [],
       legacyRuntimeDids: (this.settings.get('legacyRuntimeDids') as string[] | undefined) ?? [],
@@ -278,7 +458,7 @@ export class OwnerIdentityService {
    * The current owner DID joins the legacy list so local files converge to the
    * imported identity via restamp. Runtime delegation is re-signed.
    */
-  importMnemonic(mnemonic: string): { ownerDid: string } & RestampResult {
+  importMnemonic(mnemonic: string, opts: { expectedOwnerDid?: string } = {}): { ownerDid: string } & RestampResult {
     const normalized = mnemonic.trim().toLowerCase().replace(/\s+/g, ' ')
     if (!validateMnemonic(normalized)) {
       throw new Error('Invalid mnemonic phrase')
@@ -286,6 +466,10 @@ export class OwnerIdentityService {
 
     const currentOwnerDid = this.getOwnerDid()
     const owner = deriveOwnerIdentity(normalized)
+    // Restore (not switch): only the phrase of the owner on record is taken.
+    if (opts.expectedOwnerDid && owner.did !== opts.expectedOwnerDid) {
+      throw new Error(`That phrase belongs to ${owner.did}, not this machine's owner ${opts.expectedOwnerDid}. Check the words, or use Import identity to switch owners.`)
+    }
 
     if (currentOwnerDid && currentOwnerDid !== owner.did) {
       const legacy = (this.settings.get('legacyOwnerDids') as string[] | undefined) ?? []
@@ -296,7 +480,9 @@ export class OwnerIdentityService {
 
     this.settings.setSecret('ownerMnemonic', normalized)
     this.settings.set('ownerDid', owner.did)
+    this.settings.set(OWNER_SEED_DERIVED_KEY, true)
     this.settings.set('ownerSeedBackupConfirmed', true) // imported = user has the phrase
+    this.mirrorToSharedStore(normalized)
 
     // New owner → new encryption key; overwrite unconditionally (runtime enc key is kept).
     try {
@@ -316,6 +502,8 @@ export class OwnerIdentityService {
       )
       this.settings.set('runtimeDelegation', delegation)
     }
+    // No runtime key yet (headless restore on a fresh machine): mint one.
+    this.ensureRuntimeKey()
 
     const result = this.restampLocalAdfs()
     console.log(`[OwnerIdentity] Imported identity ${owner.did} — restamped ${result.restamped}, ${result.failures.length} failure(s)`)
@@ -371,6 +559,7 @@ export class OwnerIdentityService {
    * a malformed trusted key must not break envelope unlock.
    */
   private ensureTrustedDaemonSlots(workspace: AdfWorkspace): void {
+    if (!this.manageTrustedDaemonSlots) return
     try {
       const trusted = (this.settings.get('trustedDaemonEncKeys') as string[] | undefined) ?? []
       if (workspace.getEnvelopeState('credentials') !== 'unlocked') return
@@ -469,9 +658,7 @@ export class OwnerIdentityService {
     }
 
     let keysGenerated = false
-    if (workspace.getIdentityRow('crypto:signing:private_key') === null) {
-      workspace.generateIdentityKeys(null)
-      keysGenerated = true
+    const stampAndAttest = () => {
       if (!workspace.getMeta('adf_owner_did')) workspace.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
       if (!workspace.getMeta('adf_runtime_did')) workspace.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
       issueOwnerAttestation(workspace, {
@@ -480,6 +667,23 @@ export class OwnerIdentityService {
         runtimeDid: this.getRuntimeDid(),
         runtimePrivateKey: this.getRuntimeSigningKey()
       })
+    }
+    const signingRow = workspace.getIdentityRow('crypto:signing:private_key')
+    if (signingRow === null) {
+      workspace.generateIdentityKeys(null)
+      keysGenerated = true
+      stampAndAttest()
+    } else if (
+      signingRow.encryption_algo === 'plain' &&
+      workspace.getDid() &&
+      !workspace.getMeta('adf_owner_did') &&
+      this.getOwnerSigningKey()
+    ) {
+      // A plain key minted where no owner key was available (a headless
+      // child from an older daemon, generate-keys without an owner): it is
+      // sealed below like any plain row, and gets the owner stamps and
+      // attestations it never received. Only reached for own/reviewed files.
+      stampAndAttest()
     }
 
     const sealed = workspace.sealPlainRowsIntoEnvelopes()

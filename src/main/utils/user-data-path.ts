@@ -40,7 +40,8 @@ function platformConfigBase(): string {
 
 let loggedDefaultPath: string | null = null
 
-export function defaultUserDataPath(): string {
+/** `quiet`: skip the one-time log line (CLI output stays clean). */
+export function defaultUserDataPath(options: { quiet?: boolean } = {}): string {
   if (process.env.ADF_USER_DATA_DIR) return process.env.ADF_USER_DATA_DIR
   const base = platformConfigBase()
   // Packaged Studio writes settings under the productName directory
@@ -50,7 +51,7 @@ export function defaultUserDataPath(): string {
   const productDir = join(base, PRODUCT_NAME)
   const packageDir = join(base, PACKAGE_NAME)
   const chosen = existsSync(join(productDir, SETTINGS_FILE)) ? productDir : packageDir
-  if (loggedDefaultPath !== chosen) {
+  if (!options.quiet && loggedDefaultPath !== chosen) {
     loggedDefaultPath = chosen
     console.log(`[UserDataPath] Using user data directory: ${chosen}`)
   }

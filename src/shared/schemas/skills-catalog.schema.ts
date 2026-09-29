@@ -16,7 +16,7 @@ import { z } from 'zod'
  */
 
 /** Same kebab shape the indexer enforces — a catalog entry that can never index is not an entry. */
-const SKILL_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
+export const SKILL_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
 
 /**
  * Segments a package resource path may carry. Deliberately narrow — no spaces,

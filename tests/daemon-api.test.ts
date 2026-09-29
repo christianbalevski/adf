@@ -44,6 +44,23 @@ afterEach(async () => {
 })
 
 describe('daemon HTTP API', () => {
+  it('stops gracefully on POST /daemon/shutdown from this machine only', async () => {
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    let requested = 0
+    const server = createDaemonHttpApi(runtime, { requestShutdown: () => { requested++ } })
+    servers.push(server)
+    const remote = await server.inject({ method: 'POST', url: '/daemon/shutdown', remoteAddress: '10.0.0.9' })
+    expect(remote.statusCode).toBe(403)
+    const local = await server.inject({ method: 'POST', url: '/daemon/shutdown', remoteAddress: '127.0.0.1' })
+    expect(local.statusCode).toBe(202)
+    expect(local.json()).toMatchObject({ accepted: true, pid: process.pid })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(requested).toBe(1)
+    const without = createDaemonHttpApi(runtime)
+    servers.push(without)
+    expect((await without.inject({ method: 'POST', url: '/daemon/shutdown', remoteAddress: '127.0.0.1' })).statusCode).toBe(405)
+  })
+
   it('serves the static OpenAPI document', async () => {
     const runtime = new RuntimeService({ enforceReviewGate: false })
     const server = createDaemonHttpApi(runtime)
@@ -1368,11 +1385,18 @@ describe('daemon HTTP API', () => {
     })
     expect(identitySet.statusCode).toBe(200)
     const identityGet = await server.inject({ method: 'GET', url: `/agents/${ref.id}/identity/${purpose}` })
-    expect(identityGet.json()).toEqual(expect.objectContaining({
+    // Metadata only: the value never leaves the daemon.
+    expect(identityGet.json()).toEqual({
       agentId: ref.id,
       purpose: 'test:secret',
-      value: 'identity-secret',
-    }))
+      present: true,
+      storage: 'plain',
+      sealed: false,
+      locked: false,
+      length: 'identity-secret'.length,
+      code_access: false,
+    })
+    expect(identityGet.body).not.toContain('identity-secret')
 
     const codeAccess = await server.inject({
       method: 'PATCH',
@@ -1431,9 +1455,10 @@ describe('daemon HTTP API', () => {
     expect(providerAttach.statusCode).toBe(200)
     const providerCredentials = await server.inject({ method: 'GET', url: `/agents/${ref.id}/providers/openai-main/credentials` })
     expect(providerCredentials.json()).toEqual(expect.objectContaining({
-      credentials: { apiKey: 'sk-test' },
+      credentials: { apiKey: expect.objectContaining({ purpose: 'provider:openai-main:apiKey', present: true, length: 7 }) },
       providerConfig: expect.objectContaining({ defaultModel: 'gpt-test' }),
     }))
+    expect(providerCredentials.body).not.toContain('sk-test')
 
     const mcpPackage = '@modelcontextprotocol/server-github'
     const mcpCredential = await server.inject({
@@ -1461,8 +1486,9 @@ describe('daemon HTTP API', () => {
       url: `/agents/${ref.id}/mcp/credentials?npmPackage=${encodeURIComponent(mcpPackage)}`,
     })
     expect(mcpCredentials.json()).toEqual(expect.objectContaining({
-      credentials: { GITHUB_TOKEN: 'gh-secret' },
+      credentials: { GITHUB_TOKEN: expect.objectContaining({ present: true, storage: 'plain', length: 9 }) },
     }))
+    expect(mcpCredentials.body).not.toContain('gh-secret')
 
     const adapterCredential = await server.inject({
       method: 'PUT',
@@ -1481,8 +1507,9 @@ describe('daemon HTTP API', () => {
       url: `/agents/${ref.id}/adapters/credentials?adapterType=telegram`,
     })
     expect(adapterCredentials.json()).toEqual(expect.objectContaining({
-      credentials: { BOT_TOKEN: 'bot-secret' },
+      credentials: { BOT_TOKEN: expect.objectContaining({ present: true, locked: false, length: 10 }) },
     }))
+    expect(adapterCredentials.body).not.toContain('bot-secret')
 
     const config = await server.inject({ method: 'GET', url: `/agents/${ref.id}/config` })
     expect(config.json()).toEqual(expect.objectContaining({

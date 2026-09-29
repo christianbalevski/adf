@@ -568,6 +568,8 @@ export interface AdfApi {
     runtimeDid: string
     hasMnemonic: boolean
     mnemonicLocked: boolean
+    /** Seed-derived owner whose phrase this install cannot read (e.g. made by the daemon): restore, never mint. */
+    restoreRequired: boolean
     backupConfirmed: boolean
     legacyOwnerDids: string[]
     legacyRuntimeDids: string[]
@@ -577,7 +579,8 @@ export interface AdfApi {
   }>
   revealOwnerMnemonic: () => Promise<{ mnemonic: string | null }>
   confirmOwnerBackup: () => Promise<{ success: boolean }>
-  importOwnerMnemonic: (mnemonic: string) => Promise<{ success: boolean; ownerDid?: string; restamped?: number; attested?: number; failures?: string[]; error?: string }>
+  /** `expectedOwnerDid`: restore only that owner (a different phrase is refused, not switched to). */
+  importOwnerMnemonic: (mnemonic: string, expectedOwnerDid?: string) => Promise<{ success: boolean; ownerDid?: string; restamped?: number; attested?: number; failures?: string[]; error?: string }>
   getAgentAttestations: () => Promise<{ attestations: Array<{ issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string }>; did?: string | null }>
   reissueAgentAttestations: () => Promise<{ success: boolean; attestations?: Array<{ issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string }>; error?: string }>
 

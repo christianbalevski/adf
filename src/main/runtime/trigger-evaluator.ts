@@ -408,6 +408,8 @@ export class TriggerEvaluator extends EventEmitter {
     withSource(`system:trigger:${triggerType}`, agentId, () => {
       emitUmbilicalEvent({
         event_type: 'trigger.fired',
+        // A target aimed at an inner loop stamps that loop, so clients file the wake under it.
+        ...(target.loop ? { loop: target.loop } : {}),
         payload: { trigger_type: triggerType, scope: target.scope, target_lambda: target.lambda ?? null }
       })
     })
@@ -886,6 +888,7 @@ export class TriggerEvaluator extends EventEmitter {
         withSource('system:timer', timerAgentId, () => {
           emitUmbilicalEvent({
             event_type: 'timer.fired',
+            ...(timer.loop ? { loop: timer.loop } : {}),
             payload: {
               timer_id: timer.id,
               scope,

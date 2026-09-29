@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { RuntimeService, type RuntimeAgentLoadedEvent } from '../runtime/runtime-service'
 import { AgentRuntimeBuilder } from '../runtime/agent-runtime-builder'
@@ -20,7 +20,11 @@ import { getTokenUsageService } from '../services/token-usage.service'
 import { DaemonHost } from './daemon-host'
 import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
+import { noteAutostartReport } from './tracked-dirs'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
+import { ensureDaemonToken } from './daemon-token'
+import { DaemonIdentity, readBootPassphrase } from './daemon-identity'
+import { DaemonAgentFactory } from './daemon-agent-factory'
 import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { markConfigReviewed } from '../services/agent-review'
@@ -89,13 +93,17 @@ const settings = new FileSettingsStore(settingsPath)
 const eventBus = new DaemonEventBus(1000)
 registerDaemonEventBus(eventBus)
 
-// --- Envelope unlock (mcp-credential-identity Phase C) ---------------------
-// The daemon's X25519 key lives next to its settings file; Studio wraps a
-// credentials-envelope keyslot to it for every trusted daemon
-// (`trustedDaemonEncKeys` in Studio settings). With the hooks registered,
-// env:credentials rows decrypt here and credential-file materialization +
-// resolveMcpEnvVars work headless. Both hooks are unlock-only: the daemon
-// holds no owner key and must never provision envelopes or mint identities.
+// --- Envelope keys + owner identity -----------------------------------------
+// The daemon's X25519 key lives next to its settings file. It is this
+// daemon's runtime encryption key, and Studio also wraps a credentials-
+// envelope keyslot to it for every trusted daemon (`trustedDaemonEncKeys`),
+// so env:credentials rows decrypt here even before the owner identity is set.
+//
+// The owner identity is opt-in: the user creates or restores it (`adf
+// identity`), and the phrase lives in the OS keychain (shared with Studio on
+// this machine) or a passphrase file. Until then the hooks stay unlock-only
+// and nothing mints identities; once ready, the daemon provisions agents
+// exactly like Studio (sealed keys, owner/runtime stamps, attestations).
 let daemonEncKey: DaemonEncKey | null = null
 try {
   daemonEncKey = ensureDaemonEncKey(dirname(settingsPath))
@@ -104,13 +112,41 @@ try {
 } catch (err) {
   console.error('[ADF Daemon] Envelope key unavailable — credentials envelopes stay locked on this daemon:', err instanceof Error ? err.message : err)
 }
-if (daemonEncKey) {
-  const key = daemonEncKey
-  setWorkspaceIdentityHooks({
-    ensureIdentity: (ws) => { ws.unlockEnvelopes({ runtimeEncPrivateKey: key.privateKeyPkcs8 }) },
-    unlockEnvelopes: (ws) => { ws.unlockEnvelopes({ runtimeEncPrivateKey: key.privateKeyPkcs8 }) },
-  })
+// --- Access token ------------------------------------------------------------
+// Every HTTP route but GET /health requires it (request-guard.ts). Local
+// clients read the file; ADF_DAEMON_TOKEN overrides it (and is what remote
+// clients use). Failing to write the file is fatal: an unauthenticated
+// daemon is exactly what the token exists to prevent.
+let daemonToken: string
+if (process.env.ADF_DAEMON_TOKEN) {
+  daemonToken = process.env.ADF_DAEMON_TOKEN
+  console.log('[ADF Daemon] Access token: ADF_DAEMON_TOKEN')
+} else {
+  const minted = ensureDaemonToken(dirname(settingsPath))
+  daemonToken = minted.token
+  console.log(`[ADF Daemon] Access token: ${minted.path}${minted.created ? ' (new)' : ''} — local adf clients read it automatically; print it with: adf daemon token`)
 }
+
+const ownerIdentity = new DaemonIdentity({
+  settings,
+  settingsPath,
+  encKey: daemonEncKey,
+  bootPassphrase: readBootPassphrase((path) => readFileSync(path, 'utf-8')),
+})
+// Provider API keys added through the daemon live in the same secret store.
+settings.setProviderKeyVault(ownerIdentity.providerKeys)
+{
+  const initial = ownerIdentity.refresh()
+  console.log(`[ADF Daemon] Owner identity: ${initial.status}${initial.ownerDid ? ` (${initial.ownerDid})` : ''}, ${initial.storage} storage — ${initial.message}`)
+}
+setWorkspaceIdentityHooks({
+  ensureIdentity: (ws) => {
+    if (ownerIdentity.isReady()) ownerIdentity.service.ensureWorkspaceIdentity(ws)
+    else ownerIdentity.service.unlockWorkspaceEnvelopes(ws)
+  },
+  unlockEnvelopes: (ws) => ownerIdentity.service.unlockWorkspaceEnvelopes(ws),
+  canProvision: () => ownerIdentity.isReady(),
+})
 // Children spawned via sys_create_adf are trusted (parity with Studio; see
 // child-trust.ts). RuntimeService also wires the per-agent hook.
 setChildTrustRegistrar((childConfig) => {
@@ -163,7 +199,7 @@ const agentRuntimeBuilder = new AgentRuntimeBuilder({
   codeSandboxService,
   podmanService,
   credentialEnvelopeLockedHint: daemonEncKey
-    ? `Add this daemon's runtime key (${daemonEncKey.pubKeyPath}) to Studio's trusted daemon keys (trustedDaemonEncKeys), then open the agent in Studio once.`
+    ? `Make the owner identity available (\`adf identity restore\` / \`adf identity unlock\`, or /identity in the TUI), or add this daemon's runtime key (${daemonEncKey.pubKeyPath}) to Studio's trusted daemon keys (trustedDaemonEncKeys) and open the agent in Studio once.`
     : undefined,
   wsConnectionManager,
   mcpPackageResolver,
@@ -188,14 +224,48 @@ const runtime = new RuntimeService({
   compactionPrompt,
   agentRuntimeBuilder,
 })
+// Envelope unlock otherwise only runs at agent load. When the owner identity
+// becomes ready (create/restore/unlock, or a phrase Studio put in the shared
+// keychain), re-check every agent loaded while it was not.
+ownerIdentity.onReady(() => {
+  runtime.refreshAgentCredentials('owner identity ready')
+    .catch(err => console.error('[ADF Daemon] Credential re-check failed:', err))
+})
+// While any agent is degraded, re-check once a minute: picks up a keychain
+// phrase or a trusted-daemon slot Studio wrote, with no daemon restart.
+// Silent while nothing changes; every unlock is logged + evented.
+const CREDENTIAL_RECHECK_MS = 60_000
+setInterval(() => {
+  if (!runtime.hasDegradedAgents()) return
+  try {
+    if (!ownerIdentity.isReady()) ownerIdentity.refresh() // a transition fires onReady
+  } catch (err) {
+    console.error('[ADF Daemon] Owner identity refresh failed:', err)
+  }
+  runtime.refreshAgentCredentials('periodic re-check')
+    .catch(err => console.error('[ADF Daemon] Credential re-check failed:', err))
+}, CREDENTIAL_RECHECK_MS).unref?.()
 const loadedAgentEvents = new Map<string, RuntimeAgentLoadedEvent>()
+const agentFactory =new DaemonAgentFactory({ settings, identity: ownerIdentity, runtime })
 const daemon = new DaemonHost({
   runtime,
+  identity: ownerIdentity,
+  agentFactory,
+  // `adf daemon stop`: the same bounded shutdown as Ctrl+C / SIGTERM.
+  requestShutdown: () => {
+    console.log('[ADF Daemon] Stop requested over HTTP — shutting down...')
+    void boundedShutdown(0)
+  },
   host,
   port,
+  token: daemonToken,
   pidFile,
+  // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
+  // it must see the new list now, not at the next boot (Studio parity).
+  onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
   computeService: podmanService,
   settingsStore: settings,
+  providerKeys: ownerIdentity.providerKeys,
   eventBus,
   wsService: wsConnectionManager,
   networkService: {
@@ -231,11 +301,14 @@ const daemon = new DaemonHost({
       port: meshServer.getPort(),
       host: meshServer.getHost(),
     }),
+    // Start/stop persist, so a user's choice survives restart (default: on).
     startServer: async () => {
+      settings.set('meshServerEnabled', true)
       await meshServer.start()
       return { success: meshServer.isRunning(), running: meshServer.isRunning(), port: meshServer.getPort(), host: meshServer.getHost() }
     },
     stopServer: async () => {
+      settings.set('meshServerEnabled', false)
       await meshServer.stop()
       return { success: true, running: meshServer.isRunning(), port: meshServer.getPort(), host: meshServer.getHost() }
     },
@@ -382,7 +455,7 @@ withSource('system:daemon', () => {
       }, 5_000).unref?.()
 
       const maxDepth = (settings.get('maxDirectoryScanDepth') as number | undefined) ?? 5
-      meshServer.start().catch(err => console.error('[MeshServer] Failed to start:', err))
+      ensureMeshServer()
 
       // Sweep closed WAL sidecars in tracked dirs, deferred until after
       // autostart so open agents are skipped (parity with Studio cleanup).
@@ -396,6 +469,7 @@ withSource('system:daemon', () => {
         withSource('system:daemon', () => runtime.autostartFromDirectories(trackedDirs, { maxDepth }))
           .then(report => {
             console.log('[ADF Daemon] Autostart report:', JSON.stringify(report))
+            noteAutostartReport(report)
             withSource('system:daemon', () => {
               emitUmbilicalEvent({ event_type: 'daemon.autostart.report', payload: { report } })
             })
@@ -441,6 +515,28 @@ function registerAgentWithMesh(event: RuntimeAgentLoadedEvent): void {
   if (event.agent.adapterManager) {
     meshManager.setAdapterManager(event.filePath, event.agent.adapterManager)
   }
+  ensureMeshServer()
+}
+
+// The mesh server serves agent web/API routes and mesh delivery, and is on by
+// default (Studio parity). MeshServer.start() skips while no reachable agent is
+// registered — true at boot, before autostart loads anything — so (re)try as
+// agents register. Debounced so an autostart burst binds once, after the agents
+// that decide the host (loopback vs LAN) are known. A LAN/public agent arriving
+// while bound to loopback rebinds to all interfaces.
+let meshServerTimer: ReturnType<typeof setTimeout> | null = null
+function ensureMeshServer(): void {
+  if (settings.get('meshServerEnabled') === false) return
+  if (meshServerTimer) clearTimeout(meshServerTimer)
+  meshServerTimer = setTimeout(() => {
+    meshServerTimer = null
+    const wantsLan = !process.env.MESH_HOST && (meshManager.hasAgentOfTier('lan') || meshManager.hasAgentOfTier('public'))
+    const rebind = meshServer.isRunning() && wantsLan && meshServer.getHost() === '127.0.0.1'
+    if (meshServer.isRunning() && !rebind) return
+    const run = rebind ? meshServer.stop().then(() => meshServer.start()) : meshServer.start()
+    run.catch(err => console.error('[MeshServer] Failed to start:', err))
+  }, 500)
+  meshServerTimer.unref?.()
 }
 
 // Compute defaults come from the shared single source of truth — a local copy

@@ -1,15 +1,17 @@
-#!/usr/bin/env node
+// The one-shot CLI and TUI dispatch. The `adf` executable is bin.ts; it
+// calls runCli (this module never runs itself).
 
-import { spawn } from 'child_process'
-import { startCallbackServer } from '../providers/chatgpt-subscription/callback-server'
-
-const DEFAULT_DAEMON_URL = 'http://127.0.0.1:7385'
-
-// Sign-in is human-paced: leave room to find the browser window and type a
-// password, rather than the 2 minutes an unattended callback would need.
-const RELAY_CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
-const AUTH_POLL_INTERVAL_MS = 2_000
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+import { DEFAULT_DAEMON_URL, resolveDaemonToken, resolveDaemonUrl } from './daemon-url'
+import {
+  AUTH_PROVIDER_LABELS,
+  loginChatGpt,
+  loginGrok,
+  normalizeAuthProvider,
+  openBrowser,
+  type AuthFlowDeps,
+  type AuthOutcome,
+  type AuthProvider,
+} from './auth-flow'
 
 export interface CliIo {
   fetch: typeof fetch
@@ -21,6 +23,21 @@ export interface CliIo {
   startCallbackServer?: () => Promise<CliCallbackServer>
   /** Test seam for opening the user's browser. */
   openBrowser?: (url: string) => void
+  /** Test seam for the interactive TUI (no command, `tui`, or a TUI-only flag). */
+  launchTui?: (argv: string[]) => Promise<number>
+  /**
+   * Test seam for interactive input (seed phrase, passphrase, confirmations).
+   * hidden: do not echo what is typed. Input never goes through argv, so it
+   * stays out of shell history and process listings.
+   */
+  prompt?: (question: string, opts?: { hidden?: boolean }) => Promise<string>
+  /**
+   * Make sure a daemon answers at `url` before a command or the TUI runs:
+   * the `adf` binary starts a local one in the background (daemon-control).
+   * Returns the started daemon's pid, or null when it was already up (or
+   * may not be started). Absent (tests) = never start anything.
+   */
+  ensureDaemon?: (url: string) => Promise<{ pid: number } | null>
 }
 
 export interface CliCallbackServer {
@@ -32,6 +49,8 @@ export interface CliCallbackServer {
 interface CliOptions {
   daemonUrl: string
   json: boolean
+  /** --token; else ADF_DAEMON_TOKEN, else (loopback) the local token file. */
+  token?: string
 }
 
 interface ParsedArgs {
@@ -48,7 +67,66 @@ const defaultIo: CliIo = {
   stderr: text => process.stderr.write(text),
 }
 
+/** Flags only the TUI understands; `adf --view chat` means "open the TUI". */
+const TUI_FLAGS = new Set(['--view', '--agent', '--loop', '--theme', '--mono', '--no-color', '--ascii', '--no-alt-screen', '--no-mouse', '--mouse', '--no-kitty'])
+
+/** The argv to hand the TUI, or null when this is a one-shot command (or help). */
+export function tuiInvocation(argv: string[]): string[] | null {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--url' || arg === '-u' || arg === '--token') { i++; continue }
+    if (arg.startsWith('--url=') || arg.startsWith('--token=') || arg === '--json') continue
+    if (arg === 'tui' || TUI_FLAGS.has(arg) || [...TUI_FLAGS].some(flag => arg.startsWith(`${flag}=`))) {
+      return argv.filter(a => a !== '--json')
+    }
+    return null
+  }
+  return argv.filter(a => a !== '--json')
+}
+
+async function defaultLaunchTui(argv: string[]): Promise<number> {
+  const { runTui } = await import('../tui/index')
+  return await runTui(argv)
+}
+
+/** The `--url` in argv (TUI and CLI both take it), else ADF_DAEMON_URL, else the default. */
+function urlFromArgv(argv: string[]): string {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--url' || argv[i] === '-u') return resolveDaemonUrl(argv[i + 1])
+    if (argv[i].startsWith('--url=')) return resolveDaemonUrl(argv[i].slice(6))
+  }
+  return resolveDaemonUrl(undefined)
+}
+
+/** Start the daemon when needed; false when that failed (the error is printed). */
+async function daemonReady(io: CliIo, url: string): Promise<{ ok: boolean; started: number | null }> {
+  if (!io.ensureDaemon) return { ok: true, started: null }
+  try {
+    const started = await io.ensureDaemon(url)
+    return { ok: true, started: started?.pid ?? null }
+  } catch (err) {
+    const advice = (err as { advice?: string }).advice
+    io.stderr(`${err instanceof Error ? err.message : String(err)}\n${advice ? `${advice}\n` : ''}`)
+    return { ok: false, started: null }
+  }
+}
+
 export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo): Promise<number> {
+  const tuiArgv = tuiInvocation(argv)
+  if (tuiArgv) {
+    const wantsHelp = tuiArgv.includes('--help') || tuiArgv.includes('-h')
+    const ready = wantsHelp ? { ok: true, started: null } : await daemonReady(io, urlFromArgv(tuiArgv))
+    if (!ready.ok) return 1
+    try {
+      const code = await (io.launchTui ?? defaultLaunchTui)(tuiArgv)
+      if (ready.started) io.stdout(`The daemon (pid ${ready.started}) keeps running in the background. Stop it with: adf daemon stop\n`)
+      return code
+    } catch (err) {
+      io.stderr(`${err instanceof Error ? err.message : String(err)}\n`)
+      return 1
+    }
+  }
+
   let parsed: ParsedArgs
   try {
     parsed = parseArgs(argv)
@@ -58,6 +136,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
   }
 
   const { command, args, options } = parsed
+  if (!['help', '--help', '-h'].includes(command) && !(await daemonReady(io, options.daemonUrl)).ok) return 1
 
   try {
     switch (command) {
@@ -76,7 +155,11 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
       case 'unload':
         return await controlAgent(io, options, args, 'stop')
       case 'abort':
-        return await controlAgent(io, options, args, 'abort')
+        return await controlLoop(io, options, args, 'abort')
+      case 'interrupt':
+        return await controlLoop(io, options, args, 'interrupt')
+      case 'loops':
+        return await withAgent(args, io, async agent => printGet(io, options, `/agents/${enc(agent)}/loops`, formatLoops))
       case 'config':
         return await withAgent(args, io, async agent => printGet(io, options, `/agents/${enc(agent)}/config`, formatJsonPretty))
       case 'providers':
@@ -136,6 +219,12 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
         return await streamEvents(io, options, args)
       case 'chat':
         return await sendChat(io, options, args)
+      case 'identity':
+        return await identityCommand(io, options, args)
+      case 'templates':
+        return await printGet(io, options, '/templates', formatTemplates)
+      case 'new':
+        return await newAgent(io, options, args)
       default:
         io.stderr(`Unknown command: ${command}\n\n${usage()}\n`)
         return 2
@@ -150,6 +239,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   const args = [...argv]
   let daemonUrl = process.env.ADF_DAEMON_URL ?? DEFAULT_DAEMON_URL
   let json = false
+  let token: string | undefined
   const positional: string[] = []
 
   for (let i = 0; i < args.length; i++) {
@@ -162,6 +252,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       daemonUrl = value
     } else if (arg.startsWith('--url=')) {
       daemonUrl = arg.slice('--url='.length)
+    } else if (arg === '--token') {
+      const value = args[++i]
+      if (!value) throw new Error('--token requires a value')
+      token = value
+    } else if (arg.startsWith('--token=')) {
+      token = arg.slice('--token='.length)
     } else {
       positional.push(arg)
     }
@@ -173,6 +269,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     options: {
       daemonUrl: daemonUrl.replace(/\/+$/, ''),
       json,
+      ...(token ? { token } : {}),
     },
   }
 }
@@ -188,14 +285,27 @@ async function printGet(
   return 0
 }
 
+/** Resolved per request: an auto-started daemon writes its token file on first start. */
+function authHeader(options: CliOptions): Record<string, string> {
+  const token = resolveDaemonToken(options.token, process.env, options.daemonUrl)
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 async function requestJson(io: CliIo, options: CliOptions, path: string, init?: RequestInit): Promise<JsonValue> {
-  const response = await io.fetch(`${options.daemonUrl}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.headers ?? {}),
-      Accept: 'application/json',
-    },
-  })
+  let response: Response
+  try {
+    response = await io.fetch(`${options.daemonUrl}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.headers ?? {}),
+        Accept: 'application/json',
+        ...authHeader(options),
+      },
+    })
+  } catch (err) {
+    if (err instanceof TypeError) throw new Error(`Cannot reach the ADF daemon at ${options.daemonUrl} (${err.message}). Start it with: adf daemon start`)
+    throw err
+  }
   const text = await response.text()
   let body: JsonValue = null
   if (text.trim()) {
@@ -210,17 +320,67 @@ async function requestJson(io: CliIo, options: CliOptions, path: string, init?: 
   return body
 }
 
+/** Pull `--loop <name>` / `--loop=<name>` out of a command's arguments. */
+function takeLoop(args: string[]): { loop: string | undefined; rest: string[] } {
+  const rest: string[] = []
+  let loop: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === '--loop') {
+      loop = args[++i]
+      if (!loop) throw new Error('--loop requires a loop name')
+    } else if (arg.startsWith('--loop=')) {
+      loop = arg.slice('--loop='.length)
+    } else {
+      rest.push(arg)
+    }
+  }
+  return { loop: loop && loop !== 'main' ? loop : undefined, rest }
+}
+
 async function sendChat(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
-  const agent = args[0]
-  const text = args.slice(1).join(' ')
-  if (!agent || !text) throw new Error('Usage: adf chat <agent> <message>')
+  const { loop, rest } = takeLoop(args)
+  const agent = rest[0]
+  const text = rest.slice(1).join(' ')
+  if (!agent || !text) throw new Error('Usage: adf chat <agent> [--loop <name>] <message>')
   const data = await requestJson(io, options, `/agents/${enc(agent)}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, ...(loop ? { loop } : {}) }),
   })
   io.stdout(options.json ? `${JSON.stringify(data, null, 2)}\n` : formatChatAck(data))
   return 0
+}
+
+/** `abort` (hard stop of that loop until reload) or `interrupt` (turn ends, loop stays idle) one loop. */
+async function controlLoop(io: CliIo, options: CliOptions, args: string[], action: 'abort' | 'interrupt'): Promise<number> {
+  const { loop, rest } = takeLoop(args)
+  const agent = rest[0]
+  if (!agent) throw new Error(`Usage: adf ${action} <agent> [--loop <name>]`)
+  const query = loop ? `?loop=${enc(loop)}` : ''
+  const data = await requestJson(io, options, `/agents/${enc(agent)}/${action}${query}`, { method: 'POST' })
+  if (options.json) io.stdout(`${JSON.stringify(data, null, 2)}\n`)
+  else if (action === 'abort') io.stdout(formatAgentControl('abort', loop ? `${agent} (loop ${loop})` : agent, data))
+  else io.stdout(isRecord(data) && data.interrupted === false ? `Nothing running in ${agent} ${loop ?? 'main'}\n` : `Interrupted ${agent} ${loop ?? 'main'}: the loop is idle and keeps accepting work\n`)
+  return 0
+}
+
+function formatLoops(value: JsonValue): string {
+  const loops = isRecord(value) && Array.isArray(value.loops) ? value.loops.filter(isRecord) : []
+  if (loops.length === 0) return 'No loops\n'
+  return table(['loop', 'kind', 'enabled', 'status', 'entries', 'goal'], loops.map(loop => [
+    String(loop.name ?? ''),
+    loop.isMain === true || loop.name === 'main' ? 'main' : 'inner',
+    String(loop.enabled ?? true),
+    String(loop.status ?? ''),
+    String(loop.entryCount ?? ''),
+    truncateCell(String(loop.goal ?? ''), 60),
+  ]))
+}
+
+function truncateCell(text: string, max: number): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
 
 async function resolveTask(
@@ -269,53 +429,22 @@ async function controlAgent(
   return 0
 }
 
-type AuthProvider = 'chatgpt' | 'grok'
-
-const AUTH_PROVIDER_LABELS: Record<AuthProvider, string> = {
-  chatgpt: 'ChatGPT',
-  grok: 'Grok',
-}
-
-function normalizeAuthProvider(value: string | undefined): AuthProvider {
-  switch (value) {
-    case 'chatgpt':
-    case 'openai':
-    case 'codex':
-      return 'chatgpt'
-    case 'grok':
-    case 'xai':
-      return 'grok'
-    default:
-      throw new Error('Specify a provider: chatgpt or grok')
+/** Test seams and the daemon transport for the shared sign-in flows (./auth-flow). */
+function authDeps(io: CliIo, options: CliOptions): AuthFlowDeps {
+  return {
+    request: (method, path, body) => requestJson(io, options, path, body === undefined
+      ? { method }
+      : { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    sleep: io.sleep,
+    openBrowser: io.openBrowser ?? openBrowser,
+    startCallbackServer: io.startCallbackServer,
   }
 }
 
-/** True when the daemon shares a host with this CLI (and so with the browser). */
-function daemonIsLocal(daemonUrl: string): boolean {
-  try {
-    return LOOPBACK_HOSTS.has(new URL(daemonUrl).hostname)
-  } catch {
-    return false
-  }
-}
-
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-/** Best-effort browser launch. Silent on failure — the URL is always printed too. */
-function defaultOpenBrowser(url: string): void {
-  try {
-    const child = process.platform === 'win32'
-      ? spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true })
-      : process.platform === 'darwin'
-        ? spawn('open', [url], { detached: true, stdio: 'ignore' })
-        : spawn('xdg-open', [url], { detached: true, stdio: 'ignore' })
-    child.on('error', () => {})
-    child.unref()
-  } catch {
-    // Headless box with no browser — printing the URL is the fallback.
-  }
+function requireAuthProvider(value: string | undefined): AuthProvider {
+  const provider = normalizeAuthProvider(value)
+  if (!provider) throw new Error('Specify a provider: chatgpt or grok')
+  return provider
 }
 
 async function authCommand(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
@@ -326,14 +455,14 @@ async function authCommand(io: CliIo, options: CliOptions, args: string[]): Prom
   if (action === 'status') return await printGet(io, options, '/runtime/auth', formatAuth)
 
   if (action === 'login') {
-    const provider = normalizeAuthProvider(positional[1])
+    const provider = requireAuthProvider(positional[1])
     return provider === 'chatgpt'
-      ? await loginChatGpt(io, options, flags)
-      : await loginGrok(io, options)
+      ? await loginChatGptCli(io, options, flags)
+      : await loginGrokCli(io, options)
   }
 
   if (action === 'logout') {
-    const provider = normalizeAuthProvider(positional[1])
+    const provider = requireAuthProvider(positional[1])
     const data = await requestJson(io, options, `/auth/${provider}/logout`, { method: 'POST' })
     io.stdout(options.json
       ? `${JSON.stringify(data, null, 2)}\n`
@@ -344,114 +473,64 @@ async function authCommand(io: CliIo, options: CliOptions, args: string[]): Prom
   throw new Error('Usage: adf auth [status | login <chatgpt|grok> | logout <chatgpt|grok>]')
 }
 
-async function loginChatGpt(io: CliIo, options: CliOptions, flags: Set<string>): Promise<number> {
-  // ChatGPT uses a loopback OAuth redirect, so the callback server has to be on
-  // the same machine as the browser. When the daemon is remote that's this
-  // machine, not the daemon's — relay mode moves the callback here.
-  const relay = flags.has('--relay') ? true
-    : flags.has('--loopback') ? false
-      : !daemonIsLocal(options.daemonUrl)
-
-  const openBrowser = io.openBrowser ?? defaultOpenBrowser
-
-  if (!relay) {
-    const data = await requestJson(io, options, '/auth/chatgpt/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'loopback' }),
-    })
-    if (options.json) {
-      io.stdout(`${JSON.stringify(data, null, 2)}\n`)
-      return 0
-    }
-    const authUrl = isRecord(data) && typeof data.authUrl === 'string' ? data.authUrl : ''
-    io.stdout(`Open this URL to sign in to ChatGPT:\n\n  ${authUrl}\n\nWaiting for sign-in to complete...\n`)
-    openBrowser(authUrl)
-    return await waitForAuth(io, options, 'chatgpt', RELAY_CALLBACK_TIMEOUT_MS)
-  }
-
-  const server = await (io.startCallbackServer ?? (() => startCallbackServer(RELAY_CALLBACK_TIMEOUT_MS)))()
-  try {
-    const redirectUri = `http://localhost:${server.port}/auth/callback`
-    const started = await requestJson(io, options, '/auth/chatgpt/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'relay', redirectUri }),
-    })
-    if (!isRecord(started) || typeof started.flowId !== 'string' || typeof started.authUrl !== 'string') {
-      throw new Error('Daemon did not return a relay auth flow — it may be running an older build')
-    }
-
-    io.stdout(`Open this URL to sign in to ChatGPT:\n\n  ${started.authUrl}\n\nWaiting for the callback on ${redirectUri} ...\n`)
-    openBrowser(started.authUrl)
-
-    const callback = await server.waitForCallback()
-    const done = await requestJson(io, options, '/auth/chatgpt/complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ flowId: started.flowId, code: callback.code, state: callback.state }),
-    })
-
-    if (options.json) {
-      io.stdout(`${JSON.stringify(done, null, 2)}\n`)
-      return 0
-    }
-    const status = isRecord(done) && isRecord(done.status) ? done.status : {}
-    io.stdout(`Signed in to ChatGPT${typeof status.email === 'string' ? ` as ${status.email}` : ''}.\n`)
-    return 0
-  } finally {
-    server.close()
-  }
-}
-
-async function loginGrok(io: CliIo, options: CliOptions): Promise<number> {
-  // Device code (RFC 8628) — no callback server, so a remote daemon works as-is.
-  const data = await requestJson(io, options, '/auth/grok/start', { method: 'POST' })
-  if (options.json) {
-    io.stdout(`${JSON.stringify(data, null, 2)}\n`)
+/** Print the outcome of a sign-in; exit code. */
+function reportAuth(io: CliIo, provider: AuthProvider, outcome: AuthOutcome): number {
+  if (outcome.ok) {
+    io.stdout(`Signed in to ${AUTH_PROVIDER_LABELS[provider]}${outcome.email ? ` as ${outcome.email}` : ''}.\n`)
     return 0
   }
-  if (!isRecord(data)) throw new Error('Unexpected response from /auth/grok/start')
-
-  const userCode = typeof data.userCode === 'string' ? data.userCode : ''
-  const verificationUri = typeof data.verificationUriComplete === 'string' && data.verificationUriComplete
-    ? data.verificationUriComplete
-    : typeof data.verificationUri === 'string' ? data.verificationUri : ''
-  const expiresIn = typeof data.expiresIn === 'number' && data.expiresIn > 0 ? data.expiresIn : 900
-
-  io.stdout(`Open this URL to sign in to Grok:\n\n  ${verificationUri}\n\nAnd enter the code: ${userCode}\n\nWaiting for approval...\n`)
-  ;(io.openBrowser ?? defaultOpenBrowser)(verificationUri)
-
-  return await waitForAuth(io, options, 'grok', expiresIn * 1000)
-}
-
-/** Poll `/auth/<provider>/status` until the detached daemon-side flow settles. */
-async function waitForAuth(
-  io: CliIo,
-  options: CliOptions,
-  provider: AuthProvider,
-  timeoutMs: number,
-): Promise<number> {
-  const sleep = io.sleep ?? defaultSleep
-  const deadline = Date.now() + timeoutMs
-
-  while (Date.now() < deadline) {
-    await sleep(AUTH_POLL_INTERVAL_MS)
-    const status = await requestJson(io, options, `/auth/${provider}/status`)
-    if (!isRecord(status)) continue
-
-    if (status.authenticated === true) {
-      io.stdout(`Signed in to ${AUTH_PROVIDER_LABELS[provider]}${typeof status.email === 'string' ? ` as ${status.email}` : ''}.\n`)
-      return 0
-    }
-    if (typeof status.flowError === 'string' && status.flowError) {
-      io.stderr(`Sign-in failed: ${status.flowError}\n`)
-      return 1
-    }
+  if (outcome.timedOut) {
+    io.stderr(`Timed out waiting for ${AUTH_PROVIDER_LABELS[provider]} sign-in. Run "adf auth" to check status.\n`)
+    return 1
   }
-
-  io.stderr(`Timed out waiting for ${AUTH_PROVIDER_LABELS[provider]} sign-in. Run "adf auth" to check status.\n`)
+  io.stderr(`Sign-in failed: ${outcome.error}\n`)
   return 1
+}
+
+async function loginChatGptCli(io: CliIo, options: CliOptions, flags: Set<string>): Promise<number> {
+  // --json prints the start answer (loopback) or the completion (relay) as-is.
+  const stop = new AbortController()
+  let printedStart = false
+  const outcome = await loginChatGpt({ ...authDeps(io, options), signal: stop.signal }, {
+    daemonUrl: options.daemonUrl,
+    mode: flags.has('--relay') ? 'relay' : flags.has('--loopback') ? 'loopback' : 'auto',
+    onStart: (info) => {
+      if (options.json) {
+        if (info.mode === 'loopback') {
+          io.stdout(`${JSON.stringify(info.raw, null, 2)}\n`)
+          printedStart = true
+          stop.abort()
+        }
+        return
+      }
+      io.stdout(info.mode === 'relay'
+        ? `Open this URL to sign in to ChatGPT:\n\n  ${info.authUrl}\n\nWaiting for the callback on ${info.redirectUri} ...\n`
+        : `Open this URL to sign in to ChatGPT:\n\n  ${info.authUrl}\n\nWaiting for sign-in to complete...\n`)
+    },
+  })
+  if (printedStart) return 0
+  if (options.json && outcome.ok) {
+    io.stdout(`${JSON.stringify(outcome.raw, null, 2)}\n`)
+    return 0
+  }
+  return reportAuth(io, 'chatgpt', outcome)
+}
+
+async function loginGrokCli(io: CliIo, options: CliOptions): Promise<number> {
+  // Device code (RFC 8628) — no callback server, so a remote daemon works as-is.
+  const stop = new AbortController()
+  const outcome = await loginGrok({ ...authDeps(io, options), signal: stop.signal }, {
+    onStart: (info) => {
+      if (options.json) {
+        io.stdout(`${JSON.stringify(info.raw, null, 2)}\n`)
+        stop.abort()
+        return
+      }
+      io.stdout(`Open this URL to sign in to Grok:\n\n  ${info.verificationUri}\n\nAnd enter the code: ${info.userCode}\n\nWaiting for approval...\n`)
+    },
+  })
+  if (options.json) return 0
+  return reportAuth(io, 'grok', outcome)
 }
 
 async function networkAdmin(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
@@ -490,10 +569,11 @@ async function streamEvents(io: CliIo, options: CliOptions, args: string[]): Pro
   const agent = args[0]
   const path = agent ? `/events?agentId=${enc(agent)}` : '/events'
   const response = await io.fetch(`${options.daemonUrl}${path}`, {
-    headers: { Accept: 'text/event-stream' },
+    headers: { Accept: 'text/event-stream', ...authHeader(options) },
   })
   if (!response.ok || !response.body) {
-    throw new Error(`Event stream failed: HTTP ${response.status} ${response.statusText}`)
+    const detail = await response.json().catch(() => null) as { error?: unknown } | null
+    throw new Error(`Event stream failed: ${typeof detail?.error === 'string' ? detail.error : `HTTP ${response.status} ${response.statusText}`}`)
   }
 
   const reader = response.body.getReader()
@@ -545,6 +625,214 @@ async function withAgentAndValue(
     return 2
   }
   return await run(agent, value)
+}
+
+// ---------------------------------------------------------------------------
+// Owner identity + agent creation
+// ---------------------------------------------------------------------------
+
+/** Lines of a piped (non-TTY) stdin, read once and handed out in order. */
+let pipedLines: string[] | null = null
+let pipedLineIndex = 0
+
+async function defaultPrompt(question: string, opts: { hidden?: boolean } = {}): Promise<string> {
+  const { createInterface } = await import('readline')
+  if (!process.stdin.isTTY) {
+    if (pipedLines === null) {
+      const chunks: Buffer[] = []
+      for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk as Buffer))
+      pipedLines = Buffer.concat(chunks).toString('utf-8').split(/\r?\n/)
+    }
+    return pipedLines[pipedLineIndex++] ?? ''
+  }
+  // historySize 0: nothing typed here is kept, even in memory.
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true, historySize: 0 })
+  const internals = rl as unknown as { _writeToOutput: (text: string) => void }
+  let muted = false
+  if (opts.hidden) {
+    const write = internals._writeToOutput.bind(rl)
+    internals._writeToOutput = (text: string) => { if (!muted) write(text) }
+  }
+  try {
+    return await new Promise<string>((resolve) => {
+      rl.question(question, resolve)
+      muted = !!opts.hidden
+    })
+  } finally {
+    rl.close()
+    if (opts.hidden) process.stdout.write('\n')
+  }
+}
+
+function ask(io: CliIo, question: string, hidden = false): Promise<string> {
+  return (io.prompt ?? defaultPrompt)(question, { hidden })
+}
+
+function postJson(io: CliIo, options: CliOptions, path: string, body: Record<string, unknown> = {}): Promise<JsonValue> {
+  return requestJson(io, options, path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+/** Ask for the file-storage passphrase when the daemon has no OS keychain. */
+async function passphraseIfNeeded(io: CliIo, identity: JsonValue, confirmNew: boolean): Promise<string | undefined> {
+  if (!isRecord(identity) || identity.passphraseRequired !== true) return undefined
+  io.stdout('This machine has no usable OS keychain, so the owner identity is kept in a passphrase-protected file.\n')
+  const passphrase = await ask(io, confirmNew ? 'Choose a passphrase (8+ characters): ' : 'Passphrase: ', true)
+  if (confirmNew) {
+    const again = await ask(io, 'Repeat the passphrase: ', true)
+    if (again !== passphrase) throw new Error('The passphrases do not match.')
+  }
+  return passphrase
+}
+
+async function identityCommand(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
+  const action = args[0] ?? 'status'
+
+  if (action === 'status') return await printGet(io, options, '/identity', formatIdentity)
+
+  if (action === 'new' || action === 'create') {
+    const current = await requestJson(io, options, '/identity')
+    if (isRecord(current) && current.status !== 'none') {
+      io.stdout(formatIdentity(current))
+      io.stderr('An owner identity already exists here; nothing was created.\n')
+      return 1
+    }
+    const passphrase = await passphraseIfNeeded(io, current, true)
+    const created = await postJson(io, options, '/identity/create', passphrase ? { passphrase } : {})
+    if (options.json) {
+      io.stdout(`${JSON.stringify(created, null, 2)}\n`)
+      return 0
+    }
+    const words = isRecord(created) && Array.isArray(created.words) ? created.words.map(String) : []
+    const identity = isRecord(created) && isRecord(created.identity) ? created.identity : {}
+    io.stdout(
+      `Owner identity created: ${String(identity.ownerDid ?? '')}\n\n` +
+      'Your seed phrase — write these 12 words down, in order, and keep them somewhere safe.\n' +
+      'Anyone with this phrase can act as you; without it, your owner identity cannot be\n' +
+      'recovered if this machine is lost. It will NOT be shown again.\n\n' +
+      `${formatWords(words)}\n\n` +
+      'Use the same phrase in ADF Studio (Settings → Import Identity) or `adf identity restore`\n' +
+      'on another machine to be the same owner there.\n\n',
+    )
+    const answer = (await ask(io, 'Type "yes" once you have written the words down: ')).trim().toLowerCase()
+    if (answer === 'yes' || answer === 'y') {
+      await postJson(io, options, '/identity/confirm-backup')
+      io.stdout('Backup confirmed.\n')
+    } else {
+      io.stdout('Backup not confirmed. The phrase cannot be shown again by the daemon; if you did not save it,\n' +
+        'you can reveal it in ADF Studio on this machine (Settings → Back Up Seed Phrase).\n')
+    }
+    return 0
+  }
+
+  if (action === 'restore' || action === 'import') {
+    const current = await requestJson(io, options, '/identity')
+    if (isRecord(current) && current.status === 'ready') {
+      io.stdout(formatIdentity(current))
+      return 0
+    }
+    if (isRecord(current) && typeof current.ownerDid === 'string' && current.ownerDid) {
+      io.stdout(`This machine's owner is ${current.ownerDid}; enter the seed phrase for that owner.\n`)
+    }
+    const mnemonic = (await ask(io, 'Seed phrase (12 words, input hidden): ', true)).trim()
+    if (!mnemonic) throw new Error('No seed phrase entered.')
+    const passphrase = await passphraseIfNeeded(io, current, isRecord(current) && current.status !== 'locked')
+    const restored = await postJson(io, options, '/identity/restore', { mnemonic, ...(passphrase ? { passphrase } : {}) })
+    const identity = isRecord(restored) && isRecord(restored.identity) ? restored.identity : restored
+    io.stdout(options.json ? `${JSON.stringify(restored, null, 2)}\n` : `Owner identity restored.\n${formatIdentity(identity)}`)
+    return 0
+  }
+
+  if (action === 'unlock') {
+    const passphrase = await ask(io, 'Passphrase: ', true)
+    const unlocked = await postJson(io, options, '/identity/unlock', { passphrase })
+    const identity = isRecord(unlocked) && isRecord(unlocked.identity) ? unlocked.identity : unlocked
+    io.stdout(options.json ? `${JSON.stringify(unlocked, null, 2)}\n` : formatIdentity(identity))
+    return 0
+  }
+
+  if (action === 'lock') {
+    const locked = await postJson(io, options, '/identity/lock')
+    const identity = isRecord(locked) && isRecord(locked.identity) ? locked.identity : locked
+    io.stdout(options.json ? `${JSON.stringify(locked, null, 2)}\n` : formatIdentity(identity))
+    return 0
+  }
+
+  throw new Error('Usage: adf identity [status | new | restore | unlock | lock]')
+}
+
+async function newAgent(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
+  const body: Record<string, unknown> = {}
+  const valueFlags: Record<string, string> = {
+    '--template': 'template', '-t': 'template',
+    '--provider': 'provider', '--model': 'model',
+    '--dir': 'directory', '--directory': 'directory',
+  }
+  const positional: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    const eq = arg.indexOf('=')
+    const flag = arg.startsWith('--') && eq > 0 ? arg.slice(0, eq) : arg
+    if (flag === '--start') { body.start = true; continue }
+    const key = valueFlags[flag]
+    if (key) {
+      const value = eq > 0 && flag !== arg ? arg.slice(eq + 1) : args[++i]
+      if (!value) throw new Error(`${flag} requires a value`)
+      body[key] = value
+      continue
+    }
+    if (arg.startsWith('-')) throw new Error(`Unknown option for adf new: ${arg}`)
+    positional.push(arg)
+  }
+  if (positional.length > 0) body.name = positional.join(' ')
+  const created = await postJson(io, options, '/agents/create', body)
+  if (options.json) {
+    io.stdout(`${JSON.stringify(created, null, 2)}\n`)
+    return 0
+  }
+  const row = isRecord(created) ? created : {}
+  io.stdout(table(['field', 'value'], [
+    ['name', String(row.name ?? '')],
+    ['agentId', String(row.agentId ?? '')],
+    ['did', String(row.did ?? '')],
+    ['filePath', String(row.filePath ?? '')],
+    ['started', String(row.started ?? false)],
+  ]))
+  return 0
+}
+
+function formatWords(words: string[]): string {
+  const cells = words.map((word, i) => `${String(i + 1).padStart(2)}. ${word}`.padEnd(16))
+  const rows: string[] = []
+  for (let i = 0; i < cells.length; i += 4) rows.push(`  ${cells.slice(i, i + 4).join(' ').trimEnd()}`)
+  return rows.join('\n')
+}
+
+function formatIdentity(value: JsonValue): string {
+  if (!isRecord(value)) return formatJsonPretty(value)
+  return `${table(['field', 'value'], [
+    ['status', String(value.status ?? '')],
+    ['ownerDid', String(value.ownerDid ?? '')],
+    ['runtimeDid', String(value.runtimeDid ?? '')],
+    ['storage', String(value.storage ?? '')],
+    ['backupConfirmed', String(value.backupConfirmed ?? false)],
+  ])}${typeof value.message === 'string' ? `${value.message}\n` : ''}`
+}
+
+function formatTemplates(value: JsonValue): string {
+  const templates = isRecord(value) && Array.isArray(value.templates) ? value.templates.filter(isRecord) : []
+  if (templates.length === 0) return 'No templates.\n'
+  const defaultId = isRecord(value) ? String(value.defaultId ?? '') : ''
+  return table(['id', 'name', 'default', 'model', 'about'], templates.map(t => [
+    String(t.id ?? ''),
+    String(t.name ?? ''),
+    t.id === defaultId ? 'yes' : '',
+    [t.modelProvider, t.modelId].filter(Boolean).map(String).join('/'),
+    truncate(String(t.templateDescription ?? t.description ?? ''), 60),
+  ]))
 }
 
 function formatAgents(value: JsonValue): string {
@@ -881,15 +1169,33 @@ function isRecord(value: JsonValue | unknown): value is Record<string, JsonValue
 }
 
 function usage(): string {
-  return `Usage: adf [--url <daemon-url>] [--json] <command>
+  return `ADF CLI: run and talk to your ADF agents from a terminal.
+
+Usage: adf [--url <daemon-url>] [--json] <command>
+       adf [tui] [--view <id>] [--agent <id>] [--loop <name>]
+       adf daemon [start|status|stop|restart|logs]
+
+With no command, adf opens the terminal app (see \`adf tui --help\`).
+When the daemon URL is on this machine and nothing answers there, adf
+starts the daemon in the background first (--no-daemon or
+ADF_NO_AUTOSTART=1 turn that off). Quitting leaves it running.
 
 Commands:
+  tui                            The terminal app (the default)
   agents                         List loaded agents
   status <agent>                 Show runtime status
   start <agent>                  Start an agent and fire startup when applicable
   stop <agent>                   Stop and unload an agent
   unload <agent>                 Alias for stop
-  abort <agent>                  Abort an agent's current turn without unloading
+  loops <agent>                  List the agent's loops: main plus its inner
+                                  (side) loops, parallel threads with their own
+                                  history, e.g. a memory consolidator on a timer
+  interrupt <agent> [--loop <name>]
+                                  End the running turn; the loop goes idle and
+                                  keeps accepting chats, timers and triggers
+  abort <agent> [--loop <name>]  Hard-abort the current turn without unloading;
+                                  that loop stays stopped until the agent is
+                                  reloaded (prefer interrupt)
   runtime [agent]                Show daemon or agent runtime diagnostics
   providers                      Show provider configuration and agent resolution
   auth                           Show auth and credential presence
@@ -922,12 +1228,53 @@ Commands:
   mcp [agent]                    Show daemon MCP registrations or agent MCP state
   adapters [agent]               Show daemon adapter registrations or agent adapter state
   events [agent]                 Follow daemon SSE events
-  chat <agent> <message>         Send chat and print the accepted turn id
+  chat <agent> [--loop <name>] <message>
+                                  Send chat (to main, or an inner loop) and
+                                  print the accepted turn id
+  identity                       Show the owner identity status
+  identity new                   Create an owner identity; shows the 12-word
+                                  seed phrase once — write it down
+  identity restore               Restore the owner identity from its seed
+                                  phrase (typed at a hidden prompt; the same
+                                  phrase as ADF Studio = the same owner)
+  identity unlock|lock           Unlock/lock a passphrase-protected identity
+                                  (machines without an OS keychain)
+  templates                      List agent templates
+  new [name] [--template <id>] [--provider <id>] [--model <id>]
+      [--dir <path>] [--start]   Create an agent from a template, sealed
+                                  with the owner identity (like Studio)
+
+Daemon:
+  daemon [--port <n>] [--host <h>] [--settings <file>]
+                                  Run the daemon in the foreground (Ctrl+C
+                                  stops it; also ADF_DAEMON_PORT,
+                                  ADF_DAEMON_HOST, ADF_DAEMON_SETTINGS,
+                                  ADF_USER_DATA_DIR)
+  daemon start [--port <n>] [--force]
+                                  Start it in the background (what adf does
+                                  on its own); --force skips the ADF Studio
+                                  check
+  daemon status                  Is it running: pid, uptime, version, log file
+  daemon stop                    Stop it gracefully (agents unloaded,
+                                  containers stopped)
+  daemon restart                 Stop, then start in the background
+  daemon logs [-f] [-n <lines>]  Show the background daemon's log (-f follows)
+  daemon token                   Print this machine's daemon access token (for
+                                  clients on other machines: --token or
+                                  ADF_DAEMON_TOKEN)
+
+Options:
+  --url, -u <url>                Daemon URL
+  --token <token>                Daemon access token (default: ADF_DAEMON_TOKEN,
+                                  else read automatically on the daemon's machine)
+  --json                         JSON output
+  --no-daemon                    Never start the daemon automatically
+  --version, -v                  Print the version
 
 Environment:
-  ADF_DAEMON_URL                 Defaults to ${DEFAULT_DAEMON_URL}`
+  ADF_DAEMON_URL                 Defaults to ${DEFAULT_DAEMON_URL}
+  ADF_DAEMON_TOKEN               Daemon access token (overrides the local
+                                  <data dir>/daemon-token file)
+  ADF_NO_AUTOSTART=1             Same as --no-daemon`
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runCli().then(code => { process.exitCode = code })
-}

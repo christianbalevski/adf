@@ -29,6 +29,11 @@ export interface UmbilicalEvent {
   source: string
   /** Owning agent. Absent only for events with no agent context. */
   agent_id?: string | null
+  /**
+   * Inner (side) cognition loop that produced the event. Absent = the main
+   * loop, or an event that is not loop-scoped.
+   */
+  loop?: string
   payload: Record<string, unknown>
   /** Reserved: detached signature over the envelope. Unused in Phase 0. */
   sig?: string

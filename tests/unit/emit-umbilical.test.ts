@@ -8,7 +8,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { emitUmbilicalEvent, registerDaemonEventBus } from '../../src/main/runtime/emit-umbilical'
 import { DaemonEventBus } from '../../src/main/daemon/event-bus'
 import { ensureUmbilicalBus, clearAllUmbilicalBuses } from '../../src/main/runtime/umbilical-bus'
-import { withSource } from '../../src/main/runtime/execution-context'
+import { withLoop, withSource } from '../../src/main/runtime/execution-context'
 
 afterEach(() => {
   clearAllUmbilicalBuses()
@@ -111,5 +111,28 @@ describe('emitUmbilicalEvent', () => {
     })
 
     expect(received).toEqual(['system:manual'])
+  })
+
+  it('stamps the context loop only for its own agent, and never over an explicit main', async () => {
+    const a = '00000000-0000-0000-0000-000000000001'
+    const b = '00000000-0000-0000-0000-000000000002'
+    const seen: Array<{ agent: string | null; loop?: string }> = []
+    ensureUmbilicalBus(a).subscribe(e => seen.push({ agent: e.agent_id, loop: e.loop }))
+    ensureUmbilicalBus(b).subscribe(e => seen.push({ agent: e.agent_id, loop: e.loop }))
+
+    await withSource('agent:t', a, () => withLoop('researcher', async () => {
+      emitUmbilicalEvent({ event_type: 'x', payload: {} })
+      emitUmbilicalEvent({ event_type: 'x', agentId: b, payload: {} })
+      await new Promise(resolve => setImmediate(resolve))
+      withSource('agent:main-turn', a, () => {
+        emitUmbilicalEvent({ event_type: 'x', agentId: a, loop: 'main', payload: {} })
+      })
+    }))
+
+    expect(seen).toEqual([
+      { agent: a, loop: 'researcher' },
+      { agent: b, loop: undefined },
+      { agent: a, loop: undefined },
+    ])
   })
 })

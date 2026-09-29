@@ -8,6 +8,7 @@ import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-
 import { createSettingsDefaults } from '../../shared/constants/settings-defaults'
 import { applySettingsMigrations, mergeSettingsValue } from '../../shared/utils/settings-migrations'
 import { writeJsonAtomic, readJsonOrQuarantine } from '../utils/atomic-json'
+import { SECRET_STORE_KEY_STORAGE, type ProviderKeyVault } from './provider-key-vault'
 
 export interface SettingsQuarantineInfo {
   originalPath: string
@@ -60,6 +61,8 @@ export class FileSettingsStore implements ProviderSettingsStore {
    * so writes are refused until a re-read succeeds or quarantines.
    */
   private writeBlocked = false
+  /** Holds the keys of providers marked `apiKeyStorage: 'secret-store'` (see provider-key-vault.ts). */
+  private providerKeys: ProviderKeyVault | null = null
 
   constructor(readonly filePath?: string) {
     if (filePath) {
@@ -102,11 +105,21 @@ export class FileSettingsStore implements ProviderSettingsStore {
     this.lastSynced = disk
   }
 
+  /** Attach the daemon secret store that holds `apiKeyStorage: 'secret-store'` provider keys. */
+  setProviderKeyVault(vault: ProviderKeyVault | null): void {
+    this.providerKeys = vault
+  }
+
+  get providerKeyVault(): ProviderKeyVault | null {
+    return this.providerKeys
+  }
+
   get(key: string): unknown {
     this.refreshFromDiskIfChanged()
     if (key === 'adapters') {
       return withBuiltInAdapterRegistrations(this.data.adapters as AdapterRegistration[] | undefined)
     }
+    if (key === 'providers') return this.withVaultKeys(this.data.providers)
     return this.data[key]
   }
 
@@ -115,6 +128,7 @@ export class FileSettingsStore implements ProviderSettingsStore {
     return structuredCloneJson({
       ...this.data,
       adapters: withBuiltInAdapterRegistrations(this.data.adapters as AdapterRegistration[] | undefined),
+      ...('providers' in this.data ? { providers: this.withVaultKeys(this.data.providers) } : {}),
     })
   }
 
@@ -122,20 +136,58 @@ export class FileSettingsStore implements ProviderSettingsStore {
     // Same merge semantics as SettingsService: partial compute updates merge
     // instead of replacing wholesale, so a daemon PUT /settings/compute with a
     // partial body cannot erase hostAccessEnabled/hostApproved/executionTargets.
-    this.data[key] = mergeSettingsValue(this.data[key], key, value)
+    this.data[key] = mergeSettingsValue(this.data[key], key, key === 'providers' ? this.sealProviderKeys(value) : value)
+    this.save([key])
+  }
+
+  delete(key: string): void {
+    delete this.data[key]
     this.save([key])
   }
 
   update(values: Record<string, unknown>): void {
     for (const [key, value] of Object.entries(values)) {
-      this.data[key] = mergeSettingsValue(this.data[key], key, value)
+      this.data[key] = mergeSettingsValue(this.data[key], key, key === 'providers' ? this.sealProviderKeys(value) : value)
     }
     this.save(Object.keys(values))
   }
 
   getProvider(id: string): ProviderConfig | undefined {
     const providers = (this.data.providers as ProviderConfig[] | undefined) ?? []
-    return providers.find(provider => provider.id === id)
+    const provider = providers.find(provider => provider.id === id)
+    return provider ? this.withVaultKey(provider) : undefined
+  }
+
+  /** Secret-store providers get their key from the vault (the file holds none). */
+  private withVaultKey(provider: ProviderConfig): ProviderConfig {
+    if (provider.apiKeyStorage !== SECRET_STORE_KEY_STORAGE || provider.apiKey || !this.providerKeys) return provider
+    return { ...provider, apiKey: this.providerKeys.get(provider.id) ?? '' }
+  }
+
+  private withVaultKeys(providers: unknown): unknown {
+    if (!Array.isArray(providers) || !this.providerKeys) return providers
+    return providers.map(entry => (entry && typeof entry === 'object' ? this.withVaultKey(entry as ProviderConfig) : entry))
+  }
+
+  /**
+   * A write never puts a secret-store provider's key in the file: a key that
+   * arrives (echoed back from a read, or a new one) goes to the vault and the
+   * entry keeps an empty apiKey.
+   */
+  private sealProviderKeys(value: unknown): unknown {
+    if (!Array.isArray(value)) return value
+    return value.map(entry => {
+      if (!entry || typeof entry !== 'object') return entry
+      const provider = entry as ProviderConfig
+      if (provider.apiKeyStorage !== SECRET_STORE_KEY_STORAGE || !provider.apiKey) return entry
+      const vault = this.providerKeys
+      if (vault?.available()) {
+        if (vault.get(provider.id) !== provider.apiKey) vault.set(provider.id, provider.apiKey)
+      } else {
+        console.error(`[FileSettingsStore] Provider "${provider.id}" keeps its key in the secret store, which is locked: the key was not saved.`)
+      }
+      return { ...provider, apiKey: '' }
+    })
   }
 
   /**

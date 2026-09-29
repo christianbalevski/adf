@@ -137,3 +137,99 @@ jobs:
           --repo "${{ github.repository }}"
           --notes-file release-notes.md
           --draft=false
+
+  # --- npm package: @agentdocumentformat/cli (daemon + CLI + TUI, no Electron) ---
+  # Independent of the Studio jobs above: a failure here never blocks the
+  # Studio release, and vice versa. Built once, smoke-tested from the tarball
+  # on every OS (native deps must install from prebuilt binaries), then
+  # published via npm trusted publishing (OIDC, no token secret).
+  npm-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      # --ignore-scripts: the bundle needs no Electron binary and no
+      # Electron-ABI better-sqlite3 (the root postinstall); esbuild's platform
+      # binary arrives as an optional dependency.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Check tag matches package version
+        run: |
+          v="$(node -p "require('./package.json').version")"
+          if [ "v$v" != "${{ github.ref_name }}" ]; then
+            echo "Tag ${{ github.ref_name }} != package.json version $v"; exit 1
+          fi
+
+      - name: Build package
+        run: npm run build:npm
+
+      - name: Pack
+        run: npm pack ./dist/npm --pack-destination .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: agentdocumentformat-cli-*.tgz
+          if-no-files-found: error
+
+  npm-smoke:
+    needs: npm-build
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-2022 pinned like the Studio build (see above).
+        os: [ubuntu-latest, macos-14, windows-2022]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      # Only for scripts/npm-smoke.mjs — the package itself comes from the tarball.
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+      # npm_config_build_from_source=false + no compiler step: the native deps
+      # must come from prebuilt binaries, as they will for users.
+      - name: Install globally from the tarball
+        shell: bash
+        run: npm install -g ./agentdocumentformat-cli-*.tgz
+        env:
+          npm_config_build_from_source: 'false'
+      - name: Smoke test
+        run: node scripts/npm-smoke.mjs
+
+  npm-publish:
+    needs: npm-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # npm trusted publishing (OIDC): no token secret. The package's npmjs.com
+    # settings must list this repo + release.yml as a trusted publisher.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+      - name: Update npm
+        run: npm install -g npm@latest
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+      - name: Publish
+        shell: bash
+        run: npm publish ./agentdocumentformat-cli-*.tgz --access public

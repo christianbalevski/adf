@@ -3,8 +3,9 @@
   "info": {
     "title": "ADF Daemon API",
     "version": "0.1.0",
-    "description": "Static OpenAPI contract for the local ADF daemon. The daemon is a headless ADF runtime for loading agents, starting and stopping them, sending chat turns, streaming events, inspecting runtime diagnostics, and resolving human-in-the-loop tasks."
+    "description": "Static OpenAPI contract for the local ADF daemon. The daemon is a headless ADF runtime for loading agents, starting and stopping them, sending chat turns, streaming events, inspecting runtime diagnostics, and resolving human-in-the-loop tasks. Every route except GET /health requires `Authorization: Bearer <token>` (the per-install token in <settings dir>/daemon-token, or ADF_DAEMON_TOKEN); requests with a disallowed Host (403 host_not_allowed), a foreign Origin or Sec-Fetch-Site cross-site/same-site (403 cross_origin) are refused, and no CORS headers are sent. Credential reads return metadata only."
   },
+  "security": [{ "bearerAuth": [] }],
   "servers": [
     {
       "url": "http://127.0.0.1:7385",
@@ -21,6 +22,7 @@
     { "name": "Runtime" },
     { "name": "Auth" },
     { "name": "Agents" },
+    { "name": "Loops" },
     { "name": "Resources" },
     { "name": "Identity" },
     { "name": "Credentials" },
@@ -50,7 +52,9 @@
       "get": {
         "tags": ["Health"],
         "summary": "Daemon liveness check",
+        "description": "The only route that needs no bearer token (Host and Origin checks still apply).",
         "operationId": "getHealth",
+        "security": [],
         "responses": {
           "200": {
             "description": "Daemon is reachable",
@@ -60,6 +64,18 @@
               }
             }
           }
+        }
+      }
+    },
+    "/daemon/shutdown": {
+      "post": {
+        "tags": ["Health"],
+        "summary": "Stop the daemon gracefully (loopback only)",
+        "description": "Runs the same bounded shutdown as Ctrl+C / SIGTERM: agents are unloaded and compute containers stopped, then the process exits. Used by adf daemon stop.",
+        "operationId": "shutdownDaemon",
+        "responses": {
+          "202": { "description": "Shutdown accepted; the daemon exits shortly" },
+          "403": { "description": "Not called from this machine (loopback_only)" }
         }
       }
     },
@@ -96,6 +112,955 @@
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/identity": {
+      "get": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Owner identity status (no secrets)",
+        "operationId": "getOwnerIdentity",
+        "responses": {
+          "200": {
+            "description": "Owner identity status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityStatus"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/identity/create": {
+      "post": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Create an owner identity; returns the 12-word seed phrase ONCE (loopback only)",
+        "operationId": "createOwnerIdentity",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityPassphraseBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Identity created. `mnemonic`/`words` appear in this response only; the daemon never returns them again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Passphrase missing or too short (file storage); codes `passphrase_required`, `weak_passphrase`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not on the daemon host (loopback only); code `loopback_only`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An identity already exists or needs restore/unlock; code `identity_exists`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/identity/restore": {
+      "post": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Restore the owner identity from its seed phrase (loopback only)",
+        "operationId": "restoreOwnerIdentity",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityRestoreBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner identity status after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityStatusEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid phrase or missing passphrase; codes `invalid_mnemonic`, `passphrase_required`, `weak_passphrase`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Loopback only (`loopback_only`) or wrong passphrase (`wrong_passphrase`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The phrase belongs to a different owner than this machine's; code `owner_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/identity/unlock": {
+      "post": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Unlock a passphrase-file identity (no OS keychain; loopback only)",
+        "operationId": "unlockOwnerIdentity",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityPassphraseBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner identity status after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityStatusEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Keychain storage (`not_file_storage`) or no passphrase (`passphrase_required`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Loopback only (`loopback_only`) or wrong passphrase (`wrong_passphrase`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No identity file yet; code `nothing_to_unlock`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity/lock": {
+      "post": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Lock a passphrase-file identity (loopback only)",
+        "operationId": "lockOwnerIdentity",
+        "responses": {
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "200": {
+            "description": "Owner identity status after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityStatusEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Keychain storage; code `not_file_storage`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity/confirm-backup": {
+      "post": {
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Record that the user wrote the seed phrase down (loopback only)",
+        "operationId": "confirmOwnerBackup",
+        "responses": {
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "200": {
+            "description": "Owner identity status after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityStatusEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Identity not ready; code `not_ready`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "List agent templates new agents can be created from",
+        "operationId": "listTemplates",
+        "responses": {
+          "200": {
+            "description": "Templates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateList"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Owner identity not ready; `identity` carries the status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Create a template: blank, or a duplicate of fromId (no identity or history carried)",
+        "operationId": "createTemplate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "fromId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/Object"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`; `identity` carries the status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/templates/{id}": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "One template: summary, contents (config, seed files README.md / mind.md / soul.md, extra files) and whether it is the default",
+        "operationId": "getTemplate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Template id (the file stem in the templates folder)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`; `identity` carries the status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Rename a template and/or set its notes (description, warning; an empty string clears one). A rename moves the file: the response carries the new id",
+        "operationId": "updateTemplate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Template id (the file stem in the templates folder)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "warning": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`; `identity` carries the status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Delete a template: the file moves to <userData>/templates-trash (never a hard delete); the default falls back to standard",
+        "operationId": "deleteTemplate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Template id (the file stem in the templates folder)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`; `identity` carries the status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/templates/{id}/default": {
+      "post": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Make this template the default for new agents",
+        "operationId": "setDefaultTemplate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Template id (the file stem in the templates folder)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`; `identity` carries the status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/templates/{id}/reset": {
+      "post": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Reset a shipped template to the version the app ships (400 for a user template)",
+        "operationId": "resetShippedTemplate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Template id (the file stem in the templates folder)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`; `identity` carries the status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/templates/{id}/review": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "The agent review summary for a template (needsReview, reviewed, summary)",
+        "operationId": "getTemplateReview",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Template id (the file stem in the templates folder)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`; `identity` carries the status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/templates/{id}/review/accept": {
+      "post": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Accept a template's review: claims the file with a fresh identity under this owner, auto-locks security fields, marks it reviewed. password for a password-protected file (400 password_required, 403 wrong_password)",
+        "operationId": "acceptTemplateReview",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Template id (the file stem in the templates folder)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`; `identity` carries the status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/templates/{id}/config": {
+      "put": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Replace a template's agent config (validated against the config schema)",
+        "operationId": "setTemplateConfig",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Template id (the file stem in the templates folder)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "config"
+                ],
+                "properties": {
+                  "config": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`; `identity` carries the status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/templates/{id}/files": {
+      "put": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Write a template file: a seed file (README.md, mind.md, soul.md) or an extra file",
+        "operationId": "setTemplateFile",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Template id (the file stem in the templates folder)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "content"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`; `identity` carries the status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Remove an extra file (seed files cannot be removed; clear their text instead)",
+        "operationId": "removeTemplateFile",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Template id (the file stem in the templates folder)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`; `identity` carries the status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/agents/create": {
+      "post": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Create an agent from a template with a sealed, owner-attested identity (Studio parity), then load it",
+        "operationId": "createAgent",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Agent created and loaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateAgentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad input; code `bad_request`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Owner identity not ready (`identity_not_ready`, with `identity`) or the file exists (`name_taken`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Template missing or unreviewed; codes `template_missing`, `template_unreviewed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
         }
       }
     },
@@ -735,6 +1700,47 @@
             }
           }
         }
+      },
+      "post": {
+        "tags": ["Runtime"],
+        "summary": "Add an API-key provider; the key goes to the daemon secret store (OS keychain or the owner's passphrase file), never the settings file, and is never returned",
+        "operationId": "addRuntimeProvider",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["type"],
+                "properties": {
+                  "type": { "type": "string", "enum": ["anthropic", "openai", "openrouter", "openai-compatible"] },
+                  "name": { "type": "string" },
+                  "baseUrl": { "type": "string", "description": "Required for openai-compatible" },
+                  "defaultModel": { "type": "string" },
+                  "preset": { "type": "string", "description": "Provider catalog key (e.g. groq)" },
+                  "apiKey": { "type": "string", "description": "Required except for openai-compatible (local servers)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "`{ provider, defaultProviderId }`; provider carries `hasApiKey`, never the key", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "400": { "description": "codes `bad_type`, `subscription_type`, `api_key_required`, `base_url_required`, `bad_base_url`" },
+          "409": { "description": "code `secret_store_locked`: set up or unlock the owner identity first" }
+        }
+      }
+    },
+    "/runtime/providers/{id}": {
+      "delete": {
+        "tags": ["Runtime"],
+        "summary": "Remove a provider and its stored key",
+        "operationId": "removeRuntimeProvider",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "`{ removed, providers }`", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "404": { "description": "Unknown provider" }
+        }
       }
     },
     "/runtime/auth": {
@@ -1106,6 +2112,137 @@
         }
       }
     },
+    "/tracked-dirs/agents": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "The agents of one tracked folder and what each needs (loaded, needs review, not autostart, failed, unreadable)",
+        "operationId": "listTrackedDirAgents",
+        "parameters": [{ "name": "path", "in": "query", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": {
+            "description": "Folder agents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["path", "agents"],
+                  "properties": {
+                    "path": { "type": "string" },
+                    "agents": { "type": "array", "items": { "$ref": "#/components/schemas/FolderAgent" } }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "description": "Folder not tracked", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/tracked-dirs": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "List tracked agent folders (settings.trackedDirectories)",
+        "operationId": "listTrackedDirs",
+        "responses": {
+          "200": {
+            "description": "Tracked folders",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["maxDepth", "directories"],
+                  "properties": {
+                    "maxDepth": { "type": "integer" },
+                    "directories": { "type": "array", "items": { "$ref": "#/components/schemas/TrackedDirEntry" } }
+                  }
+                }
+              }
+            }
+          },
+          "503": { "description": "No settings store", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Track a folder now and autostart its agents (review gate applies)",
+        "operationId": "trackDir",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["path"],
+                "properties": { "path": { "type": "string", "description": "Absolute path to an existing directory" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Tracked; autostart report for the folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["entry", "directories", "absorbed", "autostart", "needsReview"],
+                  "properties": {
+                    "entry": { "$ref": "#/components/schemas/TrackedDirEntry" },
+                    "directories": { "type": "array", "items": { "type": "string" } },
+                    "absorbed": { "type": "array", "items": { "type": "string" }, "description": "Tracked subfolders the new folder replaced" },
+                    "autostart": { "$ref": "#/components/schemas/AutostartReport" },
+                    "needsReview": { "type": "array", "items": { "type": "object", "additionalProperties": true }, "description": "Autostart skips with reason 'unreviewed'" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "405": { "description": "Settings store is read-only", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "409": { "description": "Already tracked (any spelling) or covered by a tracked parent; body.coveredBy names it", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "No settings store", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["Agents"],
+        "summary": "Untrack a folder (files are never deleted)",
+        "operationId": "untrackDir",
+        "parameters": [
+          { "name": "path", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "unload", "in": "query", "required": false, "schema": { "type": "string", "enum": ["true", "false"], "default": "false" }, "description": "Also unload the agents loaded from under the folder" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Untracked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["removed", "directories", "unloaded"],
+                  "properties": {
+                    "removed": { "type": "string" },
+                    "directories": { "type": "array", "items": { "type": "string" } },
+                    "unloaded": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["agentId", "filePath", "name"],
+                        "properties": { "agentId": { "type": "string" }, "filePath": { "type": "string" }, "name": { "type": "string" } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "description": "Not a tracked folder", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "405": { "description": "Settings store is read-only", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "No settings store", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
     "/agents/review": {
       "get": {
         "tags": ["Review"],
@@ -1241,12 +2378,63 @@
       "post": {
         "tags": ["Agents"],
         "summary": "Abort the current turn without unloading the agent",
+        "description": "Aborts main's turn, or the named inner loop's turn with ?loop=<name>.",
         "operationId": "abortAgent",
-        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopQuery" }],
         "responses": {
           "200": { "$ref": "#/components/responses/Success" },
           "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" },
           "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/interrupt": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Interrupt the running turn and leave the loop idle",
+        "description": "Ends main's running turn (or the named inner loop's with ?loop=<name>) and sets that executor idle; it keeps accepting chats, triggers and timers. Unlike /abort it never stops the executor. Returns { success, interrupted, loop }; interrupted is false when nothing was running.",
+        "operationId": "interruptAgent",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopQuery" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/compact": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Compact one loop's history now",
+        "description": "Summarize-and-replace on demand for main, or the named inner loop with ?loop=<name>. Emits loop.compacted. Triggers queue and chats replay after it. 409 mid-turn or already compacting, when there is nothing to compact, or for a disabled loop; 502 when summarization fails (history preserved).",
+        "operationId": "compactAgentLoop",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopQuery" }],
+        "responses": {
+          "200": { "description": "Compacted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/context": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "One loop's context usage",
+        "description": "What the next request of main (or ?loop=<name>) would carry: the executor's context breakdown split into non-overlapping categories (system, files, tools, mcp:<server>, dynamic, messages; biggest first, summing to totalTokens) with their biggest items (?items=<n>, default 12, max 200), plus the compact threshold that loop auto-compacts at and where it comes from (loop, agent, model, default). available=false when the loop has no live executor.",
+        "operationId": "getAgentContext",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/LoopQuery" },
+          { "name": "items", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 0, "maximum": 200 } }
+        ],
+        "responses": {
+          "200": { "description": "Context usage", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
     },
@@ -1257,7 +2445,8 @@
         "operationId": "getAgentChat",
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
-          { "$ref": "#/components/parameters/LimitQuery" }
+          { "$ref": "#/components/parameters/LimitQuery" },
+          { "$ref": "#/components/parameters/LoopQuery" }
         ],
         "responses": {
           "200": { "description": "Chat history", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
@@ -1296,7 +2485,7 @@
         "tags": ["Resources"],
         "summary": "Clear persisted chat/loop history",
         "operationId": "clearAgentChat",
-        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopQuery" }],
         "responses": {
           "200": { "$ref": "#/components/responses/Success" },
           "404": { "$ref": "#/components/responses/NotFound" },
@@ -1341,7 +2530,8 @@
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
           { "$ref": "#/components/parameters/LimitQuery" },
-          { "$ref": "#/components/parameters/OffsetQuery" }
+          { "$ref": "#/components/parameters/OffsetQuery" },
+          { "$ref": "#/components/parameters/LoopQuery" }
         ],
         "responses": {
           "200": {
@@ -1354,6 +2544,68 @@
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/loops": {
+      "get": {
+        "tags": ["Loops"],
+        "summary": "List cognition loops (main plus inner loops) with live status and declarations",
+        "operationId": "listAgentLoops",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "description": "Loops", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoopListResponse" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "tags": ["Loops"],
+        "summary": "Create an inner loop through the agent's loop pool",
+        "description": "Same validation and defaults as the loop_manage tool: enabled and autostart default true, tools default to loop_send + loop_list + sys_set_state (filtered to what the host can grant). An enabled autostart loop is kicked off immediately.",
+        "operationId": "createAgentLoop",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoopCreateBody" } } } },
+        "responses": {
+          "201": { "description": "Loop created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/loops/{name}": {
+      "get": {
+        "tags": ["Loops"],
+        "summary": "Read one loop",
+        "operationId": "getAgentLoopInfo",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopNamePath" }],
+        "responses": {
+          "200": { "description": "Loop", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "patch": {
+        "tags": ["Loops"],
+        "summary": "Patch an inner loop (enabled:false stops it immediately)",
+        "operationId": "updateAgentLoop",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopNamePath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoopPatchBody" } } } },
+        "responses": {
+          "200": { "description": "Loop updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "tags": ["Loops"],
+        "summary": "Stop, archive to adf_audit, then remove an inner loop",
+        "operationId": "deleteAgentLoop",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }, { "$ref": "#/components/parameters/LoopNamePath" }],
+        "responses": {
+          "200": { "description": "Loop deleted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Error" }
         }
       }
     },
@@ -1444,6 +2696,26 @@
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/tools": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "List the agent's tool catalog",
+        "description": "Every built-in tool the agent's main registry holds, every MCP tool its servers advertise, and every declared tool, sorted by name, each with its declared state and description (the list sys_get_config gives the agent). Read-only: change tools with PUT /agents/{id}/config.",
+        "operationId": "getAgentTools",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": {
+            "description": "Tool catalog",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentToolsResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
     },
@@ -1862,15 +3134,15 @@
     "/agents/{id}/identity/{purpose}": {
       "get": {
         "tags": ["Identity"],
-        "summary": "Read one decrypted identity value",
-        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "summary": "Metadata of one stored identity value (never the value)",
+        "description": "Values and key material never leave the daemon. length is null for crypto:* purposes and locked values.",
         "operationId": "getAgentIdentityValue",
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
           { "name": "purpose", "in": "path", "required": true, "schema": { "type": "string" } }
         ],
         "responses": {
-          "200": { "description": "Identity value", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "200": { "description": "Identity value metadata", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentIdentityMetaResponse" } } } },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       },
@@ -1887,6 +3159,7 @@
           "200": { "$ref": "#/components/responses/Success" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/CredentialsLocked" },
           "500": { "$ref": "#/components/responses/Error" }
         }
       },
@@ -2085,6 +3358,7 @@
           "200": { "$ref": "#/components/responses/Success" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/CredentialsLocked" },
           "500": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -2092,15 +3366,15 @@
     "/agents/{id}/providers/{providerId}/credentials": {
       "get": {
         "tags": ["Credentials"],
-        "summary": "Read provider credentials",
-        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "summary": "Provider credential metadata and config overrides",
+        "description": "Metadata only (see CredentialMeta); stored values never leave the daemon.",
         "operationId": "getAgentProviderCredentials",
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
           { "name": "providerId", "in": "path", "required": true, "schema": { "type": "string" } }
         ],
         "responses": {
-          "200": { "description": "Provider credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "200": { "description": "Provider credential metadata", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderCredentialsMetaResponse" } } } },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
@@ -2108,15 +3382,15 @@
     "/agents/{id}/mcp/credentials": {
       "get": {
         "tags": ["Credentials"],
-        "summary": "Read MCP credentials by package",
-        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "summary": "MCP credential metadata by package",
+        "description": "Metadata only (see CredentialMeta); stored values never leave the daemon.",
         "operationId": "getAgentMcpCredentials",
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
           { "name": "npmPackage", "in": "query", "required": true, "schema": { "type": "string" } }
         ],
         "responses": {
-          "200": { "description": "MCP credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "200": { "description": "MCP credential metadata keyed by env key", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/McpCredentialsMetaResponse" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
@@ -2131,6 +3405,7 @@
           "200": { "$ref": "#/components/responses/Success" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/CredentialsLocked" },
           "500": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -2147,6 +3422,22 @@
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/mcp/servers/{serverName}/restart": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Connect one configured MCP server of a running agent now (after an attach, or to retry)",
+        "operationId": "restartAgentMcpServer",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "serverName", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "`{ agentId, serverName, success, toolsDiscovered, location, error?, hostDenied?, stderrTail? }`", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "404": { "description": "Unknown agent or server" },
+          "409": { "description": "The agent is not running here" }
         }
       }
     },
@@ -2170,15 +3461,15 @@
     "/agents/{id}/adapters/credentials": {
       "get": {
         "tags": ["Credentials"],
-        "summary": "Read adapter credentials by type",
-        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "summary": "Adapter credential metadata by type",
+        "description": "Metadata only (see CredentialMeta); stored values never leave the daemon.",
         "operationId": "getAgentAdapterCredentials",
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
           { "name": "adapterType", "in": "query", "required": true, "schema": { "type": "string" } }
         ],
         "responses": {
-          "200": { "description": "Adapter credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "200": { "description": "Adapter credential metadata keyed by env key", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdapterCredentialsMetaResponse" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
@@ -2193,6 +3484,7 @@
           "200": { "$ref": "#/components/responses/Success" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/CredentialsLocked" },
           "500": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -2412,6 +3704,89 @@
         }
       }
     },
+    "/agents/{id}/tasks/{taskId}/always-approve": {
+      "post": {
+        "tags": ["Human In The Loop"],
+        "summary": "Always approve: un-restrict the pending request's tool and approve it",
+        "description": "Studio's Approve ▸ Always approve. The HOST tool declaration (taken from the pending request, never the client) becomes enabled:true, restricted:false and is persisted/propagated like PUT /agents/{id}/config; then the request is approved. Refused (409) for protection overrides, one-shot synthetic approvals and locked declarations. Works for requests held by main or an inner loop.",
+        "operationId": "alwaysApproveAgentTask",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/TaskIdPath" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tool un-restricted and request approved",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskAlwaysApproveResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown agent or unknown task",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "409": {
+            "description": "Task is not pending_approval, no live request is waiting on it, or always-approve is not allowed (error = the blocked reason)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/tasks/approve-all": {
+      "post": {
+        "tags": ["Human In The Loop"],
+        "summary": "Approve every pending gated approval",
+        "description": "Studio's Approve all: approves every pending restricted-tool approval on main and each running inner loop (or only `loop`). Protection overrides are never included; they are counted in skippedProtection.",
+        "operationId": "approveAllAgentTasks",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "loop", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "loop": { "type": "string", "description": "Only this loop's approvals" } },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["agentId", "approved", "skippedProtection"],
+                  "properties": {
+                    "agentId": { "type": "string" },
+                    "loop": { "type": "string" },
+                    "approved": { "type": "integer" },
+                    "skippedProtection": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": {
+            "description": "Unknown agent or loop",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "409": {
+            "description": "The loop has no running executor",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
     "/agents/{id}/asks": {
       "get": {
         "tags": ["Human In The Loop"],
@@ -2622,6 +3997,13 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Per-install token from <settings dir>/daemon-token (printed by `adf daemon token`), or ADF_DAEMON_TOKEN. Local adf clients send it automatically."
+      }
+    },
     "parameters": {
       "AgentIdPath": {
         "name": "id",
@@ -2673,6 +4055,19 @@
         "required": false,
         "schema": { "type": "integer", "minimum": 0 }
       },
+      "LoopQuery": {
+        "name": "loop",
+        "in": "query",
+        "required": false,
+        "description": "Cognition loop to address. Absent = main. Unknown loops answer 404.",
+        "schema": { "type": "string" }
+      },
+      "LoopNamePath": {
+        "name": "name",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
       "FilePathQuery": {
         "name": "filePath",
         "in": "query",
@@ -2705,6 +4100,30 @@
       }
     },
     "responses": {
+      "Unauthorized": {
+        "description": "Missing or wrong bearer token; code `unauthorized`",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Host not allowed (code `host_not_allowed`), cross-site browser request (code `cross_origin`), or a loopback-only route called remotely (code `loopback_only`)",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "CredentialsLocked": {
+        "description": "The agent's credentials envelope is locked on this daemon; code `credentials_locked`. Unlock the owner identity, or retry with replace: true",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
       "Success": {
         "description": "Success",
         "content": {
@@ -2779,6 +4198,312 @@
       }
     },
     "schemas": {
+      "CredentialMeta": {
+        "type": "object",
+        "description": "What the API reveals about one stored identity value: never the value.",
+        "required": ["purpose", "present", "storage", "sealed", "locked", "length", "code_access"],
+        "properties": {
+          "purpose": { "type": "string" },
+          "present": { "type": "boolean" },
+          "storage": { "type": ["string", "null"], "enum": ["sealed", "plain", "password", null] },
+          "sealed": { "type": "boolean" },
+          "locked": { "type": "boolean", "description": "Stored but not readable in this process" },
+          "length": { "type": ["integer", "null"], "description": "null for crypto:* purposes and locked values" },
+          "code_access": { "type": "boolean" }
+        }
+      },
+      "AgentIdentityMetaResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/CredentialMeta" },
+          { "type": "object", "required": ["agentId"], "properties": { "agentId": { "type": "string" } } }
+        ]
+      },
+      "ProviderCredentialsMetaResponse": {
+        "type": "object",
+        "required": ["agentId", "providerId", "credentials"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "providerId": { "type": "string" },
+          "credentials": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/CredentialMeta" } },
+          "providerConfig": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "McpCredentialsMetaResponse": {
+        "type": "object",
+        "required": ["agentId", "npmPackage", "credentials"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "npmPackage": { "type": "string" },
+          "credentials": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/CredentialMeta" } }
+        }
+      },
+      "AdapterCredentialsMetaResponse": {
+        "type": "object",
+        "required": ["agentId", "adapterType", "credentials"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "adapterType": { "type": "string" },
+          "credentials": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/CredentialMeta" } }
+        }
+      },
+      "IdentityStatus": {
+        "type": "object",
+        "required": [
+          "status",
+          "ownerDid",
+          "runtimeDid",
+          "storage",
+          "backupConfirmed",
+          "passphraseRequired",
+          "message"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "none",
+              "locked",
+              "restore-needed",
+              "ready"
+            ]
+          },
+          "ownerDid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtimeDid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "This daemon's own runtime DID (never Studio's)."
+          },
+          "storage": {
+            "type": "string",
+            "enum": [
+              "keychain",
+              "file"
+            ]
+          },
+          "backupConfirmed": {
+            "type": "boolean"
+          },
+          "passphraseRequired": {
+            "type": "boolean",
+            "description": "File storage not unlocked: create/restore/unlock take a passphrase."
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "IdentityStatusEnvelope": {
+        "type": "object",
+        "required": [
+          "identity"
+        ],
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/IdentityStatus"
+          }
+        }
+      },
+      "IdentityPassphraseBody": {
+        "type": "object",
+        "properties": {
+          "passphrase": {
+            "type": "string",
+            "minLength": 8
+          }
+        }
+      },
+      "IdentityRestoreBody": {
+        "type": "object",
+        "required": [
+          "mnemonic"
+        ],
+        "properties": {
+          "mnemonic": {
+            "type": "string",
+            "description": "12-word BIP-39 phrase (case/whitespace-insensitive)."
+          },
+          "passphrase": {
+            "type": "string"
+          }
+        }
+      },
+      "IdentityCreateResponse": {
+        "type": "object",
+        "required": [
+          "mnemonic",
+          "words",
+          "identity"
+        ],
+        "properties": {
+          "mnemonic": {
+            "type": "string"
+          },
+          "words": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 12,
+            "maxItems": 12
+          },
+          "identity": {
+            "$ref": "#/components/schemas/IdentityStatus"
+          }
+        }
+      },
+      "IdentityErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          }
+        }
+      },
+      "TemplateList": {
+        "type": "object",
+        "required": [
+          "templates",
+          "defaultId"
+        ],
+        "properties": {
+          "templates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "reviewed"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "templateDescription": {
+                  "type": "string"
+                },
+                "warning": {
+                  "type": "string"
+                },
+                "shipped": {
+                  "type": "string"
+                },
+                "reviewed": {
+                  "type": "boolean"
+                },
+                "modelProvider": {
+                  "type": "string"
+                },
+                "modelId": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "defaultId": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "defaultDirectory": {
+            "type": "string",
+            "description": "Where POST /agents/create puts agents without `directory`."
+          }
+        }
+      },
+      "CreateAgentBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "File name (<=64 chars). Omitted: a generated adjective-plant name."
+          },
+          "directory": {
+            "type": "string",
+            "description": "Absolute, existing directory. Default: settings.agentsFolder, else ~/Documents/adf-agents."
+          },
+          "template": {
+            "type": "string",
+            "description": "Template id (GET /templates). Default: settings.defaultTemplateId, else `standard`."
+          },
+          "provider": {
+            "type": "string",
+            "description": "App provider id (must exist in settings.providers)."
+          },
+          "model": {
+            "type": "string"
+          },
+          "start": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "CreateAgentResponse": {
+        "type": "object",
+        "required": [
+          "agentId",
+          "name",
+          "filePath",
+          "did",
+          "started"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "did": {
+            "type": "string"
+          },
+          "started": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AgentCreateErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "identity": {
+            "$ref": "#/components/schemas/IdentityStatus"
+          }
+        }
+      },
       "AnyJson": {
         "description": "Arbitrary JSON value."
       },
@@ -2843,7 +4568,10 @@
       "IdentityValueBody": {
         "type": "object",
         "required": ["value"],
-        "properties": { "value": { "type": "string" } }
+        "properties": {
+          "value": { "type": "string" },
+          "replace": { "type": "boolean", "description": "Owner override while the agent's credentials envelope is locked here: a locked sealed value is discarded unread, the new value stored plain and sealed on unlock; logged to adf_logs (credential_replaced). Without it such a write is 409 credentials_locked." }
+        }
       },
       "IdentityCodeAccessBody": {
         "type": "object",
@@ -2871,7 +4599,8 @@
         "properties": {
           "npmPackage": { "type": "string" },
           "envKey": { "type": "string" },
-          "value": { "type": "string" }
+          "value": { "type": "string" },
+          "replace": { "type": "boolean", "description": "Owner override while the agent's credentials envelope is locked here: a locked sealed value is discarded unread, the new value stored plain and sealed on unlock; logged to adf_logs (credential_replaced). Without it such a write is 409 credentials_locked." }
         }
       },
       "McpAttachBody": {
@@ -2885,7 +4614,8 @@
         "properties": {
           "adapterType": { "type": "string" },
           "envKey": { "type": "string" },
-          "value": { "type": "string" }
+          "value": { "type": "string" },
+          "replace": { "type": "boolean", "description": "Owner override while the agent's credentials envelope is locked here: a locked sealed value is discarded unread, the new value stored plain and sealed on unlock; logged to adf_logs (credential_replaced). Without it such a write is 409 credentials_locked." }
         }
       },
       "AdapterAttachBody": {
@@ -3265,7 +4995,70 @@
         "type": "object",
         "required": ["text"],
         "properties": {
-          "text": { "type": "string" }
+          "text": { "type": "string" },
+          "loop": { "type": "string", "description": "Cognition loop to talk to. Absent = main. Unknown loop: 404; disabled loop: 409." }
+        }
+      },
+      "LoopConfig": {
+        "type": "object",
+        "required": ["name", "goal", "enabled"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$" },
+          "goal": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "autostart": { "type": "boolean" },
+          "autonomous": { "type": "boolean" },
+          "model": { "type": "object", "additionalProperties": true },
+          "compact_threshold": { "type": ["integer", "null"] },
+          "tools": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "LoopInfo": {
+        "type": "object",
+        "required": ["name", "goal", "status", "enabled", "isMain", "config", "entryCount", "effectiveTools"],
+        "properties": {
+          "name": { "type": "string" },
+          "goal": { "type": "string" },
+          "status": { "type": "string", "enum": ["idle", "running"] },
+          "enabled": { "type": "boolean" },
+          "isMain": { "type": "boolean" },
+          "config": { "oneOf": [{ "$ref": "#/components/schemas/LoopConfig" }, { "type": "null" }] },
+          "entryCount": { "type": "number" },
+          "effectiveTools": { "oneOf": [{ "type": "array", "items": { "type": "string" } }, { "type": "null" }] }
+        }
+      },
+      "LoopListResponse": {
+        "type": "object",
+        "required": ["agentId", "loops"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "loops": { "type": "array", "items": { "$ref": "#/components/schemas/LoopInfo" } }
+        }
+      },
+      "LoopCreateBody": {
+        "type": "object",
+        "required": ["name", "goal"],
+        "properties": {
+          "name": { "type": "string" },
+          "goal": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "autostart": { "type": "boolean" },
+          "autonomous": { "type": "boolean" },
+          "model": { "type": "object", "additionalProperties": true },
+          "compact_threshold": { "type": ["integer", "null"] },
+          "tools": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "LoopPatchBody": {
+        "type": "object",
+        "properties": {
+          "goal": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "autostart": { "type": "boolean" },
+          "autonomous": { "type": "boolean" },
+          "model": { "type": "object", "additionalProperties": true },
+          "compact_threshold": { "type": ["integer", "null"] },
+          "tools": { "type": "array", "items": { "type": "string" } }
         }
       },
       "ChatAcceptedResponse": {
@@ -3381,7 +5174,8 @@
           "lambda": { "type": "string" },
           "warm": { "type": "boolean" },
           "payload": { "type": "string" },
-          "locked": { "type": "boolean" }
+          "locked": { "type": "boolean" },
+          "loop": { "type": "string", "description": "Create only: cognition loop the agent-scope wake targets. Absent = main. Unknown loop: 404. Ignored on update (a timer keeps its loop)." }
         },
         "additionalProperties": false
       },
@@ -3470,9 +5264,10 @@
       },
       "LoopPage": {
         "type": "object",
-        "required": ["agentId", "total", "limit", "offset", "entries"],
+        "required": ["agentId", "loop", "total", "limit", "offset", "entries"],
         "properties": {
           "agentId": { "type": "string" },
+          "loop": { "type": "string" },
           "total": { "type": "number" },
           "limit": { "type": "number" },
           "offset": { "type": "number" },
@@ -3505,6 +5300,30 @@
         "properties": {
           "agentId": { "type": "string" },
           "config": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "AgentToolsResponse": {
+        "type": "object",
+        "required": ["agentId", "tools"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "enabled", "visible", "restricted", "locked", "source", "description"],
+              "properties": {
+                "name": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "visible": { "type": "boolean", "description": "Exposed in the LLM's active tool list (when enabled)." },
+                "restricted": { "type": "boolean", "description": "Authorized code only; an LLM call needs owner approval." },
+                "locked": { "type": "boolean", "description": "Owner lock: the agent cannot change this entry." },
+                "source": { "type": "string", "description": "`builtin` or `mcp:<server>`." },
+                "description": { "type": "string" },
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
         }
       },
       "AgentFilesResponse": {
@@ -3629,16 +5448,54 @@
           "completed_at": { "type": ["number", "null"] },
           "origin": { "type": "string" },
           "requires_authorization": { "type": "boolean" },
-          "executor_managed": { "type": "boolean" }
+          "executor_managed": { "type": "boolean" },
+          "approval_meta": { "type": "object", "additionalProperties": true, "description": "Durable HIL metadata: { reason: 'restricted' | 'protection', protection? }" },
+          "canAlwaysApprove": { "type": "boolean", "description": "pending_approval rows only: whether POST …/always-approve would be accepted (live, from the executor holding the request)" },
+          "alwaysApproveBlockedReason": { "type": "string", "description": "Why canAlwaysApprove is false" }
         },
         "additionalProperties": true
+      },
+      "FolderAgent": {
+        "type": "object",
+        "required": ["filePath", "name", "status", "autostart", "reviewed"],
+        "properties": {
+          "filePath": { "type": "string" },
+          "name": { "type": "string" },
+          "agentId": { "type": "string" },
+          "status": { "type": "string", "enum": ["loaded", "needs_review", "not_autostart", "stopped", "password_protected", "unreadable"] },
+          "autostart": { "type": "boolean" },
+          "reviewed": { "type": "boolean" },
+          "error": { "type": "string", "description": "Load error or why the file is unreadable" }
+        }
+      },
+      "TrackedDirEntry": {
+        "type": "object",
+        "required": ["path", "exists", "agentCount", "loadedCount"],
+        "properties": {
+          "path": { "type": "string" },
+          "exists": { "type": "boolean" },
+          "agentCount": { "type": "integer", "description": ".adf files an autostart scan finds (maxDirectoryScanDepth)" },
+          "loadedCount": { "type": "integer", "description": "Agents loaded in this daemon from under the folder" }
+        }
+      },
+      "TaskAlwaysApproveResponse": {
+        "type": "object",
+        "required": ["agentId", "taskId", "loop", "tool", "resolution", "task"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "taskId": { "type": "string" },
+          "loop": { "type": "string", "description": "Loop whose executor held the request" },
+          "tool": { "type": "string", "description": "Tool whose host declaration was un-restricted" },
+          "resolution": {},
+          "task": { "oneOf": [{ "$ref": "#/components/schemas/Task" }, { "type": "null" }] }
+        }
       },
       "TaskResolveBody": {
         "type": "object",
         "required": ["action"],
         "properties": {
           "action": { "type": "string", "enum": ["approve", "deny", "pending_approval"] },
-          "reason": { "type": "string" },
+          "reason": { "type": "string", "description": "On deny: stored as the task error and handed back to the agent as the owner's feedback" },
           "modifiedArgs": { "type": "object", "additionalProperties": true },
           "modified_args": { "type": "object", "additionalProperties": true }
         }

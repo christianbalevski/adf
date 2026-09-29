@@ -575,8 +575,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.IDENTITY_OWNER_REVEAL_MNEMONIC),
   confirmOwnerBackup: () =>
     ipcRenderer.invoke(IPC.IDENTITY_OWNER_CONFIRM_BACKUP),
-  importOwnerMnemonic: (mnemonic: string) =>
-    ipcRenderer.invoke(IPC.IDENTITY_OWNER_IMPORT, mnemonic),
+  importOwnerMnemonic: (mnemonic: string, expectedOwnerDid?: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_OWNER_IMPORT, mnemonic, expectedOwnerDid),
   getAgentAttestations: () =>
     ipcRenderer.invoke(IPC.IDENTITY_ATTESTATIONS_GET),
   reissueAgentAttestations: () =>

@@ -22,6 +22,7 @@ interface UmbilicalEvent {
   timestamp: number        // epoch ms
   source: string           // agent:<turn>, lambda:<file>:<fn>, system:<subsystem>
   agent_id?: string | null // owning agent; null for daemon-scope events
+  loop?: string            // inner cognition loop that produced it; absent = main / not loop-scoped
   payload: Record<string, unknown>
   sig?: string             // reserved: detached signature over the envelope
 }
@@ -29,6 +30,17 @@ interface UmbilicalEvent {
 
 `source` is a first-class envelope field. It is **not** folded into `payload`
 on any transport.
+
+`loop` names the inner cognition loop (a side loop declared in
+`AgentConfig.loops`, e.g. `consolidator`) whose executor produced the event:
+its turns, tool calls, model calls, state changes, HIL requests and asks.
+Work a loop's turn causes (a lambda it calls, a tool it runs) inherits the
+stamp. It is **absent** for the main loop and for events that are not
+loop-scoped (daemon, adapters, system-scope timers), so a pre-loops consumer
+sees exactly what it always did. `agent.state.changed` with a `loop` is that
+loop's executor state, not the agent's. `timer.fired` and `trigger.fired`
+carry the loop they wake (a timer's `loop`, a trigger target's `loop`), so a
+consumer can file a scheduled wake under the side loop it starts.
 
 `GET /events` wraps this envelope in a transport frame carrying a resume
 cursor: `{ cursor, event }`. `cursor` is a per-daemon-process counter used only
@@ -123,6 +135,23 @@ mixed `[thinking, text, thinking]` stays three ordered events.
 | `agent.error` | `{ filePath, event }` |
 | `agent.loaded` | `{ filePath, name, handle, autostart }` |
 | `agent.unloaded` | `{ filePath }` |
+| `agent.recovered` | `{ reason: 'auth', state: 'idle', notice }` |
+| `agent.credentials.unlocked` | `{ filePath, reason, adaptersRestarted, mcpRestartNeeded, message }` |
+
+`agent.recovered` fires per loop (`loop` set for side loops) when a
+subscription sign-in completes on the daemon (`adf auth login chatgpt|grok`,
+loopback or relay) and that loop sat in `error` on an auth failure from a
+provider of the same type. The loop returns to `idle`; the failed turn is not
+re-run — the next trigger works normally. Other error reasons are untouched.
+
+`agent.credentials.unlocked` fires when a loaded agent that was `degraded` on
+sealed credential envelopes (`CREDENTIALS_LOCKED`) unlocks without a reload —
+on the owner identity becoming ready (`adf identity new|restore|unlock`, or a
+phrase Studio put in the shared keychain) or on the daemon's once-a-minute
+re-check while any agent is degraded. `degraded` is cleared, adapters that
+were held by the locked-credentials stub are restarted, and
+`mcpRestartNeeded` names MCP servers with sealed per-agent credentials that
+connected without them (restart the agent to reconnect those).
 
 `agent.loaded` / `agent.unloaded` come from the shared lifecycle resource in
 `src/main/runtime/umbilical-lifecycle.ts`, so the daemon, Studio background,
@@ -296,7 +325,7 @@ Human-in-the-loop approvals. `request_id` and `task_id` are the same value (the
 
 | Event | Payload |
 |---|---|
-| `hil.requested` | `{ request_id, task_id, tool, reason, input }` |
+| `hil.requested` | `{ request_id, task_id, tool, reason, input, can_always_approve, always_approve_blocked_reason? }` |
 | `hil.resolved` | `{ request_id, task_id, approved, feedback?, timed_out?, orphaned? }` |
 
 `reason` is one of:

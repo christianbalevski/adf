@@ -59,7 +59,33 @@ The daemon settings store reads JSON and writes JSON. It does not run all Studio
 | Daemon HTTP API | `127.0.0.1:7385` | `ADF_DAEMON_HOST`, `ADF_DAEMON_PORT` |
 | Mesh server | `127.0.0.1:7295` | `MESH_HOST`, `MESH_PORT`, or mesh settings |
 
-The daemon HTTP API should stay on localhost unless you add an authentication and network boundary outside the daemon.
+The daemon HTTP API should stay on localhost. Binding another host
+(`ADF_DAEMON_HOST`) requires `ADF_DAEMON_TOKEN`; list the host names clients
+use in `ADF_DAEMON_ALLOWED_HOSTS` (IP literals on the bound port are accepted
+as is). Put TLS in front of it yourself: the daemon speaks plain HTTP.
+
+## Access Token
+
+Every request but `GET /health` needs `Authorization: Bearer <token>`
+([details](http-api.md#authentication-and-cross-site-protection)). On first
+start the daemon writes a random token to `daemon-token` in its settings
+directory (mode 0600, next to `adf-settings.json` and `runtime-enc-key`);
+`ADF_DAEMON_TOKEN` overrides it. Local clients (the `adf` CLI, the terminal
+app, `adf daemon start|stop|status`, auto-start) read the file by themselves,
+so nothing needs configuring on the daemon's machine. The file is replaced
+when malformed; delete it and restart the daemon to rotate the token.
+
+| Task | How |
+|------|-----|
+| Print the token (e.g. for a remote client) | `adf daemon token` on the daemon host (token on stdout, its source on stderr) |
+| Use it from another machine | `adf --url http://host:7385 --token <token> …`, or `ADF_DAEMON_TOKEN` |
+| Scripts / curl | `curl -H "Authorization: Bearer $(adf daemon token 2>/dev/null)" http://127.0.0.1:7385/agents` |
+
+Browser requests are refused: a foreign `Origin` or `Sec-Fetch-Site:
+cross-site` gets `403 cross_origin`, a `Host` outside the allow-list gets
+`403 host_not_allowed` (DNS rebinding), and the daemon sends no CORS headers.
+An older `adf` without token support gets a `401` that says to update it or
+use `adf daemon token`.
 
 Studio and daemon both use the mesh server port by default. Running both at the same time can cause a bind failure or split ownership of agents.
 
@@ -115,7 +141,7 @@ Use `ADF_DAEMON_URL` or `--url` when the daemon is not on the default URL:
 ADF_DAEMON_URL=http://127.0.0.1:7390 npm run adf -- agents
 ```
 
-See [Daemon CLI](cli.md) for the full command reference.
+See [ADF CLI](cli.md) for the full command reference.
 
 ## Stop and Abort
 
@@ -262,6 +288,19 @@ Operational checklist:
 
 If a server is not registered and has no source, the daemon skips it and continues loading the agent.
 
+### Credentials while the envelope is locked
+
+Agent credentials (channel, MCP, provider keys) are sealed in the agent's
+credentials envelope. The HTTP API never returns their values, only metadata
+(set / sealed / locked / length). While the owner identity is not available
+on this daemon, the envelope is locked and a credential write answers `409
+credentials_locked`. Either unlock (`adf identity unlock|restore`, `/identity`
+in the terminal app) and save again, or replace the value (`"replace": true`,
+or Replace in the terminal app): the old sealed value is discarded unread, the
+new one is stored unsealed and sealed automatically once the envelope unlocks
+(the daemon's credential re-check seals it), and an `adf_logs` row
+`credential_replaced` records the override. Agent code can never do this.
+
 ## Mesh and Serving Operations
 
 The daemon starts the mesh server on the configured mesh port when at least one loaded agent has reachable mesh visibility. Agent websites use the same serving config described in [HTTP Serving](../guides/serving.md), and mesh behavior is enabled unless `meshEnabled` is explicitly `false`.
@@ -351,5 +390,5 @@ npm run adf -- mcp agent-id
 
 - The `/events` stream uses an in-memory ring buffer, not durable event storage.
 - File-change triggers are incomplete in headless operation.
-- No built-in authentication on the daemon HTTP API.
-- No cross-process lock prevents Studio and daemon from opening the same `.adf`.
+- The daemon speaks plain HTTP; a remote bind needs TLS and network controls in front of it.
+- No cross-process lock prevents Studio and daemon from opening the same `.adf`. `adf` does refuse to *auto-start* a daemon while Studio runs on the same settings (Studio process, or a mesh server answering with this install's runtime id), but a daemon started by hand (`adf daemon`, `npm run daemon`) is not checked.

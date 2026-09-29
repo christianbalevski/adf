@@ -11,6 +11,7 @@ import { AgentReviewDialog } from '../common/AgentReviewDialog'
 import { ProviderSetupDialog } from '../common/ProviderSetupDialog'
 import { ShareAgentDialog } from '../common/ShareAgentDialog'
 import { AgentReviewBanner } from '../common/AgentReviewBanner'
+import { IdentityRestoreBanner } from '../common/IdentityRestoreBanner'
 import { ShutdownOverlay } from '../common/ShutdownOverlay'
 import { BottomPanel } from './BottomPanel'
 import { ApprovalToasts } from './ApprovalsMenu'
@@ -192,6 +193,7 @@ export function AppShell() {
           bar. Hidden in Settings and on the fleet map (both replace the main
           content area). */}
       {!showMeshGraph && !showSettings && <AgentReviewBanner />}
+      {!showMeshGraph && !showSettings && <IdentityRestoreBanner />}
 
       <div className="flex-1 flex overflow-hidden">
         {/* Settings has its own navigation; the workspace tree stays out of

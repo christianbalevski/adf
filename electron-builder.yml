@@ -53,7 +53,7 @@ mac:
   # builds must be universal" check during the merge. esbuild/bin/esbuild is
   # the host-arch binary its postinstall swaps in; the API resolves binaries
   # through @esbuild/* packages, so it's inert on the other arch.
-  x64ArchFiles: "**/node_modules/{@esbuild/darwin-*,@lydell/node-pty-darwin-*,esbuild/bin,node-pty/prebuilds/darwin-*,sqlite-vec-darwin-*,tree-sitter-bash/prebuilds/darwin-*}/**"
+  x64ArchFiles: "**/node_modules/{@esbuild/darwin-*,@lydell/node-pty-darwin-*,@napi-rs/keyring-darwin-*,esbuild/bin,node-pty/prebuilds/darwin-*,sqlite-vec-darwin-*,tree-sitter-bash/prebuilds/darwin-*}/**"
   category: public.app-category.productivity
   icon: resources/icons/mac/icon.icns
   # Signing + notarization. Locally, electron-builder auto-discovers the

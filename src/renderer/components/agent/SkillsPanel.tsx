@@ -26,9 +26,9 @@ import {
   type MergedCatalogEntry,
   type ParsedRegistry,
   type RegistryEntry
-} from '../../utils/skills-panel'
+} from '../../../shared/utils/skills-panel'
 import { renderMarkdownToSafeHtml } from '../../utils/markdown'
-import { elideMiddle, splitSkillDocument } from '../../utils/skill-preview'
+import { elideMiddle, splitSkillDocument } from '../../../shared/utils/skill-preview'
 import { agentChanged, setSkillMuted, syncOpenTab } from '../../utils/skills-state'
 import { Dialog } from '../common/Dialog'
 

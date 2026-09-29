@@ -15,7 +15,7 @@
 
 import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore, isAgentSwitching } from '../stores/editor-tabs.store'
-import { mergeDisabledList, SKILLS_STATE_PATH } from './skills-panel'
+import { mergeDisabledList, SKILLS_STATE_PATH } from '../../shared/utils/skills-panel'
 
 /**
  * Guard for the async gap around a write. Returns the reason to abandon, or

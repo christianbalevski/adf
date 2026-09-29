@@ -21,6 +21,7 @@ import {
   type McpConnectOutcome,
 } from '../tools/built-in'
 import { StreamBindingManager } from './stream-binding-manager'
+import { registerMcpConnector } from './mcp-connectors'
 import { createUmbilicalResources } from './umbilical-lifecycle'
 import { isolatedContainerName, containerWorkspacePath, containerAgentHome } from '../services/podman.service'
 import { resolveHostEnv } from '../services/host-exec.service'
@@ -275,7 +276,12 @@ export class AgentRuntimeBuilder {
               adaptersConfig: updatedConfig.adapters,
               workspace,
               derivedKey: null,
-              resolveFactory: (type, reg) => this.resolveAdapterFactory(type, reg),
+              // Same locked-credentials gate as the initial start: an adapter
+              // (re-)enabled while its sealed credentials are locked gets the
+              // stub, which restartLockedAdapters replaces after unlock. The
+              // real factory would fail on a null credential and never be
+              // retried once the identity becomes ready.
+              resolveFactory: (type, reg) => this.resolveAdapterFactoryUnlessLocked(type, reg, workspace),
             })
           },
           onAutostartChild: async () => false,
@@ -642,6 +648,9 @@ export class AgentRuntimeBuilder {
       return { toolsDiscovered: tools.length, location }
     }
 
+    // The owner's restart / connect-after-attach (POST /agents/:id/mcp/servers/:name/restart).
+    registerMcpConnector(manager, (serverName, reason = 'Owner restart') => connectOneServer(workspace.getAgentConfig(), serverName, reason))
+
     // Register the MCP management tools UNCONDITIONALLY — declared/enabled
     // gating happens per-call in the shell/executor, not at registration time.
     // Gating registration on the start-time config leaves the registry stale
@@ -869,6 +878,40 @@ export class AgentRuntimeBuilder {
     return { manager }
   }
 
+  /**
+   * After sealed credentials unlock: replace every locked-credentials stub
+   * adapter with the real one (stop the stub, then reconcile starts the
+   * enabled adapter with its registered factory). Returns the types restarted.
+   */
+  async restartLockedAdapters(manager: ChannelAdapterManager, workspace: AdfWorkspace): Promise<string[]> {
+    const locked = manager.getStates()
+      .filter(state => state.status === 'error' && state.error?.startsWith(LOCKED_ADAPTER_ERROR_PREFIX))
+      .map(state => state.type)
+    if (locked.length === 0) return []
+    for (const type of locked) await manager.stopAdapter(type)
+    await manager.reconcile({
+      registrations: this.getAdapterRegistrations(),
+      adaptersConfig: workspace.getAgentConfig().adapters,
+      workspace,
+      derivedKey: null,
+      resolveFactory: (type, reg) => this.resolveAdapterFactory(type, reg),
+    })
+    return locked
+  }
+
+  /** resolveAdapterFactory, but the locked-credentials stub while this adapter's sealed credentials cannot be read. */
+  private async resolveAdapterFactoryUnlessLocked(
+    adapterType: string,
+    registration: AdapterRegistration,
+    workspace: AdfWorkspace,
+  ): Promise<CreateAdapterFn | null> {
+    if (detectLockedEnvelopes(workspace).length > 0 && adapterCredentialsLocked(workspace, adapterType, null)) {
+      try { workspace.insertLog('error', 'adapter', 'credentials_locked', adapterType, 'Envelope-sealed credentials are locked in this process — adapter not started') } catch { /* ignore */ }
+      return () => createLockedCredentialsAdapter(adapterType)
+    }
+    return this.resolveAdapterFactory(adapterType, registration)
+  }
+
   private async resolveAdapterFactory(
     adapterType: string,
     registration: AdapterRegistration,
@@ -971,13 +1014,20 @@ export function adapterCredentialsLocked(
   }
 }
 
+/** Error prefix of the locked-credentials stub adapter (recognized for restart after unlock). */
+export const LOCKED_ADAPTER_ERROR_PREFIX = 'credentials locked'
+
+/** What the owner does to unlock sealed credentials on a daemon. */
+export const CREDENTIALS_UNLOCK_HINT =
+  'Make the owner identity available: `adf identity restore` (seed phrase) or `adf identity unlock` (passphrase file), or /identity in the TUI.'
+
 /**
  * Stub adapter whose start() rejects with a clear "credentials locked"
  * message: startAdapter records the error status/log without ever attempting
  * a real connection.
  */
 export function createLockedCredentialsAdapter(adapterType: string): ChannelAdapter {
-  const error = `credentials locked — envelope-sealed credentials for "${adapterType}" cannot be decrypted in this process. Start Studio once or configure daemon identity.`
+  const error = `${LOCKED_ADAPTER_ERROR_PREFIX} — envelope-sealed credentials for "${adapterType}" cannot be decrypted in this process. ${CREDENTIALS_UNLOCK_HINT} The adapter restarts automatically once they unlock.`
   return {
     start: async () => { throw new Error(error) },
     stop: async () => {},

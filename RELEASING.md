@@ -79,6 +79,34 @@ To test the publish path itself, `GH_TOKEN=$(gh auth token) npm run release`
 uploads to a draft from your machine — but it only attaches *your* OS's
 installer, so let CI produce real multi-platform releases.
 
+## npm package (`@agentdocumentformat/cli`)
+
+The same tag also releases the terminal-only package (daemon + CLI + TUI,
+`npm i -g @agentdocumentformat/cli` → `adf`). The `npm-build` → `npm-smoke` →
+`npm-publish` jobs in `release.yml` bundle it (`npm run build:npm`, output in
+`dist/npm`, version = root `package.json`), install the tarball on Linux,
+macOS and Windows (Node 22 and 24), boot a daemon, and publish with
+`npm publish --access public` through npm **trusted publishing**: the job
+authenticates with GitHub's OIDC token, so there is no npm token secret, and
+npm attaches provenance automatically. They run independently of the Studio
+jobs.
+
+One-time setup:
+
+1. `npm login`, then claim the name by publishing the first version by hand
+   (trusted publishers can only be added to a package that exists):
+   `npm run build:npm && npm publish ./dist/npm --access public`.
+2. On npmjs.com: **@agentdocumentformat/cli → Settings → Trusted Publisher →
+   GitHub Actions**, with organization/user `christianbalevski`, repository
+   `adf`, workflow filename `release.yml` (no environment). Until this is
+   set, `npm-publish` fails with an authentication error; the Studio release
+   is unaffected.
+
+Local check: `npm run build:npm && npm pack ./dist/npm`, then install the
+tarball with an isolated prefix (`npm_config_prefix=/tmp/adf-prefix npm i -g
+./agentdocumentformat-cli-*.tgz`) and run `node scripts/npm-smoke.mjs` with that
+prefix on `PATH`.
+
 ## Code signing
 
 **macOS** builds are signed with a Developer ID Application certificate and

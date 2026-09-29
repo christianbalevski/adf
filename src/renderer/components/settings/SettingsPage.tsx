@@ -211,6 +211,7 @@ type OwnerIdentityStatusView = {
   runtimeDid: string
   hasMnemonic: boolean
   mnemonicLocked: boolean
+  restoreRequired?: boolean
   backupConfirmed: boolean
   legacyOwnerDids: string[]
   legacyRuntimeDids: string[]
@@ -262,6 +263,8 @@ function IdentityTab() {
   const [backupOpen, setBackupOpen] = useState(false)
   const [mnemonic, setMnemonic] = useState<string | null>(null)
   const [importOpen, setImportOpen] = useState(false)
+  // 'restore': only the owner on record is accepted (restoreRequired); 'import' switches owners.
+  const [importMode, setImportMode] = useState<'import' | 'restore'>('import')
   const [importPhrase, setImportPhrase] = useState('')
   const [importBusy, setImportBusy] = useState(false)
   const [importResult, setImportResult] = useState<{ ok: boolean; message: string } | null>(null)
@@ -307,9 +310,10 @@ function IdentityTab() {
     setImportBusy(true)
     setImportResult(null)
     try {
-      const r = await window.adfApi?.importOwnerMnemonic(importPhrase)
+      const expected = importMode === 'restore' ? status?.ownerDid : undefined
+      const r = await window.adfApi?.importOwnerMnemonic(importPhrase, expected)
       if (r?.success) {
-        setImportResult({ ok: true, message: `Identity imported. ${r.restamped ?? 0} agent file(s) restamped${r.failures?.length ? `, ${r.failures.length} failed` : ''}.` })
+        setImportResult({ ok: true, message: `Identity ${expected ? 'restored' : 'imported'}. ${r.restamped ?? 0} agent file(s) restamped${r.failures?.length ? `, ${r.failures.length} failed` : ''}.` })
         setImportPhrase('')
         refresh()
       } else {
@@ -327,6 +331,25 @@ function IdentityTab() {
 
   return (
     <>
+      {/* Seed-derived owner whose phrase this Studio cannot read (e.g. set up
+          in the ADF terminal with a passphrase-protected file): restore it,
+          never mint a replacement. */}
+      {status?.restoreRequired && (
+        <div data-settings-anchor="restore-identity">
+        <SettingsGroup className="p-4">
+          <p className="text-sm font-medium text-amber-700 dark:text-amber-400 mb-1">Restore your identity</p>
+          <p className="text-xs text-neutral-600 dark:text-neutral-300 mb-2">
+            This machine’s owner is <span className="font-mono break-all">{status.ownerDid}</span>, set up in the ADF
+            terminal, but Studio cannot read its seed phrase. Enter the same 12 words to use it here. Studio will not
+            create a new owner or restamp your agents.
+          </p>
+          <Button variant="primary" onClick={() => { setImportMode('restore'); setImportOpen(true); setImportResult(null) }}>
+            Restore identity
+          </Button>
+        </SettingsGroup>
+        </div>
+      )}
+
       {/* Owner identity */}
       <SettingsGroup className="p-4">
         <div className="flex items-center justify-between mb-1">
@@ -396,7 +419,7 @@ function IdentityTab() {
             Back up seed phrase
           </Button>
           <Button
-            onClick={() => { setImportOpen(true); setImportResult(null) }}
+            onClick={() => { setImportMode('import'); setImportOpen(true); setImportResult(null) }}
           >
             Import identity
           </Button>
@@ -520,11 +543,19 @@ function IdentityTab() {
       </Dialog>
 
       {/* Import identity dialog */}
-      <Dialog lightDismiss={false} open={importOpen} onClose={() => setImportOpen(false)} title="Import Identity">
-        <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-3">
-          Enter the 12-word seed phrase from another Studio. Your owner DID will change to the imported
-          identity, and local agent files you own will be restamped to it.
-        </p>
+      <Dialog lightDismiss={false} open={importOpen} onClose={() => setImportOpen(false)} title={importMode === 'restore' ? 'Restore Identity' : 'Import Identity'}>
+        {importMode === 'restore' ? (
+          <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-3">
+            Enter the 12-word seed phrase of <span className="font-mono break-all">{status?.ownerDid}</span> — the
+            words shown when it was created in the ADF terminal (<span className="font-mono">adf identity new</span>).
+            A phrase for a different owner is refused.
+          </p>
+        ) : (
+          <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-3">
+            Enter the 12-word seed phrase from another Studio. Your owner DID will change to the imported
+            identity, and local agent files you own will be restamped to it.
+          </p>
+        )}
         <Textarea
           aria-label="Seed phrase"
           value={importPhrase}
@@ -550,7 +581,7 @@ function IdentityTab() {
             loading={importBusy}
             variant="primary"
           >
-            {importBusy ? 'Importing...' : 'Import'}
+            {importBusy ? (importMode === 'restore' ? 'Restoring...' : 'Importing...') : (importMode === 'restore' ? 'Restore' : 'Import')}
           </Button>
         </div>
       </Dialog>
