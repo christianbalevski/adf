@@ -1,7 +1,7 @@
 // The one-shot CLI and TUI dispatch. The `adf` executable is bin.ts; it
 // calls runCli (this module never runs itself).
 
-import { DEFAULT_DAEMON_URL, resolveDaemonToken, resolveDaemonUrl } from './daemon-url'
+import { DEFAULT_DAEMON_URL, isLocalDaemonUrl, loopbackPort, resolveDaemonToken, resolveDaemonUrl, tunnelTokenHint } from './daemon-url'
 import {
   AUTH_PROVIDER_LABELS,
   loginChatGpt,
@@ -303,7 +303,12 @@ async function requestJson(io: CliIo, options: CliOptions, path: string, init?: 
       },
     })
   } catch (err) {
-    if (err instanceof TypeError) throw new Error(`Cannot reach the ADF daemon at ${options.daemonUrl} (${err.message}). Start it with: adf daemon start`)
+    if (err instanceof TypeError) {
+      const forwarded = loopbackPort(options.daemonUrl) !== null && !isLocalDaemonUrl(options.daemonUrl)
+      throw new Error(`Cannot reach the ADF daemon at ${options.daemonUrl} (${err.message}). ${forwarded
+        ? 'That is not this machine\'s daemon port, so adf did not start one there: check the SSH tunnel, or start a daemon on it with: adf daemon start --port <n>'
+        : 'Start it with: adf daemon start'}`)
+    }
     throw err
   }
   const text = await response.text()
@@ -315,7 +320,8 @@ async function requestJson(io: CliIo, options: CliOptions, path: string, init?: 
     const message = isRecord(body) && typeof body.error === 'string'
       ? body.error
       : `HTTP ${response.status} ${response.statusText}`
-    throw new Error(message)
+    const hint = response.status === 401 ? tunnelTokenHint(options.daemonUrl, options.token) : null
+    throw new Error(hint ? `${message}\n${hint}` : message)
   }
   return body
 }
@@ -573,7 +579,8 @@ async function streamEvents(io: CliIo, options: CliOptions, args: string[]): Pro
   })
   if (!response.ok || !response.body) {
     const detail = await response.json().catch(() => null) as { error?: unknown } | null
-    throw new Error(`Event stream failed: ${typeof detail?.error === 'string' ? detail.error : `HTTP ${response.status} ${response.statusText}`}`)
+    const hint = response.status === 401 ? tunnelTokenHint(options.daemonUrl, options.token) : null
+    throw new Error(`Event stream failed: ${typeof detail?.error === 'string' ? detail.error : `HTTP ${response.status} ${response.statusText}`}${hint ? `\n${hint}` : ''}`)
   }
 
   const reader = response.body.getReader()
@@ -1173,12 +1180,14 @@ function usage(): string {
 
 Usage: adf [--url <daemon-url>] [--json] <command>
        adf [tui] [--view <id>] [--agent <id>] [--loop <name>]
-       adf daemon [start|status|stop|restart|logs]
+       adf daemon [start|status|stop|restart|logs|token]
 
 With no command, adf opens the terminal app (see \`adf tui --help\`).
-When the daemon URL is on this machine and nothing answers there, adf
-starts the daemon in the background first (--no-daemon or
-ADF_NO_AUTOSTART=1 turn that off). Quitting leaves it running.
+When the daemon URL is this machine's daemon (127.0.0.1 or localhost on
+port 7385 or ADF_DAEMON_PORT) and nothing answers there, adf starts the
+daemon in the background first (--no-daemon or ADF_NO_AUTOSTART=1 turn
+that off). Quitting leaves it running. Another local port, such as an SSH
+tunnel, is never auto-started and needs --token.
 
 Commands:
   tui                            The terminal app (the default)
@@ -1266,7 +1275,7 @@ Daemon:
 Options:
   --url, -u <url>                Daemon URL
   --token <token>                Daemon access token (default: ADF_DAEMON_TOKEN,
-                                  else read automatically on the daemon's machine)
+                                  else the local daemon's token file)
   --json                         JSON output
   --no-daemon                    Never start the daemon automatically
   --version, -v                  Print the version

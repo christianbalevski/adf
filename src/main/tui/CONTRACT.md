@@ -3,7 +3,7 @@
 The TUI is a **client of the ADF daemon** (`docs/daemon/http-api.md`). It is
 fleet-first: many agents, each with several **cognition loops**. Six feature
 views sit on this foundation, one directory each. User docs:
-`docs/daemon/tui.md`.
+`docs/cli/` (key reference: `docs/cli/reference.md`).
 
 Run it: `npm run adf` (no command) · `npm run adf -- tui --view loops` ·
 `npm run tui` · `npm run tui:mock` (in-memory mock daemon, no real daemon needed).
@@ -381,7 +381,7 @@ view, skipped while the prompt or the tab bar has focus) → **global**. Registe
 active })`; return `true` only for keys you consumed.
 
 Reserved by the shell (never consume these unless in a text-entry mode); the
-list lives in `app/shell-keys.ts` and feeds /help and docs/daemon/tui.md:
+list lives in `app/shell-keys.ts` and feeds /help and docs/cli/reference.md:
 `Ctrl+C` (cancel dialog / clear prompt / twice to quit), `Ctrl+K`, `Ctrl+P`
 and `:` (palette), `Ctrl+B` (hide / show the sidebar, `app/layout.ts`), `Shift+←/→` and `Ctrl+←/→` (previous/next loop of the
 selected agent; in a prompt with text Ctrl+←/→ jump words),

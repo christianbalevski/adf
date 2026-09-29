@@ -191,7 +191,7 @@ export function DaemonOffline({ width, height }: { width: number; height: number
       <Text wrap="wrap" color={theme.color.text}>No ADF daemon answers at {url}. The TUI is a client: agents run in the daemon, so there is nothing to show or load until it is up.</Text>
       <Text> </Text>
       <Text color={theme.color.muted}>Start it in another terminal:</Text>
-      <Text color={theme.color.accent}>  npm run daemon</Text>
+      <Text color={theme.color.accent}>  adf daemon start</Text>
       <Text> </Text>
       <Text wrap="wrap" color={theme.color.muted}>Once it is up: f track a folder of agents · o load an .adf · n new agent.</Text>
       <Text> </Text>
@@ -434,7 +434,7 @@ const fleet: ViewDefinition = {
       { keys: 's', label: 'Start the agent (a stopped one: load it into the daemon, then start it; one that needs review: review it first)' },
       { keys: 'H', label: 'Hide / show stopped agents: tracked agents that are not loaded (also /agents running|all; remembered)' },
       { keys: 'x', label: 'Stop and unload the agent (asks; the .adf is kept)' },
-      { keys: 'a', label: 'Abort the turns running now (asks)' },
+      { keys: 'a', label: 'Interrupt the turns running now (asks)' },
       { keys: 'w', label: 'Open the agent’s website (starts the web server if it is stopped)' },
       { keys: 'W', label: 'Copy the agent’s website URL' },
       { keys: 'o', label: 'Load an .adf (Tab completes, ^R require review, ^S start after load)' },

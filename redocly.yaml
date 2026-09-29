@@ -1,0 +1,16 @@
+# Redocly CLI config for the daemon OpenAPI contract (npm run docs:api:lint / docs:api).
+# recommended-strict: every recommended rule is an error, so CI fails on warnings too.
+extends:
+  - recommended-strict
+
+rules:
+  # The spec documents real behaviour; one tag per operation is enough.
+  operation-4xx-response: error
+  operation-summary: error
+  tag-description: error
+  no-unused-components: error
+
+openapi:
+  hideDownloadButtons: false
+  jsonSamplesExpandLevel: 2
+  sortTagsAlphabetically: false

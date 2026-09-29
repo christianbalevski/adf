@@ -90,6 +90,24 @@ describe('ensureDaemon', () => {
     expect(await ensureDaemon('http://127.0.0.1:7385', { fetch: down as typeof fetch, env: { ADF_NO_AUTOSTART: '1' } })).toBeNull()
   })
 
+  it('never starts a daemon on a tunnelled loopback port; the default port, ADF_DAEMON_PORT and adf-started ports are local', async () => {
+    const dir = tempDir()
+    const settingsFile = join(dir, 'adf-settings.json')
+    writeFileSync(settingsFile, JSON.stringify({ runtimeId: 'rt-1' }))
+    // A Studio-like mesh answer makes a start attempt throw before spawning: proof that one was attempted.
+    const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/ping')) return json({ runtime_id: 'rt-1' })
+      throw new TypeError('fetch failed')
+    }) as typeof fetch
+    const env = { ADF_DAEMON_SETTINGS: settingsFile }
+    expect(await ensureDaemon('http://127.0.0.1:7386', { fetch: fetchImpl, env, log: () => {} })).toBeNull()
+    expect(await ensureDaemon('http://localhost:7390', { fetch: fetchImpl, env, log: () => {} })).toBeNull()
+    await expect(ensureDaemon('http://127.0.0.1:7386', { fetch: fetchImpl, env: { ...env, ADF_DAEMON_PORT: '7386' }, log: () => {} })).rejects.toMatchObject({ advice: expect.stringContaining('Quit ADF Studio') })
+    // `adf daemon start --port 7390` left a live pid file: that port is ours.
+    writeFileSync(join(dir, 'adf-daemon-7390.pid'), JSON.stringify({ pid: process.pid }))
+    await expect(ensureDaemon('http://localhost:7390', { fetch: fetchImpl, env, log: () => {} })).rejects.toMatchObject({ advice: expect.stringContaining('Quit ADF Studio') })
+  })
+
   it('refuses to start next to a running Studio, with advice', async () => {
     const dir = tempDir()
     const settingsFile = join(dir, 'adf-settings.json')

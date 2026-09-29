@@ -6,10 +6,12 @@
  * Three checks, in order, on every request:
  *
  *   1. Host allow-list: the Host header must name this daemon — 127.0.0.1,
- *      localhost or [::1] with the bound port (plus the bind address itself),
- *      and for non-loopback binds any IP literal on that port and the names in
- *      ADF_DAEMON_ALLOWED_HOSTS. A rebinding attacker's hostname never
- *      matches.
+ *      localhost or [::1] (any port: an SSH tunnel `-L 7386:127.0.0.1:7385`
+ *      arrives as Host 127.0.0.1:7386), the bind address itself on the bound
+ *      port, and for non-loopback binds any IP literal on that port and the
+ *      names in ADF_DAEMON_ALLOWED_HOSTS. DNS rebinding always carries the
+ *      attacker's hostname, so only the name matters; it never matches.
+ *      Origin (check 2) still needs the bound port for loopback names.
  *   2. Browser context: a request carrying an Origin that is not one of the
  *      allowed hosts, or `Sec-Fetch-Site: cross-site|same-site`, is refused.
  *      Browsers always attach these to cross-site fetches and form posts;
@@ -107,9 +109,16 @@ export function parseAllowedHostsEnv(value: string | undefined): string[] {
   return (value ?? '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
 }
 
-function hostMatches(host: string, port: number, rules: HostRule[], ipLiteralPort: number | null): boolean {
+const LOOPBACK_RULE_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
+
+/**
+ * `anyLoopbackPort` (Host header only): the loopback names in `rules` match on
+ * any port, so a forwarded local port reaches the daemon. Origins keep the
+ * exact port: a page on localhost:3000 is another origin.
+ */
+function hostMatches(host: string, port: number, rules: HostRule[], ipLiteralPort: number | null, anyLoopbackPort = false): boolean {
   if (ipLiteralPort !== null && port === ipLiteralPort && isIP(host) !== 0) return true
-  return rules.some(rule => rule.host === host && (rule.port === undefined || rule.port === port))
+  return rules.some(rule => rule.host === host && (rule.port === undefined || rule.port === port || (anyLoopbackPort && LOOPBACK_RULE_HOSTS.has(rule.host))))
 }
 
 type HeaderValue = string | string[] | undefined
@@ -147,7 +156,7 @@ export class DaemonRequestGuard {
     const rules = this.rules
     if (rules) {
       const parsed = parseHostHeader(single(headers.host) ?? '')
-      if (!parsed || !hostMatches(parsed.host, parsed.port ?? 80, rules, this.ipLiteralPort)) {
+      if (!parsed || !hostMatches(parsed.host, parsed.port ?? 80, rules, this.ipLiteralPort, true)) {
         return forbidden('Host header not allowed for this daemon (DNS rebinding protection). Use 127.0.0.1 or localhost, or add the name to ADF_DAEMON_ALLOWED_HOSTS.', 'host_not_allowed')
       }
     }

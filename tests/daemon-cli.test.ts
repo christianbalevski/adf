@@ -27,19 +27,23 @@ describe('daemon access token', () => {
     return (init?.headers as Record<string, string> | undefined)?.Authorization
   }
 
-  it('sends the local token file to a loopback daemon, --token wins, never the local token to a remote one', async () => {
+  it('sends the local token file to the local daemon, --token wins, never the local token to a remote one or a tunnel', async () => {
     const { token } = ensureDaemonToken(settingsDir)
     const seen: Array<[string, string | undefined]> = []
     const io = fakeIo(async (url, init) => { seen.push([url, authOf(init)]); return jsonResponse([]) })
 
     expect(await runCli(['agents'], io)).toBe(0)
-    expect(await runCli(['--url', 'http://localhost:9999', 'agents'], io)).toBe(0)
+    expect(await runCli(['--url', 'http://localhost:7385', 'agents'], io)).toBe(0)
+    expect(await runCli(['--url', 'http://127.0.0.1:7386', 'agents'], io)).toBe(0)
+    expect(await runCli(['--url', 'http://127.0.0.1:7386', '--token', 'tunnel-token', 'agents'], io)).toBe(0)
     expect(await runCli(['--url', 'http://daemon.example:7385', 'agents'], io)).toBe(0)
     expect(await runCli(['--url', 'http://daemon.example:7385', '--token', 'remote-token', 'agents'], io)).toBe(0)
     expect(await runCli(['--token=explicit', 'agents'], io)).toBe(0)
     expect(seen).toEqual([
       ['http://127.0.0.1:7385/agents', `Bearer ${token}`],
-      ['http://localhost:9999/agents', `Bearer ${token}`],
+      ['http://localhost:7385/agents', `Bearer ${token}`],
+      ['http://127.0.0.1:7386/agents', undefined],
+      ['http://127.0.0.1:7386/agents', 'Bearer tunnel-token'],
       ['http://daemon.example:7385/agents', undefined],
       ['http://daemon.example:7385/agents', 'Bearer remote-token'],
       ['http://127.0.0.1:7385/agents', 'Bearer explicit'],
@@ -70,6 +74,23 @@ describe('daemon access token', () => {
     const io = fakeIo(async () => jsonResponse({ error: 'This ADF daemon requires its access token (Authorization: Bearer). … Print the token on the daemon host with: adf daemon token', code: 'unauthorized' }, 401))
     expect(await runCli(['--url', 'http://daemon.example:7385', 'agents'], io)).toBe(1)
     expect(io.errorOutput()).toContain('adf daemon token')
+  })
+
+  it('a 401 through a tunnel (loopback, another port) explains why no token was sent', async () => {
+    const unauthorized = async () => jsonResponse({ error: 'This ADF daemon requires its access token.', code: 'unauthorized' }, 401)
+    const io = fakeIo(unauthorized)
+    expect(await runCli(['--url', 'http://127.0.0.1:7386', 'agents'], io)).toBe(1)
+    expect(io.errorOutput()).toMatch(/not this machine's daemon port \(7385; e\.g\. an SSH tunnel\)[\s\S]*--token or set ADF_DAEMON_TOKEN[\s\S]*adf daemon token/)
+    // With a token (wrong or not) there is nothing to explain.
+    const withToken = fakeIo(unauthorized)
+    expect(await runCli(['--url', 'http://127.0.0.1:7386', '--token', 'x', 'agents'], withToken)).toBe(1)
+    expect(withToken.errorOutput()).not.toMatch(/SSH tunnel/)
+  })
+
+  it('a down tunnel says so instead of suggesting adf daemon start', async () => {
+    const io = fakeIo(async () => { throw new TypeError('fetch failed') })
+    expect(await runCli(['--url', 'http://127.0.0.1:7386', 'agents'], io)).toBe(1)
+    expect(io.errorOutput()).toMatch(/not this machine's daemon port[\s\S]*check the SSH tunnel/)
   })
 })
 

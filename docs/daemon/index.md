@@ -1,68 +1,69 @@
 # ADF Daemon
 
-The ADF daemon is the headless ADF runtime that serves an API for `.adf` agents. It runs agents without the Studio UI, exposes a local HTTP API, autostarts trusted agents from tracked directories, wires runtime services such as MCP and channel adapters, and serves agent websites through the same mesh server used by Studio.
+The ADF daemon is the headless ADF runtime that serves an API for `.adf`
+agents. It runs agents without the Studio UI: it loads the agents in your
+tracked folders, keeps them running (timers, triggers, channels, MCP servers,
+compute), serves their websites through the mesh server, and exposes
+everything over a local HTTP API guarded by a per-install access token.
 
-Studio remains the visual IDE for authoring, configuring, and observing agents. The daemon is for automation, deployment, background agents, the ADF CLI and terminal app, service supervisors, and any environment where a desktop UI is the wrong shape. Both hosts now use the same canonical assembled-agent lifecycle; the daemon selects the exhaustive `daemon` capability profile.
+The ADF CLI and its terminal app (`adf`, npm package
+[`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli))
+are clients of that API, and start the daemon in the background when they need
+it. Studio remains the visual IDE for authoring and observing agents. Both
+hosts build agents with the same canonical assembler; the daemon selects the
+exhaustive `daemon` capability profile.
 
 ## Documentation
 
-- [Getting Started](getting-started.md) - Start the daemon, load an agent, chat, inspect status, and autostart agents
-- [HTTP API](http-api.md) - Endpoint reference for agents, loop inspection, review, settings, compute, and ChatGPT auth
-- [CLI](cli.md) - Terminal client for agent control, resources, diagnostics, events, and chat
-- [Terminal app](tui.md) - `adf` with no command: the fleet and every agent's loops (chat sessions)
-- [Runtime Settings](runtime-settings.md) - Direct JSON settings, example schema, providers, MCP, adapters, compute, and mesh
-- [Runtime Architecture](runtime-architecture.md) - RuntimeService, AgentRuntimeBuilder, triggers, MCP, adapters, compute, and mesh serving
-- [Lifecycle Assembly Contract](lifecycle-assembly.md) - Shared profiles, dispatch boundary, ownership, startup, transfer, and shutdown
-- [Operations](operations.md) - Settings, ports, process management, Studio compatibility, troubleshooting, and current caveats
-- [Performance Harness](performance-harness.md) - Run the headless runtime stress harness and interpret reports
+- [Getting Started](getting-started.md): install, owner identity, providers, create or load agents, chat, and the same over HTTP
+- [Terminal app](../cli/terminal-app.md): `adf` with no command: your fleet, each agent's loops, approvals, files and live events
+- [ADF CLI](../cli/index.md): one-shot commands for agent control, resources, diagnostics, events and chat
+- [API guide](api-guide.md): building on the HTTP API: authentication and remote access, agents and loops, chat and events, approvals, identity, credentials, channels, MCP, providers, templates, skills, errors
+- [API reference](api-reference.md): every endpoint, generated from [`openapi.json`](openapi.json)
+- [HTTP API overview](http-api.md): the API at a glance, by area
+- [Operations](operations.md): running and stopping the daemon, data directory, ports, token, Studio compatibility, troubleshooting
+- [Runtime Settings](runtime-settings.md): the settings file, providers, MCP, channels, compute, mesh, and the settings API
+- [Runtime Architecture](runtime-architecture.md): RuntimeService, AgentRuntimeBuilder, the request guard, triggers, MCP, channels, compute and mesh serving
+- [Lifecycle Assembly Contract](lifecycle-assembly.md): shared profiles, dispatch boundary, ownership, startup, transfer and shutdown
+- [Performance Harness](performance-harness.md): the headless runtime stress harness
 
 ## Daemon vs Studio
 
 | Area | Studio | Daemon |
 |------|--------|--------|
-| Primary use | Desktop authoring and visual operation | Headless API runtime operation |
-| Entry point | `npm run dev` | `npm run daemon` |
-| Agent control | Renderer UI and main-process IPC | Local HTTP API on port `7385`, plus `npm run adf -- ...` |
-| Agent visibility | Loop panel, logs panel, agent panels | CLI, `/events`, `/runtime`, `/agents/:id/runtime`, resource endpoints, stdout logs |
-| Settings | App settings UI | Direct JSON settings file, plus settings HTTP endpoints |
-| Mesh serving | Mesh server on port `7295` | Same mesh server on port `7295` |
+| Primary use | Desktop authoring and visual operation | Headless runtime: terminal, scripts, servers, other clients |
+| Entry point | The ADF Studio app (`npm run dev` from source) | `adf` (auto-start), `adf daemon [start]` (`npm run daemon` from source) |
+| Agent control | Renderer UI and main-process IPC | HTTP API on `127.0.0.1:7385` (bearer token), the terminal app and the CLI |
+| Agent visibility | Loop panel, logs panel, agent panels | Terminal app, `/events` stream, diagnostics and resource endpoints, daemon log |
+| Settings | App settings UI | The same `adf-settings.json` (edited by the terminal app, the API, or by hand) |
+| Owner identity | Seed phrase in the OS keychain | The same identity (shared keychain), or a passphrase file where there is none |
+| Mesh serving | Mesh server on port `7295` | Same mesh server on port `7295`, on by default |
 | Runtime wiring | Canonical assembler with Studio foreground/background profiles | Canonical assembler with the `daemon` profile, hosted by `RuntimeService` |
 
-The daemon does not replace Studio. Studio and daemon provide different host surfaces over the same assembled-agent lifecycle and dispatch contract.
+Run one of them at a time on the same agents: both would open the same files,
+start the same channels and bind the same mesh port. `adf` refuses to
+auto-start a daemon while Studio runs on the same settings.
 
-## What Works Today
+## What works today
 
-The daemon currently supports:
-
-- Starting an HTTP API on `127.0.0.1:7385`
-- Loading `.adf` files by path
-- Listing loaded agents
-- Inspecting agent status and persisted loop entries
-- Streaming daemon and agent events with Server-Sent Events
-- Inspecting read-only agent resources such as config, files, inbox, outbox, timers, identities, and logs
-- Listing and resolving human-in-the-loop tasks, approvals, suspend prompts, and pending `ask` requests
-- Inspecting sanitized runtime diagnostics for providers, auth, settings, MCP, adapters, network, WebSockets, and agent runtime wiring
-- Using the `npm run adf -- ...` CLI client for common daemon operations
-- Sending asynchronous chat turns
-- Starting agents, unloading agents, and aborting current turns
-- Autostart scanning from tracked directories
-- Review/trust gates for autostarted or strict-loaded agents
-- ChatGPT subscription auth flow endpoints
-- Reading and updating daemon settings
-- Compute environment status and lifecycle endpoints
-- Built-in tools, code tools, compute tools, MCP tools, and channel adapters
-- Inbound adapter messages waking agents through trigger evaluation
-- Agent website and API serving through the mesh server on port `7295`
+- Background daemon management (`adf daemon start|stop|status|restart|logs|token`), auto-start from `adf`
+- Token-authenticated HTTP API with Host / Origin checks, loopback-only identity and shutdown routes
+- Owner identity create, restore, unlock and lock; agents created from templates, sealed like Studio's
+- Tracked folders with autostart and a review gate; every agent on disk listed with what it needs
+- Loading, starting, stopping, interrupting and aborting agents; inner loops (side loops) and per-loop chat, history, compaction and timers
+- Asynchronous chat turns and a Server-Sent Events stream with resume and replay
+- Approvals (approve, deny with feedback, always approve, approve all), questions and suspends
+- Sealed per-agent credentials (metadata-only reads), channels, MCP servers, API-key providers in the secret store, ChatGPT and Grok subscription sign-in
+- File-backed skills, agent files, config, timers, inbox, outbox, logs and tables
+- Context breakdowns, token usage, and runtime diagnostics for providers, auth, MCP, channels, network, compute and WebSockets
+- Built-in, code, compute and MCP tools; channel messages waking agents through triggers
+- Agent websites and APIs through the mesh server on port `7295`
 - A headless performance harness with mock providers
 
-## Current Caveats
+## Current caveats
 
-The daemon still has known operational gaps:
-
-- Do not run Studio and the daemon against the same `.adf` files unless you intentionally want both processes touching them.
-- Studio and the daemon can conflict on mesh port `7295`.
-- Switching between Studio and daemon can rebuild `better-sqlite3` for different runtimes because Studio uses Electron and the daemon uses regular Node.
-- File-change triggers are not fully meaningful in the daemon yet because Studio's document editor is not present.
-- The event stream uses an in-memory ring buffer, so it is for live visibility and short replay windows, not durable audit storage.
-
-Clients can use `/events` for live visibility into daemon lifecycle, agent lifecycle, turns, state changes, tool calls, and errors.
+- The `/events` replay buffer is in memory (1000 frames): live visibility and short reconnects, not an audit log. Durable history is in each agent's file.
+- File-change triggers are incomplete without Studio's document editor.
+- The daemon speaks plain HTTP; remote use needs an SSH tunnel or TLS in front ([remote access](api-guide.md#remote-access)).
+- No cross-process lock keeps Studio and a hand-started daemon off the same `.adf` files.
+- From a source checkout, switching between Studio (Electron) and the daemon (Node) rebuilds `better-sqlite3`.

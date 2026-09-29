@@ -14,10 +14,10 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, rea
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DEFAULT_DAEMON_URL, resolveDaemonToken } from './daemon-url'
+import { DEFAULT_DAEMON_PORT, DEFAULT_DAEMON_URL, isLocalDaemonUrl, resolveDaemonToken } from './daemon-url'
 import { defaultUserDataPath } from '../utils/user-data-path'
 
-export const DEFAULT_DAEMON_PORT = 7385
+export { DEFAULT_DAEMON_PORT }
 const DEFAULT_MESH_PORT = 7295
 const START_TIMEOUT_MS = 90_000
 const STOP_TIMEOUT_MS = 30_000
@@ -271,16 +271,18 @@ export interface EnsureOptions extends StartOptions {
 }
 
 /**
- * `adf` needs a daemon at `url`: when it is local and not answering, start
- * one in the background. Returns the start result, or null when nothing had
- * to be (or may be) started. Throws DaemonStartError when a start failed.
+ * `adf` needs a daemon at `url`: when it is this machine's (isLocalDaemonUrl:
+ * loopback on the default port / ADF_DAEMON_PORT; not a forwarded port) and
+ * not answering, start one in the background. Returns the start result, or
+ * null when nothing had to be (or may be) started. Throws DaemonStartError
+ * when a start failed.
  */
 export async function ensureDaemon(url: string, options: EnsureOptions = {}): Promise<StartResult | null> {
   const env = options.env ?? process.env
   const fetchImpl = options.fetch ?? fetch
   const target = daemonTarget(url)
   if (await isHealthy(target.url, fetchImpl)) return null
-  if (!target.loopback || options.disabled || env.ADF_NO_AUTOSTART === '1') return null
+  if (!target.loopback || !isLocalDaemonUrl(target.url, env) || options.disabled || env.ADF_NO_AUTOSTART === '1') return null
   return await startDaemon(target, options)
 }
 
