@@ -200,7 +200,7 @@ export async function checkLanFirewall(port: number): Promise<LanFirewallState> 
 /** Run a command, resolving to its stdout+exit code without throwing. */
 async function tryExec(cmd: string, args: string[]): Promise<{ code: number; stdout: string }> {
   try {
-    const { stdout } = await execFileAsync(cmd, args, { timeout: 5000 })
+    const { stdout } = await execFileAsync(cmd, args, { timeout: 5000, windowsHide: true })
     return { code: 0, stdout: stdout.toString() }
   } catch (err) {
     const code = typeof (err as { code?: number }).code === 'number' ? (err as { code: number }).code : 1

@@ -164,7 +164,7 @@ function sameContainerId(expected: string, actual: string): boolean {
 
 function run(command: string, args: string[], timeout: number): Promise<ExecResult> {
   return new Promise((resolve) => {
-    execFile(command, args, { timeout, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(command, args, { timeout, maxBuffer: 2 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
       const errorCode = (error as (NodeJS.ErrnoException & { code?: number }) | null)?.code
       const code = typeof errorCode === 'number' ? errorCode : error ? 1 : 0
       resolve({ stdout: stdout?.trim() ?? '', stderr: stderr?.trim() ?? '', code })

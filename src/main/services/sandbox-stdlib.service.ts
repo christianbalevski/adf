@@ -140,7 +140,8 @@ export class SandboxStdlibService {
           cwd: installDir,
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
           timeout: 120_000,
-          shell: IS_WIN
+          shell: IS_WIN,
+          windowsHide: true
         }
       )
 

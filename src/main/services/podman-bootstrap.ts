@@ -75,7 +75,7 @@ const EXTRA_SEARCH_PATHS: Record<string, string[]> = {
 
 function exec(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 10_000 }, (error, stdout, stderr) => {
+    execFile(cmd, args, { timeout: 10_000, windowsHide: true }, (error, stdout, stderr) => {
       resolve({ stdout: stdout?.trim() ?? '', stderr: stderr?.trim() ?? '', code: error ? (error as NodeJS.ErrnoException).code === 'ENOENT' ? -1 : 1 : 0 })
     })
   })

@@ -669,6 +669,7 @@ export class StreamBindingManager {
         cwd: endpoint.cwd,
         env: endpoint.env ? { ...process.env, ...endpoint.env } : process.env,
         stdio: 'pipe',
+        windowsHide: true,
       })
     } else if (endpoint.isolation === 'container_shared') {
       if (!this.config?.container_shared_bind) throw new Error('Shared-container process stream binding is not enabled for this agent')
