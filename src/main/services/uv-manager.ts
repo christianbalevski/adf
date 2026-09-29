@@ -139,7 +139,7 @@ export class UvManager {
 
   private async _getVersion(uvBin: string): Promise<string | null> {
     try {
-      const { stdout } = await execFileAsync(uvBin, ['--version'], { timeout: 10_000 })
+      const { stdout } = await execFileAsync(uvBin, ['--version'], { timeout: 10_000, windowsHide: true })
       // Output format: "uv 0.5.1" or "uv 0.5.1 (abcdef 2024-01-01)"
       const match = stdout.trim().match(/^uv\s+(\d+\.\d+\.\d+)/)
       return match ? match[1] : null
@@ -174,9 +174,9 @@ export class UvManager {
         await execFileAsync('powershell', [
           '-NoProfile', '-Command',
           `Expand-Archive -Path '${archivePath}' -DestinationPath '${tempDir}' -Force`
-        ], { timeout: 60_000 })
+        ], { timeout: 60_000, windowsHide: true })
       } else {
-        await execFileAsync('tar', ['xzf', archivePath, '-C', tempDir, '--strip-components=1'], { timeout: 60_000 })
+        await execFileAsync('tar', ['xzf', archivePath, '-C', tempDir, '--strip-components=1'], { timeout: 60_000, windowsHide: true })
       }
 
       // Move binary to managed dir
@@ -198,7 +198,7 @@ export class UvManager {
       // macOS: remove quarantine attribute
       if (process.platform === 'darwin') {
         try {
-          await execFileAsync('xattr', ['-d', 'com.apple.quarantine', targetPath], { timeout: 5_000 })
+          await execFileAsync('xattr', ['-d', 'com.apple.quarantine', targetPath], { timeout: 5_000, windowsHide: true })
         } catch {
           // Quarantine attribute may not be present — that's fine
         }
@@ -225,7 +225,7 @@ export class UvManager {
     if (hasPython) return
 
     console.log(`[UvManager] Installing Python ${minVersion}...`)
-    await execFileAsync(uv, ['python', 'install', minVersion], { timeout: 300_000 })
+    await execFileAsync(uv, ['python', 'install', minVersion], { timeout: 300_000, windowsHide: true })
     console.log(`[UvManager] Python ${minVersion} installed`)
   }
 
@@ -241,7 +241,7 @@ export class UvManager {
   private async _hasPython(uv: string, minVersion: string): Promise<boolean> {
     try {
       // uv python find exits 0 and prints a path if a matching Python is found
-      await execFileAsync(uv, ['python', 'find', minVersion], { timeout: 10_000 })
+      await execFileAsync(uv, ['python', 'find', minVersion], { timeout: 10_000, windowsHide: true })
       return true
     } catch {
       return false
@@ -264,6 +264,7 @@ export class UvManager {
 
     await execFileAsync(uv, ['tool', 'install', spec], {
       timeout: 120_000,
+      windowsHide: true,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
     })
 
@@ -274,7 +275,7 @@ export class UvManager {
   async toolUninstall(pkg: string): Promise<void> {
     const uv = await this.ensureUv()
     console.log(`[UvManager] Uninstalling tool: ${pkg}`)
-    await execFileAsync(uv, ['tool', 'uninstall', pkg], { timeout: 30_000 })
+    await execFileAsync(uv, ['tool', 'uninstall', pkg], { timeout: 30_000, windowsHide: true })
   }
 
   /**
@@ -299,7 +300,7 @@ export class UvManager {
 
     const binDirs: string[] = []
     try {
-      const { stdout } = await execFileAsync(uv, ['tool', 'dir', '--bin'], { timeout: 10_000 })
+      const { stdout } = await execFileAsync(uv, ['tool', 'dir', '--bin'], { timeout: 10_000, windowsHide: true })
       if (stdout.trim()) binDirs.push(stdout.trim())
     } catch {
       // uv too old for `--bin` — fall through to the conventional locations
@@ -308,7 +309,7 @@ export class UvManager {
 
     // Last resort: the tool's own venv bin dir, which uv symlinks from.
     try {
-      const { stdout } = await execFileAsync(uv, ['tool', 'dir'], { timeout: 10_000 })
+      const { stdout } = await execFileAsync(uv, ['tool', 'dir'], { timeout: 10_000, windowsHide: true })
       const toolDir = stdout.trim()
       if (toolDir) {
         binDirs.push(join(toolDir, pkg, process.platform === 'win32' ? 'Scripts' : 'bin'))
@@ -332,7 +333,7 @@ export class UvManager {
   private async listEntryPoints(pkg: string): Promise<string[]> {
     const uv = await this.ensureUv()
     try {
-      const { stdout } = await execFileAsync(uv, ['tool', 'list'], { timeout: 10_000 })
+      const { stdout } = await execFileAsync(uv, ['tool', 'list'], { timeout: 10_000, windowsHide: true })
       const names: string[] = []
       let inPkg = false
       for (const line of stdout.split('\n')) {
@@ -351,7 +352,7 @@ export class UvManager {
   async listTools(): Promise<InstalledTool[]> {
     const uv = await this.ensureUv()
     try {
-      const { stdout } = await execFileAsync(uv, ['tool', 'list'], { timeout: 10_000 })
+      const { stdout } = await execFileAsync(uv, ['tool', 'list'], { timeout: 10_000, windowsHide: true })
       // Format: "package-name v1.2.3\n- entry-point\n"
       const tools: InstalledTool[] = []
       for (const line of stdout.split('\n')) {

@@ -711,9 +711,15 @@ export function machineSize(
   }
 }
 
+const PODMAN_MISS_TTL_MS = 60_000
+
 export class PodmanService extends EventEmitter {
   private status: ComputeEnvStatus = 'stopped'
   private podmanBin: string | null = null
+  /** Shared in-flight probe, so concurrent callers run one probe between them. */
+  private podmanProbe: Promise<string | null> | null = null
+  /** When a probe last found no Podman; misses are cached for PODMAN_MISS_TTL_MS. */
+  private podmanMissAt = 0
   private activeAgentIds = new Set<string>()
   private stopTimer: ReturnType<typeof setTimeout> | null = null
   private errorMessage?: string
@@ -813,15 +819,19 @@ export class PodmanService extends EventEmitter {
 
   /**
    * Resolve the podman binary path (cached after first call).
-   * Returns null if Podman is not installed.
+   * Returns null if Podman is not installed. A miss is cached briefly: the
+   * probe spawns wsl/where/podman, and without Podman every compute call
+   * would re-run it. setup() clears the miss so a fresh install is seen.
    */
   async findPodman(): Promise<string | null> {
     if (this.podmanBin) return this.podmanBin
-    const info = await checkPodmanAvailability()
-    if (info.available && info.binPath) {
-      this.podmanBin = info.binPath
-    }
-    return this.podmanBin
+    if (Date.now() - this.podmanMissAt < PODMAN_MISS_TTL_MS) return null
+    this.podmanProbe ??= checkPodmanAvailability().then((info) => {
+      if (info.available && info.binPath) this.podmanBin = info.binPath
+      else this.podmanMissAt = Date.now()
+      return this.podmanBin
+    }).finally(() => { this.podmanProbe = null })
+    return this.podmanProbe
   }
 
   /**
@@ -1398,10 +1408,11 @@ export class PodmanService extends EventEmitter {
     installCommand?: string
   ): Promise<Record<string, unknown>> {
     if (!SETUP_STEPS.has(step)) return { success: false, error: `Unknown step: ${step}` }
+    this.podmanMissAt = 0
 
     const run = (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> =>
       new Promise((resolve) => {
-        execFile(cmd, cmdArgs, { timeout }, (error, stdout, stderr) => {
+        execFile(cmd, cmdArgs, { timeout, windowsHide: true }, (error, stdout, stderr) => {
           resolve({
             stdout: stdout?.trim() ?? '',
             stderr: stderr?.trim() ?? '',
@@ -1503,6 +1514,7 @@ export class PodmanService extends EventEmitter {
     return spawn(this.podmanBin, execArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
+      windowsHide: true,
     })
   }
 
@@ -1531,6 +1543,7 @@ export class PodmanService extends EventEmitter {
     return spawn(bin, runArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
+      windowsHide: true,
     })
   }
 
@@ -2394,7 +2407,7 @@ export class PodmanService extends EventEmitter {
 
   private exec0(cmd: string, args: string[], timeout = 30_000): Promise<ExecResult> {
     return new Promise((resolve) => {
-      execFile(cmd, args, { timeout }, (error, stdout, stderr) => {
+      execFile(cmd, args, { timeout, windowsHide: true }, (error, stdout, stderr) => {
         resolve({
           stdout: stdout?.trim() ?? '',
           stderr: stderr?.trim() ?? '',

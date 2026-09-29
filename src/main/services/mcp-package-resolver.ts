@@ -4,8 +4,11 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import type { McpInstalledPackage } from '../../shared/types/adf-v02.types'
 import { getUserDataPath } from '../utils/user-data-path'
+import { assertNpmSpec } from '../utils/npm-spec'
 
 const execFileAsync = promisify(execFile)
+const IS_WIN = process.platform === 'win32'
+const NPM_BIN = IS_WIN ? 'npm.cmd' : 'npm'
 
 interface PackageManifest {
   packages: Record<string, McpInstalledPackage>
@@ -131,6 +134,7 @@ export class PackageResolver {
     packageName: string,
     onProgress?: (message: string) => void
   ): Promise<McpInstalledPackage> {
+    assertNpmSpec(packageName)
     const baseDir = this.getBaseDir()
     // Each package gets its own subdirectory to avoid dependency conflicts
     const safeName = packageName.replace(/[/@]/g, '_')
@@ -150,9 +154,7 @@ export class PackageResolver {
 
     try {
       const { stdout, stderr } = await execFileAsync(
-        process.execPath.includes('Electron')
-          ? 'npm'   // When running in packaged Electron, use system npm
-          : 'npm',
+        NPM_BIN,
         ['install', '--save', '--no-audit', '--no-fund', packageName],
         {
           cwd: installDir,
@@ -161,7 +163,10 @@ export class PackageResolver {
             // Avoid Electron's bundled Node interfering with npm
             ELECTRON_RUN_AS_NODE: '1'
           },
-          timeout: 120_000  // 2 minute timeout
+          timeout: 120_000,  // 2 minute timeout
+          // npm is npm.cmd on Windows; Node only runs .cmd through a shell.
+          shell: IS_WIN,
+          windowsHide: true
         }
       )
 

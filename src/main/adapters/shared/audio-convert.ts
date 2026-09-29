@@ -23,7 +23,7 @@ export async function convertToOggOpus(input: Buffer): Promise<Buffer> {
         '-vn',
         '-y',
         outPath
-      ], (error) => {
+      ], { windowsHide: true }, (error) => {
         if (error) reject(new Error(`ffmpeg conversion failed: ${error.message}. Is ffmpeg installed?`))
         else resolve()
       })

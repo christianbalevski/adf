@@ -11,6 +11,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import type { CodeExecutionPackage } from '../../shared/types/adf-v02.types'
 import { getUserDataPath } from '../utils/user-data-path'
+import { assertNpmSpec } from '../utils/npm-spec'
 
 const execFileAsync = promisify(execFile)
 const IS_WIN = process.platform === 'win32'
@@ -87,6 +88,7 @@ export class SandboxPackagesService {
   ): Promise<{ name: string; version: string; size_mb: number; already_installed: boolean }> {
     const manifest = this.loadManifest()
     const versionSpec = version ?? 'latest'
+    assertNpmSpec(name, versionSpec)
 
     // Check if already installed at a compatible version
     const existing = manifest.packages[name]
@@ -107,7 +109,8 @@ export class SandboxPackagesService {
           cwd: baseDir,
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
           timeout: 120_000,
-          shell: IS_WIN
+          shell: IS_WIN,
+          windowsHide: true
         }
       )
 
@@ -371,7 +374,8 @@ export class SandboxPackagesService {
           cwd: this.getBaseDir(),
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
           timeout: 60_000,
-          shell: IS_WIN
+          shell: IS_WIN,
+          windowsHide: true
         }
       )
     } catch (err) {

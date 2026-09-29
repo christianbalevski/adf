@@ -146,6 +146,7 @@ export function startLoopbackTunnel(opts: {
   const server: Server = createServer((socket) => {
     const bridge = nodeSpawn(podmanBin, ['exec', '-i', containerName, 'node', '-e', BRIDGE_SRC, String(containerPort)], {
       stdio: ['pipe', 'pipe', 'ignore'],
+      windowsHide: true,
     })
     bridges.add(bridge)
     sockets.add(socket)
@@ -585,7 +586,7 @@ export function createHeadlessMcpAuthPreflight(log?: (msg: string) => void): Mcp
         process.platform === 'darwin' ? ['open', [url]] as const :
         process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]] as const :
         ['xdg-open', [url]] as const
-      const child = nodeSpawn(cmd, [...args], { detached: true, stdio: 'ignore' })
+      const child = nodeSpawn(cmd, [...args], { detached: true, stdio: 'ignore', windowsHide: true })
       child.on('error', () => { /* no browser available — URL already logged */ })
       child.unref()
     } catch { /* best effort */ }
