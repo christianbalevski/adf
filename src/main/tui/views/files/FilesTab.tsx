@@ -1,6 +1,7 @@
 // Tree of the agent's files (document + mind pinned on top) and the viewer.
-// Edits go through $EDITOR (editor.ts); every write, rename, delete and
-// protection change is confirmed or reported with a toast.
+// Edits go through $EDITOR (editor.ts), or the OS default app for anything
+// (external.ts); every write, rename, delete and protection change is
+// confirmed or reported with a toast.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Text, useApp } from 'ink'
@@ -11,6 +12,7 @@ import { displayWidth, formatAgo, truncate } from '../../ui/text'
 import type { FileListEntry } from '../../api/types'
 import type { UmbilicalEvent } from '../../api/types'
 import { editTarget } from './editor'
+import { externalChanged, externalCopy, openExternal, saveBackExternal, type ExternalDeps } from './external'
 import { listFiles, loadTarget, type LoadedContent } from './io'
 import {
   buildRows, formatBytes, nextProtection, parentDir, protectionMark, targetFromKey, targetKey, targetLabel,
@@ -207,6 +209,42 @@ export function FilesTab(props: FilesTabProps) {
     }
   }
 
+  const externalDeps = (): ExternalDeps => ({ client, actions, agentId, agentLabel })
+
+  const runOpenExternal = async (target: FileTarget) => {
+    await openExternal(externalDeps(), target)
+    setTick(t => t + 1)
+  }
+
+  const runSaveBack = async (target: FileTarget) => {
+    if (busy.current) {
+      actions.toast('An edit is already in progress', 'warn')
+      return
+    }
+    busy.current = true
+    try {
+      if (await saveBackExternal(externalDeps(), target) === 'written') {
+        invalidate(targetKey(target))
+        await reloadList()
+      }
+    } catch (err) {
+      actions.toast(`Save failed: ${err instanceof Error ? err.message : String(err)}`, 'error', 12_000)
+    } finally {
+      busy.current = false
+      setTick(t => t + 1)
+    }
+  }
+
+  // The viewed file's copy in the default app: re-check its mtime so the
+  // "changed — s saves it back" notice appears once the app saves.
+  const viewedCopy = viewerTarget ? externalCopy(agentId, viewerTarget) : undefined
+  const copyChanged = viewedCopy ? externalChanged(viewedCopy) : false
+  useEffect(() => {
+    if (!viewedCopy || copyChanged) return
+    const timer = setInterval(() => { if (externalChanged(viewedCopy)) setTick(t => t + 1) }, 1500)
+    return () => clearInterval(timer)
+  }, [viewedCopy, copyChanged])
+
   const createFile = async (initialPath?: string) => {
     let path = initialPath?.trim()
     if (!path) {
@@ -359,6 +397,13 @@ export function FilesTab(props: FilesTabProps) {
       else actions.toast('Pick a file to edit', 'warn')
       return true
     }
+    if ((input === 'o' || input === 's') && !key.ctrl) {
+      const target = rowTarget(row)
+      if (!target) actions.toast('Pick a file', 'warn')
+      else if (input === 'o') void runOpenExternal(target)
+      else void runSaveBack(target)
+      return true
+    }
     if (input === 'm' && !key.ctrl) { void rename(row); return true }
     if ((input === 'd' && !key.ctrl) || (key.delete && !key.backspace)) { void remove(row); return true }
     if (input === 'p' && !key.ctrl) { void cycleProtection(row); return true }
@@ -492,7 +537,9 @@ export function FilesTab(props: FilesTabProps) {
               active={focused && pane === 'viewer'}
               title={viewerTitle}
               meta={viewerMeta}
-              notice={notice?.key === viewerKey ? notice.text : undefined}
+              notice={copyChanged
+                ? 'Changed in the default app — s saves it back'
+                : notice?.key === viewerKey ? notice.text : viewedCopy ? 'Open in the default app (o reopens, s saves it back)' : undefined}
               name={viewerTarget.kind === 'file' ? viewerTarget.path : targetLabel(viewerTarget)}
               text={loadedOk?.text}
               bytes={loadedOk?.binary ? loadedOk.bytes : undefined}
@@ -502,6 +549,8 @@ export function FilesTab(props: FilesTabProps) {
               resetKey={viewerKey}
               onBack={() => setPane('list')}
               onEdit={loadedOk?.binary ? undefined : () => { void runEdit(viewerTarget) }}
+              onOpenExternal={() => { void runOpenExternal(viewerTarget) }}
+              onSaveBack={() => { void runSaveBack(viewerTarget) }}
             />
           ) : (
             <Text color={theme.color.muted}>Pick a file.</Text>

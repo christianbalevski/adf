@@ -138,7 +138,7 @@ function keyHints(scope: CommandScope): KeyHintSpec[] {
       { keys: 'backspace', label: 'back' },
       { keys: 'up down', label: 'scroll' },
       { keys: '/', label: 'search' },
-      ...(state.tab === 'files' ? [{ keys: 'e', label: 'edit' }] : []),
+      ...(state.tab === 'files' ? [{ keys: 'e', label: 'edit' }, { keys: 'o', label: 'open in app' }] : []),
       { keys: 'left right', label: 'tabs' },
     ]
   }
@@ -157,6 +157,7 @@ function keyHints(scope: CommandScope): KeyHintSpec[] {
     { keys: 'backspace', label: 'up' },
     { keys: 'left right', label: 'tabs' },
     { keys: 'e', label: 'edit' },
+    { keys: 'o', label: 'open in app' },
     { keys: 'n', label: 'new' },
     { keys: '/', label: 'filter' },
     { keys: 'd', label: 'delete' },
@@ -181,6 +182,8 @@ const files: ViewDefinition = {
         { keys: 'space', label: 'Toggle a folder' },
         { keys: '/', label: 'Filter by path (fuzzy)' },
         { keys: 'e', label: 'Edit in $EDITOR, then confirm the write (diff shown)' },
+        { keys: 'o', label: 'Open in the default app (xlsx, images, pdf, …)' },
+        { keys: 's', label: 'Save the default-app copy back (asks)' },
         { keys: 'n', label: 'New file' },
         { keys: 'm', label: 'Rename / move (a folder moves with its files)' },
         { keys: 'd delete', label: 'Delete (asks)' },
@@ -196,6 +199,7 @@ const files: ViewDefinition = {
         { keys: 'up down', label: 'Scroll (j k; PgUp PgDn Space page; g G top/bottom)' },
         { keys: '/', label: 'Search, then n N next / previous hit' },
         { keys: 'e', label: 'Edit this file' },
+        { keys: 'o s', label: 'Open in the default app · save that copy back' },
       ],
     },
     {

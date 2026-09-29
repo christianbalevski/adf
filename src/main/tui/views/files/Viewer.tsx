@@ -35,6 +35,9 @@ export interface ViewerProps {
   resetKey: string
   onBack?: () => void
   onEdit?: () => void
+  /** Open in the OS default app (`o`) and save that copy back (`s`). */
+  onOpenExternal?: () => void
+  onSaveBack?: () => void
   emptyText?: string
 }
 
@@ -59,7 +62,7 @@ function toneColor(theme: Theme, tone: Tone | undefined): string | undefined {
 }
 
 export function Viewer(props: ViewerProps) {
-  const { width, height, active, title, meta = [], notice, name, text, bytes, mime, loading, error, plain = false, resetKey, onBack, onEdit, emptyText } = props
+  const { width, height, active, title, meta = [], notice, name, text, bytes, mime, loading, error, plain = false, resetKey, onBack, onEdit, onOpenExternal, onSaveBack, emptyText } = props
   const theme = useTheme()
   const [top, setTop] = useState(0)
   const [query, setQuery] = useState('')
@@ -152,6 +155,8 @@ export function Viewer(props: ViewerProps) {
     if (input === 'n' && query) { jump(1); return true }
     if (input === 'N' && query) { jump(-1); return true }
     if (input === 'e' && onEdit) { onEdit(); return true }
+    if (input === 'o' && onOpenExternal) { onOpenExternal(); return true }
+    if (input === 's' && onSaveBack) { onSaveBack(); return true }
     if (key.escape && query) { setQuery(''); return true }
     // Back to the list: Backspace or Esc (←/→ are the view's tabs).
     if ((key.escape || (key.backspace && !key.ctrl && !key.meta)) && onBack) { onBack(); return true }
@@ -216,12 +221,12 @@ export function Viewer(props: ViewerProps) {
       {notice ? <Text color={theme.color.loop} wrap="truncate-end">{notice}</Text> : null}
       {binary ? (
         <Text color={theme.color.warn} wrap="truncate-end">
-          Binary {mime ? `(${mime}) ` : ''}{formatBytes(bytes!.length)} {theme.glyph.sep} hex dump of the first {Math.min(256, bytes!.length)} bytes
+          Binary {mime ? `(${mime}) ` : ''}{formatBytes(bytes!.length)} {theme.glyph.sep} hex dump of the first {Math.min(256, bytes!.length)} bytes{onOpenExternal ? ` ${theme.glyph.sep} o opens it in the default app` : ''}
         </Text>
       ) : null}
       <Box flexDirection="column" height={bodyRows} overflow="hidden">{body}</Box>
       <Box justifyContent="space-between" width={width}>
-        <Text color={typing ? theme.color.accent : theme.color.muted} wrap="truncate-end">{search || (active ? `/ search${onEdit ? ' · e edit' : ''}${onBack ? ' · Backspace back' : ''}` : '')}</Text>
+        <Text color={typing ? theme.color.accent : theme.color.muted} wrap="truncate-end">{search || (active ? `/ search${onEdit ? ' · e edit' : ''}${onOpenExternal ? ' · o open in app' : ''}${onBack ? ' · Backspace back' : ''}` : '')}</Text>
         <Text color={theme.color.dim}>{position}</Text>
       </Box>
     </Box>
