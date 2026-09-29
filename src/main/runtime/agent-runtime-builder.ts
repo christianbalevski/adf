@@ -276,7 +276,12 @@ export class AgentRuntimeBuilder {
               adaptersConfig: updatedConfig.adapters,
               workspace,
               derivedKey: null,
-              resolveFactory: (type, reg) => this.resolveAdapterFactory(type, reg),
+              // Same locked-credentials gate as the initial start: an adapter
+              // (re-)enabled while its sealed credentials are locked gets the
+              // stub, which restartLockedAdapters replaces after unlock. The
+              // real factory would fail on a null credential and never be
+              // retried once the identity becomes ready.
+              resolveFactory: (type, reg) => this.resolveAdapterFactoryUnlessLocked(type, reg, workspace),
             })
           },
           onAutostartChild: async () => false,
@@ -892,6 +897,19 @@ export class AgentRuntimeBuilder {
       resolveFactory: (type, reg) => this.resolveAdapterFactory(type, reg),
     })
     return locked
+  }
+
+  /** resolveAdapterFactory, but the locked-credentials stub while this adapter's sealed credentials cannot be read. */
+  private async resolveAdapterFactoryUnlessLocked(
+    adapterType: string,
+    registration: AdapterRegistration,
+    workspace: AdfWorkspace,
+  ): Promise<CreateAdapterFn | null> {
+    if (detectLockedEnvelopes(workspace).length > 0 && adapterCredentialsLocked(workspace, adapterType, null)) {
+      try { workspace.insertLog('error', 'adapter', 'credentials_locked', adapterType, 'Envelope-sealed credentials are locked in this process — adapter not started') } catch { /* ignore */ }
+      return () => createLockedCredentialsAdapter(adapterType)
+    }
+    return this.resolveAdapterFactory(adapterType, registration)
   }
 
   private async resolveAdapterFactory(

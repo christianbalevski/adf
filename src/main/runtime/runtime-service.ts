@@ -2233,6 +2233,15 @@ export class RuntimeService extends EventEmitter {
         kdfParamsJson,
       )
     } else {
+      // Sealed rows must never be replaced by a plaintext write while their
+      // envelope is locked here (setIdentity refuses too; this gives a 409).
+      const state = managed.agent.workspace.getEnvelopeState('credentials')
+      if (!purpose.startsWith('crypto:') && (state === 'locked' || state === 'foreign')) {
+        throw new RuntimeLoopError(
+          `The credentials envelope of this agent is ${state} on this daemon — refusing to store "${purpose}" unsealed. ${CREDENTIALS_UNLOCK_HINT}`,
+          409,
+        )
+      }
       managed.agent.workspace.setIdentity(purpose, value)
     }
   }

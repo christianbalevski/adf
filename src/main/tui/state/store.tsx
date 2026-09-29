@@ -40,6 +40,7 @@ import {
   type WebState,
 } from './types'
 import { bindsAll, parseLan, parseMeshAgents, parseServer, serverText } from '../web/model'
+import { findTracked, isTrackedKey, loadedIdForPath, trackedPath } from './tracked'
 
 export interface ConfirmOptions {
   title: string
@@ -65,6 +66,15 @@ export interface TuiActions {
   abort(agentId?: string, loop?: string): Promise<void>
   setDisplayState(agentId: string, state: DisplayState): Promise<void>
   loadAgentFile(filePath: string): Promise<void>
+  /** Re-read the tracked folders' agents (GET /tracked-dirs/agents/all) into `state.tracked`. Quiet on failure (the state keeps the error). */
+  refreshTracked(): Promise<void>
+  /**
+   * Load a not-loaded tracked agent (`file:<path>` key), then start it
+   * (`start`, default true; false starts it only when it is set to
+   * autostart). An unreviewed agent opens its review (the folder dialog)
+   * instead. Reports the outcome; returns the loaded agent id, else null.
+   */
+  startTracked(key: string, options?: { start?: boolean }): Promise<string | null>
 
   /** Switch to another daemon: health-checks it first, then drops this daemon's agents and transcripts and resubscribes. */
   setDaemonUrl(url: string, token?: string): Promise<boolean>
@@ -176,6 +186,10 @@ const REFRESH_DEBOUNCE_MS = 120
 /** After agent load / config events: the daemon starts its web server ~500ms after agents register. */
 const WEB_EVENT_DEBOUNCE_MS = 900
 const WEB_POLL_MS = 20_000
+/** Tracked folders' agents: Studio or the file system may add / remove .adf files; no event says so. Cheap (the daemon caches peeks by mtime). */
+const TRACKED_POLL_MS = 15_000
+/** The overlay kind of the fleet's folder-agents dialog (views/fleet/folders.ts TRACK_OVERLAY). */
+const FOLDER_OVERLAY = 'fleet.track'
 
 /** viewState slot the shell prompt watches for `prefillPrompt`. */
 export const PROMPT_PREFILL_KEY = 'shell.prompt.prefill'
@@ -192,6 +206,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   const debounced = new Map<string, ReturnType<typeof setTimeout>>()
   let stream: EventStream | null = null
   let webTick: ReturnType<typeof setInterval> | null = null
+  let trackedTick: ReturnType<typeof setInterval> | null = null
   let stopped = false
   /** Set when the daemon was unreachable; the next successful open resyncs. */
   let needsResync = false
@@ -274,7 +289,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
         dispatch({ type: 'agents/loaded', agents })
         await Promise.all(agents.map(agent => actions.refreshAgent(agent.id)))
         const selected = state.selectedAgentId
-        if (selected) await actions.ensureTranscript(selected, selectedLoopOf(selected))
+        if (selected && !isTrackedKey(selected)) await actions.ensureTranscript(selected, selectedLoopOf(selected))
       } catch (err) {
         if (stale(c)) return
         dispatch({ type: 'daemon/reachable', reachable: !(err instanceof DaemonError && err.unreachable) })
@@ -380,8 +395,91 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       }
     },
 
+    async refreshTracked() {
+      const c = client
+      try {
+        const list = await c.trackedAgents()
+        if (!stale(c)) dispatch({ type: 'tracked/loaded', list })
+      } catch (err) {
+        if (stale(c)) return
+        // No settings store / an old daemon: no tracked list, nothing to show.
+        if (err instanceof DaemonError && (err.status === 404 || err.status === 503)) {
+          if (!state.tracked) dispatch({ type: 'tracked/loaded', list: { maxDepth: 0, folders: [] } })
+          return
+        }
+        dispatch({ type: 'tracked/error', error: describe(err) })
+      }
+    },
+
+    async startTracked(key, options = {}) {
+      const entry = findTracked(state, key)
+      if (!entry) {
+        const loadedId = isTrackedKey(key) ? loadedIdForPath(state, trackedPath(key)) : key
+        if (loadedId && state.agents[loadedId]) return loadedId
+        toast('That agent is no longer in a tracked folder (r refreshes)', 'warn')
+        return null
+      }
+      const { agent, folder } = entry
+      const filePath = agent.filePath
+      if (state.tracked?.busy[filePath]) return null
+      if (agent.status === 'unreadable') {
+        toast(`${agent.name}: ${agent.error ?? 'not a readable .adf'}`, 'error', 6000)
+        return null
+      }
+      if (agent.status === 'password_protected') {
+        toast(`${agent.name}: its identity is password-protected. Load it with /load ${filePath} and unlock it`, 'warn', 8000)
+        return null
+      }
+      const review = () => {
+        toast(`${agent.name} has not been reviewed on this daemon: review it first`, 'warn', 5000)
+        actions.pushOverlay({ kind: FOLDER_OVERLAY, props: { folder, review: filePath } })
+        return null
+      }
+      if (agent.status === 'needs_review') return review()
+      const start = options.start ?? true
+      const c = client
+      dispatch({ type: 'tracked/busy', filePath, busy: 'loading' })
+      dispatch({ type: 'tracked/file-error', filePath, error: undefined })
+      let ref
+      try {
+        ref = await c.load(filePath, true)
+      } catch (err) {
+        dispatch({ type: 'tracked/busy', filePath, busy: undefined })
+        if (err instanceof DaemonError && err.unreachable) dispatch({ type: 'daemon/reachable', reachable: false })
+        if (err instanceof DaemonError && err.status === 403) return review()
+        const error = describe(err)
+        dispatch({ type: 'tracked/file-error', filePath, error })
+        toast(`Load ${agent.name}: ${error}`, 'error', 8000)
+        return null
+      }
+      const name = ref.config?.handle || ref.config?.name || agent.name
+      let started = ''
+      let level: ToastLevel = 'success'
+      if (start || agent.autostart) {
+        dispatch({ type: 'tracked/busy', filePath, busy: 'starting' })
+        try {
+          const result = await c.start(ref.id)
+          started = ` and started it${result.startupTriggered ? ' (startup turn running)' : ''}`
+        } catch (err) {
+          started = ` (start failed: ${describe(err)})`
+          level = 'warn'
+        }
+      }
+      dispatch({ type: 'tracked/busy', filePath, busy: undefined })
+      if (stale(c)) return null
+      const text = `Loaded ${name}${started}`
+      toast(text, level, 5000)
+      const wasSelected = state.selectedAgentId === key || state.selectedAgentId === entry.key
+      await actions.refreshAgents()
+      void actions.refreshTracked()
+      if ((wasSelected || !state.selectedAgentId || isTrackedKey(state.selectedAgentId)) && state.agents[ref.id]) actions.selectAgent(ref.id)
+      actions.notice(ref.id, MAIN_LOOP, text, level === 'success' ? 'info' : 'warn')
+      return ref.id
+    },
+
     selectAgent(agentId) {
       dispatch({ type: 'select/agent', agentId })
+      if (isTrackedKey(agentId)) return
       if (agentId) {
         void actions.ensureTranscript(agentId, selectedLoopOf(agentId))
         if (!state.agents[agentId]?.config) void actions.loadConfig(agentId)
@@ -448,6 +546,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     },
 
     async ensureTranscript(agentId, loop) {
+      if (isTrackedKey(agentId)) return
       const t = state.transcripts[transcriptKey(agentId, loop)]
       if (t?.loaded || t?.loading) return
       await actions.loadTranscript(agentId, loop)
@@ -482,9 +581,17 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     },
 
     async sendChat(text, target = {}) {
-      const agentId = target.agentId ?? state.selectedAgentId
+      let agentId = target.agentId ?? state.selectedAgentId
       const trimmed = text.trim()
       if (!agentId || !trimmed) return false
+      if (isTrackedKey(agentId)) {
+        // A stopped agent: start it (the owner is talking to it), then send.
+        const name = findTracked(state, agentId)?.agent.name ?? 'the agent'
+        toast(`${name} is stopped: starting it to deliver your message`, 'info', 3000)
+        const started = await actions.startTracked(agentId)
+        if (!started) { toast(`Not sent: ${name} did not start (Ctrl+Up recalls your message)`, 'warn', 6000); return false }
+        agentId = started
+      }
       const loop = target.loop ?? selectedLoopOf(agentId)
       const key = transcriptKey(agentId, loop)
       const item: UserItem = { id: localId(), at: Date.now(), local: true, kind: 'user', text: trimmed, origin: 'owner', pending: true }
@@ -768,7 +875,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     switch (event.event_type) {
       case 'agent.loaded':
       case 'agent.unloaded':
-        debounce('agents', () => { void actions.refreshAgents() }, 250)
+        debounce('agents', () => { void actions.refreshAgents().then(() => actions.refreshTracked()) }, 250)
         // The daemon (re)starts / rebinds its web server as agents register.
         debounce('web', () => { void actions.refreshWeb() }, WEB_EVENT_DEBOUNCE_MS)
         return
@@ -840,12 +947,16 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       // Studio or the CLI may start / stop the web server: no event says so.
       if (webTick) clearInterval(webTick)
       webTick = setInterval(() => { if (!stopped) void actions.refreshWeb() }, WEB_POLL_MS)
+      if (trackedTick) clearInterval(trackedTick)
+      trackedTick = setInterval(() => { if (!stopped && state.daemonReachable !== false) void actions.refreshTracked() }, TRACKED_POLL_MS)
     }
     await Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
+    await actions.refreshTracked()
   }
 
   async function resync() {
     await Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
+    void actions.refreshTracked()
     for (const key of Object.keys(state.transcripts)) {
       const at = key.indexOf('\u0000')
       const agentId = key.slice(0, at)
@@ -858,6 +969,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     stream?.close()
     stream = null
     if (webTick) { clearInterval(webTick); webTick = null }
+    if (trackedTick) { clearInterval(trackedTick); trackedTick = null }
     pendingFrames = []
     for (const timer of toastTimers.values()) clearTimeout(timer)
     for (const timer of debounced.values()) clearTimeout(timer)

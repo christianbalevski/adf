@@ -15,8 +15,10 @@ import {
   type LoopEntry,
   type LoopInfo,
   type TaskEntry,
+  type TrackedAgentsList,
   type UmbilicalEvent,
 } from '../api/types'
+import { buildTracked, pruneLoaded, reconcileSelection } from './tracked'
 import {
   applyEventToItems,
   emptyTranscript,
@@ -79,6 +81,12 @@ export type TuiAction =
   | { type: 'identity/set'; identity: IdentityStatus | null }
   | { type: 'auth/set'; auth: AuthDiagnostics | null }
   | { type: 'web/set'; web: WebState | null }
+  | { type: 'tracked/loaded'; list: TrackedAgentsList }
+  | { type: 'tracked/error'; error: string }
+  /** A load / start error for a tracked file (undefined clears it). */
+  | { type: 'tracked/file-error'; filePath: string; error: string | undefined }
+  /** Work in progress on a tracked file (`loading`, `starting`; undefined = done). */
+  | { type: 'tracked/busy'; filePath: string; busy: string | undefined }
 
 export function initialState(daemonUrl: string, activeView = 'fleet'): TuiState {
   return {
@@ -88,6 +96,7 @@ export function initialState(daemonUrl: string, activeView = 'fleet'): TuiState 
     identity: null,
     auth: null,
     web: null,
+    tracked: null,
     agents: {},
     agentOrder: [],
     selectedAgentId: null,
@@ -162,10 +171,33 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         agents[summary.id] = existing ? { ...existing, summary } : newAgent(summary)
       }
       const agentOrder = action.agents.map(agent => agent.id)
-      const selectedAgentId = state.selectedAgentId && agents[state.selectedAgentId]
-        ? state.selectedAgentId
-        : agentOrder[0] ?? null
-      return { ...state, agents, agentOrder, selectedAgentId }
+      const previous = Object.fromEntries(Object.entries(state.agents).map(([id, a]) => [id, a.summary]))
+      const tracked = state.tracked ? pruneLoaded(state.tracked, action.agents) : null
+      const next = { ...state, agents, agentOrder, tracked }
+      return { ...next, selectedAgentId: reconcileSelection(next, previous) }
+    }
+    case 'tracked/loaded': {
+      const summaries = state.agentOrder.map(id => state.agents[id]?.summary).filter(Boolean)
+      const next = { ...state, tracked: buildTracked(action.list, summaries, state.tracked) }
+      return { ...next, selectedAgentId: reconcileSelection(next, {}, true) }
+    }
+    case 'tracked/error':
+      return state.tracked ? { ...state, tracked: { ...state.tracked, error: action.error } } : state
+    case 'tracked/file-error': {
+      const tracked = state.tracked
+      if (!tracked) return state
+      const errors = { ...tracked.errors }
+      if (action.error === undefined) delete errors[action.filePath]
+      else errors[action.filePath] = action.error
+      return { ...state, tracked: { ...tracked, errors } }
+    }
+    case 'tracked/busy': {
+      const tracked = state.tracked
+      if (!tracked) return state
+      const busy = { ...tracked.busy }
+      if (action.busy === undefined) delete busy[action.filePath]
+      else busy[action.filePath] = action.busy
+      return { ...state, tracked: { ...tracked, busy } }
     }
     case 'agent/status':
       return patchAgent(state, action.agentId, agent => ({
@@ -187,7 +219,7 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         ...state,
         agents,
         agentOrder,
-        selectedAgentId: state.selectedAgentId === action.agentId ? agentOrder[0] ?? null : state.selectedAgentId,
+        selectedAgentId: state.selectedAgentId === action.agentId ? agentOrder[0] ?? state.tracked?.stopped[0]?.key ?? null : state.selectedAgentId,
       }
     }
     case 'loops/loaded': {

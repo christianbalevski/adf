@@ -5,6 +5,7 @@
 import { DaemonError, MAIN_LOOP, type AgentRef } from '../../api/types'
 import { transcriptKey, type AgentEntry, type ToastLevel } from '../../state/types'
 import type { TuiStore } from '../../state/store'
+import { findTracked, isTrackedKey } from '../../state/tracked'
 import { agentName, describeAgent } from './model'
 import { refreshFleetData } from './data'
 
@@ -25,6 +26,8 @@ function failure(store: TuiStore, agentId: string | null, verb: string, err: unk
 }
 
 export async function startAgent(store: TuiStore, agentId: string): Promise<boolean> {
+  // A tracked agent that is not loaded: load it, then start it (or review it first).
+  if (isTrackedKey(agentId)) return (await store.actions.startTracked(agentId)) !== null
   const name = labelOf(store, agentId)
   try {
     const result = await store.client.start(agentId)
@@ -38,6 +41,10 @@ export async function startAgent(store: TuiStore, agentId: string): Promise<bool
 }
 
 export async function stopAgent(store: TuiStore, agentId: string, options: { confirm?: boolean } = {}): Promise<boolean> {
+  if (isTrackedKey(agentId)) {
+    store.actions.toast(`${findTracked(store.getState(), agentId)?.agent.name ?? 'That agent'} is not running`, 'info', 2000)
+    return false
+  }
   const name = labelOf(store, agentId)
   const agent = store.getState().agents[agentId]
   const running = agent ? describeAgent(agent).runningLoops : []
@@ -54,6 +61,7 @@ export async function stopAgent(store: TuiStore, agentId: string, options: { con
     await store.client.stop(agentId)
     report(store, agentId, `Stopped and unloaded ${name}`, 'success')
     await store.actions.refreshAgents()
+    void store.actions.refreshTracked()
     return true
   } catch (err) {
     failure(store, agentId, `Stop ${name}`, err)
@@ -151,6 +159,7 @@ export async function loadAgent(store: TuiStore, filePath: string, options: Load
   const name = ref.config?.handle || ref.config?.name || ref.id
   report(store, ref.id, `Loaded ${name} from ${ref.filePath ?? filePath}${options.requireReview ? ' (review checked)' : ''}`, 'success')
   await store.actions.refreshAgents()
+  void store.actions.refreshTracked()
   store.actions.selectAgent(ref.id)
   if (options.start) await startAgent(store, ref.id)
   return ref
@@ -215,6 +224,7 @@ export async function runAutostart(store: TuiStore, dirs?: string[]): Promise<bo
     ].filter(Boolean).join(' · ')
     store.actions.toast(`Autostart: scanned ${result.scanned}, started ${result.started.length}${tail ? ` · ${tail}` : ''}`, result.failed.length ? 'warn' : 'success', 8000)
     await store.actions.refreshAgents()
+    await store.actions.refreshTracked()
     return true
   } catch (err) {
     failure(store, null, 'Autostart', err)
@@ -224,6 +234,7 @@ export async function runAutostart(store: TuiStore, dirs?: string[]): Promise<bo
 
 export async function refreshFleet(store: TuiStore): Promise<void> {
   await store.actions.refreshAgents()
+  await store.actions.refreshTracked()
   await refreshFleetData(store)
   store.actions.toast('Fleet refreshed', 'info', 1500)
 }
@@ -231,7 +242,7 @@ export async function refreshFleet(store: TuiStore): Promise<void> {
 /** Open (agent, loop) in the Chat view with the prompt focused. */
 export function openChat(store: TuiStore, agentId: string, loop = MAIN_LOOP) {
   if (store.getState().selectedAgentId !== agentId) store.actions.selectAgent(agentId)
-  store.actions.selectLoop(agentId, loop)
+  if (!isTrackedKey(agentId)) store.actions.selectLoop(agentId, loop)
   store.actions.setView('chat')
   store.actions.setFocus('input')
 }

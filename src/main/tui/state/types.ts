@@ -15,6 +15,7 @@ import type {
   TaskListEntry,
   UmbilicalEvent,
 } from '../api/types'
+import type { TrackedState } from './tracked'
 
 /** `${agentId}\u0000${loop}` — one transcript per (agent, loop). */
 export type TranscriptKey = string
@@ -270,9 +271,16 @@ export interface TuiState {
   auth: AuthDiagnostics | null
   /** The mesh web server + what each agent serves (`GET /network/mesh`); null until read. */
   web: WebState | null
+  /**
+   * Agents in the daemon's tracked folders that are not loaded (GET
+   * /tracked-dirs/agents/all), selectable under `file:<path>` keys; null until
+   * read (or on a daemon without tracked folders).
+   */
+  tracked: TrackedState | null
   agents: Record<string, AgentEntry>
   /** Agent ids in display order. */
   agentOrder: string[]
+  /** A loaded agent's id, or a not-loaded tracked agent's `file:<path>` key (`state/tracked.ts`). */
   selectedAgentId: string | null
   /** Selected loop per agent; absent = main. */
   selectedLoop: Record<string, string>

@@ -35,7 +35,7 @@ import { registerTemplateRoutes } from './template-routes'
 import { registerProviderRoutes } from './provider-routes'
 import { registerContextRoutes } from './context-routes'
 import type { ProviderKeyVault } from './provider-key-vault'
-import { listFolderAgents, listTrackedDirs, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
+import { listFolderAgents, listTrackedAgents, listTrackedDirs, noteAutostartReport, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
@@ -2147,6 +2147,18 @@ export function createDaemonHttpApi(
     }
   })
 
+  // Every tracked folder's agents in one read (the TUI fleet lists stopped
+  // agents next to loaded ones). Peeks are cached by file mtime, so a poll
+  // opens only files that changed.
+  server.get('/tracked-dirs/agents/all', async (_request, reply) => {
+    if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
+    try {
+      return listTrackedAgents(runtime, opts.settingsStore)
+    } catch (err) {
+      return trackedDirsError(reply, err)
+    }
+  })
+
   server.post<{ Body: { path?: unknown } }>('/tracked-dirs', async (request, reply) => {
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
     try {
@@ -2172,7 +2184,9 @@ export function createDaemonHttpApi(
     const trackedDirs = request.body?.trackedDirs
     if (!Array.isArray(trackedDirs)) return badRequest(reply, 'trackedDirs must be an array')
     try {
-      return await runtime.autostartFromDirectories(trackedDirs, { maxDepth: request.body?.maxDepth })
+      const report = await runtime.autostartFromDirectories(trackedDirs, { maxDepth: request.body?.maxDepth })
+      noteAutostartReport(report)
+      return report
     } catch (err) {
       return handleRuntimeError(reply, err)
     }

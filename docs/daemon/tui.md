@@ -106,7 +106,7 @@ and how to start it.
 | `ADF_TUI_CLIPBOARD=osc52` | Copy only through the terminal (OSC 52), not pbcopy / clip / wl-copy / xclip (WSL, containers, nested sessions; over SSH OSC 52 is used anyway) |
 | `ADF_TUI_KITTY=0` | Same as `--no-kitty` |
 | `ADF_TUI_SHIFT_ENTER=1` | Show `Shift+Enter` in the hints from the start (your terminal sends it through a keybinding) |
-| `ADF_TUI_PREFS=<path>` | Where the sidebar and mouse choices and the welcome count are kept (default `<config dir>/adf-studio/tui-prefs.json`; `off` keeps them for the session only) |
+| `ADF_TUI_PREFS=<path>` | Where the sidebar, stopped-agents filter and mouse choices and the welcome count are kept (default `<config dir>/adf-studio/tui-prefs.json`; `off` keeps them for the session only) |
 
 The app needs a terminal. When stdin or stdout is not a TTY (a pipe, a CI
 log), it prints a hint to use the one-shot CLI commands and exits with code 1.
@@ -155,7 +155,9 @@ Every other `npm run adf -- <command>` is the unchanged one-shot [CLI](cli.md).
   `ADF_DAEMON_URL` / `--url` / `/url`, and the retry countdown.
 - **Sidebar (every view):** the fleet tree. Agents carry a state glyph, `!n`
   for pending approvals or questions and `«n` for unread inbox messages. Each
-  agent expands into its loops. It collapses below 70 columns. **`Ctrl+B`**
+  agent expands into its loops. Below the running agents, each tracked folder
+  lists its agents that are not running, dimmed (see
+  [Stopped agents](#stopped-agents)). It collapses below 70 columns. **`Ctrl+B`**
   (or `/sidebar`, or the palette) hides it at any width for a full-width
   chat; the choice is remembered across launches. With it hidden, `Tab`
   skips it, the status bar still names the agent › loop, and the header adds
@@ -264,7 +266,7 @@ The same legend is in `?` / `/help`.
 | `↑`, `↓`, `PgUp`, `PgDn`, `Home`, `End` | Move. Moving selects that agent › loop in every view |
 | `→`, `←` | Expand an agent into its loops · collapse, or go back to the agent |
 | `Space` | Expand or collapse the agent |
-| `Enter` | Open the agent › loop in Chat |
+| `Enter` | Open the agent › loop in Chat. On a stopped agent: start it (review first when it needs it) |
 | letters | Type to filter agents and loops (`Backspace` edits, `Esc` clears) |
 
 ### Fleet
@@ -274,8 +276,9 @@ The same legend is in `?` / `/help`.
 | `↑`, `↓` (`j`, `k`) | Select an agent |
 | `←`, `→` (`h`, `l`) | Select one of its loops |
 | `Enter` | Open the agent › loop in Chat |
-| `s` | Start the agent |
+| `s` | Start the agent. A stopped one is loaded into the daemon, then started (`Enter` too); one that needs review opens its review |
 | `x` | Stop and unload the agent (asks; the `.adf` file is kept) |
+| `H` | Hide / show stopped agents (also `/agents running\|all`; remembered) |
 | `a` | Interrupt the turns running now (asks): each loop goes idle and keeps working |
 | `w`, `W` | Open the agent's website in the browser (starts the web server first if it is stopped) · copy its URL |
 | `n` | New agent from a template (sets up your owner identity first if needed) |
@@ -423,10 +426,10 @@ sent to an agent.
 | `/context [loop]` | What fills the selected loop's context against its auto-compact threshold (see [Context](#context)) |
 | `/templates [id]` | Agent templates: details, new, duplicate, rename, notes, default, review, reset, delete, edit (see [Templates](#templates)) |
 | `/terminal-setup` (`/terminal`) | Whether this terminal sends Shift+Enter, and the keybinding that makes it |
-| `/agents [interrupt\|abort <agent> [loop] \| refresh]` | Fleet overview; interrupt an agent's running turns (`abort` is the hard stop: that loop stays stopped until the agent is reloaded) |
+| `/agents [running\|all \| interrupt\|abort <agent> [loop] \| refresh]` | Fleet overview; `running` / `all` hides or shows [stopped agents](#stopped-agents) (remembered); interrupt an agent's running turns (`abort` is the hard stop: that loop stays stopped until the agent is reloaded) |
 | `/new [name]` | New agent: name, template, optional provider and model, start now. Opens its chat |
 | `/identity [create\|restore\|unlock\|lock]` | Owner identity status and actions |
-| `/start [agent]`, `/stop [agent]` (`/unload`) | Start; stop and unload (asks) |
+| `/start [agent]`, `/stop [agent]` (`/unload`) | Start (a stopped tracked agent is loaded first; Tab completes stopped names too); stop and unload (asks) |
 | `/load [path.adf] [--review] [--start]` | Load an `.adf` (no path opens the dialog) |
 | `/switch <agent>[/loop]` (`/sw`) | Jump to an agent or one of its loops (fuzzy) and open Chat |
 | `/autostart [dir…]` | Scan tracked directories and start reviewed autostart agents (asks) |
@@ -797,6 +800,48 @@ dialog to also unload that folder's agents; by default they keep running.
 Runtime › Folders (`/runtime folders`) lists every tracked folder: whether it
 exists, agents found, and agents loaded. `Enter` lists a folder's agents (the
 same list), `a` adds, `d` removes, `r` rescans.
+
+## Stopped agents
+
+The sidebar and the Fleet list every agent in your tracked folders, like
+Studio's sidebar, not only the ones running in the daemon. Running agents come
+first. Then each tracked folder that has agents which are not running gets a
+header with its name and `running/total`, and those agents are listed under
+it, dimmed, with where each stands:
+
+```text
+ FLEET          2 +3 off
+ ▾ ● agent-1 idle
+   ○ ↻main
+ ● agent-2 idle
+ lab                 0/3
+   ○ agent-3 stopped
+   ! agent-4 needs review
+   ✗ agent-5 load error
+```
+
+| State | Meaning | `s` / `Enter` |
+|-------|---------|---------------|
+| `stopped` | Not running (not set to autostart, or stopped) | Load it into the daemon and start it |
+| `needs review` | Never reviewed on this daemon | Open its review (what it can do); `y` accepts, loads and starts it |
+| `load error` | The last load failed (the error is shown; kept until it loads) | Try again |
+| `locked` | Password-protected identity | Load it with `/load <file>` and unlock it |
+| `unreadable` | Not a loadable `.adf` | — |
+
+Selecting a stopped agent works like any other: Chat, Files, Loops and
+Inspect show what it is, why it is not running and `s` / `Enter` to start it
+(focus the pane first) instead of an error. In Chat, sending a message starts
+it and then delivers the message. `/start <name>` and the palette find stopped
+agents by name. When a selected agent is loaded (here, from Studio, or by the
+autostart) the selection moves to it; when it stops it stays selected as a
+stopped agent.
+
+`H` on the Fleet, `/agents running` or the palette ("Hide / show stopped
+agents") shows running agents only; `/agents all` brings the rest back. The
+choice is remembered. The list is read from the daemon (`GET
+/tracked-dirs/agents/all`) at start, after every agent load or unload, after
+tracking or untracking a folder, and every 15 seconds; the daemon only opens
+an `.adf` that changed since its last read, read-only.
 
 ## Agent settings
 

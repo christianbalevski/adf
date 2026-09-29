@@ -4,13 +4,15 @@
 // behaviour to it (answering asks, Esc to interrupt, queued sends).
 
 import { useEffect, useRef, useState } from 'react'
+import { findTracked } from '../../state/tracked'
+import { StoppedAgentPanel } from '../fleet/stopped'
 import { Box, Text, type DOMElement } from 'ink'
 import { useTheme } from '../../app/theme'
 import { WHEEL_STEP, elementRect, keyLabel, useClick, useKeyRouter, useKeys, useWheel, type KeyHandler } from '../../app/keys'
 import { newlineKey } from '../../app/terminal'
 import { viewsHint } from '../../app/StatusBar'
 import { useActions, useClient, useStore, useTuiSelector, shallowEqual } from '../../state/store'
-import { useAuthNeed, useFocus, useLoop, useSelectedAgent, useSelectedLoop, useTranscript, useViewState } from '../../state/hooks'
+import { useSelectedTracked, useAuthNeed, useFocus, useLoop, useSelectedAgent, useSelectedLoop, useTranscript, useViewState } from '../../state/hooks'
 import { authNeedText } from '../../auth/model'
 import { shortUrl, siteOf, type Site } from '../../web/model'
 import { openSite } from '../../web/ops'
@@ -86,6 +88,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
   const actions = useActions()
   const client = useClient()
   const agent = useSelectedAgent()
+  const stopped = useSelectedTracked()
   const authNeed = useAuthNeed(agent?.summary.id)
   const agentId = agent?.summary.id ?? null
   const loopName = useSelectedLoop()
@@ -444,6 +447,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
 
   // --- render ---------------------------------------------------------------
 
+  if (stopped && !agent) return <StoppedAgentPanel entry={stopped} width={paneWidth} height={height} focused={focused} what="conversation" />
   if (!agent || !agentId) {
     return (
       <Box flexDirection="column" padding={1} width={paneWidth} height={height}>
@@ -578,6 +582,8 @@ function pendingAskFor(state: TuiState, agentId: string | null, loop: string) {
 function placeholder(scope: CommandScope): string {
   const state = scope.state()
   const agent = scope.agentId ? state.agents[scope.agentId] : undefined
+  const stopped = scope.stoppedKey ? findTracked(state, scope.stoppedKey) : undefined
+  if (stopped) return stopped.agent.status === 'needs_review' ? `${stopped.agent.name} is stopped and needs review · Shift+Tab, then s reviews it` : `${stopped.agent.name} is stopped · a message starts it, then sends · or Shift+Tab, then s`
   if (!agent || !scope.agentId) return 'Select an agent (Tab → sidebar) or type /help'
   const label = agentLabel(agent)
   const target = scope.loop === MAIN_LOOP ? label : `${label} › ${scope.loop}`
@@ -629,6 +635,7 @@ const chat: ViewDefinition = {
   keyHints: scope => {
     const state = scope.state()
     const agent = scope.agentId ? state.agents[scope.agentId] : undefined
+    if (!agent && scope.stoppedKey) return state.focus === 'main' ? [{ keys: 's enter', label: 'start' }] : [{ keys: 'shift+tab', label: 'then s: start' }, { keys: '/', label: 'commands' }]
     if (!agent) return [{ keys: 'shift+tab', label: 'sidebar: pick an agent' }, { keys: '/', label: 'commands' }]
     const loopKeys = { keys: 'shift+left right', label: 'loop' }
     // Less is more: the rest is in /help. "Esc interrupts" shows in the turn

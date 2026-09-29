@@ -310,6 +310,7 @@ export type {
   FolderAgent,
   FolderAgentStatus,
   FolderAgentsList,
+  TrackedAgentsList,
   TrackedDirEntry,
   TrackedDirsList,
   TrackDirResult,

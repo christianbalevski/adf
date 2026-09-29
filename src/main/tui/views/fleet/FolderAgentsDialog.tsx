@@ -65,6 +65,8 @@ export function FolderAgentsDialog({ overlay, close, width, height }: OverlayPro
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ text: string; error: boolean } | null>(null)
   const [rev, setRev] = useState(props.result?.agents ? 0 : 1)
+  // Opened for one agent's review (s on a stopped agent): straight into it once listed.
+  const [pendingReview, setPendingReview] = useState(props.review ?? null)
   // Load errors seen in this dialog (the track's autostart pass, or a load
   // here): a re-read only knows the file is not loaded, so they are kept.
   const [errors, setErrors] = useState<Record<string, string>>(() =>
@@ -86,6 +88,15 @@ export function FolderAgentsDialog({ overlay, close, width, height }: OverlayPro
   const rows = (agents ?? []).map(a => (a.status !== 'loaded' && !a.error && errors[a.filePath] ? { ...a, error: errors[a.filePath] } : a))
   const at = Math.min(cursor, Math.max(0, rows.length - 1))
   const selected = rows[at]
+
+  useEffect(() => {
+    if (!pendingReview || !agents) return
+    const index = rows.findIndex(r => r.filePath === pendingReview)
+    setPendingReview(null)
+    if (index < 0) return
+    setCursor(index)
+    if (rows[index].status === 'needs_review') openReview(rows[index])
+  }, [agents, pendingReview])
 
   const act = (agent: FolderAgent, accept: boolean) => {
     setBusy(accept ? `Accepting the review and loading ${agent.name}…` : `Loading ${agent.name}…`)

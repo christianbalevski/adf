@@ -386,7 +386,10 @@ export class AdfWorkspace {
    * Store an identity value. `codeAccess` only applies when the key is
    * created — an existing key keeps its current code_access flag.
    * When the covering envelope is unlocked the value is sealed under its DEK;
-   * otherwise it is stored plain (pre-envelope files keep working unchanged).
+   * otherwise it is stored plain (pre-envelope files keep working unchanged;
+   * a new row written while the envelope is locked is sealed on a later
+   * unlock). Overwriting an existing SEALED row while its envelope is locked
+   * is refused: the plain write would destroy the only copy of that secret.
    */
   setIdentity(purpose: string, value: string, codeAccess = false): void {
     const envelope = envelopeForPurpose(purpose)
@@ -396,6 +399,14 @@ export class AdfWorkspace {
       this.db.setIdentityRaw(purpose, sealWithDek(Buffer.from(value, 'utf-8'), dek), envelopeAlgo(envelope), null, null)
       if (!existed && codeAccess) this.db.setIdentityCodeAccess(purpose, true)
       return
+    }
+    const existingAlgo = this.db.getIdentityRow(purpose)?.encryption_algo
+    if (existingAlgo && envelopeFromAlgo(existingAlgo)) {
+      throw new Error(
+        `Cannot store "${purpose}" — its current value is sealed in the ${envelopeFromAlgo(existingAlgo)} envelope, which is ` +
+        `${this.getEnvelopeState(envelopeFromAlgo(existingAlgo)!)} in this process; an unsealed write would destroy it. ` +
+        'Make the owner identity available (or open the agent in ADF Studio) and retry.',
+      )
     }
     this.db.setIdentity(purpose, value, codeAccess)
   }

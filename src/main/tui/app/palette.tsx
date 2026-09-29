@@ -3,6 +3,7 @@
 // Enter runs; commands that need arguments prefill the prompt instead.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { isTrackedKey } from '../state/tracked'
 import { Box, Text, type DOMElement } from 'ink'
 import { useTheme } from './theme'
 import { useShell } from './shell-context'
@@ -30,7 +31,7 @@ export function Palette({ close, width, height }: OverlayProps) {
   const agents = useTuiSelector(s => s.agents)
 
   useEffect(() => {
-    if (!agentId) return
+    if (!agentId || isTrackedKey(agentId)) return
     let cancelled = false
     store.client.files(agentId).then(
       result => { if (!cancelled) setFiles([...result.files].sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))) },

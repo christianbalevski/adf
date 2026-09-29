@@ -162,6 +162,28 @@ export function findAgent(state: Pick<TuiState, 'agents' | 'agentOrder'>, query:
   return best?.id ?? null
 }
 
+/** Best not-loaded tracked agent (its `file:<path>` key) for a name / fuzzy fragment, or null. */
+export function findStopped(state: Pick<TuiState, 'tracked'>, query: string): string | null {
+  const q = query.trim()
+  if (!q || !state.tracked) return null
+  let best: { key: string; score: number } | null = null
+  for (const t of state.tracked.stopped) {
+    const score = Math.max(fuzzy(q, t.agent.name), fuzzy(q, t.relPath))
+    if (score > 0 && (!best || score > best.score)) best = { key: t.key, score }
+  }
+  return best?.key ?? null
+}
+
+/** Names of not-loaded tracked agents, fuzzy-filtered for completion (`/start`). */
+export function completeStopped(state: Pick<TuiState, 'tracked'>, partial: string): string[] {
+  const q = partial.trim()
+  return (state.tracked?.stopped ?? [])
+    .map(t => ({ name: t.agent.name, score: fuzzy(q, t.agent.name) }))
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map(x => x.name)
+}
+
 /** `agent-1/consolidator`, `agent-1:researcher` or `agent-1 researcher`. */
 export function parseAgentLoopRef(text: string): { agent: string; loop?: string } {
   const trimmed = text.trim()

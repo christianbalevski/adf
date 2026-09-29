@@ -5,9 +5,11 @@
 // agent's events) is the Runtime view (6). Also hosts the /theme dialog.
 
 import { Box, Text } from 'ink'
+import { StoppedAgentPanel } from '../fleet/stopped'
+import { isTrackedKey } from '../../state/tracked'
 import { useTheme } from '../../app/theme'
 import { useKeys } from '../../app/keys'
-import { useSelectedAgent, useSelectedAgentId, useSelectedLoop } from '../../state/hooks'
+import { useSelectedTracked, useSelectedAgent, useSelectedAgentId, useSelectedLoop } from '../../state/hooks'
 import { TabStrip } from '../../ui/Tabs'
 import type { ViewDefinition, ViewProps } from '../types'
 import { inspectCommands } from './commands'
@@ -30,6 +32,7 @@ function InspectView({ width: paneWidth, height, focused }: ViewProps) {
   const theme = useTheme()
   const agentId = useSelectedAgentId()
   const agent = useSelectedAgent()
+  const stopped = useSelectedTracked()
   const loop = useSelectedLoop()
   const [state, update] = useInspectState()
   const tab = state.tab
@@ -45,7 +48,8 @@ function InspectView({ width: paneWidth, height, focused }: ViewProps) {
   const bodyHeight = Math.max(1, height - 2)
   const label = agent ? agent.summary.handle || agent.summary.name : ''
   let body
-  if (!agentId) body = <Text color={theme.color.muted} wrap="wrap">Select an agent (sidebar, /agent or Ctrl+K) to inspect it. Daemon-wide status, sign-in, providers and every agent’s events are in Runtime (6).</Text>
+  if (stopped && !agent && tab !== 'events') body = <StoppedAgentPanel entry={stopped} width={width} height={bodyHeight} focused={focused} what="state, settings or config" />
+  else if (!agentId || (!agent && isTrackedKey(agentId) && tab !== 'events')) body = <Text color={theme.color.muted} wrap="wrap">Select an agent (sidebar, /agent or Ctrl+K) to inspect it. Daemon-wide status, sign-in, providers and every agent’s events are in Runtime (6).</Text>
   else {
     const props = { agentId, width, height: bodyHeight, focused }
     switch (tab) {

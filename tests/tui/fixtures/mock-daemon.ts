@@ -19,6 +19,8 @@ interface MockToolDecl { name: string; enabled: boolean; visible?: boolean; rest
 interface MockApprovalMeta { reason?: string; protection?: { level?: string }; canAlwaysApprove?: boolean; can_always_approve?: boolean; alwaysApproveBlockedReason?: string }
 interface MockAgent {
   id: string
+  /** Loaded from a tracked folder file (default /agents/<handle>.adf). */
+  filePath?: string
   handle: string
   name: string
   model: string
@@ -249,7 +251,7 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
     })),
   ]
   const hasLoop = (agent: MockAgent, loop: string) => loop === 'main' || agent.loops.some(l => l.name === loop)
-  const summary = (a: MockAgent) => ({ id: a.id, filePath: `/agents/${a.handle}.adf`, name: a.name, handle: a.handle, autostart: true })
+  const summary = (a: MockAgent) => ({ id: a.id, filePath: a.filePath ?? `/agents/${a.handle}.adf`, name: a.name, handle: a.handle, autostart: true })
   const status = (a: MockAgent) => ({ ...summary(a), runtimeState: a.state, targetState: null, loopCount: a.history.main.length })
 
   /** A scripted turn: state → deltas → tool → llm → completed, stamped with the loop. */
@@ -360,7 +362,7 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
     const loadedFile = (f: MockFolderFile) => { const id = loadedFiles.get(f.filePath); return id && agents.has(id) ? id : undefined }
     const loadFile = (f: MockFolderFile): string => {
       const id = `mock-${f.name}`
-      agents.set(id, { id, handle: f.name, name: f.name, model: 'mock-model', state: 'idle', loops: [], history: { main: [] }, files: [], timers: [], tasks: [], asks: [], provider: 'mock' })
+      agents.set(id, { id, filePath: f.filePath, handle: f.name, name: f.name, model: 'mock-model', state: 'idle', loops: [], history: { main: [] }, files: [], timers: [], tasks: [], asks: [], provider: 'mock' })
       loadedFiles.set(f.filePath, id)
       emit({ event_type: 'agent.loaded', agent_id: id })
       return id
@@ -377,6 +379,16 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
         return error ? { ...base, status, error } : { ...base, status }
       }),
     ]
+    if (url.pathname === '/tracked-dirs/agents/all' && method === 'GET') {
+      return send(200, {
+        maxDepth: 5,
+        folders: trackedDirs.map(dir => {
+          const exists = existingDirs.has(dir)
+          const list = exists ? folderAgentList(dir) : []
+          return { path: dir, exists, agentCount: list.length, loadedCount: list.filter(a => a.status === 'loaded').length, agents: list }
+        }),
+      })
+    }
     if (url.pathname === '/tracked-dirs/agents' && method === 'GET') {
       const raw = url.searchParams.get('path') ?? ''
       if (!raw) return send(400, { error: 'path is required' })

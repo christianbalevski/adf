@@ -2,10 +2,11 @@
 // viewer + $EDITOR round-trip), plus read-only inbox / outbox / meta tabs.
 
 import { useCallback } from 'react'
+import { StoppedAgentPanel } from '../fleet/stopped'
 import { Box, Text } from 'ink'
 import { useTheme } from '../../app/theme'
 import { useKeys } from '../../app/keys'
-import { useSelectedAgent, useSelectedLoop, useViewState } from '../../state/hooks'
+import { useSelectedTracked, useSelectedAgent, useSelectedLoop, useViewState } from '../../state/hooks'
 import { useStore } from '../../state/store'
 import { displayWidth } from '../../ui/text'
 import { filesCommands } from './commands'
@@ -23,6 +24,7 @@ function FilesView({ width, height, focused }: ViewProps) {
   const theme = useTheme()
   const store = useStore()
   const agent = useSelectedAgent()
+  const stopped = useSelectedTracked()
   const loop = useSelectedLoop()
   const [state, setState] = useViewState<FilesViewState>(VIEW_ID, INITIAL_STATE)
   const agentId = agent?.summary.id ?? null
@@ -50,6 +52,7 @@ function FilesView({ width, height, focused }: ViewProps) {
     return false
   }, { layer: 'view', active: !!agentId })
 
+  if (stopped && !agent) return <StoppedAgentPanel entry={stopped} width={width} height={height} focused={focused} what="document, mind or files" />
   if (!agent || !agentId) {
     return (
       <Box flexDirection="column" paddingX={1} width={width} height={height}>

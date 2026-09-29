@@ -1653,6 +1653,34 @@ but did not; `error` has the load error when known), `password_protected` or
 `unreadable` (`error` says why). `400` without `path`, `404` when the folder
 is not tracked.
 
+#### `GET /tracked-dirs/agents/all`
+
+Every tracked folder with its agents, in one read (the TUI's fleet lists
+agents that are not running next to the loaded ones):
+
+```json
+{
+  "maxDepth": 5,
+  "folders": [
+    {
+      "path": "/home/me/agents", "exists": true, "agentCount": 2, "loadedCount": 1,
+      "agents": [
+        { "filePath": "/home/me/agents/agent-1.adf", "name": "agent-1", "agentId": "…", "status": "loaded", "autostart": true, "reviewed": true },
+        { "filePath": "/home/me/agents/agent-2.adf", "name": "agent-2", "agentId": "…", "status": "stopped", "autostart": true, "reviewed": true, "error": "Provider \"anthropic\" not found." }
+      ]
+    }
+  ]
+}
+```
+
+`agents` has the same shape as `GET /tracked-dirs/agents`. Each `.adf` is
+peeked read-only for its config; the result is cached per file by the
+modification time and size of the file and its `-wal`, so polling this route
+opens only files that changed. A peek never modifies the file (sidecars it
+creates are removed). The last load error an autostart pass hit (daemon boot,
+`POST /agents/autostart`, `POST /tracked-dirs`) is kept as `error` until the
+agent loads. `503` without a settings store.
+
 #### `DELETE /tracked-dirs?path=<folder>&unload=true|false`
 
 Stops tracking a folder. `path` matches the stored string exactly or names the

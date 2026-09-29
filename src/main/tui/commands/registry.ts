@@ -2,6 +2,7 @@
 // registration of a name wins; duplicates are reported, not silently merged.
 
 import type { ViewDefinition } from '../views/types'
+import { isTrackedKey } from '../state/tracked'
 import type { TuiStore } from '../state/store'
 import { MAIN_LOOP } from '../api/types'
 import type {
@@ -86,13 +87,18 @@ export function splitArgs(text: string): string[] {
 
 export function createScope(store: TuiStore, exit: () => void): CommandScope {
   const state = store.getState()
-  const agentId = state.selectedAgentId
+  const selected = state.selectedAgentId
+  // A stopped (not loaded) tracked agent has no daemon id: agent commands see
+  // no agent; `/start` and the prompt use `stoppedKey`.
+  const stoppedKey = isTrackedKey(selected) ? selected : null
+  const agentId = stoppedKey ? null : selected
   return {
     store,
     actions: store.actions,
     client: store.client,
     state: () => store.getState(),
     agentId,
+    stoppedKey,
     loop: agentId ? state.selectedLoop[agentId] ?? MAIN_LOOP : MAIN_LOOP,
     print: (text, level = 'info') => store.actions.toast(text, level),
     exit,

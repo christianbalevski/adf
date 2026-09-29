@@ -219,11 +219,27 @@ stopped), `lanUrls`, what it serves; `web/ops.ts` `openSite` / `copySiteUrl`
 start a stopped server first and open via `auth/flow.ts` `openUrl` (the CLI's
 browser opener).
 
+Stopped agents (`state/tracked.ts`): `state.tracked` holds the tracked
+folders' agents that are not loaded (`stopped` in display order, `errors`
+from failed loads, `busy`), refreshed by `refreshTracked` (connect, resync,
+agent load / unload, track / untrack, every 15s). They are selectable:
+`selectedAgentId` is then a `file:<path>` key (`isTrackedKey`), never a
+daemon id, so guard per-agent calls; `useSelectedTracked()` /
+`useTrackedAgent(key)` / `useTracked()` read them, and the reducer moves the
+selection to the loaded agent when that file loads (and back when it
+unloads). `startTracked(key, {start?})` loads (+ starts) one, or opens the
+folder dialog's review (`fleet.track` with `{folder, review}`) when it needs
+review; `sendChat` to a stopped agent starts it first. Command scopes give
+such a selection as `stoppedKey` (with `agentId: null`). Views without an
+agent show `StoppedAgentPanel` from `views/fleet/stopped.tsx` (s / Enter
+start). The Fleet / sidebar filter (`all` | `running`) is
+`useAgentsFilter` / `setAgentsFilter` there (pref `agents`).
+
 State (`state/types.ts`): `TuiState { daemonUrl, connection, daemonReachable,
 identity (GET /identity status, null on daemons without it), auth (GET
 /runtime/auth), web (mesh web server + what agents serve, null until read), agents: Record<id, AgentEntry>, agentOrder, selectedAgentId, selectedLoop,
 transcripts: Record<TranscriptKey, Transcript>, activeView, focus, overlays,
-toasts, activity, lastEvents, viewState }`. `AgentEntry { summary, status?,
+toasts, activity, lastEvents, viewState, tracked }`. `AgentEntry { summary, status?,
 executorState?, loops?: LoopState[], config?, pendingTasks, pendingAsks,
 tokens, lastModel?, unreadInbox, error? }`. `LoopState { info: LoopInfo,
 executorState? }`.
@@ -280,7 +296,8 @@ body, unreachable }`. Types in `api/types.ts` are type-imported from the daemon
 - tracked folders: `trackedDirs trackDir(path) untrackDir(path, {unload?})
   folderAgents(path)` (GET /tracked-dirs/agents: each agent's status —
   loaded, needs_review, not_autostart, stopped + error, password_protected,
-  unreadable)
+  unreadable) · `trackedAgents()` (GET /tracked-dirs/agents/all: every
+  folder with its agents; falls back to per-folder reads on older daemons)
 - tools: `agentTools(id)` (GET /agents/:id/tools: built-in + MCP + declared
   tools with declared state, source and description; read-only, writes go
   through `putConfig`; Inspect › Settings re-reads, applies Studio's lock /
@@ -424,7 +441,7 @@ inside first: `navigate()` in `views/chat/model.ts`); prompt history is
 Ctrl+↑/↓.
 
 Persisted choices (`app/prefs.ts`, `<config dir>/adf-studio/tui-prefs.json`
-or `ADF_TUI_PREFS`): sidebar hidden, mouse mode (default on; `/mouse off`
+or `ADF_TUI_PREFS`): sidebar hidden, the stopped-agents filter (`agents`), mouse mode (default on; `/mouse off`
 is remembered), one-time tips, the welcome (`welcome.launches`: shown while
 <= 3; `welcome.dismissed`: "don't show again"). Nothing secret goes there.
 

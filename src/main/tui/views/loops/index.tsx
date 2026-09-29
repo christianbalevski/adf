@@ -7,7 +7,8 @@
 import { Box, Text } from 'ink'
 import { useTheme } from '../../app/theme'
 import { useStore } from '../../state/store'
-import { useSelectedAgent, useViewState } from '../../state/hooks'
+import { useSelectedAgent, useSelectedTracked, useViewState } from '../../state/hooks'
+import { StoppedAgentPanel } from '../fleet/stopped'
 import type { Key } from '../../app/keys'
 import type { CommandScope } from '../../commands/types'
 import type { KeyHintSpec } from '../../ui/KeyHint'
@@ -29,6 +30,7 @@ function LoopsView({ width, height, focused }: ViewProps) {
   const theme = useTheme()
   const store = useStore()
   const agent = useSelectedAgent()
+  const stopped = useSelectedTracked()
   const [raw, setRaw] = useViewState<Partial<LoopsViewState>>(VIEW_ID, INITIAL_VIEW_STATE)
   const view: LoopsViewState = { ...INITIAL_VIEW_STATE, ...raw }
   const setView = (patch: Partial<LoopsViewState>) => setRaw(prev => ({ ...INITIAL_VIEW_STATE, ...prev, ...patch }))
@@ -44,6 +46,15 @@ function LoopsView({ width, height, focused }: ViewProps) {
     return (
       <Box flexDirection="column" paddingX={1} width={width} height={height}>
         <TimersTab agentId="" width={w} height={height} focused={focused} view={{ ...view, fleet: true }} setView={setView} tabKeys={tabKeys} />
+      </Box>
+    )
+  }
+  if (!agent && stopped) {
+    return (
+      <Box flexDirection="column" paddingX={1} width={width} height={height}>
+        <Text bold color={theme.color.loop}>{theme.glyph.loop} Loops</Text>
+        <TabBar tab={view.tab} width={w} />
+        <StoppedAgentPanel entry={stopped} width={w} height={Math.max(3, height - 2)} focused={focused} what="loops, timers, triggers or history" />
       </Box>
     )
   }

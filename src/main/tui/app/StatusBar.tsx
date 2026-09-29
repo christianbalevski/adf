@@ -2,7 +2,7 @@ import { Box, Text } from 'ink'
 import { useTheme, stateColor } from './theme'
 import { useShell } from './shell-context'
 import { useStore, useTuiSelector } from '../state/store'
-import { useActiveView, useFocus, useLoop, useSelectedAgent, useSelectedLoop } from '../state/hooks'
+import { useActiveView, useFocus, useLoop, useSelectedAgent, useSelectedLoop, useSelectedTracked } from '../state/hooks'
 import { isBusyState } from '../state/reducer'
 import { createScope } from '../commands/registry'
 import { Spinner } from '../ui/Spinner'
@@ -44,6 +44,8 @@ export function StatusBar({ width }: { width: number }) {
   const activeView = useActiveView()
   const focus = useFocus()
   const agent = useSelectedAgent()
+  const stopped = useSelectedTracked()
+  const stoppedState = stopped?.agent.status === 'needs_review' ? 'needs review' : 'stopped'
   const loopName = useSelectedLoop()
   const loop = useLoop(agent?.summary.id, loopName)
   // Views derive their hints from their own viewState (tab, pane): re-render on it.
@@ -70,9 +72,14 @@ export function StatusBar({ width }: { width: number }) {
   const showTokens = !!tokenText && baseWidth + (modelText ? 2 + displayWidth(modelText) : 0) + 2 + displayWidth(tokenText) <= budget
   const leftWidth = agent
     ? Math.min(budget, baseWidth + (modelText ? 2 + displayWidth(modelText) : 0) + (showTokens ? 2 + displayWidth(tokenText) : 0))
-    : 18
+    : stopped ? Math.min(budget, displayWidth(` ${stopped.agent.name}  ${theme.glyph.ring} ${stoppedState}`)) : 18
 
-  const left = agent ? (
+  const left = !agent && stopped ? (
+    <Text wrap="truncate-end">
+      <Text bold color={theme.color.muted}> {stopped.agent.name}</Text>
+      <Text color={theme.color.dim}>  {theme.glyph.ring} {stoppedState}</Text>
+    </Text>
+  ) : agent ? (
     <Text wrap="truncate-end">
       <Text bold color={theme.color.text}> {name}</Text>
       <Text color={theme.color.dim}> {theme.glyph.pointer} </Text>

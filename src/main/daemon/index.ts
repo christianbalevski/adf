@@ -20,6 +20,7 @@ import { getTokenUsageService } from '../services/token-usage.service'
 import { DaemonHost } from './daemon-host'
 import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
+import { noteAutostartReport } from './tracked-dirs'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import { DaemonIdentity, readBootPassphrase } from './daemon-identity'
 import { DaemonAgentFactory } from './daemon-agent-factory'
@@ -451,6 +452,7 @@ withSource('system:daemon', () => {
         withSource('system:daemon', () => runtime.autostartFromDirectories(trackedDirs, { maxDepth }))
           .then(report => {
             console.log('[ADF Daemon] Autostart report:', JSON.stringify(report))
+            noteAutostartReport(report)
             withSource('system:daemon', () => {
               emitUmbilicalEvent({ event_type: 'daemon.autostart.report', payload: { report } })
             })

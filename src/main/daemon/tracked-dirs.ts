@@ -82,6 +82,12 @@ export interface UntrackDirResult {
   unloaded: Array<{ agentId: string; filePath: string; name: string }>
 }
 
+/** GET /tracked-dirs/agents/all: every tracked folder with its agents (the fleet sidebar's "all agents" list). */
+export interface TrackedAgentsList {
+  maxDepth: number
+  folders: Array<TrackedDirEntry & { agents: FolderAgent[] }>
+}
+
 /** Caller-visible failure; `statusCode` is the HTTP status to answer with. */
 export class TrackedDirError extends Error {
   constructor(message: string, readonly statusCode: 400 | 404 | 405 | 409, readonly details?: Record<string, unknown>) {
@@ -121,6 +127,67 @@ function loadedUnder(runtime: RuntimeService, dir: string): Array<{ agentId: str
   return out
 }
 
+// --- Peek cache ---------------------------------------------------------------
+// Listing a folder's agents peeks each .adf's config (one readonly open). The
+// fleet sidebar lists every tracked folder on a poll, so the peek is kept per
+// file and reused while the file and its -wal sidecar are unchanged (mtime +
+// size): a steady poll opens nothing. Only files that are not loaded here are
+// ever peeked by the pollers' callers anyway; a readonly peek never modifies
+// the .adf (sidecars it created are reaped by peekReadonly).
+
+type PeekResult = ReturnType<typeof AdfDatabase.peekBootStatusDetailed>
+const PEEK_CACHE_MAX = 2000
+const peekCache = new Map<string, { stamp: string; result: PeekResult }>()
+
+function statStamp(path: string): string {
+  try {
+    const st = statSync(path)
+    return `${st.mtimeMs}:${st.size}`
+  } catch {
+    return '-'
+  }
+}
+
+/** `AdfDatabase.peekBootStatusDetailed`, cached by the file's (and its WAL's) mtime + size. */
+export function peekBootStatusCached(filePath: string): PeekResult {
+  const stamp = `${statStamp(filePath)}|${statStamp(`${filePath}-wal`)}`
+  const hit = peekCache.get(filePath)
+  if (hit && hit.stamp === stamp) return hit.result
+  const result = AdfDatabase.peekBootStatusDetailed(filePath)
+  // A failed peek (busy, mid-write) is not cached: keep serving the last good
+  // one, like Studio's sidebar, and try again next time.
+  if (!result.status) return hit?.result.status ? hit.result : result
+  // A peek may create and reap sidecars: stamp after it, so the next poll hits.
+  const after = `${statStamp(filePath)}|${statStamp(`${filePath}-wal`)}`
+  peekCache.delete(filePath)
+  if (peekCache.size >= PEEK_CACHE_MAX) peekCache.delete(peekCache.keys().next().value as string)
+  peekCache.set(filePath, { stamp: after, result })
+  return result
+}
+
+/** Test hook: forget cached peeks. */
+export function clearPeekCache(): void {
+  peekCache.clear()
+}
+
+// --- Last load failures ---------------------------------------------------------
+// An autostart pass (daemon boot, POST /agents/autostart, tracking a folder)
+// knows why an agent did not load; later listings only see "not loaded".
+// Remember the last failure per file so the fleet shows the error until the
+// agent loads (or another pass succeeds).
+
+const loadFailures = new Map<string, string>()
+
+function failureKey(filePath: string): string {
+  try { return canonicalizePath(filePath) } catch { return filePath }
+}
+
+/** Record an autostart report's failures (and clear the ones that started). */
+export function noteAutostartReport(report: Pick<RuntimeAutostartReport, 'started' | 'failed'>): void {
+  for (const s of report.started) if (s.filePath) loadFailures.delete(failureKey(s.filePath))
+  for (const f of report.failed) if (f.filePath) loadFailures.set(failureKey(f.filePath), f.error)
+}
+
 /**
  * Each .adf under `dir` (the autostart scan's walk) and where it stands.
  * `failures` (filePath -> error) carries load errors from an autostart pass
@@ -145,8 +212,9 @@ function folderAgents(
     let key = filePath
     try { key = canonicalizePath(filePath) } catch { /* keep as scanned */ }
     const running = loaded.get(key)
-    const failure = failures.get(filePath)
-    const peek = AdfDatabase.peekBootStatusDetailed(filePath)
+    if (running) loadFailures.delete(key)
+    const failure = failures.get(filePath) ?? loadFailures.get(key)
+    const peek = peekBootStatusCached(filePath)
     const boot = peek.status
     if (!boot || !peek.config) {
       if (running) return { filePath, name: running.name, agentId: running.id, status: 'loaded', autostart: false, reviewed: true }
@@ -181,6 +249,27 @@ export function listFolderAgents(runtime: RuntimeService, settings: TrackedDirsS
   const match = storedMatch(storedDirs(settings), raw)
   if (match === undefined) throw new TrackedDirError(`Not a tracked folder: ${raw}`, 404)
   return { path: match, agents: folderAgents(runtime, settings, match, maxDepthOf(settings)) }
+}
+
+/**
+ * GET /tracked-dirs/agents/all: every tracked folder with its agents and
+ * where each stands (one scan per folder; peeks are cached by mtime).
+ */
+export function listTrackedAgents(runtime: RuntimeService, settings: TrackedDirsSettings): TrackedAgentsList {
+  const maxDepth = maxDepthOf(settings)
+  return {
+    maxDepth,
+    folders: storedDirs(settings).map(dir => {
+      const agents = folderAgents(runtime, settings, dir, maxDepth)
+      return {
+        path: dir,
+        exists: isDirectory(dir),
+        agentCount: agents.length,
+        loadedCount: agents.filter(a => a.status === 'loaded').length,
+        agents,
+      }
+    }),
+  }
 }
 
 function describe(runtime: RuntimeService, dir: string, maxDepth: number): TrackedDirEntry {
@@ -234,6 +323,7 @@ export async function trackDir(
 
   const maxDepth = maxDepthOf(settings)
   const autostart = await runtime.autostartFromDirectories([dir], { maxDepth })
+  noteAutostartReport(autostart)
   const failures = new Map(autostart.failed.map(f => [f.filePath, f.error] as const))
   return {
     entry: describe(runtime, dir, maxDepth),

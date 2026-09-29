@@ -15,6 +15,8 @@ export interface TuiPrefs {
   mouse?: boolean
   /** Tips already shown once (e.g. `shiftEnter`). */
   tips?: Record<string, boolean>
+  /** Fleet sidebar / table: `running` hides tracked agents that are not loaded (`/agents running|all`); absent = all. */
+  agents?: 'all' | 'running'
   /** Welcome screen: launches counted so far, and "don't show again". */
   welcome?: { launches?: number; dismissed?: boolean }
 }

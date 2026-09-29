@@ -8,6 +8,7 @@ import { shallowEqual, useStore, useTuiSelector } from './store'
 import { transcriptKey, type AgentEntry, type FocusZone, type LoopState, type Transcript, type TuiState } from './types'
 import type { ConnectionInfo } from '../api/sse'
 import { authNeedOf } from '../auth/model'
+import { findTracked, isTrackedKey, type TrackedAgent, type TrackedState } from './tracked'
 
 const EMPTY_TRANSCRIPT: Transcript = Object.freeze(emptyTranscript()) as Transcript
 
@@ -31,6 +32,21 @@ export function useAuthNeed(agentId: string | null | undefined) {
 /** Agents in display order. */
 export function useAgents(): AgentEntry[] {
   return useTuiSelector(s => s.agentOrder.map(id => s.agents[id]).filter(Boolean), shallowEqual)
+}
+
+/** The tracked folders' not-loaded agents + folders (null until read). */
+export function useTracked(): TrackedState | null {
+  return useTuiSelector(s => s.tracked)
+}
+
+/** The not-loaded tracked agent behind a `file:<path>` key (the selection), if that is what it is. */
+export function useTrackedAgent(key: string | null | undefined): TrackedAgent | undefined {
+  return useTuiSelector(s => (isTrackedKey(key) ? findTracked(s, key) : undefined))
+}
+
+/** The selected agent when it is a not-loaded tracked agent. */
+export function useSelectedTracked(): TrackedAgent | undefined {
+  return useTuiSelector(s => (isTrackedKey(s.selectedAgentId) ? findTracked(s, s.selectedAgentId) : undefined))
 }
 
 export function useAgent(agentId: string | null | undefined): AgentEntry | undefined {

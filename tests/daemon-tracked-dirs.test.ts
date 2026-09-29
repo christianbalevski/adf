@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -25,6 +25,8 @@ vi.mock('electron', () => {
 })
 
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
+import { clearPeekCache } from '../src/main/daemon/tracked-dirs'
+import { AdfDatabase } from '../src/main/adf/adf-database'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
 
@@ -151,7 +153,7 @@ describe('daemon tracked folders API', () => {
     expect(tracked['agent-4']).toEqual(expect.objectContaining({ status: 'stopped', error: expect.stringContaining('Provider "anthropic" not found') }))
     expect(tracked.broken).toEqual(expect.objectContaining({ status: 'unreadable', error: expect.any(String) }))
 
-    // The same list on demand (load errors are only known to the pass that hit them).
+    // The same list on demand.
     const listed = await server.inject({ method: 'GET', url: `/tracked-dirs/agents?path=${encodeURIComponent(root + sep)}` })
     expect(listed.statusCode).toBe(200)
     expect(listed.json().path).toBe(root)
@@ -159,7 +161,8 @@ describe('daemon tracked folders API', () => {
     expect(Object.keys(now).sort()).toEqual(['agent-1', 'agent-2', 'agent-3', 'agent-4', 'broken'])
     expect(now['agent-2'].status).toBe('needs_review')
     expect(now['agent-4']).toEqual(expect.objectContaining({ status: 'stopped' }))
-    expect(now['agent-4'].error).toBeUndefined()
+    // The autostart pass's load error is remembered until the agent loads.
+    expect(now['agent-4'].error).toContain('Provider "anthropic" not found')
 
     // Review + accept, then load: it lists as loaded.
     expect((await server.inject({ method: 'POST', url: '/agents/review/accept', payload: { filePath: join(root, 'agent-2.adf') } })).statusCode).toBe(200)
@@ -214,6 +217,57 @@ describe('daemon tracked folders API', () => {
     expect((await server.inject({ method: 'DELETE', url: `/tracked-dirs?path=${encodeURIComponent(root)}` })).statusCode).toBe(404)
     expect((await server.inject({ method: 'DELETE', url: '/tracked-dirs' })).statusCode).toBe(400)
     expect((await server.inject({ method: 'DELETE', url: `/tracked-dirs?path=${encodeURIComponent(root)}&unload=yes` })).statusCode).toBe(400)
+  })
+
+  it('GET /tracked-dirs/agents/all: every folder with its agents, peeks cached by mtime, load errors remembered', async () => {
+    const a = realpathSync.native(mkdtempSync(join(tmpdir(), 'adf-tracked-all-a-')))
+    const b = realpathSync.native(mkdtempSync(join(tmpdir(), 'adf-tracked-all-b-')))
+    const readyId = seedAgent(a, 'agent-1')
+    const failingId = seedAgent(a, 'agent-2')
+    const stoppedId = seedAgent(b, 'agent-3', false)
+    seedAgent(b, 'agent-4') // never reviewed
+    clearPeekCache()
+
+    const settings = memorySettings({ reviewedAgents: [readyId, failingId, stoppedId] })
+    const runtime = new RuntimeService({
+      settings: settings.store,
+      providerFactory: (config: { name?: string }) => {
+        if (config.name === 'agent-2') throw new Error('Provider "anthropic" not found.')
+        return new MockLLMProvider({ tokensPerResponse: 40 })
+      },
+    })
+    runtimes.push(runtime)
+    const server = createDaemonHttpApi(runtime, { settingsStore: settings.store })
+    servers.push(server)
+
+    // Nothing tracked yet.
+    expect((await server.inject({ method: 'GET', url: '/tracked-dirs/agents/all' })).json()).toEqual({ maxDepth: 5, folders: [] })
+
+    expect((await server.inject({ method: 'POST', url: '/tracked-dirs', payload: { path: a } })).statusCode).toBe(201)
+    expect((await server.inject({ method: 'POST', url: '/tracked-dirs', payload: { path: b } })).statusCode).toBe(201)
+
+    const peek = vi.spyOn(AdfDatabase, 'peekBootStatusDetailed')
+    try {
+      const res = await server.inject({ method: 'GET', url: '/tracked-dirs/agents/all' })
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.folders.map((f: { path: string }) => f.path)).toEqual([a, b])
+      expect(body.folders[0]).toEqual(expect.objectContaining({ exists: true, agentCount: 2, loadedCount: 1 }))
+      const byName = Object.fromEntries(body.folders.flatMap((f: { agents: Array<{ name: string }> }) => f.agents).map((x: { name: string }) => [x.name, x]))
+      expect(byName['agent-1']).toEqual(expect.objectContaining({ status: 'loaded', agentId: readyId }))
+      // The track's autostart failure is remembered for later listings.
+      expect(byName['agent-2']).toEqual(expect.objectContaining({ status: 'stopped', error: expect.stringContaining('Provider "anthropic" not found') }))
+      expect(byName['agent-3']).toEqual(expect.objectContaining({ status: 'not_autostart' }))
+      expect(byName['agent-4']).toEqual(expect.objectContaining({ status: 'needs_review' }))
+      // Every file was peeked when tracked: a steady poll opens none of them again.
+      expect(peek).not.toHaveBeenCalled()
+      await server.inject({ method: 'GET', url: '/tracked-dirs/agents/all' })
+      expect(peek).not.toHaveBeenCalled()
+    } finally {
+      peek.mockRestore()
+    }
+    // Reading never leaves sidecars next to a file that is not loaded.
+    expect(existsSync(join(b, 'agent-3.adf-wal'))).toBe(false)
   })
 
   it('answers 503 without a settings store and 405 for a read-only one', async () => {

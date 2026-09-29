@@ -74,6 +74,7 @@ import {
   type TaskResolveResult,
   type TaskAlwaysApproveResult,
   type FolderAgentsList,
+  type TrackedAgentsList,
   type TrackedDirsList,
   type TrackDirResult,
   type UntrackDirResult,
@@ -689,6 +690,24 @@ export class DaemonClient {
   /** The agents in one tracked folder and where each stands (loaded, needs review, not autostart, stopped + load error). */
   folderAgents(path: string): Promise<FolderAgentsList> {
     return this.get('/tracked-dirs/agents', { path })
+  }
+
+  /**
+   * Every tracked folder with its agents (GET /tracked-dirs/agents/all). On a
+   * daemon without that route: GET /tracked-dirs, then each folder's agents.
+   */
+  async trackedAgents(): Promise<TrackedAgentsList> {
+    try {
+      return await this.get<TrackedAgentsList>('/tracked-dirs/agents/all')
+    } catch (err) {
+      if (!(err instanceof DaemonError) || err.status !== 404) throw err
+    }
+    const list = await this.trackedDirs()
+    const folders = await Promise.all(list.directories.map(async entry => {
+      const agents = entry.exists ? await this.folderAgents(entry.path).then(r => r.agents, () => []) : []
+      return { ...entry, agents }
+    }))
+    return { maxDepth: list.maxDepth, folders }
   }
 
   asks(agentId: string): Promise<AskListResult> {

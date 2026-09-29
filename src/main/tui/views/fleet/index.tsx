@@ -1,14 +1,18 @@
 // Fleet — the ADF home screen. A daemon summary, every agent in one table
 // (state, loops busy/total, approvals, inbox, model, tokens, timers, last
 // activity, mesh), and the selected agent's cognition loops with their
-// schedules. Everything acts on (agent, loop).
+// schedules. Everything acts on (agent, loop). Tracked agents that are not
+// loaded follow the loaded ones, dimmed ("stopped", "needs review", "load
+// error"): s / Enter starts one, H (or /agents running) hides them.
 
 import { Box, Text } from 'ink'
 import { useTheme, stateColor, type Theme } from '../../app/theme'
 import { KeyHints, type KeyHintSpec } from '../../ui/KeyHint'
 import { useKeys } from '../../app/keys'
 import { useStore } from '../../state/store'
-import { useAgents, useConnection, useIdentity, useSelectedAgent, useSelectedLoop, useViewState } from '../../state/hooks'
+import { useAgents, useConnection, useIdentity, useSelectedAgent, useSelectedAgentId, useSelectedLoop, useTracked, useViewState } from '../../state/hooks'
+import { stoppedError, stoppedLabel, type TrackedAgent } from '../../state/tracked'
+import { setAgentsFilter, startStopped, stoppedAction, stoppedGlyph, useAgentsFilter } from './stopped'
 import { IDENTITY_BANNER_KEY } from '../../identity/model'
 import { authNeedOf, authNeedText } from '../../auth/model'
 import { shallowEqual, useTuiSelector } from '../../state/store'
@@ -34,22 +38,33 @@ import { copySiteUrl, openSite } from '../../web/ops'
 
 type MeshInfo = RuntimeOverview['network']['agents'][number]
 
+/** A table row: a loaded agent, or a tracked agent that is not loaded. */
+type FleetRow = { kind: 'agent'; agent: AgentEntry } | { kind: 'stopped'; entry: TrackedAgent }
+
+const rowId = (row: FleetRow) => (row.kind === 'agent' ? row.agent.summary.id : row.entry.key)
+
 function FleetView({ width, height, focused }: ViewProps) {
   useFleetPoller()
   const theme = useTheme()
   const store = useStore()
   const agents = useAgents()
+  const tracked = useTracked()
+  const filterMode = useAgentsFilter()
   const data = useFleetData()
   const lastActivity = useLastActivity()
   const selected = useSelectedAgent()
+  const selectedId = useSelectedAgentId()
   const selectedLoop = useSelectedLoop()
-  const selectedIndex = Math.max(0, agents.findIndex(a => a.summary.id === selected?.summary.id))
+  const stopped = filterMode === 'all' ? tracked?.stopped ?? [] : []
+  const rows: FleetRow[] = [...agents.map(agent => ({ kind: 'agent' as const, agent })), ...stopped.map(entry => ({ kind: 'stopped' as const, entry }))]
+  const selectedIndex = Math.max(0, rows.findIndex(r => rowId(r) === selectedId))
+  const selectedStopped = rows[selectedIndex]?.kind === 'stopped' && rowId(rows[selectedIndex]) === selectedId ? (rows[selectedIndex] as Extract<FleetRow, { kind: 'stopped' }>).entry : undefined
   const offline = useConnection().reachable === false
   const identity = useIdentity()
   const needs = useTuiSelector(s => Object.fromEntries(s.agentOrder.map(id => [id, authNeedOf(s, id)])) as Record<string, SubscriptionProvider | null>, shallowEqual)
   const [bannerHidden] = useViewState<string>(IDENTITY_BANNER_KEY, '')
   // Empty fleet + identity not ready: onboarding replaces the empty table.
-  const onboarding = agents.length === 0 && !!identity && identity.status !== 'ready'
+  const onboarding = rows.length === 0 && !!identity && identity.status !== 'ready'
   const banner = !onboarding && needsAttention(identity) && bannerHidden !== bannerKeyOf(identity) ? identity : null
   // Agent websites: re-render when the web server or what agents serve changes.
   useTuiSelector(s => s.web)
@@ -59,12 +74,23 @@ function FleetView({ width, height, focused }: ViewProps) {
   useKeys((input, key) => {
     // Ctrl/Meta chords belong to the shell (Ctrl+K palette, Ctrl+←/→ loops): never read Ctrl+K as k.
     if (key.ctrl || key.meta) return false
-    const agent = agents[selectedIndex]
+    const row = rows[selectedIndex]
+    const agent = row?.kind === 'agent' ? row.agent : undefined
     const move = key.upArrow || input === 'k' ? -1 : key.downArrow || input === 'j' ? 1 : 0
-    if (move && agents.length) {
-      const next = agents[Math.max(0, Math.min(agents.length - 1, selectedIndex + move))]
-      if (next.summary.id !== selected?.summary.id) store.actions.selectAgent(next.summary.id)
+    if (move && rows.length) {
+      const next = rows[Math.max(0, Math.min(rows.length - 1, selectedIndex + move))]
+      if (rowId(next) !== selectedId) store.actions.selectAgent(rowId(next))
       return true
+    }
+    if (input === 'H') { setAgentsFilter(store); return true }
+    if (row?.kind === 'stopped') {
+      if (input === 's' || key.return) {
+        if (stoppedAction(row.entry)) startStopped(store, row.entry)
+        else store.actions.toast(`${row.entry.agent.name}: ${stoppedError(row.entry, tracked?.errors) ?? stoppedLabel(row.entry, tracked?.errors)}`, 'warn', 5000)
+        return true
+      }
+      if (input === 'x') { store.actions.toast(`${row.entry.agent.name} is not running`, 'info', 2000); return true }
+      if (key.leftArrow || key.rightArrow || input === 'h' || input === 'l') return true
     }
     if ((key.leftArrow || key.rightArrow || input === 'h' || input === 'l') && agent) {
       const loops = agent.loops ?? []
@@ -92,15 +118,15 @@ function FleetView({ width, height, focused }: ViewProps) {
 
   const inner = Math.max(20, width - 2)
   const selectedSite = selected ? sites[selected.summary.id] ?? null : null
-  const detailRows = selected ? Math.min(Math.max(3, (selected.loops?.length ?? 1) + 2 + (selectedSite ? 1 : 0)), Math.max(3, Math.floor(height / 3))) : 0
+  const detailRows = selectedStopped ? Math.min(5, Math.max(3, Math.floor(height / 3))) : selected ? Math.min(Math.max(3, (selected.loops?.length ?? 1) + 2 + (selectedSite ? 1 : 0)), Math.max(3, Math.floor(height / 3))) : 0
   const tableRows = Math.max(2, height - 4 - detailRows - 1 - (banner ? 1 : 0))
 
-  if (offline && agents.length === 0) return <DaemonOffline width={width} height={height} />
+  if (offline && rows.length === 0) return <DaemonOffline width={width} height={height} />
 
   if (onboarding && identity) {
     return (
       <Box flexDirection="column" width={width} height={height} paddingX={1}>
-        <FleetHeadline agents={agents} />
+        <FleetHeadline agents={agents} stopped={tracked?.stopped.length ?? 0} hidden={filterMode === 'running'} />
         <DaemonLine data={data} width={inner} />
         <IdentityOnboarding identity={identity} width={inner} focused={focused} />
       </Box>
@@ -109,19 +135,23 @@ function FleetView({ width, height, focused }: ViewProps) {
 
   return (
     <Box flexDirection="column" width={width} height={height} paddingX={1}>
-      <FleetHeadline agents={agents} />
+      <FleetHeadline agents={agents} stopped={tracked?.stopped.length ?? 0} hidden={filterMode === 'running'} />
       <DaemonLine data={data} width={inner} />
       {banner ? <IdentityBanner identity={banner} width={inner} /> : <Box height={1} />}
       <Table
         width={inner}
         height={tableRows}
-        rows={agents}
-        getKey={a => a.summary.id}
-        selectedIndex={agents.length ? selectedIndex : undefined}
-        emptyText="No agents loaded — n new agent · f track a folder · o load an .adf · A autostart tracked folders"
-        columns={columnsFor(inner, theme, data, lastActivity, needs, sites)}
+        rows={rows}
+        getKey={rowId}
+        selectedIndex={rows.length ? selectedIndex : undefined}
+        emptyText={filterMode === 'running' && tracked?.stopped.length ? `No agents running — ${tracked.stopped.length} stopped hidden (H shows them)` : 'No agents loaded — n new agent · f track a folder · o load an .adf · A autostart tracked folders'}
+        columns={columnsFor(inner, theme, data, lastActivity, needs, sites, tracked?.errors ?? {}, tracked?.busy ?? {})}
       />
-      {selected ? (
+      {selectedStopped ? (
+        <Box flexDirection="column" marginTop={1} height={detailRows} overflow="hidden">
+          <StoppedDetails entry={selectedStopped} errors={tracked?.errors ?? {}} busy={tracked?.busy[selectedStopped.agent.filePath]} width={inner} />
+        </Box>
+      ) : selected ? (
         <Box flexDirection="column" marginTop={1} height={detailRows} overflow="hidden">
           <AgentDetails agent={selected} need={needs[selected.summary.id] ?? null} loop={selectedLoop} timers={data.agents[selected.summary.id]?.timers} mesh={data.runtime?.network.agents.find(a => a.agentId === selected.summary.id)} site={selectedSite} status={statusOf(selected.summary.id)} width={inner} rows={detailRows} />
         </Box>
@@ -139,6 +169,7 @@ const DASHBOARD_KEYS: KeyHintSpec[] = [
   { keys: 'enter', label: 'chat' },
   { keys: 's', label: 'start' },
   { keys: 'x', label: 'stop' },
+  { keys: 'H', label: 'hide/show stopped' },
   { keys: 'a', label: 'interrupt' },
   { keys: 'w', label: 'website' },
   { keys: 'n', label: 'new agent' },
@@ -171,7 +202,7 @@ export function DaemonOffline({ width, height }: { width: number; height: number
   )
 }
 
-function FleetHeadline({ agents }: { agents: AgentEntry[] }) {
+function FleetHeadline({ agents, stopped = 0, hidden = false }: { agents: AgentEntry[]; stopped?: number; hidden?: boolean }) {
   const theme = useTheme()
   const busy = agents.filter(a => describeAgent(a).busy)
   const loops = agents.reduce((n, a) => n + (a.loops?.length ?? 1), 0)
@@ -180,7 +211,7 @@ function FleetHeadline({ agents }: { agents: AgentEntry[] }) {
   return (
     <Text wrap="truncate-end">
       <Text bold color={theme.color.accent}>Fleet</Text>
-      <Text color={theme.color.muted}>  {agents.length} agent{agents.length === 1 ? '' : 's'}</Text>
+      <Text color={theme.color.muted}>  {agents.length} agent{agents.length === 1 ? '' : 's'}{stopped ? ` running · ${stopped} stopped${hidden ? ' (hidden)' : ''}` : ''}</Text>
       <Text color={theme.color.dim}> {theme.glyph.sep} </Text>
       {busy.length ? <Spinner label={`${busy.length} busy`} /> : <Text color={theme.color.muted}>all idle</Text>}
       <Text color={theme.color.dim}> {theme.glyph.sep} </Text>
@@ -228,7 +259,27 @@ function DaemonLine({ data, width }: { data: FleetData; width: number }) {
   )
 }
 
-function columnsFor(width: number, theme: Theme, data: FleetData, lastActivity: Record<string, number>, needs: Record<string, SubscriptionProvider | null>, sites: Record<string, Site | null>): TableColumn<AgentEntry>[] {
+/** Columns over loaded agents, lifted to fleet rows: a stopped agent shows its name and state, `·` elsewhere. */
+function columnsFor(width: number, theme: Theme, data: FleetData, lastActivity: Record<string, number>, needs: Record<string, SubscriptionProvider | null>, sites: Record<string, Site | null>, errors: Record<string, string>, busy: Record<string, string>): TableColumn<FleetRow>[] {
+  return agentColumnsFor(width, theme, data, lastActivity, needs, sites).map(col => ({
+    ...col,
+    value: (row: FleetRow) => {
+      if (row.kind === 'agent') return col.value(row.agent)
+      const e = row.entry
+      if (col.key === 'agent') return `${stoppedGlyph(theme, e, errors).glyph} ${e.agent.name}`
+      if (col.key === 'state') return busy[e.agent.filePath] ?? stoppedLabel(e, errors)
+      return '·'
+    },
+    color: (row: FleetRow) => {
+      if (row.kind === 'agent') return col.color?.(row.agent)
+      if (col.key === 'agent') return theme.color.muted
+      if (col.key === 'state') { const g = stoppedGlyph(theme, row.entry, errors); return g.color === theme.color.dim ? theme.color.muted : g.color }
+      return theme.color.dim
+    },
+  }))
+}
+
+function agentColumnsFor(width: number, theme: Theme, data: FleetData, lastActivity: Record<string, number>, needs: Record<string, SubscriptionProvider | null>, sites: Record<string, Site | null>): TableColumn<AgentEntry>[] {
   const extras = (a: AgentEntry) => data.agents[a.summary.id]
   const mesh = (a: AgentEntry): MeshInfo | undefined => data.runtime?.network.agents.find(m => m.agentId === a.summary.id)
   const cols: Array<TableColumn<AgentEntry> & { minWidth?: number; priority: number }> = [
@@ -319,6 +370,36 @@ function AgentDetails({ agent, need, loop, timers, mesh, site, status, width, ro
   )
 }
 
+/** The selected tracked agent that is not loaded: where it is, why it is not running, what s does. */
+function StoppedDetails({ entry, errors, busy, width }: { entry: TrackedAgent; errors: Record<string, string>; busy?: string; width: number }) {
+  const theme = useTheme()
+  const a = entry.agent
+  const label = stoppedLabel(entry, errors)
+  const error = stoppedError(entry, errors)
+  const action = stoppedAction(entry)
+  const glyph = stoppedGlyph(theme, entry, errors)
+  const meta = [a.filePath, `autostart ${a.autostart ? 'on' : 'off'}`, a.reviewed ? '' : 'not reviewed'].filter(Boolean).join(` ${theme.glyph.sep} `)
+  const next = a.status === 'needs_review'
+    ? 'Not reviewed on this daemon yet. s reviews it: see what it can do, then accept and start it.'
+    : a.status === 'password_protected'
+      ? `Password-protected identity: load it with /load ${a.filePath} and unlock it.`
+      : a.status === 'unreadable'
+        ? 'Not a loadable agent file.'
+        : `Not running. s (or Enter) loads it into the daemon and starts it.`
+  return (
+    <Box flexDirection="column" width={width}>
+      <Text wrap="truncate-end">
+        <Text bold color={theme.color.text}>{a.name}</Text>
+        <Text color={glyph.color}>  {busy ?? label}</Text>
+        <Text color={theme.color.dim}>  {meta}</Text>
+      </Text>
+      {error ? <Text color={theme.color.error} wrap="truncate-end">{a.status === 'unreadable' ? '' : 'last load failed: '}{error}</Text> : null}
+      {busy ? <Spinner label={`${busy === 'starting' ? 'Starting' : 'Loading'} ${a.name}…`} /> : <Text color={action ? theme.color.info : theme.color.muted} wrap="truncate-end">{next}</Text>}
+      <Text color={theme.color.dim} wrap="truncate-end">tracked folder {entry.folder}</Text>
+    </Box>
+  )
+}
+
 /** `web  http://127.0.0.1:7295/agents/agent-1/  public/ (index.html) · 1 API route  w open · W copy`. */
 function SiteLine({ site }: { site: Site }) {
   const theme = useTheme()
@@ -350,7 +431,8 @@ const fleet: ViewDefinition = {
       { keys: 'up down', label: 'Select an agent (j k)' },
       { keys: 'left right', label: 'Select one of its loops (h l)' },
       { keys: 'enter', label: 'Open the agent › loop in Chat' },
-      { keys: 's', label: 'Start the agent' },
+      { keys: 's', label: 'Start the agent (a stopped one: load it into the daemon, then start it; one that needs review: review it first)' },
+      { keys: 'H', label: 'Hide / show stopped agents: tracked agents that are not loaded (also /agents running|all; remembered)' },
       { keys: 'x', label: 'Stop and unload the agent (asks; the .adf is kept)' },
       { keys: 'a', label: 'Abort the turns running now (asks)' },
       { keys: 'w', label: 'Open the agent’s website (starts the web server if it is stopped)' },

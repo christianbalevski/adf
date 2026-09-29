@@ -80,6 +80,8 @@ export interface FolderOverlayProps {
   folder: string
   /** From a track that just happened: shown first (the dialog then re-reads from the daemon). */
   result?: TrackDirResult
+  /** Open straight into this agent's review (a stopped agent's `s` when it needs review). */
+  review?: string
 }
 
 /** Show a tracked folder's agents (what loaded, what needs review, errors). */
@@ -146,6 +148,7 @@ export async function loadFolderAgent(store: TuiStore, agent: FolderAgent, optio
     store.actions.toast(`${options.accept ? 'Reviewed and loaded' : 'Loaded'} ${name}${started}`, started.startsWith(' (') ? 'warn' : 'success', 5000)
     writeFolders(store, {}, true)
     await store.actions.refreshAgents()
+    void store.actions.refreshTracked()
     return { ok: true, agentId: ref.id }
   } catch (err) {
     if (err instanceof DaemonError && err.unreachable) store.dispatch({ type: 'daemon/reachable', reachable: false })
@@ -177,6 +180,7 @@ export async function trackFolder(store: TuiStore, path: string, options: { toas
   store.actions.toast(text, level, 8000)
   writeFolders(store, { directories: null, at: undefined }, true)
   await store.actions.refreshAgents()
+  await store.actions.refreshTracked()
   // What loaded, what needs review and why the rest did not: a list the owner
   // can act on (older daemons send no `agents`; the dialog then asks for them).
   // Nothing to act on (all loaded, or no agents): the toast says it all.
@@ -199,6 +203,7 @@ export async function untrackFolder(store: TuiStore, path: string, unload: boole
     )
     writeFolders(store, { directories: null, at: undefined }, true)
     if (result.unloaded.length) await store.actions.refreshAgents()
+    await store.actions.refreshTracked()
     return result
   } catch (err) {
     if (err instanceof DaemonError && err.unreachable) store.dispatch({ type: 'daemon/reachable', reachable: false })

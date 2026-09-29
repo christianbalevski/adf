@@ -4,7 +4,7 @@ import { useTheme } from './theme'
 import { useTerminalCaps } from './terminal'
 import { useShell } from './shell-context'
 import { PROMPT_PREFILL_KEY, useStore, useTuiSelector } from '../state/store'
-import { useActiveView, useSelectedAgent, useSelectedLoop, useViewState } from '../state/hooks'
+import { useActiveView, useSelectedAgent, useSelectedLoop, useSelectedTracked, useViewState } from '../state/hooks'
 import { completeSlash, createScope, runSlash } from '../commands/registry'
 import { TextInput, type TextInputApi } from '../ui/TextInput'
 import { truncate } from '../ui/text'
@@ -57,6 +57,7 @@ export function Prompt({ width, focused }: { width: number; focused: boolean }) 
   const { views, registry, exit } = useShell()
   const activeView = useActiveView()
   const agent = useSelectedAgent()
+  const stopped = useSelectedTracked()
   const loop = useSelectedLoop()
   const [value, setValue] = useState('')
   promptEmpty = value.length === 0
@@ -96,7 +97,7 @@ export function Prompt({ width, focused }: { width: number; focused: boolean }) 
   const target = agent ? `${agent.summary.handle || agent.summary.name} ${theme.glyph.pointer} ${loop}` : null
   const placeholder = typeof config?.placeholder === 'function'
     ? config.placeholder(scope)
-    : config?.placeholder ?? (target ? `Message ${target}   / for commands` : 'Select an agent (Tab → sidebar) or type /help')
+    : config?.placeholder ?? (target ? `Message ${target}   / for commands` : stopped ? `${stopped.agent.name} is stopped · a message starts it, then sends · / for commands` : 'Select an agent (Tab → sidebar) or type /help')
 
   const slashing = focused && value.startsWith('/') && !value.includes('\n')
   const slash = useMemo(
@@ -138,6 +139,11 @@ export function Prompt({ width, focused }: { width: number; focused: boolean }) 
       if (await runSlash(trimmed, registry, store, exit)) return
       const ctx = { ...createScope(store, exit), args: [], rest: trimmed }
       if (config?.onSubmit && await config.onSubmit(trimmed, ctx)) return
+      if (!ctx.agentId && ctx.stoppedKey) {
+        // A stopped tracked agent: sendChat starts it, then delivers the message.
+        await store.actions.sendChat(trimmed)
+        return
+      }
       if (!ctx.agentId) {
         store.actions.toast('No agent selected — pick one in the sidebar (Tab) or /agent <handle>', 'warn')
         return

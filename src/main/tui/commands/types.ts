@@ -13,8 +13,10 @@ export interface CommandContext {
   client: DaemonClient
   /** Current state snapshot (read at call time). */
   state(): TuiState
-  /** The selected agent id, if any. */
+  /** The selected agent id, if a loaded agent is selected (null for a stopped one: see `stoppedKey`). */
   agentId: string | null
+  /** The selected tracked agent that is not loaded (`file:<path>`, `state/tracked.ts`), if that is what is selected. */
+  stoppedKey?: string | null
   /** The selected loop of the selected agent (`main` by default). */
   loop: string
   /** Positional args (whitespace split, quotes respected). */

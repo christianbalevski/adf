@@ -7,6 +7,7 @@ import type { SlashCommand } from '../../commands/types'
 import type { TuiStore } from '../../state/store'
 import type { ViewDefinition } from '../../views/types'
 import { scoreEntry } from './fuzzy'
+import { isTrackedKey } from '../../state/tracked'
 
 export interface PaletteEntry {
   id: string
@@ -95,6 +96,18 @@ export function buildEntries(ctx: EntryContext): PaletteEntry[] {
     })
   }
 
+  // Tracked agents that are not loaded: select one (its panel says how to start it).
+  for (const t of state.tracked?.stopped ?? []) {
+    out.push({
+      id: `agent:${t.key}`,
+      group: 'Agents',
+      title: t.agent.name,
+      hint: ['stopped', t.agent.status === 'needs_review' ? 'needs review' : '', t.relPath].filter(Boolean).join(' · '),
+      keywords: `switch to agent select stopped tracked start ${t.relPath}`,
+      run: () => store.actions.selectAgent(t.key),
+    })
+  }
+
   // Every loop of every agent: loops are the agent's parallel chat sessions.
   for (const id of state.agentOrder) {
     const loops = state.agents[id]?.loops ?? []
@@ -148,7 +161,7 @@ export function buildEntries(ctx: EntryContext): PaletteEntry[] {
   }
 
   const agentId = state.selectedAgentId
-  if (agentId) {
+  if (agentId && !isTrackedKey(agentId)) {
     const paths: string[] = []
     for (const f of recentFiles) if (f.agentId === agentId && !paths.includes(f.path)) paths.push(f.path)
     for (const f of ctx.files ?? []) if (!paths.includes(f.path)) paths.push(f.path)
