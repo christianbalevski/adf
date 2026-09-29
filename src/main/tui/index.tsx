@@ -51,7 +51,7 @@ export interface TuiIo {
 export function tuiUsage(): string {
   return `Usage: adf [tui] [options]
 
-Interactive terminal UI for the ADF daemon: your fleet of agents, each agent's
+The ADF terminal app: your fleet of agents, each agent's
 loops, chat, files, approvals and live umbilical events. Loops are an agent's
 separate chat sessions (threads): main talks to you; inner loops (side loops)
 such as a memory consolidator on a nightly timer or a researcher work on their
@@ -132,7 +132,7 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
   }
   if (!io.stdout.isTTY || !io.stdin.isTTY) {
     io.stderr.write(
-      'adf: the interactive TUI needs a terminal (stdin and stdout must be a TTY).\n' +
+      'adf: the terminal app needs a terminal (stdin and stdout must be a TTY).\n' +
       'For scripts and pipes use one-shot commands, e.g. `npm run adf -- agents` or `npm run adf -- --help`.\n',
     )
     return 1
@@ -205,7 +205,13 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
     store.actions.toast('This terminal sends Shift+Enter as Enter: Alt+Enter or Ctrl+J add a newline · /terminal-setup to fix', 'info', 8000)
   }, 1500)
 
-  void store.start().then(() => {
+  void store.start().then(async () => {
+    // First few launches: the welcome opens over the normal UI (Esc closes it).
+    const { recordWelcomeLaunch } = await import('./setup/welcome')
+    if (recordWelcomeLaunch()) {
+      const { openWelcome } = await import('./setup/open')
+      openWelcome(store)
+    }
     if (!options.agent) return
     const state = store.getState()
     const id = state.agentOrder.find(agentId => {
@@ -228,7 +234,7 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
     uninstallMirror()
     uninstallModes()
   }
-  io.stdout.write(`Left the ADF TUI. Agents keep running in the daemon at ${client.baseUrl}.\n`)
+  io.stdout.write(`Left the ADF terminal app. Agents keep running in the daemon at ${client.baseUrl}.\n`)
   return 0
 }
 

@@ -1,7 +1,7 @@
 // `npm run tui:mock` — the TUI against the in-memory mock daemon, so the shell
 // can be seen without a real daemon. Every feature fixture is layered in front
-// of the mock as a fetch chain (auth → identity → loops → fleet → files →
-// inspect → trigger → mock), so each view works end to end. The consolidator inner loop "wakes"
+// of the mock as a fetch chain (setup → auth → identity → loops → fleet →
+// files → inspect → trigger → mock), so each view works end to end. The consolidator inner loop "wakes"
 // on a fake timer every 20s to show inner-loop activity streaming in.
 
 import { startMockDaemon, AGENT_1_ID } from './mock-daemon'
@@ -12,6 +12,7 @@ import { createInspectFixture } from './inspect-daemon'
 import { triggerFetch } from './chat-script'
 import { createIdentityFetch, type MockIdentityState } from './identity-daemon'
 import { createAuthFetch } from './auth-daemon'
+import { createSetupFetch } from './setup-daemon'
 
 async function main(): Promise<void> {
   const mock = await startMockDaemon({ stepMs: 120 })
@@ -34,6 +35,9 @@ async function main(): Promise<void> {
   // so Fleet and Chat show the hint); /login finishes after two status polls.
   // The mock never opens a real browser.
   const auth = createAuthFetch({ agentProviders: { 'agent-2': 'chatgpt-sub' }, autoApproveAfterPolls: 2 }, identity.fetch)
+  // Channels (/channels) and API-key providers (/provider add). A Telegram
+  // token containing "revoked" comes up in error.
+  const setup = createSetupFetch({}, auth.fetch)
   const { setAuthFlowSeams } = await import('../../../src/main/tui/auth/flow')
   setAuthFlowSeams({ openBrowser: () => {} })
 
@@ -82,7 +86,7 @@ async function main(): Promise<void> {
     stdin: process.stdin,
     stderr: process.stderr,
     env: process.env,
-    fetch: auth.fetch,
+    fetch: setup.fetch,
   })
   clearInterval(tick)
   if (rateTimer) clearInterval(rateTimer)

@@ -13,6 +13,7 @@ import { TERMINAL_SETUP_OVERLAY } from '../../app/terminal-setup'
 import { identityActions, identityCommand, newAgentCommand } from './identity'
 import { authActions, authCommand, loginCommand, logoutCommand } from './auth'
 import { copySiteCommand, openSiteCommand, webActions, webCommand } from './web'
+import { channelsCommand, mcpCommand, providerCommand, setupActions, welcomeCommand } from './setup'
 
 export { createQuitGuard, QUIT_WINDOW_MS } from './quit'
 export { THEMES, applyTheme, findTheme, nextThemeName } from './themes'
@@ -45,7 +46,7 @@ const help: SlashCommand = {
 const quit: SlashCommand = {
   name: 'quit',
   aliases: ['exit', 'q'],
-  description: 'Leave the TUI (agents keep running in the daemon)',
+  description: 'Leave the terminal app (agents keep running in the daemon)',
   run: ctx => ctx.exit(),
 }
 
@@ -224,6 +225,10 @@ const commands: SlashCommand[] = [
   webCommand,
   openSiteCommand,
   copySiteCommand,
+  welcomeCommand,
+  channelsCommand,
+  providerCommand,
+  mcpCommand,
 ]
 
 const actions: PaletteAction[] = [
@@ -238,6 +243,7 @@ const actions: PaletteAction[] = [
   ...identityActions,
   ...authActions,
   ...webActions,
+  ...setupActions,
 ]
 
 export const BUILTIN_COMMANDS: CommandContribution = { commands, actions }

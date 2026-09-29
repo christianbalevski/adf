@@ -90,6 +90,12 @@ import {
   type TemplateListResult,
   type SubscriptionAuthStatus,
   type SubscriptionProvider,
+  type AddProviderInput,
+  type AddProviderResult,
+  type PublicProvider,
+  type AdapterInstanceConfig,
+  type McpServerConfig,
+  type McpRestartResult,
 } from './types'
 
 export interface DaemonClientOptions {
@@ -111,6 +117,8 @@ interface RequestOptions {
   query?: Query
   body?: unknown
   signal?: AbortSignal
+  /** Longer than the client default (package installs, MCP connects). */
+  timeoutMs?: number
 }
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -172,7 +180,8 @@ export class DaemonClient {
 
   async request<T>(method: Method, path: string, options: RequestOptions = {}): Promise<T> {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(new Error('timeout')), this.timeoutMs)
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs
+    const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs)
     const onAbort = () => controller.abort(options.signal?.reason)
     options.signal?.addEventListener('abort', onAbort, { once: true })
     let response: Response
@@ -184,7 +193,7 @@ export class DaemonClient {
         signal: controller.signal,
       })
     } catch (err) {
-      const reason = controller.signal.aborted && !options.signal?.aborted ? `timed out after ${this.timeoutMs}ms` : errorMessage(err)
+      const reason = controller.signal.aborted && !options.signal?.aborted ? `timed out after ${timeoutMs}ms` : errorMessage(err)
       throw new DaemonError(`Cannot reach daemon at ${this.baseUrl}: ${reason}`, null)
     } finally {
       clearTimeout(timer)
@@ -281,6 +290,15 @@ export class DaemonClient {
 
   putSetting(key: string, value: unknown): Promise<{ key: string; value: unknown }> {
     return this.put(`/settings/${enc(key)}`, { value })
+  }
+
+  /** Add an API-key provider. The key goes to the daemon secret store; the reply never carries it. */
+  addProvider(input: AddProviderInput): Promise<AddProviderResult> {
+    return this.post('/runtime/providers', input)
+  }
+
+  removeProvider(id: string): Promise<{ removed: string; providers: PublicProvider[] }> {
+    return this.del(`/runtime/providers/${enc(id)}`)
   }
 
   // --- compute (containers) and the mesh --------------------------------------
@@ -693,6 +711,50 @@ export class DaemonClient {
 
   agentAdapters(agentId: string): Promise<AgentAdaptersDiagnostics> {
     return this.get(`/agents/${enc(agentId)}/runtime/adapters`)
+  }
+
+  // --- MCP servers (per agent) ------------------------------------------------
+
+  /** Add a server to the agent config (it connects on start, or with restartMcpServer now). */
+  attachMcpServer(agentId: string, server: McpServerConfig): Promise<{ agentId: string; serverName: string; success: true; alreadyAttached: boolean }> {
+    return this.post(`/agents/${enc(agentId)}/mcp/servers`, { server })
+  }
+
+  /** Remove it and delete its stored credentials (`mcp:<namespace>:*`; the package, else the server name). */
+  detachMcpServer(agentId: string, serverName: string, credentialNamespace?: string): Promise<{ agentId: string; serverName: string; success: true; deletedCredentials: number }> {
+    return this.request('DELETE', `/agents/${enc(agentId)}/mcp/servers/${enc(serverName)}`, { query: { credentialNamespace } })
+  }
+
+  /** (Re)connect one server of a running agent now; the outcome carries tools found or the error. */
+  restartMcpServer(agentId: string, serverName: string): Promise<McpRestartResult> {
+    return this.request('POST', `/agents/${enc(agentId)}/mcp/servers/${enc(serverName)}/restart`, { timeoutMs: 180_000 })
+  }
+
+  /** Store one env value for an MCP server in the agent's identity store (`mcp:<namespace>:<key>`, sealed). */
+  setMcpCredential(agentId: string, namespace: string, envKey: string, value: string): Promise<{ success: true }> {
+    return this.put(`/agents/${enc(agentId)}/mcp/credentials`, { npmPackage: namespace, envKey, value })
+  }
+
+  /** Install an MCP server package on the daemon host (npm or Python). Synchronous: can take a minute. */
+  installMcpPackage(kind: 'npm' | 'python', pkg: string): Promise<{ success: true; installed: unknown }> {
+    return this.request('POST', `/admin/mcp/packages/${kind}`, { body: { package: pkg }, timeoutMs: 600_000 })
+  }
+
+  // --- messaging adapters (per agent) -----------------------------------------
+
+  /** Store one adapter credential in the agent's identity keystore (sealed under the owner identity). */
+  setAdapterCredential(agentId: string, adapterType: string, envKey: string, value: string): Promise<{ agentId: string; adapterType: string; envKey: string; success: true }> {
+    return this.put(`/agents/${enc(agentId)}/adapters/credentials`, { adapterType, envKey, value })
+  }
+
+  /** Enable an adapter in the agent config; a running agent starts it. */
+  attachAdapter(agentId: string, adapterType: string, config: AdapterInstanceConfig): Promise<{ agentId: string; adapterType: string; success: true; alreadyAttached: boolean }> {
+    return this.post(`/agents/${enc(agentId)}/adapters`, { adapterType, config })
+  }
+
+  /** Remove the adapter from the config and delete its stored credentials. */
+  detachAdapter(agentId: string, adapterType: string): Promise<{ agentId: string; adapterType: string; success: true; deletedCredentials: number }> {
+    return this.del(`/agents/${enc(agentId)}/adapters/${enc(adapterType)}`)
   }
 
   agentWs(agentId: string): Promise<AgentWsDiagnostics> {

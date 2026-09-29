@@ -20,8 +20,13 @@ export type IdentityMode = 'status' | 'create' | 'restore' | 'unlock'
 /** Props of the identity overlay. Never words or passphrases: overlay props live in the store. */
 export interface IdentityOverlayProps {
   mode?: IdentityMode
-  /** Open the new-agent wizard once the identity is ready (from /new or `n`). */
-  then?: 'new-agent'
+  /**
+   * Overlay kind to open once the identity is ready: the new-agent wizard
+   * (from /new or `n`), /connect, /provider add.
+   */
+  then?: string
+  /** Props for that overlay (never secrets). The new-agent wizard takes `name` instead. */
+  thenProps?: Record<string, unknown>
   /** Agent name to carry into that wizard. */
   name?: string
   /** One line saying why the dialog opened (e.g. "Set up your owner identity first"). */
@@ -63,7 +68,7 @@ export function isLoopbackUrl(url: string): boolean {
   }
 }
 
-export const LOOPBACK_ONLY_TEXT = 'The seed phrase and passphrase never travel over the network: create, restore and unlock only work from the daemon’s own machine. Run the TUI (or `adf identity`) there.'
+export const LOOPBACK_ONLY_TEXT = 'The seed phrase and passphrase never travel over the network: create, restore and unlock only work from the daemon’s own machine. Run the terminal app (`adf`) or `adf identity` there.'
 
 /** One or two sentences: what the owner identity is. */
 export const IDENTITY_EXPLAINER = 'Your owner identity proves these agents are yours. It is 12 words: the same words restore it anywhere, in the terminal or in ADF Studio.'

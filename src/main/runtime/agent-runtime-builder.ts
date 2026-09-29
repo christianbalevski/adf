@@ -21,6 +21,7 @@ import {
   type McpConnectOutcome,
 } from '../tools/built-in'
 import { StreamBindingManager } from './stream-binding-manager'
+import { registerMcpConnector } from './mcp-connectors'
 import { createUmbilicalResources } from './umbilical-lifecycle'
 import { isolatedContainerName, containerWorkspacePath, containerAgentHome } from '../services/podman.service'
 import { resolveHostEnv } from '../services/host-exec.service'
@@ -641,6 +642,9 @@ export class AgentRuntimeBuilder {
       adfCallHandler?.updateConfig(freshConfig)
       return { toolsDiscovered: tools.length, location }
     }
+
+    // The owner's restart / connect-after-attach (POST /agents/:id/mcp/servers/:name/restart).
+    registerMcpConnector(manager, (serverName, reason = 'Owner restart') => connectOneServer(workspace.getAgentConfig(), serverName, reason))
 
     // Register the MCP management tools UNCONDITIONALLY — declared/enabled
     // gating happens per-call in the shell/executor, not at registration time.

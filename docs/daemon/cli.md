@@ -1,6 +1,6 @@
-# Daemon CLI
+# ADF CLI
 
-The repository includes a CLI client for the daemon HTTP API. It is useful for local scripts, smoke checks, and terminal-first operation. The CLI is a client of the daemon; when the daemon URL is on this machine and nothing answers there, `adf` starts the daemon in the background first (see [Background daemon](#background-daemon)).
+The ADF CLI (`adf`) is a client for the daemon HTTP API. It is useful for local scripts, smoke checks, and terminal-first operation. The CLI is a client of the daemon; when the daemon URL is on this machine and nothing answers there, `adf` starts the daemon in the background first (see [Background daemon](#background-daemon)).
 
 Run it with `adf <command>` (the [npm package](getting-started.md#install-from-npm)) or, from a source checkout:
 
@@ -8,9 +8,9 @@ Run it with `adf <command>` (the [npm package](getting-started.md#install-from-n
 npm run adf -- <command>
 ```
 
-With no command, `npm run adf` opens the interactive terminal UI instead: the
+With no command, `npm run adf` opens the terminal app instead: the
 whole fleet, every agent's loops, chat, approvals, files and live events. See
-[ADF TUI](tui.md).
+[Terminal app](tui.md).
 
 Show the built-in command list without contacting the daemon:
 
@@ -65,11 +65,11 @@ curl -X POST http://127.0.0.1:7385/agents/load \
 
 ## Background daemon
 
-`adf` (the TUI) and every command that talks to the daemon first check
+`adf` (the terminal app) and every command that talks to the daemon first check
 `<url>/health`. When nothing answers and the URL is loopback (`127.0.0.1`,
 `localhost`, `::1`), `adf` starts `adf daemon` for that port in the
 background, waits until it answers (`Starting the ADF daemon…`), and goes on.
-The daemon is detached: it keeps running after the command or the TUI exits
+The daemon is detached: it keeps running after the command or the terminal app exits
 and after the terminal closes. It is never started for a remote URL, with
 `--no-daemon` / `ADF_NO_AUTOSTART=1`, or while ADF Studio runs on the same
 settings (Studio and the daemon would run the same agents twice; `adf` says

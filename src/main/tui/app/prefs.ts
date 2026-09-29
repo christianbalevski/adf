@@ -15,6 +15,8 @@ export interface TuiPrefs {
   mouse?: boolean
   /** Tips already shown once (e.g. `shiftEnter`). */
   tips?: Record<string, boolean>
+  /** Welcome screen: launches counted so far, and "don't show again". */
+  welcome?: { launches?: number; dismissed?: boolean }
 }
 
 let file: string | null = null
@@ -51,7 +53,12 @@ export function getPrefs(): TuiPrefs {
 
 /** Merge and persist. Best effort: a read-only disk keeps the change for this session. */
 export function savePrefs(patch: Partial<TuiPrefs>): void {
-  prefs = { ...prefs, ...patch, ...(patch.tips ? { tips: { ...prefs.tips, ...patch.tips } } : {}) }
+  prefs = {
+    ...prefs,
+    ...patch,
+    ...(patch.tips ? { tips: { ...prefs.tips, ...patch.tips } } : {}),
+    ...(patch.welcome ? { welcome: { ...prefs.welcome, ...patch.welcome } } : {}),
+  }
   if (!file) return
   try {
     mkdirSync(dirname(file), { recursive: true })

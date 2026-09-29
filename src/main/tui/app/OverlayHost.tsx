@@ -13,6 +13,14 @@ import { IDENTITY_OVERLAY, NEW_AGENT_OVERLAY } from '../identity/model'
 import { AuthDialog } from '../auth/AuthDialog'
 import { AUTH_OVERLAY } from '../auth/model'
 import { TERMINAL_SETUP_OVERLAY, TerminalSetupDialog } from './terminal-setup'
+import { WelcomeDialog } from '../setup/WelcomeDialog'
+import { ChannelsDialog } from '../setup/ChannelsDialog'
+import { ProviderDialog } from '../setup/ProviderDialog'
+import { WELCOME_OVERLAY } from '../setup/welcome'
+import { CHANNELS_OVERLAY } from '../setup/channels'
+import { PROVIDER_OVERLAY } from '../setup/provider'
+import { McpDialog } from '../setup/McpDialog'
+import { MCP_OVERLAY } from '../setup/mcp'
 
 export { SHELL_KEYS } from './shell-keys'
 
@@ -48,6 +56,10 @@ const BUILTIN_OVERLAYS: Record<string, ComponentType<OverlayProps>> = {
   [NEW_AGENT_OVERLAY]: NewAgentDialog,
   [AUTH_OVERLAY]: AuthDialog,
   [TERMINAL_SETUP_OVERLAY]: TerminalSetupDialog,
+  [WELCOME_OVERLAY]: WelcomeDialog,
+  [CHANNELS_OVERLAY]: ChannelsDialog,
+  [PROVIDER_OVERLAY]: ProviderDialog,
+  [MCP_OVERLAY]: McpDialog,
 }
 
 /** Renders the topmost overlay centered over the body. Built-ins + view-registered kinds. */

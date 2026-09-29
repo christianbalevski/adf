@@ -19,7 +19,7 @@ Run it: `npm run adf` (no command) · `npm run adf -- tui --view loops` ·
 | commands / palette / inspect (the selected agent) | `views/inspect/**`, `commands/builtin/**`, `app/palette.tsx` | `inspect` / `5` |
 | runtime (the daemon, every agent) | `views/runtime/**` (pages from `commands/builtin/reports.ts`) | `runtime` / `6` |
 
-Shared (foundation — change deliberately, keep every view working): `api/**`, `state/**`, `identity/**` (owner identity + new agent dialogs), `auth/**` (provider sign-in), `web/**` (agent websites + the web server toggle), `app/**` (except
+Shared (foundation — change deliberately, keep every view working): `api/**`, `state/**`, `identity/**` (owner identity + new agent dialogs), `auth/**` (provider sign-in), `web/**` (agent websites + the web server toggle), `setup/**` (welcome, channels, API-key providers), `app/**` (except
 `app/palette.tsx`), `ui/**`, `commands/types.ts`, `commands/registry.ts`,
 `views/types.ts`, `views/registry.ts`, `index.tsx`, `interop.ts`, `package.json`
 (this dir), `CONTRACT.md`, and everything outside `src/main/tui` (daemon, CLI,
@@ -99,7 +99,14 @@ interface OverlayProps { overlay: Overlay; close(): void; width: number; height:
   (the new-agent wizard) from `src/main/tui/identity/` — open them with
   `openIdentity(store, props)` / `openNewAgent(store, name?)`, and `auth`
   (provider sign-in, `src/main/tui/auth/`; props `{ login?: 'chatgpt'|'grok' }`),
-  `terminal-setup` (Shift+Enter help, `app/terminal-setup.tsx`).
+  `terminal-setup` (Shift+Enter help, `app/terminal-setup.tsx`), and from
+  `setup/`: `welcome` (`openWelcome(store)`), `channels` (`openChannels(store,
+  {agentId?, channel?})`: the agent's channels, or one channel's setup form)
+  and `provider.add` (`openProviderAdd(store, {preset?})`), `mcp`
+  (`openMcp(store, {agentId?, add?, server?, view?})`). Openers that take
+  secrets route to the identity dialog first when it is not ready: its props
+  `then` (an overlay kind) and `thenProps` open the dialog afterwards (never
+  put secrets there).
   Dialogs are opaque (`ui/Modal` paints a fill
   layer), y/Enter confirms and n/Esc cancels everywhere, Ctrl+C cancels.
 - Views are unmounted when switched away; keep cursor/filter state in
@@ -128,7 +135,8 @@ interface CommandContext {
 first registration of a name wins and collisions are listed in
 `registry.conflicts` (a test asserts it is empty). Reserved names: builtins
 `help ? quit exit q view agent a refresh r theme url auth login logout json
-identity new sidebar mouse terminal-setup terminal web open-site site copy-site`; `runtime status usage
+identity new sidebar mouse terminal-setup terminal web open-site site copy-site
+welcome channels provider mcp`; `runtime status usage
 providers network compute settings events` belong to runtime; `loop main loops timers timer triggers history`
 belong to loops; `abort interrupt clear compact trigger copy thinking approve reject` to
 chat; `agents start stop unload load switch sw autostart` to fleet; `files
@@ -252,6 +260,19 @@ body, unreachable }`. Types in `api/types.ts` are type-imported from the daemon
   approveAllTasks(id, loop?) asks (each with its loop) answerAsk(…, loop?)
   respondSuspend`
 - tracked folders: `trackedDirs trackDir(path) untrackDir(path, {unload?})`
+- channels (per agent; "channel adapters" in the API): `setAdapterCredential(id,
+  type, envKey, value)` (sealed in the agent's identity store) ·
+  `attachAdapter(id, type, config)` (switches it on) · `detachAdapter(id,
+  type)` (also deletes its credentials); live state: `agentAdapters`
+- MCP servers (per agent): `attachMcpServer(id, server)` · `restartMcpServer(id,
+  name)` (connects it now; the outcome has tools found or the error) ·
+  `detachMcpServer(id, name, credentialNamespace?)` · `setMcpCredential(id,
+  namespace, key, value)` (sealed, `mcp:<package or name>:<KEY>`) ·
+  `installMcpPackage('npm'|'python', pkg)` (long timeout); live state:
+  `agentMcp`
+- API-key providers: `addProvider({type, name?, baseUrl?, defaultModel?,
+  preset?, apiKey?})` (POST /runtime/providers: the key goes to the daemon's
+  secret store, never the settings file, never returned) · `removeProvider(id)`
 - diagnostics: `agentRuntime agentTriggers agentMcp agentAdapters agentWs`
 - escape hatch: `request<T>(method, path, {query, body})`
 
@@ -269,10 +290,13 @@ wheel scrolls rows, or moves the selection with `wheelSelects`) · `TabStrip`
 `ListRow` · `Table` (fixed/flex columns, selection) · `ScrollView`
 (bottom-anchored, virtualized, key-anchored; `estimateHeight` per item;
 `onReachTop` to page older history) · `TextInput` (multiline, history, paste, `mask` for secrets,
-`onKey` pre-handler) · `Modal` / `Confirm` · `Markdown` / `Inline`
+`onKey` pre-handler) · `views/loops/Form` (text / choice / combo / bool /
+checklist fields; a text field with `mask: true` shows dots and the length,
+never the value; used by the setup and identity dialogs too) ·
+`Modal` / `Confirm` · `Markdown` / `Inline`
 (markdown-lite) · `Spinner` · `KeyHint` / `KeyHints` · text helpers
 (`displayWidth truncate fit oneLine wrappedHeight formatCount formatAgo
-formatClock formatEveryMs previewJson`). Import from `ui/index.ts`.
+formatClock formatEveryMs previewJson wrapText`). Import from `ui/index.ts`.
 
 ## 8. Theme (`app/theme.ts`)
 
@@ -366,7 +390,8 @@ Ctrl+↑/↓.
 
 Persisted choices (`app/prefs.ts`, `<config dir>/adf-studio/tui-prefs.json`
 or `ADF_TUI_PREFS`): sidebar hidden, mouse mode (default on; `/mouse off`
-is remembered), one-time tips. Nothing secret goes there.
+is remembered), one-time tips, the welcome (`welcome.launches`: shown while
+<= 3; `welcome.dismissed`: "don't show again"). Nothing secret goes there.
 
 Status bar: a view's first `MAX_VIEW_HINTS` (5) `keyHints`, then `Tab` focus
 and `Ctrl+K` palette (`GLOBAL_HINTS`). Put the primary keys first; the rest
@@ -394,6 +419,9 @@ belong in `helpKeys` (/help, which filters as you type).
   (`renderTui(<App …/>, {columns, rows})` → `press`, `raw`, `type`, `waitFor`,
   `resize`; mouse: write `\u001b[<64;x;yM` wheel reports, see
   `tests/tui/terminal.test.tsx`); see `tests/tui/shell.test.tsx` for the pattern.
+  `tests/tui/fixtures/setup-daemon.ts` (`createSetupFetch(opts, next)`):
+  channels (credentials, attach / detach, live state that comes up after a
+  poll) and POST/DELETE /runtime/providers with the keys kept apart.
   Fixtures use handles `agent-1`, `agent-2` and UUID ids — never personal
   names.
 - Never hide model output or take silent auto-actions: anything the TUI does

@@ -51,7 +51,7 @@ const SEQUENCE = '\\u001b[13;2u'
 export function terminalSetupLines(kind: TerminalKind, caps: TerminalCaps = terminalCaps()): Line[] {
   const works = caps.kitty || caps.shiftEnterSeen || caps.shiftEnterForced
   const lines: Line[] = [heading(`Shift+Enter in ${TERMINAL_NAMES[kind]}`)]
-  if (caps.kitty) lines.push(plain('  Works: the terminal speaks the kitty keyboard protocol and the TUI turned it on.', 'success'))
+  if (caps.kitty) lines.push(plain('  Works: the terminal speaks the kitty keyboard protocol and ADF turned it on.', 'success'))
   else if (caps.shiftEnterSeen) lines.push(plain('  Works: a Shift+Enter distinct from Enter arrived (a keybinding sends it).', 'success'))
   else if (caps.shiftEnterForced) lines.push(plain('  Assumed to work (ADF_TUI_SHIFT_ENTER=1).', 'success'))
   else lines.push(plain('  Not detected: this terminal sends Shift+Enter as a plain Enter, so it sends the message.', 'warn'))

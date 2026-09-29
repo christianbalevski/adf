@@ -1153,17 +1153,19 @@ function isRecord(value: JsonValue | unknown): value is Record<string, JsonValue
 }
 
 function usage(): string {
-  return `Usage: adf [--url <daemon-url>] [--json] <command>
+  return `ADF CLI: run and talk to your ADF agents from a terminal.
+
+Usage: adf [--url <daemon-url>] [--json] <command>
        adf [tui] [--view <id>] [--agent <id>] [--loop <name>]
        adf daemon [start|status|stop|restart|logs]
 
-With no command, adf opens the interactive TUI (see \`adf tui --help\`).
+With no command, adf opens the terminal app (see \`adf tui --help\`).
 When the daemon URL is on this machine and nothing answers there, adf
 starts the daemon in the background first (--no-daemon or
 ADF_NO_AUTOSTART=1 turn that off). Quitting leaves it running.
 
 Commands:
-  tui                            Interactive terminal UI (the default)
+  tui                            The terminal app (the default)
   agents                         List loaded agents
   status <agent>                 Show runtime status
   start <agent>                  Start an agent and fire startup when applicable

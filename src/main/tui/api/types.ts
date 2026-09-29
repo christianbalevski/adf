@@ -23,6 +23,7 @@ import type {
   RuntimeTimerMutationOptions,
   RuntimeAgentRef,
   RuntimeAutostartReport,
+  RuntimeService,
 } from '../../runtime/runtime-service'
 import type {
   DaemonAdapterDiagnostics,
@@ -57,6 +58,8 @@ import type { AdfEvent, AdfEventDispatch, AdfBatchDispatch } from '../../../shar
 import type { DaemonIdentityStatus, DaemonIdentityErrorCode } from '../../daemon/daemon-identity'
 import type { AgentCreateErrorCode, CreateAgentInput, CreateAgentResult } from '../../daemon/daemon-agent-factory'
 import type { AgentTemplateSummary } from '../../../shared/types/ipc.types'
+import type { AdapterInstanceConfig as SharedAdapterInstanceConfig } from '../../../shared/types/channel-adapter.types'
+import type { publicProvider } from '../../daemon/provider-routes'
 
 export type {
   AdfLogEntry,
@@ -379,6 +382,28 @@ export interface TemplateListResult {
 
 export type AgentCreateInput = CreateAgentInput
 export type AgentCreateResult = CreateAgentResult
+
+// --- providers added through the daemon (POST /runtime/providers) ------------
+
+export type PublicProvider = ReturnType<typeof publicProvider>
+export type AdapterInstanceConfig = SharedAdapterInstanceConfig
+export type { McpServerConfig } from '../../../shared/types/adf-v02.types'
+export type McpRestartResult = Awaited<ReturnType<RuntimeService['restartAgentMcpServer']>>
+
+export interface AddProviderInput {
+  type: 'anthropic' | 'openai' | 'openrouter' | 'openai-compatible'
+  name?: string
+  baseUrl?: string
+  defaultModel?: string
+  preset?: string
+  /** Sent once; stored in the daemon secret store, never returned. */
+  apiKey?: string
+}
+
+export interface AddProviderResult {
+  provider: PublicProvider
+  defaultProviderId: string | null
+}
 
 // --- runtime diagnostics ----------------------------------------------------
 

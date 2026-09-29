@@ -31,6 +31,8 @@ import type { AdapterInstanceConfig, AdapterRegistration } from '../../shared/ty
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { getLanAddresses } from '../utils/network'
 import { registerIdentityRoutes, type IdentityRouteDeps } from './identity-routes'
+import { registerProviderRoutes } from './provider-routes'
+import type { ProviderKeyVault } from './provider-key-vault'
 import { listTrackedDirs, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
 
 export interface DaemonHttpApiOptions {
@@ -48,6 +50,11 @@ export interface DaemonHttpApiOptions {
   sandboxPackageService?: DaemonSandboxPackageService
   /** Owner identity (GET/POST /identity*). */
   identity?: IdentityRouteDeps['identity']
+  /**
+   * Daemon secret store for API keys of providers added with POST
+   * /runtime/providers (never written to the settings file).
+   */
+  providerKeys?: ProviderKeyVault | null
   /** Template-based agent creation (GET /templates, POST /agents/create). */
   agentFactory?: IdentityRouteDeps['agentFactory']
   /**
@@ -626,6 +633,7 @@ export function createDaemonHttpApi(
   })
 
   registerIdentityRoutes(server, { identity: opts.identity, agentFactory: opts.agentFactory })
+  registerProviderRoutes(server, { settingsStore: opts.settingsStore, providerKeys: opts.providerKeys })
 
   server.get<{ Querystring: EventsQuery }>('/events', async (request, reply) => {
     if (!opts.eventBus) return unavailable(reply, 'Event bus is not configured.')
@@ -1945,6 +1953,15 @@ export function createDaemonHttpApi(
     }
   })
 
+  server.post<{ Params: McpServerParams }>('/agents/:id/mcp/servers/:serverName/restart', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    try {
+      return await runtime.restartAgentMcpServer(request.params.id, request.params.serverName)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
   server.put<{ Params: AgentIdParams; Body: AdapterCredentialBody }>('/agents/:id/adapters/credentials', async (request, reply) => {
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const { adapterType, envKey, value } = request.body ?? {}
@@ -2764,6 +2781,7 @@ function sanitizeProvider(provider: ProviderConfig) {
     preset: provider.preset,
     requestDelayMs: provider.requestDelayMs ?? 0,
     credentialStorage: provider.credentialStorage ?? 'app',
+    ...(provider.apiKeyStorage ? { apiKeyStorage: provider.apiKeyStorage } : {}),
     hasApiKey: typeof provider.apiKey === 'string' && provider.apiKey.length > 0,
     params: provider.params?.map(param => ({ key: param.key, hasValue: param.value.length > 0 })) ?? [],
   }

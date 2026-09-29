@@ -39,7 +39,7 @@ This repository contains the spec, the runtime daemon, the CLI, and the desktop 
 
 The [Quick start](#quick-start) below is for developers running ADF from source; use the release downloads above if you just want the desktop application.
 
-## Install the daemon, CLI and TUI from npm
+## Install the ADF CLI from npm
 
 For terminal-only use (servers, SSH sessions, no desktop app), install the [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli) package. It needs Node.js 22 or newer; native modules install from prebuilt binaries, so no compiler is needed.
 
@@ -48,7 +48,7 @@ npm i -g @agentdocumentformat/cli
 adf
 ```
 
-`adf` opens the interactive TUI and starts the daemon in the background when it is not running yet (it keeps running after you quit; `adf daemon stop` stops it). `adf agents` and the other one-shot commands (`adf help`) do the same. `adf daemon` runs the daemon in the foreground instead.
+`adf` opens the terminal app and starts the daemon in the background when it is not running yet (it keeps running after you quit; `adf daemon stop` stops it). `adf agents` and the other one-shot commands (`adf help`) do the same. `adf daemon` runs the daemon in the foreground instead.
 
 Studio and the npm daemon share the same settings file and owner identity (OS keychain) on one machine; `adf` will not start a daemon next to a running Studio. See [Install from npm](docs/daemon/getting-started.md#install-from-npm).
 
@@ -135,7 +135,7 @@ npm run adf -- events example-agent
 
 The CLI is a client for the running daemon; the daemon API defaults to `http://127.0.0.1:7385` (override with `ADF_DAEMON_URL` or `--url`). See the [daemon quick start](docs/daemon/getting-started.md).
 
-Run `npm run adf` with no command for the interactive terminal UI: the whole fleet in one screen, chat with any agent or any of its loops (an agent's separate chat sessions, such as a side loop that consolidates memory every night), approvals, files, schedules and live events. See the [TUI guide](docs/daemon/tui.md); `npm run tui:mock` tries it without a daemon.
+Run `npm run adf` with no command for the terminal app: the whole fleet in one screen, chat with any agent or any of its loops (an agent's separate chat sessions, such as a side loop that consolidates memory every night), approvals, files, schedules and live events. See the [terminal app guide](docs/daemon/tui.md); `npm run tui:mock` tries it without a daemon.
 
 > **Note:** Studio uses Electron while the daemon and CLI use Node, and they need different native SQLite builds. `npm run daemon` rebuilds for Node automatically; if Studio later reports a `better-sqlite3` ABI error, run `npm run postinstall` before restarting Studio.
 
@@ -207,7 +207,7 @@ down.
 | [Getting Started](docs/getting-started.md) | [ADF spec v0.2](ADF_SPEC_v0.2.md) — the file format |
 | [ADF Studio tour](docs/ADF_STUDIO_DOCS.md) | [ALF spec v0.1](ALF_SPEC_v0.1.md) — the agent communication protocol |
 | [Core Concepts](docs/core-concepts.md) | [Identity spec v0.1](docs/design/ADF_IDENTITY_SPEC_v0.1.md) — DIDs, envelopes, attestations |
-| [Fleet map guide](docs/guides/fleet-map.md) | [Daemon CLI](docs/daemon/cli.md), [TUI](docs/daemon/tui.md) and [HTTP API](docs/daemon/http-api.md) |
+| [Fleet map guide](docs/guides/fleet-map.md) | [ADF CLI](docs/daemon/cli.md), [terminal app](docs/daemon/tui.md) and [HTTP API](docs/daemon/http-api.md) |
 | [Creating agents](docs/guides/creating-agents.md) | [Tools catalog](docs/guides/tools.md) |
 | [Daemon quick start](docs/daemon/getting-started.md) | [Security architecture](docs/guides/security-architecture.md) |
 

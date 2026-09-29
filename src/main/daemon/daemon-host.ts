@@ -35,6 +35,8 @@ export interface DaemonHostOptions {
   sandboxPackageService?: DaemonSandboxPackageService
   identity?: DaemonHttpApiOptions['identity']
   agentFactory?: DaemonHttpApiOptions['agentFactory']
+  /** See DaemonHttpApiOptions.providerKeys. */
+  providerKeys?: DaemonHttpApiOptions['providerKeys']
   /** POST /daemon/shutdown handler (see DaemonHttpApiOptions.requestShutdown). */
   requestShutdown?: () => void
   /** See DaemonHttpApiOptions.onTrackedDirectoriesChanged. */
@@ -95,6 +97,7 @@ export class DaemonHost {
   private readonly adapterPackageService?: DaemonPackageService
   private readonly sandboxPackageService?: DaemonSandboxPackageService
   private readonly identity?: DaemonHttpApiOptions['identity']
+  private readonly providerKeys?: DaemonHttpApiOptions['providerKeys']
   private readonly agentFactory?: DaemonHttpApiOptions['agentFactory']
   private readonly requestShutdown?: () => void
   private readonly onTrackedDirectoriesChanged?: (dirs: string[]) => void
@@ -122,6 +125,7 @@ export class DaemonHost {
     this.adapterPackageService = opts.adapterPackageService
     this.sandboxPackageService = opts.sandboxPackageService
     this.identity = opts.identity
+    this.providerKeys = opts.providerKeys
     this.agentFactory = opts.agentFactory
     this.requestShutdown = opts.requestShutdown
     this.onTrackedDirectoriesChanged = opts.onTrackedDirectoriesChanged
@@ -156,6 +160,7 @@ export class DaemonHost {
       adapterPackageService: this.adapterPackageService,
       sandboxPackageService: this.sandboxPackageService,
       identity: this.identity,
+      providerKeys: this.providerKeys,
       agentFactory: this.agentFactory,
       requestShutdown: this.requestShutdown,
       onTrackedDirectoriesChanged: this.onTrackedDirectoriesChanged,

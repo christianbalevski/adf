@@ -16,6 +16,7 @@ import { copySiteUrl, openSite } from '../../web/ops'
 import { useDaemonData } from './hooks'
 import { useInspectState } from './state'
 import { adapterLines, identityLines, mcpLines, runtimeLines, usageLines } from './diag-lines'
+import { openChannels, openMcp } from '../../setup/open'
 
 interface TabProps { agentId: string; width: number; height: number; focused: boolean }
 
@@ -25,7 +26,7 @@ function DiagTab<T>({ agentId, width, height, focused, load, build, hint, prefix
   hint?: string
   /** Lines above the loaded data (Status: the agent's website). */
   prefix?: Line[]
-  onKey?: (input: string, key: { ctrl: boolean; meta: boolean }) => boolean
+  onKey?: (input: string, key: { ctrl: boolean; meta: boolean; return?: boolean }) => boolean
 }) {
   const theme = useTheme()
   const [inspect] = useInspectState()
@@ -91,11 +92,24 @@ export function UsageTab(props: TabProps) {
 }
 
 export function McpTab(props: TabProps) {
-  return <DiagTab {...props} load={c => c.agentMcp(props.agentId)} build={mcpLines} />
+  const store = useStore()
+  const onKey = (input: string, key: { ctrl: boolean; meta: boolean; return?: boolean }) => {
+    if (key.ctrl || key.meta) return false
+    if (input === 'a') { openMcp(store, { agentId: props.agentId, add: '' }); return true }
+    if (input === 'm' || key.return) { openMcp(store, { agentId: props.agentId }); return true }
+    return false
+  }
+  return <DiagTab {...props} load={c => c.agentMcp(props.agentId)} build={mcpLines} onKey={onKey} hint="a add · m manage (restart, credentials, tools, remove)" />
 }
 
 export function AdaptersTab(props: TabProps) {
-  return <DiagTab {...props} load={c => c.agentAdapters(props.agentId)} build={adapterLines} />
+  const store = useStore()
+  const onKey = (input: string, key: { ctrl: boolean; meta: boolean; return?: boolean }) => {
+    if (key.ctrl || key.meta) return false
+    if (input === 'a' || input === 'm' || key.return) { openChannels(store, { agentId: props.agentId }); return true }
+    return false
+  }
+  return <DiagTab {...props} load={c => c.agentAdapters(props.agentId)} build={adapterLines} onKey={onKey} hint="a / m channels: add, remove" />
 }
 
 export function IdentityTab(props: TabProps) {

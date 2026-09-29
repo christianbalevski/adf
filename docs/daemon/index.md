@@ -2,14 +2,14 @@
 
 The ADF daemon is the headless ADF runtime that serves an API for `.adf` agents. It runs agents without the Studio UI, exposes a local HTTP API, autostarts trusted agents from tracked directories, wires runtime services such as MCP and channel adapters, and serves agent websites through the same mesh server used by Studio.
 
-Studio remains the visual IDE for authoring, configuring, and observing agents. The daemon is for automation, deployment, background agents, CLI/TUI clients, service supervisors, and any environment where a desktop UI is the wrong shape. Both hosts now use the same canonical assembled-agent lifecycle; the daemon selects the exhaustive `daemon` capability profile.
+Studio remains the visual IDE for authoring, configuring, and observing agents. The daemon is for automation, deployment, background agents, the ADF CLI and terminal app, service supervisors, and any environment where a desktop UI is the wrong shape. Both hosts now use the same canonical assembled-agent lifecycle; the daemon selects the exhaustive `daemon` capability profile.
 
 ## Documentation
 
 - [Getting Started](getting-started.md) - Start the daemon, load an agent, chat, inspect status, and autostart agents
 - [HTTP API](http-api.md) - Endpoint reference for agents, loop inspection, review, settings, compute, and ChatGPT auth
 - [CLI](cli.md) - Terminal client for agent control, resources, diagnostics, events, and chat
-- [TUI](tui.md) - Interactive terminal UI for the fleet and every agent's loops (chat sessions)
+- [Terminal app](tui.md) - `adf` with no command: the fleet and every agent's loops (chat sessions)
 - [Runtime Settings](runtime-settings.md) - Direct JSON settings, example schema, providers, MCP, adapters, compute, and mesh
 - [Runtime Architecture](runtime-architecture.md) - RuntimeService, AgentRuntimeBuilder, triggers, MCP, adapters, compute, and mesh serving
 - [Lifecycle Assembly Contract](lifecycle-assembly.md) - Shared profiles, dispatch boundary, ownership, startup, transfer, and shutdown

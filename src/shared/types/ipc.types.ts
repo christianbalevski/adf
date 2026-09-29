@@ -110,6 +110,12 @@ export interface ProviderConfig {
   preset?: string
   /** Where credentials are stored: 'app' (app-wide settings) or 'agent' (per-ADF identity) */
   credentialStorage?: 'app' | 'agent'
+  /**
+   * 'secret-store': the daemon keeps this provider's key in its secret store
+   * (OS keychain or the owner's passphrase file), never in this file; `apiKey`
+   * stays empty here and the daemon fills it in when it reads the provider.
+   */
+  apiKeyStorage?: 'secret-store'
 }
 
 export interface McpServerRegistration {

@@ -54,7 +54,7 @@ function ViewCrashed({ viewId, error }: { viewId: string; error: Error }) {
     <Box flexDirection="column" paddingX={1}>
       <Text color={theme.color.error} bold>View "{viewId}" crashed</Text>
       <Text wrap="wrap" color={theme.color.text}>{error.message}</Text>
-      <Text color={theme.color.muted}>Switch views or press Ctrl+K. The rest of the TUI keeps running.</Text>
+      <Text color={theme.color.muted}>Switch views or press Ctrl+K. The rest of the app keeps running.</Text>
     </Box>
   )
 }

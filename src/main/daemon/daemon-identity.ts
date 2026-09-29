@@ -32,6 +32,7 @@ import {
   openKeychainBackend,
   type SecretBackend,
 } from '../services/owner-secret-store'
+import { SecretBackendProviderKeyVault, type ProviderKeyVault } from './provider-key-vault'
 import type { SecretStatus } from '../services/settings.service'
 import type { DaemonEncKey } from './daemon-enc-key'
 
@@ -180,6 +181,8 @@ export class DaemonIdentity {
   private readonly store: IdentitySettingsStore
   private readonly encKey: DaemonEncKey | null
   private readonly bootPassphrase?: string
+  /** API keys of providers added through the daemon (same secret store as the owner phrase). */
+  readonly providerKeys: ProviderKeyVault
   /** Owner DID the service is active for; null when not ready. */
   private readyOwnerDid: string | null = null
 
@@ -188,7 +191,9 @@ export class DaemonIdentity {
     this.encKey = opts.encKey
     this.bootPassphrase = opts.bootPassphrase || undefined
     this.backend = opts.backend ?? selectBackend(opts.settingsPath)
-    const runtimeAccount = `daemon-runtime-signing-key:${createHash('sha256').update(resolve(opts.settingsPath)).digest('hex').slice(0, 12)}`
+    const scope = createHash('sha256').update(resolve(opts.settingsPath)).digest('hex').slice(0, 12)
+    const runtimeAccount = `daemon-runtime-signing-key:${scope}`
+    this.providerKeys = new SecretBackendProviderKeyVault(this.backend, scope)
     this.identitySettings = new DaemonIdentitySettings(this.store, this.backend, this.encKey, runtimeAccount)
     this.service = new OwnerIdentityService(this.identitySettings, { manageTrustedDaemonSlots: false })
 

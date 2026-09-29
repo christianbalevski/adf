@@ -26,7 +26,7 @@ interface FieldBase {
 }
 
 export type FieldSpec =
-  | (FieldBase & { kind: 'text'; placeholder?: string; multiline?: boolean; rows?: number; editor?: boolean })
+  | (FieldBase & { kind: 'text'; placeholder?: string; multiline?: boolean; rows?: number; editor?: boolean; /** Secret: shown as dots, never as text. */ mask?: boolean })
   | (FieldBase & { kind: 'bool' })
   | (FieldBase & { kind: 'choice'; options: Array<{ value: string; label: string }> })
   | (FieldBase & { kind: 'combo'; options: string[]; placeholder?: string })
@@ -290,6 +290,10 @@ function FieldValue({ field, values, focused, width, itemCursor }: { field: Fiel
       }
       if (!text) {
         return <Text color={theme.color.dim}>{focused ? <Text inverse> </Text> : null}{truncate(field.placeholder ?? '', width - 2)}</Text>
+      }
+      if (field.mask) {
+        const dots = (theme.ascii ? '*' : '•').repeat(Math.min(text.length, Math.max(1, width - 16)))
+        return <Text color={theme.color.text}>{dots}{caret}<Text color={theme.color.dim}>{`  ${text.length} chars`}</Text></Text>
       }
       const flat = text.replace(/\n/g, field.multiline ? (theme.ascii ? ' / ' : ' ⏎ ') : ' ')
       const room = width - 2

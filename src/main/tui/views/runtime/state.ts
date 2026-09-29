@@ -18,7 +18,7 @@ export const RUNTIME_TABS = [
   { id: 'network', title: 'Network', description: 'Mesh, LAN, WebSocket; m mesh on/off, s server start/stop' },
   { id: 'compute', title: 'Compute', description: 'Container runtime and containers' },
   { id: 'mcp', title: 'MCP', description: 'MCP servers registered with the daemon' },
-  { id: 'adapters', title: 'Adapters', description: 'Channel adapters registered with the daemon' },
+  { id: 'channels', title: 'Channels', description: 'Channels (channel adapters) available to agents; connect one per agent with /channels' },
   { id: 'settings', title: 'Settings', description: 'Daemon settings (secrets redacted)' },
   { id: 'events', title: 'Events', description: 'Every agent’s live umbilical events (tail -f), filter by type, agent and loop' },
 ] as const
@@ -60,6 +60,6 @@ export function useRuntimeState(): [RuntimeState, (patch: Patch) => void] {
 export function findRuntimeTab(name: string): RuntimeTab | undefined {
   const wanted = name.trim().toLowerCase()
   if (!wanted) return undefined
-  const aliases: Record<string, RuntimeTab> = { daemon: 'status', owner: 'identity', login: 'auth', signin: 'auth', 'sign-in': 'auth', model: 'usage', mesh: 'network', containers: 'compute', umbilical: 'events', event: 'events', tracked: 'folders', dirs: 'folders', directories: 'folders', folder: 'folders' }
+  const aliases: Record<string, RuntimeTab> = { adapters: 'channels', adapter: 'channels', channel: 'channels', daemon: 'status', owner: 'identity', login: 'auth', signin: 'auth', 'sign-in': 'auth', model: 'usage', mesh: 'network', containers: 'compute', umbilical: 'events', event: 'events', tracked: 'folders', dirs: 'folders', directories: 'folders', folder: 'folders' }
   return RUNTIME_TABS.find(t => t.id === wanted)?.id ?? aliases[wanted] ?? RUNTIME_TABS.find(t => t.id.startsWith(wanted))?.id
 }

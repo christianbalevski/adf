@@ -100,3 +100,17 @@ export function previewJson(value: unknown, max = 120): string {
   try { text = typeof value === 'string' ? value : JSON.stringify(value) } catch { text = String(value) }
   return truncate(oneLine(text ?? ''), max)
 }
+
+/** Word-wrap plain text to `width` columns (no leading spaces on continuation lines). */
+export function wrapText(text: string, width: number): string[] {
+  const out: string[] = []
+  let line = ''
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (!line) { line = word; continue }
+    if (displayWidth(line) + 1 + displayWidth(word) <= width) { line += ` ${word}`; continue }
+    out.push(line)
+    line = word
+  }
+  if (line || out.length === 0) out.push(line)
+  return out
+}

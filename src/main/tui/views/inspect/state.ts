@@ -15,7 +15,7 @@ export const TABS = [
   { id: 'config', title: 'Config', description: 'Agent config; e opens it in $EDITOR and saves it back after validation' },
   { id: 'usage', title: 'Usage', description: 'Token usage by model (this agent) and this session' },
   { id: 'mcp', title: 'MCP', description: 'This agent’s MCP servers: configured, live state, recent logs' },
-  { id: 'adapters', title: 'Adapters', description: 'This agent’s channel adapters: configured and live state' },
+  { id: 'channels', title: 'Channels', description: 'This agent’s channels (Telegram, Discord, Slack, email, WhatsApp): configured and live state; /channels to add or remove' },
   { id: 'identity', title: 'Identities', description: 'The agent’s identity entries (metadata only, never values)' },
   { id: 'logs', title: 'Logs', description: 'Agent log tail with follow' },
   { id: 'tables', title: 'Tables', description: 'Local tables: list and browse rows' },
@@ -82,6 +82,6 @@ export function useInspectState(): [InspectState, (patch: Partial<Omit<InspectSt
 export function findTab(name: string): InspectTab | undefined {
   const wanted = name.trim().toLowerCase()
   if (!wanted) return undefined
-  const aliases: Record<string, InspectTab> = { umbilical: 'events', event: 'events', status: 'diag', runtime: 'diag', diagnostics: 'diag', identities: 'identity', log: 'logs', table: 'tables', db: 'tables', task: 'tasks', approvals: 'tasks', hil: 'tasks' }
+  const aliases: Record<string, InspectTab> = { adapters: 'channels', adapter: 'channels', channel: 'channels', umbilical: 'events', event: 'events', status: 'diag', runtime: 'diag', diagnostics: 'diag', identities: 'identity', log: 'logs', table: 'tables', db: 'tables', task: 'tasks', approvals: 'tasks', hil: 'tasks' }
   return (TABS.find(t => t.id === wanted)?.id) ?? aliases[wanted] ?? TABS.find(t => t.id.startsWith(wanted))?.id
 }

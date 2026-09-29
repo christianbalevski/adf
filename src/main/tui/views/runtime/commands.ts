@@ -11,7 +11,7 @@ const open = (ctx: Pick<CommandContext, 'actions' | 'state'>, tab: RuntimeTab) =
 const runtime: SlashCommand = {
   name: 'runtime',
   args: `[${RUNTIME_TABS.map(t => t.id).join('|')}]`,
-  description: 'The daemon: status, owner identity, sign-in, providers, usage, network, compute, MCP, adapters, settings, every agent’s events',
+  description: 'The daemon: status, owner identity, sign-in, providers, usage, network, compute, MCP, channels, settings, every agent’s events',
   complete: partial => RUNTIME_TABS.map(t => t.id).filter(t => t.startsWith(partial.trim())),
   run: ctx => {
     const wanted = ctx.args[0]

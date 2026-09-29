@@ -52,7 +52,7 @@ export function runtimeLines(diag: AgentRuntimeDiagnostics, loops: LoopState[] |
   out.push(plain(`  configured ${diag.ws?.configured?.length ?? 0} ${'·'} active ${diag.ws?.active?.length ?? 0}`))
   for (const conn of diag.ws?.active ?? []) out.push(...treeLines(redactSecrets(conn), 4))
   out.push(blank(), heading('Services'))
-  out.push(plain(`  MCP servers ${diag.mcp?.states?.length ?? 0} live / ${diag.mcp?.configured?.length ?? 0} configured ${'·'} adapters ${diag.adapters?.states?.length ?? 0} live / ${diag.adapters?.configured?.length ?? 0} configured`, 'muted'))
+  out.push(plain(`  MCP servers ${diag.mcp?.states?.length ?? 0} live / ${diag.mcp?.configured?.length ?? 0} configured ${'·'} channels ${diag.adapters?.states?.length ?? 0} live / ${diag.adapters?.configured?.length ?? 0} configured`, 'muted'))
   return out
 }
 
@@ -94,7 +94,7 @@ export function mcpLines(diag: AgentMcpDiagnostics): Line[] {
 }
 
 export function adapterLines(diag: AgentAdaptersDiagnostics): Line[] {
-  const out: Line[] = [heading('Live adapters')]
+  const out: Line[] = [heading('Live channels')]
   out.push(...tableLines(
     ['adapter', 'status', 'restarts', 'connected', 'error'],
     diag.states.map(s => [s.type, s.status, String(s.restartCount), stamp(s.connectedAt), s.error ?? '']),

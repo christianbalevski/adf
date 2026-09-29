@@ -171,7 +171,7 @@ Response:
 
 ## Runtime Diagnostics
 
-Diagnostics endpoints are read-only and sanitize secrets. They are intended for CLI/TUI clients, operational checks, and debugging headless runtime wiring.
+Diagnostics endpoints are read-only and sanitize secrets. They are intended for the ADF CLI and terminal app, operational checks, and debugging headless runtime wiring.
 
 ### `GET /diagnostics`
 
@@ -225,6 +225,44 @@ Returns sanitized provider registrations and how loaded agents resolve providers
   ]
 }
 ```
+
+### `POST /agents/:id/mcp/servers/:serverName/restart`
+
+Connects one configured MCP server of a running agent now, the same way the
+agent's own `mcp_restart` tool does (host or container routing, the agent's
+sealed credentials, tool discovery). Use it after `POST
+/agents/:id/mcp/servers` (the daemon connects attached servers at the next
+start otherwise) or to retry a failed server. Replies `{ agentId,
+serverName, success, toolsDiscovered, location, error?, hostDenied?,
+stderrTail? }`; `404` when the agent has no such server, `409` when the agent
+is not running here.
+
+### `POST /runtime/providers`
+
+Adds an API-key model provider for every agent on this daemon. The key goes
+to the daemon's secret store (the OS keychain, or the owner's
+passphrase-protected secret file where there is no keychain), never into the
+settings file, and is never returned. The settings entry carries
+`"apiKeyStorage": "secret-store"` and an empty `apiKey`; the daemon fills the
+key in when it resolves the provider, so agents, `/runtime/models` and
+diagnostics see an ordinary provider.
+
+```json
+{ "type": "openrouter", "name": "OpenRouter", "preset": "openrouter", "apiKey": "sk-or-…", "defaultModel": "anthropic/claude-sonnet-4" }
+```
+
+`type` is `anthropic`, `openai`, `openrouter` or `openai-compatible`
+(`baseUrl` required; `apiKey` optional, for local servers). Subscriptions
+(ChatGPT, Grok) sign in instead: `400 subscription_type`. The name is made
+unique (`OpenRouter 2`). The first provider becomes the default. Replies `201
+{ provider, defaultProviderId }` (`provider.hasApiKey`, no key), or `409
+secret_store_locked` while the secret store is locked or not set up yet (set
+up or unlock the owner identity first).
+
+### `DELETE /runtime/providers/:id`
+
+Removes the provider and deletes its stored key. The default moves to the
+next provider. `404` for an unknown id.
 
 ### `GET /runtime/auth`
 

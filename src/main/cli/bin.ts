@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // `adf`: the one executable (npm package @agentdocumentformat/cli, and
 // `npm run adf` from source).
-//   adf                                 interactive TUI (starts the daemon if needed)
+//   adf                                 the terminal app (starts the daemon if needed)
 //   adf <command> ...                   one-shot CLI (see `adf help`)
 //   adf daemon [--port N] [--host H]    run the daemon in the foreground
 //   adf daemon start|status|stop|restart|logs

@@ -115,7 +115,7 @@ Use `ADF_DAEMON_URL` or `--url` when the daemon is not on the default URL:
 ADF_DAEMON_URL=http://127.0.0.1:7390 npm run adf -- agents
 ```
 
-See [Daemon CLI](cli.md) for the full command reference.
+See [ADF CLI](cli.md) for the full command reference.
 
 ## Stop and Abort
 

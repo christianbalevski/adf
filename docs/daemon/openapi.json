@@ -1121,6 +1121,47 @@
             }
           }
         }
+      },
+      "post": {
+        "tags": ["Runtime"],
+        "summary": "Add an API-key provider; the key goes to the daemon secret store (OS keychain or the owner's passphrase file), never the settings file, and is never returned",
+        "operationId": "addRuntimeProvider",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["type"],
+                "properties": {
+                  "type": { "type": "string", "enum": ["anthropic", "openai", "openrouter", "openai-compatible"] },
+                  "name": { "type": "string" },
+                  "baseUrl": { "type": "string", "description": "Required for openai-compatible" },
+                  "defaultModel": { "type": "string" },
+                  "preset": { "type": "string", "description": "Provider catalog key (e.g. groq)" },
+                  "apiKey": { "type": "string", "description": "Required except for openai-compatible (local servers)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "`{ provider, defaultProviderId }`; provider carries `hasApiKey`, never the key", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "400": { "description": "codes `bad_type`, `subscription_type`, `api_key_required`, `base_url_required`, `bad_base_url`" },
+          "409": { "description": "code `secret_store_locked`: set up or unlock the owner identity first" }
+        }
+      }
+    },
+    "/runtime/providers/{id}": {
+      "delete": {
+        "tags": ["Runtime"],
+        "summary": "Remove a provider and its stored key",
+        "operationId": "removeRuntimeProvider",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "`{ removed, providers }`", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "404": { "description": "Unknown provider" }
+        }
       }
     },
     "/runtime/auth": {
@@ -2734,6 +2775,22 @@
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/mcp/servers/{serverName}/restart": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Connect one configured MCP server of a running agent now (after an attach, or to retry)",
+        "operationId": "restartAgentMcpServer",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "serverName", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "`{ agentId, serverName, success, toolsDiscovered, location, error?, hostDenied?, stderrTail? }`", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "404": { "description": "Unknown agent or server" },
+          "409": { "description": "The agent is not running here" }
         }
       }
     },

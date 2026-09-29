@@ -152,6 +152,7 @@ Each provider entry has this shape:
 | `params` | No | Extra provider parameters as string key/value pairs |
 | `requestDelayMs` | No | Delay before each LLM request |
 | `credentialStorage` | No | `app` for settings-file credentials or `agent` for per-ADF credentials |
+| `apiKeyStorage` | No | `secret-store`: the key lives in the daemon's secret store (OS keychain or the owner's passphrase file), not in this file; `apiKey` stays empty. Set by `POST /runtime/providers` (the terminal app's `/provider add`) |
 
 For `chatgpt-subscription`, use the auth endpoints instead of an API key:
 
@@ -268,6 +269,6 @@ Settings updates are written back to the daemon settings JSON file. Some setting
 
 ## Secret Handling
 
-If you write the settings file manually, any `apiKey` or `env` values you put there are stored as plain JSON. Protect the file with normal filesystem permissions, or store credentials per agent when that is the intended deployment model.
+Providers added through the daemon (`POST /runtime/providers`, `/provider add` in the terminal app) keep their key in the daemon's secret store, never in this file. If you write the settings file manually, any `apiKey` or `env` values you put there are stored as plain JSON. Protect the file with normal filesystem permissions, or store credentials per agent when that is the intended deployment model.
 
 For headless deployments, prefer a dedicated daemon settings file rather than sharing a personal Studio settings file.

@@ -7,7 +7,7 @@ import { TASK_FILTERS, type TaskFilter } from './tasks'
 const inspect: SlashCommand = {
   name: 'inspect',
   args: `[${TABS.map(t => t.id).join('|')}]`,
-  description: 'Inspect the selected agent: status, config, usage, MCP, adapters, identities, logs, tables, its events',
+  description: 'Inspect the selected agent: status, config, usage, MCP, channels, identities, logs, tables, its events',
   complete: partial => TABS.map(t => t.id).filter(t => t.startsWith(partial.trim())),
   run: ctx => {
     const wanted = ctx.args[0]

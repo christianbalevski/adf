@@ -18,7 +18,7 @@ import {
   type Line,
 } from '../../views/inspect/format'
 
-export type ReportKind = 'status' | 'usage' | 'providers' | 'auth' | 'network' | 'settings' | 'compute' | 'mcp' | 'adapters'
+export type ReportKind = 'status' | 'usage' | 'providers' | 'auth' | 'network' | 'settings' | 'compute' | 'mcp' | 'channels'
 
 export interface ReportResult {
   data: unknown
@@ -166,7 +166,7 @@ export const REPORTS: Record<ReportKind, Report> = {
       ).map(indent))
       lines.push(blank(), heading('Sign in or out'))
       lines.push(indent(plain('Enter opens the sign-in dialog · /login chatgpt · /login grok · /logout <chatgpt|grok>', 'accent')))
-      lines.push(indent(plain('Outside the TUI: npm run adf -- auth login <chatgpt|grok>', 'muted')))
+      lines.push(indent(plain('From a shell: adf auth login <chatgpt|grok>', 'muted')))
       lines.push(indent(plain('API keys: Studio settings, stored by the daemon (never shown here).', 'muted')))
       return { data: redactSecrets(d), lines }
     },
@@ -236,12 +236,12 @@ export const REPORTS: Record<ReportKind, Report> = {
     },
   },
 
-  adapters: {
-    title: 'Adapters',
+  channels: {
+    title: 'Channels',
     async load(client) {
       const d = redactSecrets(await client.runtimeAdapters())
-      const lines: Line[] = [heading('Channel adapters registered with the daemon'), ...treeLines(d, 2)]
-      lines.push(blank(), plain('Each agent’s own adapter state: Inspect › Adapters (5).', 'muted'))
+      const lines: Line[] = [heading('Channels (channel adapters) available to agents'), ...treeLines(d, 2)]
+      lines.push(blank(), plain('Each agent’s own channels and their live state: Inspect › Channels (5); /channels adds one.', 'muted'))
       return { data: d, lines }
     },
   },

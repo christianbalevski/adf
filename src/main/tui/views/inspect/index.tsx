@@ -50,7 +50,7 @@ function InspectView({ width: paneWidth, height, focused }: ViewProps) {
       case 'diag': body = <RuntimeTab key={agentId} {...props} />; break
       case 'usage': body = <UsageTab key={agentId} {...props} />; break
       case 'mcp': body = <McpTab key={agentId} {...props} />; break
-      case 'adapters': body = <AdaptersTab key={agentId} {...props} />; break
+      case 'channels': body = <AdaptersTab key={agentId} {...props} />; break
       case 'identity': body = <IdentityTab key={agentId} {...props} />; break
       case 'logs': body = <LogsTab key={agentId} {...props} />; break
       case 'tables': body = <TablesTab key={agentId} {...props} />; break

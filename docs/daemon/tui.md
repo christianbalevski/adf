@@ -1,6 +1,6 @@
-# ADF TUI
+# Terminal app
 
-The ADF TUI is an interactive terminal client for the [daemon](index.md). It
+The ADF terminal app (`adf` with no command) is an interactive terminal client for the [daemon](index.md). It
 shows your whole fleet at once: every loaded agent, each agent's loops, their
 live state, pending approvals and questions, and the umbilical event stream.
 From it you set up your owner identity, create agents, chat with any loop of
@@ -9,7 +9,7 @@ files, create, schedule and manage loops, and look under the hood of one
 agent (Inspect) or of the daemon itself (Runtime).
 
 It is a client like the [CLI](cli.md): it talks to the daemon's
-[HTTP API](http-api.md) and `/events` stream. Quitting the TUI leaves every
+[HTTP API](http-api.md) and `/events` stream. Quitting the app leaves every
 agent running in the daemon.
 
 ## Loops
@@ -31,7 +31,7 @@ loop), when a **timer** whose `loop` targets it fires, or when a **trigger
 target** with that `loop` matches. A timer on a loop is how you get "run this
 side loop on a recurring basis".
 
-The TUI treats loops as first class everywhere:
+The app treats loops as first class everywhere:
 
 - The sidebar tree lists every agent with its loops, each with a running,
   idle or off marker and its next scheduled run (`in 1h`).
@@ -64,7 +64,7 @@ From the prompt the same thing is `/loop new consolidator` (template),
 ## Launch
 
 ```bash
-adf                      # the npm package: opens the TUI
+adf                      # the npm package: opens the app
 npm run adf              # from a source checkout: same
 npm run adf -- tui       # same
 npm run tui              # same
@@ -72,10 +72,10 @@ npm run adf -- --view loops --agent agent-1 --loop consolidator
 ```
 
 When no daemon answers at a local daemon URL, `adf` starts one in the
-background first (`Starting the ADF daemon…`) and then opens the TUI.
-Quitting the TUI leaves it running (`adf daemon stop` stops it); see
+background first (`Starting the ADF daemon…`) and then opens the app.
+Quitting the app leaves it running (`adf daemon stop` stops it); see
 [Background daemon](cli.md#background-daemon). `--no-daemon` or
-`ADF_NO_AUTOSTART=1` skip that: the TUI then shows the daemon as offline
+`ADF_NO_AUTOSTART=1` skip that: the app then shows the daemon as offline
 and how to start it.
 
 | Option | Description |
@@ -106,9 +106,9 @@ and how to start it.
 | `ADF_TUI_CLIPBOARD=osc52` | Copy only through the terminal (OSC 52), not pbcopy / clip / wl-copy / xclip (WSL, containers, nested sessions; over SSH OSC 52 is used anyway) |
 | `ADF_TUI_KITTY=0` | Same as `--no-kitty` |
 | `ADF_TUI_SHIFT_ENTER=1` | Show `Shift+Enter` in the hints from the start (your terminal sends it through a keybinding) |
-| `ADF_TUI_PREFS=<path>` | Where the sidebar and mouse choices are kept (default `<config dir>/adf-studio/tui-prefs.json`; `off` keeps them for the session only) |
+| `ADF_TUI_PREFS=<path>` | Where the sidebar and mouse choices and the welcome count are kept (default `<config dir>/adf-studio/tui-prefs.json`; `off` keeps them for the session only) |
 
-The TUI needs a terminal. When stdin or stdout is not a TTY (a pipe, a CI
+The app needs a terminal. When stdin or stdout is not a TTY (a pipe, a CI
 log), it prints a hint to use the one-shot CLI commands and exits with code 1.
 Every other `npm run adf -- <command>` is the unchanged one-shot [CLI](cli.md).
 
@@ -123,7 +123,7 @@ Every other `npm run adf -- <command>` is the unchanged one-shot [CLI](cli.md).
    ○ ↻researcher           │  ● We keep v2 and add a since cursor.
    ● agent-2 idle          │  ✓ fs_read {"path":"notes/api.md"}
    ○ ↻main                 │  │ ↻ from loop consolidator · inter-loop message
-                           │  › hello from the TUI
+                           │  › hello from the terminal
                            │  ● Noted: "hello from the T
                            │ ╭───────────────────────────────────────────────────────────────────────╮
                            │ │ ! agent-1 wants to run msg_send                                       │
@@ -170,7 +170,7 @@ Every other `npm run adf -- <command>` is the unchanged one-shot [CLI](cli.md).
   default, `Esc` then a digit), prompt history, `Tab`, `Ctrl+K`.
 
 Nothing happens silently. Every assistant message, thinking block, tool call,
-approval, question, wake and notice is shown. Every action the TUI takes
+approval, question, wake and notice is shown. Every action the app takes
 (reconnect, resync, refetch, a daemon call) is reported in a toast or in the
 transcript of the loop it concerns.
 
@@ -182,12 +182,12 @@ transcript of the loop it concerns.
 | `2` | **Chat** | One conversation per agent › loop. Loop tabs, a virtualized transcript (history pages load as you scroll up; live events stream in), collapsible thinking and tool calls, inter-loop messages, wake markers, and an approval/question card. A turn footer shows elapsed time, tokens and the model. |
 | `3` | **Files** | The agent document, mind and files as a tree with a viewer (syntax colouring, search, hex for binaries). Edit in your `$EDITOR` with a diff confirm and a concurrent-change check. Create, move, delete, protection, authorized. Read-only Inbox, Outbox and Meta tabs. A badge names the loop that last wrote a file. |
 | `4` | **Loops** | Tabs: **Loops** (every loop with status, messages, tools, model, flags, what wakes it; create from templates, edit, enable/disable, send, schedule, clear, delete), **Timers** (this agent's or every agent's timers, with the loop each one wakes), **Triggers** (all trigger types, the loop each target wakes, enable/disable, edit targets), **History** (a loop's persisted entries with tokens, filters and paging). |
-| `5` | **Inspect** | The selected agent only (the tab bar reads `agent-1 › …`). Tabs: **Status** (the website first when the agent serves one, then state, loops, triggers, WebSocket), **Config** (tree or JSON; edit in `$EDITOR` with schema validation and a confirm), **Usage** (by model), **MCP**, **Adapters**, **Identities** (metadata only), **Logs**, **Tables**, **Events** (this agent's live umbilical events). Secrets are redacted everywhere. |
-| `6` | **Runtime** | The daemon, across every agent (`daemon › …`). Tabs: **Status** (health, version, uptime, pid, every agent's loops), **Identity** (owner identity; `Enter` opens its dialog), **Sign-in** (ChatGPT / Grok and API-key providers; `Enter` signs in), **Providers** (and which agents use them), **Usage** (all agents, by model), **Network** (mesh, the web server, agent websites, LAN, WebSocket; `m` mesh on/off (asks), `s` web server start / stop (stopping asks), `R` restart (asks)), **Compute** (container runtime and containers), **MCP** and **Adapters** (registered with the daemon), **Settings** (redacted), **Events** (every agent's live umbilical events). |
+| `5` | **Inspect** | The selected agent only (the tab bar reads `agent-1 › …`). Tabs: **Status** (the website first when the agent serves one, then state, loops, triggers, WebSocket), **Config** (tree or JSON; edit in `$EDITOR` with schema validation and a confirm), **Usage** (by model), **MCP**, **Channels** (Telegram, Discord, Slack, email, WhatsApp: configured and live; `/channels` adds and removes), **Identities** (metadata only), **Logs**, **Tables**, **Events** (this agent's live umbilical events). Secrets are redacted everywhere. |
+| `6` | **Runtime** | The daemon, across every agent (`daemon › …`). Tabs: **Status** (health, version, uptime, pid, every agent's loops), **Identity** (owner identity; `Enter` opens its dialog), **Sign-in** (ChatGPT / Grok and API-key providers; `Enter` signs in), **Providers** (and which agents use them), **Usage** (all agents, by model), **Network** (mesh, the web server, agent websites, LAN, WebSocket; `m` mesh on/off (asks), `s` web server start / stop (stopping asks), `R` restart (asks)), **Compute** (container runtime and containers), **MCP** and **Channels** (available to agents), **Settings** (redacted), **Events** (every agent's live umbilical events). |
 
 ## Keys
 
-The same list is in the TUI: press `?` or type `/help`. `Ctrl+K` searches all
+The same list is in the app: press `?` or type `/help`. `Ctrl+K` searches all
 of it.
 
 ### Everywhere
@@ -360,6 +360,8 @@ The same legend is in `?` / `/help`.
 | `←`, `→` (`[`, `]`) | Tabs |
 | Status: `w`, `W` | Open the agent's website · copy its URL |
 | Config: `e` | Edit in `$EDITOR` (validated, changed keys confirmed; also `/config edit`) |
+| MCP: `a` · `m`, `Enter` | Add a server · manage them (restart, credentials, tools, logs, remove) |
+| Channels: `a`, `m`, `Enter` | Channels: add, remove |
 | Logs: `f` · Tables: `Enter`, `n`, `p` | Follow · row detail, next / previous page |
 | Events | As in Runtime › Events, locked to this agent (`l` still narrows to the selected loop) |
 | `r` | Reload |
@@ -390,13 +392,17 @@ sent to an agent.
 | Command | Description |
 |---------|-------------|
 | `/help` (`/?`) | Keys, commands and what loops are |
-| `/quit` (`/exit`, `/q`) | Leave the TUI (agents keep running) |
+| `/welcome` | What ADF is, and the getting-started checklist (see [Welcome](#welcome)) |
+| `/channels [add [telegram\|discord\|slack\|email\|whatsapp] \| remove <channel>]` | The selected agent's channels: state, add one (credentials sealed in the agent), remove one (asks). See [Channels](#channels) |
+| `/mcp [add [name \| npm:pkg \| python:pkg \| url] \| restart <name> \| logs <name> \| remove <name>]` | The selected agent's MCP servers: state, add (catalog, npm, Python, remote URL), restart, credentials, tools on/off, logs, remove (asks). See [MCP servers](#mcp-servers) |
+| `/provider [add [preset] \| list \| remove <id>]` | Connect a model provider with an API key (kept in the daemon's secret store), list them (Runtime › Providers), remove one (asks). Subscriptions: `/login`. See [Model providers](#model-providers) |
+| `/quit` (`/exit`, `/q`) | Leave the app (agents keep running) |
 | `/view <fleet\|chat\|files\|loops\|inspect\|runtime>` | Switch the main pane |
 | `/agent <handle\|id> [loop]` (`/a`) | Select an agent, and optionally one of its loops |
 | `/refresh` (`/r`) | Re-read agents, loops and approvals |
 | `/theme [name\|next]` | Colour theme (no argument opens the picker) |
 | `/url [daemon-url] [--token <token>]` | Show the daemon URL, or switch to another daemon live (it is health-checked first). The current token is only sent to the same origin; give another daemon's with `--token` or `ADF_DAEMON_TOKEN` |
-| `/runtime [tab]` | Open the Runtime view (on a tab: `status`, `identity`, `auth`, `providers`, `usage`, `network`, `compute`, `mcp`, `adapters`, `settings`, `events`) |
+| `/runtime [tab]` | Open the Runtime view (on a tab: `status`, `identity`, `auth`, `providers`, `usage`, `network`, `compute`, `mcp`, `channels`, `settings`, `events`) |
 | `/status`, `/usage`, `/providers`, `/network`, `/compute`, `/settings` | Open that Runtime tab (`r` refresh; secrets redacted) |
 | `/auth` | Provider sign-in dialog: ChatGPT and Grok status, sign in, sign out |
 | `/login [chatgpt\|grok]`, `/logout <chatgpt\|grok>` | Sign the daemon in (browser / device code) or out (asks) |
@@ -435,7 +441,7 @@ sent to an agent.
 | `/loops`, `/timers [all]`, `/triggers`, `/history [loop]` | Open the Loops view on that tab |
 | `/timer add [--loop <name>] \| edit <id> \| rm <id>` | Create, edit or delete a timer (a timer with a loop runs that loop on a schedule) |
 | `/events [types…] [--agent] [--loop] [--all]` | Every agent's live umbilical events (Runtime › Events), e.g. `/events tool. -turn.delta --loop` |
-| `/inspect [tab]` | Inspect the selected agent on a tab (`status`, `config`, `usage`, `mcp`, `adapters`, `identity`, `logs`, `tables`, `tasks`, `events`) |
+| `/inspect [tab]` | Inspect the selected agent on a tab (`status`, `config`, `usage`, `mcp`, `channels`, `identity`, `logs`, `tables`, `tasks`, `events`) |
 | `/tasks [pending\|active\|all]` | Inspect › Tasks with that filter (see [Tasks](#tasks)) |
 
 ## Command palette
@@ -454,7 +460,7 @@ recently run entries come first.
 `Enter`, and `Alt+Enter`, `Ctrl+J` or a trailing `\` everywhere. Most
 terminals send the same `\r` for both, unless the program turns on the
 [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/).
-The TUI asks the terminal at start (`CSI ? u`) and, when it answers, turns on
+The app asks the terminal at start (`CSI ? u`) and, when it answers, turns on
 its "disambiguate" level; the terminal then sends Shift+Enter as `CSI 13;2 u`.
 The mode is switched off again on quit, on a crash and while an editor has the
 terminal. The prompt hint says `Shift+Enter newline` once it works, else
@@ -470,7 +476,7 @@ terminal you are in.
 | macOS Terminal | Not available: `Option+Enter` (with "Use Option as Meta key") or `Ctrl+J` |
 | tmux (inside any of these) | `set -s extended-keys on` and `set -as terminal-features 'xterm*:extkeys'` in `~/.tmux.conf` |
 
-The keybindings send `CSI 13;2 u` themselves, which the TUI reads as
+The keybindings send `CSI 13;2 u` themselves, which the app reads as
 Shift+Enter whether the protocol is on or not. With the protocol on, the other
 keys (`Esc`, `Ctrl+C`, `Ctrl+K`, `Shift+Tab`, `Alt+digit`, arrows, paste) work
 as before. `--no-kitty` or `ADF_TUI_KITTY=0` never turns it on.
@@ -478,7 +484,7 @@ as before. `--no-kitty` or `ADF_TUI_KITTY=0` never turns it on.
 ### Mouse
 
 **Mouse mode is the default** (mouse reporting: buttons, drags and the
-wheel, never bare pointer motion). The TUI does its own text selection, so
+wheel, never bare pointer motion). The app does its own text selection, so
 copy and paste keep working without a modifier:
 
 - **Drag** highlights text (reverse video) inside the pane where the drag
@@ -509,20 +515,20 @@ reads `pbpaste`, `Get-Clipboard` or `wl-paste` / `xclip -o`.
 **`/mouse off`** (`--no-mouse`, `ADF_TUI_MOUSE=0`; remembered) hands the
 mouse back to the terminal: its own drag-select, copy (`Ctrl+C` /
 `Ctrl+Shift+C`; Windows Terminal and VS Code copy on `Ctrl+C` with a
-selection and do not pass the key on) and right-click paste. The TUI then
+selection and do not pass the key on) and right-click paste. The app then
 turns on alternate scroll mode (`DECSET 1007`) in the alternate screen: the
 wheel sends `↑`/`↓`, so it scrolls the focused pane; in Chat a burst of arrows
 scrolls the transcript even while the prompt has text, and never moves the
 item selection (a single `↑` still selects or edits). No clicks to expand.
 
-Both modes are off whenever the TUI does not own the terminal (quit, crash,
+Both modes are off whenever the app does not own the terminal (quit, crash,
 `$EDITOR`).
 
 ## Agent websites
 
 Agents can serve web pages and APIs through the daemon's **web server** (the
 mesh HTTP server, default `127.0.0.1:7295`; it takes the next free port when
-that one is busy, and the TUI always shows the port it is bound to). An agent
+that one is busy, and the app always shows the port it is bound to). An agent
 with `serving.public` (its `public/` folder, `index.html` by default),
 `serving.shared` patterns or `serving.api` routes (lambdas, WebSocket too) is
 at `http://<host>:<port>/agents/<handle>/`. Agents that serve nothing show
@@ -544,7 +550,7 @@ it`, and `w` starts it (no confirm) and then opens the site. The header shows
 `● web :7295` or `○ web off`; `w` on the [tab bar](#tab-bar), `/web on|off`,
 the palette ("Start web server", "Stop web server…") and Runtime › Network `s`
 turn it on or off. Stopping always asks: it takes every agent site and API
-offline and stops mesh delivery over HTTP. The TUI re-reads the server state
+offline and stops mesh delivery over HTTP. The app re-reads the server state
 on connect, when agents load or their config changes, and every 20 seconds
 (Studio or the CLI may change it).
 
@@ -552,7 +558,7 @@ on connect, when agents load or their config changes, and every 20 seconds
 
 Your **owner identity** proves the agents are yours. It is a 12-word seed
 phrase: the same words restore it anywhere, in the terminal or in ADF Studio.
-New agents are sealed under it, so the TUI sets it up before the first
+New agents are sealed under it, so the app sets it up before the first
 `/new`.
 
 On first run (no agents, no identity) the Fleet view explains this and offers
@@ -579,7 +585,7 @@ case are ignored) and shows the word count while you type, masked. When the
 machine has no OS keychain, a new identity file takes a passphrase of 8+
 characters, typed twice.
 
-Create, restore and unlock only work when the TUI talks to a daemon on the
+Create, restore and unlock only work when the app talks to a daemon on the
 same machine (loopback); against a remote daemon the dialog says to run it
 there.
 
@@ -588,6 +594,123 @@ there.
 is shown), optional provider and model overrides, and start now (default
 yes). The agent is created in the daemon's agents folder, sealed and
 reviewed, then selected with its chat open.
+
+## Welcome
+
+The first three times the app starts, a welcome opens over it: what ADF
+agents are, and a getting-started checklist. It never blocks: `Esc` closes
+it, `d` hides it for good, and `/welcome` (or the palette) brings it back.
+
+```text
+ Welcome to ADF
+ ADF agents are a new kind of agent: portable and self-contained. Each is a
+ single .adf file that carries its own mind, memory, files and history. Move it
+ anywhere and it picks up where it left off.
+ Agents work in their own virtual files. They only touch your machine if you
+ give them host access (compute_exec) or MCP tools that do.
+
+ Get started
+ › ○ Set up your identity   /identity
+   ○ Connect a model        /login chatgpt · /provider add
+   ○ Create an agent        /new
+   ○ Connect a channel      /channels add  Telegram · Discord · Slack · Email · WhatsApp
+   ○ Give it tasks          chat with it, or schedule a loop  /loop new
+
+ Enter start next step · ↑/↓ pick · d don't show again · Esc close
+```
+
+Steps tick themselves (`✓`) from the daemon: the owner identity is ready
+(the step only shows while it is not), a subscription is signed in or a
+provider has a key, an agent is loaded, an agent has a channel, an agent has
+an inner loop, a timer or a conversation. `Enter` runs the selected step's
+command (the first open one is selected).
+
+## Channels
+
+Channels bring outside messages into an agent: Telegram, Discord, Slack,
+email and WhatsApp (channel adapters in the API). As in ADF Studio (Settings
+→ Channels), the channel types are built in and everything else is per
+agent: the credentials live in that agent's identity store, sealed under your
+owner identity, and switching a channel on writes the agent's config.
+
+`/channels` lists the selected agent's channels with their live state
+(`● connected`, `○ connecting`, `✗ error`, `off`). `Enter` opens one (its
+state and error, `e` new credentials, `d` remove, `i` Inspect › Channels) or
+starts adding it; `a` adds, `d` removes (asks; its stored credentials are
+deleted). `/channels add telegram` goes straight to the form:
+
+1. The steps from Studio's setup guide say where the credentials come from
+   (Telegram: create a bot with @BotFather and paste its token).
+2. Paste each credential. It shows as dots with its length, never as text.
+   Obvious mistakes (a token of the wrong shape, a Slack token in the other
+   field) are caught before anything is sent.
+3. `Enter` stores the credentials in the agent, then switches the channel on.
+   The dialog then shows the channel coming up (`connecting` → `connected`,
+   or the adapter's error). A stopped agent says `/start <agent>` brings it
+   up.
+
+Without a ready owner identity the identity dialog opens first; the channel
+setup follows once it is ready. WhatsApp needs no credentials: `Enter`
+switches it on, and the phone pairs by QR code. The app cannot draw the QR:
+open `imported/whatsapp/pairing-qr.png` from the agent's files (or use ADF
+Studio, which shows it) and scan it in WhatsApp → Linked Devices.
+
+## MCP servers
+
+`/mcp` lists the selected agent's MCP servers with their live state (`●
+connected`, `✗ error`, `not running`), tool count and where each runs.
+`Enter` opens one: its state and error, source, where it runs, its tools
+(`t`: `Space` turns a tool on or off), credential names (`e` replaces the
+values), recent logs (`l`: all of them), `r` restart, `d` remove (asks; its
+stored credentials are deleted). Inspect › MCP has the same: `a` adds, `m`
+manages.
+
+`a` (or `/mcp add`) adds one, from:
+
+- **the catalog**, ADF Studio's curated list (`/` filters: `github`,
+  `search`, `data`, …), or straight away with `/mcp add brave-search`;
+- **an npm package** (`/mcp add npm:@scope/server`);
+- **a Python package** run with uvx (`/mcp add python:mcp-server-fetch`);
+- **a remote server** by URL (`/mcp add https://…/mcp`), with an optional
+  token.
+
+The form asks for a name (its tools are `mcp_<name>_<tool>`), arguments when
+the server takes them, where it runs, and the keys it needs, as dots. Keys
+are stored in the agent's identity store, sealed under your owner identity
+(the identity dialog opens first when it is not ready), never in its config.
+Where it runs: a container by default (the shared one, or the agent's own
+when it has one), isolated from your machine; the host only for agents with
+host access, for servers that need your files, apps or login state.
+
+Then each step shows as it happens: installing the package on the daemon
+(it can take a minute), sealing the keys, attaching the server, connecting
+it. The last step shows the tools found, or the error with the server's
+last stderr lines (`l` for all its logs, `r` to retry). New tools start
+restricted: the agent asks before using them. A stopped agent connects the
+server when it starts.
+
+Remote servers that sign in with OAuth in the browser, and servers with a
+one-time sign-in step (they write a credential file), are set up in ADF
+Studio (Settings → MCP): the daemon cannot run that browser flow yet. The
+dialog says so instead of adding a half-working server.
+
+## Model providers
+
+`/provider add` (or the welcome's "Connect a model", or the palette) lists
+every provider Studio knows: subscriptions first (ChatGPT, Grok: they open
+the sign-in dialog), then APIs (Anthropic, OpenAI, OpenRouter, Gemini, Groq,
+…), local servers (Ollama, LM Studio, …) and any OpenAI-compatible URL. `/`
+filters. The form asks for a name (default: the provider's), the base URL
+when it needs one, the API key (dots, with where to get one) and an optional
+default model.
+
+The key is sent once to the daemon, which keeps it in its secret store: the
+OS keychain, or the owner's passphrase-protected secret file on machines
+without one. It is never written to the settings file, never shown again and
+never returned by the daemon (`hasApiKey` only). When that store is locked
+the identity dialog opens first. The new provider shows up in `/model`'s
+picker (`m` opens it) and in the new-agent wizard. `/provider list` opens
+Runtime › Providers, `/provider remove <id>` removes one and its key (asks).
 
 ## Provider sign-in
 
@@ -599,7 +722,7 @@ from ADF Studio's; agents need no changes.
 
 - **ChatGPT** opens your browser. The dialog also shows the URL (`c` copies
   it) in case the browser does not open, and waits until you finish there.
-  When the daemon runs on another machine, the TUI receives the browser's
+  When the daemon runs on another machine, the app receives the browser's
   callback itself and hands it to the daemon.
 - **Grok** shows a device code in large type with its URL; approve it in any
   browser.
@@ -662,7 +785,7 @@ exists, agents found, and agents loaded. `a` adds, `d` removes, `r` rescans.
 
 ## Mock mode
 
-`npm run tui:mock` runs the TUI against an in-memory mock daemon, with no real
+`npm run tui:mock` runs the app against an in-memory mock daemon, with no real
 daemon or LLM provider needed. It has two agents (`agent-1` with the loops
 `main`, `consolidator` and `researcher`, and `agent-2`), a pending approval,
 files, timers, triggers and scripted streaming replies, and the consolidator
@@ -677,16 +800,22 @@ The mock owner identity is ready by default. Try first run with
 In the mock, `agent-2` runs on a ChatGPT subscription that is not signed in;
 `/login` finishes by itself after a few seconds and never opens a browser.
 
+The welcome opens on the first three launches (the mock keeps them in your
+usual prefs file; `ADF_TUI_PREFS=off` forgets them). `/channels add` works
+against a fake channel that comes up after a second; a Telegram token
+containing `revoked` ends in an error. `/provider add` keeps keys in the
+mock's memory.
+
 ## Windows
 
 Windows Terminal with PowerShell or Git Bash is the primary target. Two
 things differ there:
 
-- The TUI leaves the bottom terminal row unused. Windows consoles scroll when
+- The app leaves the bottom terminal row unused. Windows consoles scroll when
   the bottom-right cell is written, so a frame that fills the screen forces a
   full clear on every update. Set `ADF_TUI_FULL_HEIGHT=1` to use the row
   anyway.
-- On every platform the rightmost column stays unused. The TUI redraws only
+- On every platform the rightmost column stays unused. The app redraws only
   the lines that changed, and clearing to the end of a full-width line would
   erase its last character.
 
@@ -703,6 +832,14 @@ Other notes:
 
 ## Known gaps
 
+- **MCP OAuth sign-in:** remote MCP servers that sign in with OAuth, and
+  servers with a one-time sign-in step, are set up in ADF Studio.
+- **WhatsApp pairing QR:** the app points at the QR image in the agent's
+  files; ADF Studio shows it.
+- **Provider keys added here** live in the daemon's secret store; ADF Studio
+  lists the provider but does not read that store, so Studio-hosted agents
+  on it have no key (daemon-hosted agents do).
+
 - **Seed phrase backup:** the daemon shows the 12 words once, at creation.
   It cannot reveal them again; ADF Studio on the same machine (keychain
   storage) can, under Settings → Back up seed phrase.
@@ -718,7 +855,7 @@ Other notes:
 - **Theme choice** from `/theme` lasts for the session only; persist it with
   `--theme` or `ADF_TUI_THEME`.
 - **Older daemons:** against a daemon from before loop-aware asks and timers,
-  the TUI falls back gracefully:
+  the app falls back gracefully:
   - An ask is filed under the loop whose transcript shows it.
   - Moving a timer to another loop re-creates it with a new id.
   - `/compact` reports the missing endpoint.

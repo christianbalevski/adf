@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { mcpConnectorFor } from './mcp-connectors'
 import { existsSync, readdirSync, realpathSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
@@ -1939,6 +1940,22 @@ export class RuntimeService extends EventEmitter {
     const result = await this.setAgentConfig(managed.id, nextConfig)
     const deletedCredentials = managed.agent.workspace.deleteIdentityByPrefix(`adapter:${adapterType}:`)
     return { agentId: managed.id, adapterType, success: true, deletedCredentials, config: result.config }
+  }
+
+  /**
+   * (Re)connect one configured MCP server of a running agent now: after an
+   * attach (the daemon does not reconcile MCP servers on config change), or
+   * to restart a failed one. Same path as the agent's mcp_restart tool.
+   */
+  async restartAgentMcpServer(agentId: string, serverName: string): Promise<{ agentId: string; serverName: string; success: boolean; toolsDiscovered: number; location?: string; error?: string; hostDenied?: string; stderrTail?: string[] }> {
+    const managed = this.requireAgent(agentId)
+    if (!managed.config.mcp?.servers?.some(server => server.name === serverName)) {
+      throw new RuntimeLoopError(`Agent has no MCP server "${serverName}".`, 404)
+    }
+    const connect = mcpConnectorFor(managed.agent.mcpManager)
+    if (!connect) throw new RuntimeLoopError('The agent is not running here: start it, and its MCP servers connect.', 409)
+    const outcome = await connect(serverName, 'Owner restart')
+    return { agentId: managed.id, serverName, success: outcome.toolsDiscovered > 0 && !outcome.error, ...outcome }
   }
 
   getAgentLogs(agentId: string, opts: RuntimeAgentLogsOptions = {}): AdfLogEntry[] {

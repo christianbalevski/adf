@@ -116,6 +116,8 @@ const ownerIdentity = new DaemonIdentity({
   encKey: daemonEncKey,
   bootPassphrase: readBootPassphrase((path) => readFileSync(path, 'utf-8')),
 })
+// Provider API keys added through the daemon live in the same secret store.
+settings.setProviderKeyVault(ownerIdentity.providerKeys)
 {
   const initial = ownerIdentity.refresh()
   console.log(`[ADF Daemon] Owner identity: ${initial.status}${initial.ownerDid ? ` (${initial.ownerDid})` : ''}, ${initial.storage} storage — ${initial.message}`)
@@ -245,6 +247,7 @@ const daemon = new DaemonHost({
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
   computeService: podmanService,
   settingsStore: settings,
+  providerKeys: ownerIdentity.providerKeys,
   eventBus,
   wsService: wsConnectionManager,
   networkService: {

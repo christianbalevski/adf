@@ -83,6 +83,8 @@ export function IdentityDialog({ overlay, close, width }: OverlayProps) {
     close()
     if (ready?.status === 'ready' && props.then === NEW_AGENT_OVERLAY) {
       store.actions.pushOverlay({ kind: NEW_AGENT_OVERLAY, props: props.name ? { name: props.name } : {} })
+    } else if (ready?.status === 'ready' && props.then) {
+      store.actions.pushOverlay({ kind: props.then, props: { ...(props.thenProps ?? {}) } })
     }
   }
 

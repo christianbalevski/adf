@@ -4,14 +4,14 @@ This guide starts the ADF daemon, the headless ADF runtime that serves an API, t
 
 ## Install from npm
 
-The quickest route, with no source checkout and no Electron: the [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli) package ships the daemon, the CLI and the TUI as one `adf` command. It needs Node.js 22 or newer. Native modules (SQLite, the OS keychain) install from prebuilt binaries for Windows x64, macOS (arm64/x64) and Linux (x64/arm64, glibc), so no compiler is needed.
+The quickest route, with no source checkout and no Electron: the [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli) package ships the daemon and the ADF CLI, terminal app included, as one `adf` command. It needs Node.js 22 or newer. Native modules (SQLite, the OS keychain) install from prebuilt binaries for Windows x64, macOS (arm64/x64) and Linux (x64/arm64, glibc), so no compiler is needed.
 
 ```bash
 npm i -g @agentdocumentformat/cli
 adf
 ```
 
-That is all: `adf` opens the TUI and, when no daemon answers at the local daemon URL, starts one in the background first (a `Starting the ADF daemon…` line, then the TUI). Quitting the TUI leaves the daemon and its agents running. One-shot commands do the same:
+That is all: `adf` opens the terminal app and, when no daemon answers at the local daemon URL, starts one in the background first (a `Starting the ADF daemon…` line, then the terminal app). Quitting it leaves the daemon and its agents running. One-shot commands do the same:
 
 ```bash
 adf agents                 # one-shot CLI; `adf help` lists every command
