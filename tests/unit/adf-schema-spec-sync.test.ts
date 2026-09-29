@@ -1,11 +1,48 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import Database from 'better-sqlite3'
-import { AdfDatabase, SCHEMA_SQL } from '../../src/main/adf/adf-database'
+import { AdfDatabase, SCHEMA_SQL, ADF_LATEST_SCHEMA_VERSION } from '../../src/main/adf/adf-database'
+import { AGENT_DEFAULTS, DEFAULT_TOOLS } from '../../src/shared/types/adf-v02.types'
 
 const SPEC_PATH = join(__dirname, '../../ADF_SPEC_v0.2.md')
+const TOOLS_DIR = join(__dirname, '../../src/main/tools')
+
+// Body of the section whose heading starts with `heading`, up to the next
+// heading of the same or higher level.
+function sectionBody(md: string, heading: string): string {
+  const start = md.indexOf(heading)
+  expect(start, `spec is missing the "${heading}" heading`).toBeGreaterThan(-1)
+  const level = heading.match(/^#+/)![0].length
+  const rest = md.slice(start + heading.length)
+  const next = rest.search(new RegExp(`\\n#{1,${level}} `))
+  return next === -1 ? rest : rest.slice(0, next)
+}
+
+// Data rows of every markdown table in `body`, as arrays of trimmed cells.
+function tableRows(body: string): string[][] {
+  return body
+    .split(/\r?\n/)
+    .filter((l) => l.startsWith('|') && !/^\|[\s|:-]+\|$/.test(l))
+    .map((l) => l.slice(1, -1).split('|').map((c) => c.trim()))
+}
+
+const unquote = (cell: string): string => cell.replace(/^`|`$/g, '')
+
+// Every `readonly name = '<tool>'` declared under src/main/tools.
+function registeredToolNames(dir: string): string[] {
+  const names = new Set<string>()
+  for (const entry of readdirSync(dir)) {
+    const p = join(dir, entry)
+    if (statSync(p).isDirectory()) {
+      for (const n of registeredToolNames(p)) names.add(n)
+    } else if (p.endsWith('.ts')) {
+      for (const m of readFileSync(p, 'utf-8').matchAll(/readonly name = '([a-z_]+)'/g)) names.add(m[1])
+    }
+  }
+  return [...names].sort()
+}
 
 // Pull the fenced ```sql block out of "### 3.2 Protected Schema" (the canonical
 // DDL the spec publishes), stopping before the next subsection.
@@ -85,5 +122,58 @@ describe('ADF spec ↔ schema sync', () => {
     } finally {
       raw.close()
     }
+  })
+
+  it('every schema version the spec states equals ADF_LATEST_SCHEMA_VERSION', () => {
+    const md = readFileSync(SPEC_PATH, 'utf-8')
+    const stated = [
+      ...md.matchAll(/schema version is \**(\d+)/gi),
+      ...md.matchAll(/\| `adf_schema_version` \| `(\d+)` \|/g)
+    ].map((m) => Number(m[1]))
+    expect(stated.length, 'spec states the schema version in §3.2, §3.5 and §17').toBeGreaterThanOrEqual(3)
+    for (const v of stated) expect(v).toBe(ADF_LATEST_SCHEMA_VERSION)
+
+    // §17.1 lists the latest revision first.
+    const first = tableRows(sectionBody(md, '### 17.1'))[1]
+    expect(Number(first[0])).toBe(ADF_LATEST_SCHEMA_VERSION)
+  })
+
+  it('§14.3 default tools match DEFAULT_TOOLS', () => {
+    const rows = tableRows(sectionBody(readFileSync(SPEC_PATH, 'utf-8'), '### 14.3')).slice(1)
+    const spec = rows.map(([name, enabled, visible, restricted]) => ({
+      name: unquote(name),
+      enabled: enabled === 'yes',
+      visible: visible === 'yes',
+      restricted: restricted === 'yes'
+    }))
+    const code = DEFAULT_TOOLS.map((t) => ({
+      name: t.name,
+      enabled: t.enabled,
+      visible: t.visible,
+      restricted: t.restricted === true
+    }))
+    expect(spec).toEqual(code)
+  })
+
+  it('§14.2 default triggers match AGENT_DEFAULTS.triggers', () => {
+    const rows = tableRows(sectionBody(readFileSync(SPEC_PATH, 'utf-8'), '### 14.2')).slice(1)
+    const spec = Object.fromEntries(
+      rows.map(([trigger, enabled, targets]) => [
+        unquote(trigger),
+        { enabled: enabled === 'yes', targets: JSON.parse(unquote(targets)) }
+      ])
+    )
+    expect(spec).toEqual(AGENT_DEFAULTS.triggers)
+  })
+
+  it('§10 tool catalog names equal the built-in tool names', () => {
+    const body = sectionBody(readFileSync(SPEC_PATH, 'utf-8'), '## 10.')
+    const catalog = body.slice(0, body.indexOf('### 10.9'))
+    const names = new Set<string>()
+    for (const [first] of tableRows(catalog)) {
+      const m = first.match(/^`([a-z_]+)`$/)
+      if (m) names.add(m[1])
+    }
+    expect([...names].sort()).toEqual(registeredToolNames(TOOLS_DIR))
   })
 })

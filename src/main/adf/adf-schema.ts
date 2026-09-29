@@ -549,7 +549,7 @@ export const AgentConfigSchema = z.object({
     fetch_middleware: z.array(MiddlewareRefSchema).optional(),
     require_middleware_authorization: z.boolean().default(true),
     allow_local_fetch: z.boolean().optional()
-      .describe('Opt out of the sys_fetch SSRF guard. When false/absent, sys_fetch refuses loopback, link-local and RFC1918/CGNAT destinations (including after DNS resolution and across redirects).'),
+      .describe('Allow sys_fetch/ws_connect to reach private (RFC1918) and CGNAT destinations. When false/absent those are refused, including after DNS resolution and across redirects. Loopback is allowed either way, except the local daemon control API; link-local and cloud-metadata addresses are always refused.'),
     table_protections: z.record(z.enum(['none', 'append_only', 'authorized'])).optional()
   }),
   limits: z.object({

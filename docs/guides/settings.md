@@ -86,7 +86,7 @@ Most tiles are the same OpenAI-compatible runtime with a different base URL and 
 
 **OpenAI-compatible** — Any service that implements the OpenAI API format. The picker offers named tiles for the common ones (Gemini, xAI, Mistral, DeepSeek, Groq, Cerebras, Together, Fireworks, Perplexity, Cohere, Hugging Face, NVIDIA NIM, Vercel AI Gateway, Cloudflare Workers AI, Azure OpenAI, DeepInfra, SambaNova, Nebius, Hyperbolic, Novita, Baseten, Scaleway, Venice, kluster.ai, Moonshot, Z.ai, Qwen, MiniMax, Inception) and for local servers (LM Studio, Ollama, vLLM, llama.cpp, LiteLLM, Jan, LocalAI, text-generation-webui), each with its base URL prefilled. Anything else goes through the generic **OpenAI-compatible** tile with a base URL you enter.
 
-**OpenRouter** — First-class access to OpenRouter's model catalog (e.g. `anthropic/claude-sonnet-4`, `deepseek/deepseek-r1`). Uses the official OpenRouter provider, so reasoning is normalized natively and full `reasoning_details` are returned and round-tripped across tool calls (see [Reasoning](#reasoning-thinking)). Just add your `sk-or-…` API key; the base URL defaults to OpenRouter.
+**OpenRouter** — Access to OpenRouter's model catalog (e.g. `anthropic/claude-sonnet-4`, `deepseek/deepseek-r1`). Uses the official OpenRouter provider, so reasoning is normalized natively and full `reasoning_details` are returned and round-tripped across tool calls (see [Reasoning](#reasoning-thinking)). Just add your `sk-or-…` API key; the base URL defaults to OpenRouter.
 
 **ChatGPT Subscription** — Use your existing ChatGPT Plus or Pro subscription to power agents at a flat monthly rate instead of per-token billing. This provider authenticates via OAuth (no API key needed) and uses the ChatGPT Responses API backend.
 

@@ -217,12 +217,12 @@ This dual-check means you can disable all timers of a scope by toggling the trig
 
 ### Target loop
 
-An agent can run several named cognition streams — see [Inner Loops](inner-loops.md). A timer may name which one it wakes, with a `loop` field; an absent `loop` means `main`, so every pre-loops timer routes exactly as it did.
+An agent can run several named loops — see [Inner Loops](inner-loops.md). A timer may name which one it wakes, with a `loop` field; an absent `loop` means `main`, so every pre-loops timer routes exactly as it did.
 
-**The loop stamp is agent-scope only.** Naming a loop only means something for the part of a timer that wakes a cognition stream:
+**The loop stamp is agent-scope only.** Naming a loop only means something for the part of a timer that wakes a loop:
 
 - **`scope: ["agent"]`** — the loop is honoured; the wake reaches that stream.
-- **`scope: ["system"]`** — the lambda runs through the single agent-wide system handler, under `main`'s authority, and wakes no cognition stream at all. Such a timer carries **no loop stamp**; a `loop` passed with it is dropped.
+- **`scope: ["system"]`** — the lambda runs through the single agent-wide system handler, under `main`'s authority, and wakes no loop. Such a timer carries **no loop stamp**; a `loop` passed with it is dropped.
 - **`scope: ["system", "agent"]`** — the timer keeps its loop for the agent half; the system half still runs under `main`'s authority.
 
 The strip is enforced once, at the workspace chokepoint (`addTimer`), so it holds for every caller — Studio, [`sys_set_timer`](tools.md#sys_set_timer), or any other path. Studio hides the Loop selector when you pick system scope.

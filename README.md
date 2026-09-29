@@ -5,9 +5,8 @@
 <h1 align="center">ADF — Agent Document Format</h1>
 
 <p align="center">
-  <b>An open standard for portable AI agents.</b><br>
-  A single SQLite file (<code>.adf</code>) contains a complete agent: identity, memory, instructions, tools, and execution state.<br>
-  Move the file, you move the agent.
+  <b>An open file format for AI agents, with a reference runtime.</b><br>
+  An <code>.adf</code> file is one localized agent: its identity, state and behaviour in a single SQLite file (<a href="ADF_SPEC_v0.2.md#13-one-file-one-agent">what's inside</a>).
 </p>
 
 <p align="center">
@@ -54,17 +53,17 @@ Studio and the CLI share the same settings file and owner identity (OS keychain)
 
 ## Highlights
 
-- 📄 **The agent is a file.** Config, conversation history, files, memory, timers, identity keys — one portable SQLite database. Copy it, back it up, hand it to a friend, run it on another machine.
-- 🖥️ **ADF Studio** — a desktop IDE for agents: author them, watch them think, give them tools, approve their risky actions.
+- 📄 **The agent is a file.** Copy or move the file to copy or move the agent. [Contents](ADF_SPEC_v0.2.md#13-one-file-one-agent).
+- 🖥️ **ADF Studio** — a desktop IDE for agents: author them, follow their turns, configure their tools, approve restricted tool calls.
 - 🗺️ **The fleet map** — an RTS-style command surface. Every agent is a tile on a hex map; select, message, hold, and command whole groups with hotkeys.
 - 🔌 **Any model provider** — Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio…), or a ChatGPT / Grok subscription via OAuth.
-- 🧰 **Real capabilities** — sandboxed code execution, lambdas, timers, triggers, skills, MCP servers, container-backed compute, HTTP serving, WebSockets.
-- ⚙️ **Work without a model call** — lambdas run on a trigger, a timer, or a message, and middleware sits on the inbox, outbox, routes, and fetches. The expensive part only runs when judgment is needed.
-- 🧠 **Inner loops** — up to 16 named side loops inside one agent, each with its own goal and tools, sharing one file.
+- 🧰 **Built-in tools and services** — sandboxed code execution, lambdas, timers, triggers, skills, MCP servers, container-backed compute, HTTP serving, WebSockets.
+- ⚙️ **Work without a model call** — lambdas run on a trigger, a timer, or a message, and middleware sits on the inbox, outbox, routes, and fetches. A model turn runs only when a trigger, timer or message starts one.
+- 🧠 **Inner loops** — up to 16 inner loops (side loops) next to the main loop, each with its own transcript, goal and tool subset, all stored in the agent's one file.
 - 🖲️ **A computer of its own** — a visible Linux desktop and a managed Chromium an agent can drive, with screen handoff when a login needs you.
 - 🤝 **Agent-to-agent mesh** — agents discover and message each other across runtimes over the ALF protocol (LAN, tailnet, or direct address), with DIDs, signatures, and optional E2E encryption.
 - 💬 **Channels** — bridge agents to Telegram, Discord, Slack, WhatsApp, and email.
-- 🔍 **No Secrets** — everything injected into an agent's context is stored in the file and viewable in the UI. Auditable by design.
+- 🔍 **No Secrets** — everything injected into an agent's context is stored in the file and viewable in the UI.
 - 🛡️ **Human-in-the-loop** — restricted tools pause for your approval, inline on the fleet map or in a full-context modal.
 
 ## See it
@@ -235,7 +234,8 @@ roof; expect ongoing structural changes as the codebase matures.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). All contributions require DCO
-sign-off (`git commit -s`).
+sign-off (`git commit -s`). Documentation changes follow the
+[docs style guide](docs/STYLE.md).
 
 ## Security
 

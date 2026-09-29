@@ -484,7 +484,7 @@ The scratch directory is purely internal — it is not exposed to the agent or c
 
 ### Background Agents
 
-Background agents have full MCP support. When an agent with MCP servers configured is started from the sidebar, mesh, or directory start-all, its MCP servers are connected using the same logic as foreground agents. MCP managers and scratch directories transfer seamlessly between foreground and background when switching files, and disconnect cleanly on agent stop or shutdown.
+Background agents have full MCP support. When an agent with MCP servers configured is started from the sidebar, mesh, or directory start-all, its MCP servers are connected using the same logic as foreground agents. MCP managers and scratch directories move between foreground and background when switching files, and disconnect cleanly on agent stop or shutdown.
 
 ## Security
 

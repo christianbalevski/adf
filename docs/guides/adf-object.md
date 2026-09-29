@@ -249,7 +249,7 @@ const agents = await adf.agent_discover({})
 
 ### chat_info
 
-Read-only chat/channel metadata lookup through a connected channel adapter: title, description, participant roster (truncated), counts. This is a code-path capability — it ships `enabled: true, visible: false`, so it's callable here without occupying a slot in the LLM tool schema (flip `visible` in the agent's tool config to expose it as a first-class tool).
+Read-only chat/channel metadata lookup through a connected channel adapter: title, description, participant roster (truncated), counts. This is a code-path capability — it ships `enabled: true, visible: false`, so it's callable here without occupying a slot in the LLM tool schema (flip `visible` in the agent's tool config to expose it as a visible tool).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

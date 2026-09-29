@@ -2,27 +2,28 @@
 
 **Version:** 0.2
 **Status:** Draft
-**Date:** June 2026
+**Revision:** 2026-10
 
-The Agent Document Format (`.adf`) is a portable SQLite database that bundles an agent, its memory, configuration, message history, files, contacts, scheduled work, and operational records into a single sovereign artifact.
+The Agent Document Format (`.adf`) is a SQLite database that stores one localized agent (§1.3): its identity, configuration, documents, conversation history, messages, scheduled work and operational records.
 
-This specification is intentionally ADF-focused. It defines what an `.adf` file stores and the portable semantics a conforming runtime must honor. It does not define the desktop UI, daemon HTTP API, provider-specific behavior, or container implementation details except where those details are represented in the file.
+This specification defines what an `.adf` file stores and the semantics a conforming runtime applies to it. It does not define the desktop UI, the daemon HTTP API, provider-specific behaviour or container implementation, except where the file represents them. Revision 2026-10 corrects this document against the reference runtime without changing the file contract; §17.2 lists every semantic correction.
 
 ---
 
 ## Table of Contents
 
+0. [Conventions](#0-conventions)
 1. [Core Principles](#1-core-principles)
 2. [The ADF Stack](#2-the-adf-stack)
 3. [Storage Format](#3-storage-format)
 4. [Virtual Filesystem and Metadata](#4-virtual-filesystem-and-metadata)
 5. [Agent Configuration](#5-agent-configuration)
-6. [States and Loop Behavior](#6-states-and-loop-behavior)
+6. [States and Loops](#6-states-and-loops)
 7. [Triggers and Timers](#7-triggers-and-timers)
 8. [Security, Identity, and Authorization](#8-security-identity-and-authorization)
 9. [Code Execution and Lambdas](#9-code-execution-and-lambdas)
 10. [Tool Catalog](#10-tool-catalog)
-11. [Messaging, Peers, and ALF](#11-messaging-peers-and-alf)
+11. [Messaging and ALF](#11-messaging-and-alf)
 12. [Serving, WebSockets, and Middleware](#12-serving-websockets-and-middleware)
 13. [Memory, Audit, Tasks, and Logs](#13-memory-audit-tasks-and-logs)
 14. [Defaults](#14-defaults)
@@ -32,36 +33,98 @@ This specification is intentionally ADF-focused. It defines what an `.adf` file 
 
 ---
 
+## 0. Conventions
+
+### 0.1 Requirement Keywords
+
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in BCP 14 [RFC 2119] [RFC 8174] when, and only when, they appear in all capitals, as shown here.
+
+Lower-case "must", "should" and "may" carry no requirement. Paragraphs that begin with "Rationale:" or "Note:" are non-normative. Examples are non-normative unless the text that introduces them says otherwise.
+
+### 0.2 Data Conventions
+
+- Text is UTF-8.
+- An `INTEGER` column that holds a timestamp stores Unix epoch milliseconds. A `TEXT` column that holds a timestamp stores an ISO-8601 string; the column reference (§3.3) says which.
+- Boolean flags are stored as `INTEGER` `0` or `1`.
+- A `TEXT` column that holds structured data stores a JSON string.
+- A runtime MUST preserve columns, `adf_meta` keys and config fields it does not recognise when it rewrites a row, so that newer files survive a round trip through an older runtime. A migration (§3.5) MAY remove fields that this document lists as removed.
+
+### 0.3 Terminology
+
+| Term | Meaning |
+|------|---------|
+| **localized agent** | An agent stored in one `.adf` file (§1.3). |
+| **body** | The `.adf` file of a localized agent: every component listed in §1.3. |
+| **owner** | The human whose owner identity controls the agent's keys; its DID is `adf_meta.adf_owner_did`. `operator` is an attestation role (§3.3), not a person. |
+| **runtime** | The program that opens the file and executes its configuration (Studio, the daemon, the CLI, or a third-party implementation). |
+| **loop** | A named conversation of the agent. Every agent has the loop `main`; the others are inner loops declared in `config.loops` (§6.4). |
+| **turn** | One run of a loop, from the message, trigger or timer that starts it until the loop stops. A turn contains one or more model requests and the tool calls they produce. |
+| **transcript** | The `adf_loop` rows of one loop, ordered by `COALESCE(ord, seq), seq`. |
+| **lambda reference** | A string `path/file.ts:functionName` that names a function exported by a file in `adf_files`. |
+| **model path** | Work performed by a model turn: reasoning, new work, conversation with the owner. |
+| **code path** | Work performed without a model: lambdas, triggers with system scope, timers, middleware, API routes, WebSocket handlers. |
+| **HIL** | Human-in-the-loop: the call waits for owner approval before it runs. "Owner approval" means the same thing. |
+| **template** | An `.adf` file used as the starting point for a new agent. Instantiating a template produces a new agent with its own identity (§16). |
+
+---
+
 ## 1. Core Principles
 
-### 1.1 Sovereignty
+### 1.1 Access Boundary
 
-Each ADF is an autonomous entity. It owns its document, memory, configuration, local database tables, inbox, outbox, contacts, timers, logs, and audit history. Other agents influence it through messages, never by direct file or table access. A human owner can modify anything; an agent can modify itself only through tools and runtime-enforced policies.
+An agent's file is modified only by its owner, by the runtime, or by the agent through tools (§10) and code (§9). Other agents affect it only by sending messages (§11).
 
-### 1.2 Spec Stores, Runtime Executes
+### 1.2 The File Stores, the Runtime Executes
 
-The ADF file stores declarative state and durable records. The runtime executes code, connects providers, runs MCP servers, evaluates triggers, schedules timers, serves HTTP, and delivers messages. Runtime choices are portable only when represented in `adf_config`, `adf_meta`, or protected ADF tables.
+The file stores declarative state and durable records. The runtime executes code, connects to model providers, runs MCP servers, evaluates triggers, schedules timers, serves HTTP and delivers messages. A runtime choice is portable only when the file represents it in `adf_config`, `adf_meta` or an `adf_` table.
 
-### 1.3 One Agent, One Document
+### 1.3 One File, One Agent
 
-The canonical v0.2 primary document is `README.md`. It serves as the agent's readme that explains what it can do and how one should interact wiht it. Each ADF has exactly one primary document and one `mind.md` working-memory file. Supporting files live in `adf_files` and are subordinate to the primary document.
+A **localized agent** is an agent whose identity, state and behaviour are stored in a single `.adf` file, and which a conforming runtime can run from that file alone, subject to the exceptions in §16. Each `.adf` file contains exactly one localized agent. The file is the agent's complete **body**: all data that belongs to the agent is stored in it, and no data that belongs to another agent is. Portability (§16) follows from this definition.
+
+The body consists of these components. Other sections and documents link to this table instead of repeating it.
+
+| Component | Stored in | Per file | Section |
+|-----------|-----------|----------|---------|
+| Identity | `adf_meta` keys `adf_did`, `adf_did_history`, `adf_owner_did`, `adf_runtime_did`, `adf_parent_did` | one DID (or none before provisioning) | §8.1 |
+| Keys and secrets | `adf_identity`, sealed in the `identity` and `credentials` envelopes | one keystore | §8.2–§8.4 |
+| Attestations | `adf_attestations` | zero or more | §3.3, §8.1 |
+| Configuration | `adf_config.config_json` | exactly one row | §5 |
+| Metadata | `adf_meta` | one value per key | §3.3, §4.4 |
+| Primary document | `adf_files` path `README.md` | exactly one | §4.1 |
+| Memory | `adf_files` paths `mind.md`, `mind/*`, `mind/log.md` | one `mind.md` and one `mind/log.md` | §4.1 |
+| Voice | `adf_files` path `soul.md` | exactly one | §4.1 |
+| Other files | `adf_files` (lambdas, skills, data, public files) | zero or more | §4 |
+| Loops | `config.loops` declares inner loops; `adf_loop` rows keyed by `loop` hold every transcript | `main` plus zero or more inner loops | §6.4, §13.1 |
+| Triggers | `config.triggers` | one entry per trigger type | §7 |
+| Timers | `adf_timers` | zero or more | §7.6 |
+| Messages | `adf_inbox`, `adf_outbox` | zero or more | §11 |
+| Tasks | `adf_tasks` | zero or more | §13.4 |
+| Logs | `adf_logs` | zero or more | §13.5 |
+| Audit snapshots | `adf_audit` | zero or more | §13.3 |
+| User tables | tables named `local_*`, including `vec0` virtual tables | zero or more | §3.4 |
+| Service declarations | `config.serving`, `config.ws_connections`, `config.adapters`, `config.mcp`, `config.compute`, `config.providers`, `config.stream_bindings` | as configured | §5, §12 |
+
+*Primary document.* `README.md` is the agent's primary document: it describes what the agent does and how to interact with it. A runtime MUST create it when it creates the file, with protection `no_delete` (§4.2). A runtime MUST NOT delete it on an agent's request unless the call is authorized (§8.6) or the owner approves it. A runtime MAY expose it to other agents and to people, for example through `serving.public` (§12.1).
+
+Not one per file: a file holds several loops (§6.4) and any number of documents in `adf_files`. A child agent that this agent creates (`sys_create_adf`) is a separate localized agent in its own file; the child records its creator in `adf_meta.adf_parent_did`, and the parent file stores no part of the child.
 
 ### 1.4 Asynchrony
 
-Agent-to-agent communication is store-and-forward. Messages are persisted in `adf_outbox` and `adf_inbox`; delivery transport is a runtime concern. This supports offline operation, local fast paths, relays, channel adapters, and high-latency networks.
+Agent-to-agent communication is store-and-forward. Messages are stored in `adf_outbox` and `adf_inbox`; the transport that moves them is a runtime concern (§11, §12). Delivery works between agents in the same runtime, over relays, through channel adapters and across high-latency networks.
 
 ### 1.5 No Secrets in Context
 
-Any prompt or dynamic instruction content injected into an LLM turn must be observable. System prompt snapshots, dynamic instructions, compaction summaries, and explicit context injections are persisted in `adf_loop` as regular loop entries.
+A runtime MUST record every piece of prompt text it adds to a model request, so that the owner can read what the model received. It stores system prompt snapshots, dynamic instructions, compaction summaries and `loop_inject` content as ordinary rows in `adf_loop` (§13.1).
 
-### 1.6 Cold Path and Hot Path
+### 1.6 Model Path and Code Path
 
-ADF separates:
+An agent performs work on two paths (§0.3):
 
-- **Cold path:** the LLM loop, used for reasoning, new work, tool calls, and human interaction.
-- **Hot path:** lambdas, triggers, timers, middleware, API routes, and WebSocket handlers, used for deterministic repeated work.
+- *Model path:* a model turn in a loop, used for reasoning, new work, tool calls and conversation with the owner.
+- *Code path:* lambdas, system-scope triggers, timers, middleware, API routes and WebSocket handlers, used for deterministic repeated work.
 
-The file format supports agents that gradually move repeated cold-path workflows into hot-path code stored in `adf_files`.
+An agent MAY move a repeated model-path workflow to the code path by writing a lambda to `adf_files` and referencing it from config.
 
 ---
 
@@ -69,26 +132,26 @@ The file format supports agents that gradually move repeated cold-path workflows
 
 | Layer | Component | Description |
 |-------|-----------|-------------|
-| User Interface | ADF Studio | Visual IDE for creating, configuring, editing, and observing `.adf` files |
-| Headless Runtime | ADF Daemon | Local API runtime for loading agents, background operation, automation, and service deployment |
-| Command Line | ADF CLI | Headless interface for creating, inspecting, and running agents |
-| Network | ADF Mesh | Discovery and transport layer for local and remote agents |
-| Protocol | ALF | Agentic Lingua Franca message and agent-card format |
-| Runtime | ADF Runtime | Code that enforces this spec and executes configured behavior |
-| Spec | ADF Specification | This document |
-| Data | `.adf` file | SQLite database that stores the agent |
+| User interface | ADF Studio | Desktop application for creating, configuring, editing and observing `.adf` files |
+| Headless runtime | ADF daemon | Local HTTP service that loads agents and runs them without a UI |
+| Command line | ADF CLI | The `adf` command: creates, inspects and runs agents |
+| Network | ADF Mesh | Discovery and transport for local and remote agents |
+| Protocol | ALF | Agentic Lingua Franca: message and agent-card format |
+| Runtime | ADF runtime | Code that implements this specification |
+| Specification | ADF Specification | This document |
+| Data | `.adf` file | SQLite database that stores one localized agent |
 
-Studio, daemon, and CLI are clients of the same file format. A conforming runtime may implement any subset of runtime surfaces, but it must preserve the file semantics described here.
+Studio, the daemon and the CLI read and write the same file format. A conforming runtime MAY implement any subset of the runtime surfaces, but it MUST preserve the file semantics this document defines.
 
 ---
 
 ## 3. Storage Format
 
-An `.adf` file is a SQLite 3 database. Text is UTF-8. Timestamps in system tables are Unix milliseconds unless a column explicitly says it stores an ISO string.
+An `.adf` file is a SQLite 3 database. §0.2 lists the encoding, timestamp, boolean and JSON conventions.
 
 ### 3.1 SQLite Pragmas
 
-Applied on open:
+A runtime MUST apply these pragmas when it opens a file:
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -97,18 +160,20 @@ PRAGMA busy_timeout = 5000;
 PRAGMA foreign_keys = ON;
 ```
 
+A runtime MAY apply connection-tuning pragmas that do not change stored data, such as `cache_size`, `temp_store` and `mmap_size`.
+
 ### 3.2 Protected Schema
 
-Tables prefixed with `adf_` are system tables. Agents may read some system tables through tools, but they may not directly write, drop, or alter any `adf_` table. All mutation goes through tools, lambdas, or owner/runtime operations.
+Tables whose names start with `adf_` are system tables. An agent MAY read some system tables through tools (§10.3). An agent MUST NOT write, drop or alter an `adf_` table directly; every change goes through a tool, a lambda, or an owner or runtime operation.
 
 Required metadata rows:
 
 | Key | Value | Protection |
 |-----|-------|------------|
 | `adf_version` | `0.2` | `readonly` |
-| `adf_schema_version` | `29` | `readonly` |
+| `adf_schema_version` | `32` | `readonly` |
 
-The current protected schema is:
+The current storage schema version is 32. The protected schema is:
 
 ```sql
 CREATE TABLE IF NOT EXISTS adf_meta (
@@ -124,9 +189,8 @@ CREATE TABLE IF NOT EXISTS adf_config (
   updated_at TEXT NOT NULL
 );
 
--- The loop column names the cognition stream the row belongs to ('main' is the
--- membrane-facing mind); seq stays globally unique, ordering within a stream is
--- the WHERE loop = ? filter.
+-- The loop column names the loop the row belongs to (§6.4). seq is unique
+-- across loops; a loop's transcript is selected with WHERE loop = ?.
 CREATE TABLE IF NOT EXISTS adf_loop (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   role TEXT NOT NULL,
@@ -138,8 +202,8 @@ CREATE TABLE IF NOT EXISTS adf_loop (
   loop TEXT NOT NULL DEFAULT 'main'
 );
 CREATE INDEX IF NOT EXISTS idx_adf_loop_loop_seq ON adf_loop(loop, seq);
--- Expression index on the display ordering key COALESCE(ord, seq), seq so
--- streamed reads seek and sort from the index instead of a TEMP B-TREE.
+-- Index on the ordering key COALESCE(ord, seq), seq, so transcript reads
+-- sort from the index.
 CREATE INDEX IF NOT EXISTS idx_adf_loop_stream ON adf_loop(loop, COALESCE(ord, seq), seq);
 
 CREATE TABLE IF NOT EXISTS adf_inbox (
@@ -305,83 +369,82 @@ CREATE INDEX IF NOT EXISTS idx_adf_logs_origin ON adf_logs(origin);
 
 ### 3.3 Field Reference (Data Dictionary)
 
-Per-column semantics for every system (`adf_`) table. Conventions: columns typed
-`INTEGER` that hold timestamps are **epoch milliseconds** unless noted as ISO-8601;
-boolean flags are stored as `INTEGER` `0`/`1`; columns typed `TEXT` that hold structured
-data store **JSON strings**. A conforming runtime MUST preserve all columns it does not
-understand on read-modify-write so the file stays forward-compatible.
+Per-column semantics for every `adf_` table. §0.2 gives the type conventions. A runtime MUST preserve columns it does not recognise when it rewrites a row.
 
-#### `adf_meta` — format metadata & key/value store
+#### `adf_meta` — format metadata and key/value store
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `key` | TEXT PK | Metadata key. See the namespace rules and well-known key registry below. |
+| `key` | TEXT PK | Metadata key. See the namespaces and the key registry below. |
 | `value` | TEXT | String value. Numbers and JSON are stored as text. |
-| `protection` | TEXT | `none` \| `readonly` \| `increment`. `readonly` = owner/runtime-writable only; `increment` = monotonic counter that may only increase. |
+| `protection` | TEXT | `none` \| `readonly` \| `increment` (§4.4). The protection is set when the key is created; a later write of the value does not change it. |
 
-**Key namespaces.** `adf_meta` is a shared store; the key prefix determines governance:
+*Key namespaces.* The key prefix determines who governs a key:
 
 | Namespace | Governance |
 |-----------|------------|
-| `adf_*` | Spec-governed. Reserved for this document — runtimes MUST NOT invent new `adf_*` keys outside a spec revision. |
-| `runtime_*` | Runtime-internal bookkeeping. Opaque; may change without a spec revision. Implementations MUST preserve `runtime_*` keys they do not own. |
-| all other keys | Agent-owned. Agents create them freely (e.g. via `sys_set_meta`); protection is chosen at creation and immutable thereafter. |
+| `adf_*` | Defined by this specification. A runtime MUST NOT create an `adf_*` key that the registry below does not list. |
+| `runtime_*` | Runtime bookkeeping. Opaque; it MAY change without a specification revision. A runtime MUST preserve `runtime_*` keys it does not own. |
+| other keys | Agent-owned. The agent creates them (for example with `sys_set_meta`) and chooses their protection at creation. |
 
-**Storage-layer taxonomy.** Identity-adjacent data lands in one of three stores by
-rule, not precedent:
+*Storage layers for identity data.* Identity-related data is stored in one of three places according to what it is:
 
 | Layer | Store | Semantics |
 |-------|-------|-----------|
-| Key material | `adf_identity` | Secrets. Envelope-sealed or password-encrypted at rest; unreadable in locked/foreign states. |
-| Runtime-asserted facts | `adf_meta` | Public, unsigned, single-valued claims by the runtime (`adf_did`, `adf_owner_did`, `adf_parent_did`, `adf_did_history`). Readable without unlocking anything; protected `readonly` against agent writes. Trustworthy locally because the local runtime is the trust root; not proof to a remote peer. |
+| Key material | `adf_identity` | Secrets. Sealed in an envelope or password-encrypted at rest; unreadable in the `locked` and `foreign` states (§8.4). |
+| Runtime-recorded facts | `adf_meta` | Public, unsigned, single-valued statements written by the runtime (`adf_did`, `adf_owner_did`, `adf_runtime_did`, `adf_parent_did`, `adf_did_history`). Readable without unlocking; `readonly` to the agent. The local runtime trusts them because it wrote them; a remote peer does not. |
 | Signed proofs | `adf_attestations` | Statements one identity signs about another, verifiable by anyone against the issuer DID. |
 
-The recurring pattern is a **fact + proof pair**: `adf_owner_did` (fast fact) is
-paired with the `owner` attestation (verifiable proof of the same statement).
-New identity-adjacent data MUST pick its layer by these semantics — e.g.
-`adf_parent_did` is a meta fact (single-valued, hot-path, must survive foreign
-states); a future parent-signed `creator` attestation would be its proof half.
+A fact in `adf_meta` MAY have a matching signed proof in `adf_attestations`: `adf_owner_did` records the owner, and the `owner` attestation proves the same statement. New identity-related data MUST be placed by these semantics. For example, `adf_parent_did` is a single-valued fact that the runtime reads without unlocking the file, so it is stored in `adf_meta`.
 
-**Well-known key registry.** Every key the runtime reads or writes MUST appear here — a key the runtime depends on but the spec does not name is a contract that exists only in one implementation's habits. `Writer` is the expected author by convention; `protection` is the enforced part.
+*Key registry.* Every `adf_*` key a runtime reads or writes MUST appear in this table. `Writer` is the expected author; `Protection` is enforced.
 
 | Key | Protection | Writer | Meaning |
 |-----|------------|--------|---------|
-| `adf_version` | `readonly` | runtime (create) | Format/contract version (`0.2`). |
+| `adf_version` | `readonly` | runtime (create) | Format version (`0.2`). |
 | `adf_schema_version` | `readonly` | runtime (migrations) | Storage schema version (§3.5, §17.1). |
-| `adf_name` | `none` | runtime (config sync) | Denormalized `config.name` for fast lookup without parsing config JSON. |
-| `adf_handle` | `none` | runtime (config sync) | Denormalized handle; stored source of truth for mesh addressing across file renames/moves. |
-| `adf_created_at` | `readonly` | runtime (create) | ISO-8601 creation timestamp. |
-| `adf_updated_at` | `none` | runtime (config writes) | ISO-8601 timestamp of the last config update. |
-| `adf_parent_did` | `readonly` | creating runtime | DID of the parent agent that created this file, if any. |
-| `adf_did` | `readonly` | runtime (identity provisioning) | This agent's DID once cryptographic identity is provisioned; empty string after identity reset. |
-| `adf_did_history` | `readonly` | runtime (rotation/claim/reset) | JSON array of prior agent DIDs, oldest first, appended when `adf_did` is replaced or cleared. Keeps lineage references (`adf_parent_did`) resolvable across rotation without rewriting child files. Bounded: grows only on identity rotation. |
-| `adf_owner_did` | `readonly` | runtime (claim/clone) | DID of the owning human/runtime identity. |
-| `adf_runtime_did` | `readonly` | runtime (claim/clone) | DID of the runtime that claimed the file. |
-| `status` | `none` | agent | Self-reported one-line status shown in UIs. Predates the namespace rules (unprefixed); retained as-is. |
-| `runtime_umbilical_next_seq` | `none` | runtime | Umbilical event sequence cursor. Opaque runtime-internal state. |
+| `adf_name` | `readonly` | runtime (config write) | Copy of `config.name`, readable without parsing config JSON. |
+| `adf_handle` | `readonly` | runtime (config write) | Copy of `config.handle`; the stored handle for mesh addressing when the file is renamed or moved. |
+| `adf_created_at` | `readonly` | runtime (create) | ISO-8601 creation time. |
+| `adf_updated_at` | `readonly` | runtime (config write) | ISO-8601 time of the last config write. |
+| `adf_parent_did` | `readonly` | creating runtime | DID of the agent that created this file, if any (§1.3). |
+| `adf_did` | `readonly` | runtime (identity provisioning) | This agent's DID; the empty string after an identity reset. |
+| `adf_did_history` | `readonly` | runtime (rotation, claim, reset) | JSON array of prior agent DIDs, oldest first. The runtime appends to it when it replaces or clears `adf_did`, so `adf_parent_did` values in child files stay resolvable after rotation. It grows only on rotation. |
+| `adf_owner_did` | `readonly` | runtime (claim, clone) | DID of the owner. |
+| `adf_runtime_did` | `readonly` | runtime (claim, clone) | DID of the runtime that claimed the file. |
+| `adf_clean_close` | `readonly` | runtime (close) | Present when the previous session closed the file cleanly. The runtime writes it as the last write on close and deletes it after a successful open; if it is absent on open, the runtime runs a full integrity check. |
+| `adf_effective_runtime` | `readonly` | runtime (start, config change) | JSON snapshot of the settings the agent inherits from its runtime (provider, prompt hashes, compute, MCP, adapters, mesh). Contains no secrets. |
+| `adf_loop_tools_backfilled` | `none` | runtime (config read) | `1` once the runtime has added `loop_send` and `loop_list` to inner loops declared before those tools existed. |
+| `adf_runtime_turn_checkpoint` | `readonly` | runtime (executor) | Crash-recovery record for the turn in progress in `main`. Inner loops use `adf_runtime_turn_checkpoint:<loop>`. |
+| `adf_template_shipped` | `readonly` | runtime (template build) | Identifier of the shipped template this file is. Removed when the template is instantiated. |
+| `adf_template_description` | `readonly` | runtime (template build) | Description shown when choosing a template. Removed on instantiation. |
+| `adf_template_warning` | `readonly` | runtime (template build) | Warning shown when choosing a template. Removed on instantiation. |
+| `status` | `none` | agent | One-line status the agent reports, shown in UIs. Predates the namespace rules. |
+| `context_baseline_tokens` | `readonly` | runtime (executor) | JSON estimate of the size of the next model request in `main`; inner loops use `context_baseline_tokens:<loop>`. Deleted when the transcript is cleared. Predates the namespace rules. |
+| `runtime_umbilical_next_seq` | `none` | runtime | Umbilical event sequence cursor. |
 
-**Graduation rule.** Well-known keys are appropriate for singleton values and monotonic counters. Data that needs per-row typing, relational queries, indexes, or unbounded row counts must graduate to a dedicated table via a schema revision (§3.5) — never to a growing family of structured keys.
+Note: a key in this registry holds one value or one counter. Data that needs typed rows, relational queries, indexes or an unbounded number of entries is added as a table in a schema revision (§3.5), not as a family of keys.
 
 #### `adf_config` — agent configuration (single row)
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `id` | INTEGER PK | Always `1` (enforced by `CHECK`). The table holds exactly one row. |
-| `config_json` | TEXT | The full `AgentConfig` object as JSON (see §5). |
-| `updated_at` | TEXT | ISO-8601 timestamp of the last config write. |
+| `id` | INTEGER PK | Always `1` (enforced by `CHECK`). The table holds one row. |
+| `config_json` | TEXT | The `AgentConfig` object as JSON (§5). |
+| `updated_at` | TEXT | ISO-8601 time of the last config write. |
 
-#### `adf_loop` — processing loop (conversation history)
+#### `adf_loop` — transcripts
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `seq` | INTEGER PK | Autoincrement, lifetime-stable entry identity. Never reused or renumbered — compaction and history rebuilds preserve surviving rows' seqs, so `[S<seq>]` citations stay valid across the loop and `adf_audit` blobs. |
+| `seq` | INTEGER PK | Autoincrement row identity. It is never reused or renumbered; compaction and history rebuilds keep the `seq` of surviving rows, so `[S<seq>]` citations stay valid in `adf_loop` and in `adf_audit` snapshots. |
 | `role` | TEXT | `user` \| `assistant`. |
-| `content_json` | TEXT | JSON array of content blocks (text, tool_use, tool_result, …). Injected system/instruction context is also stored here as `[Context: …]` entries for No-Secrets auditability (§1.5). |
-| `model` | TEXT | Model id that produced an `assistant` row; null for `user` rows. |
+| `content_json` | TEXT | JSON array of content blocks (text, tool_use, tool_result, …). Context the runtime adds is stored here as `[Context: …]` blocks (§1.5, §13.1). |
+| `model` | TEXT | Model id that produced an `assistant` row; NULL for `user` rows. |
 | `tokens` | TEXT | JSON token-usage record (`{ input, output, … }`) for `assistant` rows. |
 | `created_at` | INTEGER | Epoch ms when the row was appended. |
-| `ord` | INTEGER | Nullable position override. The display/replay ordering key is `COALESCE(ord, seq), seq`; `ord` is set only on compaction summary rows so the summary sorts before the preserved tail without renumbering it. |
-| `loop` | TEXT | Owning cognition stream; `NOT NULL DEFAULT 'main'`. `main` is the membrane-facing mind (the only stream a pre-loops agent has); other values name side loops declared in `config.loops`. `seq` stays globally unique across streams — reads and destructive ops scope themselves with `WHERE loop = ?`, so a stream is an independent transcript, not a sub-range of one. |
+| `ord` | INTEGER | Nullable position override. The ordering key is `COALESCE(ord, seq), seq`. The runtime sets `ord` only on compaction summary rows, so the summary sorts before the preserved rows without renumbering them. |
+| `loop` | TEXT | Name of the loop the row belongs to (§6.4); `NOT NULL DEFAULT 'main'`. `seq` is unique across all loops. Reads and destructive operations filter with `WHERE loop = ?`, so each loop has its own transcript. |
 
 #### `adf_inbox` — received messages (ALF)
 
@@ -389,135 +452,132 @@ states); a future parent-signed `creator` attestation would be its proof half.
 |--------|------|---------|
 | `id` | TEXT PK | Local row id. |
 | `message_id` | TEXT | ALF message id from the inbound envelope. |
-| `from` | TEXT | Sender DID/address (NOT NULL). |
-| `to` | TEXT | Recipient DID/address (this agent). |
+| `from` | TEXT | Sender DID or address (NOT NULL). |
+| `to` | TEXT | Recipient DID or address (this agent). |
 | `reply_to` | TEXT | Address the sender wants replies sent to. |
 | `network` | TEXT | Logical network; default `devnet`. |
 | `thread_id` | TEXT | Conversation thread id. |
-| `parent_id` | TEXT | Id of the message this is a reply to. |
+| `parent_id` | TEXT | Id of the message this message replies to. |
 | `subject` | TEXT | Optional subject line. |
-| `content` | TEXT | Message body / payload content (NOT NULL). |
-| `content_type` | TEXT | Type of the content payload. |
+| `content` | TEXT | Message content (NOT NULL). |
+| `content_type` | TEXT | Media type of `content`. |
 | `attachments` | TEXT | JSON array of stored attachments. |
-| `meta` | TEXT | JSON of arbitrary message metadata. |
-| `sender_alias` | TEXT | Human-friendly sender name; advisory only — the DID is canonical. |
-| `recipient_alias` | TEXT | Human-friendly recipient name; advisory only. |
-| `owner` | TEXT | Sender's owner DID (from `meta.owner`). |
-| `card` | TEXT | URL to the sender's signed agent-card endpoint. |
+| `meta` | TEXT | JSON message metadata. |
+| `sender_alias` | TEXT | Display name of the sender. Advisory; the DID identifies the sender. |
+| `recipient_alias` | TEXT | Display name of the recipient. Advisory. |
+| `owner` | TEXT | Sender's owner DID (from `meta.owner`), kept only when the message signature verified (§8.5). |
+| `card` | TEXT | URL of the sender's signed agent card. |
 | `return_path` | TEXT | Transport-layer bounce address. |
-| `source` | TEXT | Ingress channel; default `mesh` (e.g. `mesh` or a channel-adapter id). |
-| `source_context` | TEXT | JSON adapter-specific ingress context. |
+| `source` | TEXT | Ingress channel; default `mesh`, otherwise a channel-adapter type. |
+| `source_context` | TEXT | JSON adapter-specific ingress context (§11.6). |
 | `sent_at` | INTEGER | Epoch ms when the sender sent it. |
-| `received_at` | INTEGER | Epoch ms when stored locally (NOT NULL). |
+| `received_at` | INTEGER | Epoch ms when stored (NOT NULL). |
 | `status` | TEXT | `unread` \| `read` \| `archived`. |
-| `original_message` | TEXT | Tombstoned raw original envelope, retained for audit (formerly `envelope`). |
+| `original_message` | TEXT | Raw original envelope, kept for audit after attachment extraction. |
 
 #### `adf_outbox` — sent messages (ALF)
 
-Shares most columns with `adf_inbox`; the differences are:
+`adf_outbox` has the columns of `adf_inbox` except `source`, `source_context`, `sent_at`, `received_at`; the differences are:
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `to` | TEXT | Recipient DID/address (NOT NULL here). |
-| `address` | TEXT | Resolved transport address for delivery; default `''`. |
-| `return_path` | TEXT | Our own reply-to URL advertised to the recipient. |
-| `status_code` | INTEGER | Transport delivery status code (HTTP-like). |
-| `created_at` | INTEGER | Epoch ms when enqueued (NOT NULL). |
+| `to` | TEXT | Recipient DID or address (NOT NULL). |
+| `address` | TEXT | Resolved transport address; default `''`. |
+| `return_path` | TEXT | This agent's reply URL, sent to the recipient. |
+| `status_code` | INTEGER | Transport status code (HTTP-style). |
+| `created_at` | INTEGER | Epoch ms when queued (NOT NULL). |
 | `delivered_at` | INTEGER | Epoch ms when delivery was confirmed. |
-| `status` | TEXT | `pending` \| `sent` \| `delivered` \| `failed`. The runtime writes only `pending → delivered \| failed`; `sent` is a defined-but-never-written value. Delivery is best-effort with no sender-side store-and-forward retry. |
+| `status` | TEXT | `pending` \| `sent` \| `delivered` \| `failed` (§11.2). |
 
 #### `adf_timers` — scheduled wake events
 
 | Column | Type | Meaning |
 |--------|------|---------|
 | `id` | INTEGER PK | Autoincrement timer id. |
-| `schedule_json` | TEXT | `TimerSchedule` JSON: a once, interval, or cron schedule (§7.6). |
-| `next_wake_at` | INTEGER | Epoch ms of the next scheduled fire (indexed). |
-| `payload` | TEXT | Opaque string handed to the trigger when the timer fires. |
-| `scope` | TEXT | JSON array of scopes; default `["system"]` (`system` \| `agent`). |
-| `lambda` | TEXT | Optional lambda source executed on fire. |
-| `warm` | INTEGER | `0`/`1`; system-scope keep-warm flag. |
+| `schedule_json` | TEXT | Resolved `TimerSchedule` JSON: `once`, `interval` or `cron` (§7.6). |
+| `next_wake_at` | INTEGER | Epoch ms of the next fire (indexed). |
+| `payload` | TEXT | Opaque string passed to the handler when the timer fires. |
+| `scope` | TEXT | JSON array of scopes, default `["system"]`; elements are `system` \| `agent`. |
+| `lambda` | TEXT | Lambda reference run on fire (system scope). |
+| `warm` | INTEGER | `0`/`1`; keep the system-scope sandbox warm. |
 | `run_count` | INTEGER | Number of times the timer has fired. |
 | `created_at` | INTEGER | Epoch ms when created. |
 | `last_fired_at` | INTEGER | Epoch ms of the most recent fire. |
-| `locked` | INTEGER | `0`/`1` owner lock; prevents the agent from modifying or removing the timer. |
-| `loop` | TEXT | Originating loop — the cognition stream the wake dispatches to. Nullable; NULL means the main stream (and is what every pre-v29 row carries). Stamped from the creating loop's binding, never from caller-supplied arguments. |
+| `locked` | INTEGER | `0`/`1`; owner lock. The agent cannot modify or delete a locked timer. |
+| `expired` | INTEGER | `0`/`1`; `1` once the timer has no further fire time (§7.7). Expired rows are kept as history. |
+| `loop` | TEXT | Loop an agent-scope fire wakes (§6.4). NULL means `main`, or a timer without agent scope. The runtime sets it from the loop that created the timer, never from tool arguments. |
 
 #### `adf_files` — virtual filesystem
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `path` | TEXT PK | Relative path (e.g. `README.md`, `mind.md`, `data/x.csv`). |
-| `content` | BLOB | Raw file bytes. |
+| `path` | TEXT PK | Relative path, for example `README.md`, `mind.md`, `data/x.csv`. |
+| `content` | BLOB | File bytes. |
 | `mime_type` | TEXT | MIME type. |
 | `size` | INTEGER | Byte length of `content`. |
-| `protection` | TEXT | `read_only` \| `no_delete` \| `none`. Core files `README.md`, `mind.md`, and `soul.md` are `no_delete` (§4.2). |
-| `authorized` | INTEGER | `0`/`1`; whether the file is owner-authorized for agent code access (§4.3). |
-| `created_at` | TEXT | ISO-8601 creation timestamp. |
-| `updated_at` | TEXT | ISO-8601 last-modified timestamp. |
+| `protection` | TEXT | `read_only` \| `no_delete` \| `none` (§4.2). |
+| `authorized` | INTEGER | `0`/`1`; the owner has approved the file as trusted code (§4.3). |
+| `created_at` | TEXT | ISO-8601 creation time. |
+| `updated_at` | TEXT | ISO-8601 last-modified time. |
 
-#### `adf_audit` — compressed snapshots of cleared data
+#### `adf_audit` — compressed snapshots of removed data
 
 | Column | Type | Meaning |
 |--------|------|---------|
 | `id` | INTEGER PK | Autoincrement snapshot id. |
-| `source` | TEXT | What was captured (indexed with `start_seq`): `loop:<stream>` (archived loop rows, e.g. `loop:main`), `inbox_message` \| `outbox_message` (full ALF at arrival/send, before tombstoning), `file` (deleted file content/metadata). A bare `loop` source is legacy-read-only — written by pre-v29 runtimes, which had a single unnamed stream. `inbox` \| `outbox` batch snapshots are likewise legacy-read-only — written by pre-v28 runtimes only; message content is captured per message instead. Full set enumerated in §13.3. |
-| `start_seq` | INTEGER | For `loop` snapshots: lowest `adf_loop.seq` archived in this blob. NULL for non-loop and un-backfilled legacy rows. A given seq may appear in more than one blob (e.g. re-archived rebuild snapshots) — scan candidates. |
-| `end_seq` | INTEGER | For `loop` snapshots: highest `adf_loop.seq` archived in this blob. NULL otherwise. |
-| `ref` | TEXT | Per-item reference: ALF message id for `inbox_message`/`outbox_message`, file path for `file`. NULL for `loop:<stream>` and legacy rows — the stream name lives in `source`, not here. |
+| `source` | TEXT | What was captured (§13.3). Indexed with `start_seq`. |
+| `start_seq` | INTEGER | For `loop:<name>` snapshots: lowest `adf_loop.seq` in the blob. NULL otherwise. A `seq` MAY appear in more than one blob (for example after a history rebuild), so readers scan every candidate. |
+| `end_seq` | INTEGER | For `loop:<name>` snapshots: highest `adf_loop.seq` in the blob. NULL otherwise. |
+| `ref` | TEXT | Per-item reference: ALF message id for `inbox_message` and `outbox_message`, file path for `file`. NULL for loop snapshots and legacy rows. |
 | `entry_count` | INTEGER | Number of rows captured. |
 | `size_bytes` | INTEGER | Uncompressed size of the captured rows. |
-| `data` | BLOB | Brotli-compressed JSON of the cleared rows. |
+| `data` | BLOB | Brotli-compressed JSON of the captured rows. |
 | `created_at` | INTEGER | Epoch ms when the snapshot was taken. |
 
-#### `adf_identity` — key & secret storage
+#### `adf_identity` — keys and secrets
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `purpose` | TEXT PK | Key purpose / namespace, e.g. `crypto:signing:…`, `encryption`, or agent-set credential keys (via `set_identity`). |
-| `value` | BLOB | Key material or secret bytes (encrypted when `encryption_algo` ≠ `plain`). |
-| `encryption_algo` | TEXT | `plain` (default) or an encryption-algorithm id. |
-| `salt` | BLOB | KDF salt, present when the value is encrypted. |
-| `kdf_params` | TEXT | JSON KDF parameters. |
-| `code_access` | INTEGER | `0`/`1`; whether agent code execution may read this row. Schema default `0` (hidden from code). Rows created via the `set_identity` code method are inserted with `1` so code can read back the keys it stored; overwriting an existing row never changes its flag. |
+| `purpose` | TEXT PK | Key purpose, for example `crypto:signing:private_key`, `mcp:<server>:<key>`, or a key set with `set_identity` (§8.2). |
+| `value` | BLOB | Key material or secret bytes; encrypted when `encryption_algo` is not `plain`. |
+| `encryption_algo` | TEXT | `plain` (default), `env:identity`, `env:credentials`, or a legacy password algorithm id (§8.3). |
+| `salt` | BLOB | KDF salt for legacy password-encrypted rows. |
+| `kdf_params` | TEXT | JSON KDF parameters for legacy password-encrypted rows. |
+| `code_access` | INTEGER | `0`/`1`; whether agent code may read the row. Default `0`. Rows created by the `set_identity` code method are inserted with `1`; overwriting an existing row does not change the flag. |
 
-#### `adf_attestations` — delegation certificates
+#### `adf_attestations` — signed statements about this agent
 
-Public by design, stored plain (readable at card-build time even under
-password lock). Two lifecycle classes: current-state certs (`owner`,
-`operator`) are replaced wholesale on re-key; all other roles (`clone`,
-`rotation`, …) are append-only facts that re-attestation never deletes.
-Stored in a single `adf_attestations` adf_meta key before schema v24.
+Attestations are public and stored unencrypted, so the runtime can build the agent card while the file is password-locked. Attestations with role `owner` or `operator` describe current state and are replaced when the agent is re-keyed. Attestations with any other role (`clone`, `rotation`, …) record past events and are never deleted by re-attestation. Before schema version 24 they were stored in a single `adf_meta` key.
 
 | Column | Type | Meaning |
 |--------|------|---------|
 | `id` | INTEGER PK | Autoincrement row id (insertion order). |
-| `issuer` | TEXT | DID of the attesting party. |
-| `subject` | TEXT | DID the attestation is about; covered by the signature so a cert cannot be replayed onto another identity. |
-| `role` | TEXT | `owner` \| `operator` \| `runtime` \| `clone` \| `rotation` \| … |
-| `issued_at` | TEXT | ISO 8601. |
-| `expires_at` | TEXT | Optional ISO 8601 expiry. |
+| `issuer` | TEXT | DID of the signer. |
+| `subject` | TEXT | DID the attestation is about. The signature covers it, so an attestation cannot be moved to another identity. |
+| `role` | TEXT | `owner` \| `operator` \| `runtime` \| `clone` \| `rotation` \| other. |
+| `issued_at` | TEXT | ISO-8601. |
+| `expires_at` | TEXT | Optional ISO-8601 expiry. |
 | `scope` | TEXT | What the attestation covers (for `clone`: the prior agent DID). |
-| `signature` | TEXT | `ed25519:<base64>` over canonical JSON of all fields except `signature`. |
-| `raw_json` | TEXT | The exact signed canonical fields — verification never depends on column round-tripping. |
+| `signature` | TEXT | `ed25519:<base64>` over the canonical JSON of every field except `signature`. |
+| `raw_json` | TEXT | The signed canonical fields. Verification uses this column, not the other columns. |
 
-#### `adf_tasks` — async tool interception / HIL
+#### `adf_tasks` — asynchronous tool calls and approvals
 
 | Column | Type | Meaning |
 |--------|------|---------|
 | `id` | TEXT PK | Task id. |
-| `tool` | TEXT | Name of the tool the task represents. |
+| `tool` | TEXT | Name of the tool the task runs. |
 | `args` | TEXT | JSON tool arguments; default `{}`. |
-| `status` | TEXT | `pending` \| `pending_approval` \| `running` \| `completed` \| `failed` \| `denied` \| `cancelled` (indexed). |
+| `status` | TEXT | `pending` \| `pending_approval` \| `running` \| `completed` \| `failed` \| `denied` \| `cancelled` (indexed; §13.4). |
 | `result` | TEXT | JSON result when completed. |
-| `error` | TEXT | Error string when failed. |
+| `error` | TEXT | Error text when failed. |
 | `created_at` | INTEGER | Epoch ms when created. |
 | `completed_at` | INTEGER | Epoch ms when resolved. |
-| `origin` | TEXT | What created the task (e.g. agent, executor, owner). |
-| `requires_authorization` | INTEGER | `0`/`1`; gated on owner approval before execution. |
-| `executor_managed` | INTEGER | `0`/`1`; the executor is synchronously awaiting this tool — `task_resolve` signals approval without re-executing it. |
-| `approval_meta` | TEXT | JSON approval metadata for HIL tasks: `{ reason: 'restricted' \| 'protection', protection?: { kind, target, level, description } }`. Lets `on_task_create` lambdas, the tasks panel, and post-restart reads see what is being approved (incl. a plain-English `description`), not just tool+args. NULL for non-HIL tasks. |
-| `loop` | TEXT | Originating loop — the cognition stream whose turn created the task. Nullable; NULL means the main stream or an origin not attributable to a loop, which is what every pre-v29 row carries. |
+| `origin` | TEXT | What created the task (for example agent, executor, owner). |
+| `requires_authorization` | INTEGER | `0`/`1`; the task needs owner approval before it runs. |
+| `executor_managed` | INTEGER | `0`/`1`; the executor is waiting synchronously for this tool call, so `task_resolve` signals approval without running the tool a second time. |
+| `approval_meta` | TEXT | JSON for approval tasks: `{ reason: 'restricted' \| 'protection', protection?: { kind, target, level, description } }`. `on_task_create` lambdas, approval UIs and reads after a restart use it to show what is being approved. NULL for other tasks. |
+| `loop` | TEXT | Loop whose turn created the task (§6.4). NULL means `main` or an origin outside any loop. |
 
 #### `adf_logs` — structured runtime log
 
@@ -525,17 +585,17 @@ Stored in a single `adf_attestations` adf_meta key before schema v24.
 |--------|------|---------|
 | `id` | INTEGER PK | Autoincrement log id. |
 | `level` | TEXT | `debug` \| `info` \| `warn` \| `error` (indexed). |
-| `origin` | TEXT | Emitting subsystem/source (indexed). |
-| `event` | TEXT | Event type/name. |
+| `origin` | TEXT | Emitting subsystem (indexed). |
+| `event` | TEXT | Event name. |
 | `target` | TEXT | Affected entity, if any. |
 | `message` | TEXT | Human-readable message (NOT NULL). |
-| `data` | TEXT | Optional JSON detail payload. |
+| `data` | TEXT | Optional JSON detail. |
 | `created_at` | INTEGER | Epoch ms when logged. |
-| `loop` | TEXT | Originating loop — the cognition stream that emitted the line. Nullable; NULL means the main stream or a non-loop origin (system/mcp/adapter), which is what every pre-v29 row carries. |
+| `loop` | TEXT | Loop that emitted the row (§6.4). NULL means `main` or an origin outside any loop (system, MCP, adapter). |
 
-### 3.4 User Schema
+### 3.4 User Tables
 
-Agents may create tables that do not start with `adf_`. The recommended prefix is `local_`. Runtime tools may require the `local_` prefix for writes even if SQLite itself could store other names.
+An agent MAY create tables whose names do not start with `adf_`. Runtime tools require the prefix `local_` for writes (§10.3), and `security.table_protections` (§5.6) applies only to `local_*` tables.
 
 ```sql
 CREATE TABLE local_subscribers (
@@ -545,11 +605,11 @@ CREATE TABLE local_subscribers (
 );
 ```
 
-Runtimes SHOULD load sqlite-vec when available so agents can create vector tables with `CREATE VIRTUAL TABLE local_embeddings USING vec0(...)`.
+A runtime SHOULD load sqlite-vec when it is available, so that agents can create vector tables with `CREATE VIRTUAL TABLE local_embeddings USING vec0(...)`.
 
 ### 3.5 Schema Migration
 
-`adf_schema_version` in `adf_meta` is the canonical schema version (currently **30**; see §17.1 for the revision history). Runtimes MUST apply migrations sequentially and MUST NOT silently downgrade a newer schema. If a runtime cannot open a newer schema, it should fail read-only or refuse to open with a clear error. Runtimes SHOULD create a transient backup before applying migrations and remove it only after they succeed.
+`adf_meta.adf_schema_version` is the storage schema version. The current storage schema version is 32; §17.1 lists the revisions. A runtime MUST apply migrations in order and MUST NOT downgrade a newer schema. A runtime that cannot apply a migration MUST NOT modify the file; it SHOULD open the file read-only or refuse to open it with an error that names both versions. A runtime SHOULD create a backup before it migrates a file and remove it only after the migration succeeds.
 
 ---
 
@@ -559,70 +619,72 @@ Runtimes SHOULD load sqlite-vec when available so agents can create vector table
 
 | Path | Protection | Description |
 |------|------------|-------------|
-| `README.md` | `no_delete` | Primary document and shared human-agent artifact |
-| `mind.md` | `no_delete` | Agent working memory — always-loaded index over `mind/` wiki pages |
-| `mind/log.md` | `no_delete` | Append-only history of mind changes. Seeded at creation (and back-filled into pre-existing agents by migration). |
-| `soul.md` | `no_delete` | Agent voice/identity file, owned and rewritten by the agent; injected into the system prompt via the `{{soul.md}}` placeholder. Seeded at creation (and back-filled into pre-existing agents by migration). |
-| `public/*` | `none` | Static files eligible for public serving |
-| `lib/*` | `none` | Recommended location for lambdas and support scripts |
-| `skills/*` | `none` | Installed skill packages, one directory per skill; `skills/<name>/SKILL.md` is the manifest. Agent-owned and fully mutable — see §5.1. |
-| `skills-registry.json` | `read_only` | Derived catalog of installed skills, generated by the runtime indexer and injected via `{{skills-registry.json}}`. Always runtime-owned: agent writes are refused. Materialized at workspace open even when the agent has no skills — see §5.1. |
-| `skills-state.json` | `none` | Skill mute list — `{ "schema": 1, "disabled": [...] }`. Agent-writable; absent means every installed skill is enabled. |
+| `README.md` | `no_delete` | Primary document (§1.3). |
+| `mind.md` | `no_delete` | Working memory: an index over the pages in `mind/`, injected into the system prompt through `{{mind.md}}` (§5.1). |
+| `mind/log.md` | `no_delete` | Append-only history of changes to the memory. |
+| `soul.md` | `no_delete` | Voice file, written by the agent and injected through `{{soul.md}}`. |
+| `public/*` | `none` | Files served by `serving.public` (§12.1). |
+| `lib/*` | `none` | RECOMMENDED location for lambdas and support scripts. |
+| `skills/*` | `none` | Installed skill packages, one directory per skill; `skills/<name>/SKILL.md` is the manifest (§5.1). |
+| `skills-registry.json` | `read_only` | Catalog of installed skills, generated by the runtime and injected through `{{skills-registry.json}}` (§5.1). |
+| `skills-state.json` | `none` | Skill mute list: `{ "schema": 1, "disabled": [...] }`. When it is absent, every installed skill is enabled. |
 
-Recommended but not reserved:
+A runtime creates `README.md`, `mind.md`, `mind/log.md` and `soul.md` when it creates a file (§14.1), and adds any that are missing when it migrates an older file.
+
+RECOMMENDED locations, not reserved:
 
 | Path | Purpose |
 |------|---------|
 | `data/` | Agent-managed data files |
-| `imports/` or `imported/` | Received attachments and imported external files |
-| `mcp/` | Files saved from MCP tool media or resources |
+| `imports/` or `imported/` | Received attachments and imported files |
+| `mcp/` | Files saved from MCP tool results or resources |
 
 ### 4.2 File Protection
 
-`adf_files.protection` controls agent tool access:
+`adf_files.protection` controls access through agent tools:
 
-| Level | Read | Write | Delete | Description |
-|-------|------|-------|--------|-------------|
-| `read_only` | No | No | No | Fully locked from agent access |
-| `no_delete` | Yes | Yes | No | Mutable but cannot be deleted |
-| `none` | Yes | Yes | Yes | Fully mutable |
+| Level | Read | Write | Delete |
+|-------|------|-------|--------|
+| `read_only` | Yes | No | No |
+| `no_delete` | Yes | Yes | No |
+| `none` | Yes | Yes | Yes |
 
-Core files `README.md`, `mind.md`, `mind/log.md`, and `soul.md` use `no_delete` by default: they are always agent-writable but cannot be deleted. `read_only` always blocks agent writes. There is no config flag that gates writes to `no_delete` files (see the note on `allow_protected_writes` in §5.6).
+A runtime MUST refuse an agent's write to a `read_only` file and an agent's delete of a `read_only` or `no_delete` file, unless the call is authorized (§8.6) or the owner approves it. No config field changes these rules (§5.6).
 
 ### 4.3 File Authorization
 
-`adf_files.authorized` is a trust flag for code provenance. It is not a file protection level.
+`adf_files.authorized` records that the owner trusts the file as code. It is independent of the protection level.
 
-- `authorized = 1` means the owner, runtime, or already-authorized code has approved the file as trusted code.
-- Any agent write to an authorized file MUST clear `authorized` back to `0`.
-- Authorized files may call restricted tools and restricted code methods as described in Section 8.
+- `authorized = 1` means the owner, the runtime, or authorized code approved the file.
+- A runtime MUST set `authorized` to `0` when an agent writes to the file.
+- Code from an authorized file MAY call restricted tools and restricted code methods (§8.6, §8.7).
 
 ### 4.4 Meta Protection
 
-`adf_meta.protection` controls agent access to metadata keys:
+`adf_meta.protection` controls access through agent tools:
 
-| Level | Read | Write | Delete | Description |
-|-------|------|-------|--------|-------------|
-| `none` | Yes | Yes | Yes | Agent-managed metadata |
-| `readonly` | Yes | No | No | System or owner-managed metadata |
-| `increment` | Yes | Increment only | No | Monotonic numeric counters |
+| Level | Read | Write | Delete | Use |
+|-------|------|-------|--------|-----|
+| `none` | Yes | Yes | Yes | Agent-managed values |
+| `readonly` | Yes | No | No | Runtime- or owner-managed values |
+| `increment` | Yes | Increase only | No | Monotonic counters |
 
-System keys prefixed with `adf_` SHOULD be `readonly`. Common system keys include `adf_version`, `adf_schema_version`, `adf_created_at`, `adf_updated_at`, `adf_did`, `adf_handle`, and `adf_parent_did`.
+A runtime MUST create every `adf_*` key in the registry (§3.3) with the protection listed there. A runtime re-applies `readonly` to `adf_did`, `adf_owner_did`, `adf_runtime_did` and `adf_did_history` on every open.
 
 ---
 
 ## 5. Agent Configuration
 
-Configuration is stored as JSON in `adf_config.config_json`. It is a single-row table (`id = 1`). Runtimes MUST preserve unknown forward-compatible fields unless explicitly migrating them.
+Configuration is stored as JSON in `adf_config.config_json`, a single-row table (`id = 1`). A runtime MUST preserve config fields it does not recognise (§0.2).
 
-Config is schema-validated, but enforcement is asymmetric by design:
+A runtime validates config against its schema at two points, with different results:
 
-- **On write** (`sys_update_config`) the change is validated against the config schema and REJECTED if it would introduce a new violation. A config that was already invalid stays editable — only violations the write *introduces* are rejected — so a file can never become permanently frozen.
-- **On load** validation is non-fatal: a stored config that fails schema checks is loaded anyway (with a warning), rather than refusing to open the file. This keeps older or hand-edited files usable and avoids bricking an agent on a cosmetic schema drift.
-
-Runtimes SHOULD therefore treat the schema as an enforced write-time gate and an advisory load-time check, not an absolute load-time reject.
+- *On write* through `sys_update_config`, the runtime MUST reject a change that introduces a schema violation. A change to a config that is already invalid is accepted when it introduces no new violation, so an invalid file stays editable.
+- *On load*, a config that fails validation is loaded, and the runtime logs a warning. A runtime SHOULD NOT refuse to open a file because its config fails validation.
 
 ### 5.1 Top-Level Shape
+
+Example (non-normative values):
 
 ```jsonc
 {
@@ -630,7 +692,7 @@ Runtimes SHOULD therefore treat the schema as an enforced write-time gate and an
   "id": "a1b2c3d4e5f6",
   "name": "dashboard",
   "description": "Monitors system health",
-  "icon": "D",
+  "icon": "📊",
   "handle": "dashboard",
   "card": {
     "endpoints": {
@@ -639,12 +701,12 @@ Runtimes SHOULD therefore treat the schema as an enforced write-time gate and an
       "health": "https://relay.example.com/dashboard/health",
       "ws": "wss://relay.example.com/dashboard/ws"
     },
-    "resolution": { "method": "self" }
+    "resolution": { "method": "self" },
+    "publish_attestations": false
   },
 
   "state": "idle",
   "start_in_state": "idle",
-  "loop_mode": "interactive",
   "autonomous": false,
   "autostart": false,
 
@@ -654,33 +716,19 @@ Runtimes SHOULD therefore treat the schema as an enforced write-time gate and an
     "temperature": 0.7,
     "max_tokens": 4096,
     "top_p": null,
-    "thinking_budget": null,
-    "multimodal": {
-      "image": false,
-      "audio": false,
-      "video": false
-    },
+    "reasoning": { "enabled": true, "max_tokens": 8000 },
+    "multimodal": { "image": false, "audio": false, "video": false },
     "params": [],
     "provider_params": {}
   },
 
-  "instructions": "Help the user with their request.",
+  "instructions": "Help the owner with their request.",
   "include_base_prompt": true,
   "bare_prompt": false,
 
   "context": {
-    // document_mode / mind_mode are RESERVED — not yet implemented (no runtime
-    // reader). The live ContextConfig keys are compact_threshold, audit, and
-    // dynamic_instructions. See note below.
-    "document_mode": "agentic",
-    "mind_mode": "included",
     "compact_threshold": 100000,
-    "audit": {
-      "loop": false,
-      "inbox": false,
-      "outbox": false,
-      "files": false
-    },
+    "audit": { "loop": true, "inbox": false, "outbox": false, "files": false },
     "dynamic_instructions": {
       "inbox_hints": true,
       "context_warning": true,
@@ -691,8 +739,10 @@ Runtimes SHOULD therefore treat the schema as an enforced write-time gate and an
 
   "tools": [],
   "triggers": {},
+  "loops": [],
   "security": {},
   "limits": {},
+  "recovery": {},
   "messaging": {},
   "audit": {},
   "code_execution": {},
@@ -702,6 +752,10 @@ Runtimes SHOULD therefore treat the schema as an enforced write-time gate and an
   "adapters": {},
   "serving": {},
   "ws_connections": [],
+  "stream_bind": {},
+  "stream_bindings": [],
+  "umbilical": {},
+  "umbilical_taps": [],
   "providers": [],
   "locked_fields": [],
 
@@ -715,151 +769,109 @@ Runtimes SHOULD therefore treat the schema as an enforced write-time gate and an
 }
 ```
 
-The live `context` (`ContextConfig`) keys are `compact_threshold`, `audit`, and
-`dynamic_instructions`. `context.document_mode` and `context.mind_mode` are
-**reserved / not yet implemented**: no runtime reads them, and how document/mind
-content reaches the prompt is instead governed by instruction templating (below)
-— `mind.md` is injected via the `{{mind.md}}` placeholder, not a `mind_mode`
-switch. The two fields are retained here as forward-compatible placeholders.
+| Field | Section |
+|-------|---------|
+| `id`, `name`, `description`, `icon`, `handle`, `card` | §5.2, §5.22 |
+| `state`, `start_in_state`, `autonomous`, `autostart` | §5.3 |
+| `model` | §5.18 |
+| `instructions`, `include_base_prompt`, `bare_prompt` | §5.1 (below) |
+| `context` | §5.19 |
+| `tools` | §5.4 |
+| `triggers` | §5.5, §7 |
+| `loops` | §6.4 |
+| `security` | §5.6 |
+| `limits` | §5.7 |
+| `recovery` | §5.20 |
+| `pre_llm_hook` | §5.21 |
+| `messaging` | §5.8 |
+| `audit` | §5.19 |
+| `code_execution` | §5.9 |
+| `logging` | §5.10 |
+| `mcp` | §5.11 |
+| `compute` | §5.12 |
+| `adapters` | §5.13 |
+| `serving` | §5.14 |
+| `ws_connections` | §5.15 |
+| `stream_bind`, `stream_bindings` | §5.23 |
+| `umbilical`, `umbilical_taps` | §5.24 |
+| `providers` | §5.16 |
+| `locked_fields` | §5.17 |
+| `metadata` | Descriptive: `created_at`, `updated_at`, `author`, `tags`, `version`. |
 
 #### Instruction templating (`{{<path>}}`)
 
-The `instructions` field — and the runtime base prompt it is combined with — may
-contain `{{<path>}}` placeholders. At system-prompt assembly the runtime replaces
-each with the contents of the `adf_files` entry at that exact path:
+The `instructions` field, and the runtime base prompt combined with it, MAY contain `{{<path>}}` placeholders. When it assembles the system prompt, the runtime replaces each placeholder with the content of the `adf_files` entry at that exact path:
 
 ```
 {{mind.md}}        → the agent's working memory
-{{soul.md}}        → the agent's voice/identity file
-{{README.md}}      → the agent's public README
-{{policy/tone.md}} → any other workspace file
+{{soul.md}}        → the agent's voice file
+{{README.md}}      → the primary document
+{{policy/tone.md}} → any other file
 ```
 
-Resolution rules a conforming runtime MUST honor:
+A conforming runtime MUST apply these rules:
 
-- **Files only.** A placeholder resolves only against `adf_files`, never against
-  `adf_identity`, `adf_meta`, or `adf_config`. Dynamic or queried values are the
-  domain of lambdas and `loop_inject`, not templating.
-- **Single pass.** Injected content is not re-scanned, so a referenced file cannot
-  chain-inject another. There is no recursion.
-- **Snapshot.** Referenced files are read once at session start and reused for the
-  session; edits are picked up at the next session reset (compaction / `loop_clear`),
-  never mid-session. This keeps the system prompt stable for prompt caching.
+- *Files only.* A placeholder resolves only against `adf_files`, never against `adf_identity`, `adf_meta` or `adf_config`. Queried values reach the model through lambdas and `loop_inject` (§9).
+- *Single pass.* The runtime does not scan injected content for placeholders, so a referenced file cannot inject another file.
+- *Snapshot.* The runtime reads referenced files once when the session starts and reuses them for the session. It picks up edits at the next session reset (compaction or `loop_clear`), not during the session.
+- *Missing path.* A placeholder for a missing path renders as `[missing file: <path>]`.
+- *Independent of `fs_read`.* Templating is owner-authored prompt composition and works whether or not the agent has `fs_read` enabled.
 
-- **Missing path** renders a visible `[missing file: <path>]` marker rather than
-  silently expanding to empty, so typos are auditable.
-- **Not gated on `fs_read`.** Templating is owner-authored prompt composition; it is
-  independent of whether the agent has the `fs_read` tool enabled.
+The default base prompt contains `{{mind.md}}`. The runtime records the resolved prompt in `adf_loop` (§1.5).
 
-`mind.md` is injected via the `{{mind.md}}` placeholder in the default base prompt —
-it is not a special case. The resolved result is captured in `adf_loop` like any
-other context injection (§1.5).
+Rationale: the snapshot rule keeps the system prompt byte-stable within a session, which prompt caching requires. A visible missing-file marker makes a mistyped path auditable.
 
 #### Prompt composition (`include_base_prompt`, `bare_prompt`)
 
-Two top-level booleans control how much runtime-authored text surrounds
-`instructions`:
+Two top-level booleans control how much runtime-authored text surrounds `instructions`:
 
 | Value | System prompt contains |
 |---|---|
-| both absent/false | base prompt, every conditional section the config calls for, `instructions`, identity, multimodal, autonomous suffix |
+| both absent or `false` | base prompt, every conditional section the config calls for, `instructions`, identity block, multimodal block, autonomous suffix |
 | `include_base_prompt: false` | everything above except the base prompt and its conditional sections |
-| `bare_prompt: true` | `instructions` alone |
+| `bare_prompt: true` | `instructions` only |
 
-`bare_prompt` supersedes `include_base_prompt`. When it is true a conforming
-runtime MUST omit every piece of prompt content it authored — the base prompt,
-all conditional sections, the identity and multimodal blocks, the autonomous
-suffix — and MUST also suppress the per-turn dynamic instructions, which are
-runtime text reaching the model on a later hop rather than a different kind of
-content. Tool schemas are unaffected: they travel with the API request, not the
-prompt, and a bare agent is still a fully capable one.
+`bare_prompt` takes precedence over `include_base_prompt`. When `bare_prompt` is true, a conforming runtime MUST omit every piece of prompt text it authored: the base prompt, all conditional sections, the identity and multimodal blocks, and the autonomous suffix. `bare_prompt` governs the system prompt only; the per-turn dynamic instructions are controlled by `context.dynamic_instructions` (§5.19). Tool schemas are sent with the API request, not in the prompt, so `bare_prompt` does not remove tools.
 
-`{{<path>}}` placeholders inside `instructions` still resolve under
-`bare_prompt`. They are owner-authored composition (above), not runtime
-injection.
+`{{<path>}}` placeholders inside `instructions` resolve when `bare_prompt` is true.
 
-A conforming runtime MUST omit any prompt section whose configured text is
-empty or whitespace, so that blanking a section removes it rather than leaving
-an empty block between separators.
+A conforming runtime MUST omit a prompt section whose configured text is empty or whitespace.
 
 #### File-backed skills
 
-Skill packages live at `skills/<name>/SKILL.md` (§4.1). Presence of the manifest
-is installation; `skills-state.json` holds the mute list. **There is no skills
-configuration at all** — no per-skill state in `adf_config` and no subsystem
-policy either. Installing is a file write, muting is a file write, and a
-conforming runtime always indexes and always injects.
+A skill package is installed by writing `skills/<name>/SKILL.md` (§4.1); `skills-state.json` holds the mute list. The config has no skill fields. Installing and muting are file writes, and a conforming runtime always indexes and always injects.
 
-A conforming runtime indexes `skills/*/SKILL.md` into the derived
-`skills-registry.json` and injects that catalog into the system prompt via the
-`{{skills-registry.json}}` placeholder. **Indexing and injection are the only
-things the runtime does.** It MUST NOT execute skill text,
-authorize files, enable tools, or relax HIL because a skill is installed,
-enabled, or selected. `requires` remains a checklist the agent verifies, never a
-grant. Skill text is untrusted instruction content, and every action a skill
-describes travels the normal tool, protection, and approval path.
+A conforming runtime indexes `skills/*/SKILL.md` into `skills-registry.json` and injects that catalog through the `{{skills-registry.json}}` placeholder. Indexing and injection are the only actions the runtime takes for skills. It MUST NOT execute skill text, authorize files, enable tools, or skip owner approval because a skill is installed, enabled or selected. A skill's `requires` list is a checklist for the agent to verify; it grants nothing. Skill text is untrusted instruction content, and every action it describes goes through the normal tool, protection and approval checks.
 
-The indexer MUST bound and validate its catalog (name/directory agreement,
-directory-name shape, file size, entry count, serialized registry size), report
-rejected packages with a reason rather than dropping them silently, keep disable
-state separate from installed source, and write the generated registry outside
-`skills/` so its own output does not retrigger indexing. Rejections MUST be
-reported in the generated registry itself — a top-level `rejected` array of
-`{ path, reason }`, omitted when empty — including the case where the disable
-state file exists but does not parse, which the indexer MUST treat as an empty
-mute list rather than an error. The rejected list MAY be capped and truncated so
-that diagnostics never evict an otherwise-admissible package from the size
-budget.
+The indexer MUST bound and validate its catalog: name and directory agreement, directory-name format, file size, entry count and serialized registry size. It MUST report each rejected package with a reason in a top-level `rejected` array of `{ path, reason }` in the registry, omitted when empty. It MUST treat a `skills-state.json` that does not parse as an empty mute list and report it in `rejected`. It MAY cap the `rejected` list so that diagnostics never displace an admissible package from the size budget. It MUST keep mute state separate from installed files, and write the registry outside `skills/` so that its own output does not trigger re-indexing.
 
-`skills-registry.json` is runtime-owned: the runtime SHOULD hold it at
-protection `read_only` and adopt a pre-existing agent-authored registry at that
-path on first index. Because indexing is unconditional, that hold is never
-released. The runtime MUST materialize the registry at workspace open even for
-an agent with no packages at all — an empty `skills` object is still a valid
-catalog — so that the `{{skills-registry.json}}` placeholder always resolves
-rather than rendering a missing-file marker into every system prompt.
+The runtime owns `skills-registry.json`. It SHOULD hold the file at protection `read_only` and take over an agent-written file at that path on first index. The runtime MUST create the registry when it opens the file, even when no skills are installed (an empty `skills` object is a valid catalog), so that `{{skills-registry.json}}` always resolves.
 
-Mid-session catalog changes MUST NOT rewrite the injected snapshot (that would
-invalidate prompt caching); they are delivered as a keyed `loop_inject` that
-supersedes earlier catalogs, and the snapshot refreshes at the next session
-reset (compaction / `loop_clear`). A runtime that caches the assembled system
-prompt MUST therefore include every injected file that reaches the prompt —
-including ones referenced from conditional prompt sections rather than the base
-prompt — in that cache's key, and MUST invalidate the cache on session reset.
-Otherwise the "refreshes at the next session reset" guarantee does not hold.
+A catalog change during a session MUST NOT rewrite the injected snapshot. The runtime delivers it as a keyed `loop_inject` that replaces earlier catalog injections, and the snapshot refreshes at the next session reset. A runtime that caches the assembled system prompt MUST include every injected file in the cache key, including files referenced from conditional sections, and MUST invalidate the cache on session reset.
 
-Installation is not a runtime affordance: writing the package into
-`skills/<name>/` is the whole operation, and any writer reaches it — the
-agent's own `fs_write`, a Studio file write, an HTTP PUT. A conforming runtime
-MUST NOT require a dedicated install tool, and SHOULD NOT ship one: it would
-gate nothing that `fs_write` does not already permit. Catalogs are ordinary
-JSON documents fetched over the runtime's normal outbound-HTTP path, subject to
-that path's SSRF protections; the canonical first-party catalog is named in the
-skills prompt section.
+Installation is a file write under `skills/<name>/` by any writer: the agent's `fs_write`, a Studio file write, an HTTP PUT. A conforming runtime MUST NOT require a dedicated install tool and SHOULD NOT provide one. Skill catalogs are JSON documents fetched over the runtime's outbound HTTP path and its SSRF protections (§5.6); the skills prompt section names the first-party catalog.
 
 ### 5.2 Identity Fields
 
 | Field | Description |
 |-------|-------------|
-| `id` | Permanent local runtime handle: a 12-character nanoid minted at creation, never rewritten. Used for audit labels, event routing, and log continuity. NOT the agent's identity — that is the DID in `adf_meta.adf_did`, which can rotate (claim, re-key) while `id` stays stable. No new feature may treat `id` as identity. |
-| `name` | Human-friendly name used in UI and discovery. |
-| `description` | Public capability summary used in discovery and agent cards. |
-| `icon` | Optional display icon or short label. |
-| `handle` | URL-safe slug for mesh serving. Lowercase letters, numbers, and hyphens. |
-| `card` | Optional public card endpoint/resolution overrides. |
+| `id` | Local runtime handle: a 12-character nanoid set at creation and never changed. Used for audit labels, event routing and log continuity. It is not the agent's identity; that is the DID in `adf_meta.adf_did` (§8.1), which changes on claim and re-key while `id` stays the same. A runtime MUST NOT use `id` as identity. |
+| `name` | Display name used in UIs and discovery. |
+| `description` | Capability summary used in discovery and the agent card. |
+| `icon` | Display icon, typically one emoji. A runtime picks one from `id` when the file is created (schema version 31 backfills older files). |
+| `handle` | URL-safe name for mesh serving: lowercase letters, digits and hyphens. |
+| `card` | Agent-card overrides (§5.22). |
 
-### 5.3 State and Loop Configuration
+### 5.3 State and Turn Fields
 
-Canonical v0.2 fields:
+| Field | Values | Default | Description |
+|-------|--------|---------|-------------|
+| `state` | `active`, `idle`, `hibernate`, `suspended`, `off` | `active` | Last persisted state (§6.1). |
+| `start_in_state` | `active`, `idle`, `hibernate` | absent | State the runtime enters when it loads the agent. When absent, the runtime treats it as `active`: it runs the startup turn and reports the initial state as `active`. |
+| `autonomous` | boolean | `false` | Turn behaviour of `main` (§6.3). |
+| `autostart` | boolean | `false` | The runtime SHOULD start the agent when the runtime starts. |
 
-| Field | Values | Description |
-|-------|--------|-------------|
-| `state` | `active`, `idle`, `hibernate`, `suspended`, `error`, `off` | Last persisted display state. Runtime may keep the live executor state in memory. |
-| `start_in_state` | `active`, `idle`, `hibernate`, `off` | State entered when the runtime loads the agent. |
-| `loop_mode` | `interactive`, `autonomous` | LLM turn behavior. |
-| `autostart` | boolean | Runtime should start this agent on boot if possible. |
-
-Compatibility: existing files may use `autonomous: true|false` instead of `loop_mode`. Runtimes MUST interpret `autonomous: true` as `loop_mode: "autonomous"` and `autonomous: false` as `loop_mode: "interactive"` when `loop_mode` is absent.
+`config.autonomous` applies to `main` only; each inner loop has its own `autonomous` field (§6.4).
 
 ### 5.4 Tool Declarations
 
@@ -875,15 +887,17 @@ Compatibility: existing files may use `autonomous: true|false` instead of `loop_
 
 | Field | Description |
 |-------|-------------|
-| `name` | Built-in tool name, MCP tool name (`mcp:<server>:<tool>`), or custom runtime tool name. |
-| `enabled` | If true, the tool exists for the agent and can be called by code and lambdas. If false, the tool is off — code calls are rejected (the one exception: an `enabled: false`, `restricted: true` tool may still be called by authorized code). |
-| `visible` | If true, the enabled tool is included in the LLM loop's active tool schema. The LLM can call a tool only when `enabled` and `visible` are both true. Set `visible: false` to keep a tool callable from code while hiding it from the LLM. |
-| `restricted` | If true, only authorized code can call freely; when also `enabled` and `visible`, LLM loop calls require HIL. |
-| `locked` | If true, the agent cannot modify this declaration through config tools. |
+| `name` | Built-in tool name (§10), MCP tool name `mcp_<server>_<tool>`, or a runtime tool name. |
+| `enabled` | The tool exists for the agent: code and lambdas can call it. When `false`, code calls are rejected, except that authorized code MAY call a tool with `enabled: false, restricted: true` (§8.7). A missing value means `false`. |
+| `visible` | The tool is in the model's tool list. The model can call a tool only when `enabled` and `visible` are both true. `visible: false` keeps a tool callable from code without showing it to the model. A missing value means `false`. |
+| `restricted` | Only authorized code calls the tool freely. A model call to an enabled, visible, restricted tool requires owner approval (§8.7). |
+| `locked` | Owner lock: the agent cannot modify or remove this declaration (§5.17). |
+| `mcp_tool_hash` | Hash of the MCP tool schema and description the owner last reviewed. |
+| `mcp_tool_status` | `new` \| `changed` \| `removed`: the MCP server's definition differs from the reviewed one. A runtime MUST set a `changed` tool to `enabled: false, restricted: true` until the owner reviews it. |
 
 ### 5.5 Triggers
 
-Triggers are configured by event type. Each trigger has `enabled`, optional `locked`, and a `targets` array:
+Triggers are configured by trigger type. Each `TriggerConfig` has `enabled`, an optional `locked` (owner lock on the whole trigger), and a `targets` array:
 
 ```jsonc
 {
@@ -891,7 +905,8 @@ Triggers are configured by event type. Each trigger has `enabled`, optional `loc
     "on_inbox": {
       "enabled": true,
       "targets": [
-        { "scope": "agent", "interval_ms": 30000 },
+        { "scope": "agent" },
+        { "scope": "agent", "loop": "triage" },
         { "scope": "system", "lambda": "lib/router.ts:onInbox", "batch_ms": 100 }
       ]
     }
@@ -899,7 +914,7 @@ Triggers are configured by event type. Each trigger has `enabled`, optional `loc
 }
 ```
 
-See Section 7 for required trigger semantics.
+§7 defines trigger types, target fields and semantics.
 
 ### 5.6 Security Configuration
 
@@ -907,7 +922,7 @@ See Section 7 for required trigger semantics.
 {
   "security": {
     "allow_unsigned": true,
-    "level": 0,
+    "level": 1,
     "require_signature": false,
     "require_payload_signature": false,
     "allow_local_fetch": false,
@@ -916,59 +931,61 @@ See Section 7 for required trigger semantics.
       "outbox": [{ "lambda": "lib/mw.ts:outbox" }]
     },
     "fetch_middleware": [{ "lambda": "lib/mw.ts:fetch" }],
-    "require_middleware_authorization": true
+    "require_middleware_authorization": true,
+    "table_protections": { "local_ledger": "append_only" }
   }
 }
 ```
 
-`allow_local_fetch` (default `false`) gates whether `sys_fetch` may reach
-private/LAN and CGNAT addresses. Loopback is allowed by default — except the
-local daemon control API, which is never fetchable — while link-local /
-cloud-metadata addresses are always blocked regardless of this flag. The guard
-checks DNS-resolved addresses and every redirect hop to prevent SSRF via prompt
-injection. Set it `true` only when an agent must call LAN services. This flag is
-locked by default in the runtime (alongside the `stream_bind` gates): an agent's
-own write via `sys_update_config` is denied but surfaces as a one-time-overridable
-protection request its owner may approve — it is not one of the hard-denied
-guard-system settings.
+| Field | Default | Description |
+|-------|---------|-------------|
+| `allow_unsigned` | `true` | Accept inbound messages without signatures (§8.5). |
+| `level` | `1` | Egress signing and encryption level (§8.5). |
+| `require_signature` | `false` | Reject inbound messages without a valid message signature. |
+| `require_payload_signature` | `false` | Reject inbound messages without a valid payload signature. |
+| `allow_local_fetch` | `false` | See below. |
+| `middleware.inbox`, `middleware.outbox` | none | Message middleware (§12.3). |
+| `fetch_middleware` | none | `sys_fetch` middleware (§12.3). |
+| `require_middleware_authorization` | `true` | Middleware files MUST be authorized (§12.3). |
+| `table_protections` | none | Map of `local_*` table name to `none` \| `append_only` \| `authorized`. `append_only` rejects `UPDATE`, `DELETE` and `DROP` through `db_execute`; `authorized` rejects every write except `CREATE` unless the caller is authorized code. An unlisted table is `none`. |
 
-`allow_protected_writes` is **dead / compat-only**. It is not part of the current
-`SecurityConfig` and is stripped from stored config on migration; runtimes MUST
-NOT treat it as gating any write. File writes are governed solely by
-`adf_files.protection` (§4.2) — `no_delete` files are always agent-writable and
-`read_only` files are never agent-writable.
+`allow_local_fetch` controls which addresses `sys_fetch` and `ws_connect` may reach. A runtime MUST check DNS-resolved addresses and every redirect hop, and MUST apply these rules in order:
+
+1. Link-local and cloud-metadata addresses (`169.254.0.0/16`, `fe80::/10`, and their IPv4-mapped forms) are refused, whatever the flag.
+2. The runtime's own control API on a loopback or unspecified address is refused, whatever the flag.
+3. The agent's own served origin is allowed.
+4. When `allow_local_fetch` is `true`, every other address is allowed.
+5. When it is `false`, loopback addresses (`127.0.0.0/8`, `::1`, `localhost`) are allowed, and private, CGNAT (`100.64.0.0/10`), unspecified, multicast, reserved and `fc00::/7` addresses are refused.
+
+The runtime locks `security.allow_local_fetch` and `stream_bind` for every agent, in addition to `locked_fields` (§5.17): an agent's change through `sys_update_config` is refused and becomes a request the owner MAY approve once.
+
+`allow_protected_writes` is not a config field. A runtime MUST NOT treat it as controlling any write, and removes it from stored config on migration. File writes are governed by `adf_files.protection` alone (§4.2).
 
 ### 5.7 Limits
 
-```jsonc
-{
-  "limits": {
-    "execution_timeout_ms": 60000,
-    "max_file_read_tokens": 30000,
-    "max_file_write_bytes": 5000000,
-    "max_tool_result_tokens": 16000,
-    "max_active_turns": null,
-    "max_image_size_bytes": 5242880,
-    "max_audio_size_bytes": 10485760,
-    "max_video_size_bytes": 20971520,
-    "suspend_timeout_ms": 1200000,
-    "hibernate_nudge": {
-      "enabled": true,
-      "interval_ms": 86400000
-    }
-  }
-}
-```
+| Field | Default | Description |
+|-------|---------|-------------|
+| `execution_timeout_ms` | `60000` | Maximum run time of one code execution. |
+| `max_file_read_tokens` | `30000` | Maximum tokens `fs_read` returns. |
+| `max_file_write_bytes` | `5000000` | Maximum bytes one write stores. |
+| `max_tool_result_tokens` | `16000` | A tool result larger than this is replaced with a preview. |
+| `max_tool_result_preview_chars` | `5000` | Length of that preview. |
+| `max_active_turns` | `null` | Maximum consecutive turns before the runtime suspends the agent; `null` means no limit. |
+| `max_image_size_bytes` | `5242880` | Maximum inlined image size. |
+| `max_audio_size_bytes` | `10485760` | Maximum inlined audio size. |
+| `max_video_size_bytes` | `20971520` | Maximum inlined video size. |
+| `suspend_timeout_ms` | `1200000` when absent | Time the runtime waits for the owner to answer a suspend prompt before it turns the agent `off`. |
+| `hibernate_nudge` | `{ "enabled": true, "interval_ms": 86400000 }` when absent | Periodic wake of a hibernating agent. Requires `on_timer` enabled. |
 
 ### 5.8 Messaging Configuration
 
 ```jsonc
 {
   "messaging": {
-    "receive": false,
+    "receive": true,
     "mode": "proactive",
     "visibility": "localhost",
-    "inbox_mode": false,
+    "inbox_mode": true,
     "allow_list": [],
     "block_list": [],
     "network": "devnet"
@@ -976,20 +993,30 @@ NOT treat it as gating any write. File writes are governed solely by
 }
 ```
 
-| Mode | Behavior |
+| Field | Default | Description |
+|-------|---------|-------------|
+| `receive` | `true` | The agent registers on the mesh and accepts messages. |
+| `mode` | `proactive` | See the table below. |
+| `visibility` | `localhost` | Reachability tier (below). |
+| `inbox_mode` | `true` | The runtime adds inbox hints to dynamic instructions and records the agent's own outgoing mesh messages in `adf_inbox` with status `read`. |
+| `allow_list`, `block_list` | absent | Sender DIDs. A non-empty `allow_list` accepts only listed senders and `block_list` is not consulted; otherwise `block_list` refuses listed senders. When either list is non-empty, a message without a sender DID is refused. |
+| `network` | `devnet` when absent | ALF network name (§11.1). |
+
+| Mode | Behaviour |
 |------|----------|
-| `proactive` | Can send messages at any time. |
-| `respond_only` | Can reply to a valid parent message or during an inbox-triggered turn. |
-| `listen_only` | Cannot send. |
+| `proactive` | The agent can send at any time. |
+| `respond_only` | The agent can reply to a valid parent message or during an inbox-triggered turn. |
+| `listen_only` | The agent cannot send. |
 
-| Visibility | Who can see and reach the agent |
-|------------|---------------------------------|
-| `directory` | Agents on the same runtime in ancestor directories (same dir counts). |
-| `localhost` (default) | Any agent on the same machine. |
+| Visibility | Who can discover and reach the agent |
+|------------|--------------------------------------|
+| `directory` | Agents in the same runtime whose file is in the same directory or an ancestor directory. |
+| `localhost` | Any agent on the same machine. |
 | `lan` | Any agent on the local network. |
-| `off` | Nobody — no enumeration, no inbound delivery. Outbound sends still allowed. |
+| `public` | Any agent that can reach the runtime over the internet. |
+| `off` | No agent. The agent is not listed and inbound delivery is refused. |
 
-Tiers are strictly nested: `lan ⊃ localhost ⊃ directory`. Visibility is enforced on two surfaces — the inbox handler and the `/agents` endpoint — and the runtime's network binding is derived from the highest declared tier (any `lan`-tier agent binds `0.0.0.0`; otherwise loopback). Public internet reachability is not a tier: agents that want public reach register with a relay or expose themselves behind a public endpoint via `card.endpoints` overrides.
+Tiers are nested: `public ⊃ lan ⊃ localhost ⊃ directory`. A runtime MUST enforce visibility when it accepts inbound messages and when it lists agents; visibility does not restrict outbound sends. An agent with tier `lan` or `public` is reachable from other machines only when the runtime listens on a non-loopback address; the listener address is a runtime setting. An agent behind NAT is reached through a relay or `card.endpoints` overrides (§5.22).
 
 ### 5.9 Code Execution Configuration
 
@@ -1003,15 +1030,18 @@ Tiers are strictly nested: `lan ⊃ localhost ⊃ directory`. Visibility is enfo
     "identity_status": true,
     "get_identity": true,
     "set_identity": true,
+    "emit_event": true,
     "attestation_list": true,
     "attestation_add": true,
     "attestation_issue": true,
     "network": false,
     "packages": [{ "name": "vega-lite", "version": "^5.21.0" }],
-    "restricted_methods": ["get_identity", "model_invoke", "attestation_issue"]
+    "restricted_methods": ["attestation_issue"]
   }
 }
 ```
+
+Each boolean enables the code method of the same name (§9); all default to `true`. `network` (default `false`) gives sandbox code native `fetch`/`http`/`https`. `packages` lists at most 50 npm packages available to sandbox code; `npm_install` and `npm_uninstall` edit it. `restricted_methods` (default `["attestation_issue"]`) lists methods only authorized code may call (§8.7); an explicit list replaces the default.
 
 ### 5.10 Logging Configuration
 
@@ -1028,11 +1058,14 @@ Tiers are strictly nested: `lan ⊃ localhost ⊃ directory`. Visibility is enfo
 }
 ```
 
+`default_level` is the minimum level stored. `rules` override it per origin glob; the first matching rule applies. `max_rows` bounds `adf_logs`; `null` means no bound.
+
 ### 5.11 MCP Configuration
 
 ```jsonc
 {
   "mcp": {
+    "new_tools_restricted": true,
     "servers": [
       {
         "name": "github",
@@ -1040,20 +1073,49 @@ Tiers are strictly nested: `lan ⊃ localhost ⊃ directory`. Visibility is enfo
         "command": "node",
         "args": ["server.js"],
         "env": {},
-        "env_keys": ["GITHUB_TOKEN"],
+        "env_schema": [{ "key": "GITHUB_TOKEN", "scope": "agent", "required": true }],
         "npm_package": "@modelcontextprotocol/server-github",
         "source": "npm:@modelcontextprotocol/server-github",
         "tool_call_timeout_ms": 60000,
         "restricted": false,
         "run_location": "shared",
         "available_tools": []
+      },
+      {
+        "name": "docs",
+        "transport": "http",
+        "url": "https://mcp.example.com/mcp",
+        "headers": {},
+        "header_env": [{ "header": "Authorization", "env": "DOCS_TOKEN" }],
+        "oauth": false
       }
     ]
   }
 }
 ```
 
-MCP configurations travel with the file. Installed server binaries, app-wide credentials, process supervisors, and scratch directories are runtime concerns.
+| Field | Description |
+|-------|-------------|
+| `name` | Server name, unique in the agent. |
+| `transport` | `stdio` \| `http`. |
+| `command`, `args` | stdio: process to start. |
+| `url` | http: server endpoint. |
+| `headers` | http: static request headers. |
+| `header_env` | http: `{ header, env, required?, credential_ref? }[]`; the header value comes from a credential. |
+| `bearer_token_env_var` | http: credential used as a bearer token. |
+| `oauth` | http: the server uses interactive OAuth sign-in. |
+| `env` | Static environment variables. |
+| `env_schema` | `{ key, scope: 'agent' \| 'app', required?, description?, credential_ref? }[]`. `agent` values are stored in `adf_identity` as `mcp:<server>:<key>` (§8.2); `app` values are runtime settings and do not travel with the file. Takes precedence over the legacy `env_keys` list. |
+| `npm_package`, `pypi_package`, `source` | Package origin; `source` is `npm:…`, `uvx:…`, `pip:…`, `http:…` or `custom`. |
+| `tool_call_timeout_ms` | Per-server tool call timeout; the runtime default is 60000. |
+| `available_tools` | Cached `{ name, description?, input_schema }[]` from the last discovery. |
+| `restricted` | Every tool of the server is restricted (§8.7). |
+| `run_location` | `host` (requires `compute.host_access`) \| `shared`. When absent, the server runs in the agent's isolated container if `compute.enabled`, otherwise in the shared container. |
+| `credential_files` | `{ path, required?, write_back? }[]`: credential files the server reads, stored in `adf_identity` and written to the server's filesystem before each start. |
+
+`new_tools_restricted` (default `true`) marks the tools of a newly attached server `restricted`. It affects only tools declared after it changes.
+
+The MCP configuration travels with the file. Installed server packages, app-scoped credentials, process supervision and scratch directories are runtime concerns (§15).
 
 ### 5.12 Compute Configuration
 
@@ -1062,15 +1124,23 @@ MCP configurations travel with the file. Installed server binaries, app-wide cre
   "compute": {
     "enabled": false,
     "host_access": false,
-    "packages": {
-      "npm": [],
-      "pip": []
-    }
+    "allowed_targets": ["isolated", "shared"],
+    "default_target": "isolated",
+    "browser": true,
+    "packages": { "pip": [] }
   }
 }
 ```
 
-`compute.enabled` requests an isolated agent compute environment. `compute.host_access` requests host execution and MUST be paired with a runtime-level host-access gate.
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | The runtime gives the agent an isolated container for its MCP servers and `compute_exec`. |
+| `host_access` | `false` | The agent MAY run MCP servers on the host machine (`run_location: "host"`) and use the `host` target of `compute_exec` and `fs_transfer`. A runtime MUST also require a runtime-level host-access setting before it honours this field. |
+| `allowed_targets` | absent | Target ids `compute_exec` may select: `isolated`, `shared`, `host`, or runtime-defined external targets. When absent, the runtime's built-in behaviour applies. |
+| `default_target` | absent | Target used when `compute_exec` names none. MUST be in `allowed_targets`. When absent, the runtime uses the least-privileged available target. |
+| `browser` | `true` | The isolated container runs a visible desktop and browser. |
+| `packages.pip` | `[]` | Python packages installed in the container at start. `packages.npm` is deprecated; npm packages belong in `code_execution.packages`. |
+| `target` | absent | Deprecated single external target; migrated to `allowed_targets`. |
 
 ### 5.13 Channel Adapter Configuration
 
@@ -1101,7 +1171,7 @@ MCP configurations travel with the file. Installed server binaries, app-wide cre
 }
 ```
 
-Adapters normalize external platform messages into `adf_inbox` and deliver `adf_outbox` rows to platform APIs. There is no `credential_key` config field — each adapter resolves its credentials by fixed identity purpose, `adapter:{type}:{KEY}` (e.g. `adapter:telegram:TELEGRAM_BOT_TOKEN`), looked up in the agent's own `adf_identity` store. That is the only store — there is no app-wide credential store for adapters and no fallback; a missing row is an error, not a prompt to look elsewhere. See §8.2 for the full purpose convention.
+`policy.dm` is `all` \| `allowlist` \| `none`; `policy.groups` is `all` \| `mention` \| `none`. Adapters convert platform messages into `adf_inbox` rows and deliver `adf_outbox` rows to platform APIs (§11.6). An adapter MUST read its credentials from the agent's `adf_identity` under the purpose `adapter:<type>:<KEY>` (for example `adapter:telegram:TELEGRAM_BOT_TOKEN`; §8.2). There is no config field that names a credential and no fallback store; a missing row is an error.
 
 ### 5.14 Serving Configuration
 
@@ -1117,18 +1187,22 @@ Adapters normalize external platform messages into `adf_inbox` and deliver `adf_
         "lambda": "lib/api.ts:getStatus",
         "warm": true,
         "cache_ttl_ms": 1000,
+        "on_card": true,
         "middleware": [{ "lambda": "lib/auth.ts:check" }],
         "locked": false
       },
       {
         "method": "WS",
         "path": "/ws",
-        "lambda": "lib/ws.ts:onEvent"
+        "lambda": "lib/ws.ts:onEvent",
+        "high_water_mark_bytes": 1048576
       }
     ]
   }
 }
 ```
+
+Route fields: `method` (`GET` \| `POST` \| `PUT` \| `PATCH` \| `DELETE` \| `WS`), `path`, `lambda`, `warm`, `cache_ttl_ms`, `on_card` (list the route in the agent card's `api_routes`; default `false`), `middleware` (§12.3), `locked` (owner lock), `high_water_mark_bytes` (WS routes: inbound backpressure threshold). Defaults: `public` and `shared` disabled, `api` empty. §12.1 defines resolution.
 
 ### 5.15 WebSocket Connections
 
@@ -1138,17 +1212,26 @@ Adapters normalize external platform messages into `adf_inbox` and deliver `adf_
     {
       "id": "relay",
       "url": "wss://relay.example.com/me/ws",
-      "did": "did:adf:relay",
+      "did": "did:key:z6Mk…",
       "enabled": true,
       "lambda": "lib/ws.ts:onEvent",
       "auth": "auto",
       "auto_reconnect": true,
       "reconnect_delay_ms": 5000,
-      "keepalive_interval_ms": 30000
+      "keepalive_interval_ms": 30000,
+      "connect_timeout_ms": 15000,
+      "high_water_mark_bytes": 1048576
     }
   ]
 }
 ```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `did` | absent | Expected remote DID, verified during authentication. |
+| `auth` | `auto` | `auto` authenticates when a signing key is available; `required` fails without it; `none` skips it. |
+| `connect_timeout_ms` | `15000` | Abort a connection attempt that has not opened. |
+| `high_water_mark_bytes` | `1048576` | `ws_send` waits for the send buffer to drain above this size. |
 
 ### 5.16 Provider Overrides
 
@@ -1160,6 +1243,7 @@ Adapters normalize external platform messages into `adf_inbox` and deliver `adf_
       "type": "openai-compatible",
       "name": "Local Model",
       "baseUrl": "http://localhost:11434/v1",
+      "preset": "ollama",
       "defaultModel": "llama",
       "params": [],
       "requestDelayMs": 0
@@ -1168,57 +1252,188 @@ Adapters normalize external platform messages into `adf_inbox` and deliver `adf_
 }
 ```
 
-Provider definitions are file-carried preferences. Runtime credential storage and authentication are runtime concerns unless credentials are stored in `adf_identity`.
+`type` is `anthropic` \| `openai` \| `openai-compatible` \| `openrouter`. `preset` is a runtime catalog key used for display. Provider entries travel with the file; provider credentials travel only when stored in `adf_identity` (§8.2).
 
-### 5.17 Locked Fields
+### 5.17 Locked Fields and Owner-Only Paths
 
-`locked_fields` is an array of top-level or dot-path config fields the agent cannot modify through `sys_update_config`. The fields `adf_version`, `id`, `metadata`, `locked_fields`, `providers`, `restricted`, `restricted_methods`, and `locked` are owner-only boundaries and MUST NOT be self-modifiable by the agent.
+`locked_fields` is an array of top-level or dot-path config fields that the agent cannot change through `sys_update_config`. A lock on a path also locks every path below it, and a write to a parent of a locked path is refused.
+
+A conforming runtime MUST refuse these `sys_update_config` changes from the agent, with no approval path:
+
+- any path containing the segment `locked`, `locked_fields`, `restricted` or `restricted_methods`;
+- the top-level fields `adf_version`, `id`, `metadata`, `locked_fields` and `providers`;
+- replacing the whole `security` object, and any change under `security.allow_unsigned`, `security.require_middleware_authorization`, `security.middleware` or `security.fetch_middleware`;
+- replacing or removing an array element that has `locked: true`, and re-declaring a locked or restricted entry with `locked: false` or `restricted: false`.
+
+A runtime MUST treat `security.allow_local_fetch` and `stream_bind` as locked for every agent (§5.6). A change to a path in `locked_fields` or to these two paths is refused and becomes a request the owner MAY approve once. Authorized code MAY change a locked path; the runtime logs the change.
+
+The `state` field accepts only `active`, `idle`, `hibernate` and `off` through `sys_update_config`.
+
+Locks constrain the agent. The owner changes any field through the runtime's own controls.
+
+### 5.18 Model Configuration
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `provider` | `""` | Provider id: a built-in provider or an entry in `providers` (§5.16). |
+| `model_id` | `""` | Model id at that provider. |
+| `temperature` | `0.7` | Sampling temperature. |
+| `max_tokens` | `4096` | Maximum output tokens per request. |
+| `top_p` | absent | Nucleus sampling. |
+| `reasoning` | absent | `{ enabled?, effort?, max_tokens?, exclude?, preserve?, summary? }`; `effort` is `minimal` \| `low` \| `medium` \| `high` \| `xhigh`, `summary` is `auto` \| `concise` \| `detailed`. The runtime maps it to each provider's reasoning parameters. |
+| `multimodal` | absent | `{ image?, audio?, video? }`: which media types the runtime sends to the model. |
+| `params` | absent | `{ key, value }[]` extra request parameters. |
+| `provider_params` | absent | Provider-specific request options. |
+
+Deprecated fields: `thinking_budget` (a runtime folds it into `reasoning = { enabled: true, max_tokens }` on load), `vision` (replaced by `multimodal.image`) and `compact_threshold` (moved to `context`).
+
+### 5.19 Context and Audit Configuration
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `context.compact_threshold` | `100000` when absent | Token count at which the runtime compacts a transcript (§13.2). |
+| `context.audit.loop` | `true` | Snapshot transcript rows to `adf_audit` before compaction or clearing. |
+| `context.audit.inbox`, `context.audit.outbox` | `false` | Snapshot each message at arrival or send (`inbox_message`, `outbox_message`). |
+| `context.audit.files` | `false` | Snapshot a file before deletion. |
+| `context.dynamic_instructions.inbox_hints` | `true` | Add unread-message hints to each turn. |
+| `context.dynamic_instructions.context_warning` | `true` | Warn the model once when the transcript is within 15000 tokens of the compaction threshold. |
+| `context.dynamic_instructions.idle_reminder` | `true` | On each turn of an autonomous agent with `sys_set_state` enabled, remind the model to set `idle` when its work is done. |
+| `context.dynamic_instructions.mesh_updates` | `true` | Send the list of reachable agents when it changes. |
+
+The top-level `audit` object has the same fields and defaults as `context.audit`. The runtime reads `context.audit`; when it is absent, it reads `audit`; when both are absent, it audits nothing.
+
+### 5.20 Recovery Configuration
+
+`recovery` controls how the runtime retries a turn that failed with a transient provider error (§6.2).
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `auto_retry` | `true` | Retry the failed turn. |
+| `max_attempts` | `5` | Consecutive failed attempts per work item before the runtime stops retrying. |
+| `base_delay_ms` | `15000` | First retry delay; it doubles each attempt with ±20% jitter. |
+| `max_delay_ms` | `300000` | Retry delay ceiling. |
+
+### 5.21 Pre-LLM Hook
+
+`pre_llm_hook` names a lambda that transforms each conversational model request before the runtime sends it.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `source` | required | Lambda reference. It receives `{ request, loop: { name } }` and returns the replacement request. |
+| `scope` | `all` | `all` (every loop) \| `main` \| `loops` (the loops in `loops`). |
+| `loops` | absent | Inner-loop names; required when `scope` is `loops`. MUST NOT contain `main`. |
+| `include_main` | `false` | With `scope: "loops"`, also run for `main`. |
+| `timeout_ms` | absent | 1000–300000; also bounded by `limits.execution_timeout_ms`. |
+
+The hook cannot change tool authorization, cancellation or runtime callbacks.
+
+### 5.22 Agent Card Overrides
+
+`card` overrides the agent card (§11.5): `endpoints` (`inbox`, `card`, `health`, `ws` URLs), `resolution`, and `publish_attestations` (default `false`). When `publish_attestations` is false, the card omits `owner` and `operator` attestations, so the card does not link the agent to its owner.
+
+### 5.23 Stream Bindings
+
+`stream_bindings` declares byte streams the runtime connects between two endpoints; `stream_bind` controls which endpoint kinds the agent may use.
+
+```jsonc
+{
+  "stream_bind": {
+    "host_process_bind": false,
+    "container_shared_bind": false,
+    "container_isolated_bind": false,
+    "allow_tcp_bind": false,
+    "tcp_allowlist": [{ "host": "127.0.0.1", "port": 5432 }]
+  },
+  "stream_bindings": [
+    { "id": "db", "a": { "kind": "ws", "connection_id": "relay" }, "b": { "kind": "tcp", "host": "127.0.0.1", "port": 5432 }, "bidirectional": true }
+  ]
+}
+```
+
+Endpoint kinds are `ws`, `process` (isolation `host`, `container_shared` or `container_isolated`), `tcp` and `umbilical`; `umbilical` is allowed only as endpoint `a`. Every `stream_bind` flag defaults to `false`, and `stream_bind` is locked for every agent (§5.17). `stream_bindings` defaults to `[]`.
+
+### 5.24 Umbilical
+
+The umbilical is the runtime's event stream for one agent. `umbilical` sets emission options, all off by default: `stream_deltas` (emit streaming output deltas) and `log` (`{ enabled?, max_events?, exclude_types? }`, an in-memory replay window of default 2000 events that the runtime does not persist).
+
+`umbilical_taps` declares lambdas that receive umbilical events: `{ name, lambda, filter: { event_types, when?, allow_wildcard }, exclude_own_origin, max_rate_per_sec }`. `event_types` defaults to `["*"]`, which requires `allow_wildcard: true`. `exclude_own_origin` defaults to `true` and `max_rate_per_sec` to `100`.
 
 ---
 
-## 6. States and Loop Behavior
+## 6. States and Loops
 
 ### 6.1 Agent States
 
-| State | Description | Agent-scope wake behavior |
-|-------|-------------|---------------------------|
-| `active` | LLM loop is currently running | Already running |
-| `idle` | Responsive idle state | Wakes for chat, inbox, file changes, timers |
-| `hibernate` | Deep idle | Wakes for timers only |
-| `suspended` | Runtime safety block | Owner approval only |
-| `error` | Structural executor failure visible to user | Direct user message may recover |
-| `off` | Fully stopped | No triggers; manual restart required |
+`config.state` stores one of five states:
 
-`off` is a hard stop. A runtime transitioning an agent to `off` MUST tear down runtime resources for that agent: active LLM request, pending triggers, mesh registration, MCP server connections, adapters, WebSocket connections, and code sandboxes.
+| State | Description | Agent-scope wake behaviour |
+|-------|-------------|---------------------------|
+| `active` | The agent is running or ready to run. | Runs |
+| `idle` | The agent waits for work. | Wakes for any agent-scope trigger (§7.3) |
+| `hibernate` | The agent waits for timers only. | Wakes for `on_timer` only |
+| `suspended` | The runtime stopped the agent for safety (for example `max_active_turns`). | Wakes only when the owner resumes it |
+| `off` | The agent is stopped. | Never; the owner restarts it |
+
+A runtime also keeps an executor state for each loop in memory: `idle`, `thinking`, `tool_use`, `awaiting_approval`, `awaiting_ask`, `suspended`, `error`, `stopped`. Executor states are not stored in the file. `error` is an executor state, not a value of `config.state`.
+
+A runtime transitioning an agent to `off` MUST stop its model requests and pending triggers and release its runtime resources: mesh registration, MCP server connections, adapters, WebSocket connections and code sandboxes. The file stays open to the runtime.
 
 ### 6.2 State Transitions
 
 | Actor | Can set |
 |-------|---------|
-| LLM via `sys_set_state` | `idle`, `hibernate`, `off` |
-| Lambda via `adf.sys_set_state` | `idle`, `hibernate`, `off` |
-| Runtime | `active`, `suspended`, `error`, `off` |
-| Owner | Any state through trusted UI/runtime controls |
+| Model, through `sys_set_state` | `idle`, `hibernate`, `off` |
+| Code, through `adf.sys_set_state` | `idle`, `hibernate`, `off` |
+| Agent, through `sys_update_config` on `state` | `active`, `idle`, `hibernate`, `off` |
+| Runtime | `active`, `suspended`, `off` |
+| Owner | any state, through runtime controls |
 
-When a trigger wakes an agent from `idle` or `hibernate`, the runtime records the previous idle state, enters `active`, runs the loop, and returns to the previous idle state unless `sys_set_state` set a different target.
+When a trigger wakes an agent from `idle` or `hibernate`, the runtime records that state, runs the turn, and returns the agent to the recorded state unless the turn set another one. `sys_set_state` called from an inner loop changes that loop's executor only (§6.4).
 
-`error` is reserved for **structural** failures — the executor itself is broken (corrupt session, bad code path, tool registry fault). Transient external failures (provider rate limits, provider 5xx, network timeouts, connection resets) are operational and MUST return the agent to `idle` so timers and triggers can retry. A runtime SHOULD log transient failures to `adf_logs` with `level="warn"` and `event="provider_error"`, distinct from structural failures logged with `level="error"` and `event="turn_error"`, so agent code can distinguish the two categories through `db_*` queries.
+A failure of the executor itself (a corrupt session, a tool registry fault) sets the executor state `error` and is logged with `level="error"`, `event="turn_error"`. A transient provider failure (rate limit, provider 5xx, network timeout, connection reset) MUST NOT set `error`: the runtime retries the turn according to `recovery` (§5.20) and otherwise returns the loop to `idle`, so triggers and timers run again. A runtime SHOULD log transient failures with `event="provider_error"` and `level="warn"` when a retry is scheduled, so that agent code can tell the two cases apart with `db_query`.
 
-### 6.3 Loop Modes
+### 6.3 Turn Behaviour
 
-Canonical field: `loop_mode`.
+`autonomous` selects how a turn ends. It is set per loop: `config.autonomous` for `main`, `loops[].autonomous` for an inner loop (§6.4).
 
-Compatibility field: `autonomous`.
-
-| Behavior | Interactive | Autonomous |
-|----------|-------------|------------|
-| Raw assistant text / `respond` | Ends turn | Logs output, turn continues |
-| `say` | Continues turn | Continues turn |
-| `ask` | Pauses for human answer | Not available or strongly discouraged |
-| `sys_set_state` | Ends loop and changes state | Ends loop and changes state |
+| Behaviour | `autonomous: false` | `autonomous: true` |
+|----------|---------------------|--------------------|
+| Reply with text and no tool call | Ends the turn | The runtime continues the turn with a reminder; after 4 consecutive text-only replies it sets the loop `idle` |
+| `say` | Continues the turn | Continues the turn |
+| `ask` | Waits for the owner's answer | Waits for the owner's answer |
+| `sys_set_state` | Ends the turn and sets the state | Ends the turn and sets the state |
 | `max_active_turns` reached | Suspends | Suspends |
 
-If a human sends a new message while an agent is active, the runtime MAY abort the current turn and restart with the new user input.
+If the owner sends a message while a turn runs, the runtime MAY abort the turn and start a new one with the message.
+
+### 6.4 Loops
+
+A loop is a named conversation of the agent (§0.3). Every agent has the loop `main`; triggers wake `main` unless a target names another loop. Inner loops are additional loops declared in `config.loops`. All loops of an agent share its file, identity, credentials, channels and files; an inner loop has no identity, credentials or channels of its own.
+
+*`main`.* `main` is implicit. A config MUST NOT declare a loop named `main`, and `loop_manage` MUST refuse to create, read, update or delete it.
+
+*Declaration.* `config.loops` is an array of `LoopConfig`, default `[]`:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `name` | required | Matches `^[a-z0-9][a-z0-9_-]{0,31}$`, is not `main`, and is unique within `loops` compared case-insensitively. |
+| `goal` | required | At most 4000 characters. The runtime uses it as the loop's instructions, after a runtime-authored preamble. |
+| `enabled` | required | A disabled loop does not run. |
+| `autostart` | `false` | Run a first turn on the goal when the loop is created and each time the agent starts. |
+| `autonomous` | `false` | Turn behaviour (§6.3). Not inherited from `config.autonomous`. |
+| `model` | the agent's `model` | Model for this loop. |
+| `compact_threshold` | the agent's `context.compact_threshold` | Compaction threshold for this loop's transcript. |
+| `tools` | `[]` when absent | Tool allow-list, at most 64 names. MUST NOT contain `sys_update_config`, `loop_manage` or `sys_create_adf`. `loop_manage` gives a new loop `["loop_send", "loop_list", "sys_set_state"]` when the call names no tools. |
+
+*Effective tools.* A runtime MUST compute an inner loop's tools as the intersection of `tools` with the agent's enabled tool declarations, minus `sys_update_config`, `loop_manage` and `sys_create_adf`, minus every tool the agent declares `restricted`, minus the tools of every MCP server declared `restricted`. The runtime then adds `loop_compact` and `loop_clear` unless the agent has disabled or restricted them. An inner loop therefore never holds a tool that `main` lacks, and never holds a tool that needs owner approval.
+
+*Code execution.* Code run from an inner loop MUST NOT have a `code_execution` method the agent lacks. A method is enabled for an inner loop only if both the inner-loop profile and the agent's effective `code_execution` enable it; an absent agent field takes its default. The profile allows `model_invoke`, `sys_lambda`, `identity_status`, `loop_inject` and `emit_event`, and disables `get_identity`, `set_identity`, `task_resolve`, the `attestation_*` methods and `network`. `packages` is empty. `restricted_methods` is the union of the profile's list and the agent's list. The runtime re-derives each inner loop's profile when the agent config changes, so disabling a method on the agent also disables it in running loops.
+
+*Storage.* Each loop's transcript is the `adf_loop` rows with `loop = <name>`. `adf_timers`, `adf_tasks` and `adf_logs` rows carry the loop that created them in their `loop` column; NULL means `main`. Transcript snapshots use the `adf_audit` source `loop:<name>` (§13.3). Each loop is compacted separately (§13.2).
+
+*Routing.* A trigger target with `loop: "<name>"` wakes that loop; a target without `loop` wakes `main` (§7.2). An agent-scope timer wakes the loop in its `loop` column (§7.7). The model moves work between loops with `loop_send`. A runtime MUST drop, and log with `event="loop_dispatch_dropped"`, a dispatch addressed to a loop that does not exist or is disabled; it MUST NOT deliver it to `main` instead.
+
+*Management.* `loop_manage` is available only in `main`. Its actions are `create`, `get`, `update` and `delete`; `update` cannot rename a loop. A runtime MUST refuse to create a loop when the agent already has 16 inner loops, and MUST refuse `loop_manage` changes when `locked_fields` locks `loops`. Deleting a loop, through `loop_manage` or by removing it from config, stops it, writes its transcript to `adf_audit` as `loop:<name>` whatever `audit.loop` says, deletes its unlocked timers and keeps its locked timers.
 
 ---
 
@@ -1228,21 +1443,19 @@ If a human sends a new message while an agent is active, the runtime MAY abort t
 
 | Trigger | Event |
 |---------|-------|
-| `on_startup` | Agent starts |
-| `on_inbox` | Message arrives in `adf_inbox` |
-| `on_outbox` | Message is sent from `adf_outbox` |
-| `on_file_change` | Watched file is created, modified, or deleted |
-| `on_chat` | Human sends a loop chat message |
-| `on_timer` | Timer fires |
-| `on_tool_call` | Matching tool call completes or is denied |
-| `on_task_create` | Task is created |
-| `on_task_complete` | Task reaches terminal status |
-| `on_logs` | Matching log entry is written |
+| `on_startup` | The agent starts. |
+| `on_inbox` | A message arrives in `adf_inbox`. |
+| `on_outbox` | A message is sent from `adf_outbox`. |
+| `on_file_change` | A watched file is created, modified or deleted. |
+| `on_chat` | The owner sends a chat message. |
+| `on_timer` | A timer fires. |
+| `on_tool_call` | A matching tool call completes or is denied. |
+| `on_task_create` | A task is created. |
+| `on_task_complete` | A task reaches a terminal status. |
+| `on_logs` | A matching log row is written. |
+| `on_llm_call` | A model call completes. The event `source` is `turn`, `compaction` or `model_invoke`. |
 
-Self-generated events SHOULD NOT recursively trigger the same causal path. An
-`on_file_change` target MAY set `filter.include_self: true` to receive writes
-from its own agent or other lambdas, but the exact originating lambda MUST NOT
-receive its own file event.
+A runtime SHOULD NOT let an event caused by a handler trigger that same handler again. An `on_file_change` target MAY set `filter.include_self: true` to receive writes by its own agent and other lambdas, but the lambda that made a write MUST NOT receive the event for that write. `on_logs` handlers MUST NOT receive the log rows they produce.
 
 ### 7.2 Trigger Targets
 
@@ -1257,58 +1470,62 @@ receive its own file event.
   "interval_ms": null,
   "batch_ms": null,
   "batch_count": null,
-  "locked": false
+  "locked": false,
+  "loop": null
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| `scope` | `system` or `agent` |
-| `lambda` | System scope only. File/function reference. |
-| `command` | System scope only. Shell command alternative when supported. |
-| `warm` | System scope only. Keep sandbox warm. |
-| `filter` | Trigger-specific filter. |
-| `debounce_ms` | Timing modifier. Mutually exclusive with `interval_ms` and `batch_ms`. |
-| `interval_ms` | Timing modifier. |
-| `batch_ms` | Timing modifier. |
-| `batch_count` | Optional early-fire count, requires `batch_ms`. |
-| `locked` | Owner lock for this target. |
+| `scope` | `system` or `agent` (§7.3). |
+| `lambda` | System scope only. Lambda reference. |
+| `command` | System scope only. Shell command, where the runtime supports it. `lambda` and `command` are mutually exclusive. |
+| `warm` | System scope only. Keep the sandbox warm between events. |
+| `filter` | Trigger-specific filter (§7.4). |
+| `debounce_ms` | Fire once after events stop arriving for this long. |
+| `interval_ms` | Fire at most once per interval. |
+| `batch_ms` | Collect events for this long, then fire once with all of them. |
+| `batch_count` | Fire a batch early when this many events have collected. Requires `batch_ms`. |
+| `locked` | Owner lock on this target. |
+| `loop` | Agent scope: the loop the target wakes (§6.4). Absent means `main`. |
+
+A target MUST set at most one of `debounce_ms`, `interval_ms` and `batch_ms`. System-scope targets run on behalf of the agent as a whole and are evaluated once, not per loop.
 
 ### 7.3 Trigger Scopes
 
 | Scope | Description |
 |-------|-------------|
-| `system` | Runs a lambda or command. Fast path. Fires in all display states except `off`. |
-| `agent` | Wakes the LLM loop. Cold path. Gated by state. |
+| `system` | Runs a lambda or command on the code path. Fires in every state except `off`. |
+| `agent` | Starts a turn on the model path. Gated by state (§7.5). |
 
-System-scope lambdas receive an event object. Agent-scope targets do not receive the raw event directly; they wake the LLM with a formatted trigger message. For `on_inbox`, the agent receives an inbox summary and uses `msg_read` to fetch messages.
+A system-scope lambda receives the event object. An agent-scope target does not pass the raw event; the runtime starts a turn with a formatted trigger message. For `on_inbox`, the message summarises the inbox and the model reads messages with `msg_read`.
 
 ### 7.4 Trigger Filters
 
 | Trigger | Filter fields |
 |---------|---------------|
-| `on_inbox` | `source`, `sender` |
+| `on_inbox` | `source` (string), `sender` (string) |
 | `on_outbox` | `to` |
-| `on_file_change` | `watch`, `include_self` |
-| `on_tool_call` | `tools` |
-| `on_task_create` | `tools` |
-| `on_task_complete` | `tools`, `status` |
-| `on_logs` | `level`, `origin`, `event` |
+| `on_file_change` | `watch` (glob, required), `include_self` (default `false`) |
+| `on_tool_call` | `tools` (globs, required) |
+| `on_task_create` | `tools` (globs) |
+| `on_task_complete` | `tools` (globs), `status` |
+| `on_logs` | `level` (array), `origin` (array of globs), `event` (array of globs) |
+| `on_llm_call` | `source` (array), `provider` (array of provider names or ids) |
 
 ### 7.5 State Gating
 
-| Current State | System Scope | Agent Scope |
-|---------------|--------------|-------------|
-| `active` | Fires | Already running |
+| State | System scope | Agent scope |
+|-------|--------------|-------------|
+| `active` | Fires | Runs |
 | `idle` | Fires | Fires |
 | `hibernate` | Fires | `on_timer` only |
 | `suspended` | Fires | No |
-| `error` | Fires unless runtime suppresses for safety | Direct user recovery only |
 | `off` | No | No |
 
 ### 7.6 Timer Schedules
 
-Timers are stored in `adf_timers`. The API accepts a `schedule` object and stores its resolved form in `schedule_json`.
+Timers are stored in `adf_timers`. `sys_set_timer` accepts a `schedule` object and stores its resolved form in `schedule_json`.
 
 Input schedule:
 
@@ -1319,8 +1536,7 @@ Input schedule:
 { "type": "cron", "cron": "0 9 * * 1-5", "end_at": null, "max_runs": null }
 ```
 
-Resolved storage (persisted in `schedule_json`; the discriminant is `mode`, not
-`type`, and a `delay` input collapses to a resolved `once`):
+Stored form (the discriminant is `mode`; a `delay` input is stored as `once`):
 
 ```jsonc
 { "mode": "once", "at": 1707300300000 }
@@ -1328,31 +1544,36 @@ Resolved storage (persisted in `schedule_json`; the discriminant is `mode`, not
 { "mode": "cron", "cron": "0 9 * * 1-5", "end_at": null, "max_runs": null }
 ```
 
-Timer fields:
+Timer fields other than the schedule:
 
 | Field | Description |
 |-------|-------------|
-| `scope` | JSON array: `["system"]`, `["agent"]`, or both |
-| `lambda` | System-scope timer lambda |
-| `warm` | Keep lambda sandbox warm |
-| `payload` | Optional string delivered to handler |
-| `locked` | Owner lock preventing agent modification/deletion |
+| `scope` | JSON array: `["system"]`, `["agent"]`, or both. |
+| `lambda` | System-scope lambda reference. |
+| `warm` | Keep the lambda sandbox warm. |
+| `payload` | Optional string passed to the handler. |
+| `locked` | Owner lock: the agent cannot modify or delete the timer. An inner loop cannot create a locked timer. |
+| `loop` | Loop an agent-scope fire wakes. The runtime sets it to the creating loop when the scope includes `agent`, and to NULL otherwise. |
+| `expired` | `1` once the timer has no further fire time. |
 
 ### 7.7 Timer Firing
 
-For a timer to execute, both conditions must be true:
+A timer fires for a scope when both hold:
 
-1. The timer's `scope` includes a matching scope.
-2. The `on_timer` trigger is enabled and has a target for that scope.
+1. The timer's `scope` includes that scope.
+2. `on_timer` is enabled and has a target with that scope.
 
-Lifecycle:
+When a timer comes due, the runtime:
 
-1. Increment `run_count`; set `last_fired_at`.
-2. Deliver event to matching system and/or agent handlers.
-3. Delete one-time timers.
-4. For interval/cron timers, compute the next `next_wake_at` or delete if `max_runs` or `end_at` has been reached.
+1. Computes the next fire time. For a `once` timer, or when `max_runs` or `end_at` has been reached, there is none, and the runtime sets `expired = 1`. Otherwise it sets `next_wake_at`.
+2. Increments `run_count` and sets `last_fired_at`.
+3. Delivers the event to the matching system and agent handlers. An agent-scope fire wakes the loop in the timer's `loop` column (NULL means `main`); if that loop does not exist or is disabled, the runtime drops the fire (§6.4).
 
-Missed timers fire once on load, then reschedule future occurrences. Runtimes MUST NOT flood all missed occurrences after downtime.
+A runtime MUST NOT delete expired timers as part of firing; they remain as history. If the runtime cannot deliver a `once` fire (backpressure or a dropped dispatch), it clears `expired` so that the timer fires later.
+
+After downtime, a runtime fires each missed timer once on load and then schedules its next occurrence. A runtime MUST NOT fire every missed occurrence.
+
+When a loop is deleted, the runtime deletes its unlocked timers and logs `loop_timers_dropped`; locked timers are kept.
 
 ---
 
@@ -1360,329 +1581,286 @@ Missed timers fire once on load, then reschedule future occurrences. Runtimes MU
 
 ### 8.1 Identity Model
 
-Every ADF receives cryptographic identity **at creation** (schema v24+): an
-Ed25519 keypair sealed in the identity envelope (§8.3), a `did:key` DID in
-`adf_meta.adf_did`, owner/runtime stamps, and owner/operator attestations.
-Files created by older runtimes are provisioned on first open or by the boot
-migration sweep, keeping any existing DID.
+A runtime MUST give every new file a cryptographic identity when it creates the file (schema version 24 and later): an Ed25519 keypair sealed in the identity envelope (§8.3), a `did:key` DID in `adf_meta.adf_did`, the owner and runtime DIDs, and `owner` and `operator` attestations. A runtime provisions files created by older runtimes on first open, keeping any existing DID.
 
 | Identifier | Store | Semantics |
 |------------|-------|-----------|
-| `config.id` | `adf_config` | Permanent local runtime handle (nanoid). Stable across re-keying; never an identity. |
-| Agent DID | `adf_meta.adf_did` | The agent's identity: `did:key:z…` encoding of its Ed25519 public key. Rotates on claim/re-key. |
-| DID history | `adf_meta.adf_did_history` | Prior DIDs, oldest first, appended whenever `adf_did` is replaced or cleared. Keeps lineage references resolvable without rewriting child files. |
-| Parent reference | `adf_meta.adf_parent_did` | The spawning agent's DID (or `config.id` for pre-v24 files). Resolved read-time via the cascade: current DID → DID history → legacy `config.id`. |
+| `config.id` | `adf_config` | Local runtime handle (nanoid). Unchanged by re-keying; not an identity (§5.2). |
+| Agent DID | `adf_meta.adf_did` | The agent's identity: `did:key:z…` encoding of its Ed25519 public key. Changes on claim and re-key. |
+| DID history | `adf_meta.adf_did_history` | Prior DIDs, oldest first, appended whenever `adf_did` is replaced or cleared. |
+| Parent reference | `adf_meta.adf_parent_did` | DID of the agent that created this file (or its `config.id` for files created before schema version 24). A reader resolves it in order: current DID, DID history, legacy `config.id`. |
 
-DIDs are `did:key` — the identifier IS the key, so rotation genuinely creates a
-new identity. Continuity is app-attested via DID history (sufficient for the
-local fleet, where the runtime is the trust root) rather than cryptographically
-attested; a signed rotation chain is a designated future extension for
-remote-peer continuity.
+A `did:key` DID encodes the public key, so a key rotation produces a new DID. The runtime records continuity in `adf_did_history`; the local runtime trusts that record because it wrote it. A remote peer cannot verify continuity from the file.
 
-Once a DID is provisioned, runtimes MUST NOT delete it silently; identity reset
-clears `adf_did` to the empty string after recording it in `adf_did_history`.
+A runtime MUST NOT delete a provisioned DID without recording it: an identity reset appends `adf_did` to `adf_did_history` and then sets `adf_did` to the empty string.
 
 ### 8.2 Identity Store
 
-`adf_identity` is a general-purpose secret store. Common purposes:
+`adf_identity` stores keys and secrets by purpose:
 
 | Purpose | Description |
 |---------|-------------|
 | `crypto:signing:private_key` | Ed25519 private key (sealed: `env:identity`) |
-| `crypto:signing:public_key` | Ed25519 public key (always plain — not a secret) |
-| `crypto:envelope:identity` | Identity-envelope descriptor: JSON keyslot array (plain — wrapped material, public by design) |
-| `crypto:envelope:credentials` | Credentials-envelope descriptor (plain) |
+| `crypto:signing:public_key` | Ed25519 public key (`plain`) |
+| `crypto:envelope:identity` | Identity-envelope descriptor: JSON keyslot array (`plain`; contains only wrapped keys) |
+| `crypto:envelope:credentials` | Credentials-envelope descriptor (`plain`) |
 | `crypto:kdf:salt` | Legacy password KDF salt |
-| `crypto:kdf:params` | Legacy password KDF params |
+| `crypto:kdf:params` | Legacy password KDF parameters |
 | `mcp:<server>:<key>` | MCP server credential (sealed: `env:credentials`) |
-| `adapter:<type>:<KEY>` | Channel adapter credential (sealed: `env:credentials`), e.g. `adapter:telegram:TELEGRAM_BOT_TOKEN`, `adapter:slack:SLACK_BOT_TOKEN`, `adapter:email:EMAIL_USERNAME`/`EMAIL_PASSWORD`, `adapter:discord:DISCORD_BOT_TOKEN` |
-| `openai_key`, `anthropic_key`, custom keys | Provider or application secrets (sealed: `env:credentials`) |
+| `adapter:<type>:<KEY>` | Channel adapter credential (sealed: `env:credentials`), for example `adapter:telegram:TELEGRAM_BOT_TOKEN`, `adapter:slack:SLACK_BOT_TOKEN`, `adapter:email:EMAIL_USERNAME`, `adapter:email:EMAIL_PASSWORD`, `adapter:discord:DISCORD_BOT_TOKEN` |
+| `openai_key`, `anthropic_key`, other keys | Provider or application secrets (sealed: `env:credentials`) |
 
-`code_access` indicates whether code execution may read a row through identity
-APIs. Independent of that flag, `crypto:signing:*`, `crypto:envelope:*`, and
-`crypto:kdf:*` purposes are NEVER readable from agent code — key material is
-runtime-only even if `code_access` is flipped on such a row.
+`code_access` controls whether agent code may read a row through the identity methods (§9). A runtime MUST NOT return a `crypto:signing:*`, `crypto:envelope:*` or `crypto:kdf:*` row to agent code, whatever its `code_access`.
 
-Public keys are stored as ordinary identity rows, not as a special column. This keeps `adf_identity` a uniform `purpose -> value` store and avoids a nullable column that only applies to one key family. Runtimes that need public identity without unlocking the file should use `adf_meta` readonly keys, the signed agent card, or a plain `crypto:signing:public_key` row according to their security policy.
+Public keys are stored as ordinary rows, so `adf_identity` stays a uniform `purpose → value` store. A runtime that needs the public identity without unlocking the file reads the `readonly` keys in `adf_meta`, the signed agent card, or the `plain` `crypto:signing:public_key` row.
 
-### 8.3 Encryption at Rest — Envelopes
+### 8.3 Encryption at Rest: Envelopes
 
-The normative at-rest scheme is **dual-envelope keyslot encryption** (full
-design: `docs/design/ADF_IDENTITY_SPEC_v0.1.md`). A random 32-byte DEK encrypts each
-envelope's rows; the DEK is wrapped once per keyslot, and any slot opens the
-envelope:
+Secrets are encrypted with dual-envelope keyslot encryption (design document: `docs/design/ADF_IDENTITY_SPEC_v0.1.md`). A random 32-byte data encryption key (DEK) encrypts the rows of each envelope. The DEK is wrapped once per keyslot, and any slot opens the envelope.
 
 | Envelope | Covers | Allowed slots |
 |----------|--------|---------------|
-| `identity` | `crypto:signing:private_key` | `owner`, `runtime` — never a password slot via sharing (identity is non-transferable by file copy) |
-| `credentials` | every non-`crypto:*` secret (`set_identity` rows, `mcp:*`, provider keys) | `owner`, `runtime`, optional `password` (the share mechanism) |
+| `identity` | `crypto:signing:private_key` | `owner`, `runtime`. A runtime MUST NOT add a password slot, so copying the file does not transfer the identity. |
+| `credentials` | every non-`crypto:*` secret (`set_identity` rows, `mcp:*`, `adapter:*`, provider keys) | `owner`, `runtime`, and an optional `password` slot used to share the file |
 
-- **Sealed rows:** `encryption_algo = 'env:identity' | 'env:credentials'`,
-  `value = iv(12) || ciphertext || tag(16)`, `salt` NULL, `kdf_params` NULL.
-- **Key slots:** ephemeral X25519 ECDH against the recipient's encryption
-  public key → HKDF-SHA256 (info `adf-envelope-v1:<envelope>`) → AES-256-GCM
-  over the DEK. Wrapping needs only the recipient public key; the owner slot
-  is written without touching the seed.
-- **Password slots:** scrypt (`N=2^17, r=8, p=1`, 32-byte salt) → AES-256-GCM
-  over the DEK. New password slots MUST use scrypt, not the legacy PBKDF2.
-- **Unlock cascade:** runtime slot → owner slot (mnemonic-derived; a
-  successful owner unlock re-wraps a runtime slot for the install, so the
-  seed is needed at most once per file per machine) → password prompt on
-  demand. Unwrapped DEKs live in memory per open workspace, never persisted.
-- **Recipient adoption:** unlocking a foreign credentials envelope with a
-  share password re-wraps the DEK to the local owner/runtime and drops the
-  password slot — the password is a transit artifact, not a standing secret.
+- *Sealed rows:* `encryption_algo = 'env:identity' | 'env:credentials'`, `value = iv(12) || ciphertext || tag(16)`, `salt` NULL, `kdf_params` NULL.
+- *Key slots:* ephemeral X25519 ECDH against the recipient's encryption public key, then HKDF-SHA256 (info `adf-envelope-v1:<envelope>`), then AES-256-GCM over the DEK. Wrapping needs only the recipient's public key, so the runtime writes the owner slot without the owner's seed.
+- *Password slots:* scrypt (`N=2^17, r=8, p=1`, 32-byte salt), then AES-256-GCM over the DEK. New password slots MUST use scrypt.
+- *Unlock order:* runtime slot, then owner slot (derived from the owner's mnemonic; a successful owner unlock adds a runtime slot for this installation, so the seed is needed at most once per file per machine), then a password prompt when needed. Unwrapped DEKs are held in memory per open file and MUST NOT be written to disk.
+- *Recipient adoption:* when a recipient unlocks a foreign credentials envelope with a share password, the runtime re-wraps the DEK to the local owner and runtime and removes the password slot.
 
-**Legacy whole-file password format** (pre-envelope): rows encrypted directly
-with a PBKDF2-derived key (AES-256-GCM; IV in `salt`; PBKDF2 100,000
-iterations SHA-512). Runtimes MUST keep reading this format; it maps
-conceptually onto password-only-slot envelopes. Envelope descriptor rows and
-`env:*` rows are excluded from legacy password operations.
+*Legacy whole-file password format.* Before envelopes, rows were encrypted directly with a PBKDF2-derived key (100,000 iterations, SHA-512; AES-256-GCM; IV in `salt`). A runtime MUST keep reading this format. Envelope descriptor rows and `env:*` rows are excluded from legacy password operations.
 
-Rows with `encryption_algo = 'plain'` are unencrypted. Runtimes SHOULD warn before exporting or sharing files that contain plain secrets.
+Rows with `encryption_algo = 'plain'` are unencrypted. A runtime SHOULD warn before it exports or shares a file that contains plain secrets.
 
 ### 8.4 Envelope and Lock States
 
-Per envelope, a workspace is in one of four states:
+For each envelope, an open file is in one of four states:
 
-| State | Meaning | Capabilities |
-|-------|---------|--------------|
-| `unlocked` | DEK cached for this workspace instance | Full access to that envelope's secrets (signing for `identity`, credential reads for `credentials`). |
-| `locked` | A password slot exists and has not been opened | Public data, message receipt, and serving work; prompt to unlock. |
-| `foreign` | Slots exist but none open with this install's keys | The file belongs to another owner. Identity foreign ⇒ cannot sign ⇒ claim flow (new DID, `clone` attestation, old DID into history). Credentials foreign ⇒ secrets unreadable unless a share password unlocks them. |
-| `absent` | No envelope descriptor | Pre-envelope file; plain/legacy behavior until migrated. |
+| State | Meaning | Available |
+|-------|---------|-----------|
+| `unlocked` | The DEK is in memory for this open file. | Every secret in the envelope: signing for `identity`, credential reads for `credentials`. |
+| `locked` | A password slot exists and has not been opened. | Public data, message receipt and serving; the runtime prompts for the password. |
+| `foreign` | Slots exist, but none opens with this installation's keys: another owner holds the file. | Identity foreign: the agent cannot sign; claiming it creates a new DID, a `clone` attestation and a DID-history entry. Credentials foreign: secrets are unreadable unless a share password opens them. |
+| `absent` | No envelope descriptor. | A file created before envelopes; legacy behaviour until migrated. |
 
-Password-derived keys and DEKs are held in memory and never persisted
-unencrypted. A file is "password-protected" (unlock prompt on open) only when
-password-KDF rows exist — envelope-sealed rows do NOT trip the prompt; they
-unlock automatically via the runtime/owner keys.
+Password-derived keys and DEKs are held in memory and MUST NOT be stored unencrypted. A runtime prompts for a password on open only when password-KDF rows exist; envelope-sealed rows open with the runtime or owner keys.
 
 ### 8.5 Message Security
 
-`security.allow_unsigned: true` allows unsigned local/dev messages. Internet-facing agents SHOULD set `allow_unsigned: false` and provision cryptographic identity.
+`security.allow_unsigned: true` accepts unsigned inbound messages. An agent reachable from the internet SHOULD set `allow_unsigned: false`.
 
-`security.level` controls egress crypto middleware:
+`security.level` selects what the runtime applies to outbound messages:
 
 | Level | Meaning |
 |-------|---------|
-| `0` | Open / unsigned allowed |
-| `1` | Signed — payload signature (survives forwarding) + message signature |
-| `2` | Signed and encrypted — payloads to DID recipients are encrypted end-to-end |
-| `3` | Advanced custom middleware/policy |
+| `0` | Unsigned |
+| `1` | Signed: payload signature (kept when the message is forwarded) and message signature |
+| `2` | Signed and encrypted: payloads to DID recipients are encrypted end-to-end |
+| `3` | Custom middleware and policy |
 
-New agents default to level 1: identity keys are mandatory (§8.1), so signing
-can never fail for lack of keys. Inbound unsigned messages remain accepted
-unless `require_signature` is set.
+New agents default to level 1; every agent has signing keys (§8.1). Inbound unsigned messages are accepted unless `require_signature` is set.
 
-**Level 2 encryption.** The recipient's X25519 encryption key is derived
-directly from the Ed25519 key in its DID (standard birational conversion —
-the same mapping libsodium and age use), so encrypting requires only the
-recipient DID: no key publication or handshake. The whole plaintext payload
-(including its inner author signature) is serialized and sealed with
-ephemeral-X25519 ECDH → HKDF-SHA256 (info `adf-msg-v1`, domain-separated from
-the envelope KDF) → AES-256-GCM. Encrypted wire shape: `payload.content` =
-base64(iv‖ct‖tag), `payload.content_type` = `application/x-adf-encrypted`,
-`payload.meta.enc` = `{ v, alg, epk }`. Pipeline order — egress: signPayload →
-encryptPayload → signMessage (outer signature covers the encrypted form);
-ingress: verifyMessageSig → decryptPayload → verifyPayloadSig (inner signature
-verified on plaintext). Ingress decrypts before storage, so inbox/loop history
-stays auditable plaintext (No Secrets). Not encrypted: same-runtime local
-delivery (never leaves the process) and channel-adapter recipients (the
-platform is the transport; there is no agent key to encrypt to).
+*Level 2 encryption.* The runtime derives the recipient's X25519 encryption key from the Ed25519 key in its DID (the birational map that libsodium and age use), so encryption needs only the recipient DID. The runtime serializes the whole plaintext payload, including its inner signature, and seals it with ephemeral-X25519 ECDH, HKDF-SHA256 (info `adf-msg-v1`) and AES-256-GCM. Wire form: `payload.content` = base64(iv‖ct‖tag), `payload.content_type` = `application/x-adf-encrypted`, `payload.meta.enc` = `{ v, alg, epk }`.
 
-**Verification meta.** The trust stamps `message_verified`, `payload_verified`,
-and `identity_verified` are runtime/transport-asserted facts, never sender
-claims. The ingress pipeline strips these keys from wire-supplied `payload.meta`
-(and message `meta`) before storage and re-stamps only what the receiving
-transport itself verified, so an attacker cannot forge `identity_verified: true`
-by putting it on the wire. Likewise `meta.owner` is retained only when the
-message signature verified. Anything read back from `adf_inbox` reflects the
-runtime's verdict, not the sender's assertion.
+Pipeline order on egress: sign payload, encrypt payload, sign message (the outer signature covers the encrypted form). On ingress: verify message signature, decrypt payload, verify payload signature. The runtime decrypts before storage, so `adf_inbox` and transcripts hold plaintext (§1.5). Messages to agents in the same runtime and to channel-adapter recipients are not encrypted.
+
+*Verification fields.* `message_verified`, `payload_verified` and `identity_verified` record what the receiving runtime verified. The ingress pipeline MUST remove these keys from the received `payload.meta` and message `meta` before storage and set only what the receiving transport verified. `meta.owner` is kept only when the message signature verified. Values read from `adf_inbox` are the receiving runtime's results, not the sender's claims.
 
 ### 8.6 Authorized Code
 
-Authorized code is file-level trust. A file with `authorized = 1` may call restricted tools and restricted code methods without HIL. Unauthorized code may not.
-
-Invocation rules:
+Authorization applies to files. Code from a file with `authorized = 1` MAY call restricted tools and restricted code methods without owner approval; code from any other source MUST NOT.
 
 | Invocation | Authorization |
 |------------|---------------|
-| `sys_code` inline | Always unauthorized |
-| LLM calls `sys_lambda` targeting unauthorized file | Runs unauthorized |
-| LLM calls `sys_lambda` targeting authorized file | Requires HIL; approved run is authorized |
-| Authorized code calls authorized file | Allowed; target runs authorized |
-| Unauthorized code calls authorized file | Blocked |
-| Trigger/timer/API/middleware lambda | Based on source file's `authorized` flag |
+| `sys_code` inline code | Unauthorized |
+| Model calls `sys_lambda` on an unauthorized file | Runs unauthorized |
+| Model calls `sys_lambda` on an authorized file | Requires owner approval; the approved run is authorized |
+| Authorized code calls an authorized file | Allowed; the target runs authorized |
+| Unauthorized code calls an authorized file | Refused |
+| Trigger, timer, API route or middleware lambda | The source file's `authorized` flag |
 
-Any write to an authorized file deauthorizes it.
+A write by the agent to an authorized file clears the flag (§4.3).
 
 ### 8.7 Restricted Tools and Methods
 
-Tool access matrix. `visible` gates only the LLM loop column (the LLM sees a tool only when it is both `enabled` and `visible`); it has no effect on code-initiated calls:
+Tool access. `visible` affects only model calls:
 
-| `enabled` | `visible` | `restricted` | LLM loop | Authorized code | Unauthorized code |
-|-----------|-----------|--------------|----------|-----------------|-------------------|
-| false | — | false | Off | Off | Off |
-| false | — | true | Off | Free | Off |
-| true | false | false | Off (hidden) | Free | Free |
-| true | false | true | Off (hidden) | Free | Off |
-| true | true | false | Free | Free | Free |
-| true | true | true | HIL | Free | Off |
+| `enabled` | `visible` | `restricted` | Model | Authorized code | Unauthorized code |
+|-----------|-----------|--------------|-------|-----------------|-------------------|
+| false | any | false | Off | Off | Off |
+| false | any | true | Off | Allowed | Off |
+| true | false | false | Off | Allowed | Allowed |
+| true | false | true | Off | Allowed | Off |
+| true | true | false | Allowed | Allowed | Allowed |
+| true | true | true | Owner approval | Allowed | Off |
 
-`code_execution.restricted_methods` applies the same authorized-code rule to code-only methods such as `get_identity`, `set_identity`, `model_invoke`, `loop_inject`, and `authorize_file`. When the field is omitted, the runtime default applies: `["attestation_issue"]` — signing certificates about other agents is a deliberate trust act. An explicit list replaces the default entirely.
+A tool of an MCP server declared `restricted` (§5.11) is restricted. Inner loops never receive restricted tools (§6.4).
+
+`code_execution.restricted_methods` applies the same rule to code methods (§9): only authorized code may call a listed method. When the field is absent, the list is `["attestation_issue"]`. An explicit list replaces it.
+
+`locked` on a tool declaration, trigger, target, route or timer prevents the agent from changing or removing that entry (§5.17). A runtime MUST NOT offer a standing "always approve" for a call to a locked tool; the owner approves each call.
 
 ---
 
 ## 9. Code Execution and Lambdas
 
-All code execution contexts run in a sandbox. The spec defines their ADF-visible semantics, not the exact sandbox implementation.
+All code runs in a sandbox. This specification defines what code can do to the file, not the sandbox implementation.
 
 | Context | Entry | State persistence | Authorization source | Receives |
 |---------|-------|-------------------|----------------------|----------|
-| `sys_code` | LLM tool call | Persistent per agent | Always unauthorized | Code string |
-| `sys_lambda` | LLM/tool/code call | Fresh by default | Target/caller/HIL rules | Args object |
-| Trigger lambda | System target | Fresh unless warm | Source file flag | Event object |
-| Timer lambda | Timer system scope | Fresh unless warm | Source file flag | Timer event |
-| API route | Serving route | Fresh unless warm | Source file flag | HTTP request |
-| Middleware | Pipeline point | Fresh by point | Source file flag | Middleware input |
-| WebSocket lambda | WS event | Warm for connection lifetime | Source file flag | WS event |
+| `sys_code` | Model tool call | Persistent per agent | Unauthorized | Code string |
+| `sys_lambda` | Model, tool or code call | Fresh by default | §8.6 | Args object |
+| Trigger lambda | System-scope target | Fresh unless `warm` | Source file | Event object |
+| Timer lambda | Timer with system scope | Fresh unless `warm` | Source file | Timer event |
+| API route | `serving.api` route | Fresh unless `warm` | Source file | `HttpRequest` |
+| Middleware | Pipeline point | Fresh per call | Source file | Middleware input |
+| WebSocket lambda | WS event | Warm for the connection's lifetime | Source file | WS event |
+| Pre-LLM hook | Model request | Fresh | Source file | `{ request, loop }` |
+| Umbilical tap | Umbilical event | Fresh | Source file | Umbilical event |
 
-Every code context gets an async `adf` proxy object. Calls use a single object argument:
+Every code context has an async `adf` object. Tool calls take one object argument:
 
 ```javascript
 await adf.fs_read({ path: "README.md" })
 await adf.msg_send({ parent_id: "inbox-1", content: "Acknowledged" })
 ```
 
-Special code-only methods include:
+Code can call every enabled tool except `say` and `ask`. Code-only methods:
 
 | Method | Description |
 |--------|-------------|
-| `model_invoke` | Invoke the configured model from code |
-| `sys_lambda` | Call another file function |
-| `task_resolve` | Approve, deny, or transition tasks |
-| `loop_inject` | Queue boundary-safe user context and persist an auditable loop entry. Keyed pending updates coalesce; system, assistant, and tool shapes are rejected. |
-| `identity_status` | Read envelope states and legacy password-protection status without exposing identity values, slots, or key material |
-| `get_identity` | Read identity values allowed for code |
-| `set_identity` | Store identity values when enabled; newly created keys get `code_access = 1`, existing keys keep their flag |
-| `attestation_list` | Read this agent's attestations (public by design) |
-| `attestation_add` | Store a peer-issued attestation about this agent. Signature must verify, subject must be this agent's DID, reserved roles (`owner`/`operator`/`runtime`/`clone`/`rotation`) are rejected, duplicates are idempotent |
-| `attestation_issue` | Sign an attestation about another DID with this agent's key. Returned, not stored — attestations live with their subject. Reserved roles rejected; restricted to authorized code by default |
-| `authorize_file` | Authorized-code-only file authorization |
-| `set_meta_protection` | Authorized-code-only metadata protection change |
-| `set_file_protection` | Authorized-code-only file protection change |
+| `model_invoke` | Call the configured model. |
+| `sys_lambda` | Call a function in another file. |
+| `task_resolve` | Approve, deny or transition a task (§13.4). |
+| `loop_inject` | Queue user-role context for the next turn and store it in the transcript. Pending injections with the same key are merged; system, assistant and tool shapes are refused. |
+| `identity_status` | Read envelope states and legacy password status, without identity values, slots or key material. |
+| `get_identity` | Read an `adf_identity` row with `code_access = 1`. |
+| `set_identity` | Store a secret; new rows get `code_access = 1`, existing rows keep their flag. |
+| `emit_event` | Emit a `custom.*` umbilical event. |
+| `attestation_list` | Read this agent's attestations. |
+| `attestation_add` | Store an attestation another party issued about this agent. The signature MUST verify, the subject MUST be this agent's DID, the roles `owner`, `operator`, `runtime`, `clone` and `rotation` are refused, and a duplicate is a no-op. |
+| `attestation_issue` | Sign an attestation about another DID with this agent's key and return it without storing it; attestations are stored by their subject. Reserved roles are refused. Restricted by default. |
+| `authorize_file` | Authorized code only: set a file's `authorized` flag. |
+| `set_meta_protection` | Authorized code only: change an `adf_meta` protection. |
+| `set_file_protection` | Authorized code only: change an `adf_files` protection. |
 
-Native network access from sandbox code SHOULD be disabled unless `code_execution.network` is enabled. Portable code should use `adf.sys_fetch()` so fetch middleware applies.
+`code_execution` enables or disables each method (§5.9). A runtime SHOULD disable native network access in the sandbox unless `code_execution.network` is `true`. Code that needs HTTP SHOULD use `adf.sys_fetch()`, which applies fetch middleware and the address rules of §5.6.
 
 ---
 
 ## 10. Tool Catalog
 
-Tool names are part of the ADF contract. Tool schemas may evolve, but runtimes SHOULD preserve the following meanings.
+Tool names are part of the file contract: they appear in `config.tools`, in transcripts and in trigger filters. Tool schemas MAY change between runtime versions; a runtime SHOULD keep the meaning of each name listed here. A tool is available to the agent only when declared in `config.tools` (§5.4).
 
 ### 10.1 Turn Tools
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `respond` | `message` | Emit final response. Ends turn in interactive mode; continues in autonomous mode. Runtimes may implement raw assistant text as implicit `respond`. |
-| `say` | `message` | Emit progress/status without ending the turn. |
-| `ask` | `question` | Pause for human input in interactive mode. |
+| `say` | `message` | Show progress to the owner without ending the turn. Not callable from code. |
+| `ask` | `question` | Wait for the owner's answer. Not callable from code. |
+
+A reply with text and no tool call is the turn's response; §6.3 defines when it ends the turn.
 
 ### 10.2 Filesystem Tools
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `fs_read` | `path`, `start_line?`, `end_line?` | Read VFS file metadata and content. |
-| `fs_write` | `path`, `content?`, `old_text?`, `new_text?`, `encoding?`, `mime_type?`, `protection?` | Create, overwrite, or exact-match edit a file. |
-| `fs_list` | `prefix?` | List VFS files. |
-| `fs_delete` | `path` | Delete mutable file, auditing first if configured. |
+| `fs_read` | `path`, `start_line?`, `end_line?` | Read a file's content and metadata. |
+| `fs_write` | `path`, `content?`, `old_text?`, `new_text?`, `encoding?`, `mime_type?`, `protection?` | Create, overwrite, or edit a file by exact text match. |
+| `fs_list` | `prefix?` | List files. |
+| `fs_delete` | `path` | Delete a file; snapshots it first when `audit.files` is enabled. |
 
 ### 10.3 Database Tools
 
 | Tool | Description |
 |------|-------------|
-| `db_query` | Read-only SELECT on allowed tables: `local_*`, `adf_loop`, `adf_inbox`, `adf_outbox`, `adf_timers`, `adf_files`, `adf_audit`, `adf_logs`, `adf_tasks`. |
-| `db_execute` | INSERT/UPDATE/DELETE/CREATE/DROP on `local_*` tables only, including `vec0` virtual tables. |
+| `db_query` | Read-only `SELECT` on `local_*`, `adf_loop`, `adf_inbox`, `adf_outbox`, `adf_timers`, `adf_files`, `adf_audit`, `adf_logs` and `adf_tasks`. |
+| `db_execute` | `INSERT`, `UPDATE`, `DELETE`, `CREATE` and `DROP` on `local_*` tables only, including `vec0` virtual tables, subject to `security.table_protections` (§5.6). |
 
-`adf_meta`, `adf_config`, and `adf_identity` are not directly queryable through `db_query`.
+`adf_meta`, `adf_config` and `adf_identity` are not readable through `db_query`.
 
-### 10.4 Messaging and Peer Tools
+### 10.4 Messaging Tools
 
 | Tool | Description |
 |------|-------------|
-| `msg_send` | Send by recipient/address or reply by `parent_id`. |
-| `msg_read` | Fetch inbox messages and mark returned messages read. |
+| `msg_send` | Send to a recipient or address, or reply by `parent_id`. |
+| `msg_read` | Return inbox messages and mark them `read`. |
 | `msg_list` | Return inbox counts. |
-| `msg_update` | Mark messages `read`, `archived`, or delete when allowed. |
-| `msg_delete` | Delete inbox/outbox messages by filter. |
-| `agent_discover` | Discover agents reachable from this agent. Honors the caller's and targets' `messaging.visibility` tiers. |
-| `chat_info` | Read-only chat/channel metadata lookup through a connected channel adapter (title, roster, counts). Ships `enabled: true, visible: false` — callable from sandbox code as `adf.chat_info` without occupying an LLM tool slot. |
+| `msg_update` | Set messages to `read` or `archived`, or delete archived messages. |
+| `msg_delete` | Delete inbox or outbox messages matching a filter. |
+| `agent_discover` | List agents this agent can reach, applying `messaging.visibility` (§5.8). |
+| `chat_info` | Read chat metadata (title, participants, counts) through a channel adapter. Declared `enabled: true, visible: false` by default, so code can call it without it occupying the model's tool list. |
 
 ### 10.5 Execution, Network, and Package Tools
 
 | Tool | Description |
 |------|-------------|
-| `sys_code` | Execute inline JavaScript/TypeScript in sandbox. |
-| `sys_lambda` | Call a function in an ADF file. |
-| `sys_fetch` | HTTP request with middleware. |
-| `npm_install` | Add pure JS/WASM package to `code_execution.packages`. |
-| `npm_uninstall` | Remove package from `code_execution.packages`. |
-| `mcp_install` | Attach/install MCP server config. |
-| `mcp_uninstall` | Detach/remove MCP server config. |
+| `sys_code` | Run inline JavaScript or TypeScript in the sandbox. |
+| `sys_lambda` | Call a function in a file. |
+| `sys_fetch` | HTTP request through fetch middleware and the address rules of §5.6. |
+| `npm_install` | Add a pure JS or WASM package to `code_execution.packages`. |
+| `npm_uninstall` | Remove a package from `code_execution.packages`. |
+| `mcp_install` | Add an MCP server to `mcp.servers` and connect it. |
+| `mcp_uninstall` | Remove an MCP server. |
+| `mcp_restart` | Reconnect a configured MCP server and refresh its tool list. |
 
 ### 10.6 State, Config, and Meta Tools
 
 | Tool | Description |
 |------|-------------|
-| `sys_set_state` | Transition to `idle`, `hibernate`, or `off`. |
-| `sys_get_config` | Return config, agent card, or provider status. |
-| `sys_update_config` | Modify unlocked config paths. |
-| `sys_create_adf` | Create a child ADF, optionally from template and files. |
-| `sys_get_meta` | Read metadata. |
-| `sys_set_meta` | Write metadata with protection rules. |
-| `sys_delete_meta` | Delete mutable metadata. |
+| `sys_set_state` | Set `idle`, `hibernate` or `off` (§6.2). |
+| `sys_get_config` | Return the config, the agent card, or provider status. |
+| `sys_update_config` | Change config paths the agent may change (§5.17). |
+| `sys_create_adf` | Create a child agent in a new file (§1.3), optionally from a template and files. |
+| `sys_get_meta` | Read `adf_meta` keys. |
+| `sys_set_meta` | Write an `adf_meta` key, subject to its protection (§4.4). |
+| `sys_delete_meta` | Delete an `adf_meta` key with protection `none`. |
 
-### 10.7 Timer, Loop, Task, and Archive Tools
+### 10.7 Timer and Loop Tools
 
 | Tool | Description |
 |------|-------------|
-| `sys_set_timer` | Create timer. |
+| `sys_set_timer` | Create a timer (§7.6). |
 | `sys_list_timers` | List timers. |
-| `sys_delete_timer` | Delete unlocked timer. |
-| `loop_compact` | Signal runtime to summarize and compact loop. |
-| `loop_clear` | Delete loop slice, auditing first if configured. |
-| `loop_read` | Read loop entries. |
-| `loop_stats` | Return loop stats. |
-| `archive_read` | Decompress and read `adf_audit` entry. |
+| `sys_delete_timer` | Delete an unlocked timer. |
+| `loop_compact` | Ask the runtime to compact the calling loop's transcript (§13.2). |
+| `loop_clear` | Delete a slice of the calling loop's transcript; snapshots it first when `audit.loop` is enabled. |
+| `loop_send` | Append a message to another loop's transcript, optionally waking it (§6.4). |
+| `loop_list` | List the agent's loops with name, goal, enabled flag and running status. |
+| `loop_manage` | Create, get, update or delete an inner loop. `main` only (§6.4). |
 
-`task_resolve` is a code-only method, not an LLM-loop tool by default.
+`task_resolve` and `loop_inject` are code methods (§9), not tools.
 
-### 10.8 WebSocket, Compute, and Shell Tools
+### 10.8 WebSocket, Stream, Compute, and Shell Tools
 
 | Tool | Description |
 |------|-------------|
-| `ws_connect` | Start configured or ad-hoc WebSocket connection. |
-| `ws_disconnect` | Close active connection. |
-| `ws_connections` | List active connections. |
+| `ws_connect` | Open a configured or ad-hoc WebSocket connection. |
+| `ws_disconnect` | Close a connection. |
+| `ws_connections` | List open connections. |
 | `ws_send` | Send a text frame. |
-| `compute_exec` | Run shell command in isolated/shared/host compute target. Restricted by default. |
-| `fs_transfer` | Stage/ingest files between VFS and compute target. |
-| `adf_shell` | Virtual shell that absorbs many individual tools behind shell commands. |
+| `stream_bind` | Bind two byte endpoints so the runtime copies bytes between them outside the model path (§5.23). |
+| `stream_unbind` | Terminate a stream binding. |
+| `stream_bindings` | List active stream bindings with byte counters. |
+| `compute_exec` | Run a shell command on a compute target (§5.12). Restricted by default. |
+| `fs_transfer` | Copy files between `adf_files` and a compute target. |
+| `adf_shell` | Shell interface that exposes many tools as shell commands. |
 
 ### 10.9 Cross-Cutting Parameters
 
 | Parameter | Description |
 |-----------|-------------|
-| `_async: true` | Execute a tool in the background and create an `adf_tasks` row. |
-| `_full: true` | Code-execution-only bypass for result limits, currently for large `db_query` results. |
+| `_async: true` | Run the tool in the background and record it in `adf_tasks`. |
+| `_full: true` | Code only: return a result without result-size limits (currently `db_query`). |
 
 ---
 
-## 11. Messaging, Peers, and ALF
+## 11. Messaging and ALF
 
 ### 11.1 ALF Message
 
-ADF uses ALF (Agentic Lingua Franca) as its portable message envelope. Wire messages have:
+ADF uses ALF (Agentic Lingua Franca) as its message envelope. A wire message has this shape:
 
 ```jsonc
 {
@@ -1690,11 +1868,11 @@ ADF uses ALF (Agentic Lingua Franca) as its portable message envelope. Wire mess
   "network": "devnet",
   "id": "msg_01HQ9ZxKp4mN7qR2wT",
   "timestamp": "2026-02-28T20:00:00Z",
-  "from": "did:adf:alice",
-  "to": "did:adf:bob",
+  "from": "did:key:z6MkAlice…",
+  "to": "did:key:z6MkBob…",
   "reply_to": "https://alice.example/alice/inbox",
   "meta": {
-    "owner": "did:adf:owner",
+    "owner": "did:key:z6MkOwner…",
     "card": "https://alice.example/alice/card"
   },
   "payload": {
@@ -1715,61 +1893,57 @@ ADF uses ALF (Agentic Lingua Franca) as its portable message envelope. Wire mess
 }
 ```
 
-`adf_inbox` and `adf_outbox` store a flattened projection of this message plus `original_message`, which may contain the full raw ALF or platform-native source.
+`adf_inbox` and `adf_outbox` store a flattened projection of the message plus `original_message`, which holds the raw ALF message or the platform-native source.
 
 ### 11.2 Inbox and Outbox Statuses
 
 | Inbox status | Meaning |
 |--------------|---------|
 | `unread` | New message |
-| `read` | Fetched by the agent |
-| `archived` | Processed or hidden from active inbox |
+| `read` | Returned to the agent |
+| `archived` | Processed or hidden from the active inbox |
 
 | Outbox status | Meaning |
 |---------------|---------|
 | `pending` | Queued |
-| `sent` | Defined for compatibility but **never written** by the current runtime |
-| `delivered` | Accepted by recipient/runtime |
+| `sent` | Reserved; the reference runtime does not write it |
+| `delivered` | Accepted by the recipient or its runtime |
 | `failed` | Delivery failed |
 
-The runtime moves a row directly `pending → delivered \| failed`; `sent` is
-reserved in the enum but unused. Delivery is best-effort — there is no
-sender-side store-and-forward retry queue.
+The reference runtime moves a row from `pending` to `delivered` or `failed`. Delivery is best-effort: the sender does not queue failed messages for retry.
 
 ### 11.3 Addressing and Threading
 
 | Field | Description |
 |-------|-------------|
-| `from`, `to` | DID or adapter-style identity (`telegram:...`, `email:...`). |
+| `from`, `to` | DID or adapter address (`telegram:...`, `email:...`). |
 | `address` | Outbox delivery URL override. |
 | `reply_to` | Sender's reply endpoint. |
-| `thread_id` | Conversation group; inherited from parent on replies. |
-| `parent_id` | Specific inbox/outbox row being replied to. |
+| `thread_id` | Conversation group; a reply inherits its parent's. |
+| `parent_id` | Inbox or outbox row the message replies to. |
 
-If `parent_id` is provided without explicit recipient/address, the runtime resolves from the referenced inbox message.
+When `msg_send` has a `parent_id` and no recipient or address, the runtime takes them from the referenced inbox message.
 
 ### 11.4 Attachments
 
-ALF attachment transfer modes:
-
 | Mode | Meaning |
 |------|---------|
-| `inline` | Base64 data is present in the message payload. |
+| `inline` | Base64 data in the message payload. |
 | `reference` | URL plus digest and size. |
-| `imported` | Storage-only marker after the receiver extracts inline data to `adf_files`. |
+| `imported` | Stored form after the receiver extracts inline data to `adf_files`. |
 
-Received inline attachments are written to the recipient VFS, typically under `imported/{source}/` or `imports/{sender}/`, and the stored message attachment is updated with `path`.
+The receiving runtime writes inline attachments to the recipient's `adf_files`, under `imported/{source}/` or `imports/{sender}/`, and records the `path` in the stored attachment.
 
 ### 11.5 Agent Card
 
-An agent card is the public identity document exposed by serving runtimes and exchanged in messages.
+The agent card is the public identity document that serving runtimes expose and messages reference.
 
 ```jsonc
 {
-  "did": "did:adf:agent",
+  "did": "did:key:z6Mk…",
   "handle": "monitor",
   "description": "Monitors system resources",
-  "icon": "M",
+  "icon": "📈",
   "public_key": "...",
   "resolution": { "method": "self" },
   "endpoints": {
@@ -1788,18 +1962,21 @@ An agent card is the public identity document exposed by serving runtimes and ex
 }
 ```
 
-**Signature scope.** The `signature` covers identity and policy fields only — specifically, the canonical JSON of all card fields **except** `signature`, `endpoints`, and `resolution.endpoint`. Endpoint URLs are observer-dependent (the directory endpoint rewrites them per-requester so LAN peers receive LAN URLs and loopback peers receive loopback URLs) and are therefore out of scope for the signature. Identity is what the signature protects; endpoints are reachability metadata.
+*Signature scope.* `signature` covers the canonical JSON of every card field except `signature`, `endpoints` and `resolution.endpoint`. A runtime MAY rewrite endpoint URLs for each requester (LAN URLs for LAN peers, loopback URLs for local peers), so endpoints are outside the signature. `api_routes` lists routes with `on_card: true` (§5.14); `attestations` is empty unless `card.publish_attestations` is `true` (§5.22).
 
 ### 11.6 Channel Adapters
 
-Adapters normalize external platforms into inbox/outbox rows. Required storage semantics:
+Adapters convert external platform messages into inbox and outbox rows. A conforming adapter MUST store:
 
-- `source` identifies adapter/runtime origin (`mesh`, `telegram`, `email`, `discord`, `slack`, `whatsapp`, etc.).
-- `source_context` stores platform metadata needed for replies. It is echoed onto outbound replies; descriptive data does not belong here.
-- `meta.group` stores descriptive group-chat context (platform, chat id, title, participant roster capped at 20 with `participant_count`/`participants_truncated`/`participants_scope`). Adapters MAY attach it to inbound rows for group conversations; it is never echoed onto replies.
-- `original_message` stores raw platform source where available.
-- Adapter credentials SHOULD live in `adf_identity`. Adapters with filesystem state (e.g. WhatsApp multi-device auth) use a per-agent on-disk data directory beside the `.adf` file (`<agent>.adf.adapters/<type>/`).
-- Structured questionnaires are typed content: `content_type: "application/vnd.adf.form+json"` with the form JSON as the message `content` (validated at send time). Adapters MAY render the canonical form natively (currently Telegram inline keyboards) and MUST fall back to a plain-text questionnaire otherwise; agent recipients over mesh parse the content directly. Answers return as normal inbound rows threaded via `parent_id`, with `form_id`/`question_id`/`answer_id`/`answer_value` in `source_context`. New rich capabilities follow the same pattern: a new `content_type` plus per-adapter rendering. `message_meta` is reserved for delivery hints, not content.
+- `source`: the adapter type (`telegram`, `email`, `discord`, `slack`, `whatsapp`, …); `mesh` for agent messages.
+- `source_context`: platform data needed to reply. The runtime copies it to outbound replies; descriptive data does not belong here.
+- `original_message`: the raw platform message, where available.
+
+An adapter MAY store `meta.group` for group conversations: platform, chat id, title, and a participant list capped at 20 entries with `participant_count`, `participants_truncated` and `participants_scope`. It is not copied to replies.
+
+Adapter credentials MUST be stored in `adf_identity` (§5.13). An adapter that needs filesystem state (for example WhatsApp multi-device authentication) uses a directory beside the `.adf` file, `<agent>.adf.adapters/<type>/`; that directory is not part of the file (§16).
+
+*Forms.* A structured questionnaire is sent as `content_type: "application/vnd.adf.form+json"` with the form JSON as `content`; the runtime validates it at send time. An adapter MAY render the form natively (the reference runtime renders Telegram inline keyboards) and MUST otherwise render it as a plain-text questionnaire. Agents receiving the message over the mesh parse `content` directly. Answers arrive as ordinary inbound rows threaded by `parent_id`, with `form_id`, `question_id`, `answer_id` and `answer_value` in `source_context`. A new message capability follows the same pattern: a new `content_type` plus per-adapter rendering. `message_meta` is reserved for delivery hints.
 
 ---
 
@@ -1807,26 +1984,26 @@ Adapters normalize external platforms into inbox/outbox rows. Required storage s
 
 ### 12.1 HTTP Serving
 
-Serving config is portable. The actual host, port, TLS, LAN binding, and daemon/Studio process are runtime concerns.
+The serving configuration travels with the file. Host, port, TLS, network binding and the serving process are runtime concerns.
 
-Resolution order for `/agents/{handle}/...`:
+A runtime resolves `/agents/{handle}/...` in this order:
 
 1. `serving.api`
 2. `serving.public`
 3. `serving.shared`
 4. 404
 
-The `inbox`, `card`, and `health` segments are reserved protocol mailboxes served directly under the handle; `serving.api` routes and `public/` files MUST NOT claim them:
+The path segments `inbox`, `card` and `health` are reserved and served directly under the handle. `serving.api` routes and `public/` files MUST NOT use them.
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /agents/{handle}/card` | Agent card |
+| `GET /agents/{handle}/card` | Agent card (§11.5) |
 | `GET /agents/{handle}/health` | Health |
 | `POST /agents/{handle}/inbox` | ALF delivery |
 
-WebSocket upgrades are not a reserved endpoint: a WS route is an ordinary `serving.api` entry (method `WS`) reached at its own `path` under `/agents/{handle}/`, resolved by the same order above.
+A WebSocket route is an ordinary `serving.api` entry with method `WS`, reached at its `path` under `/agents/{handle}/` and resolved in the same order.
 
-Route handlers receive:
+Route lambdas receive and return:
 
 ```typescript
 interface HttpRequest {
@@ -1847,9 +2024,9 @@ interface HttpResponse {
 
 ### 12.2 WebSockets
 
-Inbound WebSockets are configured as `serving.api` routes with `method: "WS"` and a required lambda. Outbound WebSockets are configured in `ws_connections`.
+Inbound WebSockets are `serving.api` routes with `method: "WS"` and a lambda. Outbound WebSockets are declared in `ws_connections` (§5.15).
 
-Frames carry one ALF message per text frame unless a route lambda implements custom hot-path handling. Cold-path ALF-over-WS ingress stores messages in `adf_inbox` exactly like HTTP delivery.
+Each text frame carries one ALF message unless a route lambda handles frames itself. An ALF message received over a WebSocket without such a lambda is stored in `adf_inbox` exactly as HTTP delivery stores it.
 
 WebSocket lambda event:
 
@@ -1866,22 +2043,18 @@ interface WsLambdaEvent {
 }
 ```
 
-Transport preference for `msg_send` is: local runtime, active WebSocket, HTTP POST. Outbox middleware may override.
+`msg_send` tries transports in this order: same runtime, open WebSocket, HTTP POST. Outbox middleware MAY change the choice.
 
 ### 12.3 Middleware
 
-Middleware references are `{ "lambda": "path/file.ts:functionName" }`.
-
-Pipeline points:
+A middleware reference is `{ "lambda": "path/file.ts:functionName" }`.
 
 | Point | Config | Data |
 |-------|--------|------|
 | `route` | `serving.api[].middleware` | `HttpRequest` |
 | `inbox` | `security.middleware.inbox` | ALF message before storage |
-| `outbox` | `security.middleware.outbox` | Egress context before signing/sending |
-| `fetch` | `security.fetch_middleware` | `sys_fetch` params |
-
-Middleware input/output:
+| `outbox` | `security.middleware.outbox` | Egress context before signing and sending |
+| `fetch` | `security.fetch_middleware` | `sys_fetch` parameters |
 
 ```typescript
 interface MiddlewareInput {
@@ -1897,27 +2070,27 @@ interface MiddlewareOutput {
 }
 ```
 
-Middleware runs in array order. If any middleware rejects, the pipeline stops. By default, middleware source files must be authorized; unauthorized middleware is skipped and logged.
+Middleware runs in array order; a rejection stops the pipeline. When `security.require_middleware_authorization` is `true` (the default), a runtime MUST skip middleware from an unauthorized file and log the skip.
 
 ---
 
 ## 13. Memory, Audit, Tasks, and Logs
 
-### 13.1 Loop Entries
+### 13.1 Transcript Rows
 
-`adf_loop` stores:
+`adf_loop` stores, for each loop:
 
-- Human messages
-- Assistant messages
-- Tool calls and results
-- Ask/approval interactions
-- State transitions
-- Context blocks
-- Compaction summaries
+- owner and trigger messages;
+- model replies;
+- tool calls and results;
+- `ask` questions and answers, and approval interactions;
+- state transitions;
+- context the runtime adds;
+- compaction summaries.
 
-`content_json` is a JSON array of provider-style content blocks. `tokens` SHOULD store token usage JSON when available.
+`content_json` is a JSON array of provider-style content blocks. `tokens` SHOULD hold the token usage of `assistant` rows when the provider reports it.
 
-Context blocks use text prefixes such as:
+Context blocks start with a marker:
 
 ```text
 [Context: system_prompt] ...
@@ -1927,53 +2100,53 @@ Context blocks use text prefixes such as:
 
 ### 13.2 Compaction
 
-`loop_compact` is signal-only in v0.2. The runtime generates a summary using a dedicated compaction prompt, audits deleted rows if configured, deletes old loop entries, and inserts a `[Loop Compacted]` summary entry.
+A runtime compacts each loop's transcript separately. It compacts when the transcript reaches the loop's threshold (`loops[].compact_threshold`, otherwise `context.compact_threshold`, otherwise 100000 tokens) and when the model calls `loop_compact`. To compact, the runtime:
 
-`context.compact_threshold` (default 100000) is the single source of truth for the compaction threshold. The legacy `limits.compaction_threshold_tokens` field has been removed; runtimes silently drop it from old configs.
+1. generates a summary with a dedicated compaction prompt;
+2. snapshots the removed rows to `adf_audit` as `loop:<name>` when loop audit is enabled (§5.19);
+3. deletes the summarized rows;
+4. inserts the summary as a `user` row whose text starts with `[Loop Compacted]`, or `[Loop Compacted, audited]` when step 2 ran, with `ord` set so it sorts before the preserved rows.
+
+`limits.compaction_threshold_tokens` is not a config field; a runtime removes it from older configs.
 
 ### 13.3 Audit
 
-`adf_audit` stores brotli-compressed snapshots before destructive operations when enabled.
+`adf_audit` stores brotli-compressed snapshots taken before data is removed.
 
-Sources:
+| Source | Stored data | Addressing | Written by the current runtime |
+|--------|-------------|------------|-------------------------------|
+| `loop:<name>` | Transcript rows of loop `<name>` removed by compaction, `loop_clear`, a history rebuild, or loop deletion | `start_seq`/`end_seq` | Yes |
+| `inbox_message` | Complete inbound ALF message at arrival, before attachment extraction | `ref` = ALF message id | Yes |
+| `outbox_message` | Complete outbound ALF message at send | `ref` = ALF message id | Yes |
+| `file` | Deleted file content and metadata | `ref` = file path | Yes |
+| `loop` | Transcript rows from a runtime before schema version 29, which had one transcript | `start_seq`/`end_seq` | No; read only |
+| `inbox`, `outbox` | Batches of deleted messages from a runtime before schema version 28 | none | No; read only |
 
-| Source | Stored data | Addressing |
-|--------|-------------|------------|
-| `loop:<stream>` | Deleted loop rows, tagged with the cognition stream they came from (`loop:main` for the membrane-facing mind) | `start_seq`/`end_seq` (adf_loop seq range) |
-| `loop` | Deleted loop rows (legacy-read-only: written by pre-v29 runtimes, which had a single unnamed stream) | `start_seq`/`end_seq` (adf_loop seq range) |
-| `inbox` | Deleted inbox rows (legacy-read-only: written by pre-v28 runtimes only) | — |
-| `outbox` | Deleted outbox rows (legacy-read-only: written by pre-v28 runtimes only) | — |
-| `inbox_message` | Full inbound ALF before attachment extraction/tombstoning | `ref` = ALF message id |
-| `outbox_message` | Full outbound ALF before attachment extraction/tombstoning | `ref` = ALF message id |
-| `file` | Deleted file content and metadata | `ref` = file path |
+A batch delete of messages does not write an audit row; message content is captured per message at arrival and send.
 
-Message audit is per-message: content is captured at arrival/send time as `inbox_message`/`outbox_message` rows. Batch inbox/outbox deletes do not write audit rows — the `inbox`/`outbox` sources remain readable for files migrated from older runtimes but are never written at v28+.
-
-`adf_audit` is append-only from the agent perspective. Runtime/owner tools may expose archive reads, but agents must not directly mutate audit entries.
+The agent MUST NOT modify or delete `adf_audit` rows. Runtime and owner tools MAY read them.
 
 ### 13.4 Tasks
 
-`adf_tasks` records async tool calls and HIL approval work.
-
-Statuses:
+`adf_tasks` records asynchronous tool calls and approval requests.
 
 | Status | Meaning |
 |--------|---------|
 | `pending` | Created, not started |
-| `pending_approval` | Waiting for owner or authorized-code approval |
-| `running` | Executing |
-| `completed` | Successful terminal status |
-| `failed` | Error terminal status |
+| `pending_approval` | Waiting for the owner or authorized code to approve |
+| `running` | Running |
+| `completed` | Finished successfully |
+| `failed` | Finished with an error |
 | `denied` | Approval denied |
 | `cancelled` | Cancelled before completion |
 
-`requires_authorization = 1` means only owner UI or authorized code may approve/deny. Once set, it MUST NOT be unset by the agent.
+When `requires_authorization = 1`, only the owner or authorized code may approve or deny the task. The agent MUST NOT change `requires_authorization` from `1` to `0`.
 
 ### 13.5 Logs
 
-`adf_logs` stores structured runtime logs. Levels are `debug`, `info`, `warn`, and `error`. Log filtering and retention are controlled by `config.logging`.
+`adf_logs` stores structured runtime logs with levels `debug`, `info`, `warn` and `error`. `config.logging` controls which rows are stored and how many are kept (§5.10).
 
-Common origins/events include:
+Common origins and events:
 
 | Origin | Events |
 |--------|--------|
@@ -1982,13 +2155,14 @@ Common origins/events include:
 | `serving` | `api_request`, `api_response` |
 | `adf_shell` | `execute`, `parse_error`, `timeout` |
 | `sys_fetch` | `rejected`, `error`, `timeout` |
+| `executor` | `provider_error`, `turn_error` |
 | `mesh` | delivery errors |
-
-`on_logs` triggers MUST avoid recursing on logs produced by their own handler.
 
 ---
 
 ## 14. Defaults
+
+This section lists what the reference runtime writes when it creates a file. A value in parentheses is not written; it is the value the runtime uses when the field is absent.
 
 ### 14.1 New File Defaults
 
@@ -1996,121 +2170,159 @@ Common origins/events include:
 |-------|---------|
 | `adf_version` | `0.2` |
 | `id` | 12-character nanoid |
-| `name` | Derived from filename |
-| `description` | Empty string |
+| `name` | Derived from the filename |
+| `description` | `""` |
+| `icon` | Chosen from `id` |
 | `handle` | Sanitized filename |
-| `state` | `idle` |
-| `start_in_state` | `idle` |
-| `loop_mode` | `interactive` |
+| `state` | `active` |
+| `start_in_state` | absent (`active`) |
+| `autonomous` | `false` |
 | `autostart` | `false` |
+| `model.provider`, `model.model_id` | `""` (set by the runtime or template) |
 | `model.temperature` | `0.7` |
 | `model.max_tokens` | `4096` |
-| `context.document_mode` | `agentic` *(reserved — not yet implemented; no runtime reader)* |
-| `context.mind_mode` | `included` *(reserved — not yet implemented; no runtime reader)* |
-| `context.compact_threshold` | `100000` |
-| `messaging.receive` | `false` |
+| `context.compact_threshold` | absent (`100000`) |
+| `context.audit` | `{ "loop": true, "inbox": false, "outbox": false, "files": false }` |
+| `context.dynamic_instructions` | all four `true` |
+| `messaging.receive` | `true` |
 | `messaging.mode` | `proactive` |
 | `messaging.visibility` | `localhost` |
+| `messaging.inbox_mode` | `true` |
 | `security.allow_unsigned` | `true` |
-| `security.allow_local_fetch` | `false` |
-| `security.require_middleware_authorization` | `true` |
+| `security.level` | `1` |
+| `security.allow_local_fetch` | absent (`false`) |
+| `security.require_middleware_authorization` | absent (`true`) |
 | `limits.execution_timeout_ms` | `60000` |
 | `limits.max_file_read_tokens` | `30000` |
 | `limits.max_file_write_bytes` | `5000000` |
 | `limits.max_tool_result_tokens` | `16000` |
+| `limits.max_tool_result_preview_chars` | `5000` |
 | `limits.max_active_turns` | `null` |
+| `recovery` | absent (§5.20 defaults) |
+| `code_execution` | §5.9 defaults |
+| `compute.enabled` | `false` |
 | `logging.default_level` | `info` |
 | `logging.max_rows` | `10000` |
+| `loops` | absent (`[]`) |
+| `locked_fields` | `[]` |
 
-Default files:
+Default files, all with protection `no_delete`:
 
-| Path | Content | Protection |
-|------|---------|------------|
-| `README.md` | New-agent markdown stub | `no_delete` |
-| `mind.md` | Structured index skeleton (`## Always` / `## Pages` / `## Rules`) | `no_delete` |
-| `mind/log.md` | Append-only mind-change log stub | `no_delete` |
-| `soul.md` | Seed voice/identity content | `no_delete` |
+| Path | Content |
+|------|---------|
+| `README.md` | `# <name>`, a `Created: <YYYY-MM-DD>` line and `Status: New agent, self-configuring.` |
+| `mind.md` | Index skeleton with the sections `## Always` and `## Pages` |
+| `mind/log.md` | `# Mind Log` heading and a comment giving the entry format |
+| `soul.md` | Default voice text |
+
+A template MAY supply its own `README.md`, `mind.md` and `soul.md`.
 
 ### 14.2 Default Triggers
 
-| Trigger | Default |
-|---------|---------|
-| `on_inbox` | Enabled, agent target with `interval_ms: 30000` |
-| `on_file_change` | Enabled, agent target watching `README.md`, `debounce_ms: 2000` |
-| `on_chat` | Enabled, agent target |
-| `on_timer` | Enabled, system and agent targets |
-| `on_startup` | Disabled |
-| `on_outbox` | Disabled |
-| `on_tool_call` | Disabled |
-| `on_task_create` | Disabled |
-| `on_task_complete` | Disabled |
-| `on_logs` | Disabled |
+| Trigger | Enabled | Targets |
+|---------|---------|---------|
+| `on_inbox` | yes | `[{"scope":"agent"}]` |
+| `on_outbox` | no | `[]` |
+| `on_file_change` | yes | `[{"scope":"agent","filter":{"watch":"README.*"},"debounce_ms":2000}]` |
+| `on_chat` | yes | `[{"scope":"agent"}]` |
+| `on_timer` | yes | `[{"scope":"system"},{"scope":"agent"}]` |
+| `on_tool_call` | no | `[]` |
+| `on_task_create` | no | `[]` |
+| `on_task_complete` | yes | `[{"scope":"agent"}]` |
+| `on_logs` | no | `[]` |
+| `on_llm_call` | no | `[]` |
+| `on_startup` | no | `[]` |
 
 ### 14.3 Default Tools
 
-Enabled by default:
+| Tool | Enabled | Visible | Restricted |
+|------|---------|---------|------------|
+| `fs_read` | yes | yes | no |
+| `fs_write` | yes | yes | no |
+| `fs_list` | yes | yes | no |
+| `fs_delete` | no | no | no |
+| `msg_send` | yes | yes | no |
+| `agent_discover` | yes | yes | no |
+| `msg_list` | yes | yes | no |
+| `msg_read` | yes | yes | no |
+| `msg_update` | yes | yes | no |
+| `chat_info` | yes | no | no |
+| `sys_code` | yes | yes | no |
+| `sys_lambda` | yes | yes | no |
+| `sys_set_timer` | yes | yes | no |
+| `sys_list_timers` | yes | yes | no |
+| `sys_delete_timer` | yes | yes | no |
+| `sys_get_config` | yes | yes | no |
+| `sys_update_config` | yes | yes | yes |
+| `sys_create_adf` | no | no | yes |
+| `db_query` | yes | yes | no |
+| `db_execute` | no | no | no |
+| `loop_compact` | no | no | no |
+| `loop_clear` | no | no | no |
+| `loop_send` | yes | yes | no |
+| `loop_list` | yes | yes | no |
+| `loop_manage` | yes | yes | no |
+| `msg_delete` | no | no | no |
+| `say` | yes | yes | no |
+| `ask` | yes | yes | no |
+| `sys_set_state` | yes | yes | no |
+| `sys_get_meta` | yes | yes | no |
+| `sys_set_meta` | yes | yes | no |
+| `sys_delete_meta` | yes | yes | no |
+| `sys_fetch` | yes | yes | no |
+| `adf_shell` | no | no | no |
+| `ws_connect` | no | no | no |
+| `ws_disconnect` | no | no | no |
+| `ws_connections` | no | no | no |
+| `ws_send` | no | no | no |
+| `stream_bind` | no | no | no |
+| `stream_unbind` | no | no | no |
+| `stream_bindings` | no | no | no |
+| `fs_transfer` | no | no | no |
+| `compute_exec` | no | no | yes |
+| `mcp_install` | no | no | no |
+| `mcp_restart` | no | no | no |
+| `mcp_uninstall` | no | no | no |
 
-- `respond`, `say`, `ask`
-- `fs_read`, `fs_write`, `fs_list`
-- `msg_send`, `agent_discover`, `msg_list`, `msg_read`, `msg_update`
-- `sys_get_config`
-
-Common disabled tools:
-
-- `fs_delete`
-- `db_query`, `db_execute`
-- `loop_compact`, `loop_clear`, `loop_read`, `loop_stats`
-- `msg_delete`, `archive_read`
-- `sys_set_state`
-- `sys_code`, `sys_lambda`
-- `sys_set_timer`, `sys_list_timers`, `sys_delete_timer`
-- `sys_update_config`, `sys_create_adf`
-- `npm_install`, `npm_uninstall`
-- `mcp_install`, `mcp_uninstall`
-- `ws_connect`, `ws_disconnect`, `ws_connections`, `ws_send`
-- `compute_exec` (restricted), `fs_transfer`
-- `adf_shell`
-
-Runtimes MAY enable `sys_set_state` by default for autonomous agents, but must preserve the access-control semantics.
+`npm_install` and `npm_uninstall` are not declared by default; templates MAY declare them.
 
 ---
 
 ## 15. Spec Boundary
 
-### What the Spec Defines
+### What the Specification Defines
 
-- SQLite system table schema
-- Configuration shape and portable semantics
-- File protection and authorization fields
-- Agent states and loop-mode behavior
-- Trigger types, target fields, filters, and scope semantics
-- Timer storage and lifecycle semantics
-- Tool names and cross-cutting access rules
-- ALF message projection into inbox/outbox
-- Peer/contact storage and routing order
-- Audit, task, and logging records
-- Serving, WebSocket, middleware, adapter, MCP, compute, and provider configuration as file-carried declarations
+- The `adf_` table schema
+- The config shape and its semantics
+- File protection and authorization
+- Agent states, loops and turn behaviour
+- Trigger types, target fields, filters and scopes
+- Timer storage and lifecycle
+- Tool names and access rules
+- The projection of ALF messages into inbox and outbox rows
+- Audit, task and log records
+- Serving, WebSocket, middleware, adapter, MCP, compute, stream and provider configuration, as declarations stored in the file
 
 ### What the Runtime Defines
 
 - Provider SDKs and API details
-- Exact sandbox implementation
-- Container, Podman, host, and filesystem mechanics
+- The sandbox implementation
+- Container, host and filesystem mechanics
 - MCP process lifecycle and package installation
 - Mesh discovery and network transport
-- Daemon HTTP API and Studio UI behavior
-- Password prompts and unlock UX
-- Runtime settings outside the ADF file
-- Event stream implementation
+- The daemon HTTP API and the Studio UI
+- Password prompts and unlock flow
+- Runtime settings outside the file
+- The umbilical event stream implementation
 - Log trimming schedule
-- Prompt assembly implementation beyond stored context/audit semantics
+- Prompt assembly, beyond what §1.5 and §5.1 require
 
 ### What the Client Defines
 
-- Editor behavior
+- Editor behaviour
 - Approval UI
 - File preview UI
-- Agent graph/monitor UI
+- Agent graph and monitor UI
 - Settings panels
 - Password entry UI
 - First-open installation prompts
@@ -2119,74 +2331,87 @@ Runtimes MAY enable `sys_set_state` by default for autonomous agents, but must p
 
 ## 16. Portability
 
-Sharing one `.adf` file transfers:
-
-- Agent config
-- Primary document and mind
-- Supporting files and authorized/protection flags
-- Loop history
-- Inbox and outbox
-- Peers/contact book
-- Timers
-- Tasks
-- Logs
-- Audit snapshots
-- Identity rows and encrypted secrets
-- Local tables and vector tables
+Copying an `.adf` file copies every component listed in §1.3.
 
 Not guaranteed to transfer:
 
 - Installed MCP packages
-- Runtime app settings
-- App-level provider keys and app-level MCP environment values (channel adapter credentials are identity-only, so they travel with the file)
+- Runtime settings
+- App-level provider keys and app-scoped MCP credentials (`env_schema` scope `app`). Channel adapter credentials are stored only in `adf_identity`, so they transfer.
+- Adapter state directories beside the file (§11.6)
 - Container images and host workspaces
-- Active WebSocket connections
-- In-memory unlock keys
-- In-memory executor state
+- Open WebSocket connections and stream bindings
+- Unlocked keys held in memory (§8.4)
+- Executor state (§6.1)
+- The identity itself, unless the recipient holds the owner or runtime key: the identity envelope has no password slot (§8.3), so a new owner claims the file and it receives a new DID.
 
-Capabilities travel with the file, not the model: tools, skills, lambdas and MCP declarations live in the `.adf` and the runtime. Moving an agent to another provider or model — including a local open-weight model — preserves every tool-driven capability provided the model supports native tool (function) calling, the one model requirement. A model without it cannot run an agent that has tools enabled, since requests carry tool definitions. Multimodal input and reasoning depend on the model.
+Tools, skills, lambdas and MCP declarations are stored in the file, so moving an agent to another provider or model keeps them. The model MUST support native tool calling when the agent has tools enabled, because every request carries tool definitions. Multimodal input and reasoning depend on the model.
 
-Template sharing SHOULD strip signing identity, rotate IDs/DIDs, and clear loop/inbox/outbox unless the template intentionally includes history.
+A runtime that shares a file as a template SHOULD remove the signing identity, assign a new `id` and DID when the template is instantiated, and clear transcripts, inbox and outbox unless the template is meant to include them.
 
 ---
 
 ## 17. Version History
 
-The `adf_version` row records the **format/contract** version (this document). The
-`adf_schema_version` row records the **on-disk storage layout** and is a monotonically
-increasing integer; runtimes apply migrations sequentially up to the latest. The two
-version axes are decoupled — many `adf_schema_version` bumps may occur within a single
-`adf_version`.
+`adf_version` records the format version (this document). `adf_schema_version` records the storage layout; it is an integer that increases with each migration (§3.5). The two are independent: many schema versions can occur within one format version.
 
-The current format version is **0.2**, current storage schema is **30**.
+The current format version is 0.2. The current storage schema version is 32.
 
 | `adf_version` | Notes |
 |---------------|-------|
-| `0.2` | Current. Canonical primary document is `README.md` (renamed from the earlier `document.md` at `adf_schema_version` 22; legacy `document.md` is still readable and is migrated in place on open). Tables prefixed `adf_`; target-based trigger spec (§7); consolidated `restricted` access model. |
-| `0.1` | Initial draft. Primary document was `document.md`. |
+| `0.2` | Current. Primary document `README.md` (renamed from `document.md` at schema version 22; a runtime reads `document.md` and renames it on open). `adf_` table prefix; target-based triggers (§7); single `restricted` access flag. |
+| `0.1` | Initial draft. Primary document `document.md`. |
 
 ### 17.1 Storage Schema (`adf_schema_version`)
 
-`adf_schema_version` is the canonical migration counter (see §3.5). Notable recent
-revisions:
+Recent revisions, latest first:
 
 | Version | Change |
 |---------|--------|
-| 30 | `bare_prompt` governs the static system prompt only; per-turn dynamic instructions are gated solely by `context.dynamic_instructions`. Config-only migration: agents with `bare_prompt: true` get all four `dynamic_instructions` keys set to `false`, preserving their prior behaviour. |
-| 29 | Agent loops (named cognition streams): `adf_loop.loop` (`NOT NULL DEFAULT 'main'`) plus an `(loop, seq)` index; nullable `loop` on `adf_timers` / `adf_logs` / `adf_tasks`. Existing rows backfill to `main` / `NULL`, so a pre-loops agent's whole transcript becomes its main stream. |
-| 28 | Seq-stable memory groundwork: nullable `adf_loop.ord` (position override for compaction summaries; ordering key becomes `COALESCE(ord, seq), seq`); `adf_audit` `start_at`/`end_at` replaced by `start_seq`/`end_seq` plus a per-item `ref`, making the audit trail addressable by `[S<seq>]` citations. |
-| 27 | Persist HIL approval metadata on the task row (`adf_tasks.approval_meta` JSON). |
-| 26 | Completed timers are kept with an `expired` flag instead of being deleted. |
-| 25 | Seed `soul.md` (voice/identity file, injected via the `{{soul.md}}` placeholder) into agents created before it existed. |
-| 24 | Attestations graduate from a single `adf_meta` key to the dedicated `adf_attestations` table. |
-| 23 | Config conformance: remove `max_loop_messages` (message-count pruning; superseded by token-based compaction), remove never-enforced `limits.max_loop_rows` / `limits.max_daily_budget_usd`, fold legacy `model.thinking_budget` into `model.reasoning.max_tokens`. |
-| 22 | Rename canonical `document.md` → `README.md` (in place, preserving protection); repoint `on_file_change` watch globs `document.*` → `README.*`. |
-| 21 | Remove the `adf_peers` subsystem. |
-| 20 | Consolidate `require_approval` + `require_authorized` into a single `restricted` flag. |
-| 19 | Executor-managed HIL tasks. |
-| 18 | Task-level authorization. |
+| 32 | Index `idx_adf_outbox_created` on `adf_outbox(created_at)`. |
+| 31 | Config migration: set `config.icon`, chosen from `config.id`, on agents without one. |
+| 30 | `bare_prompt` governs the system prompt only; dynamic instructions are controlled by `context.dynamic_instructions` alone. Config migration: agents with `bare_prompt: true` get all four `dynamic_instructions` keys set to `false`, which keeps their behaviour. |
+| 29 | Loops: `adf_loop.loop` (`NOT NULL DEFAULT 'main'`) with `(loop, seq)` and `(loop, COALESCE(ord, seq), seq)` indexes; nullable `loop` on `adf_timers`, `adf_logs` and `adf_tasks`. Existing rows become `main` or NULL, so an agent's existing transcript becomes the `main` transcript. |
+| 28 | Stable `seq`: nullable `adf_loop.ord` (position override for compaction summaries; ordering key `COALESCE(ord, seq), seq`); `adf_audit` `start_at`/`end_at` replaced by `start_seq`/`end_seq` and a per-item `ref`, so `[S<seq>]` citations resolve into audit snapshots. |
+| 27 | Approval metadata on the task row (`adf_tasks.approval_meta`). |
+| 26 | Completed timers are kept with `expired = 1` instead of being deleted. |
+| 25 | Add `soul.md` to agents created before it existed. |
+| 24 | Attestations move from one `adf_meta` key to the `adf_attestations` table. |
+| 23 | Config cleanup: remove `max_loop_messages`, `limits.max_loop_rows` and `limits.max_daily_budget_usd`; fold `model.thinking_budget` into `model.reasoning.max_tokens`. |
+| 22 | Rename `document.md` to `README.md` (keeping its protection); change `on_file_change` watch globs `document.*` to `README.*`. |
+| 21 | Remove the `adf_peers` table. |
+| 20 | Merge `require_approval` and `require_authorized` into `restricted`. |
+| 19 | Executor-managed approval tasks (`adf_tasks.executor_managed`). |
+| 18 | Task-level authorization (`adf_tasks.requires_authorization`). |
 | 17 | File authorization (`adf_files.authorized`). |
 
-Runtimes MUST NOT silently downgrade a newer schema. A runtime that cannot apply a
-migration SHOULD fail closed (open read-only or refuse with a clear error) rather than
-corrupt the file.
+### 17.2 Revision 2026-10
+
+Revision 2026-10 of format version 0.2 is an editorial revision. It changes no table, column, config field or tool contract. One runtime behaviour changes with it: an inner loop's `code_execution` is now the intersection of the inner-loop profile and the agent's own settings; previously it was the fixed profile regardless of the agent (§6.4). It corrects statements that did not match the reference runtime, adds sections for features the runtime already had (§0 Conventions, §1.3 component table, §5.18–§5.24, §6.4 Loops), adopts RFC 2119 keywords, and applies one terminology list (§0.3). Sections 1.1, 1.2, 1.3, 1.6, 3.4, 5.3, 5.17, 6, 6.3, 8.3, 10.4, 10.7, 10.8, 11 and 13.1 have new titles and therefore new anchors.
+
+#### Corrections
+
+Implementers of earlier drafts SHOULD check each item:
+
+1. *`loop_mode` removed.* The field never existed in the reference runtime. `autonomous` is the canonical field, set per loop (§5.3, §6.3, §6.4).
+2. *Agent states.* `config.state` stores `active`, `idle`, `hibernate`, `suspended` or `off`. `error` is an in-memory executor state and is not stored (§6.1). `start_in_state` accepts `active`, `idle` or `hibernate`, not `off`.
+3. *Tools.* `respond`, `loop_read`, `loop_stats` and `archive_read` do not exist and are removed from §10 and §14.3. The catalog now lists `loop_send`, `loop_list`, `loop_manage`, `stream_bind`, `stream_unbind`, `stream_bindings` and `mcp_restart`. `msg_update` can delete archived messages.
+4. *Contacts removed.* The `adf_peers` table was removed at schema version 21; the file stores no contact book. References to peers and contacts are removed from §1, §15 and §16.
+5. *Schema version.* The current storage schema version is 32. Earlier text stated 29 (§3.2) and 30 (§3.5, §17). §17.1 adds versions 31 and 32.
+6. *Removed config fields.* `context.document_mode` and `context.mind_mode` were never read by a runtime and are removed. `model.thinking_budget` is deprecated in favour of `model.reasoning`.
+7. *New-file defaults (§14).* `state` is `active` (was `idle`); `start_in_state` is absent (was `idle`); `messaging.receive` is `true` (was `false`); `messaging.inbox_mode` is `true` (was `false`); `security.level` is `1`; `context.audit.loop` is `true` (was `false`).
+8. *Default triggers (§14.2).* `on_inbox` has no `interval_ms` (was 30000); `on_file_change` watches `README.*` (was `README.md`); `on_task_complete` is enabled with an agent target (was disabled); `on_llm_call` is listed.
+9. *Default tools (§14.3).* The table now matches the runtime: `sys_code`, `sys_lambda`, the timer tools, `db_query`, `sys_set_state`, the meta tools, `sys_fetch`, `loop_send`, `loop_list` and `loop_manage` are enabled; `sys_update_config` is enabled and restricted; `chat_info` is enabled and not visible.
+10. *Timers.* A completed timer is kept with `expired = 1`; it is not deleted (§7.7). This has been the behaviour since schema version 26.
+11. *`read_only` files are readable.* `read_only` blocks agent writes and deletes, not reads (§4.2).
+12. *Meta protections.* `adf_name`, `adf_handle` and `adf_updated_at` are `readonly` (were listed as `none`). The registry now lists `adf_clean_close`, `adf_effective_runtime`, `adf_loop_tools_backfilled`, `adf_runtime_turn_checkpoint`, the `adf_template_*` keys and `context_baseline_tokens` (§3.3).
+13. *MCP tool names* are `mcp_<server>_<tool>` (was `mcp:<server>:<tool>`).
+14. *Visibility* has a fifth tier, `public` (§5.8).
+15. *`allow_local_fetch`.* The address rules are stated in full: the agent's own served origin is allowed and CGNAT is refused when the flag is `false` (§5.6).
+16. *Owner-only config paths (§5.17).* Any path segment `locked`, `locked_fields`, `restricted` or `restricted_methods` is refused, as are the guard paths under `security`; `security.allow_local_fetch` and `stream_bind` are locked for every agent.
+17. *Audit configuration.* `context.audit` takes precedence over the top-level `audit`; they are not merged (§5.19).
+18. *Adapter credentials* MUST be stored in `adf_identity`; §11.6 said SHOULD.
+19. *`ask`* works in autonomous turns; the earlier text said it was unavailable (§6.3).
+20. *Pragmas.* Only the four pragmas in §3.1 are required; connection-tuning pragmas are permitted.
+
+Runtimes MUST NOT downgrade a newer schema. A runtime that cannot apply a migration MUST NOT modify the file (§3.5).

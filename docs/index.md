@@ -1,10 +1,10 @@
 # ADF Documentation
 
-Welcome to the ADF documentation. ADF Studio is the desktop application for creating, configuring, and managing autonomous AI agents packaged as portable `.adf` files. The ADF daemon is the headless ADF runtime that serves an API for running those agents without the Studio UI.
+ADF Studio is the desktop application for creating, configuring and running AI agents stored as `.adf` files. The ADF daemon is the headless runtime that runs the same agents behind an HTTP API, without the Studio UI.
 
 ## What is ADF?
 
-The **Agent Document Format** (`.adf`) is a self-contained SQLite database that bundles an AI agent's memory, logic, configuration, and communication history into a single portable file. Each `.adf` file represents one agent paired with one primary document — the atomic unit of the ADF ecosystem.
+The Agent Document Format (`.adf`) stores an AI agent in one SQLite file. An `.adf` file is one localized agent: its identity, state and behaviour in a single file ([what's inside](../ADF_SPEC_v0.2.md#13-one-file-one-agent)).
 
 ADF Studio is the visual IDE for working with these files. The daemon is the headless API runtime path for automation, deployment, and service-style operation. Both operate on the same `.adf` file format.
 
@@ -12,6 +12,7 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 
 - [What ADF Studio Can Do](CAPABILITIES.md) — the full capability catalogue: what an agent can do and what you can do with it, then the mechanisms underneath
 - [Network Traffic](NETWORK.md) — every outbound connection Studio and the daemon make, who starts it, and how to turn it off
+- [Docs Style Guide](STYLE.md) — how ADF documents are written: terminology, requirement keywords, linking to the spec
 
 ### Runtime Tracks
 
@@ -26,7 +27,7 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 - [Daemon API Reference](daemon/api-reference.md) — Every endpoint, generated from [`openapi.json`](daemon/openapi.json)
 - [Daemon HTTP API Overview](daemon/http-api.md) — The API at a glance, by area
 - [ADF CLI](cli/index.md) — Command-line client for agent control, resources, diagnostics, events, and chat
-- [Terminal app](cli/terminal-app.md) — `adf` with no command: your fleet, each agent's loops (chat sessions), approvals, files and live events
+- [Terminal app](cli/terminal-app.md) — `adf` with no command: your fleet, each agent's loops and their transcripts, approvals, files and live events
 - [Daemon Runtime Settings](daemon/runtime-settings.md) — The settings file, providers, MCP, channels, compute, mesh, and the settings API
 - [Daemon Runtime Architecture](daemon/runtime-architecture.md) — RuntimeService, AgentRuntimeBuilder, the request guard, triggers, MCP, channels, compute, and mesh
 - [Daemon Operations](daemon/operations.md) — Running and stopping the daemon, data directory, ports, access token, compatibility, and troubleshooting
@@ -44,7 +45,7 @@ The [Knowledge Base](knowledge/index.md) is a task-oriented routing layer for re
 
 ### Studio Concepts
 
-- [Core Concepts](core-concepts.md) — Sovereignty, one-agent-one-document, and the ADF stack
+- [Core Concepts](core-concepts.md) — One file, one agent; the access boundary; the ADF stack
 
 ### Studio Guides
 
@@ -60,7 +61,7 @@ The [Knowledge Base](knowledge/index.md) is a task-oriented routing layer for re
 - [Computer](guides/browser.md) — Each isolated agent's visible desktop: managed Chromium, Playwright automation, interactive login, and portable profiles
 - [Computer Use](guides/computer-use.md) — Driving that desktop from tool calls: screenshots, xdotool, clipboard, opening apps and files, sharing the screen
 - [Triggers](guides/triggers.md) — Configure what events activate your agent
-- [Inner Loops](guides/inner-loops.md) — Multiple named cognition streams inside one agent: main plus inner loops, the loop_* tools, and per-loop pacing
+- [Inner Loops](guides/inner-loops.md) — The main loop plus up to 16 inner loops (side loops) in one agent, the `loop_*` tools, and per-loop pacing
 - [Messaging](guides/messaging.md) — Inter-agent communication, channels, and routing
 - [LAN Discovery](guides/lan-discovery.md) — mDNS-based cross-runtime agent discovery and troubleshooting
 - [Contacts](guides/contacts.md) — Agent-managed contacts: reference patterns and the primitives they build on

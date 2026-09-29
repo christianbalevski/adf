@@ -12,7 +12,7 @@ Every ADF agent has a virtual filesystem stored inside its `.adf` database. This
 
 ## The Primary Document (README.md)
 
-Each agent has exactly one primary document: `README.md`. It is always a markdown file.
+`README.md` is the agent's primary document, a markdown file that states what the agent does and how to interact with it. Its place among the file's other contents is defined in [spec §1.3](../../ADF_SPEC_v0.2.md#13-one-file-one-agent).
 
 The document is the human-agent interface — a shared surface where the agent presents its work and the human provides input. What it contains depends on the agent's purpose: notes, a dashboard, an essay draft, a report, or anything else that benefits from a persistent, editable artifact.
 
@@ -76,9 +76,9 @@ Every file in the virtual filesystem has a protection level that controls what o
 
 | Level | Read | Write | Delete | Description |
 |-------|------|-------|--------|-------------|
-| `read_only` | No | No | No | Fully locked — agents cannot read, write, or delete |
+| `read_only` | Yes | No | No | Agents can read it but cannot write or delete it |
 | `no_delete` | Yes | Yes | No | Can be read and written, but not deleted |
-| `none` | Yes | Yes | Yes | Fully mutable — no restrictions (default) |
+| `none` | Yes | Yes | Yes | No restrictions (default) |
 
 Core files (`README.md`, `mind.md`, and `soul.md`) are locked to `no_delete` protection and cannot be changed to a different level. All other files default to `none`.
 

@@ -1,50 +1,44 @@
 # Core Concepts
 
-Understanding these foundational ideas will help you get the most out of ADF Studio.
+## One File, One Agent
 
-## Sovereignty
+An `.adf` file holds one **localized agent**: an agent whose identity, state and behaviour are stored in a single `.adf` file, and which a conforming runtime can run from that file alone. The file is the agent's **body**; copying or moving the file copies or moves the agent ([what's inside](../ADF_SPEC_v0.2.md#13-one-file-one-agent)).
 
-Each ADF agent is an autonomous entity. It controls its own document, memory, and state. Other agents can only influence it through messages — never through direct access. A human can modify anything in the file, but an agent can only modify itself through its approved tools.
+## Access Boundary
 
-This means when you share an `.adf` file, you're sharing a fully self-contained agent. It doesn't depend on external configuration or shared state.
+An agent's file is modified only by its owner, by the runtime, or by the agent through tools and code. Other agents affect it only by sending messages. See [spec §1.1](../ADF_SPEC_v0.2.md#11-access-boundary).
 
-## One Agent, One Document
+## No Secrets in Context
 
-The agent-document pairing is the atomic unit of ADF. Each `.adf` file contains exactly one agent paired with one primary document (`README.md`). The document is always markdown — a simple, secure, and flexible interface between the agent and the human. It can be notes, a dashboard, an essay, or whatever suits the agent's purpose.
-
-Supporting files can exist alongside the primary document (in the agent's virtual filesystem), but they're subordinate to it. If you need multiple primary documents, you need multiple agents. For executable logic, agents use lambdas — scripts that can be registered to triggers, set on timers, or bound as API route handlers.
+Any content injected into the agent's model context (system prompts, dynamic instructions, context warnings) is stored in the loop and visible in the UI. See [Context Blocks](guides/memory-management.md#context-blocks-no-secrets).
 
 ## Spec Stores, Runtime Executes
 
-The ADF specification defines what is stored in the file and what configuration is available. It does not define how code runs, how the UI renders, or how networking works. Those are **runtime** concerns handled by ADF Studio (or the ADF CLI).
+The ADF specification defines what is stored in the file and what configuration is available. It does not define how code runs, how the UI renders, or how networking works. Those are **runtime** concerns, handled by ADF Studio or the ADF daemon.
 
 This separation means:
 
 - The `.adf` file is portable across any runtime that implements the spec
-- Configuration is declarative — you define *what* the agent should do, not *how*
+- Configuration is declarative: it lists triggers, tools, timers and limits, and the runtime executes them
 - The runtime handles execution, sandboxing, networking, and UI
 
 ## The ADF Stack
 
-The ADF ecosystem consists of layered components:
+ADF has these layers:
 
 | Layer | Component | Description |
 |-------|-----------|-------------|
 | **UI** | ADF Studio | Visual IDE for editing and observing agents |
 | **CLI** | `adf` | Headless interface for running and managing agents |
 | **Network** | ADF Mesh | Discovery and transport layer (LAN + Internet) |
-| **Transport** | ADF Protocol | Rules for packet structure and addressing |
-| **Logic** | ADF Runtime | Engine that enforces the spec |
-| **Spec** | ADF Specification | The rules (this documentation reflects) |
-| **Data** | `.adf` file | The atomic unit — a SQLite database |
+| **Transport** | ALF | Message format and addressing ([ALF spec](../ALF_SPEC_v0.1.md)) |
+| **Logic** | ADF runtime | Runs agents from their files and enforces the spec |
+| **Spec** | ADF specification | What the file stores ([ADF spec](../ADF_SPEC_v0.2.md)) |
+| **Data** | `.adf` file | One agent; a SQLite database |
 
 ## Asynchronous Communication
 
-Agents communicate via store-and-forward messaging, not synchronous API calls. Each agent has an **inbox** (received messages) and an **outbox** (sent messages). This design supports:
-
-- **Offline-first operation** — agents don't need to be online simultaneously
-- **High-latency tolerance** — messages queue until delivery is possible
-- **Auditability** — every message is persisted in both sender and receiver
+Agents communicate by store-and-forward messaging. Each agent has an inbox (received messages, `adf_inbox`) and an outbox (sent messages, `adf_outbox`), and a delivered message is stored in both. Delivery is a single attempt: a failed delivery is recorded in the sender's outbox with its status code, and recovery is up to the agent ([Store-and-Forward Reality](guides/messaging.md#store-and-forward-reality)).
 
 ## Two Execution Scopes
 
@@ -52,26 +46,16 @@ When something happens (a message arrives, a timer fires, a file is changed), th
 
 ### System Scope
 
-Runs a lambda function. This is fast, cheap, and deterministic. Use it for infrastructure tasks like routing messages, logging, and archiving. System scope fires in all states except `off`. Targets with system scope specify a `lambda` field referencing the function to call (e.g. `"lib/router.ts:onInbox"`).
+Runs a lambda; no model call. Use it for routing messages, logging and archiving. System scope fires in all states except `off`. Targets with system scope specify a `lambda` field referencing the function to call (e.g. `"lib/router.ts:onInbox"`).
 
 ### Agent Scope
 
-Wakes the LLM and starts a conversation loop. This is smart, expensive, and probabilistic. Use it for reasoning, decision-making, and complex tasks. Agent scope is gated by the agent's current state — it won't fire in hibernate, suspended, or off states (with exceptions for timers in hibernate).
+Runs a model turn. Use it for work that needs the model. Agent scope is gated by the agent's current state: it does not fire in hibernate, suspended, or off states (with exceptions for timers in hibernate).
 
 Both scopes operate independently. When both fire for the same event, whichever timer expires first runs first. Ties go to system scope.
 
 ## Portability
 
-An `.adf` file is fully self-contained. Sharing one file transfers everything:
+Sharing the file shares the agent ([what's inside](../ADF_SPEC_v0.2.md#13-one-file-one-agent)). Messages address the agent by its DID and handle, so moving or renaming the file does not change its address. The config `id` is a 12-character local identifier, not the agent's identity. MCP server configurations travel with the file, but the servers may not be installed on another machine.
 
-- Agent configuration and identity
-- Document and mind content
-- Conversation history
-- Inbox and outbox
-- Timers and schedules
-- All supporting files
-- Local database tables
-
-The agent's ID ensures messages address the same agent even if the file is moved or renamed. MCP configurations travel with the file but may not be resolvable on other machines.
-
-To share an agent template without identity data, use clone with the `--clean` flag to strip identity, generate a fresh ID, and clear history.
+Cloning an agent in Studio copies the tables you select and gives the copy a new config `id`. Unless you keep the identity table, the copy also gets new signing keys and a new DID. The clone records the source's DID as its parent.

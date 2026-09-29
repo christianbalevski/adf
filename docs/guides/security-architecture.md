@@ -251,7 +251,7 @@ Out of the box, ADF Studio ships with a conservative default configuration:
 Leave defaults. No password needed. Unsigned messages are fine on localhost.
 
 ### Multi-agent local setup
-Defaults still work. Consider marking powerful tools as `restricted` if agents interact with untrusted data.
+Defaults still work. Consider marking tools with side effects as `restricted` if agents interact with untrusted data.
 
 ### Internet-facing agents
 1. Set `security.allow_unsigned: false` **via the app UI / owner console** — it is a guard-system setting the agent cannot change through `sys_update_config` (every agent has identity keys since v24)
