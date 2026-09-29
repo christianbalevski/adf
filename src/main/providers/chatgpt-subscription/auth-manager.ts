@@ -121,11 +121,12 @@ class ChatGptAuthManager {
   }
 
   /**
-   * Re-read the token file, picking up writes from the other process.
+   * Re-read the token file, picking up writes from other processes.
    *
-   * Studio and the daemon share one file, and OpenAI rotates the refresh token
-   * on every refresh — so acting on a cached copy can invalidate the other
-   * process's live session. Always reading is what prevents that; the file is
+   * Each surface has its own file (see subscription-token-store), but several
+   * processes can share one — e.g. an installed and a dev Studio, or a CLI
+   * next to its daemon — and OpenAI rotates the refresh token on every
+   * refresh, so acting on a cached copy can invalidate a sibling's session. Always reading is what prevents that; the file is
    * well under a kilobyte and this runs once per LLM request.
    */
   private syncFromDisk(): TokenSet | null {
