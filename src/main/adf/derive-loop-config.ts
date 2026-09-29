@@ -11,8 +11,10 @@
  *                    host marked `restricted`. No exceptions and no union:
  *                    `loop_send`/`loop_list` pass through this same rule
  *                    (superseding the §7.1 "essentials")
- *   - code_execution locked to the attenuated side-loop profile (§2.2), with no
- *                    inherited sandbox packages: the section the tool
+ *   - code_execution the attenuated side-loop profile (§2.2) AND-ed with the
+ *                    host's own settings (a loop never gains a method the
+ *                    agent has off), with no inherited sandbox packages: the
+ *                    section the tool
  *                    allow-list never touched, and the reason a code-capable
  *                    loop is not a skeleton key
  *   - triggers       only the parent targets that name this loop, and never a
@@ -23,6 +25,7 @@
  */
 
 import {
+  CODE_EXECUTION_DEFAULTS,
   LOOP_PROHIBITED_TOOLS,
   type AgentConfig,
   type CodeExecutionConfig,
@@ -448,6 +451,26 @@ function deriveTriggers(parent: AgentConfig, loopName: string): TriggersConfigV3
 }
 
 /**
+ * A loop never holds a code-execution capability the agent itself lacks: every
+ * boolean permission is the AND of the fixed side-loop profile and the host's
+ * EFFECTIVE setting (absent keys read as CODE_EXECUTION_DEFAULTS, exactly as
+ * adf-call-handler does). The profile only ever narrows; the host only ever
+ * narrows. Re-run on every derive, so a host revocation reaches live loops.
+ */
+function deriveLoopCodeExecutionFlags(parent: AgentConfig): CodeExecutionConfig {
+  const host = { ...CODE_EXECUTION_DEFAULTS, ...parent.code_execution }
+  const result = cloneJson(SIDE_LOOP_CODE_EXECUTION)
+  const flags = result as unknown as Record<string, unknown>
+  const hostFlags = host as unknown as Record<string, unknown>
+  for (const [key, value] of Object.entries(SIDE_LOOP_CODE_EXECUTION)) {
+    if (typeof value !== 'boolean') continue
+    // `network` defaults false; any non-true host value means "off".
+    flags[key] = value && hostFlags[key] === true
+  }
+  return result
+}
+
+/**
  * The config a side loop's executor runs under. Pure: `parent` is never
  * mutated and the result shares no sub-object with it, so a later host-config
  * mutation cannot reach into a live loop.
@@ -491,7 +514,7 @@ ${loop.goal}`
   }
   derived.triggers = deriveTriggers(parent, loop.name)
   derived.code_execution = {
-    ...cloneJson(SIDE_LOOP_CODE_EXECUTION),
+    ...deriveLoopCodeExecutionFlags(parent),
     // No inherited packages. A pure-JS package is loaded in the sandbox worker
     // through a worker-scope `createRequire` with an UNRESTRICTED `require` —
     // the package body can reach child_process/fs/net — so an inherited package

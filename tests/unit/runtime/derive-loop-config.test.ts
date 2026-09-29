@@ -359,6 +359,57 @@ describe('deriveLoopConfig — code_execution attenuation', () => {
     expect((derived.code_execution?.restricted_methods ?? []).sort())
       .toEqual(['attestation_issue', 'model_invoke'])
   })
+
+  it('never grants a method the agent itself has disabled (model_invoke off → loop off)', () => {
+    const parent = host({
+      code_execution: { ...CODE_EXECUTION_DEFAULTS, model_invoke: false },
+    } as unknown as Partial<AgentConfig>)
+    expect(deriveLoopConfig(parent, loop()).code_execution?.model_invoke).toBe(false)
+  })
+
+  it('intersects every profile flag with the agent (each host-off flag stays off)', () => {
+    for (const [key, value] of Object.entries(SIDE_LOOP_CODE_EXECUTION)) {
+      if (typeof value !== 'boolean') continue
+      const parent = host({
+        code_execution: { ...CODE_EXECUTION_DEFAULTS, [key]: false },
+      } as unknown as Partial<AgentConfig>)
+      const derived = deriveLoopConfig(parent, loop()).code_execution as unknown as Record<string, unknown>
+      expect(derived[key], key).toBe(false)
+    }
+  })
+
+  it('agent enabling a method does not lift the fixed loop profile', () => {
+    const parent = host({
+      code_execution: {
+        ...CODE_EXECUTION_DEFAULTS,
+        model_invoke: true,
+        network: true,
+        get_identity: true,
+        task_resolve: true,
+      },
+    } as unknown as Partial<AgentConfig>)
+    expect(deriveLoopConfig(parent, loop()).code_execution).toMatchObject({
+      model_invoke: true,
+      network: false,
+      get_identity: false,
+      task_resolve: false,
+    })
+  })
+
+  it('reads absent host keys as the defaults (partial or missing code_execution)', () => {
+    const missing = deriveLoopConfig(host({ code_execution: undefined } as unknown as Partial<AgentConfig>), loop())
+    expect(missing.code_execution).toMatchObject({ model_invoke: true, emit_event: true, network: false })
+    const partial = deriveLoopConfig(
+      host({ code_execution: { emit_event: false } } as unknown as Partial<AgentConfig>), loop())
+    expect(partial.code_execution).toMatchObject({ model_invoke: true, emit_event: false })
+  })
+
+  it('a later host revocation shows up on the next derive (no cached grant)', () => {
+    const parent = host()
+    expect(deriveLoopConfig(parent, loop()).code_execution?.model_invoke).toBe(true)
+    const revoked = { ...parent, code_execution: { ...parent.code_execution!, model_invoke: false } }
+    expect(deriveLoopConfig(revoked, loop()).code_execution?.model_invoke).toBe(false)
+  })
 })
 
 describe('deriveLoopConfig — triggers', () => {

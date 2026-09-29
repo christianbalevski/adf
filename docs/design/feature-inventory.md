@@ -312,7 +312,7 @@ Grouped by area, then category.
 - **Autonomous inner loop flag** — Per-loop, not inherited from the host; keeps turning after text-only responses until `sys_set_state` or the 4-reply narration breaker fires.
 - **Per-loop model override** — Same-provider-only override; requires code execution enabled on the host; falls back to the host model with a logged warning if unavailable.
 - **Per-loop compact_threshold** — Optional override of the auto-compaction token threshold, absent inherits the host's, useful alongside a differently-windowed model override.
-- **Side-loop code_execution attenuation** — `model_invoke`/`sys_lambda`/`identity_status`/`loop_inject`/`emit_event` allowed; `get_identity`/`set_identity`/`task_resolve`/`attestation_*`/`network` denied, no inherited sandbox packages.
+- **Side-loop code_execution attenuation** — `model_invoke`/`sys_lambda`/`identity_status`/`loop_inject`/`emit_event` allowed only where the agent itself allows them; `get_identity`/`set_identity`/`task_resolve`/`attestation_*`/`network` denied, no inherited sandbox packages.
 - **No side-loop system lambdas** — Inner loops cannot create system-scope lambda timers or `locked` timers; those must be requested from `main` via `loop_send`.
 - **loop_manage delete archival** — Stops the loop (aborting any in-flight turn), archives its stream to `adf_audit` under `loop:<name>`, then removes config + runtime.
 - **Locked-timer survival on loop delete** — A `locked:true` timer stamped to a deleted loop is preserved and logged rather than deleted.

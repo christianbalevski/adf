@@ -93,7 +93,7 @@ Side loops are LLMs with a restricted toolset. Enforcement rests on the **derive
 
 ### 2.2 `code_execution` attenuation (the real SEC-1 fix)
 
-`code_execution.*` dispatches off `config.code_execution` (`adf-call-handler.ts:213`, all default `true`) — a section the tool allow-list never touched. That orthogonality, not code exec, was the skeleton key. `deriveLoopConfig` gives side loops a locked profile:
+`code_execution.*` dispatches off `config.code_execution` (`adf-call-handler.ts:213`, all default `true`) — a section the tool allow-list never touched. That orthogonality, not code exec, was the skeleton key. `deriveLoopConfig` gives side loops a locked profile, AND-ed per method with the agent's own effective `code_execution` (a loop never gains a method the agent has off, and an agent-side revocation reaches live loops on the next config-change re-derive):
 
 | method | side loop | rationale |
 |---|---|---|
