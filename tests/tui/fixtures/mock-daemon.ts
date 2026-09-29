@@ -67,6 +67,8 @@ export interface MockEvent {
   loop?: string
   payload?: Record<string, unknown>
   source?: string
+  /** The turn it belongs to (the chat 202's turnId). */
+  turn_id?: string
 }
 
 export interface MockDaemon {
@@ -77,6 +79,10 @@ export interface MockDaemon {
   emit(event: MockEvent): void
   /** Kill every open SSE connection (clients should reconnect with ?since=). */
   dropEventStreams(): void
+  /** Simulate a daemon restart: a new epoch, cursors from 1, empty buffer, streams dropped. */
+  restart(): void
+  /** The current `stream.hello` epoch. */
+  readonly epoch: string
   /** Requests seen, e.g. `GET /agents`, `GET /events?since=3`. */
   requests: string[]
   /** The web server state; mutate it to simulate Studio / the CLI starting or stopping it. */
@@ -104,6 +110,8 @@ export interface MockDaemonOptions {
   trackedDirs?: string[]
   /** Extra fake folders that exist (MOCK_AGENTS_DIR and MOCK_SPARE_DIR always do). */
   existingDirs?: string[]
+  /** SSE replay buffer size. Default 1000 (the daemon's). */
+  bufferSize?: number
 }
 
 /** Seeded agents' files are /agents/<handle>.adf, so this folder "holds" them. */
@@ -207,6 +215,9 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
   const streams = new Set<{ res: ServerResponse; agentId?: string }>()
   const requests: string[] = []
   let cursor = 0
+  let epoch = 'mock-epoch-1'
+  let restarts = 0
+  const bufferSize = options.bufferSize ?? 1000
   const web: MockWebServer = { running: true, port: 7295, host: '127.0.0.1', ...options.web }
   const trackedDirs: string[] = [...(options.trackedDirs ?? [MOCK_AGENTS_DIR])]
   const existingDirs = new Set<string>([MOCK_AGENTS_DIR, MOCK_SPARE_DIR, ...(options.existingDirs ?? [])])
@@ -225,11 +236,12 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
       source: input.source ?? 'system:mock',
       agent_id: agentId,
       ...(input.loop && input.loop !== 'main' ? { loop: input.loop } : {}),
+      ...(input.turn_id ? { turn_id: input.turn_id } : {}),
       payload: input.payload ?? {},
     }
     const frame = { cursor: ++cursor, event }
     buffer.push(frame)
-    if (buffer.length > 1000) buffer.shift()
+    if (buffer.length > bufferSize) buffer.shift()
     for (const stream of streams) {
       if (stream.agentId && stream.agentId !== agentId) continue
       writeFrame(stream.res, frame)
@@ -255,24 +267,26 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
   const status = (a: MockAgent) => ({ ...summary(a), runtimeState: a.state, targetState: null, loopCount: a.history.main.length })
 
   /** A scripted turn: state → deltas → tool → llm → completed, stamped with the loop. */
-  const runTurn = (agent: MockAgent, loop: string, text: string) => {
+  const runTurn = (agent: MockAgent, loop: string, text: string, turnId?: string) => {
+    // Like the daemon: every event of the turn carries the chat 202's turnId.
+    const emitTurn = (input: MockEvent) => emit(turnId ? { ...input, turn_id: turnId } : input)
     const steps: Array<() => void> = []
     const reply = `Noted: "${text.slice(0, 60)}". Working on it in **${loop}**.`
     const toolId = `tu_${Math.random().toString(36).slice(2, 8)}`
     const setState = (state: string) => {
       if (loop === 'main') agent.state = state
       else { const l = agent.loops.find(x => x.name === loop); if (l) l.status = state === 'idle' ? 'idle' : 'running' }
-      emit({ event_type: 'agent.state.changed', agent_id: agent.id, loop, payload: { state } })
+      emitTurn({ event_type: 'agent.state.changed', agent_id: agent.id, loop, payload: { state } })
     }
     steps.push(() => setState('thinking'))
-    for (const chunk of reply.match(/.{1,12}/g) ?? []) steps.push(() => emit({ event_type: 'turn.delta', agent_id: agent.id, loop, payload: { kind: 'text', text: chunk } }))
+    for (const chunk of reply.match(/.{1,12}/g) ?? []) steps.push(() => emitTurn({ event_type: 'turn.delta', agent_id: agent.id, loop, payload: { kind: 'text', text: chunk } }))
     steps.push(() => setState('tool_use'))
-    steps.push(() => emit({ event_type: 'tool.started', agent_id: agent.id, loop, payload: { name: 'fs_read', id: toolId, input: { path: 'mind.md' } } }))
-    steps.push(() => emit({ event_type: 'tool.completed', agent_id: agent.id, loop, payload: { name: 'fs_read', id: toolId, result: { content: '- prefers v2', isError: false }, isError: false } }))
-    steps.push(() => emit({ event_type: 'llm.completed', agent_id: agent.id, loop, payload: { provider: 'mock', model: 'mock-model', input_tokens: 1200, output_tokens: 80 } }))
+    steps.push(() => emitTurn({ event_type: 'tool.started', agent_id: agent.id, loop, payload: { name: 'fs_read', id: toolId, input: { path: 'mind.md' } } }))
+    steps.push(() => emitTurn({ event_type: 'tool.completed', agent_id: agent.id, loop, payload: { name: 'fs_read', id: toolId, result: { content: '- prefers v2', isError: false }, isError: false } }))
+    steps.push(() => emitTurn({ event_type: 'llm.completed', agent_id: agent.id, loop, payload: { provider: 'mock', model: 'mock-model', input_tokens: 1200, output_tokens: 80 } }))
     steps.push(() => {
       ;(agent.history[loop] ??= []).push(row('assistant', [{ type: 'text', text: reply }]))
-      emit({ event_type: 'turn.completed', agent_id: agent.id, loop, payload: { content: reply } })
+      emitTurn({ event_type: 'turn.completed', agent_id: agent.id, loop, payload: { content: reply } })
     })
     steps.push(() => setState('idle'))
     steps.forEach((step, i) => setTimeout(step, stepMs * (i + 1)))
@@ -292,7 +306,18 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
       res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
       res.write(': connected\n\n')
       const agentId = url.searchParams.get('agentId') ?? undefined
-      const since = Number(url.searchParams.get('since') ?? 0)
+      const sinceParam = url.searchParams.get('since')
+      const epochParam = url.searchParams.get('epoch')
+      const oldest = buffer[0]?.cursor ?? null
+      // Same verdict rules as the daemon's GET /events.
+      const epochChanged = epochParam !== null && epochParam !== epoch
+      const sinceNum = sinceParam === null ? undefined : Number(sinceParam)
+      const evicted = !epochChanged && sinceNum !== undefined && sinceNum < cursor && (oldest === null || sinceNum < oldest - 1)
+      const since = epochChanged ? 0 : sinceNum ?? 0
+      res.write(`event: stream.hello\ndata: ${JSON.stringify({ epoch, oldestCursor: oldest, latestCursor: cursor })}\n\n`)
+      if (epochChanged || evicted) {
+        res.write(`event: stream.gap\ndata: ${JSON.stringify({ reason: epochChanged ? 'epoch_changed' : 'evicted', epoch, requestedCursor: sinceNum ?? null, oldestCursor: oldest, latestCursor: cursor })}\n\n`)
+      }
       for (const frame of buffer) {
         if (frame.cursor > since && (!agentId || frame.event.agent_id === agentId)) writeFrame(res, frame)
       }
@@ -556,8 +581,9 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
         if (!hasLoop(agent, loop)) return notFound(`loop "${loop}"`)
         if (loop !== 'main' && !agent.loops.find(l => l.name === loop)?.enabled) return send(409, { error: `Loop "${loop}" is disabled` })
         ;(agent.history[loop] ??= []).push(row('user', [{ type: 'text', text }]))
-        runTurn(agent, loop, text)
-        return send(202, { accepted: true, turnId: `turn_${cursor}` })
+        const turnId = `turn_${cursor}`
+        runTurn(agent, loop, text, turnId)
+        return send(202, { accepted: true, turnId })
       }
       case 'GET loops':
         if (parts[3]) {
@@ -708,6 +734,14 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
       for (const stream of streams) stream.res.destroy()
       streams.clear()
     },
+    restart() {
+      epoch = `mock-epoch-${++restarts + 1}`
+      cursor = 0
+      buffer.length = 0
+      for (const stream of streams) stream.res.destroy()
+      streams.clear()
+    },
+    get epoch() { return epoch },
     close() {
       for (const stream of streams) stream.res.destroy()
       streams.clear()

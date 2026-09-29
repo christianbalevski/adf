@@ -38,7 +38,7 @@ import { approvalHub, notificationKey, summarizeApprovalArgs, summarizeQuestion 
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { assembleContextBreakdown, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
-import { withLoop, withSource } from './execution-context'
+import { withLoop, withSource, withTurn } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
 import { SystemDispatchQueue, SystemDispatchDroppedError } from './system-dispatch-limits'
@@ -531,6 +531,8 @@ export class AgentExecutor extends EventEmitter {
   private abortController: AbortController | null = null
   private pendingTriggers: (AdfEventDispatch | AdfBatchDispatch)[] = []
   private pendingInterrupt: (AdfEventDispatch | AdfBatchDispatch) | null = null
+  /** turnIds of chat interrupts consumed into the running turn (takeAbsorbedTurnIds). */
+  private absorbedTurnIds: string[] = []
   // Turns running OR already committed to run (see isTurnActive). Not a state
   // machine — a counter, because error-recovery retries nest executeTurn calls
   // and a re-entrant successor claims its slot before its predecessor releases.
@@ -1545,7 +1547,10 @@ export class AgentExecutor extends EventEmitter {
       // inherit that loop's name.
       const loop = this.umbilicalLoop()
       const run = () => this.executeTurnImpl(dispatch, opts, turnId)
-      return await withSource(`agent:${turnId}`, this.config.id, () => loop ? withLoop(loop, run) : run())
+      // `turn_id` on this turn's events: the API request's id when the
+      // dispatch carries one (it survives an interrupt replay), else ours.
+      const correlated = () => withTurn(dispatch.turnId ?? turnId, () => loop ? withLoop(loop, run) : run())
+      return await withSource(`agent:${turnId}`, this.config.id, correlated)
     } finally {
       this.activeTurnCount--
       if (dispatch.scope !== 'system') {
@@ -5294,13 +5299,13 @@ export class AgentExecutor extends EventEmitter {
       // that never reach the registry (ask intercept, disabled tool, HIL denial,
       // async task references) go through emitSyntheticToolEvents instead.
       case 'turn_complete':
-        emitUmbilicalEvent({ event_type: 'turn.completed', agentId, loop, timestamp: event.timestamp, payload })
+        emitUmbilicalEvent({ event_type: 'turn.completed', agentId, loop, timestamp: event.timestamp, payload: { ...payload, ...this.takeAbsorbedTurnIds() } })
         break
       case 'state_changed':
         emitUmbilicalEvent({ event_type: 'agent.state.changed', agentId, loop, timestamp: event.timestamp, payload })
         break
       case 'error':
-        emitUmbilicalEvent({ event_type: 'agent.error', agentId, loop, timestamp: event.timestamp, payload: { event } })
+        emitUmbilicalEvent({ event_type: 'agent.error', agentId, loop, timestamp: event.timestamp, payload: { event, ...this.takeAbsorbedTurnIds() } })
         break
       case 'context_injected': {
         // A system prompt / dynamic-instructions / loop_inject payload was added
@@ -5344,6 +5349,14 @@ export class AgentExecutor extends EventEmitter {
         //    batches are opt-in via turn.delta.
         break
     }
+  }
+
+  /** `absorbed_turn_ids` for the turn's terminal event: interrupts it answered in-turn. */
+  private takeAbsorbedTurnIds(): { absorbed_turn_ids?: string[] } {
+    if (this.absorbedTurnIds.length === 0) return {}
+    const ids = this.absorbedTurnIds
+    this.absorbedTurnIds = []
+    return { absorbed_turn_ids: ids }
   }
 
   private hashString(str: string): string {
@@ -5721,6 +5734,8 @@ export class AgentExecutor extends EventEmitter {
     const interrupt = this.pendingInterrupt
     if (!interrupt) return null
     this.pendingInterrupt = null
+    // Answered inside the running turn: its turn.completed names it.
+    if (interrupt.turnId) this.absorbedTurnIds.push(interrupt.turnId)
 
     let userText = 'The user has manually triggered you. Review the document and respond.'
     if ('event' in interrupt && interrupt.event.type === 'chat' && interrupt.event.data) {

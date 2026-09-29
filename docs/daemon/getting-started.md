@@ -189,6 +189,7 @@ between them from one checkout rebuilds `better-sqlite3`; see
 | `ADF_DAEMON_PIDFILE` | set by `adf daemon` | Pid file path |
 | `ADF_DAEMON_TOKEN` | the `daemon-token` file | Access token override |
 | `ADF_DAEMON_ALLOWED_HOSTS` | none | Extra `Host` names for a non-loopback bind |
+| `ADF_DAEMON_BEHIND_PROXY` | off | `1`: a reverse proxy on this host forwards to the daemon; identity secrets and shutdown then need the local proof file |
 | `ADF_OWNER_PASSPHRASE`, `ADF_OWNER_PASSPHRASE_FILE` | none | Unlock a passphrase-file owner identity at boot |
 | `MESH_HOST`, `MESH_PORT` | from settings | Mesh server bind override |
 

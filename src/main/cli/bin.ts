@@ -34,10 +34,12 @@ on this machine by itself (<data dir>/daemon-token, created on first start);
 token prints it for a client elsewhere (--token or ADF_DAEMON_TOKEN there).
 ADF_DAEMON_TOKEN overrides the file, and is required with a non-loopback
 --host (plus ADF_DAEMON_ALLOWED_HOSTS for host names clients use).
+Behind a reverse proxy on this host set ADF_DAEMON_BEHIND_PROXY=1: identity
+secrets and stop then work only from adf on this host, against its loopback port.
 
 Environment: ADF_DAEMON_PORT, ADF_DAEMON_HOST, ADF_DAEMON_SETTINGS,
 ADF_USER_DATA_DIR, ADF_DAEMON_PIDFILE, ADF_DAEMON_TOKEN,
-ADF_DAEMON_ALLOWED_HOSTS`
+ADF_DAEMON_ALLOWED_HOSTS, ADF_DAEMON_BEHIND_PROXY`
 
 /** Maps `adf daemon` flags onto the env the daemon reads at boot. */
 export function applyDaemonArgs(args: string[], env: NodeJS.ProcessEnv = process.env): void {

@@ -16,7 +16,7 @@
  *      allowed hosts, or `Sec-Fetch-Site: cross-site|same-site`, is refused.
  *      Browsers always attach these to cross-site fetches and form posts;
  *      the CLI and terminal app send neither. No CORS headers are ever sent.
- *   3. Bearer token (daemon-token.ts) on everything but GET /health.
+ *   3. Bearer token (daemon-token.ts) on everything but GET/HEAD /health.
  */
 
 import { isIP } from 'node:net'
@@ -170,7 +170,7 @@ export class DaemonRequestGuard {
       return forbidden('Cross-site requests are not accepted by the ADF daemon.', 'cross_origin')
     }
 
-    if (this.token && !(method === 'GET' && path === '/health')) {
+    if (this.token && !((method === 'GET' || method === 'HEAD') && path === '/health')) {
       const auth = single(headers.authorization) ?? ''
       const match = /^Bearer\s+(.+)$/i.exec(auth.trim())
       if (!match || !tokensEqual(match[1].trim(), this.token)) {

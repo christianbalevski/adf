@@ -23,6 +23,7 @@ import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
 import { noteAutostartReport } from './tracked-dirs'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import { ensureDaemonToken } from './daemon-token'
+import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof } from './local-access'
 import { DaemonIdentity, readBootPassphrase } from './daemon-identity'
 import { DaemonAgentFactory } from './daemon-agent-factory'
 import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
@@ -125,6 +126,18 @@ if (process.env.ADF_DAEMON_TOKEN) {
   const minted = ensureDaemonToken(dirname(settingsPath))
   daemonToken = minted.token
   console.log(`[ADF Daemon] Access token: ${minted.path}${minted.created ? ' (new)' : ''} — local adf clients read it automatically; print it with: adf daemon token`)
+}
+
+// --- Proxy mode (local-access.ts) ---------------------------------------------
+// Behind a same-host reverse proxy every proxied request arrives from loopback,
+// so identity secrets and shutdown additionally need the per-run local proof
+// that only this machine's adf clients can read.
+const behindProxy = behindProxyFromEnv()
+let localProof: string | null = null
+if (behindProxy) {
+  const minted = mintLocalProof(dirname(settingsPath), port)
+  localProof = minted.proof
+  console.log(`[ADF Daemon] Proxy mode (${BEHIND_PROXY_ENV}): identity and shutdown routes need the local proof in ${minted.path}; run those adf commands on this host`)
 }
 
 const ownerIdentity = new DaemonIdentity({
@@ -259,6 +272,8 @@ const daemon = new DaemonHost({
   host,
   port,
   token: daemonToken,
+  behindProxy,
+  localProof,
   pidFile,
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).

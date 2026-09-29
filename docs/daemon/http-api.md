@@ -26,8 +26,9 @@ bearer token (`401 unauthorized`). The token is minted on first start into
 `<settings dir>/daemon-token`; local `adf` clients read it by themselves,
 `adf daemon token` prints it, and `ADF_DAEMON_TOKEN` overrides it (required
 for a non-loopback bind, with `ADF_DAEMON_ALLOWED_HOSTS` for host names).
-Owner identity changes and `POST /daemon/shutdown` answer loopback callers only
-(`403 loopback_only`). Details, remote access (SSH tunnel, TLS proxy) and
+Owner identity changes and `POST /daemon/shutdown` answer local callers only
+(`403 loopback_only`): loopback, no proxy headers, and behind a proxy
+(`ADF_DAEMON_BEHIND_PROXY`) the local proof file only `adf` on the host sends. Details, remote access (SSH tunnel, TLS proxy) and
 examples: [Base URL and authentication](api-guide.md#base-url-and-authentication).
 
 ## The API by area
@@ -60,10 +61,13 @@ Errors are `{ "error": "…", "code"?: "…" }`; see [Errors](api-guide.md#error
 
 A Server-Sent Events stream. Each frame's `data` is `{ cursor, event }`:
 `event` is the canonical umbilical envelope (`seq`, `event_type`, `timestamp`,
-`source`, `agent_id`, optional `loop`, `payload`), `cursor` (also the SSE `id`)
-is the daemon-wide position to resume from with `?since=<cursor>`. Filter with
-`?agentId=`. Replay comes from an in-memory buffer of 1000 frames; dedupe on
-`agent_id` + `seq`. Read it with `fetch` (the token goes in a header). Framing,
+`source`, `agent_id`, optional `loop` and `turn_id`, `payload`), `cursor`
+(also the SSE `id`) is the daemon-wide position to resume from with
+`?since=<cursor>` or `Last-Event-ID`. Filter with `?agentId=`. Every connection
+opens with a `stream.hello` control frame (`epoch`, buffered cursor window);
+`stream.gap` says a resume lost frames or crossed a daemon restart. Replay
+comes from an in-memory buffer of 1000 frames; dedupe on `agent_id` + `seq`.
+`turn_id` is the `turnId` `POST …/chat` answered with. Read it with `fetch` (the token goes in a header). Framing,
 resume, dedupe and gap handling:
 [The event stream](api-guide.md#the-event-stream). Event types:
 [Umbilical events](../guides/umbilical-events.md).

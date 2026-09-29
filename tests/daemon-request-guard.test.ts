@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DaemonRequestGuard, daemonHostAllowList, parseHostHeader, TOKEN_REQUIRED_MESSAGE } from '../src/main/daemon/request-guard'
 import { daemonTokenPath, ensureDaemonToken, readDaemonToken, tokensEqual } from '../src/main/daemon/daemon-token'
-import { localDaemonToken, resolveDaemonToken } from '../src/main/cli/daemon-url'
+import { localDaemonToken, localProofHeaders, resolveDaemonToken } from '../src/main/cli/daemon-url'
+import { behindProxyFromEnv, localProofPath, mintLocalProof, readLocalProof } from '../src/main/daemon/local-access'
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { DaemonHost } from '../src/main/daemon/daemon-host'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
@@ -235,5 +236,89 @@ describe('loopback-only identity routes', () => {
     } finally {
       await server.close()
     }
+  })
+})
+
+describe('local-only routes behind a reverse proxy', () => {
+  const identity = { lock: () => ({ status: 'locked' }), confirmBackup: () => ({ status: 'ready' }), status: () => ({}) }
+  const LOCAL_ROUTES = ['/identity/lock', '/identity/confirm-backup', '/daemon/shutdown']
+
+  it('forwarded headers make a loopback request non-local (they never grant local)', async () => {
+    const server = createDaemonHttpApi(new RuntimeService({ enforceReviewGate: false }), { identity: identity as never, requestShutdown: () => {} })
+    try {
+      for (const header of ['x-forwarded-for', 'forwarded', 'x-real-ip', 'x-forwarded-host', 'via']) {
+        for (const url of LOCAL_ROUTES) {
+          const res = await server.inject({ method: 'POST', url, headers: { [header]: '127.0.0.1' } })
+          expect(res.statusCode, `${header} ${url}`).toBe(403)
+          expect(res.json().code).toBe('loopback_only')
+          expect(res.json().error).toMatch(/proxy/)
+        }
+      }
+      // A remote peer claiming to be local through a header stays remote.
+      const spoofed = await server.inject({ method: 'POST', url: '/identity/lock', remoteAddress: '203.0.113.9', headers: { 'x-forwarded-for': '127.0.0.1' } })
+      expect(spoofed.statusCode).toBe(403)
+      // Other routes are unaffected by the headers.
+      expect((await server.inject({ method: 'GET', url: '/identity', headers: { 'x-forwarded-for': '198.51.100.1' } })).statusCode).toBe(200)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('proxy mode: a bare loopback request is refused; this machine’s local proof admits it', async () => {
+    const dir = tempDir()
+    const { proof } = mintLocalProof(dir)
+    const server = createDaemonHttpApi(new RuntimeService({ enforceReviewGate: false }), {
+      identity: identity as never,
+      security: { behindProxy: true, localProof: proof },
+    })
+    try {
+      for (const url of ['/identity/lock', '/identity/confirm-backup']) {
+        const bare = await server.inject({ method: 'POST', url })
+        expect(bare.statusCode, url).toBe(403)
+        expect(bare.json().error).toMatch(/ADF_DAEMON_BEHIND_PROXY/)
+        expect((await server.inject({ method: 'POST', url, headers: { 'x-adf-local-proof': 'x'.repeat(43) } })).statusCode).toBe(403)
+        expect((await server.inject({ method: 'POST', url, headers: { 'x-adf-local-proof': proof } })).statusCode, url).toBe(200)
+        // The proof does not override the other two rules.
+        expect((await server.inject({ method: 'POST', url, headers: { 'x-adf-local-proof': proof, 'x-forwarded-for': '1.2.3.4' } })).statusCode).toBe(403)
+        expect((await server.inject({ method: 'POST', url, remoteAddress: '10.0.0.2', headers: { 'x-adf-local-proof': proof } })).statusCode).toBe(403)
+      }
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('proxy mode without a proof refuses everything; the env flag turns it on', async () => {
+    const server = createDaemonHttpApi(new RuntimeService({ enforceReviewGate: false }), { identity: identity as never, security: { behindProxy: true } })
+    try {
+      expect((await server.inject({ method: 'POST', url: '/identity/lock', headers: { 'x-adf-local-proof': 'a'.repeat(43) } })).statusCode).toBe(403)
+    } finally {
+      await server.close()
+    }
+    expect(behindProxyFromEnv({ ADF_DAEMON_BEHIND_PROXY: '1' })).toBe(true)
+    expect(behindProxyFromEnv({ ADF_DAEMON_BEHIND_PROXY: 'true' })).toBe(true)
+    expect(behindProxyFromEnv({ ADF_DAEMON_BEHIND_PROXY: '0' })).toBe(false)
+    expect(behindProxyFromEnv({})).toBe(false)
+  })
+
+  it('clients send the proof to this machine’s daemon, on local-only routes only', () => {
+    const dir = tempDir()
+    const env = { ADF_DAEMON_SETTINGS: join(dir, 'adf-settings.json') }
+    expect(localProofHeaders('http://127.0.0.1:7385', '/identity/unlock', env)).toEqual({})
+    const { proof, path } = mintLocalProof(dir)
+    expect(path).toBe(localProofPath(dir))
+    if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600)
+    expect(readLocalProof(dir)).toBe(proof)
+    expect(localProofHeaders('http://127.0.0.1:7385', '/identity/unlock', env)).toEqual({ 'X-ADF-Local-Proof': proof })
+    expect(localProofHeaders('http://127.0.0.1:7385', '/daemon/shutdown', env)).toEqual({ 'X-ADF-Local-Proof': proof })
+    expect(localProofHeaders('http://127.0.0.1:7385', '/agents', env)).toEqual({})
+    expect(localProofHeaders('http://127.0.0.1:7386', '/identity/unlock', env)).toEqual({})
+    expect(localProofHeaders('http://daemon.example:7385', '/identity/unlock', env)).toEqual({})
+    // Another port has its own file: a second daemon on these settings does not clobber it.
+    const other = mintLocalProof(dir, 7386)
+    expect(other.path).toBe(join(dir, 'daemon-local-proof-7386'))
+    expect(readLocalProof(dir)).toBe(proof)
+    expect(localProofHeaders('http://127.0.0.1:7386', '/identity/unlock', { ...env, ADF_DAEMON_PORT: '7386' })).toEqual({ 'X-ADF-Local-Proof': other.proof })
+    // Re-minted every daemon start.
+    expect(mintLocalProof(dir).proof).not.toBe(proof)
   })
 })

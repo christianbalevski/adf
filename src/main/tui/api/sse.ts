@@ -1,7 +1,9 @@
 // SSE subscriber for `GET /events` over fetch streaming (no EventSource dep).
 //
-// - Resumes with `?since=<cursor>` after a drop, so the daemon replays what
-//   was buffered while we were away.
+// - Resumes with `?since=<cursor>&epoch=<epoch>` after a drop, so the daemon
+//   replays what was buffered while we were away. The daemon's `stream.hello`
+//   (epoch + buffered cursor window) and `stream.gap` frames tell whether that
+//   resume was exact; `onResume` reports it so callers reload only when needed.
 // - Dedupes by `agent_id + seq` (the durable per-agent order); events with no
 //   owning agent (seq 0) dedupe by transport cursor.
 // - Reports every connection transition through `onState` — the store turns
@@ -21,8 +23,20 @@ export interface ConnectionInfo {
   error?: string
   /** Delay before the next attempt, when reconnecting. */
   retryInMs?: number
-  /** True on an open that followed a drop: callers should resync snapshots. */
+  /** True on an open that followed a drop: callers should resync snapshots (see onResume). */
   resumed?: boolean
+}
+
+/**
+ * How a resumed connection picked up, from the daemon's `stream.hello` /
+ * `stream.gap`: `exact` = every frame since our cursor was replayed; else
+ * frames were lost (`evicted`) or the daemon restarted (`epoch_changed`) and
+ * state must be reloaded.
+ */
+export interface ResumeInfo {
+  exact: boolean
+  reason?: 'evicted' | 'epoch_changed'
+  epoch: string
 }
 
 export interface EventStreamOptions {
@@ -41,6 +55,8 @@ export interface EventStreamOptions {
   replay?: boolean
   onEvent: (frame: DaemonEventFrame) => void
   onState?: (info: ConnectionInfo) => void
+  /** Once per resumed connection, when the daemon says how the resume went (daemons that send `stream.hello`). */
+  onResume?: (info: ResumeInfo) => void
   /** Backoff bounds. Defaults 500ms → 10s. */
   minBackoffMs?: number
   maxBackoffMs?: number
@@ -59,6 +75,10 @@ export class EventStream {
   private attempt = 0
   private hasOpened = false
   private lastCursor: number
+  /** Daemon run the cursor belongs to (`stream.hello`). */
+  private epoch: string | null = null
+  /** This connection resumes a dropped one and has not reported how yet. */
+  private resumePending = false
   private readonly seen = new Set<string>()
   private readonly seenOrder: string[] = []
   private idleTimer: ReturnType<typeof setTimeout> | null = null
@@ -114,8 +134,10 @@ export class EventStream {
   private buildUrl(): string {
     const params = new URLSearchParams()
     if (this.options.agentId) params.set('agentId', this.options.agentId)
-    if (this.lastCursor >= 0) params.set('since', String(this.lastCursor))
-    else if (!this.options.replay) params.set('since', String(Number.MAX_SAFE_INTEGER))
+    if (this.lastCursor >= 0) {
+      params.set('since', String(this.lastCursor))
+      if (this.epoch) params.set('epoch', this.epoch)
+    } else if (!this.options.replay) params.set('since', String(Number.MAX_SAFE_INTEGER))
     const qs = params.toString()
     return `${this.options.baseUrl}/events${qs ? `?${qs}` : ''}`
   }
@@ -137,6 +159,7 @@ export class EventStream {
         throw new Error(`HTTP ${response.status} ${response.statusText}`.trim())
       }
       this.attempt = 0
+      this.resumePending = resumed
       this.hasOpened = true
       this.setState({ state: 'open', attempt: 0, resumed })
       this.armIdle()
@@ -200,14 +223,20 @@ export class EventStream {
 
   private handleBlock(block: string): void {
     const data: string[] = []
+    let name = ''
     for (const line of block.split('\n')) {
       if (!line || line.startsWith(':')) continue
       const colon = line.indexOf(':')
       const field = colon < 0 ? line : line.slice(0, colon)
       const value = colon < 0 ? '' : line.slice(colon + 1).replace(/^ /, '')
       if (field === 'data') data.push(value)
+      else if (field === 'event') name = value
     }
     if (data.length === 0) return
+    if (name === 'stream.hello' || name === 'stream.gap') {
+      this.handleControl(name, data.join('\n'))
+      return
+    }
     let frame: DaemonEventFrame
     try {
       frame = JSON.parse(data.join('\n')) as DaemonEventFrame
@@ -227,6 +256,44 @@ export class EventStream {
       this.remember(key)
     }
     try { this.options.onEvent(frame) } catch { /* listener errors never break the stream */ }
+  }
+
+  /**
+   * `stream.hello` carries enough to judge the resume on its own (so a quiet
+   * stream reports at once); `stream.gap` confirms a loss the hello missed.
+   */
+  private handleControl(name: string, raw: string): void {
+    let data: Record<string, unknown>
+    try { data = JSON.parse(raw) as Record<string, unknown> } catch { return }
+    const epoch = typeof data.epoch === 'string' ? data.epoch : null
+    if (!epoch) return
+    const previous = this.epoch
+    this.epoch = epoch
+    if (name === 'stream.hello') {
+      if (previous && previous !== epoch) {
+        // A restarted daemon: its cursor keys mean nothing, and it replays from 1.
+        this.forgetCursorKeys()
+        this.lastCursor = -1
+        this.reportResume({ exact: false, reason: 'epoch_changed', epoch })
+        return
+      }
+      const oldest = typeof data.oldestCursor === 'number' ? data.oldestCursor : null
+      const latest = typeof data.latestCursor === 'number' ? data.latestCursor : 0
+      const since = this.lastCursor
+      const lost = since >= 0 && since < latest && (oldest === null || since < oldest - 1)
+      this.reportResume(lost ? { exact: false, reason: 'evicted', epoch } : { exact: true, epoch })
+      return
+    }
+    const reason = data.reason === 'epoch_changed' ? 'epoch_changed' : 'evicted'
+    if (reason === 'epoch_changed') { this.forgetCursorKeys(); this.lastCursor = -1 }
+    // Normally the hello already judged this connection the same way.
+    this.reportResume({ exact: false, reason, epoch })
+  }
+
+  private reportResume(info: ResumeInfo): void {
+    if (!this.resumePending) return
+    this.resumePending = false
+    try { this.options.onResume?.(info) } catch { /* a bad listener must not kill the stream */ }
   }
 
   private remember(key: string): void {

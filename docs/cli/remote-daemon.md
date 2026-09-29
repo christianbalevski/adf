@@ -76,10 +76,14 @@ adf.example.com {
   Clients: `adf --url https://adf.example.com --token <token>`.
 - Live events are a streaming response (`/events`). Caddy streams them as is;
   with nginx set `proxy_buffering off` for the daemon location.
-- The daemon sees the proxy's loopback connection, so routes it otherwise
-  keeps to its own machine (owner identity secrets, stop) are reachable
-  through the proxy, with the token. Treat the token as the key to the
-  daemon.
+- The daemon sees the proxy's loopback connection. Start it with
+  `ADF_DAEMON_BEHIND_PROXY=1` so the routes it keeps to its own machine (owner
+  identity create / restore / unlock / lock, `adf daemon stop`) stay there:
+  they then also need a proof file only this host can read, which `adf` on
+  the server sends by itself. Run those commands on the server, against
+  `127.0.0.1:7385`, not through the proxy. A request that carries proxy
+  headers (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`, …) is never treated
+  as local, with or without the setting.
 
 ## Sign in to ChatGPT
 

@@ -1,7 +1,7 @@
 // The one-shot CLI and TUI dispatch. The `adf` executable is bin.ts; it
 // calls runCli (this module never runs itself).
 
-import { DEFAULT_DAEMON_URL, isLocalDaemonUrl, loopbackPort, resolveDaemonToken, resolveDaemonUrl, tunnelTokenHint } from './daemon-url'
+import { DEFAULT_DAEMON_URL, isLocalDaemonUrl, localProofHeaders, loopbackPort, resolveDaemonToken, resolveDaemonUrl, tunnelTokenHint } from './daemon-url'
 import {
   AUTH_PROVIDER_LABELS,
   loginChatGpt,
@@ -300,6 +300,7 @@ async function requestJson(io: CliIo, options: CliOptions, path: string, init?: 
         ...(init?.headers ?? {}),
         Accept: 'application/json',
         ...authHeader(options),
+        ...localProofHeaders(options.daemonUrl, path),
       },
     })
   } catch (err) {
@@ -596,6 +597,15 @@ async function streamEvents(io: CliIo, options: CliOptions, args: string[]): Pro
       const dataLine = part.split(/\n/).find(line => line.startsWith('data: '))
       if (!dataLine) continue
       const payload = dataLine.slice('data: '.length)
+      // Stream control frames: the hello is bookkeeping; a gap is worth saying.
+      const name = part.split(/\n/).find(line => line.startsWith('event: '))?.slice('event: '.length)
+      if (name === 'stream.hello') continue
+      if (name === 'stream.gap') {
+        let reason = 'unknown'
+        try { reason = String((JSON.parse(payload) as { reason?: unknown }).reason) } catch { /* keep unknown */ }
+        io.stderr(`Some events were not replayed (${reason === 'epoch_changed' ? 'the daemon restarted' : 'the replay buffer moved past them'}).\n`)
+        continue
+      }
       if (options.json) io.stdout(`${payload}\n`)
       else {
         try { io.stdout(`${formatEvent(JSON.parse(payload) as JsonValue)}\n`) }

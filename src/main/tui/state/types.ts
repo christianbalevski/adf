@@ -54,6 +54,12 @@ export interface UserItem extends ItemBase {
   pending?: boolean
   /** The daemon accepted it (202); still `pending` until history shows it. */
   accepted?: boolean
+  /** The 202's turnId: the daemon stamps it as `turn_id` on the events of the turn that handles it. */
+  turnId?: string
+  /** A turn carrying `turnId` has started (it is no longer queued). */
+  taken?: boolean
+  /** That turn completed (not interrupted): the agent answered this message. */
+  answered?: boolean
 }
 
 export interface AssistantItem extends ItemBase {

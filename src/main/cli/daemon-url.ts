@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { daemonSettingsDir, readDaemonToken } from '../daemon/daemon-token'
+import { readLocalProof } from '../daemon/local-access'
 
 export const DEFAULT_DAEMON_PORT = 7385
 export const DEFAULT_DAEMON_URL = `http://127.0.0.1:${DEFAULT_DAEMON_PORT}`
@@ -77,4 +78,21 @@ export function resolveDaemonToken(explicit?: string, env: NodeJS.ProcessEnv = p
   const token = explicit ?? env.ADF_DAEMON_TOKEN
   if (token) return token
   return url ? localDaemonToken(url, env) : undefined
+}
+
+/** Routes the daemon answers for local callers only (local-access.ts). */
+export function isLocalOnlyRoute(path: string): boolean {
+  const p = path.split('?')[0]
+  return p === '/daemon/shutdown' || /^\/identity\/(create|restore|unlock|lock|confirm-backup)$/.test(p)
+}
+
+/**
+ * X-ADF-Local-Proof for a local-only route of this machine's daemon
+ * (isLocalDaemonUrl): a daemon in proxy mode (ADF_DAEMON_BEHIND_PROXY) requires
+ * it there. Never sent to another host or for any other route.
+ */
+export function localProofHeaders(url: string, path: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  if (!isLocalOnlyRoute(path) || !isLocalDaemonUrl(url, env)) return {}
+  const proof = readLocalProof(daemonSettingsDir(env), loopbackPort(url) ?? DEFAULT_DAEMON_PORT)
+  return proof ? { 'X-ADF-Local-Proof': proof } : {}
 }

@@ -289,10 +289,15 @@ export function withMarkers(items: TranscriptItem[], markers: Marker[] | undefin
 
 // --- queued messages -------------------------------------------------------------
 
-/** Owner messages sent while the loop was busy and not yet taken up by a turn. */
+/**
+ * Owner messages sent while the loop was busy and not yet taken up by a turn.
+ * A message with a turnId is queued until a turn carrying that id starts
+ * (daemon turn correlation); without one (older daemon) until a turn starts after it was sent.
+ */
 export function queuedItems(items: TranscriptItem[], running: boolean, turnStartedAt: number | null): TranscriptItem[] {
   if (!running || turnStartedAt === null) return []
-  return items.filter(item => item.kind === 'user' && item.pending && item.at > turnStartedAt)
+  return items.filter(item => item.kind === 'user' && item.pending && !item.answered
+    && (item.turnId ? !item.taken : item.at > turnStartedAt))
 }
 
 // --- heights ------------------------------------------------------------------------

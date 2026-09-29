@@ -78,11 +78,11 @@ export function buildAgentContext(
 
 export function registerContextRoutes(server: FastifyInstance, runtime: ContextRouteRuntime): void {
   server.get<{ Params: { id: string }; Querystring: { loop?: string; items?: string } }>('/agents/:id/context', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return reply.code(404).send({ error: `Unknown agent "${request.params.id}"` })
+    if (!runtime.getAgent(request.params.id)) return reply.code(404).send({ error: `Unknown agent "${request.params.id}"`, code: 'not_found' })
     let items = DEFAULT_ITEMS
     if (request.query.items !== undefined) {
       const n = Number(request.query.items)
-      if (!Number.isInteger(n) || n < 0) return reply.code(400).send({ error: 'items must be a non-negative integer' })
+      if (!Number.isInteger(n) || n < 0) return reply.code(400).send({ error: 'items must be a non-negative integer', code: 'bad_request' })
       items = Math.min(n, MAX_ITEMS)
     }
     try {
@@ -94,6 +94,6 @@ export function registerContextRoutes(server: FastifyInstance, runtime: ContextR
 }
 
 function fail(reply: FastifyReply, err: unknown) {
-  if (err instanceof RuntimeLoopError) return reply.code(err.statusCode).send({ error: err.message })
+  if (err instanceof RuntimeLoopError) return reply.code(err.statusCode).send({ ...(err.details ?? {}), error: err.message, code: err.code ?? (err.statusCode === 404 ? 'not_found' : err.statusCode === 409 ? 'conflict' : err.statusCode === 502 ? 'upstream_error' : 'bad_request') })
   return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) })
 }

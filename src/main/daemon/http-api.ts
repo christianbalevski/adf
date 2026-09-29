@@ -30,7 +30,8 @@ import type { McpServerRegistration, ProviderConfig } from '../../shared/types/i
 import type { AdapterInstanceConfig, AdapterRegistration } from '../../shared/types/channel-adapter.types'
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { getLanAddresses } from '../utils/network'
-import { isLoopbackAddress, registerIdentityRoutes, type IdentityRouteDeps } from './identity-routes'
+import { registerIdentityRoutes, requireLocalCaller, type IdentityRouteDeps } from './identity-routes'
+import { behindProxyFromEnv, type LocalAccessOptions } from './local-access'
 import { DaemonRequestGuard, type DaemonRequestGuardOptions } from './request-guard'
 import { registerTemplateRoutes } from './template-routes'
 import { registerProviderRoutes } from './provider-routes'
@@ -77,7 +78,15 @@ export interface DaemonHttpApiOptions {
    * Request guard (request-guard.ts): the bearer token every route but GET
    * /health requires, and the Host allow-list. DaemonHost always sets it.
    */
-  security?: Pick<DaemonRequestGuardOptions, 'token' | 'allowedHosts' | 'ipLiteralPort'>
+  security?: Pick<DaemonRequestGuardOptions, 'token' | 'allowedHosts' | 'ipLiteralPort'> & {
+    /**
+     * Local-only routes (identity secrets, shutdown) behind a same-host
+     * reverse proxy: see local-access.ts. Default: ADF_DAEMON_BEHIND_PROXY.
+     */
+    behindProxy?: boolean
+    /** The X-ADF-Local-Proof secret proxy mode requires (daemon-local-proof file). */
+    localProof?: string | null
+  }
 }
 
 export interface DaemonComputeService {
@@ -309,6 +318,8 @@ interface UmbilicalEventsQuery {
 interface EventsQuery {
   agentId?: string
   since?: string
+  /** The epoch (stream.hello) the `since` cursor came from. */
+  epoch?: string
 }
 
 interface ModelsQuery {
@@ -634,31 +645,55 @@ export function createDaemonHttpApi(
     done()
   })
 
+  // Every 4xx/5xx JSON error body carries a machine-readable `code`: routes
+  // set specific ones; anything without one (Fastify's own 404, a route
+  // error without a code) gets the status default.
+  server.addHook('onSend', (_request, reply, payload, done) => {
+    done(null, withDefaultErrorCode(reply.statusCode, reply.getHeader('content-type'), payload))
+  })
+
   server.get('/openapi.json', async () => getOpenApiSpec())
 
   server.get('/health', async () => ({ ok: true }))
 
+  const localAccess: LocalAccessOptions = {
+    behindProxy: opts.security?.behindProxy ?? behindProxyFromEnv(),
+    localProof: opts.security?.localProof ?? null,
+  }
+
   server.post('/daemon/shutdown', async (request, reply) => {
-    if (!isLoopbackAddress(request.socket?.remoteAddress)) {
-      return reply.code(403).send({ error: 'The daemon can only be stopped from this machine (loopback).', code: 'loopback_only' })
-    }
+    if (!requireLocalCaller(request, reply, localAccess, 'The daemon can be stopped')) return reply
     if (!opts.requestShutdown) return methodNotAllowed(reply, 'Shutdown is not available on this daemon.')
     // Answer first; the shutdown closes this server.
     setTimeout(() => opts.requestShutdown?.(), 50)
     return reply.code(202).send({ accepted: true, pid: process.pid })
   })
 
-  registerIdentityRoutes(server, { identity: opts.identity, agentFactory: opts.agentFactory })
+  registerIdentityRoutes(server, { identity: opts.identity, agentFactory: opts.agentFactory, localAccess })
   registerTemplateRoutes(server, { agentFactory: opts.agentFactory })
   registerProviderRoutes(server, { settingsStore: opts.settingsStore, providerKeys: opts.providerKeys })
   registerContextRoutes(server, runtime)
 
   server.get<{ Querystring: EventsQuery }>('/events', async (request, reply) => {
     if (!opts.eventBus) return unavailable(reply, 'Event bus is not configured.')
-    const since = parseOptionalInteger(request.query.since)
-    if (request.query.since !== undefined && since === undefined) {
-      return badRequest(reply, 'since must be an integer')
+    const bus = opts.eventBus
+    // Resume point: ?since= wins over the standard SSE Last-Event-ID header.
+    const lastEventId = single(request.headers['last-event-id'])?.trim()
+    const sinceText = request.query.since ?? (lastEventId ? lastEventId : undefined)
+    const since = parseOptionalInteger(sinceText)
+    if (sinceText !== undefined && since === undefined) {
+      return badRequest(reply, request.query.since !== undefined ? 'since must be an integer' : 'Last-Event-ID must be an integer event cursor')
     }
+
+    // Cursors restart with every daemon run (a new epoch). A client that
+    // names the epoch its cursor came from learns when it no longer applies;
+    // a cursor older than the buffer means frames were dropped. Either way it
+    // gets a `stream.gap` frame and must reload state from the REST API.
+    const epochMismatch = request.query.epoch !== undefined && request.query.epoch !== bus.epoch
+    const oldest = bus.oldestCursor
+    const latest = bus.latestCursor
+    const evicted = !epochMismatch && since !== undefined && since < latest && (oldest === null || since < oldest - 1)
+    const replayFrom = epochMismatch ? 0 : since ?? 0
 
     reply.hijack()
     sseClients.add(reply.raw)
@@ -669,6 +704,16 @@ export function createDaemonHttpApi(
       'X-Accel-Buffering': 'no',
     })
     reply.raw.write(': connected\n\n')
+    writeSseControl(reply.raw, 'stream.hello', { epoch: bus.epoch, oldestCursor: oldest, latestCursor: latest })
+    if (epochMismatch || evicted) {
+      writeSseControl(reply.raw, 'stream.gap', {
+        reason: epochMismatch ? 'epoch_changed' : 'evicted',
+        epoch: bus.epoch,
+        requestedCursor: since ?? null,
+        oldestCursor: oldest,
+        latestCursor: latest,
+      })
+    }
 
     const agentId = request.query.agentId
     const send = (envelope: DaemonEventEnvelope) => {
@@ -676,11 +721,11 @@ export function createDaemonHttpApi(
       writeSseEvent(reply.raw, envelope)
     }
 
-    for (const envelope of opts.eventBus.getSince(since ?? 0, agentId)) {
+    for (const envelope of bus.getSince(replayFrom, agentId)) {
       send(envelope)
     }
 
-    const unsubscribe = opts.eventBus.subscribe(send)
+    const unsubscribe = bus.subscribe(send)
     const heartbeat = setInterval(() => {
       if (!reply.raw.destroyed) reply.raw.write(`: heartbeat ${Date.now()}\n\n`)
     }, 30_000)
@@ -711,7 +756,7 @@ export function createDaemonHttpApi(
     }
     const deniedKey = SETTINGS_WRITE_DENY_KEYS.find(key => Object.prototype.hasOwnProperty.call(patch, key))
     if (deniedKey) {
-      return forbidden(reply, `Settings key "${deniedKey}" cannot be written through the daemon API.`)
+      return forbidden(reply, `Settings key "${deniedKey}" cannot be written through the daemon API.`, 'setting_not_writable')
     }
     if ('providers' in patch) {
       patch.providers = restoreRedactedProviderKeys(patch.providers, opts.settingsStore.get('providers'))
@@ -739,7 +784,7 @@ export function createDaemonHttpApi(
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
     if (!opts.settingsStore.set) return methodNotAllowed(reply, 'Settings store is read-only.')
     if (SETTINGS_WRITE_DENY_KEYS.includes(request.params.key)) {
-      return forbidden(reply, `Settings key "${request.params.key}" cannot be written through the daemon API.`)
+      return forbidden(reply, `Settings key "${request.params.key}" cannot be written through the daemon API.`, 'setting_not_writable')
     }
     if (!request.body || !Object.prototype.hasOwnProperty.call(request.body, 'value')) {
       return badRequest(reply, 'Request body must contain a value field.')
@@ -2295,7 +2340,7 @@ export function createDaemonHttpApi(
     }
 
     const turnId = `turn_${nanoid(12)}`
-    queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop))
+    queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop, { turnId }))
     return reply.code(202).send({ accepted: true, turnId })
   })
 
@@ -2305,7 +2350,7 @@ export function createDaemonHttpApi(
     if (!normalized.ok) return badRequest(reply, normalized.error)
 
     const turnId = `trigger_${nanoid(12)}`
-    queueTurn(turnId, () => runtime.trigger(request.params.id, normalized.dispatch))
+    queueTurn(turnId, () => runtime.trigger(request.params.id, { ...normalized.dispatch, turnId }))
     return reply.code(202).send({ accepted: true, turnId })
   })
 
@@ -2466,28 +2511,28 @@ function normalizeEvent(rawEvent: Record<string, unknown>): {
   }
 }
 
-function badRequest(reply: FastifyReply, error: string) {
-  return reply.code(400).send({ error })
+function badRequest(reply: FastifyReply, error: string, code = 'bad_request') {
+  return reply.code(400).send({ error, code })
 }
 
-function notFound(reply: FastifyReply, error: string) {
-  return reply.code(404).send({ error })
+function notFound(reply: FastifyReply, error: string, code = 'not_found') {
+  return reply.code(404).send({ error, code })
 }
 
-function conflict(reply: FastifyReply, error: string) {
-  return reply.code(409).send({ error })
+function conflict(reply: FastifyReply, error: string, code = 'conflict') {
+  return reply.code(409).send({ error, code })
 }
 
 function unavailable(reply: FastifyReply, error: string) {
-  return reply.code(503).send({ error })
+  return reply.code(503).send({ error, code: 'unavailable' })
 }
 
 function methodNotAllowed(reply: FastifyReply, error: string) {
-  return reply.code(405).send({ error })
+  return reply.code(405).send({ error, code: 'not_supported' })
 }
 
-function forbidden(reply: FastifyReply, error: string) {
-  return reply.code(403).send({ error })
+function forbidden(reply: FastifyReply, error: string, code = 'forbidden') {
+  return reply.code(403).send({ error, code })
 }
 
 function buildRuntimeUsageDiagnostics() {
@@ -2905,9 +2950,33 @@ function isTaskResolveAction(value: string): value is 'approve' | 'deny' | 'pend
   return value === 'approve' || value === 'deny' || value === 'pending_approval'
 }
 
+/** Default `code` per error status (withDefaultErrorCode, RuntimeLoopError without one). */
+export const DEFAULT_ERROR_CODES: Record<number, string> = {
+  400: 'bad_request',
+  401: 'unauthorized',
+  403: 'forbidden',
+  404: 'not_found',
+  405: 'not_supported',
+  409: 'conflict',
+  413: 'payload_too_large',
+  415: 'unsupported_media_type',
+  500: 'internal_error',
+  502: 'upstream_error',
+  503: 'unavailable',
+}
+
+function withDefaultErrorCode(status: number, contentType: unknown, payload: unknown): unknown {
+  if (status < 400 || typeof payload !== 'string' || !String(contentType ?? '').includes('application/json')) return payload
+  const code = DEFAULT_ERROR_CODES[status] ?? (status >= 500 ? 'internal_error' : 'error')
+  let body: unknown
+  try { body = JSON.parse(payload) } catch { return payload }
+  if (!isRecord(body) || typeof body.code === 'string') return payload
+  return JSON.stringify({ ...body, code })
+}
+
 function handleRuntimeError(reply: FastifyReply, err: unknown) {
   if (err instanceof RuntimeLoopError) {
-    return reply.code(err.statusCode).send({ error: err.message, ...(err.code ? { code: err.code } : {}) })
+    return reply.code(err.statusCode).send({ ...(err.details ?? {}), error: err.message, code: err.code ?? DEFAULT_ERROR_CODES[err.statusCode] })
   }
   if (err instanceof RuntimeReviewRequiredError) {
     return reply.code(403).send({
@@ -2921,6 +2990,18 @@ function handleRuntimeError(reply: FastifyReply, err: unknown) {
   return reply.code(500).send({
     error: err instanceof Error ? err.message : String(err),
   })
+}
+
+/**
+ * Stream control frame (`stream.hello`, `stream.gap`): a named SSE event with
+ * no `id:` line (the resume cursor is unchanged) and a non-EventFrame body.
+ */
+function writeSseControl(stream: NodeJS.WritableStream, name: string, data: Record<string, unknown>): void {
+  stream.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
+}
+
+function single(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value
 }
 
 function writeSseEvent(stream: NodeJS.WritableStream, envelope: DaemonEventEnvelope): void {

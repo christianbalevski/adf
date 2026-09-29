@@ -14,7 +14,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, rea
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DEFAULT_DAEMON_PORT, DEFAULT_DAEMON_URL, isLocalDaemonUrl, resolveDaemonToken } from './daemon-url'
+import { DEFAULT_DAEMON_PORT, DEFAULT_DAEMON_URL, isLocalDaemonUrl, localProofHeaders, resolveDaemonToken } from './daemon-url'
 import { defaultUserDataPath } from '../utils/user-data-path'
 
 export { DEFAULT_DAEMON_PORT }
@@ -305,7 +305,7 @@ export async function stopDaemon(target: DaemonTarget, options: { env?: NodeJS.P
   }
   let accepted = false
   try {
-    const res = await fetchImpl(`${target.url}/daemon/shutdown`, { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(5000) })
+    const res = await fetchImpl(`${target.url}/daemon/shutdown`, { method: 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...localProofHeaders(target.url, '/daemon/shutdown', env) }, signal: AbortSignal.timeout(5000) })
     accepted = res.ok
     if (!res.ok && res.status !== 404) {
       const body = await res.json().catch(() => null) as { error?: string } | null

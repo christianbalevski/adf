@@ -185,6 +185,8 @@ export interface CreateStoreOptions {
 const REFRESH_DEBOUNCE_MS = 120
 /** After agent load / config events: the daemon starts its web server ~500ms after agents register. */
 const WEB_EVENT_DEBOUNCE_MS = 900
+/** How long a resumed stream waits for stream.hello before resyncing anyway (older daemon). */
+const RESUME_VERDICT_MS = 1500
 const WEB_POLL_MS = 20_000
 /** Tracked folders' agents: Studio or the file system may add / remove .adf files; no event says so. Cheap (the daemon caches peeks by mtime). */
 const TRACKED_POLL_MS = 15_000
@@ -210,6 +212,8 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   let stopped = false
   /** Set when the daemon was unreachable; the next successful open resyncs. */
   let needsResync = false
+  /** Fallback resync for a daemon that never says how a resume went (no stream.hello). */
+  let resumeFallback: ReturnType<typeof setTimeout> | null = null
 
   const getState = () => state
   const dispatch = (action: TuiAction) => {
@@ -597,8 +601,8 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       const item: UserItem = { id: localId(), at: Date.now(), local: true, kind: 'user', text: trimmed, origin: 'owner', pending: true }
       dispatch({ type: 'transcript/append', key, item })
       try {
-        await client.chat(agentId, trimmed, loop)
-        dispatch({ type: 'transcript/update', key, id: item.id, patch: { accepted: true } })
+        const accepted = await client.chat(agentId, trimmed, loop)
+        dispatch({ type: 'transcript/update', key, id: item.id, patch: { accepted: true, ...(accepted?.turnId ? { turnId: accepted.turnId } : {}) } })
         return true
       } catch (err) {
         dispatch({ type: 'transcript/update', key, id: item.id, patch: { pending: false } })
@@ -937,11 +941,32 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
             needsResync = true
             if (info.error) dispatch({ type: 'daemon/reachable', reachable: false })
           }
-          if (info.state === 'open' && (info.resumed || needsResync)) {
+          if (info.state === 'open' && info.resumed) {
+            // Wait for the daemon's verdict (onResume): an exact resume needs no reload.
             needsResync = false
-            toast(info.resumed ? 'Reconnected to daemon — resyncing' : 'Connected to daemon', 'info', 2500)
+            if (resumeFallback) clearTimeout(resumeFallback)
+            resumeFallback = setTimeout(() => {
+              resumeFallback = null
+              toast('Reconnected to daemon — resyncing', 'info', 2500)
+              void resync()
+            }, RESUME_VERDICT_MS)
+          } else if (info.state === 'open' && needsResync) {
+            needsResync = false
+            toast('Connected to daemon', 'info', 2500)
             void resync()
           }
+        },
+        onResume: info => {
+          if (resumeFallback) { clearTimeout(resumeFallback); resumeFallback = null }
+          if (info.exact) {
+            // Every missed event was replayed into the transcripts: refresh the
+            // snapshots that are not evented, skip reloading every transcript.
+            toast('Reconnected to daemon — no events missed', 'info', 2500)
+            void Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
+            return
+          }
+          toast(info.reason === 'epoch_changed' ? 'The daemon restarted — reloading' : 'Events were missed while disconnected — reloading', 'warn', 4000)
+          void resync()
         },
       }).start()
       // Studio or the CLI may start / stop the web server: no event says so.
@@ -968,6 +993,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     stopped = true
     stream?.close()
     stream = null
+    if (resumeFallback) { clearTimeout(resumeFallback); resumeFallback = null }
     if (webTick) { clearInterval(webTick); webTick = null }
     if (trackedTick) { clearInterval(trackedTick); trackedTick = null }
     pendingFrames = []

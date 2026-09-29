@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { UmbilicalEvent } from '../runtime/umbilical-bus'
 
 /**
@@ -15,6 +16,11 @@ export interface DaemonEventEnvelope {
 export type DaemonEventListener = (envelope: DaemonEventEnvelope) => void
 
 export class DaemonEventBus {
+  /**
+   * Identifies this bus instance (one per daemon run). Cursors are only
+   * comparable within an epoch: a new epoch means cursors restarted at 1.
+   */
+  readonly epoch: string = randomUUID()
   private nextCursor = 1
   /** Circular buffer: once full, `head` is the oldest slot and the next to be overwritten. */
   private readonly buffer: DaemonEventEnvelope[] = []
@@ -60,6 +66,17 @@ export class DaemonEventBus {
       }
     }
     return out
+  }
+
+  /** Cursor of the newest published envelope (0 before the first). */
+  get latestCursor(): number {
+    return this.nextCursor - 1
+  }
+
+  /** Cursor of the oldest envelope still buffered; null when the buffer is empty. */
+  get oldestCursor(): number | null {
+    if (this.buffer.length === 0) return null
+    return this.buffer[this.head].cursor // head stays 0 until the buffer wraps
   }
 
   subscribe(listener: DaemonEventListener): () => void {

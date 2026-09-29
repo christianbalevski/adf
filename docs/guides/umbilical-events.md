@@ -23,6 +23,7 @@ interface UmbilicalEvent {
   source: string           // agent:<turn>, lambda:<file>:<fn>, system:<subsystem>
   agent_id?: string | null // owning agent; null for daemon-scope events
   loop?: string            // inner cognition loop that produced it; absent = main / not loop-scoped
+  turn_id?: string         // the turn that produced it; absent outside a turn
   payload: Record<string, unknown>
   sig?: string             // reserved: detached signature over the envelope
 }
@@ -42,9 +43,17 @@ loop's executor state, not the agent's. `timer.fired` and `trigger.fired`
 carry the loop they wake (a timer's `loop`, a trigger target's `loop`), so a
 consumer can file a scheduled wake under the side loop it starts.
 
+`turn_id` names the turn whose work produced the event: the `turnId` that
+`POST /agents/:id/chat` or `/trigger` answered with (kept when an interrupting
+chat is replayed after the turn it cut short), else the runtime's own turn id
+(the one in `source: agent:<id>`). Lambdas and tools a turn runs inherit it.
+A chat the agent picked up inside a running turn is listed on that turn's
+`turn.completed` / `agent.error` payload as `absorbed_turn_ids`.
+
 `GET /events` wraps this envelope in a transport frame carrying a resume
 cursor: `{ cursor, event }`. `cursor` is a per-daemon-process counter used only
-for `?since=` replay; per-agent ordering lives on `event.seq`. See
+for `?since=` / `Last-Event-ID` replay (the stream's `stream.hello` epoch says
+which process); per-agent ordering lives on `event.seq`. See
 [http-api.md](../daemon/http-api.md#get-events).
 
 ## Typed registry

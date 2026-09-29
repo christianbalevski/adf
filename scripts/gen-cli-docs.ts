@@ -117,6 +117,7 @@ const ENV_DOCS: Record<string, { scope: Scope; desc: string }> = {
   ADF_USER_DATA_DIR: { scope: 'daemon', desc: 'Overrides the user data folder that holds the default settings file (shared with ADF Studio)' },
   ADF_DAEMON_PIDFILE: { scope: 'daemon', desc: 'Pid file path (default `<data dir>/adf-daemon.pid`, `adf-daemon-<port>.pid` for other ports)' },
   ADF_DAEMON_ALLOWED_HOSTS: { scope: 'daemon', desc: 'Extra Host names a non-loopback daemon accepts (comma or space separated, `name` or `name:port`): the names remote clients or a proxy use' },
+  ADF_DAEMON_BEHIND_PROXY: { scope: 'daemon', desc: '`1`: a reverse proxy on this host forwards to the daemon. Owner identity secrets and `daemon stop` then also need `<data dir>/daemon-local-proof`, which only `adf` on this host sends: run them on the host against its loopback port' },
   ADF_OWNER_PASSPHRASE: { scope: 'daemon', desc: 'Unlocks a passphrase-file owner identity at daemon start (machines without an OS keychain)' },
   ADF_OWNER_PASSPHRASE_FILE: { scope: 'daemon', desc: 'Same, read from the first line of this file' },
   ADF_SECRET_STORE: { scope: 'daemon', desc: '`file` or `keychain`: where the owner phrase and provider keys are kept (default: the OS keychain when usable, else the passphrase file)' },

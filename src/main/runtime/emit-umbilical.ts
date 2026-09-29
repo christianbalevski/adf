@@ -14,7 +14,7 @@
  */
 
 import type { DaemonEventBus } from '../daemon/event-bus'
-import { currentSourceOrUnknown, currentAgentId, currentLoop } from './execution-context'
+import { currentSourceOrUnknown, currentAgentId, currentLoop, currentTurnId } from './execution-context'
 import { getUmbilicalBus, type UmbilicalEvent } from './umbilical-bus'
 
 let daemonEventBus: DaemonEventBus | null = null
@@ -57,6 +57,9 @@ export function emitUmbilicalEvent(input: EmitUmbilicalInput): void {
   // inner-loop turn) must not carry the sender's loop.
   const loop = input.loop ?? (agentId !== null && agentId === contextAgentId ? currentLoop() : undefined)
   const loopField = loop && loop !== 'main' ? { loop } : {}
+  // Same rule for the turn: only the context agent's own events belong to its turn.
+  const turnId = agentId !== null && agentId === contextAgentId ? currentTurnId() : undefined
+  const turnField = turnId ? { turn_id: turnId } : {}
 
   // Temporary diagnostic — remove after the "nothing fires" issue is understood.
   if (process.env.ADF_UMBILICAL_TRACE === '1') {
@@ -72,6 +75,7 @@ export function emitUmbilicalEvent(input: EmitUmbilicalInput): void {
     source,
     agent_id: agentId,
     ...loopField,
+    ...turnField,
     payload,
   }
 
@@ -84,6 +88,7 @@ export function emitUmbilicalEvent(input: EmitUmbilicalInput): void {
         source,
         agent_id: agentId,
         ...loopField,
+        ...turnField,
         payload,
       })
     } else if (!_missingBusWarned.has(agentId)) {

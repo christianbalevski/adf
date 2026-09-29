@@ -123,7 +123,7 @@ export interface DaemonClientOptions {
   timeoutMs?: number
 }
 
-const { localDaemonToken, resolveDaemonToken, resolveDaemonUrl } = cjs(daemonUrlNs)
+const { localDaemonToken, localProofHeaders, resolveDaemonToken, resolveDaemonUrl } = cjs(daemonUrlNs)
 
 type Query = Record<string, string | number | boolean | undefined | null>
 
@@ -217,7 +217,11 @@ export class DaemonClient {
     try {
       response = await this.fetchImpl(this.url(path, options.query), {
         method,
-        headers: this.headers(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        headers: this.headers({
+          ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          // Proxy-mode daemons (ADF_DAEMON_BEHIND_PROXY) need this machine's proof on local-only routes.
+          ...(this.options.localToken ? localProofHeaders(this.baseUrl, path, this.options.env ?? process.env) : {}),
+        }),
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         signal: controller.signal,
       })

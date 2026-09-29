@@ -22,8 +22,9 @@ the CLI is the same owner, so agents made in either open in both.
   (app): never argv, shell history, logs or the clipboard. Piping it on stdin
   works for automation.
 - Create, restore and unlock only work on the daemon's own machine
-  (loopback). Against a remote daemon, run them there (or over an
-  [SSH tunnel](remote-daemon.md)).
+  (loopback, never through a reverse proxy). Against a remote daemon, run
+  them there (or over an [SSH tunnel](remote-daemon.md)); behind a proxy,
+  on the server against its loopback port.
 
 ```bash
 adf identity            # status
