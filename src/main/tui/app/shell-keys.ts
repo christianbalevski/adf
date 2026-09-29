@@ -1,4 +1,4 @@
-// The shell's own keys, in one place: /help, the palette and docs/daemon/tui.md
+// The shell's own keys, in one place: /help, the palette and docs/cli/reference.md
 // list exactly these. Views add theirs through `keyHints`.
 
 export const SHELL_KEYS: Array<{ keys: string; label: string }> = [

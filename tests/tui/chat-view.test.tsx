@@ -1,5 +1,5 @@
 import React from 'react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../../src/main/tui/app/App'
 import { createTheme } from '../../src/main/tui/app/theme'
 import { DaemonClient } from '../../src/main/tui/api/client'
@@ -30,7 +30,15 @@ let mock: MockDaemon | null = null
 let store: TuiStore | null = null
 let ui: RenderedTui | null = null
 
+// Midday, so "next <time>" never rolls over to the next day ("next Tue 00:10")
+// and pushes the goal off the info line. Only Date is faked; timers stay real.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true })
+  vi.setSystemTime(new Date(2026, 8, 28, 12, 0, 0))
+})
+
 afterEach(async () => {
+  vi.useRealTimers()
   ui?.unmount()
   ui = null
   store?.stop()

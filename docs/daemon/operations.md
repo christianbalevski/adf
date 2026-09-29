@@ -1,75 +1,96 @@
 # Daemon Operations
 
-This guide covers day-to-day operation for the daemon, the headless ADF runtime that serves an API: settings, ports, process supervision, compatibility with Studio, compute, troubleshooting, and known caveats.
+Day-to-day operation of the daemon, the headless ADF runtime that serves an
+API: running and stopping it, where it keeps its data, ports, the access token,
+Studio compatibility, and troubleshooting. Building a client instead? See the
+[API guide](api-guide.md).
 
-## Recommended Operating Model
+## Operating model
 
-For local development:
+- **Personal machine:** install `@agentdocumentformat/cli` and run `adf`. It
+  starts the daemon in the background when needed, and the daemon keeps your
+  agents running after you close the terminal app. Studio and the daemon share
+  settings and owner identity, but should not run at the same time (see
+  [Studio compatibility](#studio-compatibility)).
+- **Server or always-on host:** run `adf daemon` (foreground) under a service
+  manager, with a dedicated settings file (`ADF_DAEMON_SETTINGS`), dedicated
+  tracked folders, and a passphrase-file owner identity unlocked at boot
+  (`ADF_OWNER_PASSPHRASE_FILE`) when the machine has no OS keychain.
 
-1. Use Studio to create and configure agents.
-2. Stop Studio.
-3. Run `npm run daemon`.
-4. Use HTTP clients, scripts, or the bundled CLI against `http://127.0.0.1:7385`.
+## Running and stopping
 
-For long-running daemon work:
+| Task | Command |
+|------|---------|
+| Start in the background | `adf daemon start` (or any `adf` command, which auto-starts a local daemon; `--no-daemon` / `ADF_NO_AUTOSTART=1` disables that) |
+| Run in the foreground | `adf daemon [--port N] [--host H] [--settings FILE]` (from source: `npm run daemon`) |
+| Status | `adf daemon status`: url, running, pid, uptime, version, loaded agents, data dir, log file (exit code 3 when not running) |
+| Logs | `adf daemon logs [-f] [-n N]` (background daemons log to `<data dir>/logs/adf-daemon.log`; foreground daemons to stdout/stderr) |
+| Stop | `adf daemon stop` |
+| Restart | `adf daemon restart` |
 
-1. Use a dedicated settings file with `ADF_DAEMON_SETTINGS`.
-2. Use dedicated tracked directories for daemon-owned agents.
-3. Avoid opening the same `.adf` files in Studio while the daemon owns them.
-4. Use a process supervisor and `ADF_DAEMON_PIDFILE` if you need restart management.
+`adf daemon stop` calls `POST /daemon/shutdown` (loopback only) and waits for
+the process to exit. It is the same bounded shutdown as Ctrl+C or `SIGTERM`:
+token usage is flushed, the HTTP server closes, every agent is unloaded
+immediately (running turns are aborted), compute containers stop, then
+WebSocket connections, the mesh server, sandboxes and child processes. The
+whole shutdown is capped at 20 seconds. On Windows, `adf daemon stop` is the
+only graceful way to stop a detached daemon.
 
-## Settings File
+`adf daemon start` refuses while ADF Studio runs on the same settings (see
+below); `--force` skips that. A daemon that is starting under an existing pid
+file is waited for rather than started twice, and the daemon itself refuses to
+start when its pid file names a live process.
 
-By default, the daemon uses the same settings path as Studio:
+Startup output includes the listen address, settings path, owner identity
+status, token file, envelope key, and the autostart report. Uncaught errors in
+one agent are logged, never fatal: the daemon keeps the rest of the fleet
+running.
 
-```text
-~/Library/Application Support/adf-studio/adf-settings.json
-```
+## Data directory
 
-Override it:
+Everything lives next to the settings file (`ADF_DAEMON_SETTINGS`'s directory,
+else `ADF_USER_DATA_DIR`, else the platform default: `ADF Studio` or
+`adf-studio` under `~/Library/Application Support`, `%APPDATA%`, or
+`$XDG_CONFIG_HOME` / `~/.config`):
 
-```bash
-ADF_DAEMON_SETTINGS=/path/to/adf-daemon/settings.json npm run daemon
-```
+| File | What |
+|------|------|
+| `adf-settings.json` | Settings ([Runtime Settings](runtime-settings.md)) |
+| `daemon-token` | The API access token (0600) |
+| `runtime-enc-key`, `runtime-enc-key.pub` | The daemon's envelope key (lets it unlock agent credentials Studio shared with it) |
+| `owner-secrets.json` | The owner identity, when stored in a passphrase file instead of the OS keychain |
+| `adf-daemon[-<port>].pid` | Pid file of a daemon started by `adf` |
+| `logs/adf-daemon[-<port>].log` | Log of a background daemon |
 
-Common settings keys used by the daemon:
-
-| Key | Purpose |
-|-----|---------|
-| `providers` | Provider configurations used by `provider-factory` |
-| `trackedDirectories` | Directories scanned at startup for autostart agents |
-| `maxDirectoryScanDepth` | Directory scan depth for startup autostart |
-| `reviewedAgents` | Agent IDs accepted by the review gate |
-| `globalSystemPrompt` | Base prompt prepended to agents that include the app base prompt |
-| `toolPrompts` | Conditional tool prompt sections |
-| `compactionPrompt` | Prompt used for loop compaction |
-| `mcpServers` | Global MCP server registrations |
-| `adapters` | Global channel adapter registrations |
-| `compute` | Podman and compute routing settings |
-| `meshEnabled` | Enables mesh behavior unless explicitly `false` |
-| `meshPort` | Mesh server port used by the mesh service |
-| `meshLan` | Studio setting for LAN binding; daemon mesh behavior depends on mesh service support |
-
-The daemon settings store reads JSON and writes JSON. It does not run all Studio settings migrations. If you use an isolated daemon settings file, start from the [runtime settings example](runtime-settings.md) or provide all required keys explicitly.
+`adf daemon status` prints the directory. Agent templates (`templates/`,
+`templates-trash/`) live in the user data directory, which is the same place
+unless `ADF_DAEMON_SETTINGS` points elsewhere.
 
 ## Ports
 
 | Service | Default | Override |
 |---------|---------|----------|
-| Daemon HTTP API | `127.0.0.1:7385` | `ADF_DAEMON_HOST`, `ADF_DAEMON_PORT` |
-| Mesh server | `127.0.0.1:7295` | `MESH_HOST`, `MESH_PORT`, or mesh settings |
+| Daemon HTTP API | `127.0.0.1:7385` | `ADF_DAEMON_HOST`, `ADF_DAEMON_PORT` (`adf daemon --host/--port`) |
+| Mesh server (agent websites, mesh delivery) | `127.0.0.1:7295` | `meshPort` setting, `MESH_HOST`, `MESH_PORT` |
 
-The daemon HTTP API should stay on localhost. Binding another host
-(`ADF_DAEMON_HOST`) requires `ADF_DAEMON_TOKEN`; list the host names clients
-use in `ADF_DAEMON_ALLOWED_HOSTS` (IP literals on the bound port are accepted
-as is). Put TLS in front of it yourself: the daemon speaks plain HTTP.
+Keep the daemon API on localhost. Binding another host requires
+`ADF_DAEMON_TOKEN`, and host names clients use go in `ADF_DAEMON_ALLOWED_HOSTS`
+(IP literals on the bound port are accepted as is). The daemon speaks plain
+HTTP; for remote use prefer an SSH tunnel or a TLS reverse proxy
+([remote access](api-guide.md#remote-access)).
 
-## Access Token
+The mesh server is on by default. It binds once a loaded agent is reachable
+over the mesh, on loopback, and rebinds to all interfaces when an agent with
+`lan` or `public` visibility loads (or when `meshLan` is set). `adf network
+server stop|start` (or `POST /network/server/stop|start`) turns it off or on
+and persists the choice as `meshServerEnabled`. Studio uses the same port:
+running both makes one fail to bind.
+
+## Access token
 
 Every request but `GET /health` needs `Authorization: Bearer <token>`
-([details](http-api.md#authentication-and-cross-site-protection)). On first
-start the daemon writes a random token to `daemon-token` in its settings
-directory (mode 0600, next to `adf-settings.json` and `runtime-enc-key`);
+([details](api-guide.md#base-url-and-authentication)). On first start the
+daemon writes a random token to `daemon-token` in its data directory;
 `ADF_DAEMON_TOKEN` overrides it. Local clients (the `adf` CLI, the terminal
 app, `adf daemon start|stop|status`, auto-start) read the file by themselves,
 so nothing needs configuring on the daemon's machine. The file is replaced
@@ -87,308 +108,184 @@ cross-site` gets `403 cross_origin`, a `Host` outside the allow-list gets
 An older `adf` without token support gets a `401` that says to update it or
 use `adf daemon token`.
 
-Studio and daemon both use the mesh server port by default. Running both at the same time can cause a bind failure or split ownership of agents.
+## Owner identity and credentials
 
-## Process Management
+`adf identity` shows the owner identity: `none`, `locked`, `restore-needed` or
+`ready` (`adf identity new|restore|unlock|lock`; `/identity` in the terminal
+app). These routes answer only on the daemon's machine. With passphrase-file
+storage, unlock after every restart, or set `ADF_OWNER_PASSPHRASE` /
+`ADF_OWNER_PASSPHRASE_FILE` for the daemon.
 
-Start:
+Agent credentials (channel tokens, MCP keys, per-agent provider keys) are
+sealed in each agent's file. The API returns only metadata about them (set,
+sealed, locked, length). Agents loaded while the identity is not ready run
+`degraded` without them and unlock in place once it is (checked again every
+minute). While an agent's credentials are locked, saving one answers `409
+credentials_locked`: unlock and save again, or replace the value (`"replace":
+true`, or Replace in the terminal app). Replacing discards the old sealed value
+unread, stores the new one unsealed until the envelope unlocks (it is then
+sealed automatically), and logs `credential_replaced` to the agent's
+`adf_logs`. Agent code can never do this. See
+[Credentials](api-guide.md#credentials).
 
-```bash
-npm run daemon
-```
-
-Write a pid file:
-
-```bash
-ADF_DAEMON_PIDFILE=/tmp/adf-daemon.pid npm run daemon
-```
-
-The daemon removes the pid file on `SIGINT` and `SIGTERM` shutdown.
-
-On either signal, the host first closes intake, unloads every runtime agent through its assembled handle, stops compute services, and then removes the pid file. Agent unload uses normal asynchronous lifecycle teardown: new dispatches are refused, timer and trigger intake stops, tracked work gets a five-second grace period, and remaining work is aborted. Cleanup continues even when an individual resource reports an error.
-
-The daemon logs to stdout/stderr. Important startup messages include:
-
-- Listening address
-- Settings path
-- Mesh server startup errors
-- Autostart report
-- MCP setup logs
-- Adapter startup logs
-- Compute startup logs
-
-## CLI Operations
-
-Use the bundled CLI for common operational checks:
+## Everyday checks
 
 ```bash
-npm run adf -- agents
-npm run adf -- runtime
-npm run adf -- providers
-npm run adf -- network
-npm run adf -- events
+adf agents                     # loaded agents
+adf runtime                    # daemon diagnostics: providers, auth, MCP, channels, network, compute
+adf runtime agent-1            # one agent: status, channels, MCP, triggers, WebSockets
+adf tasks agent-1              # pending approvals
+adf asks agent-1               # pending questions
+adf events agent-1             # live events
+adf --json runtime             # JSON for scripts
 ```
 
-Use `--json` for scripts:
+`--url` / `ADF_DAEMON_URL` point the CLI at another daemon. The full command
+list is in [ADF CLI](cli.md).
+
+## Stop, interrupt, abort
+
+- `adf stop agent-1` unloads the agent (its file stays): new work is refused,
+  timer and trigger intake stops, in-flight work gets five seconds, then the
+  rest is aborted and the agent's channels, MCP clients, sandbox workers and
+  mesh registration are disposed.
+- `adf interrupt agent-1 [--loop <name>]` ends the running turn; the loop goes
+  `idle` and keeps taking chats, timers and triggers. Use this for a stuck or
+  unwanted turn.
+- `adf abort agent-1 [--loop <name>]` is the hard stop: that loop's executor
+  stays `stopped` until the agent is reloaded.
+
+## Approvals and questions
 
 ```bash
-npm run adf -- --json runtime
+adf tasks agent-1                      # pending approvals
+adf approve agent-1 <taskId>
+adf deny agent-1 <taskId> "use staging"   # the reason reaches the agent as feedback
+adf asks agent-1
+adf answer agent-1 <requestId> "yes, continue"
 ```
 
-Use `ADF_DAEMON_URL` or `--url` when the daemon is not on the default URL:
+Always-approve, approve-all and suspend answers are in the terminal app and
+the API ([HIL](api-guide.md#approvals-questions-and-suspends-hil)).
 
-```bash
-ADF_DAEMON_URL=http://127.0.0.1:7390 npm run adf -- agents
-```
+## Review and autostart
 
-See [ADF CLI](cli.md) for the full command reference.
+At boot, and whenever a folder is tracked, the daemon loads the agents in its
+tracked folders that are marked `autostart` and reviewed on this machine. It
+skips agents that are unreviewed, password-protected, not autostart, or
+already loaded; `adf` shows them in the fleet with what each needs.
 
-## Stop and Abort
-
-`stop` and `unload` release an agent from the daemon runtime:
-
-```bash
-npm run adf -- stop agent-id
-```
-
-This disposes the loaded runtime wiring through the assembled handle, including adapters, MCP clients, sandbox workers, and mesh registration. Teardown is idempotent and asynchronous for the full `daemon` profile.
-
-`abort` immediately cancels the current turn but keeps the agent loaded:
-
-```bash
-npm run adf -- abort agent-id
-```
-
-Use `abort` for stuck or unwanted turns when the agent should remain available.
-
-## Human-In-The-Loop Operations
-
-The daemon exposes pending tool approvals and `ask` requests so headless clients can complete human-in-the-loop workflows.
-
-List tasks and pending approvals:
-
-```bash
-npm run adf -- tasks agent-id
-npm run adf -- task agent-id task-id
-```
-
-Approve or deny a task:
-
-```bash
-npm run adf -- approve agent-id task-id
-npm run adf -- deny agent-id task-id "not allowed"
-```
-
-List and answer pending asks:
-
-```bash
-npm run adf -- asks agent-id
-npm run adf -- answer agent-id request-id "yes, continue"
-```
-
-The HTTP API also exposes `POST /agents/:id/suspend/respond` for pending suspend requests.
+Accept a review in the terminal app, or over HTTP (`GET /agents/review?filePath=`,
+then `POST /agents/review/accept`), then start the agent (`adf start <agent>`)
+or rescan (`POST /agents/autostart`). Agents an agent creates (`sys_create_adf`)
+and agents made with `adf new` are reviewed automatically.
 
 ## Native SQLite ABI
 
-Studio runs under Electron and the daemon runs under Node. Native modules compiled for one runtime may not load in the other.
+Only relevant from a source checkout: Studio runs under Electron and the
+daemon under Node, and `better-sqlite3` must be built for the runtime that
+loads it. `npm run daemon` (and `adf` from source) runs
+`node scripts/rebuild-for-node.mjs` first. If Studio then reports a
+`better-sqlite3` ABI error, rebuild for Electron with `npm run postinstall`
+before starting Studio. The npm package ships prebuilt binaries and is
+unaffected.
 
-`npm run daemon` runs:
+## Compute
 
-```bash
-node scripts/rebuild-for-node.mjs
-```
+The daemon starts the shared compute container (Podman) in the background a
+few seconds after boot; without Podman, MCP servers run on the host. Agents
+with isolated compute get their own container when they load.
 
-before launching the daemon. This fixes the common case where Studio rebuilt `better-sqlite3` for Electron and the daemon later needs it for Node.
-
-If Studio reports a `better-sqlite3` ABI error after daemon work, rebuild the native module for Electron before restarting Studio:
-
-```bash
-npm run postinstall
-```
-
-`npm install` also runs this postinstall step.
-
-## Review and Autostart
-
-Autostart is intentionally conservative. The daemon skips agents that are unreviewed, password protected, not configured for autostart, or already loaded.
-
-Use the review endpoints:
+With `ADF` and `H` set as in the [API guide](api-guide.md#quick-start):
 
 ```bash
-curl "http://127.0.0.1:7385/agents/review?filePath=/path/to/agent.adf"
+curl -s -H "$H" $ADF/compute/status
+curl -s -H "$H" -X POST $ADF/compute/start      # also /compute/stop, /compute/containers
 ```
 
-```bash
-curl -X POST http://127.0.0.1:7385/agents/review/accept \
-  -H 'Content-Type: application/json' \
-  -d '{"filePath":"/path/to/agent.adf"}'
-```
+## Channels and MCP servers
 
-Then either restart the daemon or call:
+- **Channels** (Telegram, email, installed packages) are configured per agent:
+  credentials in the agent (`adapter:<type>:<KEY>`), then the channel attached
+  to the agent. Attaching one starts it immediately. Inbound messages wake the
+  agent through its `on_inbox` trigger. In the terminal app: `/channels`.
+- **MCP servers** are declared per agent (`mcp.servers`); daemon-wide
+  registrations in `mcpServers` and managed packages supply how to run them. A
+  newly attached server connects at the next agent start, or at once with
+  `POST /agents/:id/mcp/servers/:name/restart`. A declared server that is not
+  registered and has no source is skipped, and the agent loads without it. In
+  the terminal app: `/mcp`.
 
-```bash
-curl -X POST http://127.0.0.1:7385/agents/autostart \
-  -H 'Content-Type: application/json' \
-  -d '{"trackedDirs":["/path/to/agents"],"maxDepth":5}'
-```
+## Mesh and agent websites
 
-## Compute Operations
-
-Check compute status:
-
-```bash
-curl http://127.0.0.1:7385/compute/status
-```
-
-Start shared compute:
-
-```bash
-curl -X POST http://127.0.0.1:7385/compute/start
-```
-
-Stop shared compute:
-
-```bash
-curl -X POST http://127.0.0.1:7385/compute/stop
-```
-
-List compute containers:
-
-```bash
-curl http://127.0.0.1:7385/compute/containers
-```
-
-Agents with isolated compute enabled can cause agent-specific containers to start during runtime build. MCP servers may also use shared or isolated containers depending on compute routing.
-
-## Channel Adapter Operations
-
-The daemon can start configured channel adapters for loaded agents. Current built-in adapters are Telegram and email.
-
-Operational checklist:
-
-- Register the adapter in settings under `adapters`.
-- Configure per-agent adapter settings in `config.adapters`.
-- Store required credentials either in global adapter environment settings or per-agent identity storage.
-- Enable `on_inbox` triggers if inbound messages should wake the agent.
-- Confirm daemon logs show the adapter started for the agent.
-
-Inbound messages are persisted to the ADF inbox. The daemon trigger evaluator then wakes the loop when the agent's trigger config matches the inbound event.
-
-## MCP Operations
-
-The daemon connects MCP servers declared by the agent when they are registered in settings or include enough source information to resolve.
-
-Operational checklist:
-
-- Confirm `mcpServers` settings contain the server registration.
-- Confirm the agent config includes the server under `mcp.servers`.
-- Provide required environment variables or identity-backed secrets.
-- Check daemon logs for discovery or skip messages.
-- Inspect agent config after load; discovered MCP tools are added as tool declarations.
-
-If a server is not registered and has no source, the daemon skips it and continues loading the agent.
-
-### Credentials while the envelope is locked
-
-Agent credentials (channel, MCP, provider keys) are sealed in the agent's
-credentials envelope. The HTTP API never returns their values, only metadata
-(set / sealed / locked / length). While the owner identity is not available
-on this daemon, the envelope is locked and a credential write answers `409
-credentials_locked`. Either unlock (`adf identity unlock|restore`, `/identity`
-in the terminal app) and save again, or replace the value (`"replace": true`,
-or Replace in the terminal app): the old sealed value is discarded unread, the
-new one is stored unsealed and sealed automatically once the envelope unlocks
-(the daemon's credential re-check seals it), and an `adf_logs` row
-`credential_replaced` records the override. Agent code can never do this.
-
-## Mesh and Serving Operations
-
-The daemon starts the mesh server on the configured mesh port when at least one loaded agent has reachable mesh visibility. Agent websites use the same serving config described in [HTTP Serving](../guides/serving.md), and mesh behavior is enabled unless `meshEnabled` is explicitly `false`.
-
-Typical URLs:
+Agent websites and mesh delivery are served by the mesh server:
 
 ```text
 http://127.0.0.1:7295/agents/{handle}/
-http://127.0.0.1:7295/agents/{handle}/inbox
 http://127.0.0.1:7295/agents/{handle}/card
 http://127.0.0.1:7295/agents/{handle}/health
 ```
 
-If an agent website does not appear:
+If a website does not appear: the agent is loaded, has a unique handle and a
+reachable visibility, mesh is enabled (`meshEnabled` is not `false`), the mesh
+server is not turned off (`meshServerEnabled`), and nothing else (Studio) holds
+port 7295. `adf network` shows the state.
 
-1. Check that the daemon is running.
-2. Check that mesh is enabled.
-3. Check that the agent is loaded.
-4. Check that the agent has a unique handle.
-5. Check daemon logs for mesh server bind errors.
-6. Confirm Studio is not already using port `7295`.
+## Studio compatibility
 
-## Studio Compatibility
+Studio and the daemon are separate hosts of the same runtime, not a
+replacement for each other. Run one at a time on the same agents:
 
-The daemon is built alongside Studio, not as a replacement.
+- both would open and write the same `.adf` files, start the same channels
+  (the same bot account), and fire the same timers;
+- both want mesh port 7295;
+- from a source checkout, switching rebuilds `better-sqlite3`.
 
-Known compatibility risks:
-
-- Studio and daemon can both open and write the same `.adf` files.
-- Both can try to own the same mesh port.
-- Both can start adapters for the same external account or bot.
-- Both can trigger the same autostart or timer behavior.
-- Switching between them can rebuild native SQLite bindings for different runtimes.
-
-The safest workflow is single-owner operation: either Studio owns an agent file, or the daemon owns it.
+`adf` refuses to auto-start a daemon while Studio runs on the same settings.
+A daemon started by hand (`adf daemon`, `npm run daemon`) is not checked, and
+nothing stops Studio from starting while the daemon runs.
 
 ## Troubleshooting
 
-### `Unable to read ADF boot status`
+**`401 unauthorized`.** The client has no token or the wrong one. Local `adf`
+reads it by itself (update an old `adf`); elsewhere pass `--token` or
+`ADF_DAEMON_TOKEN` (from `adf daemon token`). A token in the environment
+overrides the file on both sides.
 
-Run the daemon through `npm run daemon` so the Node ABI rebuild happens before launch. The autostart report now includes the underlying boot-status error when available.
+**`403 host_not_allowed`.** The `Host` header does not name the daemon: e.g. a
+proxy forwarding its public host name (loopback names are accepted on any
+port, so SSH tunnels are fine). See [remote access](api-guide.md#remote-access).
 
-### Agent skipped as `unreviewed`
+**`403 cross_origin`.** A browser made the request. Browser pages cannot call
+the daemon; use a backend.
 
-Accept review for that `.adf` file, then rerun autostart or restart the daemon.
+**Agent skipped as `unreviewed` / `password_protected`.** Accept its review,
+then start it or rescan. Password-protected agents need a human unlock and are
+never autostarted.
 
-### Agent skipped as `password_protected`
+**Chat accepted but nothing happens.** `202` means queued, not done. Check
+`adf events <agent>` (errors, `hil.requested`), `adf tasks <agent>` and
+`adf asks <agent>` (the turn may be waiting for you), `adf status <agent>`
+(`runtimeState`, `degraded`), `adf runtime <agent>`, and the provider's
+sign-in or key (`adf auth`, `adf providers`).
 
-Password-protected agents need a human unlock path. The daemon currently skips them during autostart.
+**Channel messages are stored but the agent does not answer.** Check the
+agent's `on_inbox` trigger: inbound messages wake it only with an enabled
+agent-scope target.
 
-### `POST /agents/:id/chat` returns accepted but nothing appears
+**MCP tools are missing.** `adf mcp <agent>` shows each server's state and
+error. Check the registration or source, credentials, package install, `uvx`,
+and container routing in the log.
 
-Check:
+**`Unable to read ADF boot status` (source checkout).** Start through
+`npm run daemon` or `adf`, so `better-sqlite3` is rebuilt for Node.
 
-- The agent ID, handle, or name is loaded and resolves to the intended agent.
-- Provider settings are valid.
-- Daemon stderr for provider errors.
-- `npm run adf -- runtime agent-id` for adapters, MCP, triggers, and WebSocket diagnostics.
-- `npm run adf -- tasks agent-id` for pending approvals that may be blocking progress.
-- `npm run adf -- asks agent-id` for pending user questions.
-- `/events?agentId=agent-id` for live state, tool, turn, or error events.
-- `/agents/:id/status` for runtime state.
-- `/agents/:id/loop?limit=20` for recent loop entries.
+## Current caveats
 
-The chat endpoint is asynchronous, so `202 Accepted` means the turn was queued, not that it completed.
-
-### Adapter messages are stored but the agent does not respond
-
-Check the agent's `on_inbox` trigger. Inbound adapter messages wake the loop only when trigger config includes an enabled agent-scope target.
-
-### Mesh website does not load
-
-Check port `7295`, mesh enabled status, agent handle, and daemon logs. Studio running at the same time is the most common conflict.
-
-### MCP tools are missing
-
-Check whether the MCP server is registered in settings. Unregistered servers without source metadata are skipped. Also check environment variables, package installation, `uvx` resolution, and container routing logs.
-
-CLI shortcuts:
-
-```bash
-npm run adf -- mcp
-npm run adf -- mcp agent-id
-```
-
-## Current Caveats
-
-- The `/events` stream uses an in-memory ring buffer, not durable event storage.
-- File-change triggers are incomplete in headless operation.
-- The daemon speaks plain HTTP; a remote bind needs TLS and network controls in front of it.
-- No cross-process lock prevents Studio and daemon from opening the same `.adf`. `adf` does refuse to *auto-start* a daemon while Studio runs on the same settings (Studio process, or a mesh server answering with this install's runtime id), but a daemon started by hand (`adf daemon`, `npm run daemon`) is not checked.
+- `/events` replays from an in-memory buffer of 1000 frames; it is not an
+  event log. Durable history is in each agent's file.
+- File-change triggers are incomplete in headless operation (there is no
+  document editor).
+- The daemon speaks plain HTTP; remote use needs an SSH tunnel or TLS in front.
+- No cross-process lock keeps Studio and a hand-started daemon off the same
+  `.adf` files.

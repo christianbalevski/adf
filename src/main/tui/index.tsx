@@ -59,7 +59,7 @@ own goal, on demand or on a schedule.
 
 Options:
   --url, -u <url>      Daemon URL (default ADF_DAEMON_URL or ${resolveDaemonUrl(undefined, {})})
-  --token <token>      Bearer token (default ADF_DAEMON_TOKEN)
+  --token <token>      Bearer token (default: ADF_DAEMON_TOKEN, else the local daemon's token file)
   --view <id>          Start view: fleet | chat | files | loops | inspect | runtime
   --agent <id|handle>  Preselect an agent
   --loop <name>        Preselect one of its loops (default main)
@@ -133,7 +133,7 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
   if (!io.stdout.isTTY || !io.stdin.isTTY) {
     io.stderr.write(
       'adf: the terminal app needs a terminal (stdin and stdout must be a TTY).\n' +
-      'For scripts and pipes use one-shot commands, e.g. `npm run adf -- agents` or `npm run adf -- --help`.\n',
+      'For scripts and pipes use one-shot commands, e.g. `adf agents` or `adf --help`.\n',
     )
     return 1
   }

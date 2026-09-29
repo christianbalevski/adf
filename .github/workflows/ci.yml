@@ -67,6 +67,25 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # docs/cli/reference.md is generated from the CLI help, the terminal
+      # app's command registry and its key lists. Stale = a command, flag or
+      # key changed without `npm run docs:cli`.
+      - name: CLI reference is up to date
+        run: |
+          npm run docs:cli
+          git diff --exit-code -- docs/cli/reference.md
+
+      # docs/daemon/openapi.json is the daemon API contract: every registered
+      # route documented with its path parameters (coverage test), a valid
+      # spec (Redocly, strict), and the generated reference in sync with it.
+      # Stale = the spec changed without `npm run docs:api`.
+      - name: API contract and reference are up to date
+        run: |
+          npx vitest run tests/openapi-coverage.test.ts
+          npm run docs:api:lint
+          npm run docs:api
+          git diff --exit-code -- docs/daemon/api-reference.md docs/daemon/api-reference.html
+
       - name: Build
         run: npm run build
 

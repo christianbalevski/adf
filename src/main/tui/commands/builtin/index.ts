@@ -159,7 +159,7 @@ const url: SlashCommand = {
       ctx.print(`${target} is not answering: ${err instanceof Error ? err.message : String(err)}`, 'error')
       return
     }
-    ctx.print(`${target} is up, but this build cannot switch daemons live. Restart with: npm run adf -- --url ${target}`, 'warn')
+    ctx.print(`${target} is up, but this build cannot switch daemons live. Restart with: adf --url ${target}`, 'warn')
   },
 }
 

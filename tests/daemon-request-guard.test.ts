@@ -50,7 +50,10 @@ describe('daemon token file', () => {
     const { token } = ensureDaemonToken(dir)
     const env = { ADF_DAEMON_SETTINGS: join(dir, 'adf-settings.json') }
     expect(localDaemonToken('http://127.0.0.1:7385', env)).toBe(token)
-    expect(localDaemonToken('http://localhost:9000', env)).toBe(token)
+    // Another loopback port is presumably a tunnel to a daemon elsewhere: not our token.
+    expect(localDaemonToken('http://localhost:9000', env)).toBeUndefined()
+    expect(localDaemonToken('http://127.0.0.1:7386', env)).toBeUndefined()
+    expect(localDaemonToken('http://127.0.0.1:7386', { ...env, ADF_DAEMON_PORT: '7386' })).toBe(token)
     expect(localDaemonToken('http://[::1]:7385', env)).toBe(token)
     expect(localDaemonToken('http://daemon.example:7385', env)).toBeUndefined()
     expect(localDaemonToken('http://192.168.1.5:7385', env)).toBeUndefined()
@@ -81,8 +84,17 @@ describe('DaemonRequestGuard', () => {
     }
   })
 
-  it('rejects DNS rebinding (foreign Host) and wrong ports', () => {
-    for (const host of ['evil.example:7385', 'localhost.evil.example:7385', 'localhost:7386', '127.0.0.1', '192.168.1.5:7385', undefined]) {
+  it('accepts loopback names on any port (SSH tunnel -L 7386:127.0.0.1:7385)', () => {
+    for (const host of ['127.0.0.1:7386', 'localhost:9000', '[::1]:7390', '127.0.0.1']) {
+      expect(guard.check('GET', '/agents', { host, ...auth })).toBeNull()
+    }
+    // Still token-gated, and a loopback Origin on another port is still another origin.
+    expect(guard.check('GET', '/agents', { host: '127.0.0.1:7386' })?.status).toBe(401)
+    expect(guard.check('POST', '/agents/x/start', { host: '127.0.0.1:7386', origin: 'http://127.0.0.1:7386', ...auth })?.body.code).toBe('cross_origin')
+  })
+
+  it('rejects DNS rebinding (foreign Host) on any port', () => {
+    for (const host of ['evil.example:7385', 'evil.example:7386', 'localhost.evil.example:7385', '127.0.0.2:7385', '192.168.1.5:7385', undefined]) {
       expect(guard.check('GET', '/agents', { host, ...auth })?.body.code).toBe('host_not_allowed')
     }
     // Even /health.
@@ -123,6 +135,7 @@ describe('DaemonRequestGuard', () => {
     expect(lan.check('GET', '/agents', { host: 'proxy.example:8443', ...auth })?.status).toBe(403)
     expect(lan.check('GET', '/agents', { host: '192.168.1.5:8080', ...auth })?.status).toBe(403)
     expect(lan.check('GET', '/agents', { host: 'evil.example:7385', ...auth })?.status).toBe(403)
+    expect(lan.check('GET', '/agents', { host: '127.0.0.1:7386', ...auth })).toBeNull()
     expect(lan.check('POST', '/agents', { host: '192.168.1.5:7385', origin: 'http://192.168.1.9:8080', ...auth })?.status).toBe(403)
   })
 })
@@ -180,6 +193,8 @@ describe('DaemonHost over real HTTP', () => {
     expect(JSON.parse(denied.body).error).toMatch(/adf daemon token/)
     expect((await send('GET', '/agents', { authorization: `Bearer ${TOKEN}` })).status).toBe(200)
     expect((await send('GET', '/openapi.json')).status).toBe(401)
+    // A forwarded port (ssh -L) arrives with its own port in Host.
+    expect((await send('GET', '/agents', { host: `127.0.0.1:${port + 1}`, authorization: `Bearer ${TOKEN}` })).status).toBe(200)
   })
 
   it('a web page cannot drive it: foreign Origin, cross-site metadata and rebinding Host are refused', async () => {

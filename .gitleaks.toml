@@ -9,6 +9,10 @@ description = "Test fixtures use fake keys and tokens"
 paths = ['''^tests/''']
 
 [[allowlists]]
+description = "Build output and installed packages (not committed; bundled third-party code)"
+paths = ['''^dist/''', '''(^|/)node_modules/''', '''^out/''']
+
+[[allowlists]]
 description = "Truncated example DIDs in docs (did:key:z6MkAliceOwner...)"
 regexTarget = "line"
 regexes = ['''did:key:z6Mk[A-Za-z0-9]*\.\.\.''']

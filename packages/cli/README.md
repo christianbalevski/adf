@@ -1,44 +1,67 @@
 # @agentdocumentformat/cli
 
-The ADF CLI: the ADF (Agent Document Format) daemon, command line and terminal app. An ADF agent is a single `.adf` file: config, memory, files and history in one document. This package runs your agents headless from a terminal, with no desktop app. For the desktop app (ADF Studio), see the [releases](https://github.com/christianbalevski/adf/releases).
+The **ADF CLI**: run ADF (Agent Document Format) agents from a terminal, with
+no desktop app. An ADF agent is a single `.adf` file: config, memory, files
+and history in one portable document. For the desktop app, ADF Studio, see
+the [releases](https://github.com/christianbalevski/adf/releases).
+
+- `adf`: the **terminal app**. Your fleet of agents in one screen: chat with
+  any agent or any of its loops, approve tool calls, edit files, schedule
+  inner loops (side loops), watch live events.
+- `adf <command>`: one-shot commands for scripts (`adf help`).
+- `adf daemon`: the background daemon that runs the agents. `adf` starts it
+  for you; it keeps running after you quit.
 
 ## Install
 
-Requires Node.js 22 or newer.
+Requires Node.js 22 or newer. Native modules (SQLite, OS keychain) come
+prebuilt for Windows, macOS (arm64, x64) and Linux (x64, arm64, glibc).
 
 ```bash
 npm i -g @agentdocumentformat/cli
 adf
 ```
 
-Native modules (SQLite, OS keychain) install from prebuilt binaries; no compiler is needed on Windows, macOS (arm64/x64) or Linux (x64/arm64, glibc).
+`EEXIST` on install? Remove the old package first:
+`npm uninstall -g agent-document-format`.
 
-## Use
+Upgrade: `npm i -g @agentdocumentformat/cli@latest`, then
+`adf daemon restart`.
 
-```bash
-adf                   # the terminal app; starts the daemon in the background if needed
-adf agents            # one-shot CLI commands; `adf help` lists them
-adf daemon status     # the background daemon: status | stop | restart | logs -f
-adf daemon            # or run the daemon in the foreground (http://127.0.0.1:7385)
-adf --version
+## Quickstart
+
+In the terminal app (a welcome checklist opens on first run):
+
+```text
+/identity create        # your owner identity: 12 words, the same as in ADF Studio
+/login chatgpt          # or /login grok, or /provider add for an API key
+/new                    # create an agent; its chat opens
+/loop new consolidator  # optional: an inner loop that tidies memory nightly
 ```
 
-The daemon keeps running after you quit the terminal app (`adf daemon stop` stops it gracefully). It is only started automatically for a daemon URL on this machine, never next to a running ADF Studio, and not with `--no-daemon` / `ADF_NO_AUTOSTART=1`. `adf --url http://127.0.0.1:7400` (or `ADF_DAEMON_URL`) targets, and if needed starts, a daemon on another port. Other daemon settings: `ADF_DAEMON_HOST`, `ADF_DAEMON_SETTINGS` (settings JSON path), `ADF_USER_DATA_DIR`, `ADF_DAEMON_TOKEN` (required off loopback).
+Or with one-shot commands:
 
-The daemon shares its settings file with ADF Studio on the same machine by default, so providers and tracked directories you set up in Studio carry over.
+```bash
+adf identity new
+adf auth login chatgpt
+adf new agent-1 --start
+adf chat agent-1 "hello"
+adf events agent-1
+```
 
-## Identity and sign-in
-
-- `adf identity` shows the owner identity status; `adf identity create` / `adf identity restore` sets it up (the seed phrase is typed at a hidden prompt; the same phrase as Studio means the same owner). The phrase is kept in the OS keychain, or a passphrase-protected file where no keychain exists (`adf identity unlock`).
-- `adf providers` lists model providers; `adf auth <provider>` signs in to subscription providers (ChatGPT, Grok) from the terminal.
-- `adf new` creates an agent from a template, sealed with the owner identity.
+Daemon: `adf daemon status | stop | restart | logs -f | token`. Studio and
+the CLI share settings and the owner identity on one machine; `adf` does not
+start a daemon while Studio is running.
 
 ## Docs
 
-- [Daemon getting started](https://github.com/christianbalevski/adf/blob/main/docs/daemon/getting-started.md)
-- [CLI reference](https://github.com/christianbalevski/adf/blob/main/docs/daemon/cli.md)
-- [Terminal app](https://github.com/christianbalevski/adf/blob/main/docs/daemon/tui.md)
-- [HTTP API](https://github.com/christianbalevski/adf/blob/main/docs/daemon/http-api.md)
+- [ADF CLI](https://github.com/christianbalevski/adf/blob/main/docs/cli/index.md)
+- [Getting started](https://github.com/christianbalevski/adf/blob/main/docs/cli/getting-started.md)
+- [Terminal app](https://github.com/christianbalevski/adf/blob/main/docs/cli/terminal-app.md)
+- [Reference](https://github.com/christianbalevski/adf/blob/main/docs/cli/reference.md): every command, flag, slash command and key
+- [Remote daemon](https://github.com/christianbalevski/adf/blob/main/docs/cli/remote-daemon.md)
+- [Troubleshooting](https://github.com/christianbalevski/adf/blob/main/docs/cli/troubleshooting.md)
+- [Daemon HTTP API](https://github.com/christianbalevski/adf/blob/main/docs/daemon/http-api.md)
 
 ## License
 

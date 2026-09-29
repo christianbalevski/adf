@@ -237,7 +237,7 @@ export function FleetSidebar({ width, height, focused }: SidebarProps) {
         </Text>
       ) : null}
       {rows.length === 0 ? (
-        <Text color={theme.color.muted} wrap="wrap">{filtering ? `No agent or loop matches "${view.filter}".` : offline ? 'Daemon offline. Start it with npm run daemon (Fleet view, 1, has details).' : 'No agents yet. On the Fleet view: n new agent, o load an .adf (or /new, /load).'}</Text>
+        <Text color={theme.color.muted} wrap="wrap">{filtering ? `No agent or loop matches "${view.filter}".` : offline ? 'Daemon offline. Start it with adf daemon start (Fleet view, 1, has details).' : 'No agents yet. On the Fleet view: n new agent, o load an .adf (or /new, /load).'}</Text>
       ) : windowRows.map((row, i) => {
         const selected = offsetRef.current + i === cursorIndex
         switch (row.kind) {

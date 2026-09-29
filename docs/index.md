@@ -21,13 +21,15 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 ### Daemon
 
 - [Daemon Overview](daemon/index.md) — What the daemon is, what works today, and current caveats
-- [Daemon Getting Started](daemon/getting-started.md) — Run the daemon, load agents, chat, inspect loop state, and autostart
-- [Daemon HTTP API](daemon/http-api.md) — Endpoint reference for headless clients
-- [ADF CLI](daemon/cli.md) — Command-line client for agent control, resources, diagnostics, events, and chat
-- [Terminal app](daemon/tui.md) — `adf` with no command: your fleet, each agent's loops (chat sessions), approvals, files and live events
-- [Daemon Runtime Settings](daemon/runtime-settings.md) — Direct JSON settings, example schema, and settings API usage
-- [Daemon Runtime Architecture](daemon/runtime-architecture.md) — RuntimeService, AgentRuntimeBuilder, triggers, MCP, adapters, compute, and mesh
-- [Daemon Operations](daemon/operations.md) — Settings, ports, process management, compatibility, and troubleshooting
+- [Daemon Getting Started](daemon/getting-started.md) — Install `adf`, set up your owner identity, create or load agents, chat, and the same over HTTP
+- [Daemon API Guide](daemon/api-guide.md) — Building on the HTTP API: authentication and remote access, agents and loops, chat and events, approvals, identity, credentials, channels, MCP, providers, errors
+- [Daemon API Reference](daemon/api-reference.md) — Every endpoint, generated from [`openapi.json`](daemon/openapi.json)
+- [Daemon HTTP API Overview](daemon/http-api.md) — The API at a glance, by area
+- [ADF CLI](cli/index.md) — Command-line client for agent control, resources, diagnostics, events, and chat
+- [Terminal app](cli/terminal-app.md) — `adf` with no command: your fleet, each agent's loops (chat sessions), approvals, files and live events
+- [Daemon Runtime Settings](daemon/runtime-settings.md) — The settings file, providers, MCP, channels, compute, mesh, and the settings API
+- [Daemon Runtime Architecture](daemon/runtime-architecture.md) — RuntimeService, AgentRuntimeBuilder, the request guard, triggers, MCP, channels, compute, and mesh
+- [Daemon Operations](daemon/operations.md) — Running and stopping the daemon, data directory, ports, access token, compatibility, and troubleshooting
 - [Headless Performance Harness](daemon/performance-harness.md) — Benchmark headless runtime behavior with mock providers
 
 ### Studio Getting Started

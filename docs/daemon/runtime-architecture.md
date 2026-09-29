@@ -12,24 +12,31 @@ This is the same canonical assembler used by Studio and lightweight headless cal
 
 ## Process Startup
 
-`npm run daemon` runs:
+The daemon is `adf daemon` (npm package `@agentdocumentformat/cli`; `adf` and
+`adf daemon start` launch it detached in the background), or `npm run daemon`
+from a source checkout:
 
 ```bash
 node scripts/rebuild-for-node.mjs && tsx src/main/daemon/index.ts
 ```
 
-The rebuild step matters because Studio runs under Electron while the daemon runs under Node. Native modules such as `better-sqlite3` must match the current runtime ABI.
+The rebuild step matters in a checkout because Studio runs under Electron while the daemon runs under Node. Native modules such as `better-sqlite3` must match the current runtime ABI. The npm package ships prebuilt Node binaries.
 
-Startup flow:
+Startup flow (`src/main/daemon/index.ts`; the module boots on import):
 
-1. Read daemon host, port, pid file, and settings path from environment variables.
-2. Load settings with `FileSettingsStore`.
-3. Create shared runtime services: code sandbox, Podman compute, mesh manager, WebSocket manager, mesh server, MCP resolvers, and adapter resolvers.
-4. Create `AgentRuntimeBuilder`, which will select the `daemon` profile when it builds an agent.
-5. Create `RuntimeService`, the daemon host for assembled handles.
-6. Create and start `DaemonHost`, which exposes the HTTP API.
-7. Start the mesh server.
-8. Scan `trackedDirectories` and autostart eligible agents.
+1. Install signal and fatal-error handlers (errors are logged, never fatal; signals run a bounded shutdown).
+2. Read host, port, pid file and settings path from the environment (`adf daemon --host/--port/--settings` set them).
+3. Load settings with `FileSettingsStore` and create the `DaemonEventBus` (1000-frame replay buffer).
+4. Load or mint the daemon's envelope key (`runtime-enc-key`) and the API access token (`daemon-token`, unless `ADF_DAEMON_TOKEN` is set). Failing to write the token is fatal.
+5. Open the owner identity (`DaemonIdentity`: OS keychain, or the passphrase file unlocked from `ADF_OWNER_PASSPHRASE[_FILE]`) and wire the provider-key vault and workspace identity hooks.
+6. Create shared runtime services: code sandbox, Podman compute, mesh manager (enabled unless `meshEnabled` is `false`), WebSocket manager, mesh server, MCP and adapter package resolvers.
+7. Create `AgentRuntimeBuilder` (selects the `daemon` profile when it builds an agent), `RuntimeService`, `DaemonAgentFactory` and `DaemonHost`.
+8. `DaemonHost.start()` writes the pid file, binds the HTTP API (refusing a non-loopback host without `ADF_DAEMON_TOKEN`), and emits `daemon.started`.
+9. In the background: install the sandbox standard library, start the shared compute container after five seconds, and start the mesh server once a reachable agent registers (unless `meshServerEnabled` is `false`).
+10. Autostart eligible agents from `trackedDirectories`, emit `daemon.autostart.report`, then sweep stale WAL sidecars.
+
+While any loaded agent is `degraded` on locked credentials, the daemon re-checks
+once a minute, and immediately whenever the owner identity becomes ready.
 
 ## RuntimeService
 
@@ -40,16 +47,18 @@ Current responsibilities:
 - `loadAgent(filePath)` opens an `.adf`, resolves the provider, obtains an assembled `daemon` handle from the builder, attaches the daemon host, and registers it.
 - `unloadAgent(agentId)` detaches the host, awaits `disposeAsync()`, and removes file indexes.
 - `createAgent(...)` is the compatibility fallback for tests and harnesses. It delegates to the same `headlessLive` assembler as direct lightweight construction; it is not another lifecycle profile or recipe.
-- `startAgent(agentId)` invokes the assembled handle's once-only startup dispatch when `start_in_state` is `active`.
+- `startAgent(agentId)` invokes the assembled handle's once-only startup dispatch when `start_in_state` is `active`; `startOrLoadAgent(identifier)` first loads an unloaded agent found by id, handle or name in the tracked directories (or by `.adf` path).
 - `stopAgent(agentId)` unloads the agent through canonical asynchronous teardown.
-- `abortAgent(agentId)` aborts the current executor turn without unloading the agent.
-- `sendChat(agentId, text)` creates a chat dispatch object and submits it through the assembled handle.
+- `interruptAgent(agentId, loop?)` ends one loop's running turn and leaves it `idle`; `abortAgent(agentId, loop?)` hard-aborts it (the executor stays stopped).
+- `sendChat(agentId, text, loop?)` creates a chat dispatch object (source `user`, the owner's voice) and submits it through the assembled handle, to `main` or an inner loop.
 - `trigger(agentId, dispatch)` submits an `AdfEventDispatch` or `AdfBatchDispatch` through the same boundary.
 - `autostartFromDirectories(...)` scans tracked directories for `.adf` files and starts eligible agents.
-- `getAgent`, `listAgents`, `getAgentStatus`, and `getAgentLoop` expose runtime state to HTTP clients.
-- Read-only resource methods expose config, files, inbox, outbox, timers, identity metadata, and logs.
-- Task and human-in-the-loop methods expose task listing, task resolution, pending asks, ask responses, and suspend responses.
-- Diagnostics methods expose adapters, MCP, triggers, and WebSocket runtime state.
+- `getAgent`, `listAgents`, `getAgentStatus`, `getAgentLoop` and `getAgentChat` expose runtime state to HTTP clients.
+- Loop methods list, create, patch and delete inner loops through the agent's loop pool (the `loop_manage` path), and compact one loop on demand.
+- Resource methods read and write config, files, inbox, outbox, timers, meta, logs and tables.
+- Credential methods write identity values (refusing with `credentials_locked` while the envelope is locked, unless `replace`) and return metadata only; `refreshAgentCredentials` unlocks degraded agents in place.
+- Task and human-in-the-loop methods expose tasks, resolve, always-approve and approve-all, pending asks and answers, and suspend responses, across `main` and running inner loops.
+- Diagnostics methods expose adapters, MCP, triggers, WebSocket state, tools and context breakdowns.
 - `getReviewInfo` and `acceptReview` implement the review/trust gate.
 
 Runtime events:
@@ -89,7 +98,18 @@ GET /events?agentId=agent-id
 GET /events?since=42
 ```
 
-[docs/guides/umbilical-events.md](../guides/umbilical-events.md) is the canonical catalog of published event types and payload shapes. The buffer supports short replay windows for clients that reconnect with a `since` cursor. Durable history still lives in the `.adf` file and is exposed through APIs such as `/agents/:id/loop`.
+[docs/guides/umbilical-events.md](../guides/umbilical-events.md) is the canonical catalog of published event types and payload shapes. The buffer holds the last 1000 frames of all agents, for clients that reconnect with a `since` cursor; see [the event stream](api-guide.md#the-event-stream) for resume, dedupe and gap handling. Durable history still lives in the `.adf` file and is exposed through APIs such as `/agents/:id/chat` and `/agents/:id/loop`.
+
+## HTTP Host and Request Guard
+
+`DaemonHost` owns the Fastify server built by `createDaemonHttpApi`
+(`src/main/daemon/http-api.ts`, plus `identity-routes.ts`, `template-routes.ts`,
+`provider-routes.ts` and `context-routes.ts`). Every request passes
+`DaemonRequestGuard` (`request-guard.ts`) first: the `Host` allow-list, the
+`Origin` / `Sec-Fetch-Site` browser check, then the bearer token
+(`daemon-token.ts`) on everything but `GET /health`. Identity routes that move
+secrets and `POST /daemon/shutdown` additionally require a loopback peer. See
+[Base URL and authentication](api-guide.md#base-url-and-authentication).
 
 ## Review Gate
 
@@ -100,7 +120,7 @@ Autostart checks:
 - The file can be scanned for boot status.
 - `autostart` is enabled.
 - The file is not password protected.
-- The agent ID is present in the `reviewedAgents` settings array.
+- The agent has been reviewed on this machine (recorded in the `reviewedAgents` setting).
 
 Direct `/agents/load` calls bypass review by default because they are explicit local operator actions. Clients can set `requireReview: true` to enforce the same gate.
 
@@ -169,7 +189,7 @@ This wakes the agent loop when the agent has an enabled `on_inbox` trigger with 
 
 Daemon agents use the full asynchronous lifecycle: `created`, `starting`, `running`, `stopping`, `stopped`, and `disposed`. Lifecycle calls are idempotent and concurrent callers share the active promise. Full profiles expose `disposeAsync()` rather than synchronous `dispose()` because MCP, adapters, compute, stream bindings, and mesh/WebSocket resources may require asynchronous cleanup.
 
-Normal stop disables timer and trigger intake, waits for tracked dispatches, and aborts at `DEFAULT_STOP_GRACE_MS` (`5_000`) if work remains. Owner-off and emergency modes abort immediately. Cleanup runs in reverse startup order and continues after individual failures. `DaemonHost` applies this teardown to every loaded agent on `SIGINT` and `SIGTERM` before stopping compute and removing its pid file.
+Normal stop (`POST /agents/:id/stop`) disables timer and trigger intake, waits for tracked dispatches, and aborts at `DEFAULT_STOP_GRACE_MS` (`5_000`) if work remains. Owner-off and emergency modes abort immediately. Cleanup runs in reverse startup order and continues after individual failures. Daemon shutdown (`SIGINT`, `SIGTERM`, `adf daemon stop` / `POST /daemon/shutdown`) flushes token usage, closes the HTTP server, unloads every agent in immediate mode under a per-agent deadline, stops compute, runs the remaining shutdown hooks (WebSockets, mesh, sandboxes, child processes, WAL sweep), and removes its pid file, all within a 20-second budget.
 
 See [Lifecycle Assembly Contract](lifecycle-assembly.md) for the shared contract and profile matrix.
 
