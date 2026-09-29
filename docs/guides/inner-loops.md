@@ -1,6 +1,6 @@
 ---
 type: guide
-description: Inner loops — multiple named cognition streams inside one agent, sharing its body while each runs its own goal, tool subset, and pacing
+description: Inner loops (side loops) — up to 16 named loops inside one agent, each with its own transcript, goal, tool subset and pacing
 see_also:
   - triggers.md — event targets can name a loop (target.loop)
   - timers.md — timers can wake a specific loop
@@ -10,17 +10,17 @@ see_also:
 
 # Inner Loops
 
-An ADF agent is one mind — and a mind is not a single-threaded process. An **inner loop** is one of several named cognition streams that together make up that one mind. Every agent has a `main` loop — the stream that faces the outside world (inbox, messaging, channels, your principal) — and can also run zero or more **inner loops**: interior processes of the same mind. Loops make a mind more expressive; they do not make it more than one.
+Every agent has a `main` loop, which handles the outside world: inbox, messaging, channels and its owner. An agent can also run up to 16 **inner loops** (side loops): named loops, each with its own transcript and goal, inside the same agent.
 
-All loops share the **same** `.adf` file: one identity, one set of credentials, one memory, one filesystem. What each loop has of its own is a conversation stream, a system prompt (a short standing preamble plus its `goal`), a subset of the agent's tools, an optional model override, an optional compaction threshold, and its own pacing. Loops run concurrently. Loops do **not** nest.
+All loops live in the same file and share everything in [spec §1.3](../../ADF_SPEC_v0.2.md#13-one-file-one-agent) except their transcript, goal, tool subset, model and pacing. The system prompt of an inner loop is a short standing preamble plus its `goal`; the model and compaction threshold are optional overrides. Loops run concurrently. Loops do not nest.
 
-> A loop is a facet of one agent, not a second agent. If a piece of work needs its own DID, its own `.adf` file, or its own mesh presence, that is a separate agent (a mount), not an inner loop.
+> An inner loop has no DID, `.adf` file or mesh presence of its own. Work that needs any of those belongs in a separate agent.
 
-## Main vs. inner: the shared body, the attenuated facet
+## Main and inner loops
 
 The governing rule is: **a loop inherits the whole agent and overrides a small delta.** An inner loop gets no identity, credentials, or config of its own, and it cannot alter the agent's. It shares main's `.adf` body, memory tables, and files. What it overrides is small: its instructions (its `goal`), its tool set (a minimal allow-list), optionally its model, optionally its compaction point, and which events wake it.
 
-`main` is special: it always exists, is never deletable, and is the fallback target for anything not addressed to a specific loop. An inner loop knows it is an interior process — its standing preamble tells it which loop it is, that it shares the agent's body, that `main` owns the outside world, how to reach the rest of itself, and when to stop.
+`main` is special: it always exists, is never deletable, and is the fallback target for anything not addressed to a specific loop. The standing preamble of an inner loop tells the model which loop it is, that it shares the agent's body, that `main` owns the outside world, how to reach the rest of itself, and when to stop.
 
 ## When to reach for an inner loop
 
@@ -72,7 +72,7 @@ An agent may declare up to **16** inner loops (`MAX_SIDE_LOOPS`) — a structura
 
 **The default-on exception.** `loop_compact` and `loop_clear` are the two tools a loop gets *without* naming them in its allow-list — every loop has them unless the host explicitly turned them off. The exception exists because history destruction is owner intent, not loop taste. In practice both ship **disabled** on the agent (`DEFAULT_TOOLS`), so no loop has them until you enable them on the agent itself; a host `restricted` flag on either also keeps them off every loop, since a loop has no channel to ask a human. Everything else is explicit — nothing else reaches a loop that its own allow-list did not name.
 
-`loop_send` and `loop_list` are ordinary config-declared tools: they ship enabled and visible, you can turn them off in the Tools panel like any other, and the runtime registers them into `main` **whenever their declaration is enabled** — exactly like every other capability tool. There is no loop-count gate. A loop-less agent's model *does* see them, and they answer sensibly: `loop_list` returns just `main`, and `loop_send` errors on any target it names (there is nowhere to send). To be granted to a *specific* loop, a tool must appear in that loop's own allow-list. A new loop created with no explicit tool list is seeded with `loop_send + loop_list` (`DEFAULT_NEW_LOOP_TOOLS`) so it can talk back to main; pass an explicit `[]` for a mute loop that only thinks.
+`loop_send` and `loop_list` are ordinary config-declared tools: they ship enabled and visible, you can turn them off in the Tools panel like any other, and the runtime registers them into `main` **whenever their declaration is enabled** — exactly like every other capability tool. There is no loop-count gate. A loop-less agent's model *does* see them, and they answer sensibly: `loop_list` returns just `main`, and `loop_send` errors on any target it names (there is nowhere to send). To be granted to a *specific* loop, a tool must appear in that loop's own allow-list. A new loop created with no explicit tool list is seeded with `loop_send`, `loop_list` and `sys_set_state` (`DEFAULT_NEW_LOOP_TOOLS`) so it can talk back to main and end its own turn; pass an explicit `[]` for a mute loop that only thinks.
 
 Because `loop_manage` is also on by default, **every** agent's system prompt now carries a short *Inner Loops* section — the roster if it has loops, or an invitation describing what loops are for if it does not. Turning `loop_manage` off on a loop-less agent removes that section entirely, leaving the prompt exactly as it was before loops existed.
 
@@ -98,14 +98,14 @@ A `LoopConfig` has these fields:
 - **`autostart`** *(optional, default `false` in the file; `loop_manage create` and the Studio Loops card default it to `true`)* — the loop-level counterpart of the agent's `autostart`. An autostart loop runs a first turn on its goal without waiting to be addressed: `main` sends it a kickoff message with `wake: true` at create time and again every time the agent starts (only when the agent starts active — a hibernating agent keeps its loops quiet). The kickoff is an ordinary stream row, audited like any other interior message. Ignored while `enabled: false`. Without it, a loop only runs when a trigger, timer, or `loop_send` targets it.
 - **`autonomous`** *(optional, default `false`)* — the loop-level counterpart of the agent's `autonomous`, and **not inherited** from it. An autonomous loop keeps turning after a text-only response until it calls `sys_set_state` (or the narration breaker forces it idle after four tool-less replies). Grant `sys_set_state` alongside it; the default new-loop seed includes it.
 - **`tools`** — an **absolute allow-list** of tool names, intersected with the agent's own enabled tools at derive time (up to 64 names). `loop_send`/`loop_list` are granted only if named here; the sole implicit grants are the default-on pair `loop_compact`/`loop_clear` described above, which every loop gets unless the host disabled or restricted them. Naming a tool the agent has merely disabled is not an error: the loop carries the name ungranted and picks it up automatically if the tool is later enabled. Naming an unknown tool, or one never grantable to a loop, fails.
-- **`model`** *(optional)* — a model override for this loop only. The **provider must be the same as the agent's** (a loop shares your credentials, so it can change which model it thinks with, not which vendor). A cross-provider override is rejected. Overrides also require code execution (`sys_code`/`sys_lambda`) to be enabled on the agent; without it the override is ignored and the loop runs on the agent model.
+- **`model`** *(optional)* — a model override for this loop only. It may name any configured provider; the loop is built with that provider's own credentials. An override whose provider cannot be built fails the loop start rather than falling back to the agent's provider. Overrides also require code execution (`sys_code`/`sys_lambda`) to be enabled on the agent; without it the override is ignored and the loop runs on the agent model.
 - **`compact_threshold`** *(optional)* — the token count at which this loop auto-compacts its own history. Absent = inherit the agent's threshold. Worth setting mainly alongside a model override, whose context window may differ from the agent model's.
 
 ## Pacing: how a loop wakes
 
 An inner loop has no membrane of its own — it is woken by a timer, a trigger, or a `loop_send` from another loop. Both **timers** and **triggers** can name a specific loop with a `loop` field on the target; an absent `loop` means `main`, which keeps every pre-loops config routing exactly as it was.
 
-**The loop stamp is agent-scope only.** Naming a loop only means something for the part of a timer or trigger that wakes a *cognition stream* — that is, `agent` scope. A `system`-scope timer or target runs its lambda through the single agent-wide system handler, under `main`'s authority, and wakes no stream at all, so it carries **no loop stamp**; a system-scope trigger target that names an inner loop has that name stripped. A timer with `scope: ["system", "agent"]` keeps its loop for the agent half. This is enforced once at the workspace chokepoint (`addTimer`), so it holds for every caller — Studio, `sys_set_timer`, or any other path — and Studio simply hides the Loop selector when you pick system scope. Inner loops cannot create system-lambda timers or `locked` timers at all; they ask `main` with `loop_send`.
+**The loop stamp is agent-scope only.** Naming a loop only means something for the part of a timer or trigger that wakes a loop, that is, `agent` scope. A `system`-scope timer or target runs its lambda through the single agent-wide system handler, under `main`'s authority, and wakes no stream at all, so it carries **no loop stamp**; a system-scope trigger target that names an inner loop has that name stripped. A timer with `scope: ["system", "agent"]` keeps its loop for the agent half. This is enforced once at the workspace chokepoint (`addTimer`), so it holds for every caller — Studio, `sys_set_timer`, or any other path — and Studio simply hides the Loop selector when you pick system scope. Inner loops cannot create system-lambda timers or `locked` timers at all; they ask `main` with `loop_send`.
 
 For example, an `on_timer` trigger whose target sets `loop: "gardener"` wakes the `gardener` loop every interval, where it runs its consolidation work and reports back to main with `loop_send`. This `on_timer(...) → target.loop → loop wakes → does its work → loop_send to main` pattern is the canonical background-loop shape.
 

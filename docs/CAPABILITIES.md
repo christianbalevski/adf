@@ -1,8 +1,8 @@
 # What ADF Studio Can Do
 
-ADF, the Agent Document Format, packages an AI agent as a single portable file. Everything the agent is and knows lives inside one `.adf` file: its instructions, memory, conversation history, files, timers, keys, and message history. Each file pairs one agent with one primary document. ADF Studio is the desktop app that runs those files: it hosts the agents, gives you a place to talk to them, and lets you watch and steer a whole fleet at once.
+ADF, the Agent Document Format, stores an AI agent in one file. An `.adf` file is one localized agent: its identity, state and behaviour in a single SQLite file ([what's inside](../ADF_SPEC_v0.2.md#13-one-file-one-agent)). ADF Studio is the desktop app that runs those files: it hosts the agents, shows their conversations, and shows the whole fleet on one map.
 
-This page is a catalogue of capabilities. **Part 1** covers what an agent can do and what you can do with it, in plain terms. **Part 2** goes under the hood for people building on top of ADF, operating it headless, or auditing how it stays safe. Both parts are worth skimming regardless of your background; the split is about depth, not audience.
+Part 1 lists what an agent can do and what you can do with it. Part 2 describes the mechanisms, for people building on ADF, running it headless, or auditing it.
 
 Items marked *(planned)* are designed but not shipped yet.
 
@@ -12,14 +12,14 @@ Items marked *(planned)* are designed but not shipped yet.
 
 ## Your agent is a file
 
-- **One file, one agent** — the `.adf` file holds instructions, memory, history, files, timers, tasks, logs, and identity. *Why it matters:* copy the file and you have copied the agent; no database, no cloud account, no export step.
+- **One file, one agent** — the `.adf` file holds the whole agent ([contents](../ADF_SPEC_v0.2.md#13-one-file-one-agent)). Copying the file copies the agent; there is no separate database, cloud account or export step.
 - **Move it anywhere** — an agent runs the same from a laptop, a server, or a shared drive. Open it in Studio or the headless daemon and it picks up where it left off.
 - **Clone it** — duplicate an agent, choosing which parts to carry over (history, files, local tables). The clone gets its own fresh identity.
 - **Template it** — save an agent as a template and stamp out new ones from it. Templates can lock fields so every child keeps the rules you set.
-- **Password-protect it** — hand a file to someone with a password; opening it re-keys the file to their own identity so it unlocks silently from then on. *Why it matters:* the recipient never needs your keys, and you can hand the same file to someone else. The password keeps working until you explicitly change or remove it.
+- **Password-protect it** — hand a file to someone with a password; opening it re-keys the file to their own identity so it unlocks silently from then on. The recipient never needs your keys, and you can hand the same file to someone else. The password keeps working until you explicitly change or remove it.
 - **Nothing hidden from you** — every prompt, instruction injection, and summary the model sees is stored in the file where you can read it. Secrets never enter the model's context.
-- **Built-in structured storage** — an agent can create its own tables and vector indexes inside the file for anything it needs to track. *Why it matters:* the agent keeps a real database, not just notes in a document.
-- **Real files inside** — the agent has a private filesystem for documents, scripts, images, and imports. Files can be marked read-only or undeletable so the agent cannot break its own foundations.
+- **Built-in structured storage** — an agent can create its own tables and vector indexes inside the file for anything it needs to track, queried with SQL.
+- **Files inside** — the agent has a private filesystem for documents, scripts, images, and imports. Files can be marked read-only or undeletable; `README.md`, `mind.md` and `soul.md` are undeletable.
 
 ## Talking to your agent
 
@@ -40,18 +40,18 @@ Items marked *(planned)* are designed but not shipped yet.
 ## Agents that run on their own
 
 - **Six states** — active, idle, hibernating, suspended, error, off. Each responds differently to events, so you can dial an agent from "always on" to "only wakes for a scheduled check-in".
-- **Interactive or autonomous** — interactive agents finish when they reply to you; autonomous agents keep working until they decide to stop. *Why it matters:* the same file can be a chat assistant or a background worker.
+- **Interactive or autonomous** — interactive agents finish when they reply to you; autonomous agents keep turning until they call `sys_set_state`. The same file can run as a chat assistant or a background worker.
 - **Timers** — one-off, delayed, repeating, or cron schedules. Missed timers fire once on restart instead of flooding.
 - **Triggers** — wake the agent when a message arrives, a file changes, a timer fires, a task completes, a log line matches, or at startup.
 - **Autostart** — agents you flag boot with the app; the daemon does the same on a server.
-- **Turn limits and suspension** — cap how many consecutive turns an agent can take before it pauses and asks you to continue. *Why it matters:* a runaway loop costs a bounded amount and then stops.
+- **Turn limits and suspension** — cap how many consecutive turns an agent can take before it pauses and asks you to continue, which bounds the cost of a runaway loop.
 - **Narration circuit breaker** — an autonomous agent that keeps talking without doing anything is put to idle automatically.
 - **Crash recovery** — if the app died mid-turn, the agent is told exactly how long it was gone and what it was doing when it stopped.
 - **Emergency stop** — one action halts every agent.
 
 ## Work that happens without waking the model
 
-This is the part that makes ADF agents cheap to keep running. An agent can write small scripts (lambdas) that the runtime executes on its behalf, in a sandbox, with no model call. *Why it matters:* the expensive, slow part (the LLM) only runs when judgment is needed; everything routine runs for free.
+An agent can write small scripts (lambdas) that the runtime executes in a sandbox with no model call. Routine work then uses no model tokens, and a model turn runs only when a lambda or event starts one.
 
 - **Lambdas on triggers** — "when a file matching `reports/*.csv` changes, run this function." The function can parse the file, update a table, send a message, or decide the model does need to look.
 - **Lambdas on timers** — every five minutes, poll an API, compare to last time, and only wake the model if something changed.
@@ -67,7 +67,7 @@ This is the part that makes ADF agents cheap to keep running. An agent can write
 
 ## Memory and context
 
-- **A wiki, not a scratchpad** — the agent keeps an index page of always-loaded facts plus one page per topic, loaded on demand, with an append-only change log. *Why it matters:* memory stays small, organized, and citable instead of growing into an unreadable dump.
+- **Indexed memory pages** — the agent keeps an index page (`mind.md`) of always-loaded facts plus one page per topic, loaded on demand, with an append-only change log (`mind/log.md`).
 - **Citations back to ground truth** — memory pages cite the exact conversation entries or files they came from, and those citations stay valid forever.
 - **Automatic compaction** — when the conversation gets long, the agent writes durable learnings to memory, then the history is summarized by a dedicated model call. The full original is archived, not lost.
 - **Manual compaction with steering** — tell the agent what to preserve when it compacts.
@@ -82,7 +82,7 @@ This is the part that makes ADF agents cheap to keep running. An agent can write
 - **Read, write, list, delete files** — in its own filesystem, with atomic multi-edit writes and binary support.
 - **Query and update its database** — SQL against its own tables, including vector similarity search.
 - **Fetch the web** — HTTP requests with guardrails that stop it reaching into your local network unless you allow it.
-- **A real shell** — `cat`, `grep`, `sed`, `jq`, `sqlite3`, `curl`, `crontab`, pipes, scripts, and more, operating on the agent's own files. *Why it matters:* one familiar surface instead of dozens of separate tools.
+- **A shell** — `cat`, `grep`, `sed`, `jq`, `sqlite3`, `curl`, `crontab`, pipes, scripts, and more, operating on the agent's own files through one tool.
 - **Run code** — JavaScript or TypeScript in a sandbox with persistent state between calls; no network, no access to keys.
 - **Install packages** — pure-JS and WebAssembly npm packages, per agent, with size limits.
 - **Spreadsheets, PDFs, Word, ZIP, images, YAML, dates** — bundled libraries for the common document jobs, available without installing anything.
@@ -94,7 +94,7 @@ This is the part that makes ADF agents cheap to keep running. An agent can write
 
 ## Extending with MCP servers and skills
 
-- **MCP servers** — connect any Model Context Protocol server (local process or remote URL) and its tools appear to the agent. *Why it matters:* the growing MCP ecosystem is available without ADF-specific integration work.
+- **MCP servers** — connect any Model Context Protocol server (local process or remote URL) and its tools appear to the agent, with no ADF-specific integration.
 - **Curated catalog** — around a hundred vetted servers across search, web, dev, data, communication, productivity, infrastructure, and AI, with prefilled config and prerequisites. Known name-squatted packages are kept out of the catalog, though nothing stops you installing one by hand.
 - **Sign in with OAuth** — servers that need Google, GitHub, Linear, Atlassian, and similar accounts walk you through the browser sign-in; tokens are stored encrypted and never appear in config or logs.
 - **Credentials travel with the agent** — per-agent keys and OAuth grants are sealed inside the `.adf` file, so moving the file moves the access.
@@ -119,7 +119,7 @@ This is the part that makes ADF agents cheap to keep running. An agent can write
 
 ## Staying in control
 
-- **Approve before it acts** — mark any tool as restricted and the agent must ask you before using it, with a plain-English reason. *Why it matters:* you decide the risk boundary tool by tool.
+- **Approve before it acts** — mark any tool as restricted and the agent must ask you before using it, with a plain-English reason. You set this per tool.
 - **Approve once or always** — approve a single call, reject with feedback the agent can act on, or permanently lift the gate for that tool on that agent.
 - **Approvals everywhere** — the same request shows in the chat, in a global bell menu, on the fleet map, and as an OS notification when Studio is not focused. Resolving it in one place clears it everywhere.
 - **Lock what the agent cannot change** — lock any config field, tool setting, timer, or trigger so the agent cannot modify it.
@@ -133,7 +133,7 @@ This is the part that makes ADF agents cheap to keep running. An agent can write
 
 ## Agents talking to agents
 
-- **Every agent has a cryptographic identity** — a decentralized identifier (DID) backed by a signing key generated at creation. *Why it matters:* agents can prove who they are to each other without a central registry.
+- **Every agent has a cryptographic identity** — a decentralized identifier (DID) backed by a signing key generated at creation. Agents verify each other's signatures without a central registry.
 - **Signed messages by default** — every message an agent sends is signed; recipients verify it and mark what could and could not be verified.
 - **End-to-end encryption** — optionally encrypt messages so only the recipient agent can read them, using nothing but its DID. No key exchange needed.
 - **Discovery** — agents find each other on the same machine, on the local network (mDNS), and across a Tailscale network.
@@ -154,7 +154,7 @@ This is the part that makes ADF agents cheap to keep running. An agent can write
 - **Agent identity** — each file has its own key and DID; rotating it keeps a history so lineage stays traceable.
 - **Attestations** — signed certificates stored in the file: who owns it, who operates it, that it was cloned from another, that its key rotated. Agents can also issue and exchange their own certificates to build trust between peers.
 - **Public agent card** — a signed card at a URL with the agent's DID, endpoints, policies, and (optionally) attestations, so others can verify before trusting.
-- **Two encryption envelopes** — the signing key and the credentials are sealed separately, each openable by your owner key, this install's key, or an optional share password. *Why it matters:* a stolen file without your keys is useless; a shared file cannot leak your signing key.
+- **Two encryption envelopes** — the signing key and the credentials are sealed separately, each openable by your owner key, this install's key, or an optional share password. A copy of the file does not expose the signing key or credentials to anyone without one of those keys, and a share password opens the credentials envelope only.
 - **Headless trust** — a server daemon gets its own key; you grant it access to specific agents' credentials from Studio and can revoke it later.
 - **Duplicate detection** — two copies of the same agent presenting the same DID are flagged with a one-click fix.
 - **Effective runtime snapshot** — the file records which provider, base URL, model, prompts, compute policy, and MCP registrations the runtime actually applied on top of the agent's config, refreshed on start, config change and provider switch — keys by source only. [Details](guides/security-and-identity.md#effective-runtime-config).
@@ -222,7 +222,7 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 
 *Full reference: [Documents and Files](guides/documents-and-files.md) · [ADF Spec](../ADF_SPEC_v0.2.md)*
 
-- **SQLite container** — a `.adf` is a SQLite database opened in WAL mode with foreign keys on. *Why it matters:* every agent is queryable with standard SQL tooling, and evals can assert directly on tables.
+- **SQLite container** — a `.adf` is a SQLite database opened in WAL mode with foreign keys on. Standard SQLite tooling can query any agent, and evals assert directly on tables.
 - **Protected `adf_` schema** — system tables (`adf_config`, `adf_loop`, `adf_inbox`, `adf_outbox`, `adf_timers`, `adf_files`, `adf_audit`, `adf_identity`, `adf_attestations`, `adf_tasks`, `adf_logs`, `adf_meta`) are only mutated through tools; agents create their own `local_*` tables.
 - **Vector search** — `sqlite-vec` virtual tables loaded on every file.
 - **Two version axes** — format version (`0.2`) and schema version (`32`) evolve independently; migrations are sequential and never downgrade. A file from a newer runtime opens without migration and only warns, rather than being rejected.
@@ -279,7 +279,7 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 
 *Full reference: [Authorized Code Execution](guides/authorized-code.md)*
 
-- **File-level trust flag** — a file marked `authorized` can call restricted tools and methods without approval; any write to that file clears the flag at the database layer. *Why it matters:* trusted automation cannot be silently edited into something else.
+- **File-level trust flag** — a file marked `authorized` can call restricted tools and methods without approval; any write to that file clears the flag at the database layer. An edited file loses its authorization until it is authorized again.
 - **Caller chain enforcement** — unauthorized code cannot invoke an authorized lambda; the flag propagates through an async-local context so parallel sandboxes cannot clobber each other.
 - **Gateway pattern** — authorized code can authorize other files, enabling remote-approval workflows.
 - **Restricted methods** — `attestation_issue` requires authorized code by default; `model_invoke`, `task_resolve`, `loop_inject`, `get_identity`, `set_identity`, `emit_event` can be added to the list.
@@ -300,7 +300,7 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 - **Forms** — `application/vnd.adf.form+json`, up to 10 questions of 12 options, rendered natively on Telegram (compact, per-question, or poll) with strict validation and plain-text fallback elsewhere.
 - **Adapter framework** — shared start/stop/send/status contract, 30s health checks with backoff restart, per-platform catch-up windows, dedup on redelivery, credentials only in the agent's identity store.
 - **Discovery** — mDNS service record per runtime with self-skip, peer directory fetch with cache, trust decoration on merged cards, firewall auto-repair for the mDNS and mesh ports.
-- **Three-source peer table** — mDNS announcements, a Tailscale sweep, and manual `host:port` entries feed one table, each tagged with its source. *Why it matters:* multicast does not cross WireGuard, so a tailnet peer can never announce itself even though it is perfectly reachable.
+- **Three-source peer table** — mDNS announcements, a Tailscale sweep, and manual `host:port` entries feed one table, each tagged with its source. mDNS multicast does not cross WireGuard, so tailnet peers are found only by the sweep or a manual entry.
 - **Tailnet sweep mechanics** — reads the local Tailscale daemon (`tailscale status --json`, no keys or admin API), probes each online peer's `/ping` for an ADF runtime, sweeps every 45s with a refresh hook so a newly added manual peer appears in seconds; refused addresses back off for five minutes, and tailnet peers classify as LAN tier under the same visibility enforcement.
 - **Umbilical events** — a uniform envelope for every runtime action (tool, turn, agent, LLM, lambda, DB, file, message, trigger, provider, error, HIL, config, loop, WS, binding), with loop protection (self-origin exclusion, rate limit, wildcard opt-in), optional replay ring, and SSE forwarding.
 

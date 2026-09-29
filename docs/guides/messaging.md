@@ -86,7 +86,7 @@ const info = await adf.chat_info({ adapter: 'slack', chat_id: 'C0123ABC', limit:
 // or { supported: false, reason } — e.g. adapter not connected, or email (no live roster)
 ```
 
-`chat_info` is read-only — it never sends, joins, or mutates platform state. It ships enabled but **not visible**: it doesn't occupy a slot in the LLM tool schema and is intended to be called as `adf.chat_info` from `sys_code`/lambdas — though, like any enabled tool, it remains callable by name (e.g. through `adf_shell`) even while invisible. Flip `visible: true` in the agent's tool config to expose it as a first-class tool. Email doesn't implement it (no live query surface) — thread recipients are already in `source_context.to`/`cc`.
+`chat_info` is read-only — it never sends, joins, or mutates platform state. It ships enabled but **not visible**: it doesn't occupy a slot in the LLM tool schema and is intended to be called as `adf.chat_info` from `sys_code`/lambdas — though, like any enabled tool, it remains callable by name (e.g. through `adf_shell`) even while invisible. Flip `visible: true` in the agent's tool config to expose it as a visible tool. Email doesn't implement it (no live query surface) — thread recipients are already in `source_context.to`/`cc`.
 
 ## Sending Messages
 

@@ -1,6 +1,6 @@
 # ADF Studio
 
-ADF Studio is the desktop application for creating, configuring, and operating ADF agents. It is the visual IDE for the [Agent Document Format](../README.md) — the place where you author an agent, watch it think, give it tools, and run it on the mesh.
+ADF Studio is the desktop application for creating, configuring, and operating ADF agents. It is the visual IDE for the [Agent Document Format](../README.md) — where you author an agent, follow its turns, configure its tools, and run it on the mesh.
 
 This document covers the **Studio application itself**: its interface, settings, and day-to-day workflows. For the underlying format, runtime, and tool concepts, see the [documentation index](index.md), which links every guide. For the headless runtime, see the [Daemon documentation](daemon/index.md).
 
@@ -54,7 +54,7 @@ The Studio window is organized into a few persistent areas:
 |-----|---------------|
 | **Loop** | The conversation/transcript: your messages, the agent's reasoning, tool calls and results. This is where you chat with the agent. |
 | **Inbox** | Messages received from other agents over the mesh. |
-| **Files** | The agent's virtual filesystem — the primary document, the mind file, and any uploaded or agent-written files. |
+| **Files** | The agent's files (`adf_files`): `README.md`, `mind.md`, `soul.md`, and any uploaded or agent-written files. |
 | **Agent** | The configuration panel, with sub-sections for Identity, Model, Instructions, Tools, Triggers, Messaging, Serving, Timers, and the raw Config. (`mind.md` and `soul.md` are edited as files in the editor, not here.) |
 
 ### The Home view
@@ -75,9 +75,9 @@ The **Age of Agents** button in the toolbar opens the fleet map — an RTS-style
 
 1. Click **New .adf** in the sidebar.
 2. Choose a filename — this becomes the agent's default name.
-3. Studio creates the `.adf` file with sensible defaults in your tracked directory.
+3. Studio creates the `.adf` file in your tracked directory from an [agent template](guides/agent-templates.md).
 
-A new agent ships with a blank `README.md` (its primary document), a `mind.md` seeded with the structured memory-index skeleton (working memory), a default tool set, and a unique 12-character ID. It starts in the **idle** state.
+A new agent gets everything in its template except the template's identity and history, including its start state, files and tool set. It gets a new 12-character config `id` and its own identity. Fields the template does not set take the [new-file defaults](../ADF_SPEC_v0.2.md#141-new-file-defaults).
 
 See [Creating and Configuring Agents](guides/creating-agents.md) for every configuration field.
 
@@ -168,6 +168,6 @@ Notes:
 ## Where to Go Next
 
 - [Getting Started](getting-started.md) — create your first agent and start a conversation.
-- [Core Concepts](guides/core-concepts.md) — sovereignty, one-agent-one-document, and the ADF stack.
+- [Core Concepts](guides/core-concepts.md) — one file, one agent; the access boundary; the ADF stack.
 - [Documentation index](index.md) — the full list of guides for the format, runtime, tools, messaging, security, and more.
 - [Daemon documentation](daemon/index.md) — run the same `.adf` agents headlessly via the API runtime.

@@ -22,8 +22,8 @@ Grouped by area, then category.
 
 ### Core Principles
 
-- **Sovereignty** — each `.adf` owns its document, memory, config, inbox/outbox, timers, and logs; other agents influence it only via messages.
-- **One Agent, One Document** — exactly one primary document (`README.md`) and one `mind.md` per file; supporting files are subordinate.
+- **Access Boundary** — the file is modified only by its owner, the runtime, or the agent through tools and code; other agents only send messages ([spec §1.1](../../ADF_SPEC_v0.2.md#11-access-boundary)).
+- **One File, One Agent** — each `.adf` is one localized agent; its contents are listed in [spec §1.3](../../ADF_SPEC_v0.2.md#13-one-file-one-agent).
 - **No Secrets in Context** — every prompt/context injection (system prompt, dynamic instructions, compaction summaries) is persisted as an auditable `adf_loop` row.
 - **Cold path / hot path separation** — LLM loop (reasoning) vs. lambdas/triggers/timers/middleware (deterministic, repeated work).
 - **Spec stores, runtime executes** — the file holds declarative state; providers, sandboxes, and networking are runtime concerns.
@@ -336,7 +336,7 @@ Grouped by area, then category.
 - **Child autostart-on-create** — `autostart:true` on `sys_create_adf` starts the child as a background agent immediately, before the parent's turn ends.
 - **Spawned-child trust** — A child created via `sys_create_adf` is trusted by construction (HIL gates the tool call, not the child); review/accept applies only to foreign ADFs.
 - ~~Parent-controlled remote shutdown~~ — CORRECTED: unverified. `sys_set_state` is self-only; no code grants a parent DID shutdown authority over a child.
-- ~~Sovereignty / resource starvation~~ — CORRECTED: children do not share a live key reference. The default spawn template copies no credentials; an explicit template copies them as independent values.
+- ~~Independent resources / resource starvation~~ — CORRECTED: children do not share a live key reference. The default spawn template copies no credentials; an explicit template copies them as independent values.
 
 ### Agent States & Lifecycle
 - **Five primary states** — Active, Idle, Hibernate, Suspended, Error, Off, each with a distinct trigger-responsiveness profile.

@@ -26,7 +26,7 @@ ADF provides tools organized into these categories:
 - [MCP Management Tools](#mcp-management-tools) — Installing and managing MCP servers
 - [Timer Tools](#timer-tools) — Scheduling events
 - [Loop Management Tools](#loop-management-tools) — Managing conversation history
-- [Inner Loop Tools](#inner-loop-tools) — Signalling and managing the agent's inner cognition loops
+- [Inner Loop Tools](#inner-loop-tools) — Signalling and managing the agent's inner loops
 - [Message Deletion Tools](#message-deletion-tools) — Cleaning up inbox and outbox
 - [State and Config Tools](#state-and-config-tools) — Self-management
 
@@ -577,7 +577,7 @@ To read past loop entries or compute loop statistics (row count, estimated token
 
 ## Inner Loop Tools
 
-Tools for the agent's **inner loops** — additional named cognition streams running inside the same agent, sharing its file, identity, credentials, and memory. See [Inner Loops](inner-loops.md) for the model.
+Tools for the agent's **inner loops** — named loops running inside the same agent, sharing its file, identity, credentials, and memory. See [Inner Loops](inner-loops.md) for the model.
 
 All three ship **enabled and visible**, and the runtime registers each into `main` whenever its declaration is enabled — like any other capability tool. There is no loop-count gate: an agent with no loops still holds `loop_send` and `loop_list`, and they answer sensibly (`loop_list` returns just `main`; `loop_send` errors on any target it names). `loop_send` and `loop_list` reach an *inner* loop only when that loop's own tool allow-list names them; `loop_manage` never does.
 
@@ -585,7 +585,7 @@ All three ship **enabled and visible**, and the runtime registers each into `mai
 
 **Parameters:** `to_loop`, `content`, `wake?`
 
-Send a message, insight, or request from one cognition loop of this agent to another (`"main"` is the outward-facing loop). The content is appended to the target loop's stream as a real entry stamped `[from loop:<sender>]`. Peer-to-peer — any loop may address any other; `main` is not a bus. Interior signalling only: it never leaves the agent (use `msg_send` to reach another agent or a person).
+Send a message, insight, or request from one loop of this agent to another (`"main"` is the outward-facing loop). The content is appended to the target loop's stream as a real entry stamped `[from loop:<sender>]`. Peer-to-peer — any loop may address any other; `main` is not a bus. Interior signalling only: it never leaves the agent (use `msg_send` to reach another agent or a person).
 
 `content` is capped at 48,000 characters, the same bound `loop_inject` uses.
 
@@ -607,7 +607,7 @@ A message to a **disabled** loop is delivered (the row lands) but never read, be
 
 **Parameters:** *(none)*
 
-Read-only roster of this agent's cognition loops — each loop's name, a summary of its goal, whether it is enabled, and whether it is running right now. Marks which loop you are. This is the discovery step for `loop_send`. `main`'s entry summarizes its goal rather than reproducing its full instructions.
+Read-only roster of this agent's loops — each loop's name, a summary of its goal, whether it is enabled, and whether it is running right now. Marks which loop you are. This is the discovery step for `loop_send`. `main`'s entry summarizes its goal rather than reproducing its full instructions.
 
 ### loop_manage
 

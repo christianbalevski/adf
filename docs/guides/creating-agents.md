@@ -15,14 +15,9 @@ To create a new `.adf` file:
 
 1. Click **New .adf** in the sidebar
 2. Choose a filename — this becomes the agent's default name
-3. The file is created with sensible defaults and placed in your tracked directory
+3. The file is created from an [agent template](agent-templates.md) and placed in your tracked directory
 
-A newly created agent includes:
-
-- A blank `README.md` (primary document)
-- `mind.md` seeded with the structured memory-index skeleton (working memory)
-- Default configuration with common tools enabled
-- A unique 12-character nanoid as its ID
+A new agent gets everything in its template except the template's identity and history: config (including its start state), files and tools. It gets a new 12-character config `id` and its own signing keys. Fields the template does not set take the [new-file defaults](../../ADF_SPEC_v0.2.md#141-new-file-defaults).
 
 ## Identity Settings
 

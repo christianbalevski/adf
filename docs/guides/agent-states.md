@@ -214,7 +214,7 @@ If the LLM emits text without calling any tool, it's treated as an implicit `res
 
 ### Birth
 
-An agent is created either by a human (through the UI or CLI) or by another agent (via `sys_create_adf`). A parent agent may inject API keys into the child's identity store. When using template-based creation, the child receives a fresh cryptographic identity (new DID and keypair) while inheriting the template's config, files, and non-signing credentials. The parent's identity (DID or nanoid) is always recorded in the child's `adf_parent_did` metadata for lineage tracking.
+An agent is created either by a human (through the UI or CLI) or by another agent (via `sys_create_adf`). A parent can give the child credentials through a template, which copies them into the child's `adf_identity` rows. When using template-based creation, the child receives a fresh cryptographic identity (new DID and keypair) while inheriting the template's config, files, and non-signing credentials. The parent's identity (DID or nanoid) is always recorded in the child's `adf_parent_did` metadata for lineage tracking.
 
 If `autostart: true` is set in the agent's config, the agent is started as a background agent immediately on creation (when created by a parent) and on every subsequent runtime boot. Password-protected agents are skipped during autostart — they require human unlock first.
 
@@ -224,12 +224,12 @@ The agent processes triggers, communicates with other agents, and maintains its 
 
 ### Identity Provisioning
 
-When the agent needs to participate in the global mesh, a cryptographic identity is provisioned. The nanoid is replaced by a DID derived from an Ed25519 public key.
+The runtime generates the agent's Ed25519 signing keys when the agent is created. The agent's DID is derived from the public key. The config `id` stays a 12-character nanoid and is not the agent's identity.
 
-### Sovereignty
+### Independent resources
 
-An agent achieves sovereignty when it acquires its own resources (API keys, crypto) independent of its parent.
+For each model call the runtime reads the provider key from the agent's own `adf_identity` row (`provider:<id>:apiKey`). If the file has no key for that provider, the runtime uses its own key for the same provider id. A child created from a template holds copies of the template's credentials, not references to the parent's keys. An agent whose keys were issued to it, or set by its owner, does not depend on its parent to run.
 
-### Death
+### Losing model access
 
-Resource starvation: if a parent revokes the API key, the agent can no longer think. The file becomes inert but all data remains accessible.
+If the provider key an agent uses is revoked at the provider, its model turns fail. Lambdas, timers and other code-path work keep running, and all data in the file remains readable.

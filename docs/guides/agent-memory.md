@@ -120,7 +120,7 @@ Seq numbers are for your bookkeeping, not for people. When mentioning a cited me
 ```js
 import { brotliDecompressSync } from 'zlib'
 
-// `loop` is optional. seq is one global counter across every cognition stream,
+// `loop` is optional. seq is one global counter across every loop,
 // so a bare seq is already unambiguous; naming the loop only narrows the
 // candidate set to that stream's blobs (source = 'loop:<name>'). Omit it when
 // resolving a citation from a sibling loop or one whose origin you do not know.
@@ -155,7 +155,7 @@ export async function auditRead({ seq, loop }) {
 Caveats:
 
 - **Multiple blobs can match** one seq (successive compactions archive overlapping ranges, and sibling loops interleave on one global counter, so a `main` block's `start_seq..end_seq` can span seqs that belong to an inner loop) — always scan candidates for the exact seq rather than trusting the first blob.
-- **Seq is global, loop is provenance.** Every cognition stream draws from the same `adf_loop.seq` counter, so `[S137]` names exactly one message no matter which loop wrote it. The loop is recorded per audit row in `source` (`loop:<name>`; bare `loop` on pre-loops rows means `main`). A loop knows its own name from its system prompt, so pass `loop` to narrow the scan to your own stream; a citation format that carries the loop (`[S137@planner]`, `adf-audit://seq/137?loop=planner`) is your convention to choose — the runtime never parses citations, it only stamps `[S<seq>]`.
+- **Seq is global, loop is provenance.** Every loop draws from the same `adf_loop.seq` counter, so `[S137]` names exactly one message no matter which loop wrote it. The loop is recorded per audit row in `source` (`loop:<name>`; bare `loop` on pre-loops rows means `main`). A loop knows its own name from its system prompt, so pass `loop` to narrow the scan to your own stream; a citation format that carries the loop (`[S137@planner]`, `adf-audit://seq/137?loop=planner`) is your convention to choose — the runtime never parses citations, it only stamps `[S<seq>]`.
 - **Check live `adf_loop` first** — recent seqs have not been archived yet.
 - **Gaps are possible.** If loop audit was disabled when a compaction ran, that range is gone; `missing` is an honest answer. The setting is `audit.loop` (on by default; agent-writable via `sys_update_config`, HIL-gated — see [Memory Management → Audit](memory-management.md#audit)). Likewise, messages that arrived while audit was disabled (or before per-message capture existed) have no audit row — enabling audit later does not retroactively archive them.
 - Decompress inside the sandbox, never into your LLM context — a single blob can be megabytes. Return only the entry (or the measurement) you need.
