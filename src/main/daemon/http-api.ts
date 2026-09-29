@@ -30,7 +30,8 @@ import type { McpServerRegistration, ProviderConfig } from '../../shared/types/i
 import type { AdapterInstanceConfig, AdapterRegistration } from '../../shared/types/channel-adapter.types'
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { getLanAddresses } from '../utils/network'
-import { registerIdentityRoutes, type IdentityRouteDeps } from './identity-routes'
+import { isLoopbackAddress, registerIdentityRoutes, type IdentityRouteDeps } from './identity-routes'
+import { DaemonRequestGuard, type DaemonRequestGuardOptions } from './request-guard'
 import { registerTemplateRoutes } from './template-routes'
 import { registerProviderRoutes } from './provider-routes'
 import { registerContextRoutes } from './context-routes'
@@ -72,6 +73,11 @@ export interface DaemonHttpApiOptions {
    * treats it as tracked now — Studio's meshManager.setTrackedDirectories.
    */
   onTrackedDirectoriesChanged?: (dirs: string[]) => void
+  /**
+   * Request guard (request-guard.ts): the bearer token every route but GET
+   * /health requires, and the Host allow-list. DaemonHost always sets it.
+   */
+  security?: Pick<DaemonRequestGuardOptions, 'token' | 'allowedHosts' | 'ipLiteralPort'>
 }
 
 export interface DaemonComputeService {
@@ -391,6 +397,8 @@ interface MetaProtectionBody {
 
 interface IdentityValueBody {
   value?: string
+  /** Owner override: discard a locked sealed value / store while locked (see RuntimeService.setIdentityValue). */
+  replace?: boolean
 }
 
 interface IdentityCodeAccessBody {
@@ -415,6 +423,8 @@ interface McpCredentialBody {
   npmPackage?: string
   envKey?: string
   value?: string
+  /** Owner override: discard a locked sealed value / store while locked (see RuntimeService.setIdentityValue). */
+  replace?: boolean
 }
 
 interface McpAttachBody {
@@ -426,6 +436,8 @@ interface AdapterCredentialBody {
   adapterType?: string
   envKey?: string
   value?: string
+  /** Owner override: discard a locked sealed value / store while locked (see RuntimeService.setIdentityValue). */
+  replace?: boolean
 }
 
 interface AdapterAttachBody {
@@ -604,28 +616,30 @@ export function createDaemonHttpApi(
     done()
   })
 
-  // Optional bearer-token auth (required for non-loopback binds; enforced by
-  // DaemonHost). /health stays open for liveness probes.
-  const daemonToken = process.env.ADF_DAEMON_TOKEN
-  if (daemonToken) {
-    server.addHook('onRequest', (request, reply, done) => {
-      const path = request.url.split('?')[0]
-      if (path === '/health') return done()
-      if (request.headers.authorization !== `Bearer ${daemonToken}`) {
-        void reply.code(401).send({ error: 'unauthorized', message: 'Missing or invalid Authorization: Bearer token.' })
-        return
-      }
-      done()
-    })
-  }
+  // Cross-site protection + bearer token (request-guard.ts). DaemonHost
+  // always passes `security` (Host allow-list + the install's token); a
+  // bare createDaemonHttpApi (tests) still refuses browser origins and
+  // honours ADF_DAEMON_TOKEN.
+  const guard = new DaemonRequestGuard({
+    token: opts.security?.token ?? process.env.ADF_DAEMON_TOKEN ?? null,
+    allowedHosts: opts.security?.allowedHosts ?? null,
+    ipLiteralPort: opts.security?.ipLiteralPort ?? null,
+  })
+  server.addHook('onRequest', (request, reply, done) => {
+    const rejection = guard.check(request.method, request.url.split('?')[0], request.headers)
+    if (rejection) {
+      void reply.code(rejection.status).header('Cache-Control', 'no-store').send(rejection.body)
+      return
+    }
+    done()
+  })
 
   server.get('/openapi.json', async () => getOpenApiSpec())
 
   server.get('/health', async () => ({ ok: true }))
 
   server.post('/daemon/shutdown', async (request, reply) => {
-    const remote = request.socket?.remoteAddress ?? ''
-    if (!(remote === '::1' || remote.startsWith('127.') || remote.startsWith('::ffff:127.'))) {
+    if (!isLoopbackAddress(request.socket?.remoteAddress)) {
       return reply.code(403).send({ error: 'The daemon can only be stopped from this machine (loopback).', code: 'loopback_only' })
     }
     if (!opts.requestShutdown) return methodNotAllowed(reply, 'Shutdown is not available on this daemon.')
@@ -1873,7 +1887,7 @@ export function createDaemonHttpApi(
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.value !== 'string') return badRequest(reply, 'value is required')
     try {
-      return runtime.setAgentIdentity(request.params.id, request.params.purpose, request.body.value)
+      return runtime.setAgentIdentity(request.params.id, request.params.purpose, request.body.value, { replace: request.body.replace === true })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -1895,7 +1909,7 @@ export function createDaemonHttpApi(
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.value !== 'string') return badRequest(reply, 'value is required')
     try {
-      return runtime.setAgentProviderCredential(request.params.id, request.params.providerId, request.body.value)
+      return runtime.setAgentProviderCredential(request.params.id, request.params.providerId, request.body.value, { replace: request.body.replace === true })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -1929,12 +1943,12 @@ export function createDaemonHttpApi(
 
   server.put<{ Params: AgentIdParams; Body: McpCredentialBody }>('/agents/:id/mcp/credentials', async (request, reply) => {
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
-    const { npmPackage, envKey, value } = request.body ?? {}
+    const { npmPackage, envKey, value, replace } = request.body ?? {}
     if (typeof npmPackage !== 'string') return badRequest(reply, 'npmPackage is required')
     if (typeof envKey !== 'string') return badRequest(reply, 'envKey is required')
     if (typeof value !== 'string') return badRequest(reply, 'value is required')
     try {
-      return runtime.setAgentMcpCredential(request.params.id, npmPackage, envKey, value)
+      return runtime.setAgentMcpCredential(request.params.id, npmPackage, envKey, value, { replace: replace === true })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -1979,12 +1993,12 @@ export function createDaemonHttpApi(
 
   server.put<{ Params: AgentIdParams; Body: AdapterCredentialBody }>('/agents/:id/adapters/credentials', async (request, reply) => {
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
-    const { adapterType, envKey, value } = request.body ?? {}
+    const { adapterType, envKey, value, replace } = request.body ?? {}
     if (typeof adapterType !== 'string') return badRequest(reply, 'adapterType is required')
     if (typeof envKey !== 'string') return badRequest(reply, 'envKey is required')
     if (typeof value !== 'string') return badRequest(reply, 'value is required')
     try {
-      return runtime.setAgentAdapterCredential(request.params.id, adapterType, envKey, value)
+      return runtime.setAgentAdapterCredential(request.params.id, adapterType, envKey, value, { replace: replace === true })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -2608,10 +2622,9 @@ function resolveModelListProviderConfig(
   try {
     const agentProvider = runtime.getAgent(agentId)?.config.providers?.find(provider => provider.id === providerId)
     if (!agentProvider) return null
-    const credentials = runtime.getAgentProviderCredentials(agentId, providerId).credentials
     return {
       ...agentProvider,
-      apiKey: credentials.apiKey ?? '',
+      apiKey: runtime.readAgentProviderApiKey(agentId, providerId) ?? '',
     }
   } catch {
     return null
@@ -2894,7 +2907,7 @@ function isTaskResolveAction(value: string): value is 'approve' | 'deny' | 'pend
 
 function handleRuntimeError(reply: FastifyReply, err: unknown) {
   if (err instanceof RuntimeLoopError) {
-    return reply.code(err.statusCode).send({ error: err.message })
+    return reply.code(err.statusCode).send({ error: err.message, ...(err.code ? { code: err.code } : {}) })
   }
   if (err instanceof RuntimeReviewRequiredError) {
     return reply.code(403).send({

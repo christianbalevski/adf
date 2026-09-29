@@ -131,7 +131,7 @@ type DaemonUrlSetter = (url: string, token?: string) => Promise<boolean | void>
 const url: SlashCommand = {
   name: 'url',
   args: '[daemon-url] [--token <token>]',
-  description: 'Show the daemon URL, or reconnect to another daemon (its token only with --token or ADF_DAEMON_TOKEN)',
+  description: 'Show the daemon URL, or reconnect to another daemon (for a remote daemon pass --token or set ADF_DAEMON_TOKEN)',
   run: async ctx => {
     const state = ctx.state()
     if (!ctx.args[0]) {

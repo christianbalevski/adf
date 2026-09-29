@@ -1,5 +1,77 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { runCli, type CliIo } from '../src/main/cli'
+import { ensureDaemonToken } from '../src/main/daemon/daemon-token'
+
+// The CLI reads the local daemon token file: point it at a temp settings dir
+// (never the user's real one) and clear any token from the environment.
+const saved = { settings: process.env.ADF_DAEMON_SETTINGS, token: process.env.ADF_DAEMON_TOKEN, url: process.env.ADF_DAEMON_URL }
+const settingsDir = mkdtempSync(join(tmpdir(), 'adf-cli-token-'))
+beforeAll(() => {
+  process.env.ADF_DAEMON_SETTINGS = join(settingsDir, 'adf-settings.json')
+  delete process.env.ADF_DAEMON_TOKEN
+  delete process.env.ADF_DAEMON_URL
+})
+afterAll(() => {
+  for (const [key, value] of [['ADF_DAEMON_SETTINGS', saved.settings], ['ADF_DAEMON_TOKEN', saved.token], ['ADF_DAEMON_URL', saved.url]] as const) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  rmSync(settingsDir, { recursive: true, force: true })
+})
+
+describe('daemon access token', () => {
+  function authOf(init?: RequestInit): string | undefined {
+    return (init?.headers as Record<string, string> | undefined)?.Authorization
+  }
+
+  it('sends the local token file to a loopback daemon, --token wins, never the local token to a remote one', async () => {
+    const { token } = ensureDaemonToken(settingsDir)
+    const seen: Array<[string, string | undefined]> = []
+    const io = fakeIo(async (url, init) => { seen.push([url, authOf(init)]); return jsonResponse([]) })
+
+    expect(await runCli(['agents'], io)).toBe(0)
+    expect(await runCli(['--url', 'http://localhost:9999', 'agents'], io)).toBe(0)
+    expect(await runCli(['--url', 'http://daemon.example:7385', 'agents'], io)).toBe(0)
+    expect(await runCli(['--url', 'http://daemon.example:7385', '--token', 'remote-token', 'agents'], io)).toBe(0)
+    expect(await runCli(['--token=explicit', 'agents'], io)).toBe(0)
+    expect(seen).toEqual([
+      ['http://127.0.0.1:7385/agents', `Bearer ${token}`],
+      ['http://localhost:9999/agents', `Bearer ${token}`],
+      ['http://daemon.example:7385/agents', undefined],
+      ['http://daemon.example:7385/agents', 'Bearer remote-token'],
+      ['http://127.0.0.1:7385/agents', 'Bearer explicit'],
+    ])
+  })
+
+  it('--token is a one-shot option, not a TUI flag', async () => {
+    const launched: string[][] = []
+    const io = { ...fakeIo(async () => jsonResponse([])), launchTui: async (argv: string[]) => { launched.push(argv); return 0 } }
+    expect(await runCli(['--token', 'x', 'agents'], io)).toBe(0)
+    expect(launched).toEqual([])
+    expect(await runCli(['--token', 'x'], io)).toBe(0)
+    expect(launched).toEqual([['--token', 'x']])
+  })
+
+  it('events sends the token too', async () => {
+    const { token } = ensureDaemonToken(settingsDir)
+    let auth: string | undefined
+    const io = fakeIo(async (_url, init) => {
+      auth = authOf(init)
+      return new Response('', { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    })
+    expect(await runCli(['events'], io)).toBe(0)
+    expect(auth).toBe(`Bearer ${token}`)
+  })
+
+  it('surfaces the daemon 401 message (what an outdated client sees too)', async () => {
+    const io = fakeIo(async () => jsonResponse({ error: 'This ADF daemon requires its access token (Authorization: Bearer). … Print the token on the daemon host with: adf daemon token', code: 'unauthorized' }, 401))
+    expect(await runCli(['--url', 'http://daemon.example:7385', 'agents'], io)).toBe(1)
+    expect(io.errorOutput()).toContain('adf daemon token')
+  })
+})
 
 describe('daemon CLI', () => {
   it('lists agents from the daemon API', async () => {

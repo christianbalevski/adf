@@ -14,7 +14,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, rea
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DEFAULT_DAEMON_URL } from './daemon-url'
+import { DEFAULT_DAEMON_URL, resolveDaemonToken } from './daemon-url'
 import { defaultUserDataPath } from '../utils/user-data-path'
 
 export const DEFAULT_DAEMON_PORT = 7385
@@ -294,7 +294,7 @@ export async function stopDaemon(target: DaemonTarget, options: { env?: NodeJS.P
   const fetchImpl = options.fetch ?? fetch
   const paths = daemonPaths(target.port, env)
   const record = readPidFile(paths.pidFile)
-  const token = env.ADF_DAEMON_TOKEN
+  const token = resolveDaemonToken(undefined, env, target.url)
   if (!await isHealthy(target.url, fetchImpl)) {
     if (record && processAlive(record.pid)) {
       return { stopped: false, message: `No daemon answers ${target.url}, but pid ${record.pid} from ${paths.pidFile} is alive. It may be starting or stuck; see adf daemon logs.` }
@@ -338,7 +338,7 @@ export async function daemonStatus(target: DaemonTarget, options: { env?: NodeJS
   const lines = [`url       ${target.url}`, `status    ${running ? 'running' : 'not running'}`]
   if (running) {
     try {
-      const token = env.ADF_DAEMON_TOKEN
+      const token = resolveDaemonToken(undefined, env, target.url)
       const res = await fetchImpl(`${target.url}/runtime`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(3000) })
       const body = await res.json() as { daemon?: { pid?: number; uptime?: number; version?: string | null }; agents?: unknown[] }
       if (body.daemon?.pid) lines.push(`pid       ${body.daemon.pid}`)

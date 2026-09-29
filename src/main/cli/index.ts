@@ -1,7 +1,7 @@
 // The one-shot CLI and TUI dispatch. The `adf` executable is bin.ts; it
 // calls runCli (this module never runs itself).
 
-import { DEFAULT_DAEMON_URL, resolveDaemonUrl } from './daemon-url'
+import { DEFAULT_DAEMON_URL, resolveDaemonToken, resolveDaemonUrl } from './daemon-url'
 import {
   AUTH_PROVIDER_LABELS,
   loginChatGpt,
@@ -49,6 +49,8 @@ export interface CliCallbackServer {
 interface CliOptions {
   daemonUrl: string
   json: boolean
+  /** --token; else ADF_DAEMON_TOKEN, else (loopback) the local token file. */
+  token?: string
 }
 
 interface ParsedArgs {
@@ -66,14 +68,14 @@ const defaultIo: CliIo = {
 }
 
 /** Flags only the TUI understands; `adf --view chat` means "open the TUI". */
-const TUI_FLAGS = new Set(['--view', '--agent', '--loop', '--theme', '--mono', '--no-color', '--ascii', '--no-alt-screen', '--token', '--no-mouse', '--mouse', '--no-kitty'])
+const TUI_FLAGS = new Set(['--view', '--agent', '--loop', '--theme', '--mono', '--no-color', '--ascii', '--no-alt-screen', '--no-mouse', '--mouse', '--no-kitty'])
 
 /** The argv to hand the TUI, or null when this is a one-shot command (or help). */
 export function tuiInvocation(argv: string[]): string[] | null {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
-    if (arg === '--url' || arg === '-u') { i++; continue }
-    if (arg.startsWith('--url=') || arg === '--json') continue
+    if (arg === '--url' || arg === '-u' || arg === '--token') { i++; continue }
+    if (arg.startsWith('--url=') || arg.startsWith('--token=') || arg === '--json') continue
     if (arg === 'tui' || TUI_FLAGS.has(arg) || [...TUI_FLAGS].some(flag => arg.startsWith(`${flag}=`))) {
       return argv.filter(a => a !== '--json')
     }
@@ -237,6 +239,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   const args = [...argv]
   let daemonUrl = process.env.ADF_DAEMON_URL ?? DEFAULT_DAEMON_URL
   let json = false
+  let token: string | undefined
   const positional: string[] = []
 
   for (let i = 0; i < args.length; i++) {
@@ -249,6 +252,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       daemonUrl = value
     } else if (arg.startsWith('--url=')) {
       daemonUrl = arg.slice('--url='.length)
+    } else if (arg === '--token') {
+      const value = args[++i]
+      if (!value) throw new Error('--token requires a value')
+      token = value
+    } else if (arg.startsWith('--token=')) {
+      token = arg.slice('--token='.length)
     } else {
       positional.push(arg)
     }
@@ -260,6 +269,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     options: {
       daemonUrl: daemonUrl.replace(/\/+$/, ''),
       json,
+      ...(token ? { token } : {}),
     },
   }
 }
@@ -275,8 +285,13 @@ async function printGet(
   return 0
 }
 
+/** Resolved per request: an auto-started daemon writes its token file on first start. */
+function authHeader(options: CliOptions): Record<string, string> {
+  const token = resolveDaemonToken(options.token, process.env, options.daemonUrl)
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 async function requestJson(io: CliIo, options: CliOptions, path: string, init?: RequestInit): Promise<JsonValue> {
-  const token = process.env.ADF_DAEMON_TOKEN
   let response: Response
   try {
     response = await io.fetch(`${options.daemonUrl}${path}`, {
@@ -284,7 +299,7 @@ async function requestJson(io: CliIo, options: CliOptions, path: string, init?: 
       headers: {
         ...(init?.headers ?? {}),
         Accept: 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...authHeader(options),
       },
     })
   } catch (err) {
@@ -554,10 +569,11 @@ async function streamEvents(io: CliIo, options: CliOptions, args: string[]): Pro
   const agent = args[0]
   const path = agent ? `/events?agentId=${enc(agent)}` : '/events'
   const response = await io.fetch(`${options.daemonUrl}${path}`, {
-    headers: { Accept: 'text/event-stream' },
+    headers: { Accept: 'text/event-stream', ...authHeader(options) },
   })
   if (!response.ok || !response.body) {
-    throw new Error(`Event stream failed: HTTP ${response.status} ${response.statusText}`)
+    const detail = await response.json().catch(() => null) as { error?: unknown } | null
+    throw new Error(`Event stream failed: ${typeof detail?.error === 'string' ? detail.error : `HTTP ${response.status} ${response.statusText}`}`)
   }
 
   const reader = response.body.getReader()
@@ -1243,16 +1259,22 @@ Daemon:
                                   containers stopped)
   daemon restart                 Stop, then start in the background
   daemon logs [-f] [-n <lines>]  Show the background daemon's log (-f follows)
+  daemon token                   Print this machine's daemon access token (for
+                                  clients on other machines: --token or
+                                  ADF_DAEMON_TOKEN)
 
 Options:
   --url, -u <url>                Daemon URL
+  --token <token>                Daemon access token (default: ADF_DAEMON_TOKEN,
+                                  else read automatically on the daemon's machine)
   --json                         JSON output
   --no-daemon                    Never start the daemon automatically
   --version, -v                  Print the version
 
 Environment:
   ADF_DAEMON_URL                 Defaults to ${DEFAULT_DAEMON_URL}
-  ADF_DAEMON_TOKEN               Bearer token sent to the daemon when set
+  ADF_DAEMON_TOKEN               Daemon access token (overrides the local
+                                  <data dir>/daemon-token file)
   ADF_NO_AUTOSTART=1             Same as --no-daemon`
 }
 

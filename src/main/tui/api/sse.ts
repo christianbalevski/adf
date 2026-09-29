@@ -27,7 +27,8 @@ export interface ConnectionInfo {
 
 export interface EventStreamOptions {
   baseUrl: string
-  headers?: Record<string, string>
+  /** Request headers; a function is re-read on every (re)connect. */
+  headers?: Record<string, string> | (() => Record<string, string>)
   fetch?: typeof fetch
   /** Only this agent's events (`?agentId=`). */
   agentId?: string
@@ -129,7 +130,7 @@ export class EventStream {
     let failure: string | undefined
     try {
       const response = await this.fetchImpl(this.buildUrl(), {
-        headers: { Accept: 'text/event-stream', ...(this.options.headers ?? {}) },
+        headers: { Accept: 'text/event-stream', ...(typeof this.options.headers === 'function' ? this.options.headers() : this.options.headers ?? {}) },
         signal: controller.signal,
       })
       if (!response.ok || !response.body) {

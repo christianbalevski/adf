@@ -186,7 +186,7 @@ Commands are executed via `execFile` with array arguments (not shell strings), p
 
 ## sys_fetch / ws_connect Egress Guard (SSRF)
 
-`sys_fetch` and `ws_connect` are reachable from the LLM loop, so a prompt-injected agent could otherwise drive the local unauthenticated daemon, cloud metadata endpoints, or anything else on the LAN. The egress guard default-denies private/LAN destinations before the request leaves the process; **loopback is allowed by default** (local dev servers are a core agent use case), with the daemon control API carved out as a hard block. The same guard also covers `ws_connect` (ws/wss ad-hoc URLs).
+`sys_fetch` and `ws_connect` are reachable from the LLM loop, so a prompt-injected agent could otherwise drive the local daemon, cloud metadata endpoints, or anything else on the LAN. The egress guard default-denies private/LAN destinations before the request leaves the process; **loopback is allowed by default** (local dev servers are a core agent use case), with the daemon control API carved out as a hard block. The same guard also covers `ws_connect` (ws/wss ad-hoc URLs).
 
 Allowed by default:
 
@@ -200,7 +200,7 @@ Blocked by default (overridable with `security.allow_local_fetch: true`):
 Always blocked (ignores `allow_local_fetch`):
 
 - **Link-local** — `169.254.0.0/16` (including cloud metadata `169.254.169.254`), `fe80::/10`
-- **The local ADF daemon control API** on loopback (including via `0.0.0.0`/`::`) — this closes the "injected agent drives the unauthenticated daemon" path unconditionally: without it, a single poisoned message could make the agent POST to `127.0.0.1` control endpoints on the operator's own machine.
+- **The local ADF daemon control API** on loopback (including via `0.0.0.0`/`::`) — this closes the "injected agent drives the local daemon" path unconditionally: without it, a single poisoned message could make the agent POST to `127.0.0.1` control endpoints on the operator's own machine. (The daemon also requires its bearer token and refuses cross-site browser requests; see [Daemon HTTP API → Authentication](../daemon/http-api.md#authentication-and-cross-site-protection).)
 
 The check runs on **DNS-resolved addresses**, not just the literal host — a rebinding record that resolves to `192.168.0.1` is rejected — and on **every redirect hop**: a public URL that `302`s to a private address is stopped at the hop. Redirects are ALWAYS followed manually and re-checked, even under `allow_local_fetch`. Only `http`/`https` URLs are permitted for `sys_fetch` (and `ws`/`wss` for `ws_connect`).
 

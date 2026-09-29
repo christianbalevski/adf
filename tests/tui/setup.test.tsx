@@ -53,6 +53,8 @@ async function mount(options: MountOptions = {}): Promise<{ tui: RenderedTui; se
   return { tui: ui, setup, store }
 }
 
+const settle = () => new Promise(resolve => setTimeout(resolve, 60))
+
 async function slash(tui: RenderedTui, text: string) {
   store!.actions.prefillPrompt('')
   await tui.waitFor(() => store!.getState().focus === 'input')
@@ -239,6 +241,60 @@ describe('/channels', () => {
     await tui.press('y')
     frame = await tui.waitFor(f => /Telegram\s+off/.test(f))
     expect(setup.calls).toContain(`DELETE /agents/${AGENT_1_ID}/adapters/telegram`)
+  }, 15000)
+
+  it('locked credentials: explains, Cancel keeps the form, Replace asks first then re-sends with replace', async () => {
+    const { tui, setup } = await mount({ setup: { credentialsLocked: true } })
+    await slash(tui, '/channels add telegram')
+    await tui.waitFor('Telegram · agent-1')
+    await tui.type(TG_TOKEN)
+    await tui.press(KEY.enter)
+    let frame = await tui.waitFor('r Replace · c/Esc Cancel'); await settle()
+    expect(frame.replace(/[│\s]+/g, ' ')).toContain("This agent's saved Telegram is locked and can't be read (identity not unlocked). Unlock first (/identity), or replace it — the old value is discarded.")
+    expect(setup.credentialWrites).toEqual([{ path: `/agents/${AGENT_1_ID}/adapters/credentials`, replace: false }])
+    await tui.press('c')
+    frame = await tui.waitFor(`${TG_TOKEN.length} chars`); await settle()
+    expect(frame).toContain('@BotFather')
+    await tui.press(KEY.enter)
+    await tui.waitFor('r Replace · c/Esc Cancel'); await settle()
+    await tui.press('r')
+    await tui.waitFor('Replace the saved Telegram?'); await settle()
+    await tui.press('n')
+    await tui.waitFor('r Replace · c/Esc Cancel'); await settle()
+    expect(setup.credentialWrites.filter(w => w.replace)).toEqual([])
+    await tui.press('r')
+    await tui.waitFor('Replace the saved Telegram?'); await settle()
+    await tui.press('y')
+    await tui.waitFor(f => f.includes('switched on for agent-1'))
+    expect(setup.credentialWrites.at(-1)).toEqual({ path: `/agents/${AGENT_1_ID}/adapters/credentials`, replace: true })
+    expect(setup.credentials.get(AGENT_1_ID)?.get('telegram')?.get('TELEGRAM_BOT_TOKEN')).toBe(TG_TOKEN)
+    for (const f of tui.frames) expect(f).not.toContain(TG_TOKEN)
+  }, 20000)
+
+  it('locked credentials: Unlock opens the identity flow and resumes the channel after', async () => {
+    const { tui, store } = await mount({ setup: { credentialsLocked: true } })
+    await slash(tui, '/channels add telegram')
+    await tui.waitFor('Telegram · agent-1')
+    await tui.type(TG_TOKEN)
+    await tui.press(KEY.enter)
+    await tui.waitFor('r Replace · c/Esc Cancel'); await settle()
+    await tui.press('u')
+    await tui.waitFor(() => store.getState().overlays.some(o => o.kind === 'identity'))
+    expect(store.getState().overlays.find(o => o.kind === 'identity')?.props).toMatchObject({ then: 'channels', thenProps: { agentId: AGENT_1_ID, channel: 'telegram' } })
+    expect(JSON.stringify(store.getState())).not.toContain(TG_TOKEN)
+  }, 15000)
+
+  it('editing shows what is stored, never the value', async () => {
+    const { tui, setup } = await mount()
+    await slash(tui, '/channels add telegram')
+    await tui.waitFor('Telegram · agent-1')
+    await tui.type(TG_TOKEN)
+    await tui.press(KEY.enter)
+    await tui.waitFor('switched on for agent-1'); await settle()
+    await tui.press('e')
+    const frame = await tui.waitFor('set • (hidden) · type to replace')
+    expect(frame).not.toContain(TG_TOKEN)
+    expect(setup.credentials.get(AGENT_1_ID)?.get('telegram')?.size).toBe(1)
   }, 15000)
 
   it('WhatsApp: no credentials, switch on, then how to pair by QR', async () => {

@@ -506,6 +506,36 @@ export class DaemonError extends Error {
   }
 }
 
+/** 409 `credentials_locked`: the agent's credentials envelope is locked here (saving needs unlock or an explicit replace). */
+export function isCredentialsLocked(err: unknown): boolean {
+  if (!(err instanceof DaemonError) || err.status !== 409) return false
+  const body = err.body as { code?: unknown } | null
+  return !!body && typeof body === 'object' && body.code === 'credentials_locked'
+}
+
+/** One stored credential as the daemon describes it: never its value. */
+export interface CredentialMeta {
+  purpose: string
+  present: boolean
+  storage: 'sealed' | 'plain' | 'password' | null
+  sealed: boolean
+  /** Stored but unreadable in the daemon right now (identity not unlocked). */
+  locked: boolean
+  length: number | null
+  code_access: boolean
+}
+
+/** GET …/adapters/credentials and …/mcp/credentials: keyed by env key. */
+export interface CredentialMetaResult {
+  agentId: string
+  credentials: Record<string, CredentialMeta>
+}
+
+export interface CredentialWriteOptions {
+  /** Owner override: discard a locked sealed value (or store while locked). */
+  replace?: boolean
+}
+
 // --- context usage (/context) -------------------------------------------------
 
 /** GET /agents/:id/context: one loop's context breakdown, categories and compact threshold. */

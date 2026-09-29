@@ -64,8 +64,20 @@ try {
     console.log(`daemon healthy after ${Date.now() - started} ms`)
     const agents = adf(['--url', URL, 'agents'])
     console.log(`adf agents: ${agents.trim()}`)
-    const spec = await fetch(`${URL}/openapi.json`)
+    // Access token: minted next to the settings, printed by `adf daemon token`,
+    // required on everything but /health; browser origins are refused.
+    const tokenFile = join(data, 'daemon-token')
+    const token = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf-8').trim() : ''
+    if (!token) fail(`no daemon token at ${tokenFile}`, log)
+    const printed = execFileSync(WIN ? 'adf.cmd' : 'adf', ['daemon', 'token', '--port', String(PORT)], { env, encoding: 'utf-8', timeout: 60_000, shell: WIN, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    if (printed !== token) fail('adf daemon token does not print the daemon\'s token')
+    const noToken = await fetch(`${URL}/openapi.json`)
+    if (noToken.status !== 401) fail(`/openapi.json without a token -> ${noToken.status} (want 401)`, log)
+    const foreign = await fetch(`${URL}/agents`, { headers: { Authorization: `Bearer ${token}`, Origin: 'http://evil.example' } })
+    if (foreign.status !== 403) fail(`foreign Origin -> ${foreign.status} (want 403)`, log)
+    const spec = await fetch(`${URL}/openapi.json`, { headers: { Authorization: `Bearer ${token}` } })
     if (!spec.ok) fail(`/openapi.json -> ${spec.status}`, log)
+    console.log('token + cross-origin checks OK')
     if (/Cannot find module|ERR_MODULE_NOT_FOUND/.test(log)) fail('daemon logged a missing module', log)
   }
 } catch (err) {

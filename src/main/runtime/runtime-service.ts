@@ -8,6 +8,7 @@ import { resolveDefaultProvider } from '../adf/apply-default-provider'
 import { templateFilePath } from '../adf/agent-templates'
 import { canProvisionWorkspaceIdentity, ensureWorkspaceIdentity, unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { encrypt } from '../crypto/identity-crypto'
+import { envelopeFromAlgo } from '../crypto/envelope-crypto'
 import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { withDeadline } from '../utils/concurrency'
 import type { LLMProvider } from '../providers/provider.interface'
@@ -199,11 +200,36 @@ export interface RuntimeAgentLoopPage {
 
 /** A caller-visible loop API failure; `statusCode` is the HTTP status to answer with. */
 export class RuntimeLoopError extends Error {
-  constructor(message: string, readonly statusCode: 400 | 404 | 409 | 502) {
+  constructor(message: string, readonly statusCode: 400 | 404 | 409 | 502, readonly code?: string) {
     super(message)
     this.name = 'RuntimeLoopError'
   }
 }
+
+/**
+ * What the owner may know about one stored identity value over HTTP: never
+ * the value. `length` is null for key material (`crypto:*`) and for values
+ * this process cannot read (locked).
+ */
+export interface RuntimeIdentityMeta {
+  purpose: string
+  present: boolean
+  /** 'sealed' = envelope-encrypted, 'password' = whole-file password (legacy), null = absent. */
+  storage: 'sealed' | 'plain' | 'password' | null
+  sealed: boolean
+  /** Stored but not readable in this process (envelope / password locked). */
+  locked: boolean
+  length: number | null
+  code_access: boolean
+}
+
+/** Credential writes from the owner: `replace` discards a locked sealed value (see setIdentityValue). */
+export interface RuntimeCredentialWriteOptions {
+  replace?: boolean
+}
+
+/** 409 code of a credential write refused because its envelope is locked here. */
+export const CREDENTIALS_LOCKED_CODE = 'credentials_locked'
 
 /** One cognition loop as the owner sees it: live status plus its declaration. */
 export interface RuntimeAgentLoopInfo extends LoopInfo {
@@ -648,6 +674,15 @@ export class RuntimeService extends EventEmitter {
       }
 
       managed.degraded = undefined
+      // Values the owner stored (or replaced) while locked were written
+      // plain: seal them now that the envelope is open (Studio parity with
+      // ensureWorkspaceIdentity's migration pass).
+      try {
+        const sealed = workspace.sealPlainRowsIntoEnvelopes()
+        if (sealed > 0) console.log(`[RuntimeService] Sealed ${sealed} credential(s) stored while ${label} was locked`)
+      } catch (err) {
+        console.error(`[RuntimeService] Sealing plain credentials failed for ${label}:`, err)
+      }
       let adaptersRestarted: string[] = []
       const adapterManager = managed.agent.adapterManager
       if (this.agentRuntimeBuilder && adapterManager) {
@@ -1729,19 +1764,16 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, purposes: managed.agent.workspace.listIdentityPurposes(prefix) }
   }
 
-  getAgentIdentity(agentId: string, purpose: string): { agentId: string; purpose: string; value: string | null } {
+  /** Metadata only: stored values (and all key material) never leave the process. */
+  getAgentIdentity(agentId: string, purpose: string): { agentId: string } & RuntimeIdentityMeta {
     const managed = this.requireAgent(agentId)
-    return {
-      agentId: managed.id,
-      purpose,
-      value: managed.agent.workspace.getIdentityDecrypted(purpose, managed.derivedKey),
-    }
+    return { agentId: managed.id, ...this.describeIdentity(managed, purpose) }
   }
 
-  setAgentIdentity(agentId: string, purpose: string, value: string): { agentId: string; purpose: string; success: true } {
+  setAgentIdentity(agentId: string, purpose: string, value: string, opts: RuntimeCredentialWriteOptions = {}): { agentId: string; purpose: string; success: true; replaced?: boolean } {
     const managed = this.requireAgent(agentId)
-    this.setIdentityValue(managed, purpose, value)
-    return { agentId: managed.id, purpose, success: true }
+    const replaced = this.setIdentityValue(managed, purpose, value, opts)
+    return { agentId: managed.id, purpose, success: true, ...(replaced ? { replaced } : {}) }
   }
 
   deleteAgentIdentity(agentId: string, purpose: string): { agentId: string; purpose: string; success: boolean } {
@@ -1850,16 +1882,17 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, success: true, did: result.did }
   }
 
-  setAgentProviderCredential(agentId: string, providerId: string, value: string): { agentId: string; providerId: string; success: true } {
+  setAgentProviderCredential(agentId: string, providerId: string, value: string, opts: RuntimeCredentialWriteOptions = {}): { agentId: string; providerId: string; success: true; replaced?: boolean } {
     const managed = this.requireAgent(agentId)
-    this.setIdentityValue(managed, `provider:${providerId}:apiKey`, value)
-    return { agentId: managed.id, providerId, success: true }
+    const replaced = this.setIdentityValue(managed, `provider:${providerId}:apiKey`, value, opts)
+    return { agentId: managed.id, providerId, success: true, ...(replaced ? { replaced } : {}) }
   }
 
+  /** Metadata only (see RuntimeIdentityMeta), keyed by credential name (`apiKey`). */
   getAgentProviderCredentials(agentId: string, providerId: string): {
     agentId: string
     providerId: string
-    credentials: Record<string, string>
+    credentials: Record<string, RuntimeIdentityMeta>
     providerConfig?: Pick<AdfProviderConfig, 'defaultModel' | 'params' | 'requestDelayMs'>
   } {
     const managed = this.requireAgent(agentId)
@@ -1867,7 +1900,7 @@ export class RuntimeService extends EventEmitter {
     return {
       agentId: managed.id,
       providerId,
-      credentials: this.readCredentialMap(managed, `provider:${providerId}:`),
+      credentials: this.describeCredentials(managed, `provider:${providerId}:`),
       ...(providerConfig
         ? { providerConfig: {
             defaultModel: providerConfig.defaultModel,
@@ -1899,18 +1932,19 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, providerId, success: true, deletedCredentials, config: result.config }
   }
 
-  setAgentMcpCredential(agentId: string, npmPackage: string, envKey: string, value: string): { agentId: string; npmPackage: string; envKey: string; success: true } {
+  setAgentMcpCredential(agentId: string, npmPackage: string, envKey: string, value: string, opts: RuntimeCredentialWriteOptions = {}): { agentId: string; npmPackage: string; envKey: string; success: true; replaced?: boolean } {
     const managed = this.requireAgent(agentId)
-    this.setIdentityValue(managed, `mcp:${npmPackage}:${envKey}`, value)
-    return { agentId: managed.id, npmPackage, envKey, success: true }
+    const replaced = this.setIdentityValue(managed, `mcp:${npmPackage}:${envKey}`, value, opts)
+    return { agentId: managed.id, npmPackage, envKey, success: true, ...(replaced ? { replaced } : {}) }
   }
 
-  getAgentMcpCredentials(agentId: string, npmPackage: string): { agentId: string; npmPackage: string; credentials: Record<string, string> } {
+  /** Metadata only (see RuntimeIdentityMeta), keyed by env key. */
+  getAgentMcpCredentials(agentId: string, npmPackage: string): { agentId: string; npmPackage: string; credentials: Record<string, RuntimeIdentityMeta> } {
     const managed = this.requireAgent(agentId)
     return {
       agentId: managed.id,
       npmPackage,
-      credentials: this.readCredentialMap(managed, `mcp:${npmPackage}:`),
+      credentials: this.describeCredentials(managed, `mcp:${npmPackage}:`),
     }
   }
 
@@ -1937,19 +1971,29 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, serverName, success: true, deletedCredentials, config: result.config }
   }
 
-  setAgentAdapterCredential(agentId: string, adapterType: string, envKey: string, value: string): { agentId: string; adapterType: string; envKey: string; success: true } {
+  setAgentAdapterCredential(agentId: string, adapterType: string, envKey: string, value: string, opts: RuntimeCredentialWriteOptions = {}): { agentId: string; adapterType: string; envKey: string; success: true; replaced?: boolean } {
     const managed = this.requireAgent(agentId)
-    this.setIdentityValue(managed, `adapter:${adapterType}:${envKey}`, value)
-    return { agentId: managed.id, adapterType, envKey, success: true }
+    const replaced = this.setIdentityValue(managed, `adapter:${adapterType}:${envKey}`, value, opts)
+    return { agentId: managed.id, adapterType, envKey, success: true, ...(replaced ? { replaced } : {}) }
   }
 
-  getAgentAdapterCredentials(agentId: string, adapterType: string): { agentId: string; adapterType: string; credentials: Record<string, string> } {
+  /** Metadata only (see RuntimeIdentityMeta), keyed by env key. */
+  getAgentAdapterCredentials(agentId: string, adapterType: string): { agentId: string; adapterType: string; credentials: Record<string, RuntimeIdentityMeta> } {
     const managed = this.requireAgent(agentId)
     return {
       agentId: managed.id,
       adapterType,
-      credentials: this.readCredentialMap(managed, `adapter:${adapterType}:`),
+      credentials: this.describeCredentials(managed, `adapter:${adapterType}:`),
     }
+  }
+
+  /**
+   * An agent provider's API key, for in-process use only (the daemon's model
+   * listing calls the provider with it). Never returned over HTTP.
+   */
+  readAgentProviderApiKey(agentId: string, providerId: string): string | undefined {
+    const managed = this.requireAgent(agentId)
+    return managed.agent.workspace.getIdentityDecrypted(`provider:${providerId}:apiKey`, managed.derivedKey) ?? undefined
   }
 
   async attachAgentAdapter(agentId: string, adapterType: string, config: AdapterInstanceConfig): Promise<{ agentId: string; adapterType: string; success: true; alreadyAttached: boolean; config: AgentConfig }> {
@@ -2218,40 +2262,90 @@ export class RuntimeService extends EventEmitter {
     return this.startAgent(managed.id)
   }
 
-  private setIdentityValue(managed: ManagedRuntimeAgent, purpose: string, value: string): void {
-    if (managed.agent.workspace.isPasswordProtected() && !managed.derivedKey) {
+  /**
+   * Owner credential write (HTTP credential routes). Returns true when a
+   * locked sealed value was discarded (`replace`).
+   *
+   * While the covering envelope is locked here a plain write is refused
+   * (409 credentials_locked): it would destroy a sealed value, or store a
+   * new one unsealed. `replace: true` is the owner's explicit override: the
+   * locked sealed row is deleted, the new value stored plain and sealed on
+   * the next unlock (sealPlainRowsIntoEnvelopes), and the replace logged to
+   * the agent's adf_logs. Agent code never reaches this (set_identity /
+   * shell export write through AdfWorkspace.setIdentity, which keeps
+   * refusing).
+   */
+  private setIdentityValue(managed: ManagedRuntimeAgent, purpose: string, value: string, opts: RuntimeCredentialWriteOptions = {}): boolean {
+    const workspace = managed.agent.workspace
+    if (workspace.isPasswordProtected() && !managed.derivedKey) {
       throw new Error('Identity keystore is locked')
     }
     if (managed.derivedKey) {
       const { ciphertext, iv } = encrypt(Buffer.from(value, 'utf-8'), managed.derivedKey)
-      const kdfParamsJson = managed.agent.workspace.getDatabase().getIdentity('crypto:kdf:params')
-      managed.agent.workspace.getDatabase().setIdentityRaw(
+      const kdfParamsJson = workspace.getDatabase().getIdentity('crypto:kdf:params')
+      workspace.getDatabase().setIdentityRaw(
         purpose,
         ciphertext,
         'aes-256-gcm',
         iv,
         kdfParamsJson,
       )
-    } else {
-      // Sealed rows must never be replaced by a plaintext write while their
-      // envelope is locked here (setIdentity refuses too; this gives a 409).
-      const state = managed.agent.workspace.getEnvelopeState('credentials')
-      if (!purpose.startsWith('crypto:') && (state === 'locked' || state === 'foreign')) {
-        throw new RuntimeLoopError(
-          `The credentials envelope of this agent is ${state} on this daemon — refusing to store "${purpose}" unsealed. ${CREDENTIALS_UNLOCK_HINT}`,
-          409,
-        )
-      }
-      managed.agent.workspace.setIdentity(purpose, value)
+      return false
     }
+    if (purpose.startsWith('crypto:')) {
+      // Key material is managed by provisioning, never replaced by an owner write.
+      if (opts.replace) throw new RuntimeLoopError(`"${purpose}" is key material and cannot be replaced over the API.`, 400)
+      workspace.setIdentity(purpose, value)
+      return false
+    }
+    const state = workspace.getEnvelopeState('credentials')
+    const envelopeLocked = state === 'locked' || state === 'foreign'
+    const row = workspace.getIdentityRow(purpose)
+    const rowEnvelope = row ? envelopeFromAlgo(row.encryption_algo) : null
+    const rowLocked = rowEnvelope !== null && workspace.getEnvelopeState(rowEnvelope) !== 'unlocked'
+    if (!envelopeLocked && !rowLocked) {
+      workspace.setIdentity(purpose, value)
+      return false
+    }
+    if (!opts.replace) {
+      throw new RuntimeLoopError(
+        rowLocked
+          ? `This agent's saved "${purpose}" is sealed and its credentials envelope is ${state} on this daemon, so it can't be read or overwritten. ${CREDENTIALS_UNLOCK_HINT} Or replace it (replace: true): the old value is discarded.`
+          : `The credentials envelope of this agent is ${state} on this daemon — refusing to store "${purpose}" unsealed. ${CREDENTIALS_UNLOCK_HINT} Or store it anyway (replace: true): it is sealed once the envelope unlocks.`,
+        409,
+        CREDENTIALS_LOCKED_CODE,
+      )
+    }
+    const codeAccess = row?.code_access ?? false
+    if (rowLocked) workspace.deleteIdentity(purpose)
+    workspace.setIdentity(purpose, value, codeAccess)
+    const message = rowLocked
+      ? `Owner replaced locked sealed credential "${purpose}" (the old value was discarded unread); the new value is stored unsealed until the credentials envelope unlocks.`
+      : `Owner stored credential "${purpose}" while the credentials envelope is ${state}; it is stored unsealed until the envelope unlocks.`
+    console.warn(`[RuntimeService] ${managed.config.name}: ${message}`)
+    // Straight to adf_logs (not the agent's log-level filter): an owner override is always recorded.
+    try { workspace.getDatabase().insertLog('warn', 'runtime', 'credential_replaced', purpose, message) } catch { /* non-fatal */ }
+    return rowLocked
   }
 
-  private readCredentialMap(managed: ManagedRuntimeAgent, prefix: string): Record<string, string> {
-    const credentials: Record<string, string> = {}
-    const purposes = managed.agent.workspace.listIdentityPurposes(prefix)
-    for (const purpose of purposes) {
-      const value = managed.agent.workspace.getIdentityDecrypted(purpose, managed.derivedKey)
-      if (value !== null) credentials[purpose.slice(prefix.length)] = value
+  private describeIdentity(managed: ManagedRuntimeAgent, purpose: string): RuntimeIdentityMeta {
+    const workspace = managed.agent.workspace
+    const row = workspace.getIdentityRow(purpose)
+    if (!row) return { purpose, present: false, storage: null, sealed: false, locked: false, length: null, code_access: false }
+    const envelope = envelopeFromAlgo(row.encryption_algo)
+    const storage = envelope ? 'sealed' : row.encryption_algo === 'plain' ? 'plain' : 'password'
+    const locked = envelope ? workspace.getEnvelopeState(envelope) !== 'unlocked' : storage === 'password' && !managed.derivedKey
+    let length: number | null = null
+    if (!locked && !purpose.startsWith('crypto:')) {
+      try { length = workspace.getIdentityDecrypted(purpose, managed.derivedKey)?.length ?? null } catch { length = null }
+    }
+    return { purpose, present: true, storage, sealed: envelope !== null, locked, length, code_access: row.code_access }
+  }
+
+  private describeCredentials(managed: ManagedRuntimeAgent, prefix: string): Record<string, RuntimeIdentityMeta> {
+    const credentials: Record<string, RuntimeIdentityMeta> = {}
+    for (const purpose of managed.agent.workspace.listIdentityPurposes(prefix)) {
+      credentials[purpose.slice(prefix.length)] = this.describeIdentity(managed, purpose)
     }
     return credentials
   }

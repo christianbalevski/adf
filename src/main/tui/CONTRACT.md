@@ -313,15 +313,25 @@ body, unreachable }`. Types in `api/types.ts` are type-imported from the daemon
   acceptTemplateReview(id, password?) putTemplateConfig(id, config)
   putTemplateFile(id, path, content) removeTemplateFile(id, path)`
 - channels (per agent; "channel adapters" in the API): `setAdapterCredential(id,
-  type, envKey, value)` (sealed in the agent's identity store) ·
+  type, envKey, value, {replace?})` (sealed in the agent's identity store) ·
+  `adapterCredentials(id, type)` (metadata per env key: present, sealed,
+  locked, length; never values) ·
   `attachAdapter(id, type, config)` (switches it on) · `detachAdapter(id,
   type)` (also deletes its credentials); live state: `agentAdapters`
 - MCP servers (per agent): `attachMcpServer(id, server)` · `restartMcpServer(id,
   name)` (connects it now; the outcome has tools found or the error) ·
   `detachMcpServer(id, name, credentialNamespace?)` · `setMcpCredential(id,
-  namespace, key, value)` (sealed, `mcp:<package or name>:<KEY>`) ·
+  namespace, key, value, {replace?})` (sealed, `mcp:<package or name>:<KEY>`) ·
+  `mcpCredentials(id, namespace)` (metadata only, like `adapterCredentials`) ·
   `installMcpPackage('npm'|'python', pkg)` (long timeout); live state:
   `agentMcp`
+- locked credentials: a credential save answers 409 `credentials_locked`
+  (`isCredentialsLocked(err)`) while the agent's credentials envelope is
+  locked on the daemon. The channel / MCP dialogs then offer Unlock (identity
+  flow, the setup resumes after) · Replace (confirmed; re-sends with
+  `replace: true`, the old value is discarded unread) · Cancel (back to the
+  form as typed). Edit forms show "set • (hidden)" / "set • locked" / "not
+  set" from the metadata readers, never a value.
 - API-key providers: `addProvider({type, name?, baseUrl?, defaultModel?,
   preset?, apiKey?})` (POST /runtime/providers: the key goes to the daemon's
   secret store, never the settings file, never returned) · `removeProvider(id)`

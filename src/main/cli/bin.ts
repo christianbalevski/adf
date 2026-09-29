@@ -22,14 +22,22 @@ const DAEMON_HELP = `Usage: adf daemon [--port <n>] [--host <h>] [--settings <fi
        adf daemon start [--port <n>] [--force]
        adf daemon status | stop | restart [--port <n>]
        adf daemon logs [-f] [-n <lines>] [--port <n>]
+       adf daemon token
 
 Without a subcommand the daemon runs in the foreground (Ctrl+C stops it).
 start runs it in the background, like adf does on its own when it needs one;
 the log goes to <data dir>/logs/adf-daemon.log. stop is graceful: agents are
 unloaded and compute containers stopped.
 
+Every request but GET /health needs the daemon's access token. adf reads it
+on this machine by itself (<data dir>/daemon-token, created on first start);
+token prints it for a client elsewhere (--token or ADF_DAEMON_TOKEN there).
+ADF_DAEMON_TOKEN overrides the file, and is required with a non-loopback
+--host (plus ADF_DAEMON_ALLOWED_HOSTS for host names clients use).
+
 Environment: ADF_DAEMON_PORT, ADF_DAEMON_HOST, ADF_DAEMON_SETTINGS,
-ADF_USER_DATA_DIR, ADF_DAEMON_PIDFILE`
+ADF_USER_DATA_DIR, ADF_DAEMON_PIDFILE, ADF_DAEMON_TOKEN,
+ADF_DAEMON_ALLOWED_HOSTS`
 
 /** Maps `adf daemon` flags onto the env the daemon reads at boot. */
 export function applyDaemonArgs(args: string[], env: NodeJS.ProcessEnv = process.env): void {
@@ -48,7 +56,7 @@ export function applyDaemonArgs(args: string[], env: NodeJS.ProcessEnv = process
   }
 }
 
-const DAEMON_SUBCOMMANDS = new Set(['start', 'status', 'stop', 'restart', 'logs'])
+const DAEMON_SUBCOMMANDS = new Set(['start', 'status', 'stop', 'restart', 'logs', 'token'])
 
 async function daemonSubcommand(sub: string, args: string[]): Promise<number> {
   const control = await import('./daemon-control')
@@ -89,6 +97,19 @@ async function daemonSubcommand(sub: string, args: string[]): Promise<number> {
         if (!result.stopped) return 1
       }
       return await start()
+    }
+    case 'token': {
+      // stdout carries only the token (pipeable); where it came from goes to stderr.
+      if (process.env.ADF_DAEMON_TOKEN) {
+        process.stderr.write('(from ADF_DAEMON_TOKEN)\n')
+        out(`${process.env.ADF_DAEMON_TOKEN}\n`)
+        return 0
+      }
+      const { ensureDaemonToken } = await import('../daemon/daemon-token')
+      const { token, path } = ensureDaemonToken(control.daemonPaths(target.port).dataDir)
+      process.stderr.write(`(${path})\n`)
+      out(`${token}\n`)
+      return 0
     }
     case 'logs': {
       const follow = rest.includes('-f') || rest.includes('--follow')

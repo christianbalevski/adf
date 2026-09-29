@@ -1459,7 +1459,7 @@ Grouped by area, then category.
 ### HTTP API — Identity & Credentials
 
 - **GET /agents/{id}/identities, /identity, /identity/entries** — identity metadata without secret values.
-- **GET/PUT/DELETE /agents/{id}/identity/{purpose}** — decrypted identity value read/write/delete.
+- **GET/PUT/DELETE /agents/{id}/identity/{purpose}** — metadata read (never the value) / write (`replace: true` discards a locked sealed value) / delete.
 - **PATCH /identity/{purpose}/code-access** — gate code-execution readability of a key.
 - **DELETE /agents/{id}/identity-prefix** — bulk delete by purpose prefix.
 - **GET/PUT/DELETE /agents/{id}/identity/password** — legacy manual password status/set/remove.

@@ -22,6 +22,7 @@ import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
 import { noteAutostartReport } from './tracked-dirs'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
+import { ensureDaemonToken } from './daemon-token'
 import { DaemonIdentity, readBootPassphrase } from './daemon-identity'
 import { DaemonAgentFactory } from './daemon-agent-factory'
 import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
@@ -111,6 +112,21 @@ try {
 } catch (err) {
   console.error('[ADF Daemon] Envelope key unavailable — credentials envelopes stay locked on this daemon:', err instanceof Error ? err.message : err)
 }
+// --- Access token ------------------------------------------------------------
+// Every HTTP route but GET /health requires it (request-guard.ts). Local
+// clients read the file; ADF_DAEMON_TOKEN overrides it (and is what remote
+// clients use). Failing to write the file is fatal: an unauthenticated
+// daemon is exactly what the token exists to prevent.
+let daemonToken: string
+if (process.env.ADF_DAEMON_TOKEN) {
+  daemonToken = process.env.ADF_DAEMON_TOKEN
+  console.log('[ADF Daemon] Access token: ADF_DAEMON_TOKEN')
+} else {
+  const minted = ensureDaemonToken(dirname(settingsPath))
+  daemonToken = minted.token
+  console.log(`[ADF Daemon] Access token: ${minted.path}${minted.created ? ' (new)' : ''} — local adf clients read it automatically; print it with: adf daemon token`)
+}
+
 const ownerIdentity = new DaemonIdentity({
   settings,
   settingsPath,
@@ -242,6 +258,7 @@ const daemon = new DaemonHost({
   },
   host,
   port,
+  token: daemonToken,
   pidFile,
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).

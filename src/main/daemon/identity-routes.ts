@@ -1,9 +1,9 @@
 /**
  * Owner identity + agent creation routes (registered by createDaemonHttpApi).
  *
- * Secret-moving routes (create returns the phrase; restore/unlock take the
- * phrase or passphrase) answer loopback callers only, on top of the daemon's
- * ADF_DAEMON_TOKEN auth. The phrase appears in exactly one response body
+ * Secret-moving and state-changing identity routes (create returns the
+ * phrase; restore/unlock take the phrase or passphrase; lock; confirm-backup)
+ * answer loopback callers only, on top of the daemon's bearer-token auth. The phrase appears in exactly one response body
  * (POST /identity/create) and nowhere else: not in status, errors, logs, or
  * events.
  */
@@ -17,7 +17,7 @@ export interface IdentityRouteDeps {
   agentFactory?: DaemonAgentFactory
 }
 
-function isLoopbackAddress(address: string | undefined): boolean {
+export function isLoopbackAddress(address: string | undefined): boolean {
   if (!address) return false
   return address === '::1' || address.startsWith('127.') || address.startsWith('::ffff:127.')
 }
@@ -100,8 +100,9 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
     }
   })
 
-  server.post('/identity/lock', async (_request, reply) => {
+  server.post('/identity/lock', async (request, reply) => {
     if (!deps.identity) return unavailable(reply)
+    if (!requireLoopback(request, reply)) return reply
     try {
       return { identity: deps.identity.lock() }
     } catch (err) {
@@ -109,8 +110,9 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
     }
   })
 
-  server.post('/identity/confirm-backup', async (_request, reply) => {
+  server.post('/identity/confirm-backup', async (request, reply) => {
     if (!deps.identity) return unavailable(reply)
+    if (!requireLoopback(request, reply)) return reply
     try {
       return { identity: deps.identity.confirmBackup() }
     } catch (err) {

@@ -6,13 +6,64 @@ The daemon is the headless ADF runtime that serves a local Fastify API for headl
 http://127.0.0.1:7385
 ```
 
-Unless configured otherwise, bind the daemon API to localhost only. The current API has no authentication layer.
+Unless configured otherwise, bind the daemon API to localhost only.
+
+## Authentication and cross-site protection
+
+A web page in the user's browser can send requests to `127.0.0.1:7385` (CSRF)
+or point its own hostname at it (DNS rebinding). Every request passes three
+checks, in this order:
+
+1. **Host allow-list.** The `Host` header must name this daemon: `127.0.0.1`,
+   `localhost` or `[::1]` with the bound port, or the bind address itself. A
+   daemon bound off loopback also accepts any IP literal on the bound port and
+   the names in `ADF_DAEMON_ALLOWED_HOSTS` (comma/space separated, `name` = any
+   port, `name:port`). Anything else: `403`, `code: "host_not_allowed"`.
+2. **No browser cross-site context.** A request carrying an `Origin` that is
+   not one of the allowed hosts (including `Origin: null`), or
+   `Sec-Fetch-Site: cross-site` / `same-site`, gets `403`,
+   `code: "cross_origin"`. The daemon never sends CORS headers, so preflighted
+   browser requests fail too. The CLI and terminal app send neither header.
+3. **Bearer token** on every route except `GET /health` (including
+   `/openapi.json` and the `/events` SSE stream, where it goes in the header:
+   clients use `fetch`, not `EventSource`):
+   `Authorization: Bearer <token>`, compared in constant time. Missing or
+   wrong: `401`, `code: "unauthorized"`, with an `error` telling the user to
+   update `adf` or run `adf daemon token`.
+
+**The token.** On first start the daemon mints a random per-install token into
+`<settings dir>/daemon-token` (mode 0600, next to `adf-settings.json` and
+`runtime-enc-key`; the settings dir follows `ADF_DAEMON_SETTINGS` /
+`ADF_USER_DATA_DIR`). A malformed file is simply replaced; the token guards
+nothing at rest. `ADF_DAEMON_TOKEN` overrides the file and is **required**
+when the daemon binds a non-loopback host.
+
+**Clients on the daemon's machine** (the `adf` CLI, the terminal app, `adf
+daemon start|stop|status`, auto-start) read the file from the same settings
+dir by themselves; the terminal app re-reads it once on a `401` (e.g. right
+after the daemon first started). The local token is only ever sent to loopback
+URLs, never to a remote daemon.
+
+**Remote clients.** On the daemon host run `adf daemon token` (prints only the
+token on stdout; its source on stderr), then on the client pass
+`--token <token>` or set `ADF_DAEMON_TOKEN`.
+
+**Loopback-only routes.** Independent of the token, these answer loopback
+callers only (`403`, `code: "loopback_only"`): `POST /identity/create`,
+`/identity/restore`, `/identity/unlock`, `/identity/lock`,
+`/identity/confirm-backup`, and `POST /daemon/shutdown`.
+
+**Compatibility.** An older `adf` talking to this daemon gets the clear `401`
+message above. A newer `adf` talking to an older daemon still works: the older
+daemon ignores the `Authorization` header unless it was started with
+`ADF_DAEMON_TOKEN`.
 
 ## Health
 
 ### `GET /health`
 
-Returns a basic liveness response.
+Returns a basic liveness response. The only route without a token (the Host
+and Origin checks still apply).
 
 ```json
 {
@@ -381,9 +432,9 @@ ADF Studio on the same machine cannot read the phrase (passphrase-file
 storage), it never mints a replacement owner or restamps agents: it shows
 "Restore your identity" and takes the same 12 words (Settings → Identity).
 
-Routes that move secrets (`create`, `restore`, `unlock`) answer loopback
-callers only (`403`, `code: "loopback_only"` otherwise), on top of
-`ADF_DAEMON_TOKEN`. The seed phrase appears in the `POST /identity/create`
+Routes that move secrets or change identity state (`create`, `restore`,
+`unlock`, `lock`, `confirm-backup`) answer loopback callers only (`403`,
+`code: "loopback_only"` otherwise), on top of the bearer token. The seed phrase appears in the `POST /identity/create`
 response and nowhere else. Errors are `{ "error": "...", "code": "..." }`.
 
 ### `GET /identity`
@@ -1121,7 +1172,40 @@ Lists identity metadata without secret values.
 
 ### Identity and Credential Mutation
 
-The daemon exposes loaded-agent identity storage directly for headless clients. Secret-bearing endpoints return values because they are intended for localhost automation; do not expose the daemon API on an untrusted interface.
+The daemon exposes loaded-agent identity storage for headless clients. Values
+go in, never out: every read returns **metadata only**, and stored values and
+key material (`crypto:signing:*`, `crypto:envelope:*`, owner/runtime keys)
+never leave the process by any route. One stored value is described as:
+
+```json
+{
+  "purpose": "adapter:telegram:BOT_TOKEN",
+  "present": true,
+  "storage": "sealed",
+  "sealed": true,
+  "locked": false,
+  "length": 46,
+  "code_access": false
+}
+```
+
+`storage` is `sealed` (envelope-encrypted), `plain`, `password` (legacy
+whole-file password) or `null` (absent). `locked`: stored but not readable in
+this process (its envelope or password is locked). `length` is `null` for key
+material (`crypto:*`) and for locked values. No timestamp is stored.
+
+**Writes while locked.** While the agent's credentials envelope is locked (or
+foreign) on this daemon, a credential `PUT` is refused with `409`,
+`code: "credentials_locked"`: a plain write would destroy a sealed value it
+cannot read, or store a new one unsealed. Unlock first (`adf identity
+unlock|restore`, `/identity` in the terminal app), or send `"replace": true`:
+the owner's explicit override. A locked sealed value is then discarded unread,
+the new value is stored plain and sealed automatically once the envelope
+unlocks, and the replace is logged to the agent's `adf_logs` (event
+`credential_replaced`, target = the purpose). The response carries
+`"replaced": true` when an old value was discarded. `replace` is not accepted
+for key material (`crypto:*`, `400`). Agent code (`set_identity`, shell
+export) has no such override and stays refused while locked.
 
 Identity endpoints:
 
@@ -1129,8 +1213,8 @@ Identity endpoints:
 |--------|------|-------------|
 | `GET` | `/agents/:id/identity?prefix=...` | List identity purposes, optionally filtered by prefix |
 | `GET` | `/agents/:id/identity/entries` | List identity metadata without secret values |
-| `GET` | `/agents/:id/identity/:purpose` | Read one decrypted identity value |
-| `PUT` | `/agents/:id/identity/:purpose` | Set one identity value with `{ "value": "..." }` |
+| `GET` | `/agents/:id/identity/:purpose` | Metadata of one stored value (`{ agentId, purpose, present, storage, sealed, locked, length, code_access }`), never the value |
+| `PUT` | `/agents/:id/identity/:purpose` | Set one identity value with `{ "value": "...", "replace"?: true }` |
 | `DELETE` | `/agents/:id/identity/:purpose` | Delete one identity value |
 | `DELETE` | `/agents/:id/identity-prefix?prefix=...` | Delete identity values by purpose prefix |
 | `PATCH` | `/agents/:id/identity/:purpose/code-access` | Set code access with `{ "codeAccess": true }` |
@@ -1147,8 +1231,8 @@ Provider credential endpoints:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/agents/:id/providers/:providerId/credential` | Store `provider:{providerId}:apiKey` with `{ "value": "..." }` |
-| `GET` | `/agents/:id/providers/:providerId/credentials` | Return stored provider credentials and provider config overrides |
+| `PUT` | `/agents/:id/providers/:providerId/credential` | Store `provider:{providerId}:apiKey` with `{ "value": "...", "replace"?: true }` |
+| `GET` | `/agents/:id/providers/:providerId/credentials` | `{ agentId, providerId, credentials: { apiKey: <metadata> }, providerConfig? }`: credential metadata (no values) and provider config overrides |
 | `POST` | `/agents/:id/providers` | Upsert an ADF provider config with `{ "provider": { ... } }` |
 | `DELETE` | `/agents/:id/providers/:providerId` | Remove provider config and `provider:{providerId}:*` identity rows |
 
@@ -1156,8 +1240,8 @@ MCP credential endpoints:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/agents/:id/mcp/credentials` | Store `mcp:{npmPackage}:{envKey}` with `{ "npmPackage": "...", "envKey": "...", "value": "..." }` |
-| `GET` | `/agents/:id/mcp/credentials?npmPackage=...` | Return all credentials for an MCP package namespace |
+| `PUT` | `/agents/:id/mcp/credentials` | Store `mcp:{npmPackage}:{envKey}` with `{ "npmPackage": "...", "envKey": "...", "value": "...", "replace"?: true }` |
+| `GET` | `/agents/:id/mcp/credentials?npmPackage=...` | `{ agentId, npmPackage, credentials: { <envKey>: <metadata> } }` for an MCP package namespace (no values) |
 | `POST` | `/agents/:id/mcp/servers` | Attach an ADF `McpServerConfig` with `{ "server": { ... } }` |
 | `DELETE` | `/agents/:id/mcp/servers/:serverName?credentialNamespace=...` | Remove server config and matching MCP identity rows |
 
@@ -1165,8 +1249,8 @@ Adapter credential endpoints:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/agents/:id/adapters/credentials` | Store `adapter:{adapterType}:{envKey}` with `{ "adapterType": "...", "envKey": "...", "value": "..." }` |
-| `GET` | `/agents/:id/adapters/credentials?adapterType=...` | Return all credentials for an adapter type |
+| `PUT` | `/agents/:id/adapters/credentials` | Store `adapter:{adapterType}:{envKey}` with `{ "adapterType": "...", "envKey": "...", "value": "...", "replace"?: true }` |
+| `GET` | `/agents/:id/adapters/credentials?adapterType=...` | `{ agentId, adapterType, credentials: { <envKey>: <metadata> } }` for an adapter type (no values) |
 | `POST` | `/agents/:id/adapters` | Attach/update an adapter config with `{ "adapterType": "...", "config": { ... } }` |
 | `DELETE` | `/agents/:id/adapters/:adapterType` | Remove adapter config and `adapter:{adapterType}:*` identity rows |
 
@@ -2315,9 +2399,14 @@ Common errors:
 | Status | Shape | Cause |
 |--------|-------|-------|
 | `400` | `{ "error": "..." }` | Invalid request body or query |
+| `401` | `{ "error": "...", "code": "unauthorized" }` | Missing or wrong bearer token (see [Authentication](#authentication-and-cross-site-protection)) |
+| `403` | `{ "error": "...", "code": "host_not_allowed" }` | `Host` header not in the allow-list (DNS rebinding protection) |
+| `403` | `{ "error": "...", "code": "cross_origin" }` | Foreign `Origin`, or `Sec-Fetch-Site: cross-site/same-site` |
+| `403` | `{ "error": "...", "code": "loopback_only" }` | Identity secret/state route or shutdown called from another machine |
 | `403` | `{ "error": "...", "code": "AGENT_REVIEW_REQUIRED" }` | Review gate blocked loading |
 | `404` | `{ "error": "Unknown agent ..." }` | Agent ID is not loaded |
 | `409` | `{ "error": "..." }` | Target resource is in a state that does not permit the operation (e.g. resolving a non-pending task) |
+| `409` | `{ "error": "...", "code": "credentials_locked" }` | Credential write while the agent's credentials envelope is locked here (unlock, or retry with `"replace": true`) |
 | `405` | `{ "error": "..." }` | Settings store is read-only |
 | `503` | `{ "error": "..." }` | Optional service is not configured |
 | `500` | `{ "error": "..." }` | Runtime error |

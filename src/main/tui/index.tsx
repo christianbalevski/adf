@@ -160,7 +160,7 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
     return 2
   }
 
-  const client = new DaemonClient({ baseUrl: options.url, token: options.token, fetch: io.fetch })
+  const client = new DaemonClient({ baseUrl: options.url, token: options.token, fetch: io.fetch, localToken: true, env: io.env })
   const store = createTuiStore({ client, initialView: options.view })
   const prefs = loadPrefs(defaultPrefsPath(io.env))
   if (prefs.sidebar === false) store.actions.setViewState(LAYOUT_STATE_KEY, { sidebarHidden: true })

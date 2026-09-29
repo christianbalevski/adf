@@ -100,20 +100,30 @@ import {
   type AdapterInstanceConfig,
   type McpServerConfig,
   type McpRestartResult,
+  type CredentialMetaResult,
+  type CredentialWriteOptions,
 } from './types'
 
 export interface DaemonClientOptions {
   /** Daemon base URL. Defaults to `--url` semantics: ADF_DAEMON_URL, then http://127.0.0.1:7385. */
   baseUrl?: string
-  /** Bearer token. Defaults to ADF_DAEMON_TOKEN. */
+  /** Bearer token. Defaults to ADF_DAEMON_TOKEN (then the local token file, with `localToken`). */
   token?: string
+  /**
+   * With no token given: read this machine's daemon token file (loopback
+   * URLs only; daemon-token.ts), and re-read it once on a 401. The terminal
+   * app sets it; tests leave it off so they never read real user files.
+   */
+  localToken?: boolean
+  /** Environment for the token lookup. Defaults to process.env. */
+  env?: NodeJS.ProcessEnv
   /** Injected for tests. */
   fetch?: typeof fetch
   /** Per-request timeout for non-streaming calls. Default 15s. */
   timeoutMs?: number
 }
 
-const { resolveDaemonToken, resolveDaemonUrl } = cjs(daemonUrlNs)
+const { localDaemonToken, resolveDaemonToken, resolveDaemonUrl } = cjs(daemonUrlNs)
 
 type Query = Record<string, string | number | boolean | undefined | null>
 
@@ -139,14 +149,14 @@ function sameOrigin(a: string, b: string): boolean {
 
 export class DaemonClient {
   readonly baseUrl: string
-  private readonly token: string | undefined
+  private token: string | undefined
   private readonly fetchImpl: typeof fetch
   private readonly timeoutMs: number
   private readonly options: DaemonClientOptions
 
   constructor(options: DaemonClientOptions = {}) {
     this.baseUrl = resolveDaemonUrl(options.baseUrl)
-    this.token = resolveDaemonToken(options.token)
+    this.token = resolveDaemonToken(options.token, options.env ?? process.env, options.localToken ? this.baseUrl : undefined)
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis)
     this.timeoutMs = options.timeoutMs ?? 15_000
     this.options = options
@@ -182,7 +192,22 @@ export class DaemonClient {
     }
   }
 
-  async request<T>(method: Method, path: string, options: RequestOptions = {}): Promise<T> {
+  /**
+   * The daemon answered 401: with `localToken` and no explicit token, pick up
+   * a token file that appeared or changed since (daemon first start). True
+   * when the token changed, so the request is worth one retry.
+   */
+  private refreshLocalToken(): boolean {
+    if (!this.options.localToken || this.options.token) return false
+    const env = this.options.env ?? process.env
+    if (env.ADF_DAEMON_TOKEN) return false
+    const fresh = localDaemonToken(this.baseUrl, env)
+    if (!fresh || fresh === this.token) return false
+    this.token = fresh
+    return true
+  }
+
+  async request<T>(method: Method, path: string, options: RequestOptions = {}, retried = false): Promise<T> {
     const controller = new AbortController()
     const timeoutMs = options.timeoutMs ?? this.timeoutMs
     const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs)
@@ -209,6 +234,7 @@ export class DaemonClient {
       try { body = JSON.parse(text) } catch { body = text }
     }
     if (!response.ok) {
+      if (response.status === 401 && !retried && this.refreshLocalToken()) return this.request<T>(method, path, options, true)
       const message = isRecord(body) && typeof body.error === 'string'
         ? body.error
         : `HTTP ${response.status} ${response.statusText}`
@@ -239,7 +265,8 @@ export class DaemonClient {
 
   /** Live umbilical events (SSE) with auto-reconnect. Call `.start()` on the result. */
   events(options: Omit<EventStreamOptions, 'baseUrl' | 'headers' | 'fetch'>): EventStream {
-    return new EventStream({ ...options, baseUrl: this.baseUrl, headers: this.headers({ Accept: 'text/event-stream' }), fetch: this.fetchImpl })
+    // A function: a reconnect sends the current token (refreshed after a 401).
+    return new EventStream({ ...options, baseUrl: this.baseUrl, headers: () => this.headers({ Accept: 'text/event-stream' }), fetch: this.fetchImpl })
   }
 
   // --- daemon ---------------------------------------------------------------
@@ -759,8 +786,13 @@ export class DaemonClient {
   }
 
   /** Store one env value for an MCP server in the agent's identity store (`mcp:<namespace>:<key>`, sealed). */
-  setMcpCredential(agentId: string, namespace: string, envKey: string, value: string): Promise<{ success: true }> {
-    return this.put(`/agents/${enc(agentId)}/mcp/credentials`, { npmPackage: namespace, envKey, value })
+  setMcpCredential(agentId: string, namespace: string, envKey: string, value: string, opts: CredentialWriteOptions = {}): Promise<{ success: true; replaced?: boolean }> {
+    return this.put(`/agents/${enc(agentId)}/mcp/credentials`, { npmPackage: namespace, envKey, value, ...(opts.replace ? { replace: true } : {}) })
+  }
+
+  /** What is stored for an MCP server's env keys: metadata only, never values. */
+  mcpCredentials(agentId: string, namespace: string): Promise<CredentialMetaResult> {
+    return this.get(`/agents/${enc(agentId)}/mcp/credentials`, { npmPackage: namespace })
   }
 
   /** Install an MCP server package on the daemon host (npm or Python). Synchronous: can take a minute. */
@@ -771,8 +803,13 @@ export class DaemonClient {
   // --- messaging adapters (per agent) -----------------------------------------
 
   /** Store one adapter credential in the agent's identity keystore (sealed under the owner identity). */
-  setAdapterCredential(agentId: string, adapterType: string, envKey: string, value: string): Promise<{ agentId: string; adapterType: string; envKey: string; success: true }> {
-    return this.put(`/agents/${enc(agentId)}/adapters/credentials`, { adapterType, envKey, value })
+  setAdapterCredential(agentId: string, adapterType: string, envKey: string, value: string, opts: CredentialWriteOptions = {}): Promise<{ agentId: string; adapterType: string; envKey: string; success: true; replaced?: boolean }> {
+    return this.put(`/agents/${enc(agentId)}/adapters/credentials`, { adapterType, envKey, value, ...(opts.replace ? { replace: true } : {}) })
+  }
+
+  /** What is stored for a channel's credentials: metadata only, never values. */
+  adapterCredentials(agentId: string, adapterType: string): Promise<CredentialMetaResult> {
+    return this.get(`/agents/${enc(agentId)}/adapters/credentials`, { adapterType })
   }
 
   /** Enable an adapter in the agent config; a running agent starts it. */

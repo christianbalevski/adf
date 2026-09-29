@@ -259,3 +259,82 @@ describe('sealed channel credentials survive a daemon that cannot open them', ()
     expectTokenIntact(file, studioPhrase)
   }, 60_000)
 })
+
+describe('owner replace of a locked sealed credential (replace: true)', () => {
+  function logsOf(runtime: RuntimeService, agentId: string) {
+    const managed = (runtime as unknown as { agents: Map<string, { agent: { workspace: AdfWorkspace } }> }).agents.get(agentId)!
+    return managed.agent.workspace.getLogs(50)
+  }
+
+  it('refuses without replace (409 credentials_locked), discards + stores with replace, logs it, seals on unlock', async () => {
+    const phrase = generateMnemonic()
+    const file = makeStudioAgent(phrase)
+    const { runtime, server } = makeDaemon()
+    const ref = await runtime.loadAgent(file, { enforceReviewGate: false })
+    const url = `/agents/${ref.id}/adapters/credentials`
+
+    // Metadata while locked: present, sealed, locked; never a value.
+    const meta = await server.inject({ method: 'GET', url: `${url}?adapterType=telegram` })
+    expect(meta.json().credentials.TELEGRAM_BOT_TOKEN).toEqual(expect.objectContaining({ present: true, sealed: true, storage: 'sealed', locked: true, length: null }))
+    expect(meta.body).not.toContain(TOKEN)
+
+    const refused = await server.inject({ method: 'PUT', url, payload: { adapterType: 'telegram', envKey: 'TELEGRAM_BOT_TOKEN', value: 'new-token' } })
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json().code).toBe('credentials_locked')
+    expectTokenIntact(file, phrase)
+
+    const replaced = await server.inject({ method: 'PUT', url, payload: { adapterType: 'telegram', envKey: 'TELEGRAM_BOT_TOKEN', value: 'new-token', replace: true } })
+    expect(replaced.statusCode).toBe(200)
+    expect(replaced.json()).toEqual(expect.objectContaining({ success: true, replaced: true }))
+    const after = (await server.inject({ method: 'GET', url: `${url}?adapterType=telegram` })).json().credentials.TELEGRAM_BOT_TOKEN
+    expect(after).toEqual(expect.objectContaining({ present: true, storage: 'plain', sealed: false, locked: false, length: 'new-token'.length }))
+    expect(logsOf(runtime, ref.id).some((l) => l.event === 'credential_replaced' && l.target === TOKEN_PURPOSE && /Owner replaced locked sealed credential/.test(l.message))).toBe(true)
+
+    // The owner identity arrives: the plain value is sealed under the envelope.
+    expect((await server.inject({ method: 'POST', url: '/identity/restore', payload: { mnemonic: phrase } })).json().identity.status).toBe('ready')
+    await vi.waitFor(() => expect(runtime.getAgentStatus(ref.id)?.degraded).toBeUndefined())
+    const sealed = (await server.inject({ method: 'GET', url: `${url}?adapterType=telegram` })).json().credentials.TELEGRAM_BOT_TOKEN
+    expect(sealed).toEqual(expect.objectContaining({ storage: 'sealed', sealed: true, locked: false, length: 'new-token'.length }))
+    await runtime.unloadAgent(ref.id, { mode: 'immediate' })
+    const ws = AdfWorkspace.open(file)
+    try {
+      expect(ws.getIdentityRow(TOKEN_PURPOSE)!.encryption_algo).toBe('env:credentials')
+      ws.unlockEnvelopes({ ownerEncPrivateKey: deriveOwnerEncryptionKey(phrase).privateKeyPkcs8 })
+      expect(ws.getIdentity(TOKEN_PURPOSE)).toBe('new-token')
+    } finally {
+      ws.close()
+    }
+  }, 60_000)
+
+  it('covers every credential PUT route; key material cannot be replaced; agent writes stay refused', async () => {
+    const phrase = generateMnemonic()
+    const file = makeStudioAgent(phrase)
+    const { runtime, server } = makeDaemon()
+    const ref = await runtime.loadAgent(file, { enforceReviewGate: false })
+    const cases: Array<{ url: string; payload: Record<string, unknown> }> = [
+      { url: `/agents/${ref.id}/identity/${encodeURIComponent('custom:thing')}`, payload: { value: 'v1' } },
+      { url: `/agents/${ref.id}/mcp/credentials`, payload: { npmPackage: 'pkg', envKey: 'KEY', value: 'v2' } },
+      { url: `/agents/${ref.id}/providers/openai-main/credential`, payload: { value: 'v3' } },
+    ]
+    for (const c of cases) {
+      const refused = await server.inject({ method: 'PUT', url: c.url, payload: c.payload })
+      expect(refused.statusCode, c.url).toBe(409)
+      expect(refused.json().code).toBe('credentials_locked')
+      const stored = await server.inject({ method: 'PUT', url: c.url, payload: { ...c.payload, replace: true } })
+      expect(stored.statusCode, c.url).toBe(200)
+      // Nothing sealed was there: stored while locked, not a discard.
+      expect(stored.json().replaced).toBeUndefined()
+    }
+    const keyPurpose = encodeURIComponent('crypto:signing:private_key')
+    const keyReplace = await server.inject({ method: 'PUT', url: `/agents/${ref.id}/identity/${keyPurpose}`, payload: { value: 'x', replace: true } })
+    expect(keyReplace.statusCode).toBe(400)
+    const keyMeta = await server.inject({ method: 'GET', url: `/agents/${ref.id}/identity/${keyPurpose}` })
+    expect(keyMeta.json()).toEqual(expect.objectContaining({ present: true, sealed: true, length: null }))
+    expect(keyMeta.json()).not.toHaveProperty('value')
+
+    // Agent-side writes (set_identity / shell export go through AdfWorkspace.setIdentity) stay refused.
+    const managed = (runtime as unknown as { agents: Map<string, { agent: { workspace: AdfWorkspace } }> }).agents.get(ref.id)!
+    expect(() => managed.agent.workspace.setIdentity(TOKEN_PURPOSE, 'agent-write')).toThrow(/sealed/)
+    expectTokenIntact(file, phrase)
+  }, 60_000)
+})

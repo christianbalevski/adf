@@ -29,6 +29,7 @@ The CLI talks to `http://127.0.0.1:7385` by default.
 | `--url <daemon-url>` | Override the daemon base URL |
 | `--url=<daemon-url>` | Same as `--url` |
 | `-u <daemon-url>` | Short form URL override |
+| `--token <token>` | Daemon access token (default `ADF_DAEMON_TOKEN`, else read automatically on the daemon's machine) |
 | `--json` | Print raw JSON responses instead of formatted tables |
 | `--no-daemon` | Never start the daemon automatically (also `ADF_NO_AUTOSTART=1`) |
 | `--version`, `-v` | Print the version |
@@ -39,8 +40,14 @@ You can also set:
 ADF_DAEMON_URL=http://127.0.0.1:7385 npm run adf -- agents
 ```
 
-When the daemon requires a token (`ADF_DAEMON_TOKEN`), set the same variable
-for the CLI; it is sent as `Authorization: Bearer <token>`.
+Every command sends the daemon's access token as `Authorization: Bearer
+<token>`. On the daemon's machine `adf` reads it by itself from
+`<settings dir>/daemon-token` (the same `ADF_DAEMON_SETTINGS` /
+`ADF_USER_DATA_DIR` resolution as the daemon; created on the daemon's first
+start). For a daemon elsewhere, print its token there with `adf daemon token`
+and pass it with `--token <token>` or `ADF_DAEMON_TOKEN` (which also overrides
+the file). The local token is never sent to a non-loopback URL. A `401` means
+the token is missing or wrong (or `adf` predates tokens: update it).
 
 ## Common Commands
 
@@ -83,6 +90,7 @@ so and what to do).
 | `daemon stop` | Graceful stop (`POST /daemon/shutdown`, loopback only): agents unloaded, compute containers stopped. Never a hard kill |
 | `daemon restart` | Stop, then start in the background |
 | `daemon logs [-f] [-n <lines>]` | The background daemon's log, `<data dir>/logs/adf-daemon.log` |
+| `daemon token` | Print this install's daemon access token (`<data dir>/daemon-token`, created if missing; `ADF_DAEMON_TOKEN` when set) for a client on another machine. Only the token goes to stdout |
 
 Each takes `--port <n>` or `--url <url>` (default: `ADF_DAEMON_URL`, then
 `ADF_DAEMON_PORT`, then `http://127.0.0.1:7385`). The data dir is the folder

@@ -25,6 +25,11 @@ export interface SetupMockOptions {
   connectAfterPolls?: number
   /** Answer POST /runtime/providers with 409 secret_store_locked. */
   secretStoreLocked?: boolean
+  /**
+   * The agents' credentials envelopes are locked: credential PUTs answer 409
+   * credentials_locked unless the body says `replace: true`.
+   */
+  credentialsLocked?: boolean
 }
 
 export interface SetupMock {
@@ -41,6 +46,8 @@ export interface SetupMock {
   /** Raw bodies of POST /runtime/providers (tests assert the key went here, and only here). */
   providerBodies: Array<Record<string, unknown>>
   setSecretStoreLocked(on: boolean): void
+  /** Credential PUTs as sent: path + whether `replace` was set (never values). */
+  credentialWrites: Array<{ path: string; replace: boolean }>
   /** agent id → attached MCP server configs. */
   mcpServers: Map<string, Array<Record<string, unknown>>>
   /** agent id → server → live state. */
@@ -65,6 +72,16 @@ export function createSetupFetch(options: SetupMockOptions = {}, next: typeof fe
   const keys = new Map<string, string>()
   const providerBodies: SetupMock['providerBodies'] = []
   let locked = !!options.secretStoreLocked
+  const credentialWrites: SetupMock['credentialWrites'] = []
+  const lockedCredential = (path: string, body: Record<string, unknown>) => {
+    credentialWrites.push({ path, replace: body.replace === true })
+    if (!options.credentialsLocked || body.replace === true) return null
+    return json(409, { error: 'The credentials envelope of this agent is foreign on this daemon.', code: 'credentials_locked' })
+  }
+  /** Metadata like the daemon's GET …/credentials: never values. */
+  const describe = (entries: Array<[string, string]>) => Object.fromEntries(entries.map(([key, value]) => [key, {
+    purpose: key, present: true, storage: 'sealed', sealed: true, locked: !!options.credentialsLocked, length: options.credentialsLocked ? null : value.length, code_access: false,
+  }]))
   const connectAfter = options.connectAfterPolls ?? 1
   const idOf = (idOrHandle: string) => (idOrHandle === 'agent-1' ? AGENT_1_ID : idOrHandle === 'agent-2' ? AGENT_2_ID : idOrHandle)
   for (const [agentId, types] of Object.entries(options.channels ?? {})) {
@@ -153,8 +170,20 @@ export function createSetupFetch(options: SetupMockOptions = {}, next: typeof fe
       log()
       const { adapterType, envKey, value } = body as { adapterType?: string; envKey?: string; value?: string }
       if (typeof adapterType !== 'string' || typeof envKey !== 'string' || typeof value !== 'string') return json(400, { error: 'adapterType, envKey and value are required' })
+      const refused = lockedCredential(url.pathname, body)
+      if (refused) return refused
       credsOf(agentId, adapterType).set(envKey, value)
       return json(200, { agentId, adapterType, envKey, success: true })
+    }
+    if (sub === 'adapters/credentials' && method === 'GET') {
+      const type = url.searchParams.get('adapterType') ?? ''
+      return json(200, { agentId, adapterType: type, credentials: describe([...credsOf(agentId, type).entries()]) })
+    }
+    if (sub === 'mcp/credentials' && method === 'GET') {
+      const ns = url.searchParams.get('npmPackage') ?? ''
+      const prefix = `mcp:${ns}:`
+      const entries = [...(mcpCredentials.get(agentId)?.entries() ?? [])].filter(([k]) => k.startsWith(prefix)).map(([k, v]) => [k.slice(prefix.length), v] as [string, string])
+      return json(200, { agentId, npmPackage: ns, credentials: describe(entries) })
     }
     if (sub === 'adapters' && method === 'POST') {
       log()
@@ -210,6 +239,8 @@ export function createSetupFetch(options: SetupMockOptions = {}, next: typeof fe
       log()
       const { npmPackage, envKey, value } = body as { npmPackage?: string; envKey?: string; value?: string }
       if (!npmPackage || !envKey || typeof value !== 'string') return json(400, { error: 'npmPackage, envKey and value are required' })
+      const refused = lockedCredential(url.pathname, body)
+      if (refused) return refused
       const creds = mcpCredentials.get(agentId) ?? mcpCredentials.set(agentId, new Map()).get(agentId)!
       creds.set(`mcp:${npmPackage}:${envKey}`, value)
       return json(200, { agentId, npmPackage, envKey, success: true })
@@ -254,6 +285,7 @@ export function createSetupFetch(options: SetupMockOptions = {}, next: typeof fe
     keys,
     providerBodies,
     setSecretStoreLocked(on) { locked = on },
+    credentialWrites,
     mcpServers,
     mcpStates,
     mcpTools,

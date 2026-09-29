@@ -16,7 +16,8 @@ import { formatClock, truncate } from '../ui/text'
 import { Form, type FieldSpec, type FormValues } from '../views/loops/Form'
 import { LinesView } from '../views/inspect/LinesView'
 import type { Line } from '../views/inspect/format'
-import type { AgentConfig, AgentMcpDiagnostics, McpRestartResult, McpServerConfig } from '../api/types'
+import { isCredentialsLocked, type AgentConfig, type AgentMcpDiagnostics, type CredentialMeta, type McpRestartResult, type McpServerConfig } from '../api/types'
+import { LockedCredential, credentialPlaceholder } from './LockedCredential'
 import type { OverlayProps } from '../views/types'
 import { channelsIdentityReady, identityFirst } from './open'
 import {
@@ -51,6 +52,26 @@ type Step =
   | { kind: 'form'; row: McpSourceRow }
   | { kind: 'env'; name: string }
   | { kind: 'work'; name: string; steps: WorkStep[]; outcome?: McpRestartResult; done: boolean }
+  | { kind: 'locked'; name: string; confirming: boolean }
+
+/**
+ * A credential save the daemon refused as locked, kept (component memory
+ * only) for Replace: the values to seal, the steps shown so far, and where
+ * Cancel returns to with the form as typed.
+ */
+interface PendingSeal {
+  name: string
+  server: McpServerConfig
+  env: Array<readonly [string, string]>
+  steps: WorkStep[]
+  /** Index of the sealing step in `steps`. */
+  index: number
+  /** Add flow: attach the server after sealing. */
+  attach: boolean
+  back: Step
+  values: FormValues
+  resume: Record<string, unknown>
+}
 
 type McpState = AgentMcpDiagnostics['states'][number]
 
@@ -81,6 +102,9 @@ export function McpDialog({ overlay, close, width, height }: OverlayProps) {
   })
   const [errors, setErrors] = useState<Record<string, string | undefined>>({})
   const [formError, setFormError] = useState<string | null>(null)
+  // What is stored for the server whose credentials are being edited (metadata only; null = unknown).
+  const [stored, setStored] = useState<Record<string, CredentialMeta> | null>(null)
+  const pending = useRef<PendingSeal | null>(null)
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
   const direct = props.add !== undefined || !!props.server
@@ -168,6 +192,7 @@ export function McpDialog({ overlay, close, width, height }: OverlayProps) {
       steps[i] = { ...steps[i], status: 'failed', note: err instanceof Error ? err.message : String(err) }
       if (alive.current) setStep({ kind: 'work', name: form.name, done: true, steps: [...steps] })
     }
+    const typedValues = values
     setValues({})
     let i = 0
     if (pkg) {
@@ -178,22 +203,87 @@ export function McpDialog({ overlay, close, width, height }: OverlayProps) {
       } catch (err) { fail(i, err); return }
       i++
     }
-    if (Object.keys(env).length) {
-      steps[i] = { ...steps[i], status: 'running' }; show()
+    await sealAndFinish({
+      name: form.name,
+      server,
+      env: Object.entries(env),
+      steps,
+      index: i,
+      attach: true,
+      back: { kind: 'form', row },
+      values: typedValues,
+      resume: { agentId, add: props.add ?? '' },
+    }, false)
+  }
+
+  /**
+   * Seal the credentials (when any), attach the server (add flow), connect.
+   * A locked envelope pauses here on the Unlock / Replace / Cancel step;
+   * `replace` is the owner's confirmed override.
+   */
+  const sealAndFinish = async (job: PendingSeal, replace: boolean) => {
+    const { steps, name, server } = job
+    const show = () => { if (alive.current) setStep({ kind: 'work', name, done: false, steps: [...steps] }) }
+    const fail = (at: number, err: unknown) => {
+      steps[at] = { ...steps[at], status: 'failed', note: err instanceof Error ? err.message : String(err) }
+      if (alive.current) setStep({ kind: 'work', name, done: true, steps: [...steps] })
+    }
+    let i = job.index
+    if (job.env.length) {
+      steps[i] = { ...steps[i], status: 'running', ...(replace ? { note: 'replacing the locked value' } : {}) }; show()
       try {
         const ns = credentialNamespace(server)
-        for (const [key, value] of Object.entries(env)) await store.client.setMcpCredential(agentId, ns, key, value)
+        for (const [key, value] of job.env) await store.client.setMcpCredential(agentId, ns, key, value, replace ? { replace: true } : {})
         steps[i] = { ...steps[i], status: 'done' }
-      } catch (err) { fail(i, err); return }
+      } catch (err) {
+        if (!replace && isCredentialsLocked(err)) {
+          steps[i] = { ...steps[i], status: 'pending' }
+          pending.current = job
+          if (alive.current) setStep({ kind: 'locked', name, confirming: false })
+          return
+        }
+        pending.current = null
+        fail(i, err)
+        return
+      }
+      pending.current = null
       i++
     }
-    steps[i] = { ...steps[i], status: 'running' }; show()
-    try {
-      await store.client.attachMcpServer(agentId, server)
-      steps[i] = { ...steps[i], status: 'done', note: server.run_location === 'host' ? 'runs on the host' : server.transport === 'http' ? 'remote' : 'runs in a container' }
-    } catch (err) { fail(i, err); return }
-    void store.actions.loadConfig(agentId)
-    await runConnect(form.name, steps)
+    if (job.attach) {
+      steps[i] = { ...steps[i], status: 'running' }; show()
+      try {
+        await store.client.attachMcpServer(agentId, server)
+        steps[i] = { ...steps[i], status: 'done', note: server.run_location === 'host' ? 'runs on the host' : server.transport === 'http' ? 'remote' : 'runs in a container' }
+      } catch (err) { fail(i, err); return }
+      void store.actions.loadConfig(agentId)
+    }
+    await runConnect(name, steps)
+  }
+
+  const cancelLocked = () => {
+    const job = pending.current
+    pending.current = null
+    if (!job) { setStep({ kind: 'list' }); return }
+    setValues(job.values)
+    setStep(job.back)
+  }
+
+  const unlockFirst = () => {
+    const job = pending.current
+    pending.current = null
+    setValues({})
+    close()
+    identityFirst(store, MCP_OVERLAY, job?.resume ?? { agentId }, `${job?.name ?? 'This server'}'s saved credentials on ${who} are sealed under your owner identity: unlock it, then continue here.`)
+  }
+
+  const openEnv = (name: string) => {
+    setValues({}); setErrors({}); setStored(null)
+    setStep({ kind: 'env', name })
+    const server = serverOf(name)
+    if (!server) return
+    store.client.mcpCredentials(agentId, credentialNamespace(server))
+      .then(result => { if (alive.current) setStored(result.credentials ?? {}) })
+      .catch(() => { /* older daemon: keep the generic placeholder */ })
   }
 
   const saveEnv = async (name: string) => {
@@ -206,19 +296,20 @@ export function McpDialog({ overlay, close, width, height }: OverlayProps) {
       identityFirst(store, MCP_OVERLAY, { agentId, server: name }, 'MCP credentials are sealed under your owner identity: set it up first.')
       return
     }
+    const typedValues = values
     setValues({})
-    const steps: WorkStep[] = [{ label: `Sealing ${typed.length} credential${typed.length === 1 ? '' : 's'} in ${who}`, status: 'running' }]
-    setStep({ kind: 'work', name, done: false, steps })
-    try {
-      const ns = credentialNamespace(server)
-      for (const [key, value] of typed) await store.client.setMcpCredential(agentId, ns, key, value)
-      steps[0] = { ...steps[0], status: 'done' }
-    } catch (err) {
-      steps[0] = { ...steps[0], status: 'failed', note: err instanceof Error ? err.message : String(err) }
-      if (alive.current) setStep({ kind: 'work', name, done: true, steps: [...steps] })
-      return
-    }
-    await runConnect(name, steps)
+    const steps: WorkStep[] = [{ label: `Sealing ${typed.length} credential${typed.length === 1 ? '' : 's'} in ${who}`, status: 'pending' }]
+    await sealAndFinish({
+      name,
+      server,
+      env: typed,
+      steps,
+      index: 0,
+      attach: false,
+      back: { kind: 'env', name },
+      values: typedValues,
+      resume: { agentId, server: name },
+    }, false)
   }
 
   const remove = async (name: string) => {
@@ -263,7 +354,7 @@ export function McpDialog({ overlay, close, width, height }: OverlayProps) {
         if (key.escape) { back(); return true }
         if (input === 'r') { void restart(step.name); return true }
         if (input === 'd') { setStep({ kind: 'remove', name: step.name }); return true }
-        if (input === 'e') { setValues({}); setErrors({}); setStep({ kind: 'env', name: step.name }); return true }
+        if (input === 'e') { openEnv(step.name); return true }
         if (input === 'l') { setStep({ kind: 'logs', name: step.name }); return true }
         if (input === 't') { setStep({ kind: 'tools', name: step.name }); return true }
         return true
@@ -289,7 +380,7 @@ export function McpDialog({ overlay, close, width, height }: OverlayProps) {
       default:
         return false
     }
-  }, { layer: 'overlay', active: step.kind !== 'form' && step.kind !== 'env' })
+  }, { layer: 'overlay', active: step.kind !== 'form' && step.kind !== 'env' && step.kind !== 'locked' })
 
   // --- views -----------------------------------------------------------------------
 
@@ -327,7 +418,7 @@ export function McpDialog({ overlay, close, width, height }: OverlayProps) {
               if (!s) return false
               if (input === 'r') { void restart(s.name); return true }
               if (input === 'd') { setStep({ kind: 'remove', name: s.name }); return true }
-              if (input === 'e') { setValues({}); setErrors({}); setStep({ kind: 'env', name: s.name }); return true }
+              if (input === 'e') { openEnv(s.name); return true }
               if (input === 'l') { setStep({ kind: 'logs', name: s.name }); return true }
               return false
             }}
@@ -431,9 +522,28 @@ export function McpDialog({ overlay, close, width, height }: OverlayProps) {
   const server = serverOf(name)
   const live = stateOf(name)
 
+  if (step.kind === 'locked') {
+    return (
+      <LockedCredential
+        name={name}
+        title={`${name} ${theme.glyph.sep} ${who}`}
+        width={dialogWidth}
+        confirming={step.confirming}
+        onUnlock={unlockFirst}
+        onReplace={() => setStep({ ...step, confirming: true })}
+        onConfirm={confirmed => {
+          const job = pending.current
+          if (!confirmed || !job) { setStep({ ...step, confirming: false }); return }
+          void sealAndFinish(job, true)
+        }}
+        onCancel={cancelLocked}
+      />
+    )
+  }
+
   if (step.kind === 'env') {
     const keys = server ? serverEnvKeys(server) : []
-    const fields: FieldSpec[] = keys.map(key => ({ kind: 'text', key: `env:${key}`, label: key, placeholder: 'stored · type to replace', mask: true }))
+    const fields: FieldSpec[] = keys.map(key => ({ kind: 'text', key: `env:${key}`, label: key, placeholder: credentialPlaceholder(stored, key, 'stored · type to replace'), mask: true }))
     return (
       <Modal title={`${name} credentials ${theme.glyph.sep} ${who}`} width={dialogWidth} onClose={keys.length ? undefined : () => setStep({ kind: 'detail', name })} hints={[{ keys: 'enter', label: 'next / save' }, { keys: 'ctrl+s', label: 'save + reconnect' }, { keys: 'esc', label: 'cancel' }]}>
         {keys.length === 0 ? <Text color={theme.color.muted} wrap="wrap">{name} takes no credentials.</Text> : (

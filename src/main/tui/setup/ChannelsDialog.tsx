@@ -16,7 +16,8 @@ import { truncate } from '../ui/text'
 import { Form, type FieldSpec, type FormValues } from '../views/loops/Form'
 import { INSPECT_VIEW, patchInspectState } from '../views/inspect/state'
 import type { OverlayProps } from '../views/types'
-import type { AgentAdaptersDiagnostics } from '../api/types'
+import { isCredentialsLocked, type AgentAdaptersDiagnostics, type CredentialMeta } from '../api/types'
+import { LockedCredential, credentialPlaceholder } from './LockedCredential'
 import type { AdapterRegistryEntry } from '../../../shared/constants/adapter-registry'
 import { channelsIdentityReady, identityFirst } from './open'
 import {
@@ -38,6 +39,7 @@ type Step =
   | { kind: 'saving'; entry: AdapterRegistryEntry }
   | { kind: 'detail'; entry: AdapterRegistryEntry; saved?: 'on' | 'updated' }
   | { kind: 'remove'; entry: AdapterRegistryEntry; busy?: boolean }
+  | { kind: 'locked'; entry: AdapterRegistryEntry; editing: boolean; confirming: boolean }
 
 const POLL_MS = 1000
 const POLL_FOR_MS = 20_000
@@ -58,6 +60,8 @@ export function ChannelsDialog({ overlay, close, width, height }: OverlayProps) 
   const [values, setValues] = useState<FormValues>({})
   const [errors, setErrors] = useState<Record<string, string | undefined>>({})
   const [formError, setFormError] = useState<string | null>(null)
+  // What is stored for the channel being edited (metadata only; null = unknown).
+  const [stored, setStored] = useState<Record<string, CredentialMeta> | null>(null)
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
 
@@ -103,11 +107,22 @@ export function ChannelsDialog({ overlay, close, width, height }: OverlayProps) 
       identityFirst(store, CHANNELS_OVERLAY, { agentId, channel: entry.type }, 'Channel credentials are sealed under your owner identity: set it up first, then the channel setup follows.')
       return
     }
-    setValues({}); setErrors({}); setFormError(null)
+    setValues({}); setErrors({}); setFormError(null); setStored(null)
     setStep({ kind: 'form', entry, editing })
+    if (editing) {
+      store.client.adapterCredentials(agentId, entry.type)
+        .then(result => { if (alive.current) setStored(result.credentials ?? {}) })
+        .catch(() => { /* older daemon: keep the generic placeholder */ })
+    }
   }
 
-  const save = async (entry: AdapterRegistryEntry, editing: boolean) => {
+  const unlockFirst = (entry: AdapterRegistryEntry) => {
+    setValues({})
+    close()
+    identityFirst(store, CHANNELS_OVERLAY, { agentId, channel: entry.type }, `${who}'s saved ${entry.displayName} credentials are sealed under your owner identity: unlock it, then the channel setup follows.`)
+  }
+
+  const save = async (entry: AdapterRegistryEntry, editing: boolean, replace = false) => {
     const typed = Object.fromEntries(credentialFields(entry).map(f => [f.key, typeof values[f.key] === 'string' ? (values[f.key] as string).trim() : '']))
     // Editing keeps what is stored: an empty field leaves that credential as it is.
     const problems = Object.fromEntries(Object.entries(validateCredentials(entry, typed)).filter(([key]) => !(editing && !typed[key])))
@@ -118,10 +133,12 @@ export function ChannelsDialog({ overlay, close, width, height }: OverlayProps) 
       // Credentials first: the config write (re)starts the channel and must find them.
       for (const field of credentialFields(entry)) {
         const value = typed[field.key]
-        if (value) await store.client.setAdapterCredential(agentId, entry.type, field.key, value)
+        if (value) await store.client.setAdapterCredential(agentId, entry.type, field.key, value, replace ? { replace: true } : {})
       }
     } catch (err) {
       if (!alive.current) return
+      // Locked here: the typed values stay in state for Unlock / Replace.
+      if (!replace && isCredentialsLocked(err)) { setStep({ kind: 'locked', entry, editing, confirming: false }); return }
       setFormError(`Could not store the credentials on ${who}: ${err instanceof Error ? err.message : String(err)}`)
       setStep({ kind: 'form', entry, editing })
       return
@@ -181,7 +198,7 @@ export function ChannelsDialog({ overlay, close, width, height }: OverlayProps) 
       return true
     }
     return false
-  }, { layer: 'overlay', active: step.kind !== 'form' })
+  }, { layer: 'overlay', active: step.kind !== 'form' && step.kind !== 'locked' })
 
   if (!agent) {
     return (
@@ -250,6 +267,21 @@ export function ChannelsDialog({ overlay, close, width, height }: OverlayProps) 
     )
   }
 
+  if (step.kind === 'locked') {
+    return (
+      <LockedCredential
+        name={entry.displayName}
+        title={title}
+        width={dialogWidth}
+        confirming={step.confirming}
+        onUnlock={() => unlockFirst(entry)}
+        onReplace={() => setStep({ ...step, confirming: true })}
+        onConfirm={confirmed => { if (confirmed) void save(entry, step.editing, true); else setStep({ ...step, confirming: false }) }}
+        onCancel={() => setStep({ kind: 'form', entry, editing: step.editing })}
+      />
+    )
+  }
+
   if (step.kind === 'detail') {
     const live = stateOf(entry.type)
     const running = agent.status?.runtimeState
@@ -276,7 +308,7 @@ export function ChannelsDialog({ overlay, close, width, height }: OverlayProps) 
     kind: 'text',
     key: f.key,
     label: f.label,
-    placeholder: editing ? 'stored · type to replace' : `paste here${f.placeholder ? ` (${f.placeholder})` : ''}${f.required ? '' : ', optional'}`,
+    placeholder: editing ? credentialPlaceholder(stored, f.key, 'stored · type to replace') : `paste here${f.placeholder ? ` (${f.placeholder})` : ''}${f.required ? '' : ', optional'}`,
     hint: f.hint,
     mask: true,
   }))

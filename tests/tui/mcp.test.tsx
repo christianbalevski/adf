@@ -37,6 +37,8 @@ async function mount(options: { identity?: IdentityMockOptions; setup?: SetupMoc
   return { tui: ui, setup, store }
 }
 
+const settle = () => new Promise(resolve => setTimeout(resolve, 60))
+
 async function slash(tui: RenderedTui, text: string) {
   store!.actions.prefillPrompt('')
   await tui.waitFor(() => store!.getState().focus === 'input')
@@ -118,6 +120,51 @@ describe('/mcp', () => {
     expect(store.getState().overlays.find(o => o.kind === 'identity')?.props).toMatchObject({ then: 'mcp', thenProps: { agentId: AGENT_1_ID, add: 'brave-search' } })
     expect(setup.calls).toEqual([])
   }, 15000)
+
+  it('locked credentials on add: Unlock / Replace / Cancel, Replace re-seals with replace and connects', async () => {
+    const { tui, setup } = await mount({ setup: { credentialsLocked: true } })
+    await slash(tui, '/mcp add brave-search')
+    await tui.waitFor('BRAVE_API_KEY')
+    await tui.press(KEY.down)
+    await tui.press(KEY.down)
+    await tui.type(SECRET)
+    await tui.press(KEY.ctrlS)
+    let frame = await tui.waitFor('r Replace · c/Esc Cancel'); await settle()
+    expect(frame.replace(/[│\s]+/g, ' ')).toContain("This agent's saved brave-search is locked and can't be read (identity not unlocked).")
+    await tui.press('c')
+    frame = await tui.waitFor(`${SECRET.length} chars`); await settle()
+    expect(frame).toContain('BRAVE_API_KEY')
+    await tui.press(KEY.ctrlS)
+    await tui.waitFor('r Replace · c/Esc Cancel'); await settle()
+    await tui.press('r')
+    await tui.waitFor('Replace the saved brave-search?'); await settle()
+    await tui.press(KEY.enter)
+    await tui.waitFor(f => f.includes('3 tools') && f.includes('Attaching brave-search'))
+    expect(setup.credentialWrites.map(w => w.replace)).toEqual([false, false, true])
+    expect(setup.mcpCredentials.get(AGENT_1_ID)?.get('mcp:@brave/brave-search-mcp-server:BRAVE_API_KEY')).toBe(SECRET)
+    for (const f of tui.frames) expect(f).not.toContain(SECRET)
+  }, 20000)
+
+  it('editing credentials shows set/not set from metadata; a locked save offers Replace', async () => {
+    const { tui, setup } = await mount({ setup: { credentialsLocked: true, mcp: { 'agent-1': [{ name: 'github', transport: 'stdio', npm_package: '@modelcontextprotocol/server-github', env_keys: ['GITHUB_TOKEN'] }] } } })
+    await slash(tui, '/mcp')
+    await tui.waitFor(f => f.includes('MCP servers · agent-1') && f.includes('github')); await settle()
+    await tui.press('e')
+    await tui.waitFor('not set'); await settle()
+    await tui.type(SECRET)
+    await tui.press(KEY.ctrlS)
+    await tui.waitFor('r Replace · c/Esc Cancel'); await settle()
+    await tui.press('r')
+    await tui.press('y')
+    await tui.waitFor(f => f.includes('Connecting github') && f.includes('3 tools'))
+    expect(setup.credentialWrites.map(w => w.replace)).toEqual([false, true])
+    await settle()
+    await tui.press(KEY.esc)
+    await tui.waitFor('MCP servers · agent-1'); await settle()
+    await tui.press('e')
+    const frame = await tui.waitFor('set • locked · type to replace')
+    expect(frame).not.toContain(SECRET)
+  }, 20000)
 
   it('OAuth-only remote servers point to Studio', async () => {
     const { tui, setup } = await mount()

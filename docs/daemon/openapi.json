@@ -3,8 +3,9 @@
   "info": {
     "title": "ADF Daemon API",
     "version": "0.1.0",
-    "description": "Static OpenAPI contract for the local ADF daemon. The daemon is a headless ADF runtime for loading agents, starting and stopping them, sending chat turns, streaming events, inspecting runtime diagnostics, and resolving human-in-the-loop tasks."
+    "description": "Static OpenAPI contract for the local ADF daemon. The daemon is a headless ADF runtime for loading agents, starting and stopping them, sending chat turns, streaming events, inspecting runtime diagnostics, and resolving human-in-the-loop tasks. Every route except GET /health requires `Authorization: Bearer <token>` (the per-install token in <settings dir>/daemon-token, or ADF_DAEMON_TOKEN); requests with a disallowed Host (403 host_not_allowed), a foreign Origin or Sec-Fetch-Site cross-site/same-site (403 cross_origin) are refused, and no CORS headers are sent. Credential reads return metadata only."
   },
+  "security": [{ "bearerAuth": [] }],
   "servers": [
     {
       "url": "http://127.0.0.1:7385",
@@ -51,7 +52,9 @@
       "get": {
         "tags": ["Health"],
         "summary": "Daemon liveness check",
+        "description": "The only route that needs no bearer token (Host and Origin checks still apply).",
         "operationId": "getHealth",
+        "security": [],
         "responses": {
           "200": {
             "description": "Daemon is reachable",
@@ -330,9 +333,10 @@
         "tags": [
           "Identity"
         ],
-        "summary": "Lock a passphrase-file identity",
+        "summary": "Lock a passphrase-file identity (loopback only)",
         "operationId": "lockOwnerIdentity",
         "responses": {
+          "403": { "$ref": "#/components/responses/Forbidden" },
           "200": {
             "description": "Owner identity status after the change",
             "content": {
@@ -361,9 +365,10 @@
         "tags": [
           "Identity"
         ],
-        "summary": "Record that the user wrote the seed phrase down",
+        "summary": "Record that the user wrote the seed phrase down (loopback only)",
         "operationId": "confirmOwnerBackup",
         "responses": {
+          "403": { "$ref": "#/components/responses/Forbidden" },
           "200": {
             "description": "Owner identity status after the change",
             "content": {
@@ -3129,15 +3134,15 @@
     "/agents/{id}/identity/{purpose}": {
       "get": {
         "tags": ["Identity"],
-        "summary": "Read one decrypted identity value",
-        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "summary": "Metadata of one stored identity value (never the value)",
+        "description": "Values and key material never leave the daemon. length is null for crypto:* purposes and locked values.",
         "operationId": "getAgentIdentityValue",
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
           { "name": "purpose", "in": "path", "required": true, "schema": { "type": "string" } }
         ],
         "responses": {
-          "200": { "description": "Identity value", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "200": { "description": "Identity value metadata", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentIdentityMetaResponse" } } } },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       },
@@ -3154,6 +3159,7 @@
           "200": { "$ref": "#/components/responses/Success" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/CredentialsLocked" },
           "500": { "$ref": "#/components/responses/Error" }
         }
       },
@@ -3352,6 +3358,7 @@
           "200": { "$ref": "#/components/responses/Success" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/CredentialsLocked" },
           "500": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -3359,15 +3366,15 @@
     "/agents/{id}/providers/{providerId}/credentials": {
       "get": {
         "tags": ["Credentials"],
-        "summary": "Read provider credentials",
-        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "summary": "Provider credential metadata and config overrides",
+        "description": "Metadata only (see CredentialMeta); stored values never leave the daemon.",
         "operationId": "getAgentProviderCredentials",
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
           { "name": "providerId", "in": "path", "required": true, "schema": { "type": "string" } }
         ],
         "responses": {
-          "200": { "description": "Provider credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "200": { "description": "Provider credential metadata", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderCredentialsMetaResponse" } } } },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
@@ -3375,15 +3382,15 @@
     "/agents/{id}/mcp/credentials": {
       "get": {
         "tags": ["Credentials"],
-        "summary": "Read MCP credentials by package",
-        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "summary": "MCP credential metadata by package",
+        "description": "Metadata only (see CredentialMeta); stored values never leave the daemon.",
         "operationId": "getAgentMcpCredentials",
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
           { "name": "npmPackage", "in": "query", "required": true, "schema": { "type": "string" } }
         ],
         "responses": {
-          "200": { "description": "MCP credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "200": { "description": "MCP credential metadata keyed by env key", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/McpCredentialsMetaResponse" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
@@ -3398,6 +3405,7 @@
           "200": { "$ref": "#/components/responses/Success" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/CredentialsLocked" },
           "500": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -3453,15 +3461,15 @@
     "/agents/{id}/adapters/credentials": {
       "get": {
         "tags": ["Credentials"],
-        "summary": "Read adapter credentials by type",
-        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "summary": "Adapter credential metadata by type",
+        "description": "Metadata only (see CredentialMeta); stored values never leave the daemon.",
         "operationId": "getAgentAdapterCredentials",
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
           { "name": "adapterType", "in": "query", "required": true, "schema": { "type": "string" } }
         ],
         "responses": {
-          "200": { "description": "Adapter credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "200": { "description": "Adapter credential metadata keyed by env key", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdapterCredentialsMetaResponse" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
@@ -3476,6 +3484,7 @@
           "200": { "$ref": "#/components/responses/Success" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/CredentialsLocked" },
           "500": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -3988,6 +3997,13 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Per-install token from <settings dir>/daemon-token (printed by `adf daemon token`), or ADF_DAEMON_TOKEN. Local adf clients send it automatically."
+      }
+    },
     "parameters": {
       "AgentIdPath": {
         "name": "id",
@@ -4084,6 +4100,30 @@
       }
     },
     "responses": {
+      "Unauthorized": {
+        "description": "Missing or wrong bearer token; code `unauthorized`",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Host not allowed (code `host_not_allowed`), cross-site browser request (code `cross_origin`), or a loopback-only route called remotely (code `loopback_only`)",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "CredentialsLocked": {
+        "description": "The agent's credentials envelope is locked on this daemon; code `credentials_locked`. Unlock the owner identity, or retry with replace: true",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
       "Success": {
         "description": "Success",
         "content": {
@@ -4158,6 +4198,54 @@
       }
     },
     "schemas": {
+      "CredentialMeta": {
+        "type": "object",
+        "description": "What the API reveals about one stored identity value: never the value.",
+        "required": ["purpose", "present", "storage", "sealed", "locked", "length", "code_access"],
+        "properties": {
+          "purpose": { "type": "string" },
+          "present": { "type": "boolean" },
+          "storage": { "type": ["string", "null"], "enum": ["sealed", "plain", "password", null] },
+          "sealed": { "type": "boolean" },
+          "locked": { "type": "boolean", "description": "Stored but not readable in this process" },
+          "length": { "type": ["integer", "null"], "description": "null for crypto:* purposes and locked values" },
+          "code_access": { "type": "boolean" }
+        }
+      },
+      "AgentIdentityMetaResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/CredentialMeta" },
+          { "type": "object", "required": ["agentId"], "properties": { "agentId": { "type": "string" } } }
+        ]
+      },
+      "ProviderCredentialsMetaResponse": {
+        "type": "object",
+        "required": ["agentId", "providerId", "credentials"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "providerId": { "type": "string" },
+          "credentials": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/CredentialMeta" } },
+          "providerConfig": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "McpCredentialsMetaResponse": {
+        "type": "object",
+        "required": ["agentId", "npmPackage", "credentials"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "npmPackage": { "type": "string" },
+          "credentials": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/CredentialMeta" } }
+        }
+      },
+      "AdapterCredentialsMetaResponse": {
+        "type": "object",
+        "required": ["agentId", "adapterType", "credentials"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "adapterType": { "type": "string" },
+          "credentials": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/CredentialMeta" } }
+        }
+      },
       "IdentityStatus": {
         "type": "object",
         "required": [
@@ -4480,7 +4568,10 @@
       "IdentityValueBody": {
         "type": "object",
         "required": ["value"],
-        "properties": { "value": { "type": "string" } }
+        "properties": {
+          "value": { "type": "string" },
+          "replace": { "type": "boolean", "description": "Owner override while the agent's credentials envelope is locked here: a locked sealed value is discarded unread, the new value stored plain and sealed on unlock; logged to adf_logs (credential_replaced). Without it such a write is 409 credentials_locked." }
+        }
       },
       "IdentityCodeAccessBody": {
         "type": "object",
@@ -4508,7 +4599,8 @@
         "properties": {
           "npmPackage": { "type": "string" },
           "envKey": { "type": "string" },
-          "value": { "type": "string" }
+          "value": { "type": "string" },
+          "replace": { "type": "boolean", "description": "Owner override while the agent's credentials envelope is locked here: a locked sealed value is discarded unread, the new value stored plain and sealed on unlock; logged to adf_logs (credential_replaced). Without it such a write is 409 credentials_locked." }
         }
       },
       "McpAttachBody": {
@@ -4522,7 +4614,8 @@
         "properties": {
           "adapterType": { "type": "string" },
           "envKey": { "type": "string" },
-          "value": { "type": "string" }
+          "value": { "type": "string" },
+          "replace": { "type": "boolean", "description": "Owner override while the agent's credentials envelope is locked here: a locked sealed value is discarded unread, the new value stored plain and sealed on unlock; logged to adf_logs (credential_replaced). Without it such a write is 409 credentials_locked." }
         }
       },
       "AdapterAttachBody": {

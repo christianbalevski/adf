@@ -78,10 +78,18 @@ Quitting the app leaves it running (`adf daemon stop` stops it); see
 `ADF_NO_AUTOSTART=1` skip that: the app then shows the daemon as offline
 and how to start it.
 
+The daemon requires its access token on every request. For a daemon on this
+machine (a loopback URL) the app reads `<settings dir>/daemon-token` by
+itself, and re-reads it once when the daemon answers `401` (a daemon that
+just started for the first time); the local token is never sent to another
+host. For a remote daemon pass `--token` or set `ADF_DAEMON_TOKEN` (print the
+token on the daemon host with `adf daemon token`). See
+[Authentication](http-api.md#authentication-and-cross-site-protection).
+
 | Option | Description |
 |--------|-------------|
 | `--url`, `-u <url>` | Daemon URL (default `ADF_DAEMON_URL`, then `http://127.0.0.1:7385`) |
-| `--token <token>` | Bearer token (default `ADF_DAEMON_TOKEN`) |
+| `--token <token>` | Daemon access token (default `ADF_DAEMON_TOKEN`; on the daemon's machine the app reads it by itself) |
 | `--view <id>` | Start view: `fleet` \| `chat` \| `files` \| `loops` \| `inspect` \| `runtime` |
 | `--agent <id\|handle>` | Preselect an agent |
 | `--loop <name>` | Preselect one of its loops (default `main`) |
@@ -97,6 +105,7 @@ and how to start it.
 | Environment | Effect |
 |-------------|--------|
 | `ADF_DAEMON_URL`, `ADF_DAEMON_TOKEN` | Daemon address and token, as for the CLI |
+| `ADF_DAEMON_SETTINGS`, `ADF_USER_DATA_DIR` | Where the local daemon's token file (`daemon-token`) is found, as for the daemon |
 | `NO_COLOR` (any value), `TERM=dumb` | No color. Emphasis uses bold, inverse and underline. Always wins over `--theme` |
 | `ADF_TUI_THEME` | Same as `--theme` |
 | `ADF_TUI_ASCII=1` | Same as `--ascii` |
@@ -407,7 +416,7 @@ sent to an agent.
 | `/agent <handle\|id> [loop]` (`/a`) | Select an agent, and optionally one of its loops |
 | `/refresh` (`/r`) | Re-read agents, loops and approvals |
 | `/theme [name\|next]` | Colour theme (no argument opens the picker) |
-| `/url [daemon-url] [--token <token>]` | Show the daemon URL, or switch to another daemon live (it is health-checked first). The current token is only sent to the same origin; give another daemon's with `--token` or `ADF_DAEMON_TOKEN` |
+| `/url [daemon-url] [--token <token>]` | Show the daemon URL, or switch to another daemon live (it is health-checked first). The current token is only sent to the same origin; another daemon on this machine gets the local token file, a remote one needs `--token` or `ADF_DAEMON_TOKEN` |
 | `/runtime [tab]` | Open the Runtime view (on a tab: `status`, `identity`, `auth`, `providers`, `usage`, `network`, `compute`, `mcp`, `channels`, `settings`, `events`) |
 | `/status`, `/usage`, `/providers`, `/network`, `/compute`, `/settings` | Open that Runtime tab (`r` refresh; secrets redacted) |
 | `/auth` | Provider sign-in dialog: ChatGPT and Grok status, sign in, sign out |
@@ -661,8 +670,23 @@ deleted). `/channels add telegram` goes straight to the form:
    or the adapter's error). A stopped agent says `/start <agent>` brings it
    up.
 
+Editing (`e`) never shows stored values: each field says `set • (hidden) ·
+type to replace` (`set • locked · type to replace` when the agent's
+credentials are locked on this daemon) or `not set`; an empty field keeps
+what is stored.
+
 Without a ready owner identity the identity dialog opens first; the channel
-setup follows once it is ready. WhatsApp needs no credentials: `Enter`
+setup follows once it is ready.
+
+When the agent's saved credentials are locked (its credentials envelope
+cannot be opened on this daemon: identity not unlocked), saving says so:
+"This agent's saved <name> is locked and can't be read (identity not
+unlocked). Unlock first (/identity), or replace it — the old value is
+discarded." **Unlock** (`u`) opens the identity dialog and resumes the setup after;
+**Replace** (`r`) asks once more (`y`/`Enter`), then stores the typed values anyway (the old
+sealed value is discarded unread, the new one is sealed once the identity is
+unlocked, and the agent's log records the replace); **Cancel** (`c`/`Esc`) returns to the
+form. The same dialog appears for MCP server keys. WhatsApp needs no credentials: `Enter`
 switches it on, and the phone pairs by QR code. The app cannot draw the QR:
 open `imported/whatsapp/pairing-qr.png` from the agent's files (or use ADF
 Studio, which shows it) and scan it in WhatsApp → Linked Devices.
@@ -673,7 +697,7 @@ Studio, which shows it) and scan it in WhatsApp → Linked Devices.
 connected`, `✗ error`, `not running`), tool count and where each runs.
 `Enter` opens one: its state and error, source, where it runs, its tools
 (`t`: `Space` turns a tool on or off), credential names (`e` replaces the
-values), recent logs (`l`: all of them), `r` restart, `d` remove (asks; its
+values; each shows `set • (hidden)` or `not set`, never the value), recent logs (`l`: all of them), `r` restart, `d` remove (asks; its
 stored credentials are deleted). Inspect › MCP has the same: `a` adds, `m`
 manages.
 
@@ -690,6 +714,8 @@ The form asks for a name (its tools are `mcp_<name>_<tool>`), arguments when
 the server takes them, where it runs, and the keys it needs, as dots. Keys
 are stored in the agent's identity store, sealed under your owner identity
 (the identity dialog opens first when it is not ready), never in its config.
+Locked credentials get the same Unlock / Replace / Cancel choice as
+[channels](#channels).
 Where it runs: a container by default (the shared one, or the agent's own
 when it has one), isolated from your machine; the host only for agents with
 host access, for servers that need your files, apps or login state.
@@ -992,6 +1018,9 @@ Other notes:
 - **Folder delete:** delete the files one by one.
 - **Binary files** can be viewed (hex) but not edited.
 - **Timer start/end times** are not in the timer form (max runs is).
+- **Stored credentials are write-only:** the daemon never returns a saved
+  channel, MCP or provider value (only whether it is set, sealed or locked),
+  so forms can replace a value but not show or reveal it.
 - **Trigger state:** the Triggers tab shows on/off and target count. The
   daemon reports no last-fired time.
 - **Loop "last activity"** costs one small request per loop, because the
