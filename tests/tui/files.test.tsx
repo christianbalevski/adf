@@ -11,7 +11,7 @@ import { startMockDaemon, AGENT_1_ID, type MockDaemon } from './fixtures/mock-da
 import { createFilesFetch, type FilesFixture } from './fixtures/files-daemon'
 import { renderTui, type RenderedTui } from './fixtures/render'
 
-const KEY = { tab: '\t', enter: '\r', esc: '\u001b', down: '\u001b[B', up: '\u001b[A', right: '\u001b[C', left: '\u001b[D' }
+const KEY = { tab: '\t', enter: '\r', esc: '\u001b', down: '\u001b[B', up: '\u001b[A', right: '\u001b[C', left: '\u001b[D', backspace: '\u007f', del: '\u001b[3~' }
 
 let mock: MockDaemon
 let fixture: FilesFixture
@@ -66,7 +66,7 @@ async function mountFiles(size?: { columns?: number; rows?: number }) {
   ui = renderTui(<App store={store} theme={createTheme({ mono: true })} />, { columns: 130, rows: 34, ...size })
   await store.start()
   await waitFor(ui, 'consolidator')
-  await ui.press('3')
+  await ui.press('2')
   await waitFor(ui, f => f.includes('7 files') && (!!size || f.includes('Document body.')))
   return ui
 }
@@ -117,10 +117,11 @@ describe('files view', () => {
 
   it('collapses folders, filters with /, and searches inside the viewer', async () => {
     const tui = await mountFiles()
+    // Enter / Backspace open and close folders (←/→ are the tabs now).
     await cursorTo(tui, 'notes/')
-    await tui.press(KEY.left)
+    await tui.press(KEY.backspace)
     await waitFor(tui, f => !f.includes('q3.md'))
-    await tui.press(KEY.right)
+    await tui.press(KEY.enter)
     await waitFor(tui, 'q3.md')
 
     await tui.press('/')
@@ -243,25 +244,84 @@ describe('files view', () => {
 
   it('shows inbox, outbox and meta as read-only tabs', async () => {
     const tui = await mountFiles()
-    await tui.press(']')
+    await tui.press(KEY.right)
     const inbox = await waitFor(tui, 'Standings sync')
     expect(inbox).toContain('unread')
     expect(inbox).toContain('read-only')
     await tui.press(KEY.down)
     await tui.press(KEY.enter)
     await waitFor(tui, 'Can you share the **v2** cursor format?')
+    const viewing = () => (store.getState().viewState.files as { pane?: string }).pane
+    expect(viewing()).toBe('viewer')
+    // Backspace is back (Esc too).
+    await tui.press(KEY.backspace)
+    await waitFor(tui, () => viewing() === 'list')
+    await tui.press(KEY.enter)
+    await waitFor(tui, () => viewing() === 'viewer')
     await tui.press(KEY.esc)
+    await waitFor(tui, () => viewing() === 'list')
     await tui.press('f')
     await waitFor(tui, f => f.includes('1 unread') && !f.includes('Thanks, got it.'))
-    await tui.press(']')
+    await tui.press(KEY.right)
     await waitFor(tui, 'Re: Standings sync')
-    await tui.press(']')
+    await tui.press(KEY.right)
     const meta = await waitFor(tui, 'standings.cursor')
     expect(meta).toContain('readonly')
     await tui.press(KEY.down)
     await waitFor(tui, '"page": 3,')
-    await tui.press(']')
+    // ←/→ wrap around; [ ] still work, unlisted.
+    await tui.press(KEY.right)
     await waitFor(tui, '7 files')
+    await tui.press(KEY.left)
+    await waitFor(tui, 'standings.cursor')
+    await tui.press('[')
+    await waitFor(tui, 'Re: Standings sync')
+    await tui.press(']')
+    await waitFor(tui, 'standings.cursor')
+  })
+
+  it('tree keys: Enter opens a file, Backspace / Esc come back to it; Backspace closes folders, never deletes', async () => {
+    const tui = await mountFiles()
+    const files = () => store.getState().viewState.files as { pane?: string; tab?: string; agents?: Record<string, { cursor?: string; collapsed?: string[] }> }
+    await cursorTo(tui, 'api.md')
+    await tui.press(KEY.enter)
+    await waitFor(tui, () => files().pane === 'viewer')
+    await tui.press(KEY.backspace)
+    await waitFor(tui, () => files().pane === 'list')
+    expect(files().agents?.[AGENT_1_ID]?.cursor).toBe('file:notes/api.md')
+    await tui.press(KEY.enter)
+    await waitFor(tui, () => files().pane === 'viewer')
+    await tui.press(KEY.esc)
+    await waitFor(tui, () => files().pane === 'list')
+    expect(files().agents?.[AGENT_1_ID]?.cursor).toBe('file:notes/api.md')
+    // Backspace on a file: up to its folder; again: close it.
+    await tui.press(KEY.backspace)
+    await waitFor(tui, () => files().agents?.[AGENT_1_ID]?.cursor === 'dir:notes')
+    await tui.press(KEY.backspace)
+    await waitFor(tui, () => (files().agents?.[AGENT_1_ID]?.collapsed ?? []).includes('notes'))
+    expect(store.getState().overlays).toHaveLength(0)
+    expect(mock.requests.some(r => r.startsWith('DELETE'))).toBe(false)
+    // ←/→ switch the tab from the tree.
+    await tui.press(KEY.right)
+    await waitFor(tui, () => files().tab === 'inbox')
+    await tui.press(KEY.left)
+    await waitFor(tui, () => files().tab === 'files')
+    // In the filter, Backspace edits the text and ←/→ stay put.
+    await tui.press('/')
+    await tui.type('q3x')
+    await waitFor(tui, '/q3x')
+    await tui.press(KEY.backspace)
+    await waitFor(tui, f => f.includes('/q3 ') || /\/q3\s/.test(f))
+    await tui.press(KEY.right)
+    expect(files().tab).toBe('files')
+    await tui.press(KEY.esc)
+    await waitFor(tui, f => !f.includes('/q3'))
+    // Enter opens the folder again; the Delete key still asks to delete.
+    await tui.press(KEY.enter)
+    await waitFor(tui, () => !(files().agents?.[AGENT_1_ID]?.collapsed ?? []).includes('notes'))
+    await cursorTo(tui, 'api.md')
+    await tui.press(KEY.del)
+    await waitFor(tui, 'Delete file')
   })
 
   it('works as a single pane in a narrow terminal', async () => {

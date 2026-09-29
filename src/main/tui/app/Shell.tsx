@@ -9,13 +9,14 @@ import { getScreenText, setHighlight, setRepaint } from './screen'
 import { copyToClipboard, readClipboard } from './clipboard'
 import { insertIntoFocusedInput } from '../ui/TextInput'
 import { readLayout, setSidebarHidden } from './layout'
-import { Header, createHeaderHits } from './Header'
+import { Header, TABS_CURSOR_KEY, createHeaderHits, tabOrder, tabsCursorOnAgent } from './Header'
+import type { ViewDefinition } from '../views/types'
 import { FleetSidebar } from '../views/fleet/Sidebar'
 import { StatusBar } from './StatusBar'
 import { Toasts } from './Toasts'
 import { Prompt, insertIntoPrompt, isPromptEmpty, isPromptMenuOpen } from './Prompt'
 import { OverlayHost } from './OverlayHost'
-import { openPalette } from './palette'
+import { openAgentSwitcher, openPalette } from './palette'
 import { createQuitGuard, QUIT_WINDOW_MS } from '../commands/builtin/quit'
 import { useStore, useTuiSelector } from '../state/store'
 import { useActiveView, useFocus, useOverlays, useToasts } from '../state/hooks'
@@ -127,6 +128,11 @@ export function Shell() {
     if (focus !== 'tabs' && !zones.includes(focus)) store.actions.setFocus('main')
   }, [focus, showSidebar, promptShown])
 
+  // A view change (digit, click, command) takes the tab bar's cursor off the agent label.
+  useEffect(() => {
+    if (store.getState().viewState[TABS_CURSOR_KEY]) store.actions.setViewState(TABS_CURSOR_KEY, null)
+  }, [activeView])
+
   /** Where a view is entered from the tab bar: Chat's prompt, else its main pane. */
   const enterZone = (id: string): FocusZone => (id === 'chat' && views.find(v => v.id === id)?.prompt !== false ? 'input' : 'main')
 
@@ -170,6 +176,7 @@ export function Shell() {
       const x = mouse.x - header.x
       const tab = headerHits.tabs.find(t => x >= t.x0 && x < t.x1)
       if (tab) store.actions.setView(tab.id)
+      else if (headerHits.agent && x >= headerHits.agent.x0 && x < headerHits.agent.x1) openAgentSwitcher(store)
       else if (headerHits.web && x >= headerHits.web.x0 && x < headerHits.web.x1) void toggleWebServer(store)
       return true
     },
@@ -220,19 +227,30 @@ export function Shell() {
 
   // The tab bar (Esc from a view with nothing left to cancel): ←/→ switch views
   // as the cursor moves (like any tab strip), Enter / ↓ go into the view.
+  // With groups the agent label is the first stop: Enter on it opens the agent switcher.
   useKeys((input, key) => {
     if (key.ctrl || key.meta || key.shift) return false
-    const at = Math.max(0, views.findIndex(v => v.id === store.getState().activeView))
+    const state = store.getState()
+    const order = tabOrder(views)
+    const stops: Array<ViewDefinition | 'agent'> = order.grouped ? ['agent', ...order.all] : order.all
+    const onAgent = tabsCursorOnAgent(state) && order.grouped
+    const at = onAgent ? 0 : Math.max(0, stops.findIndex(s => s !== 'agent' && s.id === state.activeView))
     const go = (index: number) => {
-      const next = views[(index + views.length) % views.length]
-      if (next) { store.actions.setView(next.id); store.actions.setFocus('tabs') }
+      const next = stops[(index + stops.length) % stops.length]
+      if (next === 'agent') store.actions.setViewState(TABS_CURSOR_KEY, 'agent')
+      else if (next) { store.actions.setViewState(TABS_CURSOR_KEY, null); store.actions.setView(next.id); store.actions.setFocus('tabs') }
       return true
     }
     if (key.leftArrow || input === 'h') return go(at - 1)
     if (key.rightArrow || input === 'l') return go(at + 1)
-    if (key.home) return go(0)
-    if (key.end) return go(views.length - 1)
-    if (key.return || key.downArrow || input === 'j') { store.actions.setFocus(enterZone(views[at]?.id ?? '')); return true }
+    if (key.home) return go(order.grouped ? 1 : 0)
+    if (key.end) return go(stops.length - 1)
+    if (onAgent && (key.return || key.downArrow || input === 'j')) {
+      store.actions.setViewState(TABS_CURSOR_KEY, null)
+      openAgentSwitcher(store)
+      return true
+    }
+    if (key.return || key.downArrow || input === 'j') { store.actions.setFocus(enterZone(state.activeView)); return true }
     if (key.upArrow || input === 'k') return true
     if (input === 'w') { void toggleWebServer(store); return true }
     if (key.escape) return true
@@ -277,6 +295,7 @@ export function Shell() {
         }
       }
       lastEscAt.current = 0
+      if (state.viewState[TABS_CURSOR_KEY]) store.actions.setViewState(TABS_CURSOR_KEY, null)
       store.actions.setFocus('tabs')
       return true
     }

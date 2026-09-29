@@ -17,9 +17,9 @@ commands.
 ## Layout
 
 ```text
- ◆ ADF   1 Fleet   2 Chat   3 Files   4 Loops   5 Inspect   6 Runtime  ● web :7295  !1 pending  ● live  127.0.0.1:7385
+ ◆ ADF  agent-1 ›  1 Chat   2 Files   3 Loops   4 Inspect │ 5 Fleet   6 Runtime   ● web :7295  !1 pending  ● live
  FLEET                   2 │ agent-1 ›  ● main !  ○ consolidator  ○ researcher             Shift+←/→
- ▾ ⠹ agent-1 thinki… !1 «1 │ host ✓ · Merging API notes into mind.md
+ ▾ ⠹ agent-1 thinki… !1 «1 │ host ✓ · web 127.0.0.1:7295/agents/agent-1/
    ⠹ ↻main        thinking │
    ○ ↻consolidator   in 1h │  › What did we decide about the standings API?
    ○ ↻researcher           │  ● We keep v2 and add a since cursor.
@@ -28,20 +28,29 @@ commands.
                            │ │ ! agent-1 wants to run msg_send                          │
                            │ │ y approve · a always · n reject · f feedback · v details │
                            │ ╰──────────────────────────────────────────────────────────╯
-                           │╭────────────────────────────────────────────────────────────╮
+                           │╭────────────────────────── Merging API notes into mind.md ─╮
                            ││ › Message agent-1 · queued until the turn ends             │
                            │╰────────────────────────────────────────────────────────────╯
  agent-1 › ↻ main  ⠹ thinking  model   Shift+←/→ loop · Alt+1-6 views · Tab focus · Ctrl+K palette
 ```
 
-- **Header (tab bar):** the six views, the web server (`● web :7295` or
-  `○ web off`), pending approvals across the fleet, the connection (`live`
-  or `offline`) and the daemon URL.
+- **Header (tab bar):** the selected agent (and its loop, when not main)
+  followed by its views, **1 Chat · 2 Files · 3 Loops · 4 Inspect**; after
+  the `│`, the app's own views, **5 Fleet** (every agent) and **6 Runtime**
+  (the daemon). Then the web server (`● web :7295` or `○ web off`), pending
+  approvals across the fleet, the connection (`live` or `offline`) and the
+  daemon URL. With no agent selected the label reads `no agent`. Click the
+  agent label (or `Enter` on it from the tab bar) to switch agent or loop.
+  Narrow terminals shorten the view names and drop the badges first; the
+  agent label and the `│` stay.
 - **Sidebar:** the fleet tree. Each agent with its state, `!n` approvals or
   questions waiting, `«n` unread inbox messages; expand it (`→`) for its
   loops and their next timer (`in 1h`).
 - **Main pane:** the active view.
-- **Prompt:** a message to the selected agent › loop, or a `/command`.
+- **Prompt:** a message to the selected agent › loop, or a `/command`. The
+  agent's status line (what it set with `sys_set_meta` `status`) sits on the
+  prompt's top border, on the right; click it for Inspect › Status. An inner
+  loop shows its agent's status.
 - **Toasts** report the outcome of every action; **status bar**: the
   selection, its state and model, and the view's main keys.
 
@@ -53,14 +62,36 @@ wake and notice is shown, and every action the app takes is reported.
 Press the digit (outside the prompt) or `Alt+digit` (anywhere). On macOS,
 where Option does not send Alt by default, press `Esc` then the digit.
 
+The selected agent's views:
+
 | Key | View | For |
 |---|---|---|
-| `1` | Fleet | All agents: state, loops, approvals, inbox, model, tokens. Start (`s`), stop (`x`), interrupt (`a`), new (`n`), load (`o`), track a folder (`f`). |
-| `2` | Chat | One conversation per agent › loop, with loop tabs, approvals and questions. |
-| `3` | Files | The agent's document, mind and files; Inbox, Outbox, Meta. See [Files](files.md). |
-| `4` | Loops | Inner loops, timers, triggers, loop history. See [Loops and timers](loops-and-timers.md). |
-| `5` | Inspect | The selected agent: status, [settings](agent-settings.md), config, usage, MCP, channels, identities, logs, tables, tasks, events. |
+| `1` | Chat | One conversation per agent › loop, with loop tabs, approvals and questions. |
+| `2` | Files | The agent's document, mind and files; Inbox, Outbox, Meta. See [Files](files.md). |
+| `3` | Loops | Inner loops, timers, triggers, loop history. See [Loops and timers](loops-and-timers.md). |
+| `4` | Inspect | The selected agent: status, [settings](agent-settings.md), config, usage, MCP, channels, identities, logs, tables, tasks, events. |
+
+The app's views:
+
+| Key | View | For |
+|---|---|---|
+| `5` | Fleet | All agents: state, loops, approvals, inbox, model, tokens. Start (`s`), stop (`x`), interrupt (`a`), new (`n`), load (`o`), track a folder (`f`). |
 | `6` | Runtime | The daemon: status, tracked folders, owner identity, sign-in, providers, usage, network, compute, MCP, channels, settings, every agent's events. |
+
+The app opens on Fleet.
+
+### Tabs, lists and details
+
+Files, Loops, Inspect and Runtime work the same way:
+
+| Keys | Action |
+|---|---|
+| `←` `→` | The view's tabs (Files · Inbox · Outbox · Meta, Loops · Timers · …) |
+| `↑` `↓` | Move in the list |
+| `Enter` | Open the item: a file, a message, a history entry, a task, a table row, an event. On a folder: open or close it |
+| `Backspace` | Back one level: the viewer or detail to its list (the item stays selected); in the Files tree, close the folder, then go to the parent folder. It never deletes (`d` / `Delete` do, and ask) |
+| `Esc` | Back one level like `Backspace` (it does not close folders); from a list it goes on to the tab bar |
+| `/` | Filter the list. While typing, `Backspace` edits the filter and `←` `→` stay put |
 
 ## Moving around
 
@@ -69,7 +100,8 @@ where Option does not send Alt by default, press `Esc` then the digit.
   view's own mode (a filter, the file viewer, a selected chat item),
   interrupts a running chat turn, and finally moves focus up to the **tab
   bar**. There `←`/`→` switch views as you move, `Enter` or `↓` goes into
-  the view, `w` turns the web server on or off.
+  the view, `w` turns the web server on or off. Left of `1 Chat` is the
+  agent label: `Enter` on it switches agent or loop.
 - **`Ctrl+B`** hides the sidebar for a full-width view (also `/sidebar`;
   remembered across launches).
 - **`Ctrl+K`** (or `Ctrl+P`, or `:` outside the prompt) opens the **command
@@ -121,7 +153,7 @@ stopped agents. Track a folder with `f` on the Fleet or `/track [dir]`;
 - **Scroll:** `PgUp`/`PgDn` (also while typing), the mouse wheel, `Home`
   (top, loading older history) and `End` (follow live).
 - **Thinking:** `t` expands or collapses all of it.
-- **Files:** `@` in the prompt completes an agent file path (`Tab`).
+- **Files:** `@` in the prompt completes an agent file path (`Tab` or `Enter`).
 
 ### Approvals and questions
 
@@ -157,10 +189,11 @@ session. In the terminal app `/abort` is an alias of `/interrupt`.
 
 | Keys | Action |
 |---|---|
-| `Enter` | Send (or run the `/command`) |
+| `Enter` | Send (or run the `/command`). With the completion menu open: take the highlighted item; a `/command` with all its required arguments runs, one that needs arguments is inserted with a space so you can type them, an `@file` is inserted |
+| `↑` `↓`, `Esc` | Move in the completion menu, close it |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J`, a trailing `\` | Newline |
 | `Ctrl+↑`, `Ctrl+↓` | Prompt history (per agent › loop in Chat) |
-| `Tab` | Accept a completion: `/commands`, their arguments, `@files` |
+| `Tab` | Complete without running: `/commands`, their arguments, `@files` |
 | `Alt+←/→`, `Alt+B/F` | Word left / right |
 | `Home`, `End`, `Ctrl+A`, `Ctrl+E` | Line start / end |
 | `Ctrl+W`, `Ctrl+Backspace`, `Alt+Backspace` | Delete the word before the caret |
@@ -193,8 +226,9 @@ paste work without a modifier:
 - **Drag** selects text inside one pane and copies it on release
   (`Copied N chars`). **Double-click** takes a word, **triple-click** a line.
 - **Click** a transcript item to select it; a tool call or thinking block
-  expands or collapses. Clicks on tabs switch views; the approval card's
-  actions are buttons.
+  expands or collapses. Clicks on tabs switch views, on the agent label
+  switch agent, on the prompt's status note open Inspect › Status; the
+  approval card's actions are buttons.
 - **Right-click** pastes into the prompt or the open dialog. `Ctrl+V`,
   `Ctrl+Shift+V` and `Cmd+V` paste as usual.
 - **The wheel** scrolls whatever is under the pointer.

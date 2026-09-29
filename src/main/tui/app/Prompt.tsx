@@ -5,11 +5,13 @@ import { useTerminalCaps } from './terminal'
 import { useShell } from './shell-context'
 import { PROMPT_PREFILL_KEY, useStore, useTuiSelector } from '../state/store'
 import { useActiveView, useSelectedAgent, useSelectedLoop, useSelectedTracked, useViewState } from '../state/hooks'
-import { completeSlash, createScope, runSlash } from '../commands/registry'
+import { completeSlash, createScope, parseSlash, runSlash } from '../commands/registry'
+import type { SlashCommand } from '../commands/types'
 import { TextInput, type TextInputApi } from '../ui/TextInput'
 import { truncate } from '../ui/text'
 import { MAIN_LOOP } from '../api/types'
 import type { PromptCompletion } from '../views/types'
+import { ComposerTop, statusBadgeText, useComposerStatus } from './ComposerTop'
 
 const HISTORY_LIMIT = 200
 const MENU_ROWS = 6
@@ -43,6 +45,39 @@ interface MenuItem {
   label: string
   description: string
   accept: () => { value: string; cursor?: number }
+  /** A slash completion's command (Enter decides run vs insert from its args). */
+  command?: SlashCommand
+}
+
+/**
+ * Enter on a slash completion (like Claude Code): a command whose required
+ * `<args>` are all there runs; one that still needs some is inserted with a
+ * trailing space; a path being completed (`/load C:\agents\`) keeps going.
+ */
+export function slashEnterAction(value: string, command: SlashCommand): { run: string } | { insert: string } {
+  if (/[\\/]$/.test(value)) return { insert: value }
+  const required = command.args?.match(/<[^>]+>/g)?.length ?? 0
+  const given = parseSlash(value)?.args.length ?? 0
+  return given >= required ? { run: value } : { insert: `${value} ` }
+}
+
+/**
+ * Enter with the completion menu open, for the highlighted item (`offered` is
+ * what Tab would put in the prompt): `submit` = the prompt submits that text
+ * (a /command runs), `insert` = it goes into the prompt to type on. An item
+ * that does not complete what is typed (free text past the suggestions:
+ * `/loop new critic Review …`) submits the typed text; one that only repeats
+ * it (`/track C:\dir` vs `C:\dir\`) is judged by what is typed.
+ */
+export function menuEnter(typed: string, offered: { value: string; cursor?: number }, command?: SlashCommand): { submit: string } | { insert: string; cursor?: number } {
+  const t = typed.trimEnd()
+  const o = offered.value.trimEnd()
+  const bare = (s: string) => s.replace(/[\\/]$/, '').toLowerCase()
+  if (!o.toLowerCase().startsWith(t.toLowerCase())) return { submit: typed }
+  const complete = bare(o) === bare(t)
+  if (!command) return complete ? { submit: typed } : { insert: offered.value, cursor: offered.cursor }
+  const action = slashEnterAction(complete ? t : o, command)
+  return 'run' in action ? { submit: action.run } : { insert: action.insert }
 }
 
 /**
@@ -94,7 +129,10 @@ export function Prompt({ width, focused }: { width: number; focused: boolean }) 
     if (prefill) { setValue(prefill.text); setDismissed(false) }
   }, [prefill?.nonce])
 
-  const target = agent ? `${agent.summary.handle || agent.summary.name} ${theme.glyph.pointer} ${loop}` : null
+  // The agent's status line, inset on the top border (sticky note).
+  const badge = statusBadgeText(useComposerStatus(), width, theme.mono, theme.glyph.ellipsis)
+
+  const target = agent ?`${agent.summary.handle || agent.summary.name} ${theme.glyph.pointer} ${loop}` : null
   const placeholder = typeof config?.placeholder === 'function'
     ? config.placeholder(scope)
     : config?.placeholder ?? (target ? `Message ${target}   / for commands` : stopped ? `${stopped.agent.name} is stopped · a message starts it, then sends · / for commands` : 'Select an agent (Tab → sidebar) or type /help')
@@ -123,6 +161,7 @@ export function Prompt({ width, focused }: { width: number; focused: boolean }) 
       description: s.command.description,
       // Completing into a path (`/load C:\agents\`) keeps the caret there.
       accept: () => ({ value: /[\\/]$/.test(s.value) ? s.value : `${s.value} ` }),
+      command: s.command,
     }))
     : custom.map(c => ({ key: `${c.label}:${c.value}`, label: c.label, description: c.description ?? '', accept: () => ({ value: c.value, cursor: c.cursor }) }))
   const menuOpen = !dismissed && menu.length > 0 && !(slashing && slash.length === 1 && slash[0].value === value.trimEnd())
@@ -171,7 +210,8 @@ export function Prompt({ width, focused }: { width: number; focused: boolean }) 
           ))}
         </Box>
       ) : null}
-      <Box borderStyle={theme.ascii ? 'classic' : 'round'} borderColor={focused ? theme.color.borderFocus : theme.color.border} paddingX={1} width={width} flexDirection="column">
+      {badge ? <ComposerTop width={width} focused={focused} badge={badge} /> : null}
+      <Box borderStyle={theme.ascii ? 'classic' : 'round'} borderTop={!badge} borderColor={focused ? theme.color.borderFocus : theme.color.border} paddingX={1} width={width} flexDirection="column">
         <TextInput
           value={value}
           onChange={next => { setValue(next); setMenuIndex(0); setDismissed(false) }}
@@ -190,6 +230,21 @@ export function Prompt({ width, focused }: { width: number; focused: boolean }) 
               const next = menu[highlighted].accept()
               api.setValue(next.value, next.cursor)
               return true
+            }
+            // Enter takes the highlighted item: a ready command runs (the
+            // input submits it), else it is inserted like Tab. Shift/Alt+Enter
+            // still add a newline.
+            if (key.return && !key.shift && !key.meta) {
+              // Only an item that completes what is typed: a menu from an
+              // older value (text + Enter in one burst) or free text past
+              // the suggestions (`/loop new critic Review …`) submits as typed.
+              if (api.value !== value) return false
+              const item = menu[highlighted]
+              const outcome = menuEnter(api.value, item.accept(), item.command)
+              if ('insert' in outcome) { api.setValue(outcome.insert, outcome.cursor); return true }
+              // The input submits what is now in it.
+              api.setValue(outcome.submit)
+              return false
             }
             return false
           }}

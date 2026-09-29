@@ -13,7 +13,9 @@ export default defineConfig({
       // The TUI suites (ink renders, mock daemons) run in worker threads: the
       // forks pool's child processes die at teardown on Windows ("Worker
       // exited unexpectedly"). They never load native modules.
-      { extends: true, test: { name: 'tui', include: ['tests/tui/**/*.test.{ts,tsx}'], pool: 'threads' } },
+      // Each test drives a real ink render against a mock daemon; on a loaded
+      // CI runner (macOS: 400 files in parallel) a whole chat turn can pass 5s.
+      { extends: true, test: { name: 'tui', include: ['tests/tui/**/*.test.{ts,tsx}'], pool: 'threads', testTimeout: 15_000 } },
       { extends: true, test: { name: 'unit', exclude: [...exclude, 'tests/tui/**'] } },
     ],
   },

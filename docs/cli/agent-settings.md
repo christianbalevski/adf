@@ -1,6 +1,6 @@
 # Agent settings
 
-Inspect › Settings (`5`, then the Settings tab; `/inspect settings`) is
+Inspect › Settings (`4`, then the Settings tab; `/inspect settings`) is
 Studio's agent config as rows. Instructions, Tools and Compaction open
 dialogs; Autonomous, Autostart, Receive messages, Host access, Visibility,
 Send mode, Inbox mode and "New MCP tools need approval" flip in place with

@@ -73,7 +73,7 @@ describe('provider sign-in', () => {
     expect(frame).toMatch(/agent-2 .*signed out/)
     store.actions.selectAgent(AGENT_2_ID)
     frame = await tui.waitFor('ChatGPT not signed in — /login chatgpt')
-    await tui.press('2')
+    await tui.press('1')
     frame = await tui.waitFor(f => f.includes('agent-2 ›') && f.includes('ChatGPT not signed in — /login chatgpt'))
     expect(frame).toContain('ChatGPT not signed in')
   })

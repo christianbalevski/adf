@@ -23,7 +23,7 @@ const KEY_COL = 18
 export const LOOPS_EXPLAINER = [
   'Loops are an agent’s parallel chat sessions (threads), each with its own history.',
   'main is the agent itself and talks to you. Inner loops (also called side loops) are extra threads with their own goal: a consolidator that tidies memory on a recurring timer, a researcher you hand questions to, a critic. They run on demand, when main hands work over, or on a schedule.',
-  'Pick a loop in the sidebar or with Shift+←/→ to chat with it and see its transcript; create, edit, enable, disable, delete and schedule inner loops in the Loops view (4).',
+  'Pick a loop in the sidebar or with Shift+←/→ to chat with it and see its transcript; create, edit, enable, disable, delete and schedule inner loops in the Loops view (3).',
 ]
 
 /**

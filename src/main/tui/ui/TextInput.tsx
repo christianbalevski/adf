@@ -94,9 +94,10 @@ export function TextInput(props: TextInputProps) {
     setCursor(Math.max(0, Math.min(nextCursor, next.length)))
   }
 
+  // value / cursor read the live edit, so an onKey handler in the same tick as a burst sees it.
   const api: TextInputApi = {
-    value,
-    cursor,
+    get value() { return live.current.value },
+    get cursor() { return live.current.cursor },
     setValue: (next, c) => update(next, c ?? next.length),
     insert: text => {
       const { value: v, cursor: c } = live.current

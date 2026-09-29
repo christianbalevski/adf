@@ -81,7 +81,7 @@ every daemon start.
 
 ## 5. Chat
 
-Press `2` for Chat (or `Enter` on an agent). Type in the prompt at the bottom
+Press `1` for Chat (or `Enter` on an agent). Type in the prompt at the bottom
 and press `Enter`. Replies, thinking and tool calls stream into the
 transcript.
 

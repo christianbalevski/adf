@@ -223,8 +223,9 @@ describe('loops manager', () => {
     const tui = await mount()
     await tui.press(KEY.right)
     await tui.press(KEY.right)
-    let frame = await tui.waitFor('Triggers of agent-1')
-    expect(frame).toMatch(/on_timer\s+on\s+on 2t\s+→ main, consolidator/)
+    await tui.waitFor('Triggers of agent-1')
+    // The RUNTIME column arrives with its own daemon read (… until then).
+    let frame = await tui.waitFor(f => /on_timer\s+on\s+on 2t\s+→ main, consolidator/.test(f))
     expect(frame).toMatch(/on_inbox\s+off\s+off 1t\s+→ researcher/)
     // on_startup, on_inbox, on_outbox, on_file_change, on_chat, on_timer
     for (let i = 0; i < 5; i++) await tui.press(KEY.down)

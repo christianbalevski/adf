@@ -65,7 +65,7 @@ export function EntryDialog({ overlay, close, width, height }: OverlayProps) {
   const [top, setTop] = useState(0)
   const maxTop = Math.max(0, lines.length - rows)
   useKeys((input, key) => {
-    if (key.escape || key.return || input === 'q') { close(); return true }
+    if (key.escape || key.backspace || key.return || input === 'q') { close(); return true }
     if (key.downArrow || input === 'j') { setTop(t => Math.min(maxTop, t + 1)); return true }
     if (key.upArrow || input === 'k') { setTop(t => Math.max(0, t - 1)); return true }
     if (key.pageDown || input === ' ') { setTop(t => Math.min(maxTop, t + rows)); return true }
@@ -77,7 +77,7 @@ export function EntryDialog({ overlay, close, width, height }: OverlayProps) {
   if (!entry) return null
   const tokens = formatTokens(entry)
   return (
-    <Modal title={`${loop} ${theme.glyph.sep} entry #${entry.seq}`} width={dialogWidth} hints={[{ keys: 'up down', label: 'scroll' }, { keys: 'pgup pgdn', label: 'page' }, { keys: 'esc', label: 'close' }]}>
+    <Modal title={`${loop} ${theme.glyph.sep} entry #${entry.seq}`} width={dialogWidth} hints={[{ keys: 'up down', label: 'scroll' }, { keys: 'pgup pgdn', label: 'page' }, { keys: 'backspace esc', label: 'back' }]}>
       <Text color={theme.color.muted}>
         {entry.role} {theme.glyph.sep} {new Date(entry.created_at).toLocaleDateString()} {formatClock(entry.created_at)}
         {entry.model ? ` ${theme.glyph.sep} ${entry.model}` : ''}

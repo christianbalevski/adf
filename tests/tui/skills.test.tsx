@@ -13,7 +13,7 @@ import { BUILTIN_COMMANDS } from '../../src/main/tui/commands/builtin/index'
 import { VIEWS } from '../../src/main/tui/views/registry'
 import { startMockDaemon, type MockDaemon } from './fixtures/mock-daemon'
 import { createFilesFetch, type FilesFixture } from './fixtures/files-daemon'
-import { renderTui, type RenderedTui } from './fixtures/render'
+import { renderTui, wrapped, type RenderedTui } from './fixtures/render'
 
 const KEY = { enter: '\r', esc: '\u001b', down: '\u001b[B', up: '\u001b[A', backspace: '\u007f' }
 
@@ -135,7 +135,7 @@ async function slash(tui: RenderedTui, text: string) {
   await tui.waitFor(() => store.getState().focus === 'input')
   await new Promise(resolve => setTimeout(resolve, 40))
   await tui.type(text)
-  await tui.waitFor(text)
+  await tui.waitFor(wrapped(text))
   await tui.press(KEY.enter)
 }
 

@@ -12,7 +12,7 @@ import runtime from '../../src/main/tui/views/runtime/index'
 import { completeFolder } from '../../src/main/tui/views/fleet/folders'
 import { openRuntime } from '../../src/main/tui/views/runtime/state'
 import { MOCK_AGENTS_DIR, startMockDaemon, type MockDaemon } from './fixtures/mock-daemon'
-import { renderTui, type RenderedTui } from './fixtures/render'
+import { renderTui, wrapped, type RenderedTui } from './fixtures/render'
 
 const KEY = { tab: '\t', enter: '\r', esc: '\u001b', down: '\u001b[B', up: '\u001b[A' }
 
@@ -74,7 +74,7 @@ describe('tracked folders', () => {
     await tui.press('f')
     await tui.waitFor('Track a folder')
     await tui.press(KEY.tab)
-    await tui.waitFor('team-agents')
+    await tui.waitFor(wrapped('team-agents'))
     await tui.press(KEY.enter)
     await tui.waitFor(f => !f.includes('Track a folder'))
     const dir = join(tmp, 'team-agents')

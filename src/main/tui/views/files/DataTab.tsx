@@ -246,7 +246,6 @@ export function DataTab({ kind, width, height, focused, agentId, agentLabel, pan
             onKey={(input, key) => {
               if (input === 'r' && !key.ctrl) { void reload(); return true }
               if (input === 'f' && !key.ctrl && filters.length > 1) { setFilterIndex(i => (i + 1) % filters.length); return true }
-              if (key.rightArrow || input === 'l') { setPane('viewer'); return true }
               return false
             }}
             emptyText={records ? (kind === 'meta' ? `No meta entries in ${agentLabel}.` : `No ${status ?? ''} messages in the ${kind} of ${agentLabel}.`.replace('  ', ' ')) : `Loading${theme.glyph.ellipsis}`}

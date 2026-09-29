@@ -28,7 +28,7 @@ async function mount(options: IdentityMockOptions = {}): Promise<{ tui: Rendered
   mock = await startMockDaemon({ stepMs: 5 })
   const identity = createIdentityFetch(mock, options)
   store = createTuiStore({ client: new DaemonClient({ baseUrl: mock.url, fetch: identity.fetch }) })
-  ui = renderTui(<App store={store} theme={createTheme({ mono: true })} />, { columns: 110, rows: 34 })
+  ui = renderTui(<App store={store} theme={createTheme({ mono: true })} />, { columns: 120, rows: 34 })
   await store.start()
   return { tui: ui, identity, store, mock }
 }

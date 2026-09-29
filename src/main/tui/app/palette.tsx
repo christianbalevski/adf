@@ -19,10 +19,16 @@ export { fuzzyScore, scoreEntry } from './palette/fuzzy'
 export { buildEntries, rankEntries, recordRecentFile, needsArgs, type PaletteEntry } from './palette/entries'
 export { HelpOverlay, helpLines, LOOPS_EXPLAINER } from './palette/help'
 
-export function Palette({ close, width, height }: OverlayProps) {
+/** Palette props: `agents` narrows it to the agent / loop picker (the header's agent label). */
+export interface PaletteProps { mode?: 'agents' }
+
+const inSwitcher = (e: PaletteEntry) => e.id.startsWith('agent:') || e.id.startsWith('loop:')
+
+export function Palette({ overlay, close, width, height }: OverlayProps) {
   const theme = useTheme()
   const store = useStore()
   const { views, registry, exit } = useShell()
+  const switcher = (overlay.props as PaletteProps | undefined)?.mode === 'agents'
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const [files, setFiles] = useState<FileListEntry[] | undefined>(undefined)
@@ -40,10 +46,10 @@ export function Palette({ close, width, height }: OverlayProps) {
     return () => { cancelled = true }
   }, [store, agentId])
 
-  const entries = useMemo(
-    () => buildEntries({ store, views, registry, exit, loopGlyph: theme.glyph.loop, files }),
-    [store, views, registry, exit, theme.glyph.loop, files, agents],
-  )
+  const entries = useMemo(() => {
+    const all = buildEntries({ store, views, registry, exit, loopGlyph: theme.glyph.loop, files })
+    return switcher ? all.filter(inSwitcher) : all
+  }, [store, views, registry, exit, theme.glyph.loop, files, agents, switcher])
   const filtered = useMemo(() => rankEntries(entries, query), [entries, query])
 
   const selected = Math.min(index, Math.max(0, filtered.length - 1))
@@ -81,12 +87,12 @@ export function Palette({ close, width, height }: OverlayProps) {
   const inner = dialogWidth - 4
   let lastGroup = ''
   return (
-    <Modal title="Command palette" width={dialogWidth} hints={[{ keys: 'enter', label: 'run' }, { keys: 'up down', label: 'move' }, { keys: 'ctrl+u', label: 'clear' }, { keys: 'esc', label: 'close' }]}>
+    <Modal title={switcher ? 'Switch agent' : 'Command palette'} width={dialogWidth} hints={[{ keys: 'enter', label: 'run' }, { keys: 'up down', label: 'move' }, { keys: 'ctrl+u', label: 'clear' }, { keys: 'esc', label: 'close' }]}>
       <Text wrap="truncate-end">
         <Text color={theme.color.accent}>{theme.glyph.pointer} </Text>
         <Text color={theme.color.text}>{query}</Text>
         <Text inverse> </Text>
-        {query ? null : <Text color={theme.color.dim}> agents, loops, /commands, views, files</Text>}
+        {query ? null : <Text color={theme.color.dim}>{switcher ? ' agents and loops' : ' agents, loops, /commands, views, files'}</Text>}
         <Text color={theme.color.dim}>  {filtered.length} of {entries.length}</Text>
       </Text>
       <Box ref={listRef} flexDirection="column" marginTop={1}>
@@ -132,4 +138,11 @@ export function openPalette(store: ReturnType<typeof useStore>): void {
   const top = store.getState().overlays.at(-1)
   if (top?.kind === 'palette') return
   store.actions.pushOverlay({ id: 'palette', kind: 'palette' })
+}
+
+/** The palette as an agent / loop picker (the header's agent label: click, or Enter on the tab bar). */
+export function openAgentSwitcher(store: ReturnType<typeof useStore>): void {
+  const top = store.getState().overlays.at(-1)
+  if (top?.kind === 'palette') return
+  store.actions.pushOverlay({ id: 'palette', kind: 'palette', props: { mode: 'agents' } satisfies PaletteProps })
 }

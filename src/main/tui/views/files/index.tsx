@@ -44,9 +44,11 @@ function FilesView({ width, height, focused }: ViewProps) {
 
   useKeys((input, key) => {
     if (key.ctrl || key.meta || (key.shift && (key.leftArrow || key.rightArrow))) return false
-    if (input === ']' || input === '[') {
+    // ←/→ switch tabs ([ ] still work, unlisted).
+    const step = key.rightArrow || input === ']' ? 1 : key.leftArrow || input === '[' ? -1 : 0
+    if (step) {
       const i = TABS.indexOf(state.tab)
-      setTab(TABS[(i + (input === ']' ? 1 : TABS.length - 1)) % TABS.length])
+      setTab(TABS[(i + step + TABS.length) % TABS.length])
       return true
     }
     return false
@@ -64,7 +66,7 @@ function FilesView({ width, height, focused }: ViewProps) {
   const unread = agent.unreadInbox ?? 0
   const bodyHeight = Math.max(3, height - 1)
   const bodyWidth = Math.max(10, width - 2)
-  // The agent › loop label keeps its width; the "[ ] switch" hint only shows
+  // The agent › loop label keeps its width; the "←/→ switch" hint only shows
   // when the tabs, hint and label all fit with a gap.
   const target = `${agentLabel} ${theme.glyph.pointer} ${theme.glyph.loop} ${loop}`
   const targetWidth = Math.min(displayWidth(target), Math.max(8, Math.floor(bodyWidth / 2)))
@@ -92,7 +94,7 @@ function FilesView({ width, height, focused }: ViewProps) {
               </Text>
             )
           })}
-          {showSwitch ? <Text color={theme.color.dim}>  [ ] switch</Text> : null}
+          {showSwitch ? <Text color={theme.color.dim}>  {theme.ascii ? '</>' : '←/→'} switch</Text> : null}
         </Text>
         <Box flexShrink={0} marginLeft={2} width={targetWidth}>
           <Text color={theme.color.dim} wrap="truncate-start">{target}</Text>
@@ -133,29 +135,30 @@ function keyHints(scope: CommandScope): KeyHintSpec[] {
   const state = readViewState(scope.state())
   if (state.pane === 'viewer') {
     return [
+      { keys: 'backspace', label: 'back' },
       { keys: 'up down', label: 'scroll' },
       { keys: '/', label: 'search' },
-      { keys: 'esc', label: 'back' },
       ...(state.tab === 'files' ? [{ keys: 'e', label: 'edit' }] : []),
-      { keys: 'n N', label: 'next/prev' },
+      { keys: 'left right', label: 'tabs' },
     ]
   }
   if (state.tab !== 'files') {
     return [
       { keys: 'enter', label: 'read' },
+      { keys: 'left right', label: 'tabs' },
       { keys: '/', label: 'filter' },
       ...(state.tab === 'meta' ? [] : [{ keys: 'f', label: 'status' }]),
       { keys: 'r', label: 'reload' },
-      { keys: '[ ]', label: 'tabs' },
     ]
   }
   return [
     // The status bar shows the first few; the rest are in /help.
     { keys: 'enter', label: 'open' },
+    { keys: 'backspace', label: 'up' },
+    { keys: 'left right', label: 'tabs' },
     { keys: 'e', label: 'edit' },
     { keys: 'n', label: 'new' },
     { keys: '/', label: 'filter' },
-    { keys: '[ ]', label: 'tabs' },
     { keys: 'd', label: 'delete' },
   ]
 }
@@ -163,7 +166,8 @@ function keyHints(scope: CommandScope): KeyHintSpec[] {
 const files: ViewDefinition = {
   id: VIEW_ID,
   title: 'Files',
-  key: '3',
+  key: '2',
+  group: 'agent',
   component: FilesView,
   keyHints,
   helpKeys: [
@@ -171,8 +175,9 @@ const files: ViewDefinition = {
       title: 'Files tab (tree)',
       keys: [
         { keys: 'up down', label: 'Move; the viewer previews the highlighted entry' },
-        { keys: 'enter right', label: 'Open in the viewer · expand a folder (l)' },
-        { keys: 'left', label: 'Collapse the folder · go to the parent (h)' },
+        { keys: 'enter', label: 'Open the file in the viewer · open / close a folder' },
+        { keys: 'backspace', label: 'Close the folder · go to the parent folder (never deletes)' },
+        { keys: 'left right', label: 'Tabs: Files · Inbox · Outbox · Meta' },
         { keys: 'space', label: 'Toggle a folder' },
         { keys: '/', label: 'Filter by path (fuzzy)' },
         { keys: 'e', label: 'Edit in $EDITOR, then confirm the write (diff shown)' },
@@ -182,22 +187,21 @@ const files: ViewDefinition = {
         { keys: 'p', label: 'Protection: none → read_only → no_delete' },
         { keys: 'a', label: 'Toggle authorized' },
         { keys: 'r', label: 'Reload' },
-        { keys: '[ ]', label: 'Tabs: Files · Inbox · Outbox · Meta' },
       ],
     },
     {
       title: 'Viewer',
       keys: [
+        { keys: 'backspace esc', label: 'Back to the list (the entry stays selected)' },
         { keys: 'up down', label: 'Scroll (j k; PgUp PgDn Space page; g G top/bottom)' },
         { keys: '/', label: 'Search, then n N next / previous hit' },
         { keys: 'e', label: 'Edit this file' },
-        { keys: 'esc', label: 'Back to the list (← h)' },
       ],
     },
     {
       title: 'Inbox · Outbox · Meta (read-only)',
       keys: [
-        { keys: 'enter', label: 'Read the message / entry' },
+        { keys: 'enter', label: 'Read the message / entry (Backspace or Esc: back)' },
         { keys: '/', label: 'Filter' },
         { keys: 'f', label: 'Status filter (inbox, outbox)' },
         { keys: 'r', label: 'Reload' },

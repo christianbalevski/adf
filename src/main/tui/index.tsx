@@ -60,7 +60,7 @@ own goal, on demand or on a schedule.
 Options:
   --url, -u <url>      Daemon URL (default ADF_DAEMON_URL or ${resolveDaemonUrl(undefined, {})})
   --token <token>      Bearer token (default: ADF_DAEMON_TOKEN, else the local daemon's token file)
-  --view <id>          Start view: fleet | chat | files | loops | inspect | runtime
+  --view <id>          Start view: chat | files | loops | inspect | fleet | runtime
   --agent <id|handle>  Preselect an agent
   --loop <name>        Preselect one of its loops (default main)
   --theme <name>       adf (dark) | adf-light | adf-contrast | adf-mono (also ADF_TUI_THEME)

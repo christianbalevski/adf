@@ -43,7 +43,8 @@ describe('TUI shell', () => {
     const tui = await mount()
     const frame = await tui.waitFor(f => f.includes('consolidator') && f.includes('live'))
     expect(frame).toContain('ADF')
-    expect(frame).toContain('1 Fleet')
+    expect(frame).toContain('1 Chat')
+    expect(frame).toMatch(/agent-1 ›\s+1 Chat .*│ 5 Fleet/)
     expect(frame).toContain('FLEET')
     expect(frame).toContain('agent-1')
     expect(frame).toContain('agent-2')
@@ -57,11 +58,11 @@ describe('TUI shell', () => {
     const tui = await mount()
     await tui.waitFor('consolidator')
     // Pick the consolidator loop from the Loops view, then open it in Chat.
-    await tui.press('4')
+    await tui.press('3')
     await tui.waitFor('Loops of agent-1')
     await tui.press(KEY.down)
     await tui.waitFor(f => /agent-1 › ↻ consolidator/.test(f))
-    await tui.press('2')
+    await tui.press('1')
     await tui.waitFor('Merged 3 notes into mind.md.')
 
     // Entering Chat focuses the prompt.
@@ -153,7 +154,9 @@ describe('prompt input bursts', () => {
 
 describe('contracts', () => {
   it('registers the six feature views with unique ids and hotkeys, and commands without collisions', () => {
-    expect(VIEWS.map(v => v.id)).toEqual(['fleet', 'chat', 'files', 'loops', 'inspect', 'runtime'])
+    expect(VIEWS.map(v => v.id)).toEqual(['chat', 'files', 'loops', 'inspect', 'fleet', 'runtime'])
+    expect(VIEWS.map(v => v.key)).toEqual(['1', '2', '3', '4', '5', '6'])
+    expect(VIEWS.map(v => v.group)).toEqual(['agent', 'agent', 'agent', 'agent', 'app', 'app'])
     expect(new Set(VIEWS.map(v => v.key)).size).toBe(VIEWS.length)
     const registry = collectCommands(VIEWS, [BUILTIN_COMMANDS])
     expect(registry.conflicts).toEqual([])

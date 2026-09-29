@@ -1,7 +1,7 @@
 # Files
 
 Every agent carries its own files inside its `.adf`: the **document**, its
-**mind** (memory), and any other files it or you write. The Files view (`3`,
+**mind** (memory), and any other files it or you write. The Files view (`2`,
 or `/files`) browses and edits them.
 
 ## Browse
@@ -9,14 +9,14 @@ or `/files`) browses and edits them.
 | Key | Action |
 |---|---|
 | `↑`, `↓` | Move; the viewer previews the highlighted entry |
-| `Enter`, `→` | Open in the viewer · expand a folder |
-| `←` | Collapse · go to the parent |
-| `/` | Filter by path (fuzzy) |
-| `[`, `]` | Tabs: Files · Inbox · Outbox · Meta |
+| `Enter` | Open the file in the viewer · open or close a folder |
+| `Backspace` | Close the folder · then go to the parent folder (never deletes) |
+| `←`, `→` | Tabs: Files · Inbox · Outbox · Meta |
+| `/` | Filter by path (fuzzy); `Backspace` edits the filter while you type |
 
 The viewer colours code, searches (`/`, then `n` / `N`) and shows binaries as
-hex. `Esc` goes back to the list. A badge names the loop that last wrote a
-file.
+hex. `Backspace` or `Esc` goes back to the tree, with the file still
+selected. A badge names the loop that last wrote a file.
 
 ## Edit
 
@@ -42,8 +42,8 @@ From the prompt, from any view:
 /mv notes/a.md archive/a.md
 ```
 
-In Chat, `@` in the prompt completes a file path (`Tab`), to point the agent
-at a file.
+In Chat, `@` in the prompt completes a file path (`Tab` or `Enter`), to
+point the agent at a file.
 
 The external editor is `ADF_EDITOR`, then `VISUAL`, then `EDITOR`
 (default `notepad` on Windows, else `nano`, then `vi`). Binary files can be
@@ -51,8 +51,8 @@ viewed but not edited. A folder cannot be deleted in one go: delete its files.
 
 ## Inbox, Outbox, Meta
 
-Read-only tabs: messages the agent received and sent (`Enter` reads one, `f`
-filters by status) and its meta entries.
+Read-only tabs: messages the agent received and sent (`Enter` reads one,
+`Backspace` or `Esc` goes back, `f` filters by status) and its meta entries.
 
 One-shot:
 

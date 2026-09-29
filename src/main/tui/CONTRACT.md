@@ -12,12 +12,19 @@ Run it: `npm run adf` (no command) · `npm run adf -- tui --view loops` ·
 
 | Feature | Owns (edit freely) | View id / hotkey |
 |---|---|---|
-| fleet | `views/fleet/**` | `fleet` / `1` |
-| chat | `views/chat/**` | `chat` / `2` |
-| files | `views/files/**` (document, mind, files) | `files` / `3` |
-| loops | `views/loops/**` | `loops` / `4` |
-| commands / palette / inspect (the selected agent) | `views/inspect/**`, `commands/builtin/**`, `app/palette.tsx` | `inspect` / `5` |
-| runtime (the daemon, every agent) | `views/runtime/**` (pages from `commands/builtin/reports.ts`) | `runtime` / `6` |
+| chat | `views/chat/**` | `chat` / `1` (agent group) |
+| files | `views/files/**` (document, mind, files) | `files` / `2` (agent group) |
+| loops | `views/loops/**` | `loops` / `3` (agent group) |
+| commands / palette / inspect (the selected agent) | `views/inspect/**`, `commands/builtin/**`, `app/palette.tsx` | `inspect` / `4` (agent group) |
+| fleet | `views/fleet/**` | `fleet` / `5` (app group) |
+| runtime (the daemon, every agent) | `views/runtime/**` (pages from `commands/builtin/reports.ts`) | `runtime` / `6` (app group) |
+
+The header reads `◆ ADF  agent-1 › [loop]  1 Chat 2 Files 3 Loops 4 Inspect │
+5 Fleet 6 Runtime` then the badges: views with `group: 'agent'` follow the
+selected agent's label (`tabOrder` in `app/Header.tsx`), the rest follow a
+dim separator. The label (click, or `Enter` on it in the tab bar) opens the
+agent switcher (`openAgentSwitcher`: the palette narrowed to agents and
+loops, props `{ mode: 'agents' }`). The app still opens on Fleet.
 
 Shared (foundation — change deliberately, keep every view working): `api/**`, `state/**`, `identity/**` (owner identity + new agent dialogs), `auth/**` (provider sign-in), `web/**` (agent websites + the web server toggle), `setup/**` (welcome, channels, API-key providers), `app/**` (except
 `app/palette.tsx`), `ui/**`, `commands/types.ts`, `commands/registry.ts`,
@@ -66,6 +73,7 @@ on a schedule. Design: `docs/design/agent-loops-mvp.md`. User-facing prose says
 // views/types.ts
 interface ViewDefinition {
   id: string; title: string; key: string            // key: '1'..'9'
+  group?: 'agent' | 'app'                           // header group: the selected agent's views, or the app's
   component: ComponentType<ViewProps>
   sidebar?: ComponentType<SidebarProps>             // replaces the default (views/fleet/Sidebar: FleetSidebar)
   fullWidth?: boolean                               // hide the sidebar
@@ -81,7 +89,7 @@ interface PromptConfig {
   onSubmit?: (text: string, ctx: CommandContext) => boolean | Promise<boolean> // true = handled
   historyKey?: (scope) => string   // ↑ history per key (chat: per agent + loop)
   draftKey?: (scope) => string     // unsent text parked per key, restored on return
-  complete?: (value, cursor, scope) => PromptCompletion[] | Promise<…>  // e.g. @path, Tab accepts
+  complete?: (value, cursor, scope) => PromptCompletion[] | Promise<…>  // e.g. @path; Tab or Enter accepts
 }
 interface OverlayProps { overlay: Overlay; close(): void; width: number; height: number }
 ```
@@ -91,6 +99,15 @@ interface OverlayProps { overlay: Overlay; close(): void; width: number; height:
 - The **prompt** belongs to the shell (history, slash completion, paste,
   multiline). Slash input runs commands; other text goes to your
   `prompt.onSubmit`, else is sent as chat to the selected agent + loop.
+  With the completion menu open, `Enter` takes the highlighted item
+  (`menuEnter` in `app/Prompt.tsx`): a command whose required `<args>` are
+  there runs, else it is inserted with a space; an item that does not
+  extend what is typed submits the typed text. `Tab` only completes. An exact
+  name or alias leads the slash menu.
+- The prompt's top border carries the selected agent's status line
+  (`web.agents[id].status`, adf_meta `status`) right-aligned, ≤ 40% of the
+  width (`app/ComposerTop.tsx`); a click opens Inspect › Status. Inner loops
+  have no status line of their own and show the agent's.
 - Open a dialog: `actions.pushOverlay({ kind: 'loops.new', props })`; register
   the component under `overlays['loops.new']`. Built-in kinds: `palette`,
   `help` (full keys/commands reference, also `?` and `/help`), `confirm` (use
@@ -404,13 +421,27 @@ the main pane or an empty prompt; a prompt with text needs `Esc` twice to
 clear (`DOUBLE_ESC_MS`), then the next `Esc` goes up. On the tab bar `←/→`
 switch views live (`setView` then `setFocus('tabs')`), `Enter`/`↓` enter the
 view (Chat: `input`, else `main`), digits jump in, `Tab`/`Shift+Tab` go to
-the first / last pane, `w` toggles the web server. `setView('chat')` focuses
+the first / last pane, `w` toggles the web server. With groups, the agent
+label is the stop left of the first view (viewState `TABS_CURSOR_KEY` =
+`'agent'`; the active view stays): `Enter` / `↓` there open the agent
+switcher; any view change clears it. `setView('chat')` focuses
 the prompt. Status-bar hints switch to `TAB_BAR_HINTS` while `tabs` has focus;
 the list is `TAB_BAR_KEYS` in `app/shell-keys.ts`.
 
 View-local conventions: `↑↓`/`j k` move, `Enter` open/act, `Space` toggle,
 `n` new, `e` edit, `d`/`Del` delete (always via `actions.confirm`), `r`
 refresh, `x` enable/disable, `/` filter within lists. Show them via `keyHints`.
+
+Tabbed views (Files, Loops, Inspect, Runtime) share one model: `←/→` switch
+the view's tabs from the `view` layer (`[ ]` stay as unlisted aliases), so
+lists, trees and viewers must not consume plain `←/→`; `Enter` opens an
+item's detail; `Backspace` is "back" (detail → list, keeping the selection;
+in the Files tree: close the folder, then go to the parent) and never
+deletes (`key.delete` is the Delete key; ink reports Backspace as
+`key.backspace`); `Esc` backs out of a detail like `Backspace` (never
+closes folders), then goes on to the tab bar. Anything that takes text
+(a `/` filter, a search) consumes `←/→` and `Backspace` while typing
+(`ui/List` does for its filter).
 
 External editor: `util/editor.ts` (`resolveEditor`: ADF_EDITOR → VISUAL →
 EDITOR → notepad / nano / vi; `editText`; `runEditorProcess`). Hand the
@@ -435,7 +466,7 @@ pane it started in and copies on release (double-click word, triple-click
 line), a plain click goes to the innermost `useClick(ref, event => used)`
 region (chat: select + expand an item; the approval card's buttons) and then
 focuses the pane (the prompt keeps focus when the click was used), header
-clicks switch tabs / toggle the web server (`HeaderHits` from
+clicks switch tabs / open the agent switcher (the label) / toggle the web server (`HeaderHits` from
 `app/Header.tsx`), right-click pastes the clipboard into the prompt (or the
 focused dialog input). The cells come from `app/screen.ts`: every TUI write
 is mirrored into an in-process `@xterm/headless` terminal (a runtime

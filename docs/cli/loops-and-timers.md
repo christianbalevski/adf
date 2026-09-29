@@ -34,7 +34,7 @@ adf interrupt agent-1 --loop consolidator
 
 ## Create an inner loop
 
-Press `4` for the Loops view, then `n`, and pick a template:
+Press `3` for the Loops view, then `n`, and pick a template:
 
 | Template | Goal | Schedule |
 |---|---|---|
@@ -59,7 +59,7 @@ From the prompt:
 
 ## Manage loops
 
-On the Loops tab (`4`), with a loop selected:
+On the Loops tab (`3`), with a loop selected:
 
 | Key | Action |
 |---|---|
@@ -78,7 +78,7 @@ The same from the prompt: `/loop edit|rm|on|off <name>`,
 ## Timers
 
 A timer wakes a loop (main, or an inner loop) with a message. Timers tab
-(`4`, then `→`), or `/timers` (`/timers all`: every agent's upcoming timers):
+(`3`, then `→`), or `/timers` (`/timers all`: every agent's upcoming timers):
 
 | Key | Action |
 |---|---|

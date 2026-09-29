@@ -4,6 +4,8 @@ import type { AppUpdateCheckResult, AppUpdateState } from '../../../src/shared/t
 
 const mocks = vi.hoisted(() => ({
   isPackaged: true,
+  /** Settings → Privacy: background update checks allowed. */
+  checkEnabled: true,
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   listeners: new Map<string, (...args: unknown[]) => void>(),
   checkForUpdates: vi.fn<() => Promise<unknown>>(),
@@ -35,7 +37,7 @@ async function startUpdater(): Promise<{ sent: AppUpdateState[]; check: () => Pr
   vi.resetModules()
   const sent: AppUpdateState[] = []
   const { initAppUpdater } = await import('../../../src/main/services/app-updater.service')
-  initAppUpdater({ send: (s) => sent.push(s), prepareQuitForUpdate: async () => {} })
+  initAppUpdater({ send: (s) => sent.push(s), prepareQuitForUpdate: async () => {}, isCheckEnabled: () => mocks.checkEnabled })
   const check = () => mocks.handlers.get(IPC.APP_UPDATE_CHECK)!() as Promise<AppUpdateCheckResult>
   return { sent, check }
 }
@@ -49,6 +51,7 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   mocks.isPackaged = true
+  mocks.checkEnabled = true
   mocks.handlers.clear()
   mocks.listeners.clear()
   mocks.checkForUpdates.mockReset().mockImplementation(feedHasNothing)
@@ -122,6 +125,15 @@ describe('app updater: background schedule', () => {
 
     await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
     expect(mocks.checkForUpdates).toHaveBeenCalledTimes(3)
+  })
+
+  it('makes no background check while the owner has turned them off; a manual check still works', async () => {
+    mocks.checkEnabled = false
+    const { check } = await startUpdater()
+    await vi.advanceTimersByTimeAsync(3 * 60 * 60 * 1000)
+    expect(mocks.checkForUpdates).not.toHaveBeenCalled()
+    expect(await check()).toEqual({ outcome: 'up-to-date', version: '1.0.0' })
+    expect(mocks.checkForUpdates).toHaveBeenCalledTimes(1)
   })
 
   it('never schedules anything in an unpackaged build', async () => {

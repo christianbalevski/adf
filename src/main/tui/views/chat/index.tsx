@@ -155,8 +155,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
   }, [agentId, loopName])
 
   const transcripts = useTuiSelector(s => s.transcripts)
-  // The agent's status line (adf_meta status, via the mesh) and website, live.
-  const agentStatus = useTuiSelector(s => (agentId ? s.web?.agents[agentId]?.status : undefined))
+  // The agent's status line now sits on the composer's top border (app/ComposerTop.tsx); the website stays here.
   useTuiSelector(s => s.web?.server)
   const site = siteOf(store.getState(), agentId)
 
@@ -452,7 +451,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
     return (
       <Box flexDirection="column" padding={1} width={paneWidth} height={height}>
         <Text color={theme.color.muted}>No agent selected.</Text>
-        <Text color={theme.color.dim}>Pick one in the sidebar (Tab), with /agent &lt;handle&gt;, or from the Fleet view (1).</Text>
+        <Text color={theme.color.dim}>Pick one in the sidebar (Tab), with /agent &lt;handle&gt;, or from the Fleet view (5).</Text>
       </Box>
     )
   }
@@ -460,7 +459,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
   const label = agentLabel(agent)
   const loopTimers = (timers[agentId] ?? []).filter(t => !t.expired && (t.loop ?? MAIN_LOOP) === loopName)
   const infoSegments = fitInfoSegments(
-    infoLineSegments({ isMain: loop?.info.isMain !== false && loopName === MAIN_LOOP, loop, timers: loopTimers, agent, status: agentStatus, site, authNeed: authNeed ? authNeedText(authNeed) : null, glyph: g }),
+    infoLineSegments({ isMain: loop?.info.isMain !== false && loopName === MAIN_LOOP, loop, timers: loopTimers, agent, site, authNeed: authNeed ? authNeedText(authNeed) : null, glyph: g }),
     width,
     displayWidth(` ${g.sep} `),
   )
@@ -530,15 +529,15 @@ function useMergedItems(items: TranscriptItem[], markers: ChatState['markers'][s
 
 /**
  * The line under the loop tabs, most important first when narrow: sign-in
- * warning, disabled loop, host access, the loop's schedule, the agent's own
- * status line, the inner loop's goal, the website, autonomous, new inbox.
+ * warning, disabled loop, host access, the loop's schedule, the inner loop's
+ * goal, the website, autonomous, new inbox (the agent's status line is on the
+ * composer's top border).
  */
 export function infoLineSegments(input: {
   isMain: boolean
   loop: LoopState | undefined
   timers: Timer[]
   agent: AgentEntry
-  status?: string
   site: Site | null
   authNeed: string | null
   glyph: { warn: string; check: string; sep: string }
@@ -551,7 +550,6 @@ export function infoLineSegments(input: {
   if (agent.config?.compute?.host_access === true) out.push({ key: 'host', text: `host ${glyph.check}`, order: 2, priority: 2 })
   const wakes = wakesText(input.timers, input.now, glyph.sep)
   if (wakes) out.push({ key: 'wakes', text: wakes, order: 5, priority: 3 })
-  if (input.status) out.push({ key: 'status', text: oneLine(input.status), order: 3, priority: isMain ? 4 : 5, flex: true })
   if (!isMain && loop) out.push({ key: 'goal', text: `goal: ${oneLine(loop.info.goal || '(none)')}`, order: 4, priority: 4, flex: true })
   if (input.site) out.push({ key: 'web', text: input.site.url ? `web ${shortUrl(input.site.url)}` : 'web server stopped (w)', order: 6, priority: 6 })
   if (!isMain && loop?.info.config?.autonomous) out.push({ key: 'autonomous', text: 'autonomous', order: 7, priority: 7 })
@@ -617,7 +615,8 @@ async function completeFiles(value: string, cursor: number, scope: CommandScope)
 const chat: ViewDefinition = {
   id: CHAT_VIEW,
   title: 'Chat',
-  key: '2',
+  key: '1',
+  group: 'agent',
   component: ChatView,
   prompt: {
     placeholder,
@@ -661,7 +660,7 @@ const chat: ViewDefinition = {
     {
       keys: [
         { keys: 'enter', label: 'Send to the selected loop (queued while it runs)' },
-        { keys: 'shift+left shift+right', label: 'Previous / next loop tab (also Ctrl+←/→ on an empty prompt; [ ] and ← → in the transcript)' },
+        { keys: 'shift+left shift+right', label: 'Previous / next loop tab (also Ctrl+←/→ on an empty prompt; ← → in the transcript)' },
         { keys: 'up down', label: 'Select the previous / next transcript item (message, reply, thinking, tool call, notice, approval, marker): from an empty prompt or the transcript (j k). An item taller than the view scrolls inside first' },
         { keys: 'enter space', label: 'Expand / collapse the selected item (tool call input + result, thinking, context, approval, wake). Mouse mode: click the item' },
         { keys: 'esc', label: 'Let go of the selected item (before interrupting)' },

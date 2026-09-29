@@ -187,6 +187,7 @@ export function LogsTab({ agentId, width, height, focused }: TabProps) {
         onKey={(input, key) => {
           if (key.ctrl || key.meta) return false
           if (key.return) { setDetail(d => !d); return true }
+          if ((key.escape || key.backspace) && detail) { setDetail(false); return true }
           if (input === 'f') { update({ logsFollow: !follow }); setPinned(true); return true }
           if (input === 'r') { void loadAll(); return true }
           return false
