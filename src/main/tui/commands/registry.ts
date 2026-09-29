@@ -153,5 +153,7 @@ export function completeSlash(text: string, registry: CommandRegistry, scope: Co
       out.push({ value: `/${command.name}`, command })
     }
   }
-  return out
+  // An exact name or alias leads (`/copy` before `/copy-site`): Enter takes the first.
+  const exact = (c: SlashCommand) => [c.name, ...(c.aliases ?? [])].some(n => n.toLowerCase() === parsed.name)
+  return [...out.filter(o => exact(o.command)), ...out.filter(o => !exact(o.command))]
 }

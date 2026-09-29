@@ -122,7 +122,7 @@ ADF_DAEMON_ALLOWED_HOSTS, ADF_DAEMON_BEHIND_PROXY
 |---|---|
 | `--url, -u <url>` | Daemon URL (default ADF_DAEMON_URL or http://127.0.0.1:7385) |
 | `--token <token>` | Bearer token (default: ADF_DAEMON_TOKEN, else the local daemon's token file) |
-| `--view <id>` | Start view: fleet \| chat \| files \| loops \| inspect \| runtime |
+| `--view <id>` | Start view: chat \| files \| loops \| inspect \| fleet \| runtime |
 | `--agent <id\|handle>` | Preselect an agent |
 | `--loop <name>` | Preselect one of its loops (default main) |
 | `--theme <name>` | adf (dark) \| adf-light \| adf-contrast \| adf-mono (also ADF_TUI_THEME) |
@@ -172,11 +172,11 @@ ADF_DAEMON_ALLOWED_HOSTS, ADF_DAEMON_BEHIND_PROXY
 
 | Key | View | Id (`--view`, `/view`) |
 |---|---|---|
-| `1` | Fleet | `fleet` |
-| `2` | Chat | `chat` |
-| `3` | Files | `files` |
-| `4` | Loops | `loops` |
-| `5` | Inspect | `inspect` |
+| `1` | Chat | `chat` |
+| `2` | Files | `files` |
+| `3` | Loops | `loops` |
+| `4` | Inspect | `inspect` |
+| `5` | Fleet | `fleet` |
 | `6` | Runtime | `runtime` |
 
 ### Slash commands
@@ -189,7 +189,7 @@ Type `/` in the prompt; `Tab` completes names and arguments. Commands work from 
 |---|---|---|
 | `/help` | `/?` | Keys, commands and what loops are |
 | `/quit` | `/exit` `/q` | Leave the terminal app (agents keep running in the daemon) |
-| `/view <fleet\|chat\|files\|loops\|inspect\|runtime>` |  | Switch the main pane |
+| `/view <chat\|files\|loops\|inspect\|fleet\|runtime>` |  | Switch the main pane |
 | `/agent <handle\|id> [loop]` | `/a` | Select an agent, and optionally one of its loops (default main) |
 | `/refresh` | `/r` | Re-read agents, loops and approvals from the daemon |
 | `/theme [adf\|adf-light\|adf-contrast\|adf-mono\|next]` |  | Pick a color theme (no argument opens the picker) |
@@ -213,19 +213,6 @@ Type `/` in the prompt; `Tab` completes names and arguments. Commands work from 
 | `/templates [template-id]` |  | Agent templates: list, details, new, duplicate, rename, notes, default, review, reset, delete, edit in $EDITOR |
 | `/skills [add [name \| https-url \| ./path] \| mute\|unmute\|remove <name> \| sources [add\|remove <url>]]` |  | The selected agent’s skills: preview, mute, edit, remove; add from the catalog, a URL or a local folder |
 | `/context [loop]` |  | Context usage of the selected loop: total vs the auto-compact threshold, what fills it (prompt, files, tools, MCP, conversation), compact now |
-
-#### Fleet view
-
-| Command | Aliases | Description |
-|---|---|---|
-| `/agents [running\|all \| interrupt\|abort <agent> [loop] \| refresh]` |  | Fleet overview; running/all: hide or show stopped tracked agents (remembered); interrupt an agent's running turns (abort = hard stop until reload); refresh |
-| `/start [agent]` |  | Start an agent (runs its startup turn when it starts active); a stopped tracked agent is loaded first |
-| `/stop [agent]` | `/unload` | Stop and unload an agent and all its loops (asks first) |
-| `/load [path.adf] [--review] [--start]` |  | Load an .adf into the daemon (no path: file picker with Tab completion) |
-| `/switch <agent>[/loop]` | `/sw` | Jump to an agent (fuzzy) or one of its loops and open the chat |
-| `/autostart [dir…]` |  | Scan tracked directories and start every reviewed autostart agent (asks first) |
-| `/track [dir]` |  | Track a folder of agents (its reviewed autostart agents load now and at every daemon start); no dir: folder picker |
-| `/untrack <dir>` |  | Stop tracking a folder (asks; files are not touched; optionally unload its agents) |
 
 #### Chat view
 
@@ -276,6 +263,19 @@ Type `/` in the prompt; `Tab` completes names and arguments. Commands work from 
 | `/instructions [edit]` |  | Edit the selected agent’s instructions (a dialog; edit opens $EDITOR) |
 | `/tools [filter]` |  | The selected agent’s tools: enable, show, require approval, lock (built-in and MCP) |
 | `/compaction [tokens\|default]` |  | Compaction threshold of the selected agent › loop (80000, 80k; default = main’s default / an inner loop inherits). No argument: every loop |
+
+#### Fleet view
+
+| Command | Aliases | Description |
+|---|---|---|
+| `/agents [running\|all \| interrupt\|abort <agent> [loop] \| refresh]` |  | Fleet overview; running/all: hide or show stopped tracked agents (remembered); interrupt an agent's running turns (abort = hard stop until reload); refresh |
+| `/start [agent]` |  | Start an agent (runs its startup turn when it starts active); a stopped tracked agent is loaded first |
+| `/stop [agent]` | `/unload` | Stop and unload an agent and all its loops (asks first) |
+| `/load [path.adf] [--review] [--start]` |  | Load an .adf into the daemon (no path: file picker with Tab completion) |
+| `/switch <agent>[/loop]` | `/sw` | Jump to an agent (fuzzy) or one of its loops and open the chat |
+| `/autostart [dir…]` |  | Scan tracked directories and start every reviewed autostart agent (asks first) |
+| `/track [dir]` |  | Track a folder of agents (its reviewed autostart agents load now and at every daemon start); no dir: folder picker |
+| `/untrack <dir>` |  | Stop tracking a folder (asks; files are not touched; optionally unload its agents) |
 
 #### Runtime view
 
@@ -332,22 +332,6 @@ Type `/` in the prompt; `Tab` completes names and arguments. Commands work from 
 | Skills of this agent | Actions |  |
 | Add a skill | Actions |  |
 | Context usage | Actions |  |
-
-#### Fleet view
-
-| Action | Group | Shortcut |
-|---|---|---|
-| Track a folder… | Fleet | `f` |
-| Untrack folder… | Fleet |  |
-| Load agent file (.adf)… | Fleet | `o` |
-| Start selected agent | Fleet | `s` |
-| Stop + unload selected agent… | Fleet | `x` |
-| Interrupt running turns of selected agent… | Fleet | `a` |
-| Hard abort selected agent’s running loops (stopped until reload)… | Fleet |  |
-| Autostart agents from tracked directories… | Fleet | `Shift+a` |
-| Hide / show stopped agents (tracked, not loaded) | Fleet | `Shift+h` |
-| Refresh fleet (agents, timers, inbox, runtime) | Fleet | `r` |
-| Open selected agent + loop in chat | Fleet | `Enter` |
 
 #### Chat view
 
@@ -420,6 +404,22 @@ Type `/` in the prompt; `Tab` completes names and arguments. Commands work from 
 | Inspect: Tasks | Inspect |  |
 | Inspect: Events | Inspect |  |
 
+#### Fleet view
+
+| Action | Group | Shortcut |
+|---|---|---|
+| Track a folder… | Fleet | `f` |
+| Untrack folder… | Fleet |  |
+| Load agent file (.adf)… | Fleet | `o` |
+| Start selected agent | Fleet | `s` |
+| Stop + unload selected agent… | Fleet | `x` |
+| Interrupt running turns of selected agent… | Fleet | `a` |
+| Hard abort selected agent’s running loops (stopped until reload)… | Fleet |  |
+| Autostart agents from tracked directories… | Fleet | `Shift+a` |
+| Hide / show stopped agents (tracked, not loaded) | Fleet | `Shift+h` |
+| Refresh fleet (agents, timers, inbox, runtime) | Fleet | `r` |
+| Open selected agent + loop in chat | Fleet | `Enter` |
+
 #### Runtime view
 
 | Action | Group | Shortcut |
@@ -448,7 +448,7 @@ The same lists as `?` / `/help` in the app.
 | `Ctrl+K` `Ctrl+P` | Command palette (also : when the prompt is not focused) |
 | `Tab` `Shift+Tab` | Cycle focus: sidebar → main → prompt (a hidden sidebar is skipped); from the tab bar Tab goes to the first pane |
 | `Ctrl+B` | Hide / show the fleet sidebar: full-width chat (also /sidebar; remembered) |
-| `1-6` `Alt+1-6` | Switch view: 1 Fleet 2 Chat 3 Files 4 Loops 5 Inspect (the selected agent) 6 Runtime (the daemon) (bare digits outside the prompt) |
+| `1-6` `Alt+1-6` | Switch view. The selected agent: 1 Chat 2 Files 3 Loops 4 Inspect · the app: 5 Fleet (every agent) 6 Runtime (the daemon) (bare digits outside the prompt) |
 | `Shift+←` `Shift+→` | Previous / next loop of the selected agent, from anywhere (also Ctrl+←/→, except in a prompt with text) |
 | `Alt+←` `Alt+→` | In the prompt: word left / right (also Alt+B / Alt+F, and Ctrl+←/→ while there is text) |
 | `Home` `End` | In the prompt: line start / end (also Ctrl+A / Ctrl+E, Cmd+← / Cmd+→) |
@@ -458,15 +458,17 @@ The same lists as `?` / `/help` in the app.
 | `/` | Slash command (focuses the prompt) |
 | `?` | This help (when the prompt is not focused) |
 | `Esc` | In order: close the dialog or completion menu · end a view’s own mode (filter, search, viewer, a selected chat item) · (chat) interrupt the running turn · then focus the tab bar (from the sidebar, the main pane, or an empty prompt) |
+| `←` `→` | Files, Loops, Inspect, Runtime: the view’s tabs (from its lists; not while typing a filter) |
+| `Enter` `Backspace` | In a list: open the item (file, message, entry, task, row, event) · back one level (Esc too). Backspace never deletes |
 | `Esc` `Esc` | Clear a prompt that has text (the next Esc goes to the tab bar) |
 | `Ctrl+C` | Cancel dialog · clear the prompt · press twice to quit (agents keep running) |
-| `Enter` | Send the prompt (to the selected agent › loop unless it starts with /) |
+| `Enter` | Send the prompt (to the selected agent › loop unless it starts with /). With a completion menu open: take the highlighted item; a /command with all its required arguments runs, else it is inserted to type them |
 | `Shift+Enter` `Alt+Enter` `Ctrl+J` | Newline in the prompt (or end a line with \). Shift+Enter needs a terminal that tells it apart: /terminal-setup |
 | `Ctrl+↑` `Ctrl+↓` | Prompt history (per agent › loop in Chat); ↑ ↓ too on the first / last line of text |
 | `↑` `↓` | Chat, empty prompt: select the previous / next transcript item (Enter expands, Esc lets go; PgUp PgDn Home End scroll) · otherwise move in the text / completion menu |
 | `Mouse` | Mouse mode (default): the wheel scrolls what is under the pointer; click selects / expands a tool call; drag selects + copies (double-click word, triple-click line); right-click pastes. Shift+drag (Option+drag iTerm2, Fn+drag Terminal.app): the terminal’s own selection. /mouse off: the terminal’s mouse |
 | `w` | Fleet, Inspect › Status, Chat transcript: open the agent’s website (W copies the URL) · on the tab bar: web server on / off |
-| `Tab` | In the prompt with a menu open: complete /commands, their arguments, @files (Chat) |
+| `Tab` | In the prompt with a menu open: complete /commands, their arguments, @files (Chat) without running |
 
 #### Tab bar
 
@@ -474,7 +476,8 @@ The same lists as `?` / `/help` in the app.
 
 | Keys | Action |
 |---|---|
-| `←` `→` | Previous / next view: switches as you move (h l too; Home / End first / last) |
+| `←` `→` | Previous / next view: switches as you move (h l too; Home / End first / last). Left of 1 Chat is the agent label |
+| `Enter` | On the agent label: switch agent / loop (also a click on it in mouse mode) |
 | `Enter` `↓` | Into the view (Chat: its prompt) |
 | `1-6` | Jump straight into a view |
 | `Tab` `Shift+Tab` | Back into the panes (first / last) |
@@ -497,33 +500,12 @@ The same lists as `?` / `/help` in the app.
 | `y` `Enter` | Confirm |
 | `n` `Esc` | Cancel |
 
-#### 1 Fleet
-
-| Keys | Action |
-|---|---|
-| `n` | New agent from a template (sets up your owner identity first if needed) |
-| `i` | Owner identity: status, create, restore, unlock (I hides the banner) |
-| `c` `r` `u` | With no agents and no ready identity: create, restore, unlock the owner identity |
-| `↑` `↓` | Select an agent (j k) |
-| `←` `→` | Select one of its loops (h l) |
-| `Enter` | Open the agent › loop in Chat |
-| `s` | Start the agent (a stopped one: load it into the daemon, then start it; one that needs review: review it first) |
-| `H` | Hide / show stopped agents: tracked agents that are not loaded (also /agents running\|all; remembered) |
-| `x` | Stop and unload the agent (asks; the .adf is kept) |
-| `a` | Interrupt the turns running now (asks) |
-| `w` | Open the agent’s website (starts the web server if it is stopped) |
-| `W` | Copy the agent’s website URL |
-| `o` | Load an .adf (Tab completes, ^R require review, ^S start after load) |
-| `f` | Track a folder of agents (Tab completes folders): its reviewed autostart agents load now and at every daemon start · /untrack <dir> stops |
-| `A` | Autostart: scan tracked directories (asks) |
-| `r` | Refresh agents, timers, inbox and the daemon line |
-
-#### 2 Chat
+#### 1 Chat
 
 | Keys | Action |
 |---|---|
 | `Enter` | Send to the selected loop (queued while it runs) |
-| `Shift+←` `Shift+→` | Previous / next loop tab (also Ctrl+←/→ on an empty prompt; [ ] and ← → in the transcript) |
+| `Shift+←` `Shift+→` | Previous / next loop tab (also Ctrl+←/→ on an empty prompt; ← → in the transcript) |
 | `↑` `↓` | Select the previous / next transcript item (message, reply, thinking, tool call, notice, approval, marker): from an empty prompt or the transcript (j k). An item taller than the view scrolls inside first |
 | `Enter` `Space` | Expand / collapse the selected item (tool call input + result, thinking, context, approval, wake). Mouse mode: click the item |
 | `Esc` | Let go of the selected item (before interrupting) |
@@ -550,15 +532,16 @@ Approvals and questions (the card under the transcript):
 | `v` | Full details of the tool call |
 | `/approve` | /approve [all\|always] · /reject [feedback]: the same from the prompt |
 
-#### 3 Files
+#### 2 Files
 
 Files tab (tree):
 
 | Keys | Action |
 |---|---|
 | `↑` `↓` | Move; the viewer previews the highlighted entry |
-| `Enter` `→` | Open in the viewer · expand a folder (l) |
-| `←` | Collapse the folder · go to the parent (h) |
+| `Enter` | Open the file in the viewer · open / close a folder |
+| `Backspace` | Close the folder · go to the parent folder (never deletes) |
+| `←` `→` | Tabs: Files · Inbox · Outbox · Meta |
 | `Space` | Toggle a folder |
 | `/` | Filter by path (fuzzy) |
 | `e` | Edit in $EDITOR, then confirm the write (diff shown) |
@@ -568,31 +551,30 @@ Files tab (tree):
 | `p` | Protection: none → read_only → no_delete |
 | `a` | Toggle authorized |
 | `r` | Reload |
-| `[` `]` | Tabs: Files · Inbox · Outbox · Meta |
 
 Viewer:
 
 | Keys | Action |
 |---|---|
+| `Backspace` `Esc` | Back to the list (the entry stays selected) |
 | `↑` `↓` | Scroll (j k; PgUp PgDn Space page; g G top/bottom) |
 | `/` | Search, then n N next / previous hit |
 | `e` | Edit this file |
-| `Esc` | Back to the list (← h) |
 
 Inbox · Outbox · Meta (read-only):
 
 | Keys | Action |
 |---|---|
-| `Enter` | Read the message / entry |
+| `Enter` | Read the message / entry (Backspace or Esc: back) |
 | `/` | Filter |
 | `f` | Status filter (inbox, outbox) |
 | `r` | Reload |
 
-#### 4 Loops
+#### 3 Loops
 
 | Keys | Action |
 |---|---|
-| `←` `→` | Tabs: Loops · Timers · Triggers · History ([ ]) |
+| `←` `→` | Tabs: Loops · Timers · Triggers · History |
 
 Loops tab:
 
@@ -653,11 +635,11 @@ Loop and timer forms:
 | `Ctrl+S` | Review, then Enter / y applies |
 | `Esc` | Cancel (from review: back to the form) |
 
-#### 5 Inspect
+#### 4 Inspect
 
 | Keys | Action |
 |---|---|
-| `←` `→` | The selected agent’s tabs: Status Settings Config Usage MCP Channels Identities Logs Tables Tasks Events ([ ]) |
+| `←` `→` | The selected agent’s tabs: Status Settings Config Usage MCP Channels Identities Logs Tables Tasks Events |
 
 Other tabs:
 
@@ -733,11 +715,32 @@ Events (this agent’s live umbilical events; every agent: Runtime › Events):
 | `c` | Clear |
 | `x` | Reset filters |
 
+#### 5 Fleet
+
+| Keys | Action |
+|---|---|
+| `n` | New agent from a template (sets up your owner identity first if needed) |
+| `i` | Owner identity: status, create, restore, unlock (I hides the banner) |
+| `c` `r` `u` | With no agents and no ready identity: create, restore, unlock the owner identity |
+| `↑` `↓` | Select an agent (j k) |
+| `←` `→` | Select one of its loops (h l) |
+| `Enter` | Open the agent › loop in Chat |
+| `s` | Start the agent (a stopped one: load it into the daemon, then start it; one that needs review: review it first) |
+| `H` | Hide / show stopped agents: tracked agents that are not loaded (also /agents running\|all; remembered) |
+| `x` | Stop and unload the agent (asks; the .adf is kept) |
+| `a` | Interrupt the turns running now (asks) |
+| `w` | Open the agent’s website (starts the web server if it is stopped) |
+| `W` | Copy the agent’s website URL |
+| `o` | Load an .adf (Tab completes, ^R require review, ^S start after load) |
+| `f` | Track a folder of agents (Tab completes folders): its reviewed autostart agents load now and at every daemon start · /untrack <dir> stops |
+| `A` | Autostart: scan tracked directories (asks) |
+| `r` | Refresh agents, timers, inbox and the daemon line |
+
 #### 6 Runtime
 
 | Keys | Action |
 |---|---|
-| `←` `→` | The daemon’s tabs: Status Folders Identity Sign-in Providers Usage Network Compute MCP Channels Settings Events ([ ]) |
+| `←` `→` | The daemon’s tabs: Status Folders Identity Sign-in Providers Usage Network Compute MCP Channels Settings Events |
 
 Pages:
 

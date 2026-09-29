@@ -53,7 +53,7 @@ const quit: SlashCommand = {
   run: ctx => ctx.exit(),
 }
 
-const VIEW_IDS = ['fleet', 'chat', 'files', 'loops', 'inspect', 'runtime']
+const VIEW_IDS = ['chat', 'files', 'loops', 'inspect', 'fleet', 'runtime']
 
 const view: SlashCommand = {
   name: 'view',

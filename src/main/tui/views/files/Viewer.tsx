@@ -136,6 +136,8 @@ export function Viewer(props: ViewerProps) {
       if (key.escape) { setTyping(false); setQuery(''); return true }
       if (key.return) { setTyping(false); return true }
       if (key.backspace || key.delete) { setQuery(q => q.slice(0, -1)); return true }
+      // ←/→ would switch the view's tabs: not while typing a search.
+      if ((key.leftArrow || key.rightArrow) && !key.ctrl && !key.shift) return true
       if (input && !key.ctrl && !key.meta && !/[\r\n\t]/.test(input)) { setQuery(q => q + input); return true }
       return false
     }
@@ -151,7 +153,8 @@ export function Viewer(props: ViewerProps) {
     if (input === 'N' && query) { jump(-1); return true }
     if (input === 'e' && onEdit) { onEdit(); return true }
     if (key.escape && query) { setQuery(''); return true }
-    if ((key.escape || key.leftArrow || input === 'h') && onBack) { onBack(); return true }
+    // Back to the list: Backspace or Esc (←/→ are the view's tabs).
+    if ((key.escape || (key.backspace && !key.ctrl && !key.meta)) && onBack) { onBack(); return true }
     return false
   }, { layer: 'main', active })
 
@@ -218,7 +221,7 @@ export function Viewer(props: ViewerProps) {
       ) : null}
       <Box flexDirection="column" height={bodyRows} overflow="hidden">{body}</Box>
       <Box justifyContent="space-between" width={width}>
-        <Text color={typing ? theme.color.accent : theme.color.muted} wrap="truncate-end">{search || (active ? `/ search${onEdit ? ' · e edit' : ''}${onBack ? ' · esc back' : ''}` : '')}</Text>
+        <Text color={typing ? theme.color.accent : theme.color.muted} wrap="truncate-end">{search || (active ? `/ search${onEdit ? ' · e edit' : ''}${onBack ? ' · Backspace back' : ''}` : '')}</Text>
         <Text color={theme.color.dim}>{position}</Text>
       </Box>
     </Box>

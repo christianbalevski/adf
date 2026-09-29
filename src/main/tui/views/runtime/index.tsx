@@ -2,7 +2,7 @@
 // every agent's loops), owner identity, provider sign-in, providers, usage by
 // model, network / mesh, compute (containers), daemon-level MCP servers and
 // adapters, settings (redacted) and the live event tail of every agent.
-// The selected agent's own pages are Inspect (5).
+// The selected agent's own pages are Inspect (4).
 
 import { useMemo } from 'react'
 import { Box, Text } from 'ink'
@@ -185,6 +185,7 @@ const runtime: ViewDefinition = {
   id: RUNTIME_VIEW,
   title: 'Runtime',
   key: '6',
+  group: 'app',
   component: RuntimeView,
   keyHints: [
     { keys: 'left right', label: 'tab' },
@@ -192,7 +193,7 @@ const runtime: ViewDefinition = {
     { keys: 'enter', label: 'open' },
   ],
   helpKeys: [
-    { keys: [{ keys: 'left right', label: `The daemon’s tabs: ${RUNTIME_TABS.map(t => t.title).join(' ')} ([ ])` }] },
+    { keys: [{ keys: 'left right', label: `The daemon’s tabs: ${RUNTIME_TABS.map(t => t.title).join(' ')}` }] },
     {
       title: 'Pages',
       keys: [

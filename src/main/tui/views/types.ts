@@ -24,7 +24,7 @@ export interface SidebarProps {
 }
 
 export interface ViewDefinition {
-  /** Stable id, also the directory name: 'fleet' | 'chat' | 'files' | 'loops' | 'inspect'. */
+  /** Stable id, also the directory name: 'chat' | 'files' | 'loops' | 'inspect' | 'fleet' | 'runtime'. */
   id: string
   title: string
   /**
@@ -32,6 +32,12 @@ export interface ViewDefinition {
    * anywhere. Digits by convention ('1'..'9').
    */
   key: string
+  /**
+   * Header group: `agent` views are about the selected agent and sit after
+   * its label (Chat, Files, Loops, Inspect); the rest are the app's own
+   * (Fleet, Runtime), after a separator.
+   */
+  group?: 'agent' | 'app'
   component: ComponentType<ViewProps>
   /** Replaces the default sidebar while this view is active. */
   sidebar?: ComponentType<SidebarProps>

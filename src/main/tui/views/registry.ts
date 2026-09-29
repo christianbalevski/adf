@@ -8,4 +8,5 @@ import inspect from './inspect/index'
 import runtime from './runtime/index'
 import type { ViewDefinition } from './types'
 
-export const VIEWS: ViewDefinition[] = [fleet, chat, files, loops, inspect, runtime]
+// Header order: the selected agent's views (1-4), then the app's (5-6).
+export const VIEWS: ViewDefinition[] = [chat, files, loops, inspect, fleet, runtime]

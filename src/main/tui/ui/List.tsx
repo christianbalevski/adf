@@ -96,6 +96,8 @@ export function List<T>(props: ListProps<T>) {
       if (key.return) { setFiltering(false); return true }
       if (key.backspace || key.delete) { setQuery(q => q.slice(0, -1)); return true }
       if (key.upArrow || key.downArrow) { select(index + (key.upArrow ? -1 : 1)); return true }
+      // ←/→ switch a view's tabs: not while typing a filter.
+      if ((key.leftArrow || key.rightArrow) && !key.ctrl && !key.shift) return true
       if (input && !key.ctrl && !key.meta && input.length >= 1 && !/[\r\n\t]/.test(input)) { setQuery(q => q + input); return true }
       return false
     }

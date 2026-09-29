@@ -79,7 +79,8 @@ function InspectView({ width: paneWidth, height, focused }: ViewProps) {
 const inspect: ViewDefinition = {
   id: 'inspect',
   title: 'Inspect',
-  key: '5',
+  key: '4',
+  group: 'agent',
   component: InspectView,
   keyHints: scope => {
     const tab = readInspectState(scope.state()).tab
@@ -109,7 +110,7 @@ const inspect: ViewDefinition = {
     ]
   },
   helpKeys: [
-    { keys: [{ keys: 'left right', label: `The selected agent’s tabs: ${TABS.map(t => t.title).join(' ')} ([ ])` }] },
+    { keys: [{ keys: 'left right', label: `The selected agent’s tabs: ${TABS.map(t => t.title).join(' ')}` }] },
     {
       title: 'Other tabs',
       keys: [

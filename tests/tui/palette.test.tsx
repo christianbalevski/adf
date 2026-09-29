@@ -158,7 +158,7 @@ describe('palette + help against the mock daemon', () => {
     expect(lines).toContain('Shell commands')
     for (const view of VIEWS) expect(lines).toContain(`${view.key} ${view.title}`)
     for (const command of registry.commands) expect(lines).toContain(`/${command.name}`)
-    expect(lines).toMatch(/5 Inspect\s+\(current view\)/)
+    expect(lines).toMatch(/4 Inspect\s+\(current view\)/)
 
     store.actions.prefillPrompt('')
     await tui.waitFor(() => store.getState().focus === 'input')

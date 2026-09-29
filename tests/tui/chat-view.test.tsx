@@ -68,7 +68,10 @@ describe('chat view', () => {
     const frame = await tui.waitFor('from loop consolidator')
     expect(frame).toMatch(/agent-1 › .*main.*consolidator.*researcher/)
     expect(frame).not.toContain('main loop: the agent itself')
-    expect(frame).toMatch(/host ✓ · Merging API notes into mind.md/)
+    // The status line sits on the composer's top border, not in the info line.
+    expect(frame).toMatch(/host ✓ · /)
+    expect(frame).not.toMatch(/host ✓ · Merging/)
+    expect(frame).toMatch(/╭─+\[ Merging API notes into mind\.md \]─╮/)
     expect(frame).toContain('› What did we decide about the standings API?')
     expect(frame).toContain('We keep v2 and add a since cursor.')
     expect(frame).toContain('• pagination stays offset-based')

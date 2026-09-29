@@ -420,7 +420,8 @@ function SiteLine({ site }: { site: Site }) {
 const fleet: ViewDefinition = {
   id: 'fleet',
   title: 'Fleet',
-  key: '1',
+  key: '5',
+  group: 'app',
   component: FleetView,
   keyHints: [{ keys: 'enter', label: 'chat' }, { keys: 'n', label: 'new' }, { keys: 'o', label: 'load' }],
   helpKeys: [{

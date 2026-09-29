@@ -7,6 +7,7 @@ import React from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { App } from '../../src/main/tui/app/App'
 import { createTheme } from '../../src/main/tui/app/theme'
+import { tabsCursorOnAgent } from '../../src/main/tui/app/Header'
 import { DaemonClient } from '../../src/main/tui/api/client'
 import { createTuiStore, type TuiStore } from '../../src/main/tui/state/store'
 import { AGENT_1_ID, startMockDaemon, type MockDaemon } from './fixtures/mock-daemon'
@@ -51,13 +52,22 @@ describe('tab bar focus', () => {
     expect(focus()).toBe('tabs')
     const frame = await tui.waitFor('←/→ view · Enter open · 1-6 jump')
     expect(frame).toContain('w web server')
+    // Order: [agent label] 1 Chat 2 Files 3 Loops 4 Inspect | 5 Fleet 6 Runtime (launch is on Fleet).
+    await tui.press(KEY.right)
+    expect(view()).toBe('runtime')
+    expect(focus()).toBe('tabs')
+    // Past the last view: the agent label (the view stays), then Chat.
+    await tui.press(KEY.right)
+    expect(tabsCursorOnAgent(store.getState())).toBe(true)
+    expect(view()).toBe('runtime')
     await tui.press(KEY.right)
     expect(view()).toBe('chat')
-    expect(focus()).toBe('tabs')
+    expect(tabsCursorOnAgent(store.getState())).toBe(false)
     await tui.press(KEY.right)
     expect(view()).toBe('files')
     await tui.press(KEY.left)
     await tui.press(KEY.left)
+    expect(tabsCursorOnAgent(store.getState())).toBe(true)
     await tui.press(KEY.left)
     expect(view()).toBe('runtime')
     await tui.press(KEY.enter)
@@ -67,7 +77,7 @@ describe('tab bar focus', () => {
     await esc(tui)
     expect(focus()).toBe('tabs')
     // ↓ into Chat lands in its prompt; digits jump straight into a view.
-    await tui.press('2')
+    await tui.press('1')
     expect(view()).toBe('chat')
     expect(focus()).toBe('input')
   })
@@ -138,10 +148,57 @@ describe('tab bar focus', () => {
     store.actions.setFocus('tabs')
     const frame = await tui.waitFor('←/→ view')
     const row = frame.split('\n')[0]
-    expect(row).toContain('3 Files')
-    const x = row.indexOf('4 Loops')
+    expect(row).toContain('2 Files')
+    const x = row.indexOf('3 Loops')
     tui.raw(`\u001b[<0;${x + 2};1M`)
     await tui.waitFor(() => view() === 'loops')
     expect(view()).toBe('loops')
+  })
+
+  it('the agent label opens the agent switcher: Enter on it in the tab bar, or a click', async () => {
+    const tui = await mount()
+    store.actions.setView('files')
+    store.actions.setFocus('tabs')
+    await tui.waitFor('←/→ view')
+    await tui.press(KEY.left)
+    await tui.press(KEY.left)
+    expect(tabsCursorOnAgent(store.getState())).toBe(true)
+    // Moving onto the label keeps the view the cursor passed last (Chat).
+    expect(view()).toBe('chat')
+    // Any view change (digit, click) takes the cursor off the label.
+    store.actions.setView('files')
+    await tui.waitFor(() => store.getState().viewState['shell.tabs.cursor'] == null)
+    store.actions.setFocus('tabs')
+    await tui.press(KEY.left)
+    await tui.press(KEY.left)
+    expect(tabsCursorOnAgent(store.getState())).toBe(true)
+    await tui.press(KEY.enter)
+    let frame = await tui.waitFor('Switch agent')
+    expect(frame).toContain('agent-2')
+    expect(frame).not.toContain('/help')
+    expect(store.getState().overlays.at(-1)?.props).toEqual({ mode: 'agents' })
+    // Picking an agent selects it; the view stays.
+    await tui.type('agent-2')
+    await tui.press(KEY.enter)
+    await tui.waitFor(() => store.getState().overlays.length === 0)
+    expect(view()).toBe('chat')
+    expect(store.getState().agents[store.getState().selectedAgentId!]?.summary.handle).toBe('agent-2')
+    // A click on the label (mouse mode) opens it too.
+    frame = await tui.waitFor(f => /agent-2 ›/.test(f.split('\n')[0]))
+    const x = frame.split('\n')[0].indexOf('agent-2')
+    tui.raw(`\u001b[<0;${x + 2};1M`)
+    await tui.waitFor('Switch agent')
+  })
+
+  it('Home / End go to the first / last view; Esc onto the bar starts on the view, not the label', async () => {
+    const tui = await mount()
+    store.actions.setView('loops')
+    store.actions.setFocus('tabs')
+    await tui.waitFor('←/→ view')
+    await tui.press('\u001b[F')
+    expect(view()).toBe('runtime')
+    await tui.press('\u001b[H')
+    expect(view()).toBe('chat')
+    expect(tabsCursorOnAgent(store.getState())).toBe(false)
   })
 })

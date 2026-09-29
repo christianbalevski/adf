@@ -97,12 +97,13 @@ function placeholder(scope: CommandScope): string {
 const loops: ViewDefinition = {
   id: VIEW_ID,
   title: 'Loops',
-  key: '4',
+  key: '3',
+  group: 'agent',
   component: LoopsView,
   keyHints,
   prompt: { placeholder },
   helpKeys: [
-    { keys: [{ keys: 'left right', label: 'Tabs: Loops · Timers · Triggers · History ([ ])' }] },
+    { keys: [{ keys: 'left right', label: 'Tabs: Loops · Timers · Triggers · History' }] },
     {
       title: 'Loops tab',
       keys: [

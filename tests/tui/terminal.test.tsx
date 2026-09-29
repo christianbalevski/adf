@@ -29,7 +29,7 @@ const KITTY = {
   ctrlC: '\u001b[99;5u',
   esc: '\u001b[27u',
   shiftTab: '\u001b[9;2u',
-  alt4: '\u001b[52;3u',
+  alt3: '\u001b[51;3u',
   ctrlK: '\u001b[107;5u',
 }
 const KEY = { enter: '\r', tab: '\t', up: '\u001b[A', down: '\u001b[B', ctrlUp: '\u001b[1;5A', end: '\u001b[F', shiftRight: '\u001b[1;2C', ctrlB: '\u0002' }
@@ -223,7 +223,7 @@ describe('keys with the kitty keyboard protocol', () => {
     await tui.waitFor(f => !f.includes('Command palette'))
     await tui.press(KEY.shiftRight)
     await tui.waitFor(() => store.getState().selectedLoop[AGENT_1_ID] === 'consolidator')
-    await tui.press(KITTY.alt4)
+    await tui.press(KITTY.alt3)
     await tui.waitFor(() => store.getState().activeView === 'loops')
   })
 })

@@ -328,6 +328,8 @@ export function FilesTab(props: FilesTabProps) {
       if (key.return) { setFiltering(false); return true }
       if (key.backspace || key.delete) { setQuery(q => q.slice(0, -1)); return true }
       if (key.upArrow || key.downArrow || key.pageUp || key.pageDown) return false
+      // ←/→ would switch tabs: not while typing a filter.
+      if ((key.leftArrow || key.rightArrow) && !key.ctrl && !key.shift) return true
       if (input && !key.ctrl && !key.meta && !key.tab && !/[\r\n]/.test(input)) { setQuery(q => q + input); return true }
       return false
     }
@@ -341,24 +343,16 @@ export function FilesTab(props: FilesTabProps) {
     }
     if (input === 'n' && !key.ctrl) { void createFile(); return true }
     if (!row) return false
-    if (row.kind === 'dir') {
-      if (key.rightArrow || input === 'l') { toggleDir(row, true); return true }
-      if (key.leftArrow || input === 'h') {
-        if (!toggleDir(row, false)) {
-          const parent = parentDir(row.path)
-          if (parent) selectKey(`dir:${parent}`)
-        }
-        return true
-      }
-      if (input === ' ') { toggleDir(row); return true }
-    } else {
-      if (key.rightArrow || input === 'l') { setAgentState({ open: row.key }); setPane('viewer'); return true }
-      if ((key.leftArrow || input === 'h') && row.kind === 'file' && !query) {
-        const parent = parentDir(row.path)
-        if (parent) selectKey(`dir:${parent}`)
-        return true
-      }
+    // Enter opens a file / toggles a folder (List onSubmit); ←/→ are the
+    // view's tabs. Backspace is "back": collapse the folder, else go to the
+    // parent folder. It never deletes (that is d / Delete).
+    if (key.backspace && !key.ctrl && !key.meta) {
+      if (row.kind === 'dir' && toggleDir(row, false)) return true
+      const parent = row.kind === 'dir' || row.kind === 'file' ? parentDir(row.path) : ''
+      if (parent && !query) selectKey(`dir:${parent}`)
+      return true
     }
+    if (row.kind === 'dir' && input === ' ') { toggleDir(row); return true }
     if (input === 'e' && !key.ctrl) {
       const target = rowTarget(row)
       if (target) void runEdit(target)
@@ -366,7 +360,7 @@ export function FilesTab(props: FilesTabProps) {
       return true
     }
     if (input === 'm' && !key.ctrl) { void rename(row); return true }
-    if ((input === 'd' && !key.ctrl) || key.delete) { void remove(row); return true }
+    if ((input === 'd' && !key.ctrl) || (key.delete && !key.backspace)) { void remove(row); return true }
     if (input === 'p' && !key.ctrl) { void cycleProtection(row); return true }
     if (input === 'a' && !key.ctrl) { void toggleAuthorized(row); return true }
     return false

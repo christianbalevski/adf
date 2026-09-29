@@ -63,7 +63,7 @@ export function createFleetFetch(mock: MockDaemon, options: FleetMockOptions = {
     if (method === 'GET' && parts[0] === 'agents' && parts[2] === 'inbox') {
       const agent = mock.agents.get(parts[1])
       const n = agent ? options.unread?.[agent.handle] ?? 0 : 0
-      return json(200, { agentId: parts[1], messages: Array.from({ length: n }, (_, i) => ({ id: `m${i}`, status: 'unread' })) })
+      return json(200, { agentId: parts[1], messages: Array.from({ length: n }, (_, i) => ({ id: `m${i}`, status: 'unread', from: 'agent-2', to: agent?.handle ?? '', content: `Unread message ${i + 1}`, received_at: Date.now() - i * 60_000 })) })
     }
     if (method === 'GET' && path === '/agents/review') {
       const filePath = url.searchParams.get('filePath') ?? ''

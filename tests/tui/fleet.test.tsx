@@ -13,7 +13,7 @@ import fleet from '../../src/main/tui/views/fleet/index'
 import type { ViewDefinition } from '../../src/main/tui/views/types'
 import { startMockDaemon, AGENT_1_ID, type MockDaemon } from './fixtures/mock-daemon'
 import { createFleetFetch, AGENT_3_ID, type FleetMock } from './fixtures/fleet-mock'
-import { renderTui, type RenderedTui } from './fixtures/render'
+import { renderTui, wrapped, type RenderedTui } from './fixtures/render'
 
 const KEY = { tab: '\t', enter: '\r', esc: '\u001b', down: '\u001b[B', up: '\u001b[A', right: '\u001b[C', left: '\u001b[D' }
 
@@ -186,9 +186,9 @@ describe('fleet view', () => {
     await tui.press('\u0015')
     await tui.type(`${tmp}${sep}ag`)
     await tui.press(KEY.tab)
-    await until(tui, `agents${sep}`)
+    await until(tui, wrapped(`agents${sep}`))
     await tui.press(KEY.tab)
-    await until(tui, 'agent-3.adf')
+    await until(tui, wrapped('agent-3.adf'))
     await tui.press('\u0013')
     await until(tui, 'start on')
     await tui.press(KEY.enter)

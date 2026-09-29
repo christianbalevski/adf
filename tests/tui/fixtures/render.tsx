@@ -48,6 +48,17 @@ class FakeStdin extends EventEmitter {
   }
 }
 
+/**
+ * A frame matcher for text an input may wrap (a long path: macOS temp dirs are
+ * ~50 chars before the test's own folder). Compares with whitespace and box
+ * borders removed, so `…/team-age│\n│ nts/` still reads `…/team-agents/`.
+ */
+export function wrapped(text: string): (frame: string) => boolean {
+  const flat = (s: string) => s.replace(/[\s│╭╮╰╯─]/g, '')
+  const want = flat(text)
+  return frame => frame.includes(text) || flat(frame).includes(want)
+}
+
 export interface RenderedTui {
   lastFrame(): string
   frames: string[]

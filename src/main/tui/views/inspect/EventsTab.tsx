@@ -91,9 +91,11 @@ export function EventsTab({ width, height, focused, filters: stored, update, sco
     setPinned(i >= events.length - 1)
   }, [events.length])
 
-  const onKey = (input: string, key: { return: boolean; escape: boolean; ctrl: boolean; meta: boolean }) => {
+  const onKey = (input: string, key: { return: boolean; escape: boolean; backspace: boolean; ctrl: boolean; meta: boolean }) => {
     if (key.ctrl || key.meta) return false
     if (key.return) { setDetail(d => !d); return true }
+    // Back out of the detail first (Backspace or Esc), then Esc goes on up.
+    if ((key.escape || key.backspace) && detail) { setDetail(false); return true }
     if (input === ' ') {
       if (frozen) { setFrozen(null); setPinned(true) } else setFrozen(live)
       return true
