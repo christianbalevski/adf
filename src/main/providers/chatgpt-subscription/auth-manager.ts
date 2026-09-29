@@ -44,6 +44,23 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
   }
 }
 
+/**
+ * The ChatGPT account UUID for the ChatGPT-Account-ID header. OpenAI nests it
+ * under the `https://api.openai.com/auth` claim (top-level only in older
+ * tokens). Never `sub`: the backend doesn't reject an unknown account ID, it
+ * bills a different bucket and returns a misleading `usage_limit_reached`.
+ */
+export function chatgptAccountIdFromJwt(token: string | undefined): string {
+  if (!token) return ''
+  const claims = decodeJwtPayload(token)
+  const auth = claims['https://api.openai.com/auth']
+  const nested = auth && typeof auth === 'object'
+    ? (auth as Record<string, unknown>).chatgpt_account_id
+    : undefined
+  const id = nested ?? claims.chatgpt_account_id
+  return typeof id === 'string' ? id : ''
+}
+
 async function openExternal(url: string): Promise<void> {
   try {
     const electron = require('electron') as { shell?: { openExternal?: (url: string) => Promise<unknown> } }
@@ -269,22 +286,12 @@ class ChatGptAuthManager {
       id_token?: string
     }
 
-    // Extract email and chatgpt_account_id from id_token
-    // The ChatGPT-Account-ID header needs the chatgpt_account_id claim, NOT sub
-    let accountId = ''
     if (tokenData.id_token) {
-      const claims = decodeJwtPayload(tokenData.id_token)
-      this.email = claims.email as string | undefined
-      accountId = (claims.chatgpt_account_id as string) ?? ''
-      console.log(`[ChatGPT Auth] id_token claims: email=${this.email}, chatgpt_account_id=${accountId}, sub=${claims.sub}`)
+      this.email = decodeJwtPayload(tokenData.id_token).email as string | undefined
     }
-
-    // Fallback: try access_token claims
-    if (!accountId) {
-      const accessClaims = decodeJwtPayload(tokenData.access_token)
-      accountId = (accessClaims.chatgpt_account_id as string) ?? (accessClaims.sub as string) ?? ''
-      console.log(`[ChatGPT Auth] access_token fallback: chatgpt_account_id=${accountId}`)
-    }
+    const accountId = chatgptAccountIdFromJwt(tokenData.access_token) ||
+      chatgptAccountIdFromJwt(tokenData.id_token)
+    console.log(`[ChatGPT Auth] signed in: email=${this.email}, chatgpt_account_id=${accountId || '(missing)'}`)
 
     // Use the access_token directly — the ChatGPT subscription backend
     // accepts OAuth access tokens with the ChatGPT-Account-ID header
@@ -320,7 +327,10 @@ class ChatGptAuthManager {
   }
 
   getAccountId(): string | undefined {
-    return this.syncFromDisk()?.account_id
+    // Derive from the live access token first: sessions persisted before the
+    // nested-claim fix stored `sub` here and must heal without a re-login.
+    const tokens = this.syncFromDisk()
+    return chatgptAccountIdFromJwt(tokens?.access_token) || tokens?.account_id || undefined
   }
 
   /**
@@ -340,6 +350,9 @@ class ChatGptAuthManager {
 
   private async refreshTokens(tokens: TokenSet): Promise<string> {
     let data: RefreshResponse
+    // Only the token endpoint rejecting the refresh token ends the session.
+    // Network errors, 5xx and 429 are transient: the session stays on disk.
+    let rejected = false
     try {
       // Codex CLI uses JSON body for refresh
       const response = await fetch(TOKEN_URL, {
@@ -353,11 +366,12 @@ class ChatGptAuthManager {
       })
 
       if (!response.ok) {
+        rejected = response.status === 400 || response.status === 401
         throw new Error(`Token refresh failed (${response.status})`)
       }
 
       data = await response.json() as RefreshResponse
-    } catch {
+    } catch (err) {
       // A failure here may just mean another surface rotated the refresh token
       // between our disk check and this request. Look once more before
       // destroying what could be a perfectly live session.
@@ -370,7 +384,9 @@ class ChatGptAuthManager {
         return fresh.access_token
       }
 
-      // Clear tokens on refresh failure
+      if (!rejected) {
+        throw new Error(`Could not refresh the session (${err instanceof Error ? err.message : String(err)}) — still signed in, try again`)
+      }
       clearTokens()
       this.cachedTokens = null
       this.email = undefined
@@ -392,7 +408,8 @@ class ChatGptAuthManager {
       access_token: data.access_token,
       refresh_token: data.refresh_token,
       expires_at: Date.now() + data.expires_in * 1000,
-      account_id: tokens.account_id
+      account_id: chatgptAccountIdFromJwt(data.access_token) ||
+        chatgptAccountIdFromJwt(data.id_token) || tokens.account_id
     })
     return data.access_token
   }

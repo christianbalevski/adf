@@ -142,6 +142,23 @@ describe('ChatGPT auth manager refresh-rotation safety', () => {
     expect(store.readTokens()).toBeNull()
   })
 
+  it.each([
+    ['a network error', () => Promise.reject(new TypeError('fetch failed'))],
+    ['a 5xx', async () => new Response('down', { status: 503 })],
+    ['a 429', async () => new Response('slow down', { status: 429 })],
+  ])('keeps the session when the refresh fails with %s', async (_label, respond) => {
+    const store = newStore()
+    store.writeTokens(tokenSet({ access_token: 'expiring', refresh_token: 'r1', expires_at: Date.now() + 1_000 }))
+
+    const manager = await freshManager()
+    vi.stubGlobal('fetch', vi.fn(respond))
+
+    await expect(manager.getValidAccessToken()).rejects.toThrow('still signed in')
+    expect(store.readTokens()?.refresh_token).toBe('r1')
+    expect(manager.getAuthStatus().authenticated).toBe(true)
+    manager.logout()
+  })
+
   it('reports a refused write as a storage problem, not an expired session', async () => {
     const store = newStore()
     store.writeTokens(tokenSet({ access_token: 'expiring', refresh_token: 'r1', expires_at: Date.now() + 1_000 }))

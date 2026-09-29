@@ -270,6 +270,9 @@ class GrokAuthManager {
 
   private async refreshTokens(tokens: TokenSet): Promise<string> {
     let data: TokenResponse
+    // Only the token endpoint rejecting the refresh token ends the session.
+    // Network errors, 5xx and 429 are transient: the session stays on disk.
+    let rejected = false
     try {
       const response = await fetch(TOKEN_URL, {
         method: 'POST',
@@ -282,11 +285,12 @@ class GrokAuthManager {
       })
 
       if (!response.ok) {
+        rejected = response.status === 400 || response.status === 401
         throw new Error(`Token refresh failed (${response.status})`)
       }
 
       data = await response.json() as TokenResponse
-    } catch {
+    } catch (err) {
       // A failure here may just mean another surface rotated the refresh token
       // between our disk check and this request. Look once more before
       // destroying what could be a perfectly live session.
@@ -299,7 +303,9 @@ class GrokAuthManager {
         return fresh.access_token
       }
 
-      // Clear tokens on refresh failure
+      if (!rejected) {
+        throw new Error(`Could not refresh the session (${err instanceof Error ? err.message : String(err)}) — still signed in, try again`)
+      }
       clearTokens()
       this.cachedTokens = null
       this.email = undefined
