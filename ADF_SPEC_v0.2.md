@@ -867,7 +867,7 @@ Installation is a file write under `skills/<name>/` by any writer: the agent's `
 | Field | Values | Default | Description |
 |-------|--------|---------|-------------|
 | `state` | `active`, `idle`, `hibernate`, `suspended`, `off` | `active` | Last persisted state (§6.1). |
-| `start_in_state` | `active`, `idle`, `hibernate` | absent | State the runtime enters when it loads the agent. When absent, the runtime treats it as `active`. |
+| `start_in_state` | `active`, `idle`, `hibernate` | absent | State the runtime enters when it loads the agent. When absent, the runtime treats it as `active`: it runs the startup turn and reports the initial state as `active`. |
 | `autonomous` | boolean | `false` | Turn behaviour of `main` (§6.3). |
 | `autostart` | boolean | `false` | The runtime SHOULD start the agent when the runtime starts. |
 
@@ -1427,7 +1427,7 @@ A loop is a named conversation of the agent (§0.3). Every agent has the loop `m
 
 *Effective tools.* A runtime MUST compute an inner loop's tools as the intersection of `tools` with the agent's enabled tool declarations, minus `sys_update_config`, `loop_manage` and `sys_create_adf`, minus every tool the agent declares `restricted`, minus the tools of every MCP server declared `restricted`. The runtime then adds `loop_compact` and `loop_clear` unless the agent has disabled or restricted them. An inner loop therefore never holds a tool that `main` lacks, and never holds a tool that needs owner approval.
 
-*Code execution.* Code run from an inner loop uses a fixed `code_execution` profile: `model_invoke`, `sys_lambda`, `identity_status`, `loop_inject` and `emit_event` are enabled; `get_identity`, `set_identity`, `task_resolve`, the `attestation_*` methods and `network` are disabled; `packages` is empty; `restricted_methods` is the union of the profile's list and the agent's list.
+*Code execution.* Code run from an inner loop MUST NOT have a `code_execution` method the agent lacks. A method is enabled for an inner loop only if both the inner-loop profile and the agent's effective `code_execution` enable it; an absent agent field takes its default. The profile allows `model_invoke`, `sys_lambda`, `identity_status`, `loop_inject` and `emit_event`, and disables `get_identity`, `set_identity`, `task_resolve`, the `attestation_*` methods and `network`. `packages` is empty. `restricted_methods` is the union of the profile's list and the agent's list. The runtime re-derives each inner loop's profile when the agent config changes, so disabling a method on the agent also disables it in running loops.
 
 *Storage.* Each loop's transcript is the `adf_loop` rows with `loop = <name>`. `adf_timers`, `adf_tasks` and `adf_logs` rows carry the loop that created them in their `loop` column; NULL means `main`. Transcript snapshots use the `adf_audit` source `loop:<name>` (§13.3). Each loop is compacted separately (§13.2).
 
@@ -2387,7 +2387,7 @@ Recent revisions, latest first:
 
 ### 17.2 Revision 2026-10
 
-Revision 2026-10 of format version 0.2 is an editorial revision. It changes no table, column, config field or tool contract. It corrects statements that did not match the reference runtime, adds sections for features the runtime already had (§0 Conventions, §1.3 component table, §5.18–§5.24, §6.4 Loops), adopts RFC 2119 keywords, and applies one terminology list (§0.3). Sections 1.1, 1.2, 1.3, 1.6, 3.4, 5.3, 5.17, 6, 6.3, 8.3, 10.4, 10.7, 10.8, 11 and 13.1 have new titles and therefore new anchors.
+Revision 2026-10 of format version 0.2 is an editorial revision. It changes no table, column, config field or tool contract. One runtime behaviour changes with it: an inner loop's `code_execution` is now the intersection of the inner-loop profile and the agent's own settings; previously it was the fixed profile regardless of the agent (§6.4). It corrects statements that did not match the reference runtime, adds sections for features the runtime already had (§0 Conventions, §1.3 component table, §5.18–§5.24, §6.4 Loops), adopts RFC 2119 keywords, and applies one terminology list (§0.3). Sections 1.1, 1.2, 1.3, 1.6, 3.4, 5.3, 5.17, 6, 6.3, 8.3, 10.4, 10.7, 10.8, 11 and 13.1 have new titles and therefore new anchors.
 
 #### Corrections
 
