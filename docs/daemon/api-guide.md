@@ -130,13 +130,28 @@ send neither `Origin` nor `Sec-Fetch-Site` and are unaffected.
 
 ### Loopback-only routes
 
-These answer only callers whose TCP connection comes from the daemon's own
-machine (`403 loopback_only` otherwise), on top of the token:
+These answer only callers on the daemon's own machine (`403 loopback_only`
+otherwise), on top of the token:
 
 - `POST /identity/create`, `/identity/restore`, `/identity/unlock`,
   `/identity/lock`, `/identity/confirm-backup` (they move the seed phrase or
   passphrase, or change identity state)
 - `POST /daemon/shutdown`
+
+"Local" means the TCP connection comes from loopback **and** the request
+carries no proxy header (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`,
+`X-Forwarded-Proto`, `X-Real-IP`, `Via`). Forwarded headers can only take
+"local" away, never grant it: a spoofed `X-Forwarded-For: 127.0.0.1` from a
+remote peer changes nothing.
+
+Not every proxy adds those headers (nginx does not by default), so a daemon
+behind a same-host reverse proxy should run with `ADF_DAEMON_BEHIND_PROXY=1`.
+Then these routes additionally require `X-ADF-Local-Proof`: a random secret
+the daemon writes at every start to `<settings dir>/daemon-local-proof` (`daemon-local-proof-<port>` off the default port)
+(0600). The `adf` CLI and terminal app on the daemon host read it and send it,
+for these routes only, to their own daemon; a caller behind the proxy cannot.
+Run `adf identity unlock`, `adf daemon stop` and friends **on the daemon host,
+against its loopback port**, never through the proxy.
 
 ### Remote access
 
@@ -154,9 +169,10 @@ Pick one:
   `127.0.0.1`. The proxy must send `Host: 127.0.0.1:7385` upstream (nginx's
   default `proxy_pass http://127.0.0.1:7385` does; Caddy needs `header_up Host
   127.0.0.1:7385`) and must not buffer `/events` (the daemon sends
-  `X-Accel-Buffering: no`). Every proxied request arrives from loopback, so
-  loopback-only routes become reachable to anyone with the token: block
-  `POST /identity/*` and `/daemon/shutdown` at the proxy unless you want that.
+  `X-Accel-Buffering: no`). Every proxied request arrives from loopback: start
+  the daemon with `ADF_DAEMON_BEHIND_PROXY=1` so loopback-only routes stay
+  host-only (see [above](#loopback-only-routes)), and have the proxy send
+  `X-Forwarded-For` too (a second, header-based line of defence).
 - **Direct bind** off loopback: `ADF_DAEMON_HOST=0.0.0.0` requires
   `ADF_DAEMON_TOKEN` (the daemon refuses to start without it); list the host
   names clients use in `ADF_DAEMON_ALLOWED_HOSTS`. Traffic, token included, is
@@ -167,6 +183,7 @@ Pick one:
 | `ADF_DAEMON_HOST`, `ADF_DAEMON_PORT` | daemon | Bind address (default `127.0.0.1:7385`) |
 | `ADF_DAEMON_TOKEN` | daemon, clients | Token, overriding `<settings dir>/daemon-token`; required for a non-loopback bind |
 | `ADF_DAEMON_ALLOWED_HOSTS` | daemon | Extra `Host` names for a non-loopback bind |
+| `ADF_DAEMON_BEHIND_PROXY` | daemon | `1`: a reverse proxy on this host forwards to the daemon; loopback-only routes then also need the local proof file |
 | `ADF_DAEMON_URL` | `adf` clients | Daemon URL (default `http://127.0.0.1:7385`) |
 
 ## Conventions
@@ -255,14 +272,40 @@ no `loop` field.
 ## Chat turns and reading results
 
 `POST /agents/:id/chat {text, loop?}` queues the message as the owner's voice
-and answers `202 {accepted: true, turnId}`. The turn runs when the loop is
-free: a message sent mid-turn waits for the current turn. `turnId` is a request
-id for daemon logs; events do not carry it.
+and answers `202 {accepted: true, turnId}`. Every event of the turn that
+handles the request carries `turnId` as `event.turn_id`, from its first
+`agent.state.changed` to `turn.completed` (`payload.interrupted: true` when it
+was cut short) or `agent.error`. `POST …/trigger` answers a `turnId` the same
+way.
+
+Messages sent while the loop is busy (mid-turn, or during a compaction) are
+never dropped. They queue in arrival order:
+
+- The first one interrupts the running turn; the rest of a burst only join the
+  queue, so a burst costs one interrupt.
+- The oldest queued message then runs as the next turn, under its own
+  `turnId`. Every other queued message joins that turn as a consecutive user
+  row, in order, before its first model call. A `chat.delivered` event (with
+  that turn's `turn_id`) lists their ids in `payload.turn_ids` at once, and
+  the turn's `turn.completed` lists them in `absorbed_turn_ids`.
+- The turn that was cut short ends with `turn.completed` +
+  `interrupted: true`. Its message is still in the history, so the replay
+  answers it too and lists its id in `absorbed_turn_ids`.
+- Only `POST …/abort`, unloading the agent or an `off` transition discard
+  queued messages. A `chat.discarded` event (`reason`, `turn_ids`, and
+  `unanswered_turn_ids` for messages whose turn was cut off) announces it, and
+  a System notice quoting them goes into the loop. `POST …/interrupt` keeps the
+  queue: it runs next.
+
+So every `turnId` ends on a `turn.completed` (as `turn_id` or in
+`absorbed_turn_ids`), an `agent.error`, or a `chat.discarded`. Queued messages
+exist only in memory until they are delivered: a daemon crash loses them, and
+their ids never complete.
 
 To get the answer:
 
 1. **Live:** open `/events?agentId=<id>` *before* posting, then wait for
-   `turn.completed` from the same loop: its `payload.content` is the final
+   `turn.completed` with your `turn_id`: its `payload.content` is the final
    assistant text. Along the way you see `tool.started`/`tool.completed`,
    `hil.requested` (the turn waits for you), `ask.requested`,
    `agent.state.changed`, and `agent.error` on failure. `turn.delta` (streamed
@@ -273,23 +316,26 @@ To get the answer:
    (`{seq, role, content_json, model, tokens, created_at}`, paginated, last page
    by default).
 
-The daemon cannot tell your turn's `turn.completed` from another client's if
-two clients chat to the same loop at once.
+Match on `turn_id`, not on the loop: another client chatting to the same loop
+gets its own `turnId`, so its turns never look like yours.
 
 ```ts
 import { adf } from './adf'
-import { openEvents } from './adf-events' // see "The event stream"
+import { frames, openEvents } from './adf-events' // see "The event stream"
 
 export async function chat(agent: string, text: string, loop = 'main'): Promise<string> {
   const { id } = await adf<{ id: string }>('GET', `/agents/${encodeURIComponent(agent)}`)
   const ac = new AbortController()
   // Headers arrive only after the daemon subscribed this stream, so nothing is missed.
-  const events = await openEvents({ agentId: id, since: Number.MAX_SAFE_INTEGER, signal: ac.signal })
+  const events = frames(await openEvents({ agentId: id, since: Number.MAX_SAFE_INTEGER, signal: ac.signal }))
   try {
-    await adf('POST', `/agents/${id}/chat`, loop === 'main' ? { text } : { text, loop })
+    const { turnId } = await adf<{ turnId: string }>('POST', `/agents/${id}/chat`, loop === 'main' ? { text } : { text, loop })
     for await (const { event } of events) {
-      if ((event.loop ?? 'main') !== loop) continue
-      if (event.event_type === 'turn.completed') return String(event.payload.content ?? '')
+      const listed = (key: string) => (event.payload[key] as string[] | undefined)?.includes(turnId)
+      if (event.event_type === 'chat.discarded' && (listed('turn_ids') || listed('unanswered_turn_ids'))) throw new Error('discarded: agent stopped')
+      const mine = event.turn_id === turnId || listed('absorbed_turn_ids')
+      if (!mine) continue
+      if (event.event_type === 'turn.completed' && !event.payload.interrupted) return String(event.payload.content ?? '')
       if (event.event_type === 'agent.error') throw new Error(JSON.stringify(event.payload))
       if (event.event_type === 'hil.requested') console.error(`approval needed: ${event.payload.tool} (task ${event.payload.task_id})`)
     }
@@ -319,39 +365,66 @@ Frames look like this:
 ```text
 : connected
 
+event: stream.hello
+data: {"epoch":"6f1c1f9e-2b7a-4f2e-9d59-0c6f5c3f1a10","oldestCursor":1,"latestCursor":42}
+
 id: 43
 event: agent.state.changed
-data: {"cursor":43,"event":{"seq":118,"event_type":"agent.state.changed","timestamp":1760000000000,"source":"system:runtime","agent_id":"abc123","payload":{"filePath":"/agents/agent-1.adf","state":"idle"}}}
+data: {"cursor":43,"event":{"seq":118,"event_type":"agent.state.changed","timestamp":1760000000000,"source":"agent:Xk3v9QpLm2","agent_id":"abc123","turn_id":"turn_V1StGXR8_Z5j","payload":{"filePath":"/agents/agent-1.adf","state":"idle"}}}
 
 : heartbeat 1760000030000
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `cursor` (also the SSE `id`) | Transport position. Daemon-wide, per process, starts at 1 on every daemon start. Only for `?since=` |
+| `cursor` (also the SSE `id`) | Transport position. Daemon-wide, per process, starts at 1 on every daemon start (a new `epoch`). Only for `?since=` / `Last-Event-ID` |
 | `event.agent_id` | Owning agent id, `null` for daemon events (`daemon.started`, …) |
 | `event.seq` | Per-agent sequence, +1 per event of that agent, persisted in the file across restarts. `0` without an owning agent |
 | `event.loop` | Inner loop that produced it; absent for `main` |
 | `event.source` | `agent:<turn>`, `lambda:<file>:<fn>`, `system:<subsystem>` |
+| `event.turn_id` | The turn that produced it: the `turnId` your `POST …/chat` / `…/trigger` got, else the runtime's own turn id; absent outside a turn |
 
-Query parameters: `agentId` (one agent's events, replay included) and `since`
-(replay buffered frames with `cursor > since`, then go live). Without `since`
-the whole buffer is replayed first; `since=9007199254740991` starts live. The
-daemon ignores `Last-Event-ID`: pass `since`.
+Query parameters: `agentId` (one agent's events, replay included), `since`
+(replay buffered frames with `cursor > since`, then go live) and `epoch` (the
+run your cursor came from, see below). Without `since` the whole buffer is
+replayed first; `since=9007199254740991` starts live. The standard SSE
+`Last-Event-ID` header works like `since` (what an EventSource sends on
+reconnect); `?since` wins when both are present.
+
+Every connection starts with a `stream.hello` control frame, a named SSE event
+with no `id:` whose data is not an EventFrame:
+
+```text
+event: stream.hello
+data: {"epoch":"6f1c1f9e-…","oldestCursor":44,"latestCursor":1043}
+```
+
+`epoch` identifies the daemon run: cursors restart at 1 with every run, so a
+cursor is only meaningful with its epoch. When a resume cannot be exact the
+daemon says so, before replaying:
+
+```text
+event: stream.gap
+data: {"reason":"evicted","epoch":"6f1c1f9e-…","requestedCursor":12,"oldestCursor":44,"latestCursor":1043}
+```
+
+- `evicted`: the cursor is older than the buffer; the frames in between are
+  gone.
+- `epoch_changed`: you passed `?epoch=` and the daemon has restarted since; it
+  replays its whole buffer from cursor 1.
 
 **Replay is short.** The buffer holds the last 1000 frames of all agents, in
-memory. A client that was away longer, or a daemon restart, loses the frames in
-between. Durable state is in the agent (`/chat`, `/loop`, `/tasks`, `/logs`):
-re-read it when you detect a gap.
+memory. Durable state is in the agent (`/chat`, `/loop`, `/tasks`, `/logs`):
+re-read it on a gap.
 
 A reconnecting client should:
 
-- resume with `?since=<last cursor>`, with backoff;
+- resume with `?since=<last cursor>&epoch=<epoch>` (or `Last-Event-ID`), with
+  backoff;
+- on `stream.gap`, or a `stream.hello` epoch other than the one it had,
+  re-snapshot the state it shows; an exact resume (no gap) needs no reload;
 - **dedupe** on `agent_id` + `seq` (replay can repeat frames); daemon events
   (`seq` 0) on `cursor`;
-- detect a **gap** when an agent's `seq` jumps by more than one, and a **daemon
-  restart** when a cursor goes backwards (or on `daemon.started`), then
-  re-snapshot the state it shows;
 - treat ~75 s without bytes as a dead connection (heartbeats come every 30 s).
 
 ```ts
@@ -360,51 +433,69 @@ import { BASE, TOKEN } from './adf'
 
 export interface UmbilicalEvent {
   seq: number; event_type: string; timestamp: number; source: string
-  agent_id: string | null; loop?: string; payload: Record<string, any>
+  agent_id: string | null; loop?: string; turn_id?: string; payload: Record<string, any>
 }
 export interface Frame { cursor: number; event: UmbilicalEvent }
+export interface Hello { epoch: string; oldestCursor: number | null; latestCursor: number }
+export interface Gap extends Hello { reason: 'evicted' | 'epoch_changed'; requestedCursor: number | null }
+type Item = { kind: 'event'; frame: Frame } | { kind: 'hello'; hello: Hello } | { kind: 'gap'; gap: Gap }
 
-export async function openEvents(opts: { agentId?: string; since?: number; signal?: AbortSignal } = {}) {
+export async function openEvents(opts: { agentId?: string; since?: number; epoch?: string; signal?: AbortSignal } = {}) {
   const qs = new URLSearchParams()
   if (opts.agentId) qs.set('agentId', opts.agentId)
   if (opts.since !== undefined) qs.set('since', String(opts.since))
+  if (opts.epoch) qs.set('epoch', opts.epoch)
   const res = await fetch(`${BASE}/events?${qs}`, {
     headers: { Authorization: `Bearer ${TOKEN}`, Accept: 'text/event-stream' },
     signal: opts.signal,
   })
   if (!res.ok || !res.body) throw new Error(`events: HTTP ${res.status}`)
-  return frames(res.body)
+  return items(res.body)
 }
 
-async function* frames(body: ReadableStream<Uint8Array>): AsyncGenerator<Frame> {
+async function* items(body: ReadableStream<Uint8Array>): AsyncGenerator<Item> {
   const decoder = new TextDecoder()
   let buf = ''
   for await (const chunk of body as any as AsyncIterable<Uint8Array>) {
     buf += decoder.decode(chunk, { stream: true }).replace(/\r\n?/g, '\n')
     for (let i = buf.indexOf('\n\n'); i >= 0; i = buf.indexOf('\n\n')) {
-      const block = buf.slice(0, i)
+      const lines = buf.slice(0, i).split('\n')
       buf = buf.slice(i + 2)
-      const data = block.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n')
-      if (data) yield JSON.parse(data) as Frame
+      const name = lines.find(l => l.startsWith('event:'))?.slice(6).trim()
+      const data = lines.filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n')
+      if (!data) continue // comment (connected / heartbeat)
+      if (name === 'stream.hello') yield { kind: 'hello', hello: JSON.parse(data) }
+      else if (name === 'stream.gap') yield { kind: 'gap', gap: JSON.parse(data) }
+      else yield { kind: 'event', frame: JSON.parse(data) }
     }
   }
 }
 
-// A resilient subscriber: resume, dedupe, gap and restart detection.
-export async function follow(onEvent: (e: UmbilicalEvent) => void, resync: (agentId?: string) => void) {
+/** Only the events: for a caller that opens one stream and does not resume. */
+export async function* frames(stream: AsyncGenerator<Item>): AsyncGenerator<Frame> {
+  for await (const item of stream) if (item.kind === 'event') yield item.frame
+}
+
+// A resilient subscriber: resume with the epoch, reload on a gap or restart, dedupe.
+export async function follow(onEvent: (e: UmbilicalEvent) => void, resync: () => void) {
   let cursor = Number.MAX_SAFE_INTEGER // start live; 0 replays the buffer
+  let epoch: string | undefined
   const lastSeq = new Map<string, number>()
   for (let attempt = 0; ; attempt++) {
     try {
-      for await (const f of await openEvents({ since: cursor })) {
+      for await (const item of await openEvents({ since: cursor, epoch })) {
         attempt = 0
-        if (cursor !== Number.MAX_SAFE_INTEGER && f.cursor < cursor) resync() // daemon restarted
-        cursor = f.cursor
-        const e = f.event
+        if (item.kind === 'hello') {
+          if (epoch && item.hello.epoch !== epoch) cursor = 0 // restarted: its cursors start over
+          epoch = item.hello.epoch
+          continue
+        }
+        if (item.kind === 'gap') { resync(); continue } // frames were lost: re-read state
+        cursor = item.frame.cursor
+        const e = item.frame.event
         if (e.agent_id && e.seq > 0) {
           const last = lastSeq.get(e.agent_id)
           if (last !== undefined && e.seq <= last) continue // duplicate
-          if (last !== undefined && e.seq > last + 1) resync(e.agent_id) // missed events
           lastSeq.set(e.agent_id, e.seq)
         }
         onEvent(e)
@@ -663,8 +754,10 @@ restart. Keys and file format: [Runtime Settings](runtime-settings.md).
 
 ## Errors
 
-Errors are JSON with a human-readable `error`, plus a machine `code` wherever a
-client is expected to branch on it:
+Errors are JSON with a human-readable `error` and a machine `code`. Every error
+body has a `code`: a specific one where the route defines it, otherwise the
+status default (`bad_request`, `forbidden`, `not_found`, `not_supported`,
+`conflict`, `internal_error`, `upstream_error`, `unavailable`):
 
 ```json
 { "error": "The credentials envelope of this agent is locked on this daemon — …", "code": "credentials_locked" }
@@ -672,22 +765,22 @@ client is expected to branch on it:
 
 Show `error` to the user; branch on `status` and `code`. Some bodies carry more
 (`identity` on `identity_not_ready`, `agentId`/`filePath` on a review refusal,
-`coveredBy` on a tracked-folder conflict). Framework-level errors (unknown
-route, malformed JSON, empty JSON body) come from Fastify as `{statusCode,
-error, message}`.
+`coveredBy` on a tracked-folder conflict, `candidates` on `ambiguous_agent`).
+Framework-level errors (unknown route, malformed JSON, empty JSON body) come
+from Fastify as `{statusCode, code, error, message}`.
 
 | Status | Means | Common `code`s |
 |--------|-------|----------------|
 | `400` | Bad request body or query | `bad_request`, `invalid_mnemonic`, `passphrase_required`, `subscription_type`, `bad_type`, `api_key_required`, `password_required` |
 | `401` | Missing or wrong token | `unauthorized` |
-| `403` | Refused by a guard or policy | `host_not_allowed`, `cross_origin`, `loopback_only`, `wrong_passphrase`, `wrong_password`, `AGENT_REVIEW_REQUIRED`; settings write denials have no code |
-| `404` | Unknown agent (or not loaded), loop, task, file, template | `template_missing`, `not_found` |
-| `405` | Read-only settings store | `read_only` |
-| `409` | Valid, but not in the current state | `credentials_locked`, `identity_not_ready`, `identity_exists`, `owner_mismatch`, `name_taken`, `secret_store_locked`, `nothing_to_unlock`; plus code-less conflicts: task not pending, loop mid-turn or disabled, loops locked by the owner, agent not running |
+| `403` | Refused by a guard or policy | `host_not_allowed`, `cross_origin`, `loopback_only`, `setting_not_writable`, `wrong_passphrase`, `wrong_password`, `AGENT_REVIEW_REQUIRED` |
+| `404` | Unknown agent (or not loaded), loop, task, file, template, ask | `not_found`, `ask_not_found`, `template_missing` |
+| `405` | Read-only settings store, operation not available | `read_only`, `not_supported` |
+| `409` | Valid, but not in the current state | `credentials_locked` (also a legacy password-locked agent), `ambiguous_agent`, `identity_not_ready`, `identity_exists`, `owner_mismatch`, `name_taken`, `secret_store_locked`, `nothing_to_unlock`, and `conflict` for the rest: task not pending, loop mid-turn or disabled, loops locked by the owner, agent not running |
 | `422` | Accepted input, but the result could not be produced | `template_unreviewed`, `load_failed` |
 | `502` | An upstream model call failed | (compaction) |
-| `503` | That service is not configured on this daemon | |
-| `500` | Unexpected runtime error | |
+| `503` | That service is not configured on this daemon | `unavailable` |
+| `500` | Unexpected runtime error | `internal_error` |
 
 ## Concurrency
 

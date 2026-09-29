@@ -30,6 +30,10 @@ export interface DaemonHostOptions {
   token?: string | null
   /** Extra allowed Host names for non-loopback binds (ADF_DAEMON_ALLOWED_HOSTS; default: that env var). */
   allowedHosts?: string[]
+  /** Proxy mode for the local-only routes (local-access.ts; default: ADF_DAEMON_BEHIND_PROXY). */
+  behindProxy?: boolean
+  /** The X-ADF-Local-Proof secret proxy mode requires (see local-access.ts). */
+  localProof?: string | null
   pidFile?: string
   logger?: boolean
   shutdownAgentTimeoutMs?: number
@@ -95,6 +99,8 @@ export class DaemonHost {
   private readonly port: number
   private readonly token: string | null
   private readonly allowedHosts: string[]
+  private readonly behindProxy?: boolean
+  private readonly localProof: string | null
   private readonly pidFile?: string
   private readonly logger: boolean
   private readonly shutdownAgentTimeoutMs: number
@@ -125,6 +131,8 @@ export class DaemonHost {
     this.port = opts.port ?? 7385
     this.token = opts.token ?? process.env.ADF_DAEMON_TOKEN ?? null
     this.allowedHosts = opts.allowedHosts ?? parseAllowedHostsEnv(process.env.ADF_DAEMON_ALLOWED_HOSTS)
+    this.behindProxy = opts.behindProxy
+    this.localProof = opts.localProof ?? null
     this.pidFile = opts.pidFile
     this.logger = opts.logger ?? false
     this.shutdownAgentTimeoutMs = opts.shutdownAgentTimeoutMs ?? envShutdownTimeoutMs() ?? DEFAULT_AGENT_UNLOAD_TIMEOUT_MS
@@ -182,6 +190,8 @@ export class DaemonHost {
         token: this.token,
         allowedHosts: () => daemonHostAllowList(this.host, this.boundPort(), loopback ? [] : this.allowedHosts),
         ipLiteralPort: () => (loopback ? null : this.boundPort()),
+        behindProxy: this.behindProxy,
+        localProof: this.localProof,
       },
     })
     await this.server.listen({ host: this.host, port: this.port })

@@ -218,6 +218,12 @@ export interface AdfEventDispatch<T extends AdfEventType = AdfEventType> {
    * main's authority is a privilege escalation).
    */
   loop?: string
+  /**
+   * Request correlation id (the `turnId` POST /agents/:id/chat or /trigger
+   * answered with). Stamped as `turn_id` on every umbilical event of the turn
+   * that runs this dispatch, including after an interrupt replay.
+   */
+  turnId?: string
 }
 
 /** Full discriminated union of all dispatch types. */
@@ -247,6 +253,8 @@ export interface AdfBatchDispatch<T extends AdfEventType = AdfEventType> {
   warm?: boolean
   /** See `AdfEventDispatch.loop`. */
   loop?: string
+  /** See `AdfEventDispatch.turnId`. */
+  turnId?: string
 }
 
 // =============================================================================

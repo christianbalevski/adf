@@ -1,5 +1,6 @@
 import type { AgentExecutionEvent } from '../../shared/types/ipc.types'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
+import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import {
   createDispatch,
   createEvent,
@@ -358,7 +359,7 @@ export function assembleAgent<P extends AgentProfileName>(
   if (options.systemScopeHandler) executor.setSystemScopeHandler(options.systemScopeHandler)
 
   const triggerEvaluator = new TriggerEvaluator(config)
-  triggerEvaluator.setDisplayState(config.start_in_state ?? 'idle')
+  triggerEvaluator.setDisplayState(resolveStartInState(config))
   triggerEvaluator.setWorkspace(workspace)
 
   let state: AgentLifecycleState = 'created'
@@ -464,7 +465,7 @@ export function assembleAgent<P extends AgentProfileName>(
     // (a user message replacing it is main's business, not the loops').
     if (!loopAutostartFired) {
       loopAutostartFired = true
-      if ((config.start_in_state ?? 'active') === 'active') {
+      if (resolveStartInState(config) === 'active') {
         void loopPool.autostartLoops().catch((error) => {
           console.error('[AssembleAgent] Loop autostart failed:', error)
         })
@@ -505,7 +506,7 @@ export function assembleAgent<P extends AgentProfileName>(
         }
       }
     }
-    if ((config.start_in_state ?? 'active') !== 'active' || startupTurnDispatched) return false
+    if (resolveStartInState(config) !== 'active' || startupTurnDispatched) return false
     startupTurnDispatched = true
     await dispatch(createDispatch(
       createEvent({ type: 'startup', source: 'system', data: undefined }),

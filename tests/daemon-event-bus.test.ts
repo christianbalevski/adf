@@ -73,6 +73,20 @@ describe('DaemonEventBus', () => {
     expect(bus.getSince(0, agent).map(e => e.event.event_type)).toEqual(['e8', 'e10'])
   })
 
+  it('reports its epoch and the buffered cursor window', () => {
+    const bus = new DaemonEventBus(2)
+    expect(bus.epoch).toMatch(/^[0-9a-f-]{36}$/)
+    expect(new DaemonEventBus().epoch).not.toBe(bus.epoch)
+    expect(bus.latestCursor).toBe(0)
+    expect(bus.oldestCursor).toBeNull()
+    bus.publish(event({ event_type: 'one' }))
+    expect([bus.oldestCursor, bus.latestCursor]).toEqual([1, 1])
+    bus.publish(event({ event_type: 'two' }))
+    bus.publish(event({ event_type: 'three' }))
+    bus.publish(event({ event_type: 'four' }))
+    expect([bus.oldestCursor, bus.latestCursor]).toEqual([3, 4])
+  })
+
   it('notifies subscribers and supports unsubscribe', () => {
     const bus = new DaemonEventBus()
     const seen: string[] = []

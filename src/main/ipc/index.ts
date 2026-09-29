@@ -231,6 +231,7 @@ import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerReg
 import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
 import type { AgentConfig, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
 import type { AgentTemplate } from '../../shared/types/adf-v02.types'
+import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
@@ -4792,7 +4793,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
 
     // Emit initial display state based on start_in_state config
-    const initialDisplayState = finalConfig.start_in_state ?? 'idle'
+    const initialDisplayState = resolveStartInState(finalConfig)
 
     // If the user navigated away during setup, transition to background instead
     // of installing into foreground globals — mirrors what cleanupCurrentFile does.

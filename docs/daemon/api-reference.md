@@ -8,11 +8,13 @@ Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /
 
 The daemon is a headless ADF runtime: it loads agents from .adf files, runs them, streams their events and resolves human-in-the-loop requests. This document is the contract; docs/daemon/api-reference.md and api-reference.html are generated from it (`npm run docs:api`).
 
-**Authentication.** Every route except `GET /health` requires `Authorization: Bearer <token>`: the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.
+**Authentication.** Every route except `GET /health` (and `HEAD /health`) requires `Authorization: Bearer <token>`: the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.
 
 **Request guard.** A Host header that does not name this daemon (403 `host_not_allowed`, DNS-rebinding protection) and browser cross-site requests — a foreign `Origin` or `Sec-Fetch-Site: cross-site|same-site` (403 `cross_origin`) — are refused on every route. No CORS headers are ever sent.
 
-**Errors** are JSON `{ "error": "<message>" }`, plus a stable `code` where the route defines one (listed per response; many 400/404/409 answers carry only `error`, and settings refusals have no `code`). A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ "statusCode": 400, "code": "FST_ERR_CTP_EMPTY_JSON_BODY", "error": "Bad Request", "message": "…" }`: send no Content-Type (or `{}`) on bodiless POSTs.
+**Errors** are JSON `{ "error": "<message>", "code": "<code>" }`. Every error body carries a stable machine-readable `code`: a specific one where the route defines it (listed per response), otherwise the status default: 400 `bad_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 405 `not_supported`, 409 `conflict`, 500 `internal_error`, 502 `upstream_error`, 503 `unavailable`. Branch on `code`, not on the message. A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ "statusCode": 400, "code": "FST_ERR_CTP_EMPTY_JSON_BODY", "error": "Bad Request", "message": "…" }`: send no Content-Type (or `{}`) on bodiless POSTs.
+
+**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take "local" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (0600), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy.
 
 **Secrets.** Credential and identity reads return metadata only; stored values and key material never leave the daemon. The owner seed phrase appears in exactly one response (`POST /identity/create`).
 
@@ -60,7 +62,7 @@ Liveness. The only route that needs no bearer token.
 
 **Liveness check**
 
-The only route that needs no bearer token; the Host and Origin checks still apply.
+The only route that needs no bearer token (`HEAD /health` works the same, without a body); the Host and Origin checks still apply.
 
 Operation `getHealth` · no authentication
 
@@ -118,9 +120,15 @@ Example 200 (`application/json`):
 
 **Stop the daemon gracefully (loopback only)**
 
-Answers 202 first, then runs the same bounded shutdown as Ctrl+C / SIGTERM: the HTTP server closes (3 s deadline), every agent is unloaded in immediate mode (running turns are cut, no 5 s grace) under a per-agent deadline (10 s, `ADF_SHUTDOWN_TIMEOUT_MS`), compute containers stop, and the process exits; the whole shutdown is capped at 20 s. `adf daemon stop` uses it; on Windows it is the only graceful way to stop a detached daemon. Loopback callers only. No body.
+Answers 202 first, then runs the same bounded shutdown as Ctrl+C / SIGTERM: the HTTP server closes (3 s deadline), every agent is unloaded in immediate mode (running turns are cut, no 5 s grace) under a per-agent deadline (10 s, `ADF_SHUTDOWN_TIMEOUT_MS`), compute containers stop, and the process exits; the whole shutdown is capped at 20 s. `adf daemon stop` uses it; on Windows it is the only graceful way to stop a detached daemon. Local callers only (see Local-only routes: never through a proxy). No body.
 
 Operation `shutdownDaemon` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `X-ADF-Local-Proof` | header | string |  | Required only when the daemon runs with `ADF_DAEMON_BEHIND_PROXY`: the contents of `<settings dir>/daemon-local-proof` (`daemon-local-proof-<port>` off the default port) on the daemon host (the adf CLI and terminal app send it automatically to their own daemon). |
 
 **Responses**
 
@@ -128,7 +136,7 @@ Operation `shutdownDaemon` · bearer token
 |---|---|---|
 | 202 | [ShutdownAccepted](#schema-shutdownaccepted) | Accepted; the daemon exits shortly |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | Called from another machine (`loopback_only`: owner secrets and shutdown are handled on the daemon host only), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 405 | [ErrorResponse](#schema-errorresponse) | Shutdown is not available on this daemon |
 
 Example 202 (`application/json`):
@@ -157,7 +165,7 @@ Live umbilical event stream (Server-Sent Events) and per-agent replay windows.
 
 **Stream live events (Server-Sent Events)**
 
-Starts with a `: connected` comment, replays buffered frames after `since`, then streams new ones; a `: heartbeat` comment every 30 s. Each frame: `id: <cursor>`, `event: <event_type>`, `data: <EventFrame JSON>`. To resume, pass the last cursor as `?since=`; the `Last-Event-ID` header is ignored. The buffer is bounded (1000 frames) and process-local, and cursors reset on restart: order and deduplicate across restarts by `event.agent_id` + `event.seq`, and read durable history from GET /agents/{id}/loop. The token goes in the Authorization header (use fetch, not EventSource). Event catalog: docs/guides/umbilical-events.md.
+Starts with a `: connected` comment and a `stream.hello` frame, replays buffered frames after the resume cursor, then streams new ones; a `: heartbeat` comment every 30 s. Each event frame: `id: <cursor>`, `event: <event_type>`, `data: <EventFrame JSON>`. **Resume**: pass the last cursor as `?since=` or in the standard `Last-Event-ID` header (what EventSource sends on reconnect); `?since` wins when both are present. Add `?epoch=` (from `stream.hello`) so the daemon can tell you when the cursor is from an earlier run. **Control frames** (named SSE events, no `id:` line, data is not an EventFrame): `stream.hello` `{epoch, oldestCursor, latestCursor}` on every connect; `stream.gap` `{reason, epoch, requestedCursor, oldestCursor, latestCursor}` when the resume cannot be exact — `evicted` (the cursor is older than the buffer: frames were dropped) or `epoch_changed` (the daemon restarted: cursors restarted at 1, and the whole buffer is replayed). On a gap, or when `stream.hello` shows an epoch other than the one you had, reload state from the REST API. The buffer is bounded (1000 frames) and process-local: order and deduplicate by `event.agent_id` + `event.seq` (durable), and read durable history from GET /agents/{id}/loop. Events of a turn carry `event.turn_id`: the `turnId` POST …/chat and …/trigger answered with. The token goes in the Authorization header (use fetch, or an EventSource polyfill that sends headers). Event catalog: docs/guides/umbilical-events.md.
 
 Operation `streamEvents` · bearer token
 
@@ -166,13 +174,15 @@ Operation `streamEvents` · bearer token
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `agentId` | query | string |  | Only this agent's events |
-| `since` | query | integer |  | Replay buffered frames whose cursor is greater than this. Process-local; resets on daemon restart. |
+| `since` | query | integer |  | Replay buffered frames whose cursor is greater than this. Process-local; resets on daemon restart. Wins over `Last-Event-ID`. |
+| `epoch` | query | string |  | The `stream.hello` epoch the resume cursor came from. A different epoch (the daemon restarted) yields `stream.gap` `epoch_changed` and a full replay. |
+| `Last-Event-ID` | header | string |  | Standard SSE resume header: the last `id:` (cursor) received. Same as `?since=`, which wins when both are sent. Not an integer: 400. |
 
 **Responses**
 
 | Status | Body | Description |
 |---|---|---|
-| 200 | [EventFrame](#schema-eventframe)[] | SSE stream (text/event-stream) |
+| 200 | [EventFrame](#schema-eventframe) \| [StreamHello](#schema-streamhello) \| [StreamGap](#schema-streamgap)[] | SSE stream (text/event-stream) |
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
@@ -831,7 +841,7 @@ Example 200 (`application/json`):
 
 **Start an agent, loading it from a tracked folder when needed**
 
-`id` may also name an agent that is not loaded: an .adf path, or an id / handle / name found in the tracked folders. The daemon loads it (review gate applies: 403) and starts it; `loaded` says whether it did. `startupTriggered` is true when the agent's start state fired its startup event. An identifier that matches several files answers 500. No body.
+`id` may also name an agent that is not loaded: an .adf path, or an id / handle / name found in the tracked folders. The daemon loads it (review gate applies: 403) and starts it; `loaded` says whether it did. `startupTriggered` is true when the agent's start state fired its startup event. An identifier that matches several files answers 409 `ambiguous_agent` with the `candidates`: start one by its file path. No body.
 
 Operation `startAgent` · bearer token
 
@@ -849,6 +859,7 @@ Operation `startAgent` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ReviewRequiredResponse](#schema-reviewrequiredresponse) \| [ErrorResponse](#schema-errorresponse) | The .adf must be reviewed on this machine before it loads (`AGENT_REVIEW_REQUIRED`), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [AmbiguousAgentResponse](#schema-ambiguousagentresponse) | The identifier matches several agent files (`ambiguous_agent`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -944,7 +955,7 @@ Example 200 (`application/json`):
 
 **Abort the current turn without unloading**
 
-A hard stop: the executor of main (or the named inner loop) is left `stopped` and runs no further turns, triggers or timers until the agent is reloaded. To end a turn and keep working, use /interrupt. Unknown loop 404; a loop with no running executor 409.
+A hard stop: the executor of main (or the named inner loop) is left `stopped` and runs no further turns, triggers or timers until the agent is reloaded. To end a turn and keep working, use /interrupt. Chats still queued behind the turn are discarded, never silently: a `chat.discarded` event names their `turnId`s and a System notice lands in the loop. Unknown loop 404; a loop with no running executor 409.
 
 Operation `abortAgent` · bearer token
 
@@ -995,7 +1006,7 @@ Example 200 (`application/json`):
 
 **Interrupt the running turn and leave the loop idle**
 
-Ends main's (or the named loop's) running turn and sets that executor idle; it keeps accepting chats, triggers and timers. Unlike /abort it never stops the executor. `interrupted` is false when nothing was running; 409 when the loop is stopped or errored.
+Ends main's (or the named loop's) running turn and sets that executor idle; it keeps accepting chats, triggers and timers. Unlike /abort it never stops the executor, and chats queued behind the turn are kept and run next. `interrupted` is false when nothing was running; 409 when the loop is stopped or errored.
 
 Operation `interruptAgent` · bearer token
 
@@ -2513,7 +2524,7 @@ Example 200 (`application/json`):
 
 **Queue a user chat turn**
 
-The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued.
+The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped: the first interrupts the running turn, then the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`.
 
 Operation `chatAgent` · bearer token
 
@@ -2605,7 +2616,7 @@ Accepts a dispatch, a wrapped `{ dispatch }`, a bare event (target fields at the
 
 **Bypasses the TriggerEvaluator:** the dispatch goes straight to the executor, with no enabled check, target/scope gate, filter, timing modifier, state gating or self-suppression. An `inbox` dispatch creates no adf_inbox row; for a real inbound message use the mesh server's `POST /agents/{handle}/inbox`.
 
-**No owner voice:** `data.message.source: "user"` is refused (400; use POST …/chat, or source `api` / `mesh`), as are the internal flags `skip_loop_append` and `pre_appended_loop`.
+**No owner voice:** `data.message.source: "user"` is refused (400; use POST …/chat, or source `api` / `mesh`), as are the internal flags `skip_loop_append` and `pre_appended_loop`. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn.
 
 Operation `triggerAgent` · bearer token
 
@@ -3535,6 +3546,8 @@ Example 200 (`application/json`):
 
 **Set an identity password (legacy whole-file encryption)**
 
+Always 400 `not_supported`: whole-file passwords are no longer supported.
+
 Operation `setAgentIdentityPassword` · bearer token
 
 **Parameters**
@@ -3597,6 +3610,7 @@ Operation `removeAgentIdentityPassword` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -3659,6 +3673,8 @@ Example 200 (`application/json`):
 ### POST `/agents/{id}/identity/password/change`
 
 **Change the identity password**
+
+Always 400 `not_supported`: whole-file passwords are no longer supported.
 
 Operation `changeAgentIdentityPassword` · bearer token
 
@@ -3920,7 +3936,7 @@ Operation `setAgentIdentityValue` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true` |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -4072,9 +4088,15 @@ Example 200 (`application/json`):
 
 **Create the owner identity; returns the seed phrase ONCE (loopback only)**
 
-Only when `status` is `none`. `passphrase` (8+ characters) is required with file storage. Show the words to the user once, then call POST /identity/confirm-backup.
+Only when `status` is `none`. `passphrase` (8+ characters) is required with file storage. Show the words to the user once, then call POST /identity/confirm-backup. Local callers only (see Local-only routes).
 
 Operation `createOwnerIdentity` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `X-ADF-Local-Proof` | header | string |  | Required only when the daemon runs with `ADF_DAEMON_BEHIND_PROXY`: the contents of `<settings dir>/daemon-local-proof` (`daemon-local-proof-<port>` off the default port) on the daemon host (the adf CLI and terminal app send it automatically to their own daemon). |
 
 **Request body** (optional): [IdentityPassphraseBody](#schema-identitypassphrasebody)
 
@@ -4095,7 +4117,7 @@ Operation `createOwnerIdentity` · bearer token
 | 201 | [IdentityCreateResponse](#schema-identitycreateresponse) | Created. Show the phrase once; it is never returned again. |
 | 400 | [IdentityErrorResponse](#schema-identityerrorresponse) | No keychain and no/weak passphrase (`passphrase_required`, `weak_passphrase`) |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | Called from another machine (`loopback_only`: owner secrets and shutdown are handled on the daemon host only), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 409 | [IdentityErrorResponse](#schema-identityerrorresponse) | An identity already exists (`identity_exists`, `owner_mismatch`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
@@ -4126,9 +4148,15 @@ Example 201 (`application/json`):
 
 **Restore the owner identity from its seed phrase (loopback only)**
 
-A phrase of a different owner than the one this machine already has answers 409 `owner_mismatch` (switch owners in Studio instead); a wrong passphrase for an existing file 403 `wrong_passphrase`.
+A phrase of a different owner than the one this machine already has answers 409 `owner_mismatch` (switch owners in Studio instead); a wrong passphrase for an existing file 403 `wrong_passphrase`. Local callers only (see Local-only routes).
 
 Operation `restoreOwnerIdentity` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `X-ADF-Local-Proof` | header | string |  | Required only when the daemon runs with `ADF_DAEMON_BEHIND_PROXY`: the contents of `<settings dir>/daemon-local-proof` (`daemon-local-proof-<port>` off the default port) on the daemon host (the adf CLI and terminal app send it automatically to their own daemon). |
 
 **Request body** (required): [IdentityRestoreBody](#schema-identityrestorebody)
 
@@ -4151,7 +4179,7 @@ Operation `restoreOwnerIdentity` · bearer token
 | 200 | [IdentityStatusEnvelope](#schema-identitystatusenvelope) | Restored |
 | 400 | [IdentityErrorResponse](#schema-identityerrorresponse) | Invalid phrase or passphrase (`invalid_mnemonic`, `passphrase_required`, `weak_passphrase`) |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | Called from another machine (`loopback_only`: owner secrets and shutdown are handled on the daemon host only), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 409 | [IdentityErrorResponse](#schema-identityerrorresponse) | A different owner is already set up here (`owner_mismatch`, `identity_exists`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
@@ -4178,9 +4206,15 @@ Example 200 (`application/json`):
 
 **Unlock a passphrase-file identity (loopback only)**
 
-Only for file storage (no OS keychain). A wrong passphrase answers 403 `wrong_passphrase`. The daemon can also unlock at boot from ADF_OWNER_PASSPHRASE or ADF_OWNER_PASSPHRASE_FILE.
+Only for file storage (no OS keychain). A wrong passphrase answers 403 `wrong_passphrase`. The daemon can also unlock at boot from ADF_OWNER_PASSPHRASE or ADF_OWNER_PASSPHRASE_FILE. Local callers only (see Local-only routes).
 
 Operation `unlockOwnerIdentity` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `X-ADF-Local-Proof` | header | string |  | Required only when the daemon runs with `ADF_DAEMON_BEHIND_PROXY`: the contents of `<settings dir>/daemon-local-proof` (`daemon-local-proof-<port>` off the default port) on the daemon host (the adf CLI and terminal app send it automatically to their own daemon). |
 
 **Request body** (required): [IdentityPassphraseBody](#schema-identitypassphrasebody)
 
@@ -4201,7 +4235,7 @@ Operation `unlockOwnerIdentity` · bearer token
 | 200 | [IdentityStatusEnvelope](#schema-identitystatusenvelope) | Unlocked |
 | 400 | [IdentityErrorResponse](#schema-identityerrorresponse) | Keychain storage (`not_file_storage`) or no passphrase (`passphrase_required`) |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | Called from another machine (`loopback_only`: owner secrets and shutdown are handled on the daemon host only), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 409 | [IdentityErrorResponse](#schema-identityerrorresponse) | No identity file yet (`nothing_to_unlock`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
@@ -4228,9 +4262,15 @@ Example 200 (`application/json`):
 
 **Lock a passphrase-file identity (loopback only)**
 
-No body.
+No body. Local callers only (see Local-only routes).
 
 Operation `lockOwnerIdentity` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `X-ADF-Local-Proof` | header | string |  | Required only when the daemon runs with `ADF_DAEMON_BEHIND_PROXY`: the contents of `<settings dir>/daemon-local-proof` (`daemon-local-proof-<port>` off the default port) on the daemon host (the adf CLI and terminal app send it automatically to their own daemon). |
 
 **Responses**
 
@@ -4239,7 +4279,7 @@ Operation `lockOwnerIdentity` · bearer token
 | 200 | [IdentityStatusEnvelope](#schema-identitystatusenvelope) | Locked |
 | 400 | [IdentityErrorResponse](#schema-identityerrorresponse) | Keychain storage cannot be locked by the daemon (`not_file_storage`) |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | Called from another machine (`loopback_only`: owner secrets and shutdown are handled on the daemon host only), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
 
@@ -4265,9 +4305,15 @@ Example 200 (`application/json`):
 
 **Record that the seed phrase was written down (loopback only)**
 
-No body.
+No body. Local callers only (see Local-only routes).
 
 Operation `confirmOwnerBackup` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `X-ADF-Local-Proof` | header | string |  | Required only when the daemon runs with `ADF_DAEMON_BEHIND_PROXY`: the contents of `<settings dir>/daemon-local-proof` (`daemon-local-proof-<port>` off the default port) on the daemon host (the adf CLI and terminal app send it automatically to their own daemon). |
 
 **Responses**
 
@@ -4275,7 +4321,7 @@ Operation `confirmOwnerBackup` · bearer token
 |---|---|---|
 | 200 | [IdentityStatusEnvelope](#schema-identitystatusenvelope) | Confirmed |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | Called from another machine (`loopback_only`: owner secrets and shutdown are handled on the daemon host only), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 409 | [IdentityErrorResponse](#schema-identityerrorresponse) | No usable identity (`not_ready`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
@@ -4397,7 +4443,7 @@ Operation `setAgentProviderCredential` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true` |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -4491,7 +4537,7 @@ Operation `setAgentMcpCredential` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true` |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -4586,7 +4632,7 @@ Operation `setAgentAdapterCredential` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true` |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -6539,7 +6585,7 @@ Example 200 (`application/json`):
 
 **Answer an ask request**
 
-Request ids are numbered per loop: pass the `loop` from GET …/asks when two loops ask at once; without it the first loop holding the id is answered. An id no loop holds answers 500.
+Request ids are numbered per loop: pass the `loop` from GET …/asks when two loops ask at once; without it the first loop holding the id is answered. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.
 
 Operation `answerAgentAsk` · bearer token
 
@@ -6571,7 +6617,7 @@ Operation `answerAgentAsk` · bearer token
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
-| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (`not_found`), or no loop holds this ask (`ask_not_found`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -10286,7 +10332,7 @@ Operation `patchSettings` · bearer token
 | 200 | [SettingsResponse](#schema-settingsresponse) | Settings after the merge |
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | A secret or identity settings key cannot be written over HTTP, or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | A secret or identity settings key cannot be written over HTTP (`setting_not_writable`), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 405 | [ErrorResponse](#schema-errorresponse) | Not available on this daemon (the subsystem is read-only or lacks this operation) |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
 
@@ -10368,7 +10414,7 @@ Operation `putSetting` · bearer token
 | 200 | [SettingValueResponse](#schema-settingvalueresponse) | Stored value |
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | A secret or identity settings key cannot be written over HTTP, or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | A secret or identity settings key cannot be written over HTTP (`setting_not_writable`), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 405 | [ErrorResponse](#schema-errorresponse) | Not available on this daemon (the subsystem is read-only or lacks this operation) |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
 
@@ -10403,7 +10449,7 @@ Reusable shapes referenced above. Error bodies share [ErrorResponse](#schema-err
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `accepted` | `true` | yes |  |
-| `turnId` | string | yes |  |
+| `turnId` | string | yes | Correlation id: the events of the turn that handles this request carry it as `event.turn_id` on GET /events |
 
 <a id="schema-adapterattachbody"></a>
 
@@ -11352,7 +11398,7 @@ Every error body. Some routes add fields (e.g. `identity`, `coveredBy`, `agentId
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | string | yes | Human-readable message |
-| `code` | string |  | Stable machine-readable code, when the route has one (see each response) |
+| `code` | string |  | Stable machine-readable code. Every error body has one: route-specific where listed, else the status default (400 bad_request, 403 forbidden, 404 not_found, 405 not_supported, 409 conflict, 500 internal_error, 502 upstream_error, 503 unavailable) |
 
 <a id="schema-eventframe"></a>
 
@@ -11362,7 +11408,7 @@ The `data` of one SSE frame. The SSE `id` is the cursor, the SSE `event` is even
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `cursor` | integer | yes | Resume token for ?since= (process-local) |
+| `cursor` | integer | yes | Resume token for ?since= / Last-Event-ID (process-local; see the stream.hello epoch) |
 | `event` | [UmbilicalEvent](#schema-umbilicalevent) | yes |  |
 
 <a id="schema-fileauthorizedbody"></a>
@@ -13295,6 +13341,7 @@ Type: [AdfEventDispatch](#schema-adfeventdispatch) \| [AdfBatchDispatch](#schema
 | `loop` | string |  | Inner loop that produced it; absent = main |
 | `payload` | object | yes |  |
 | `sig` | string |  |  |
+| `turn_id` | string |  | The turn that produced it: the `turnId` POST /agents/{id}/chat or /trigger answered with (kept when an interrupting chat is replayed), else the runtime's own turn id. Absent outside a turn. A chat consumed into a running turn (it arrived mid-tool-use) is listed in that turn's `turn.completed` / `agent.error` payload as `absorbed_turn_ids`. |
 
 <a id="schema-umbilicaleventsresponse"></a>
 
@@ -13352,3 +13399,42 @@ A page of the agent's in-memory replay window. Not durable.
 | `direction` | `"inbound"` \| `"outbound"` | yes |  |
 | `connected_at` | integer | yes |  |
 | `last_message_at` | integer | yes |  |
+
+<a id="schema-streamhello"></a>
+
+### StreamHello
+
+Data of the `stream.hello` control frame, sent on every connect.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `epoch` | string | yes | Identifies this daemon run; cursors are only comparable within one epoch |
+| `oldestCursor` | integer \| null | yes | Oldest buffered cursor (null: nothing buffered) |
+| `latestCursor` | integer | yes | Newest cursor published (0: none yet) |
+
+<a id="schema-streamgap"></a>
+
+### StreamGap
+
+Data of the `stream.gap` control frame: the resume could not be exact; reload state from the REST API.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reason` | `"evicted"` \| `"epoch_changed"` | yes | `evicted`: frames after the cursor were dropped from the buffer. `epoch_changed`: the cursor is from an earlier daemon run. |
+| `epoch` | string | yes |  |
+| `requestedCursor` | integer \| null | yes |  |
+| `oldestCursor` | integer \| null | yes |  |
+| `latestCursor` | integer | yes |  |
+
+<a id="schema-ambiguousagentresponse"></a>
+
+### AmbiguousAgentResponse
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error` | string | yes | Human-readable message |
+| `code` | string |  | Stable machine-readable code. Every error body has one: route-specific where listed, else the status default (400 bad_request, 403 forbidden, 404 not_found, 405 not_supported, 409 conflict, 500 internal_error, 502 upstream_error, 503 unavailable) |
+| `candidates` | object[] | yes |  |
+| `candidates[].name` | string | yes |  |
+| `candidates[].handle` | string \| null | yes |  |
+| `candidates[].filePath` | string | yes |  |

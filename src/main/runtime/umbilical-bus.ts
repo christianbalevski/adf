@@ -34,6 +34,11 @@ export interface UmbilicalEvent {
    * loop, or an event that is not loop-scoped.
    */
   loop?: string
+  /**
+   * The turn that produced the event: the `turnId` POST /agents/:id/chat or
+   * /trigger answered with, else the runtime's own turn id. Absent outside a turn.
+   */
+  turn_id?: string
   payload: Record<string, unknown>
   /** Reserved: detached signature over the envelope. Unused in Phase 0. */
   sig?: string

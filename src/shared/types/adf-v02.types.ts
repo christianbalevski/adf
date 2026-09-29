@@ -583,6 +583,15 @@ export const START_IN_STATES = ['active', 'idle', 'hibernate'] as const
 export type StartInState = (typeof START_IN_STATES)[number]
 
 /**
+ * The state an agent actually starts in. Unset means `active` (the startup
+ * turn runs), matching AGENT_DEFAULTS.state. The single resolution used by the
+ * runtime's startup-turn decision AND every reported/displayed initial state.
+ */
+export function resolveStartInState(config: { start_in_state?: StartInState | null }): StartInState {
+  return config.start_in_state ?? 'active'
+}
+
+/**
  * Recursive partial for template overrides: plain objects recurse, arrays stay
  * whole (they replace on merge), everything else is optional as-is.
  */

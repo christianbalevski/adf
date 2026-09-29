@@ -50,6 +50,7 @@ import { adapterCredentialsLocked, createLockedCredentialsAdapter, describeHostE
 import { createHeadlessMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import type { SettingsService } from '../services/settings.service'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
+import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { AgentState, BackgroundAgentStatus, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration, ProviderConfig } from '../../shared/types/ipc.types'
 import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
@@ -613,7 +614,7 @@ export class BackgroundAgentManager extends EventEmitter {
 
       this.emitEvent({
         type: 'agent_started',
-        payload: { filePath, state: config.start_in_state ?? 'idle', handle: (config as AgentConfig).handle || deriveHandle(filePath) },
+        payload: { filePath, state: resolveStartInState(config), handle: (config as AgentConfig).handle || deriveHandle(filePath) },
         timestamp: Date.now()
       })
 

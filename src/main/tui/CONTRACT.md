@@ -253,7 +253,13 @@ status: running|ok|error, result?}` · `notice {text, level, event?}` · `hil
 text}` (system prompt, loop_inject, compaction summaries — render collapsed,
 never drop). History comes from `GET /agents/:id/loop?loop=` (parsed by the
 same `parseLoopToDisplay` Studio uses); live events add streaming text, tools,
-HIL, asks and notices; `turn.completed` triggers a reconciling refetch.
+HIL, asks and notices; `turn.completed` triggers a reconciling refetch. An
+owner message sent here keeps the chat 202's `turnId`: events with that
+`turn_id` mark it taken (no longer `[queued]`), as does `chat.delivered`
+listing it in `turn_ids` (a burst delivered into another message's turn); its
+non-interrupted `turn.completed` (or `absorbed_turn_ids`) marks it answered.
+`chat.discarded` ends the wait: `turn_ids` → `discarded` (`[not delivered]`),
+`unanswered_turn_ids` → taken, not answered.
 **Never hide model output** — every item kind must be renderable.
 
 ## 6. Daemon client (`api/`)
@@ -339,9 +345,12 @@ body, unreachable }`. Types in `api/types.ts` are type-imported from the daemon
 - escape hatch: `request<T>(method, path, {query, body})`
 
 SSE: `client.events({ onEvent, onState, agentId?, since?, replay? }).start()`
-→ `EventStream` (fetch streaming, backoff reconnect with `?since=<cursor>`,
-dedupe by `agent_id+seq`, idle watchdog, `connection` getter, `close()`,
-`reconnect()`). The store owns the one live stream — views never open another.
+→ `EventStream` (fetch streaming, backoff reconnect with
+`?since=<cursor>&epoch=<epoch>`, `onResume` verdict from `stream.hello` /
+`stream.gap`: exact → refresh snapshots only, gap or daemon restart → full
+resync incl. transcripts; a daemon without `stream.hello` gets the full resync
+after 1.5 s; dedupe by `agent_id+seq`, idle watchdog, `connection` getter,
+`close()`, `reconnect()`). The store owns the one live stream — views never open another.
 
 ## 7. Primitives (`ui/`)
 

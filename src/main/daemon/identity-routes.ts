@@ -11,21 +11,25 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { DaemonIdentityError, type DaemonIdentity } from './daemon-identity'
 import { AgentCreateError, type CreateAgentInput, type DaemonAgentFactory } from './daemon-agent-factory'
+import { isLoopbackAddress, localAccessRefusal, type LocalAccessOptions } from './local-access'
+
+const OWNER_SECRETS = 'Owner identity secrets can be handled'
 
 export interface IdentityRouteDeps {
   identity?: DaemonIdentity
   agentFactory?: DaemonAgentFactory
+  /** Proxy mode + local proof for the local-only routes (local-access.ts). */
+  localAccess?: LocalAccessOptions
 }
 
-export function isLoopbackAddress(address: string | undefined): boolean {
-  if (!address) return false
-  return address === '::1' || address.startsWith('127.') || address.startsWith('::ffff:127.')
-}
+export { isLoopbackAddress }
 
-function requireLoopback(request: FastifyRequest, reply: FastifyReply): boolean {
-  if (isLoopbackAddress(request.socket?.remoteAddress)) return true
+/** Local-only routes (local-access.ts): false = a 403 `loopback_only` was sent. */
+export function requireLocalCaller(request: FastifyRequest, reply: FastifyReply, opts: LocalAccessOptions, what: string): boolean {
+  const refusal = localAccessRefusal({ remoteAddress: request.socket?.remoteAddress, headers: request.headers }, opts)
+  if (!refusal) return true
   void reply.code(403).send({
-    error: 'Owner identity secrets can only be handled from this machine (loopback). Run the command on the daemon host.',
+    error: `${what} only from this machine: ${refusal}. Run the adf command on the daemon host, against the daemon's own loopback address (not through a proxy or tunnel).`,
     code: 'loopback_only',
   })
   return false
@@ -68,7 +72,7 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
 
   server.post('/identity/create', async (request, reply) => {
     if (!deps.identity) return unavailable(reply)
-    if (!requireLoopback(request, reply)) return reply
+    if (!requireLocalCaller(request, reply, deps.localAccess ?? {}, OWNER_SECRETS)) return reply
     try {
       const { mnemonic, identity } = deps.identity.create({ passphrase: bodyString(request.body, 'passphrase') })
       // Shown once: the daemon never returns the phrase again.
@@ -80,7 +84,7 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
 
   server.post('/identity/restore', async (request, reply) => {
     if (!deps.identity) return unavailable(reply)
-    if (!requireLoopback(request, reply)) return reply
+    if (!requireLocalCaller(request, reply, deps.localAccess ?? {}, OWNER_SECRETS)) return reply
     const mnemonic = bodyString(request.body, 'mnemonic')
     if (!mnemonic) return reply.code(400).send({ error: 'mnemonic is required', code: 'invalid_mnemonic' })
     try {
@@ -92,7 +96,7 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
 
   server.post('/identity/unlock', async (request, reply) => {
     if (!deps.identity) return unavailable(reply)
-    if (!requireLoopback(request, reply)) return reply
+    if (!requireLocalCaller(request, reply, deps.localAccess ?? {}, OWNER_SECRETS)) return reply
     try {
       return { identity: deps.identity.unlock(bodyString(request.body, 'passphrase') ?? '') }
     } catch (err) {
@@ -102,7 +106,7 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
 
   server.post('/identity/lock', async (request, reply) => {
     if (!deps.identity) return unavailable(reply)
-    if (!requireLoopback(request, reply)) return reply
+    if (!requireLocalCaller(request, reply, deps.localAccess ?? {}, OWNER_SECRETS)) return reply
     try {
       return { identity: deps.identity.lock() }
     } catch (err) {
@@ -112,7 +116,7 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
 
   server.post('/identity/confirm-backup', async (request, reply) => {
     if (!deps.identity) return unavailable(reply)
-    if (!requireLoopback(request, reply)) return reply
+    if (!requireLocalCaller(request, reply, deps.localAccess ?? {}, OWNER_SECRETS)) return reply
     try {
       return { identity: deps.identity.confirmBackup() }
     } catch (err) {

@@ -28,7 +28,7 @@ Studio compatibility, and troubleshooting. Building a client instead? See the
 | Stop | `adf daemon stop` |
 | Restart | `adf daemon restart` |
 
-`adf daemon stop` calls `POST /daemon/shutdown` (loopback only) and waits for
+`adf daemon stop` calls `POST /daemon/shutdown` (local callers only, never through a proxy) and waits for
 the process to exit. It is the same bounded shutdown as Ctrl+C or `SIGTERM`:
 token usage is flushed, the HTTP server closes, every agent is unloaded
 immediately (running turns are aborted), compute containers stop, then
@@ -77,7 +77,10 @@ Keep the daemon API on localhost. Binding another host requires
 `ADF_DAEMON_TOKEN`, and host names clients use go in `ADF_DAEMON_ALLOWED_HOSTS`
 (IP literals on the bound port are accepted as is). The daemon speaks plain
 HTTP; for remote use prefer an SSH tunnel or a TLS reverse proxy
-([remote access](api-guide.md#remote-access)).
+([remote access](api-guide.md#remote-access)). Behind a reverse proxy on the
+same host, set `ADF_DAEMON_BEHIND_PROXY=1`: identity secrets and shutdown then
+need the per-start proof in `<settings dir>/daemon-local-proof`, which only
+`adf` on this host sends ([loopback-only routes](api-guide.md#loopback-only-routes)).
 
 The mesh server is on by default. It binds once a loaded agent is reachable
 over the mesh, on loopback, and rebinds to all interfaces when an agent with
@@ -258,6 +261,11 @@ port, so SSH tunnels are fine). See [remote access](api-guide.md#remote-access).
 
 **`403 cross_origin`.** A browser made the request. Browser pages cannot call
 the daemon; use a backend.
+
+**`403 loopback_only`.** An owner identity secret route or `POST
+/daemon/shutdown` from anything but this machine's own `adf`: another host, a
+request with proxy headers, or (with `ADF_DAEMON_BEHIND_PROXY`) one without the
+local proof. Run the command on the daemon host against `127.0.0.1`.
 
 **Agent skipped as `unreviewed` / `password_protected`.** Accept its review,
 then start it or rescan. Password-protected agents need a human unlock and are

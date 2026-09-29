@@ -166,6 +166,7 @@ describe('daemon HTTP API', () => {
     expect(trustPut.statusCode).toBe(403)
     expect(trustPut.json()).toEqual({
       error: 'Settings key "trustedDaemonEncKeys" cannot be written through the daemon API.',
+      code: 'setting_not_writable',
     })
     expect(set).not.toHaveBeenCalled()
 
@@ -1419,14 +1420,15 @@ describe('daemon HTTP API', () => {
       url: `/agents/${ref.id}/identity/password`,
       payload: { password: 'pw-test' },
     })
-    expect(passwordSet.statusCode).toBe(500)
+    expect(passwordSet.statusCode).toBe(400)
+    expect(passwordSet.json().code).toBe('not_supported')
     expect(passwordSet.json().error).toMatch(/no longer supported/)
     const passwordChange = await server.inject({
       method: 'POST',
       url: `/agents/${ref.id}/identity/password/change`,
       payload: { newPassword: 'pw-test-2' },
     })
-    expect(passwordChange.statusCode).toBe(500)
+    expect(passwordChange.statusCode).toBe(400)
     expect(passwordChange.json().error).toMatch(/no longer supported/)
     const passwordStatus = await server.inject({ method: 'GET', url: `/agents/${ref.id}/identity/password` })
     expect(passwordStatus.json()).toEqual(expect.objectContaining({

@@ -200,7 +200,8 @@ export interface RuntimeAgentLoopPage {
 
 /** A caller-visible loop API failure; `statusCode` is the HTTP status to answer with. */
 export class RuntimeLoopError extends Error {
-  constructor(message: string, readonly statusCode: 400 | 404 | 409 | 502, readonly code?: string) {
+  /** `details`: extra fields for the HTTP error body (e.g. `candidates`). */
+  constructor(message: string, readonly statusCode: 400 | 404 | 409 | 502, readonly code?: string, readonly details?: Record<string, unknown>) {
     super(message)
     this.name = 'RuntimeLoopError'
   }
@@ -757,26 +758,24 @@ export class RuntimeService extends EventEmitter {
     await this.requireAgent(agentId).agent.dispatchTo(loop, dispatch)
   }
 
-  async sendChat(agentId: string, text: string, loop = 'main'): Promise<void> {
-    await this.trigger(
-      agentId,
-      createDispatch(
-        createEvent({
-          type: 'chat',
-          source: 'user',
-          data: {
-            message: {
-              seq: Date.now(),
-              role: 'user',
-              content_json: [{ type: 'text', text }],
-              created_at: Date.now(),
-            },
+  /** `opts.turnId`: correlation id stamped as `turn_id` on the turn's events (AdfEventDispatch.turnId). */
+  async sendChat(agentId: string, text: string, loop = 'main', opts: { turnId?: string } = {}): Promise<void> {
+    const dispatch = createDispatch(
+      createEvent({
+        type: 'chat',
+        source: 'user',
+        data: {
+          message: {
+            seq: Date.now(),
+            role: 'user',
+            content_json: [{ type: 'text', text }],
+            created_at: Date.now(),
           },
-        }),
-        { scope: 'agent' },
-      ),
-      loop,
+        },
+      }),
+      { scope: 'agent' },
     )
+    await this.trigger(agentId, opts.turnId ? { ...dispatch, turnId: opts.turnId } : dispatch, loop)
   }
 
   async startAgent(agentId: string): Promise<boolean> {
@@ -1707,7 +1706,7 @@ export class RuntimeService extends EventEmitter {
     const managed = this.requireAgent(agentId)
     const holder = this.askExecutors(managed).find(entry =>
       (loop === undefined || entry.loop === loop) && entry.executor.getPendingAsks().some(ask => ask.requestId === requestId))
-    if (!holder) throw new Error(`Ask request "${requestId}" not found${loop ? ` in loop "${loop}"` : ''}`)
+    if (!holder) throw new RuntimeLoopError(`Ask request "${requestId}" not found${loop ? ` in loop "${loop}"` : ''} (already answered, or never asked).`, 404, 'ask_not_found')
     holder.executor.resolveAsk(requestId, answer)
     return { agentId: managed.id, requestId, loop: holder.loop, answered: true }
   }
@@ -1822,12 +1821,14 @@ export class RuntimeService extends EventEmitter {
 
   /** @deprecated Whole-file password creation is removed; the method stays so daemon callers fail loudly. */
   setAgentIdentityPassword(_agentId: string, _password: string): { agentId: string; success: true } {
-    throw new Error('Whole-file passwords are no longer supported — use a share password instead.')
+    throw new RuntimeLoopError('Whole-file passwords are no longer supported — use a share password instead.', 400, 'not_supported')
   }
 
   removeAgentIdentityPassword(agentId: string): { agentId: string; success: true } {
     const managed = this.requireAgent(agentId)
-    if (!managed.derivedKey) throw new Error('Identity keystore is locked')
+    if (!managed.derivedKey) {
+      throw new RuntimeLoopError('This agent’s identity keystore is locked with its file password. Unlock it first (POST /agents/{id}/identity/password/unlock).', 409, CREDENTIALS_LOCKED_CODE)
+    }
     managed.agent.workspace.removePassword(managed.derivedKey)
     managed.derivedKey = null
     return { agentId: managed.id, success: true }
@@ -1835,7 +1836,7 @@ export class RuntimeService extends EventEmitter {
 
   /** @deprecated Re-keying is continued use of the removed whole-file password mechanism. Remove the password instead. */
   changeAgentIdentityPassword(_agentId: string, _newPassword: string): { agentId: string; success: true } {
-    throw new Error('Whole-file passwords are no longer supported — remove the password and use a share password instead.')
+    throw new RuntimeLoopError('Whole-file passwords are no longer supported — remove the password and use a share password instead.', 400, 'not_supported')
   }
 
   wipeAgentIdentity(agentId: string): { agentId: string; success: true } {
@@ -2278,7 +2279,12 @@ export class RuntimeService extends EventEmitter {
   private setIdentityValue(managed: ManagedRuntimeAgent, purpose: string, value: string, opts: RuntimeCredentialWriteOptions = {}): boolean {
     const workspace = managed.agent.workspace
     if (workspace.isPasswordProtected() && !managed.derivedKey) {
-      throw new Error('Identity keystore is locked')
+      // Legacy whole-file password: nothing can be written until it is unlocked.
+      throw new RuntimeLoopError(
+        'This agent’s identity keystore is locked with its file password. Unlock it first (POST /agents/{id}/identity/password/unlock), then save the credential.',
+        409,
+        CREDENTIALS_LOCKED_CODE,
+      )
     }
     if (managed.derivedKey) {
       const { ciphertext, iv } = encrypt(Buffer.from(value, 'utf-8'), managed.derivedKey)
@@ -2514,7 +2520,12 @@ export class RuntimeService extends EventEmitter {
       const details = matches
         .map(match => `${match.config.name}${match.config.handle ? ` (${match.config.handle})` : ''}: ${match.filePath}`)
         .join(', ')
-      throw new Error(`RuntimeService: agent identifier "${identifier}" matched multiple files: ${details}`)
+      throw new RuntimeLoopError(
+        `Agent identifier "${identifier}" matches ${matches.length} agent files: ${details}. Start it by file path instead.`,
+        409,
+        'ambiguous_agent',
+        { candidates: matches.map(match => ({ name: match.config.name, handle: match.config.handle ?? null, filePath: match.filePath })) },
+      )
     }
 
     return matches[0]?.filePath ?? null

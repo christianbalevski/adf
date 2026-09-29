@@ -30,6 +30,12 @@ export const UMBILICAL_EVENT_TYPES = [
   // --- turn --------------------------------------------------------------
   'turn.completed',
 
+  // --- owner chats queued behind a running turn ---------------------------
+  // delivered → put into a running turn (their ids complete with it);
+  // discarded → dropped undelivered by stop/unload/off (never silently).
+  'chat.delivered',
+  'chat.discarded',
+
   // --- tools -------------------------------------------------------------
   'tool.started',
   'tool.completed',
@@ -179,6 +185,8 @@ export interface UmbilicalEventEnvelope<P = Record<string, unknown>> {
   agent_id?: string | null
   /** Inner (side) loop that produced the event. Absent = main, or not loop-scoped. */
   loop?: string
+  /** The turn that produced it (the `turnId` POST …/chat or …/trigger answered with, else the runtime's own). Absent outside a turn. */
+  turn_id?: string
   payload: P
   /** Reserved: detached signature over the envelope. Unused in Phase 0. */
   sig?: string
