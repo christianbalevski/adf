@@ -182,7 +182,7 @@ transcript of the loop it concerns.
 | `2` | **Chat** | One conversation per agent › loop. Loop tabs, a virtualized transcript (history pages load as you scroll up; live events stream in), collapsible thinking and tool calls, inter-loop messages, wake markers, and an approval/question card. A turn footer shows elapsed time, tokens and the model. |
 | `3` | **Files** | The agent document, mind and files as a tree with a viewer (syntax colouring, search, hex for binaries). Edit in your `$EDITOR` with a diff confirm and a concurrent-change check. Create, move, delete, protection, authorized. Read-only Inbox, Outbox and Meta tabs. A badge names the loop that last wrote a file. |
 | `4` | **Loops** | Tabs: **Loops** (every loop with status, messages, tools, model, flags, what wakes it; create from templates, edit, enable/disable, send, schedule, clear, delete), **Timers** (this agent's or every agent's timers, with the loop each one wakes), **Triggers** (all trigger types, the loop each target wakes, enable/disable, edit targets), **History** (a loop's persisted entries with tokens, filters and paging). |
-| `5` | **Inspect** | The selected agent only (the tab bar reads `agent-1 › …`). Tabs: **Status** (the website first when the agent serves one, then state, loops, triggers, WebSocket), **Config** (tree or JSON; edit in `$EDITOR` with schema validation and a confirm), **Usage** (by model), **MCP**, **Channels** (Telegram, Discord, Slack, email, WhatsApp: configured and live; `/channels` adds and removes), **Identities** (metadata only), **Logs**, **Tables**, **Events** (this agent's live umbilical events). Secrets are redacted everywhere. |
+| `5` | **Inspect** | The selected agent only (the tab bar reads `agent-1 › …`). Tabs: **Status** (the website first when the agent serves one, then state, loops, triggers, WebSocket), **Settings** (instructions, tools, compaction, autonomous, autostart, messaging and mesh visibility, host access: switches flip in place, risky ones ask; see [Agent settings](#agent-settings)), **Config** (tree or JSON; edit in `$EDITOR` with schema validation and a confirm), **Usage** (by model), **MCP**, **Channels** (Telegram, Discord, Slack, email, WhatsApp: configured and live; `/channels` adds and removes), **Identities** (metadata only), **Logs**, **Tables**, **Events** (this agent's live umbilical events). Secrets are redacted everywhere. |
 | `6` | **Runtime** | The daemon, across every agent (`daemon › …`). Tabs: **Status** (health, version, uptime, pid, every agent's loops), **Identity** (owner identity; `Enter` opens its dialog), **Sign-in** (ChatGPT / Grok and API-key providers; `Enter` signs in), **Providers** (and which agents use them), **Usage** (all agents, by model), **Network** (mesh, the web server, agent websites, LAN, WebSocket; `m` mesh on/off (asks), `s` web server start / stop (stopping asks), `R` restart (asks)), **Compute** (container runtime and containers), **MCP** and **Channels** (available to agents), **Settings** (redacted), **Events** (every agent's live umbilical events). |
 
 ## Keys
@@ -359,6 +359,8 @@ The same legend is in `?` / `/help`.
 |------|--------|
 | `←`, `→` (`[`, `]`) | Tabs |
 | Status: `w`, `W` | Open the agent's website · copy its URL |
+| Settings: `Enter`, `Space` | Open the dialog or flip the switch (Autonomous, Host access and LAN/public visibility ask) |
+| Settings: `e` · `l` | Instructions in `$EDITOR` · lock the section for the agent (`locked_fields`) |
 | Config: `e` | Edit in `$EDITOR` (validated, changed keys confirmed; also `/config edit`) |
 | MCP: `a` · `m`, `Enter` | Add a server · manage them (restart, credentials, tools, logs, remove) |
 | Channels: `a`, `m`, `Enter` | Channels: add, remove |
@@ -375,6 +377,7 @@ The same legend is in `?` / `/help`.
 | Identity: `Enter` · `c`, `r`, `u` | Identity dialog · create, restore, unlock (when offered) |
 | Sign-in: `Enter` | The sign-in dialog |
 | Network: `m`, `s`, `R` | Mesh on/off (asks), web server start / stop (stopping asks), restart it (asks) |
+| Folders: `Enter` · `a`, `d` | A folder's agents and what each needs (review, load) · track, untrack (asks) |
 | Events: `↑`, `↓`, wheel · `End` (`G`) | Scroll (stops following) · follow the newest again |
 | Events: `t`, `a`, `l`, `/` | Filter by type (e.g. `tool. -turn.delta`), agent, loop, text |
 | Events: `Space`, `f`, `Enter`, `c`, `x` | Pause, follow, full event, clear, reset filters |
@@ -413,6 +416,12 @@ sent to an agent.
 | `/open-site [agent]` (`/site`), `/copy-site [agent]` | Open an agent's website in the browser (starts the web server if stopped) · copy its URL |
 | `/model [[provider/]model \| inherit]` | Change the selected agent › loop's model: main changes the agent config, an inner loop gets its own override (`inherit` clears it). No argument: a picker (provider with sign-in state, then model, type to filter) |
 | `/config [edit]` | The selected agent's config (Inspect › Config); `edit` opens it in `$EDITOR` |
+| `/instructions [edit]` | Edit the selected agent's instructions in the app (`edit`: in `$EDITOR`) |
+| `/tools [filter]` | The agent's tools, grouped like Studio (built-in and MCP): enable, show, require approval, lock |
+| `/compaction [tokens\|default]` | Compaction threshold of the selected agent › loop; no argument: every loop with its context in use |
+| `/skills [add [name\|url\|path] \| mute\|unmute\|remove <name> \| sources [add\|remove <url>]]` | The agent's skills: preview, mute, edit, remove; add from the catalog, a URL or disk (see [Skills](#skills)) |
+| `/context [loop]` | What fills the selected loop's context against its auto-compact threshold (see [Context](#context)) |
+| `/templates [id]` | Agent templates: details, new, duplicate, rename, notes, default, review, reset, delete, edit (see [Templates](#templates)) |
 | `/terminal-setup` (`/terminal`) | Whether this terminal sends Shift+Enter, and the keybinding that makes it |
 | `/agents [interrupt\|abort <agent> [loop] \| refresh]` | Fleet overview; interrupt an agent's running turns (`abort` is the hard stop: that loop stays stopped until the agent is reloaded) |
 | `/new [name]` | New agent: name, template, optional provider and model, start now. Opens its chat |
@@ -441,7 +450,7 @@ sent to an agent.
 | `/loops`, `/timers [all]`, `/triggers`, `/history [loop]` | Open the Loops view on that tab |
 | `/timer add [--loop <name>] \| edit <id> \| rm <id>` | Create, edit or delete a timer (a timer with a loop runs that loop on a schedule) |
 | `/events [types…] [--agent] [--loop] [--all]` | Every agent's live umbilical events (Runtime › Events), e.g. `/events tool. -turn.delta --loop` |
-| `/inspect [tab]` | Inspect the selected agent on a tab (`status`, `config`, `usage`, `mcp`, `channels`, `identity`, `logs`, `tables`, `tasks`, `events`) |
+| `/inspect [tab]` | Inspect the selected agent on a tab (`status`, `settings`, `config`, `usage`, `mcp`, `channels`, `identity`, `logs`, `tables`, `tasks`, `events`) |
 | `/tasks [pending\|active\|all]` | Inspect › Tasks with that filter (see [Tasks](#tasks)) |
 
 ## Command palette
@@ -712,6 +721,13 @@ the identity dialog opens first. The new provider shows up in `/model`'s
 picker (`m` opens it) and in the new-agent wizard. `/provider list` opens
 Runtime › Providers, `/provider remove <id>` removes one and its key (asks).
 
+ADF Studio reads keys added here from the same OS-keychain entry, so the
+provider works in both apps; a key changed in Studio goes back to the
+keychain, never to the settings file. Where Studio cannot open the keychain
+(or the daemon keeps keys in its passphrase file), Studio's provider settings
+say so: manage that key with `/provider`. Keys added in Studio stay in
+Studio's settings file as before.
+
 ## Provider sign-in
 
 Agents on a ChatGPT or Grok subscription need the daemon to be signed in.
@@ -766,8 +782,12 @@ waiting call except protection overrides (confirmed).
 Track a folder of agents: on the Fleet press `f` (or `/track [dir]`, or the
 palette's "Track a folder…"). Tab completes folders. The daemon remembers the
 folder and loads its reviewed autostart agents right away and at every start,
-the same as Studio's tracked directories. Agents that were never reviewed are
-listed in the result; load them with `/load <file> --review`. Already-tracked
+the same as Studio's tracked directories. When some of its agents did not
+load, the folder's agents are listed next: loaded, needs review, not
+autostart, failed to load (with the daemon's error) or unreadable. `Enter`
+does the next step for the selected agent: open its chat, review it (what it
+can do: owner, compute, powerful tools, MCP servers, channels; `y` accepts and
+loads it, starting it if it autostarts), or load it. `r` rescans. Already-tracked
 folders, and folders inside a tracked parent, are refused with the reason.
 
 Stop tracking with `/untrack <dir>` (Tab lists tracked folders) or `d` on
@@ -775,7 +795,86 @@ Runtime › Folders. It asks first and never touches files. Press `u` in the
 dialog to also unload that folder's agents; by default they keep running.
 
 Runtime › Folders (`/runtime folders`) lists every tracked folder: whether it
-exists, agents found, and agents loaded. `a` adds, `d` removes, `r` rescans.
+exists, agents found, and agents loaded. `Enter` lists a folder's agents (the
+same list), `a` adds, `d` removes, `r` rescans.
+
+## Agent settings
+
+Inspect › Settings (`/inspect settings`, palette "Agent settings") is Studio's
+agent config as rows: Instructions, Tools and Compaction open dialogs;
+Autonomous, Autostart, Receive messages, Host access, Visibility, Send mode,
+Inbox mode and "New MCP tools need approval" flip in place. Turning
+autonomous or host access on, and LAN or public visibility, ask first with
+Studio's warnings. `l` locks the highlighted section for the agent
+(`locked_fields`: the agent cannot change it). Every change re-reads the
+config, changes only the edited fields, saves and reports the result.
+
+- **Instructions** (`/instructions`): an in-app editor (`Enter` newline,
+  `Ctrl+S` save, `Ctrl+O` continue in `$EDITOR`, `Esc` cancel, asking when
+  there are unsaved changes); `e` or `/instructions edit` goes straight to
+  `$EDITOR`. If the daemon's copy changed meanwhile it asks before
+  overwriting.
+- **Tools** (`/tools [filter]`): Studio's groups plus one per MCP server,
+  each tool with enabled, shown, approval required and lock. `Space` enables,
+  `v` shows/hides, `r` requires approval, `l` locks (built-in tools), `/`
+  filters; on a group header they act on the whole group (locked tools
+  skipped). Studio's rules apply: a locked tool cannot be enabled or shown,
+  turn tools (say, ask, sys_set_state) have no approval toggle, hidden needs
+  enabled. Refusals show as warnings.
+- **Compaction** (`/compaction [tokens|default]`): main and every inner loop
+  with its threshold (default / inherits main / set) and context in use.
+  `Enter` sets (`80000`, `80k`, `default`, `inherit`), `d` resets, `c`
+  compacts now (asks). `/context` shows the breakdown.
+
+## Context
+
+`/context [loop]` (palette "Context usage") shows what fills the selected
+loop's context, like Studio's context breakdown: the total against the
+auto-compact threshold (and where that comes from: the loop, the agent, the
+model or the default), then categories biggest first (system prompt,
+injected files, built-in tools, each MCP server, dynamic instructions,
+conversation). `Enter` lists a category's biggest items, `c` compacts now
+(asks), `r` re-measures, `←`/`→` other loops, `Esc` closes. A loop that is
+not running has nothing to measure. The Chat footer shows `ctx 42%`: the
+loop's latest call input against its threshold (amber from 70%, red from
+90%), after a call completes while the app is open; it clears on compact or
+clear.
+
+## Skills
+
+`/skills` lists the selected agent's skills, the same as Studio's Skills
+panel: name, description, `~N tok` (the cost of reading its SKILL.md) and
+whether it is muted; the header shows the catalog's cost in the prompt, and
+packages the indexer skipped are listed with its reason. `Enter` previews
+SKILL.md, `Space` mutes / unmutes (a muted skill's description leaves the
+prompt), `e` edits SKILL.md in `$EDITOR`, `d` removes `skills/<name>/`
+(asks), `a` adds, `r` refreshes.
+
+`/skills add` (or `a`) browses the merged catalog (the sources set in Studio
+Settings › Skills, or the first-party registry): type to filter, `Enter`
+previews, `Enter` in the preview installs. `/skills add <name>` jumps to an
+entry, `/skills add https://…/registry.json` browses that catalog,
+`/skills add https://…/SKILL.md`, `/skills add ./my-skill` (a folder) or
+`./SKILL.md` install one package. Also `/skills mute|unmute|remove <name>`
+and `/skills sources [add|remove <https-url>]` (shared with Studio). Skills
+are instructions, never authority: installing writes files under
+`skills/<name>/` and grants no tools, files or approvals.
+
+## Templates
+
+`/templates [id]` (palette "Agent templates"): the templates new agents start
+from, as in Studio's Settings › Agent templates. Shipped templates first, then
+yours, tagged default / shipped / not reviewed / has run, with notes and
+warning. `Enter` shows details (model, tools, compute, instructions, files).
+`n` new, `u` duplicate, `m` rename, `t` notes (description, warning), `s`
+make default, `a` review someone else's template (the review summary; `Enter`
+claims it, asking for a password when the file has one), `x` reset a shipped
+template (asks), `d` delete your own (asks; the file moves to the daemon's
+`templates-trash` folder). In details: `e` edits the instructions and `c` the
+config (schema-checked, changed keys shown) in `$EDITOR`; `f` lists the seed
+files (`Enter` edits one, `d` removes an extra file). Needs the owner
+identity: when it is locked or missing, `i` opens the identity dialog.
+Studio only: revealing the folder, adding files from disk.
 
 ## Themes
 

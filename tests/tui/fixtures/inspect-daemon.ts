@@ -63,7 +63,7 @@ export function createInspectFixture(_mockUrl: string, next: typeof fetch = glob
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
     const path = url.pathname
     if (method === 'GET' && path === '/runtime') {
-      return json({ daemon: { uptime: 3725, pid: 4242 }, settings: {}, providers: {}, auth: {}, mcp: {}, adapters: {}, network: {}, compute: null, agents: [] })
+      return json({ daemon: { uptime: 3725, pid: 4242 }, settings: {}, providers: { providers: [], agentUsage: [] }, auth: {}, mcp: { servers: [] }, adapters: { adapters: [] }, network: { host: [], mesh: { enabledSetting: false, lan: false, port: 7295, status: null }, websocket: { activeConnections: 0, inboundConnections: 0, outboundConnections: 0 }, agents: [] }, compute: null, agents: [] })
     }
     if (method === 'GET' && path === '/runtime/usage') {
       return json({

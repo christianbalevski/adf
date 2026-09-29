@@ -23,6 +23,7 @@ import { TranscriptItemView } from './Transcript'
 import { LoopTabs } from './LoopTabs'
 import { Dock, dockHeight, topCard, type DockAction, type DockModel } from './Dock'
 import { Footer } from './Footer'
+import { loopContextPercent } from '../../context/model'
 import { ApprovalDetailsOverlay, DENY_OVERLAY, DETAILS_OVERLAY, DenyOverlay } from './overlays'
 import { alwaysApprove, rejectWithFeedback } from './approvals'
 import type { TaskListEntry } from '../../api/types'
@@ -507,7 +508,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
       {/* Keyed by width: after some resize sequences ink reuses a stale layout
           for the card and drops its title line; a fresh subtree lays out clean. */}
       <Dock key={`dock:${width}`} model={dockModel} width={width} focused={focused} agentLabel={loopName === MAIN_LOOP ? label : `${label} ${g.pointer} ${loopName}`} onAction={dockAction} />
-      <Footer width={width} running={running} state={state} turn={turn} since={mountedAt.current} model={model} error={transcript.error} />
+      <Footer width={width} running={running} state={state} turn={turn} since={mountedAt.current} model={model} error={transcript.error} contextPercent={loopContextPercent(agent.config, loopName, turn?.lastInput)} />
       {late ? <LateKeys handler={inputKeys} layer="input" /> : null}
     </Box>
   )

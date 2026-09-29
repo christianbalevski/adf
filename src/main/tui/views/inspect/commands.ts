@@ -3,11 +3,14 @@ import type { CommandContribution, PaletteAction, SlashCommand } from '../../com
 import { findTab, patchInspectState, TABS, INSPECT_VIEW } from './state'
 import { MODEL_OVERLAY, applyModel, parseModelArg, providerChoices } from './model-picker'
 import { TASK_FILTERS, type TaskFilter } from './tasks'
+import { COMPACTION_OVERLAY, INSTRUCTIONS_OVERLAY, TOOLS_OVERLAY } from './SettingsTab'
+import { applyThreshold } from './SettingDialogs'
+import { parseThreshold } from './settings-model'
 
 const inspect: SlashCommand = {
   name: 'inspect',
   args: `[${TABS.map(t => t.id).join('|')}]`,
-  description: 'Inspect the selected agent: status, config, usage, MCP, channels, identities, logs, tables, its events',
+  description: 'Inspect the selected agent: status, settings, config, usage, MCP, channels, identities, logs, tables, its events',
   complete: partial => TABS.map(t => t.id).filter(t => t.startsWith(partial.trim())),
   run: ctx => {
     const wanted = ctx.args[0]
@@ -60,6 +63,50 @@ const config: SlashCommand = {
   },
 }
 
+const instructions: SlashCommand = {
+  name: 'instructions',
+  args: '[edit]',
+  description: 'Edit the selected agent’s instructions (a dialog; edit opens $EDITOR)',
+  available: scope => !!scope.agentId,
+  complete: partial => ['edit'].filter(v => v.startsWith(partial.trim())),
+  run: ctx => {
+    if (!ctx.agentId) { ctx.print('No agent selected', 'warn'); return }
+    if (ctx.args[0] && ctx.args[0] !== 'edit') { ctx.print('Usage: /instructions [edit]', 'warn'); return }
+    ctx.actions.pushOverlay({ kind: INSTRUCTIONS_OVERLAY, props: { agentId: ctx.agentId, ...(ctx.args[0] === 'edit' ? { editor: true } : {}) } })
+  },
+}
+
+const tools: SlashCommand = {
+  name: 'tools',
+  args: '[filter]',
+  description: 'The selected agent’s tools: enable, show, require approval, lock (built-in and MCP)',
+  available: scope => !!scope.agentId,
+  run: ctx => {
+    if (!ctx.agentId) { ctx.print('No agent selected', 'warn'); return }
+    ctx.actions.pushOverlay({ kind: TOOLS_OVERLAY, props: { agentId: ctx.agentId, query: ctx.rest.trim() } })
+  },
+}
+
+const compaction: SlashCommand = {
+  name: 'compaction',
+  args: '[tokens|default]',
+  description: 'Compaction threshold of the selected agent › loop (80000, 80k; default = main’s default / an inner loop inherits). No argument: every loop',
+  available: scope => !!scope.agentId,
+  complete: partial => ['default'].filter(v => v.startsWith(partial.trim())),
+  run: async ctx => {
+    if (!ctx.agentId) { ctx.print('No agent selected', 'warn'); return }
+    const arg = ctx.rest.trim()
+    if (!arg) { ctx.actions.pushOverlay({ kind: COMPACTION_OVERLAY, props: { agentId: ctx.agentId, loop: ctx.loop } }); return }
+    const parsed = parseThreshold(arg)
+    if (!parsed.ok) { ctx.print(`${parsed.error}. Usage: /compaction [tokens|default]`, 'warn'); return }
+    if (ctx.loop !== MAIN_LOOP && !ctx.state().agents[ctx.agentId]?.config?.loops?.some(l => l.name === ctx.loop)) {
+      ctx.print(`${ctx.loop} is not an inner loop of this agent`, 'warn')
+      return
+    }
+    await applyThreshold(ctx.store, ctx.agentId, ctx.loop, parsed.value)
+  },
+}
+
 const TASK_FILTER_ARGS: readonly TaskFilter[] = TASK_FILTERS
 
 const tasks: SlashCommand = {
@@ -80,6 +127,10 @@ const tasks: SlashCommand = {
 }
 
 const actions: PaletteAction[] = [
+  { id: 'inspect.settings', title: 'Agent settings', hint: 'instructions, tools, compaction, autonomy, messaging, host access', group: 'Inspect', keywords: ['settings', 'preferences', 'agent config', 'autonomous', 'autostart', 'host', 'visibility', 'mesh'], available: scope => !!scope.agentId, run: ctx => { patchInspectState(ctx.actions, ctx.state(), { tab: 'settings' }); ctx.actions.setView(INSPECT_VIEW); ctx.actions.setFocus('main') } },
+  { id: 'inspect.instructions', title: 'Edit agent instructions', hint: 'the selected agent', group: 'Inspect', keywords: ['instructions', 'prompt', 'system prompt'], available: scope => !!scope.agentId, run: ctx => instructions.run({ ...ctx, args: [], rest: '' }) },
+  { id: 'inspect.tools', title: 'Agent tools', hint: 'enable, show, require approval, lock', group: 'Inspect', keywords: ['tools', 'approval', 'restricted', 'hil', 'mcp', 'enable'], available: scope => !!scope.agentId, run: ctx => tools.run({ ...ctx, args: [], rest: '' }) },
+  { id: 'inspect.compaction', title: 'Compaction threshold', hint: 'main and inner loops', group: 'Inspect', keywords: ['compaction', 'compact', 'context', 'tokens', 'threshold'], available: scope => !!scope.agentId, run: ctx => compaction.run({ ...ctx, args: [], rest: '' }) },
   { id: 'inspect.tasks', title: 'Show tasks', hint: 'the selected agent’s approvals and async tool calls', group: 'Inspect', keywords: ['tasks', 'hil', 'approval', 'approve', 'pending', 'adf_tasks'], available: scope => !!scope.agentId, run: ctx => tasks.run({ ...ctx, args: [], rest: '' }) },
   { id: 'inspect.model', title: 'Change model', hint: 'the selected agent › loop', group: 'Inspect', keywords: ['model', 'provider', 'llm', 'switch model'], available: scope => !!scope.agentId, run: ctx => { if (ctx.agentId) ctx.actions.pushOverlay({ kind: MODEL_OVERLAY, props: { agentId: ctx.agentId, loop: ctx.loop } }) } },
   { id: 'inspect.config.edit', title: 'Edit agent config in $EDITOR', group: 'Inspect', keywords: ['config', 'settings', 'edit'], available: scope => !!scope.agentId, run: ctx => config.run({ ...ctx, args: ['edit'] }) },
@@ -107,4 +158,4 @@ const actions: PaletteAction[] = [
   })),
 ]
 
-export const inspectCommands: CommandContribution = { commands: [inspect, model, config, tasks], actions }
+export const inspectCommands: CommandContribution = { commands: [inspect, model, config, tasks, instructions, tools, compaction], actions }

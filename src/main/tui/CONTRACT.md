@@ -103,7 +103,21 @@ interface OverlayProps { overlay: Overlay; close(): void; width: number; height:
   `setup/`: `welcome` (`openWelcome(store)`), `channels` (`openChannels(store,
   {agentId?, channel?})`: the agent's channels, or one channel's setup form)
   and `provider.add` (`openProviderAdd(store, {preset?})`), `mcp`
-  (`openMcp(store, {agentId?, add?, server?, view?})`). Openers that take
+  (`openMcp(store, {agentId?, add?, server?, view?})`); `templates` (agent
+  templates, `src/main/tui/templates/`; props `{ id? }` opens one's details;
+  `openTemplates(store, props)` routes through the identity dialog when it is
+  not ready); `skills` (`openSkills(store, {agentId?, add?, skill?})` from
+  `src/main/tui/skills/ops.ts`: installed skills; `add: ''` browses the
+  catalog, a name searches it, an https SKILL.md URL or a local path previews
+  that package; file-backed like Studio: install = resources then
+  `skills/<name>/SKILL.md`, remove = SKILL.md first, mute = merge
+  `skills-state.json`, never writes the registry; pure logic shared with
+  Studio in `src/shared/utils/skills-panel.ts` / `skill-preview.ts`).
+  `context` (`src/main/tui/context/`: one loop's context usage from GET
+  /agents/:id/context; `openContext(store, {agentId, loop})`).
+  `fleet.track` with props `{ folder, result? }` lists a tracked folder's
+  agents and their next step (`openFolderAgents(store, folder, result?)` in
+  `views/fleet/folders.ts`). Openers that take
   secrets route to the identity dialog first when it is not ready: its props
   `then` (an overlay kind) and `thenProps` open the dialog afterwards (never
   put secrets there).
@@ -136,12 +150,12 @@ first registration of a name wins and collisions are listed in
 `registry.conflicts` (a test asserts it is empty). Reserved names: builtins
 `help ? quit exit q view agent a refresh r theme url auth login logout json
 identity new sidebar mouse terminal-setup terminal web open-site site copy-site
-welcome channels provider mcp`; `runtime status usage
+welcome channels provider mcp templates skills context`; `runtime status usage
 providers network compute settings events` belong to runtime; `loop main loops timers timer triggers history`
 belong to loops; `abort interrupt clear compact trigger copy thinking approve reject` to
 chat; `agents start stop unload load switch sw autostart` to fleet; `files
-open edit doc document mind new-file rm mv` to files; `inspect model config tasks` to
-inspect; `track untrack` to fleet. Pick new names inside your domain (`/loop …`, `/file …`,
+open edit doc document mind new-file rm mv` to files; `inspect model config tasks
+instructions tools compaction` to inspect; `track untrack` to fleet. Pick new names inside your domain (`/loop …`, `/file …`,
 `/task …`). Unknown `/x` is reported, never sent to an agent.
 
 ## 5. Store (`state/`)
@@ -228,6 +242,10 @@ HIL, asks and notices; `turn.completed` triggers a reconciling refetch.
 
 ## 6. Daemon client (`api/`)
 
+`runtime()` is normalized (`api/normalize.ts`): a partial or older daemon's
+GET /runtime (missing sections, `providers: {}`) reads as empty, never
+crashes a view. Read other responses defensively too.
+
 `new DaemonClient({ baseUrl?, token?, fetch?, timeoutMs? })` — `baseUrl`
 defaults like the CLI (`--url` → `ADF_DAEMON_URL` → `http://127.0.0.1:7385`),
 token from `ADF_DAEMON_TOKEN`. All methods reject with `DaemonError { status,
@@ -259,7 +277,24 @@ body, unreachable }`. Types in `api/types.ts` are type-imported from the daemon
   alwaysApproveBlockedReason) resolveTask alwaysApproveTask(id, taskId)
   approveAllTasks(id, loop?) asks (each with its loop) answerAsk(…, loop?)
   respondSuspend`
-- tracked folders: `trackedDirs trackDir(path) untrackDir(path, {unload?})`
+- tracked folders: `trackedDirs trackDir(path) untrackDir(path, {unload?})
+  folderAgents(path)` (GET /tracked-dirs/agents: each agent's status —
+  loaded, needs_review, not_autostart, stopped + error, password_protected,
+  unreadable)
+- tools: `agentTools(id)` (GET /agents/:id/tools: built-in + MCP + declared
+  tools with declared state, source and description; read-only, writes go
+  through `putConfig`; Inspect › Settings re-reads, applies Studio's lock /
+  protection rules client-side — the owner PUT path does no lock checks —
+  and PUTs only the edited fields)
+- context: `agentContext(id, loop?, items?)` (GET /agents/:id/context:
+  categories with top items, compactThreshold + source, totalTokens,
+  percent, Studio's raw breakdown; computed by `src/shared/utils/context-breakdown.ts`)
+- templates: `templates templateDetail(id) createTemplate({name, fromId?})
+  updateTemplate(id, {name?, description?, warning?}) (a rename returns the
+  new id) deleteTemplate(id) (moves the file to the daemon's templates-trash)
+  setDefaultTemplate(id) resetTemplate(id) templateReview(id)
+  acceptTemplateReview(id, password?) putTemplateConfig(id, config)
+  putTemplateFile(id, path, content) removeTemplateFile(id, path)`
 - channels (per agent; "channel adapters" in the API): `setAdapterCredential(id,
   type, envKey, value)` (sealed in the agent's identity store) ·
   `attachAdapter(id, type, config)` (switches it on) · `detachAdapter(id,
@@ -422,6 +457,13 @@ belong in `helpKeys` (/help, which filters as you type).
   `tests/tui/fixtures/setup-daemon.ts` (`createSetupFetch(opts, next)`):
   channels (credentials, attach / detach, live state that comes up after a
   poll) and POST/DELETE /runtime/providers with the keys kept apart.
+  `tests/tui/fixtures/templates-daemon.ts` (`createTemplatesFetch({locked?,
+  passwordProtected?}, next)`: every /templates route in memory, `trash`,
+  `state.defaultId`); `tests/tui/fixtures/settings-daemon.ts` (tools catalog,
+  loop PATCH with compact_threshold, loop pages with tokens); the mock
+  daemon's `folderFiles` (tracked folder autostart pass, review gate,
+  GET /tracked-dirs/agents); skills: `setSkillsFetchSeams({catalog?, text?})`
+  from `skills/catalog.ts` swaps the network.
   Fixtures use handles `agent-1`, `agent-2` and UUID ids — never personal
   names.
 - Never hide model output or take silent auto-actions: anything the TUI does

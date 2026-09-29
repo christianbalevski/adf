@@ -6,6 +6,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { mockContext } from './context-mock'
 
 export const AGENT_1_ID = '6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f'
 export const AGENT_2_ID = '0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d'
@@ -45,6 +46,16 @@ interface MockAgent {
   hostAccess?: boolean
 }
 
+/** An .adf in a fake tracked folder. `loadError` makes every load of it fail with that message. */
+export interface MockFolderFile {
+  filePath: string
+  name: string
+  autostart: boolean
+  reviewed: boolean
+  loadError?: string
+  unreadable?: boolean
+}
+
 /** The daemon's mesh web server (GET /network/server). */
 export interface MockWebServer { running: boolean; port: number; host: string }
 
@@ -72,6 +83,12 @@ export interface MockDaemon {
   trackedDirs: string[]
   /** Fake folders that "exist" for POST /tracked-dirs; add a path to make it trackable. */
   existingDirs: Set<string>
+  /**
+   * Agent files in fake folders (besides the seeded /agents/*.adf): tracking a
+   * folder autostarts its reviewed autostart files; the rest are listed by
+   * GET /tracked-dirs/agents and load through POST /agents/load (+ review).
+   */
+  folderFiles: MockFolderFile[]
   close(): Promise<void>
 }
 
@@ -191,6 +208,9 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
   const web: MockWebServer = { running: true, port: 7295, host: '127.0.0.1', ...options.web }
   const trackedDirs: string[] = [...(options.trackedDirs ?? [MOCK_AGENTS_DIR])]
   const existingDirs = new Set<string>([MOCK_AGENTS_DIR, MOCK_SPARE_DIR, ...(options.existingDirs ?? [])])
+  const folderFiles: MockFolderFile[] = []
+  /** filePath -> agent id, for folder files loaded from a tracked folder. */
+  const loadedFiles = new Map<string, string>()
 
   const emit = (input: MockEvent) => {
     const agentId = input.agent_id ?? null
@@ -334,12 +354,71 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
     // Tracked agent folders (settings.trackedDirectories). Paths are fake:
     // "exists" means listed in `existingDirs`; agents count by their
     // /agents/<handle>.adf filePath.
+    const fromFolders = () => new Set(loadedFiles.values())
+    const agentsUnder = (dir: string) => [...agents.values()].filter(a => !fromFolders().has(a.id) && isUnder(dir, `/agents/${a.handle}.adf`))
+    const filesUnder = (dir: string) => folderFiles.filter(f => isUnder(dir, f.filePath))
+    const loadedFile = (f: MockFolderFile) => { const id = loadedFiles.get(f.filePath); return id && agents.has(id) ? id : undefined }
+    const loadFile = (f: MockFolderFile): string => {
+      const id = `mock-${f.name}`
+      agents.set(id, { id, handle: f.name, name: f.name, model: 'mock-model', state: 'idle', loops: [], history: { main: [] }, files: [], timers: [], tasks: [], asks: [], provider: 'mock' })
+      loadedFiles.set(f.filePath, id)
+      emit({ event_type: 'agent.loaded', agent_id: id })
+      return id
+    }
+    const folderAgentList = (dir: string, failures: Map<string, string> = new Map()) => [
+      ...agentsUnder(dir).map(a => ({ filePath: `/agents/${a.handle}.adf`, name: a.name, agentId: a.id, status: 'loaded', autostart: true, reviewed: true })),
+      ...filesUnder(dir).map(f => {
+        const id = loadedFile(f)
+        if (f.unreadable) return { filePath: f.filePath, name: f.name, status: 'unreadable', autostart: false, reviewed: false, error: 'Not a readable .adf: file is not a database' }
+        const base = { filePath: f.filePath, name: f.name, agentId: id ?? `mock-${f.name}`, autostart: f.autostart, reviewed: f.reviewed }
+        if (id) return { ...base, status: 'loaded' }
+        const status = !f.reviewed ? 'needs_review' : f.autostart ? 'stopped' : 'not_autostart'
+        const error = failures.get(f.filePath)
+        return error ? { ...base, status, error } : { ...base, status }
+      }),
+    ]
+    if (url.pathname === '/tracked-dirs/agents' && method === 'GET') {
+      const raw = url.searchParams.get('path') ?? ''
+      if (!raw) return send(400, { error: 'path is required' })
+      const match = trackedDirs.find(d => normDir(d) === normDir(raw))
+      if (match === undefined) return send(404, { error: `Not a tracked folder: ${raw}` })
+      return send(200, { path: match, agents: folderAgentList(match) })
+    }
+    if (url.pathname === '/agents/review' && method === 'GET') {
+      const f = folderFiles.find(x => x.filePath === url.searchParams.get('filePath'))
+      if (!f) return notFound('file')
+      return send(200, {
+        agentId: `mock-${f.name}`,
+        filePath: f.filePath,
+        reviewed: f.reviewed,
+        summary: {
+          name: f.name, description: 'A mock folder agent', identity: { scenario: 'foreign', needsClaim: true }, computeTier: 'host', autostart: f.autostart,
+          tools: [{ name: 'compute_exec', enabled: true, notable: true }, { name: 'fs_read', enabled: true, notable: false }],
+          mcpServers: [], triggers: [], codeExecution: false, messaging: { mode: 'proactive' },
+          network: { wsConnections: [], serving: null, adapters: ['telegram'] }, security: { tableProtections: [] },
+        },
+      })
+    }
+    if (url.pathname === '/agents/review/accept' && method === 'POST') {
+      const f = folderFiles.find(x => x.filePath === body?.filePath)
+      if (!f) return notFound('file')
+      f.reviewed = true
+      return send(200, { agentId: `mock-${f.name}`, filePath: f.filePath, reviewed: true, summary: {} })
+    }
+    if (url.pathname === '/agents/load' && method === 'POST') {
+      const f = folderFiles.find(x => x.filePath === body?.filePath)
+      if (!f) return send(500, { error: `ENOENT: ${String(body?.filePath)}` })
+      if (body?.requireReview === true && !f.reviewed) return send(403, { error: 'Agent review required', code: 'AGENT_REVIEW_REQUIRED' })
+      if (f.loadError || f.unreadable) return send(500, { error: f.loadError ?? 'file is not a database' })
+      const id = loadedFile(f) ?? loadFile(f)
+      return send(200, { id, filePath: f.filePath, config: { id, name: f.name, handle: f.name } })
+    }
     if (url.pathname === '/tracked-dirs') {
-      const agentsUnder = (dir: string) => [...agents.values()].filter(a => isUnder(dir, `/agents/${a.handle}.adf`))
       const entry = (dir: string) => {
         const exists = existingDirs.has(dir)
+        const files = exists ? filesUnder(dir) : []
         const n = exists ? agentsUnder(dir).length : 0
-        return { path: dir, exists, agentCount: n, loadedCount: n }
+        return { path: dir, exists, agentCount: n + files.length, loadedCount: n + files.filter(f => loadedFile(f)).length }
       }
       if (method === 'GET') return send(200, { maxDepth: 5, directories: trackedDirs.map(entry) })
       if (method === 'POST') {
@@ -354,12 +433,25 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
         const absorbed = trackedDirs.filter(d => isUnder(raw, d))
         trackedDirs.splice(0, trackedDirs.length, ...trackedDirs.filter(d => !absorbed.includes(d)), raw)
         const found = agentsUnder(raw)
+        // The autostart pass: reviewed autostart files load; the rest are reported.
+        const started: Array<Record<string, unknown>> = []
+        const skipped: Array<Record<string, unknown>> = found.map(a => ({ filePath: `/agents/${a.handle}.adf`, name: a.name, reason: 'already_loaded', agentId: a.id }))
+        const failed: Array<{ filePath: string; name: string; error: string }> = []
+        for (const f of filesUnder(raw)) {
+          if (loadedFile(f)) skipped.push({ filePath: f.filePath, name: f.name, reason: 'already_loaded' })
+          else if (f.unreadable) failed.push({ filePath: f.filePath, name: f.name, error: 'Unable to read ADF boot status.' })
+          else if (!f.autostart) skipped.push({ filePath: f.filePath, name: f.name, reason: 'not_autostart' })
+          else if (!f.reviewed) skipped.push({ filePath: f.filePath, name: f.name, reason: 'unreviewed' })
+          else if (f.loadError) failed.push({ filePath: f.filePath, name: f.name, error: f.loadError })
+          else started.push({ agentId: loadFile(f), filePath: f.filePath, name: f.name, startupTriggered: true })
+        }
         return send(201, {
           entry: entry(raw),
           directories: [...trackedDirs],
           absorbed,
-          autostart: { scanned: found.length, started: [], skipped: found.map(a => ({ filePath: `/agents/${a.handle}.adf`, name: a.name, reason: 'already_loaded', agentId: a.id })), failed: [] },
-          needsReview: [],
+          autostart: { scanned: found.length + filesUnder(raw).length, started, skipped, failed },
+          needsReview: skipped.filter(x => x.reason === 'unreviewed'),
+          agents: folderAgentList(raw, new Map(failed.map(f => [f.filePath, f.error]))),
         })
       }
       if (method === 'DELETE') {
@@ -413,6 +505,11 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
         if (!hasLoop(agent, loopParam)) return notFound(`loop "${loopParam}"`)
         emit({ event_type: 'agent.state.changed', agent_id: agent.id, loop: loopParam, payload: { state: 'idle' } })
         return send(200, { success: true })
+      }
+      case 'GET context': {
+        if (!hasLoop(agent, loopParam)) return notFound(`loop "${loopParam}"`)
+        const enabled = loopParam === 'main' || !!agent.loops.find(l => l.name === loopParam)?.enabled
+        return send(200, mockContext(agent.id, loopParam, enabled ? (agent.history[loopParam] ?? []).length : null, agent.model, Number(url.searchParams.get('items') ?? 12)))
       }
       case 'POST compact': {
         if (!hasLoop(agent, loopParam)) return notFound(`loop "${loopParam}"`)
@@ -593,6 +690,7 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
     requests,
     web,
     trackedDirs,
+    folderFiles,
     existingDirs,
     dropEventStreams() {
       for (const stream of streams) stream.res.destroy()

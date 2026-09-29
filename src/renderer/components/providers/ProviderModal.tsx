@@ -210,10 +210,20 @@ function ProviderForm({
 
         {auth ? (
           <SubscriptionAuth auth={auth} label={entry?.label ?? provider.name} />
+        ) : provider.apiKeyStorage === 'secret-store' && provider.apiKeyStatus === 'unavailable' && !provider.apiKey ? (
+          <Field label="API key">
+            <div role="alert" className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/40 bg-[var(--adf-ui-warning-subtle)] px-2.5 py-1.5 text-[12px] leading-5 text-[var(--adf-ui-warning)]">
+              This key was added from the ADF CLI and is kept in the OS keychain, which Studio can't open on this machine, so Studio's agents can't use it. Manage this provider's key with /provider in the ADF CLI.
+            </div>
+          </Field>
         ) : (
           <Field
             label="API key"
-            hint={entry?.keysUrl ? <ExternalLink href={entry.keysUrl}>Get a key ↗</ExternalLink> : entry?.keyOptional ? 'Most local servers accept any value or none.' : undefined}
+            hint={provider.apiKeyStorage === 'secret-store'
+              ? (provider.apiKeyStatus === 'missing' && !provider.apiKey
+                ? <span className="text-[var(--adf-ui-warning)]">No key for this provider in the OS keychain. Enter one to store it there.</span>
+                : 'Kept in the OS keychain, shared with the ADF CLI.')
+              : entry?.keysUrl ? <ExternalLink href={entry.keysUrl}>Get a key ↗</ExternalLink> : entry?.keyOptional ? 'Most local servers accept any value or none.' : undefined}
           >
             <TextInput
               aria-label="API key"

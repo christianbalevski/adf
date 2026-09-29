@@ -31,9 +31,11 @@ import type { AdapterInstanceConfig, AdapterRegistration } from '../../shared/ty
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { getLanAddresses } from '../utils/network'
 import { registerIdentityRoutes, type IdentityRouteDeps } from './identity-routes'
+import { registerTemplateRoutes } from './template-routes'
 import { registerProviderRoutes } from './provider-routes'
+import { registerContextRoutes } from './context-routes'
 import type { ProviderKeyVault } from './provider-key-vault'
-import { listTrackedDirs, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
+import { listFolderAgents, listTrackedDirs, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
@@ -633,7 +635,9 @@ export function createDaemonHttpApi(
   })
 
   registerIdentityRoutes(server, { identity: opts.identity, agentFactory: opts.agentFactory })
+  registerTemplateRoutes(server, { agentFactory: opts.agentFactory })
   registerProviderRoutes(server, { settingsStore: opts.settingsStore, providerKeys: opts.providerKeys })
+  registerContextRoutes(server, runtime)
 
   server.get<{ Querystring: EventsQuery }>('/events', async (request, reply) => {
     if (!opts.eventBus) return unavailable(reply, 'Event bus is not configured.')
@@ -1412,6 +1416,17 @@ export function createDaemonHttpApi(
     }
   })
 
+  // The tool catalog (built-in + MCP + declared) with each tool's declared
+  // state and description. Read-only: tools change through PUT /config.
+  server.get<{ Params: AgentIdParams }>('/agents/:id/tools', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    try {
+      return runtime.getAgentTools(request.params.id)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
   // Live display state (fleet-map semantics). Config edits do not move the
   // running agent's state; this is the dedicated surface for that.
   server.post<{ Params: AgentIdParams; Body: AgentStateBody }>('/agents/:id/state', async (request, reply) => {
@@ -2119,6 +2134,17 @@ export function createDaemonHttpApi(
   server.get('/tracked-dirs', async (_request, reply) => {
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
     return listTrackedDirs(runtime, opts.settingsStore)
+  })
+
+  // The agents in one tracked folder and where each stands (loaded, needs
+  // review, not autostart, stopped with its load error, …).
+  server.get<{ Querystring: { path?: string } }>('/tracked-dirs/agents', async (request, reply) => {
+    if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
+    try {
+      return listFolderAgents(runtime, opts.settingsStore, request.query.path)
+    } catch (err) {
+      return trackedDirsError(reply, err)
+    }
   })
 
   server.post<{ Body: { path?: unknown } }>('/tracked-dirs', async (request, reply) => {

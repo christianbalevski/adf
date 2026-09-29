@@ -46,6 +46,8 @@ export interface TurnStats {
   output: number
   calls: number
   model?: string
+  /** Input tokens of the loop's latest LLM call (its context size then); kept across turns, dropped on compact / clear. */
+  lastInput?: number
 }
 
 export const INITIAL_CHAT_STATE: ChatState = { scroll: {}, selected: {}, expanded: {}, showThinking: false, seen: {}, markers: {}, turns: {}, digested: {} }
@@ -225,7 +227,7 @@ export function digestEvents(state: ChatState, events: UmbilicalEvent[], lookup:
     switch (event.event_type) {
       case 'agent.state.changed': {
         const busy = isBusyState(typeof p.state === 'string' ? p.state : undefined)
-        if (busy && (!turn || turn.endedAt !== undefined)) edit('turns', { ...next.turns, [key]: { startedAt: at, input: 0, output: 0, calls: 0 } })
+        if (busy && (!turn || turn.endedAt !== undefined)) edit('turns', { ...next.turns, [key]: { startedAt: at, input: 0, output: 0, calls: 0, ...(turn?.lastInput !== undefined ? { lastInput: turn.lastInput } : {}) } })
         else if (!busy && turn && turn.endedAt === undefined) edit('turns', { ...next.turns, [key]: { ...turn, endedAt: at } })
         break
       }
@@ -239,10 +241,18 @@ export function digestEvents(state: ChatState, events: UmbilicalEvent[], lookup:
             output: base.output + num(p.output_tokens),
             calls: base.calls + 1,
             model: typeof p.model === 'string' ? p.model : base.model,
+            ...(num(p.input_tokens) > 0 ? { lastInput: num(p.input_tokens) } : {}),
           },
         })
         break
       }
+      case 'loop.compacted':
+      case 'loop.cleared':
+        if (turn?.lastInput !== undefined) {
+          const { lastInput: _dropped, ...rest } = turn
+          edit('turns', { ...next.turns, [key]: rest })
+        }
+        break
       case 'turn.completed':
         if (turn && turn.endedAt === undefined) edit('turns', { ...next.turns, [key]: { ...turn, endedAt: at } })
         break

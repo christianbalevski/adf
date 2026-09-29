@@ -10,7 +10,7 @@ export const RUNTIME_VIEW = 'runtime'
 
 export const RUNTIME_TABS = [
   { id: 'status', title: 'Status', description: 'Daemon health, version, uptime and every agent’s loops' },
-  { id: 'folders', title: 'Folders', description: 'Tracked agent folders: a add, d stop tracking, r rescan' },
+  { id: 'folders', title: 'Folders', description: 'Tracked agent folders: Enter its agents (review, load, errors), a add, d stop tracking, r rescan' },
   { id: 'identity', title: 'Identity', description: 'Owner identity: status; Enter to create, restore, unlock or lock' },
   { id: 'auth', title: 'Sign-in', description: 'Provider sign-ins (ChatGPT, Grok) and API-key providers; Enter to sign in' },
   { id: 'providers', title: 'Providers', description: 'LLM providers and which agents use them' },

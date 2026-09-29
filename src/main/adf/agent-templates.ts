@@ -389,6 +389,12 @@ export interface AgentTemplatesDeps {
   getOwnerDid: () => string
   /** Push IPC.TEMPLATES_CHANGED to the renderer. */
   notifyChanged: () => void
+  /**
+   * Where `delete` puts a template file. Default: the OS trash (Electron's
+   * shell.trashItem). The daemon, which has no Electron, moves it into a
+   * trash folder of its own. Never a hard delete.
+   */
+  trashItem?: (filePath: string) => Promise<void>
 }
 
 export class AgentTemplatesService {
@@ -751,8 +757,12 @@ export class AgentTemplatesService {
     const path = templateFilePath(id)
     if (!existsSync(path)) return { success: true }
     try {
-      const { shell } = require('electron') as typeof import('electron')
-      await shell.trashItem(path)
+      if (this.deps.trashItem) {
+        await this.deps.trashItem(path)
+      } else {
+        const { shell } = require('electron') as typeof import('electron')
+        await shell.trashItem(path)
+      }
       if (this.defaultTemplateId() === id) {
         this.deps.settings.set('defaultTemplateId', DEFAULT_SHIPPED_TEMPLATE_ID)
       }
@@ -900,7 +910,14 @@ export class AgentTemplatesService {
     const path = templateFilePath(args.id)
     if (!existsSync(path)) return { success: false, error: `${args.id}.adf is not in the templates folder.` }
     // Validate before opening: an invalid config must not touch the file.
-    const parsed = AgentConfigSchema.safeParse(args.config)
+    // A template may leave the provider and model unset (the shipped ones
+    // do: the composer or the default provider fills them in per agent), so
+    // an empty pair is not an error here even though an agent needs one.
+    const model = args.config?.model
+    const unsetModel = !!model && !model.provider && !model.model_id
+    const parsed = AgentConfigSchema.safeParse(
+      unsetModel ? { ...args.config, model: { ...model, provider: 'unset', model_id: 'unset' } } : args.config
+    )
     if (!parsed.success) {
       const first = parsed.error.issues[0]
       return { success: false, error: `${first.path.join('.') || 'config'}: ${first.message}` }

@@ -481,6 +481,35 @@ identity is ready).
 }
 ```
 
+### Managing Templates
+
+Studio's Settings > Agent templates over HTTP, on the same
+`<userData>/templates` folder and the same service. A template is an ordinary
+`.adf`; its id is the file stem. New agents get everything in a template
+except its identity and history. Every route answers `409
+identity_not_ready` (with `identity`) until the owner identity is ready, `404
+template_missing` for an unknown id, and `400 template_invalid` with the
+service's sentence when a write is refused.
+
+| Route | What it does |
+|-------|--------------|
+| `POST /templates` `{ name, fromId? }` | New template: blank, or a duplicate of `fromId` (no identity or history carried; the notes are). `201 { id, template }`. Names: letters, digits, spaces, `-`, `_`, ≤64 chars |
+| `GET /templates/:id` | `{ template, isDefault, defaultId, contents: { config, files: { readme, mind, soul }, extra: [{ path, size, mime }] } }` |
+| `PATCH /templates/:id` `{ name?, description?, warning? }` | Notes (shown wherever the template is offered, never copied into agents; `""` clears one, ≤500 chars) and/or rename (moves the file; `defaultId` follows). `{ id, template }`: `id` is the new one after a rename |
+| `DELETE /templates/:id` | Moves the file to `<userData>/templates-trash` (Studio: the OS trash). Never a hard delete. The default falls back to `standard`. `{ deleted, id, trashFolder, defaultId }` |
+| `POST /templates/:id/default` | Default for new agents (`settings.defaultTemplateId`). `{ defaultId }` |
+| `POST /templates/:id/reset` | A shipped template (`standard`, `sandboxed`, `full-access`, even renamed) back to the shipped version. `400` for a user template |
+| `GET /templates/:id/review` | `{ id, needsReview, reviewed, summary }`: the agent review summary (`AgentConfigSummary`: identity scenario, tools, MCP, triggers, network, …; `provider.status` is `unchecked` or `missing`, credentials are not probed) |
+| `POST /templates/:id/review/accept` `{ password? }` | Claims the file with a fresh identity under this owner, auto-locks `compute` (and ws / adapters / table protections when set), marks it reviewed. `400 password_required` / `403 wrong_password` for a password-protected file; `409 identity_not_ready` when the owner keys are unavailable |
+| `PUT /templates/:id/config` `{ config }` | Replace the agent config (validated with the config schema; the first issue is the `400` error) |
+| `PUT /templates/:id/files` `{ path, content }` | Write a seed file (`README.md`, `mind.md`, `soul.md`) or an extra file |
+| `DELETE /templates/:id/files?path=` | Remove an extra file (seed files: clear their text instead) |
+
+Review is per template: someone else's template (foreign or identity-less)
+shows `reviewed: false` and `POST /agents/create` refuses it (`422
+template_unreviewed`) until accepted. Studio-only: revealing the folder and
+adding host files through a file picker.
+
 ### `POST /agents/create`
 
 Studio's "new agent", headless: template instance → sealed identity with
@@ -507,6 +536,7 @@ All fields optional. `name`: a file name (≤64 chars; generated when omitted).
 | `409` | `identity_not_ready` | Owner identity not ready; body includes `identity` (status) so a client can offer create/restore/unlock |
 | `409` | `name_taken` | The file already exists |
 | `422` | `template_missing` / `template_unreviewed` | Template gone, or someone else's and not reviewed |
+| `422` | `load_failed` | The file was created (reviewed, folder tracked) but could not load, e.g. no provider configured; the message has the load error. Fix it, then `POST /agents/load` |
 
 ## Agents
 
@@ -794,6 +824,29 @@ curl -X PUT http://127.0.0.1:7385/agents/agent-id/config \
 A changed `config.state` in the body does **not** move the running agent's live
 state — the config field is the persisted start state, not a live control. Use
 `POST /agents/:id/state` to move a loaded agent.
+
+### `GET /agents/:id/tools`
+
+The agent's tool catalog, sorted by name: every built-in tool main's registry
+holds, every MCP tool its servers advertise (`available_tools`), and every
+declared tool, each with its declared state and description. It is the list
+`sys_get_config` gives the agent. Read-only: change a tool by editing
+`config.tools` and `PUT /agents/:id/config` (the owner path; `locked` and
+`locked_fields` bind the agent's own `sys_update_config`, not the owner).
+
+```json
+{
+  "agentId": "agent-id",
+  "tools": [
+    { "name": "fs_read", "enabled": true, "visible": true, "restricted": false, "locked": false, "source": "builtin", "description": "Read a file…", "schema": {}, "restrictions": { "restricted": false, "locked": false } },
+    { "name": "mcp_github_search", "enabled": true, "visible": true, "restricted": true, "locked": false, "source": "mcp:github", "description": "…", "schema": {}, "restrictions": { "restricted": true, "locked": false } }
+  ]
+}
+```
+
+`visible` = shown in the LLM's active tool list (when enabled); `restricted` =
+callable by authorized code only, and an LLM call waits for owner approval;
+`locked` = the agent cannot change this entry.
 
 ### `POST /agents/:id/state`
 
@@ -1574,9 +1627,13 @@ Body: `{ "path": "<absolute folder>" }`. The folder is tracked right away:
   "directories": ["/home/me/agents"],
   "absorbed": [],
   "autostart": { "scanned": 2, "started": [], "skipped": [], "failed": [] },
-  "needsReview": [{ "filePath": "/home/me/agents/agent-2.adf", "name": "agent-2", "reason": "unreviewed", "agentId": "…" }]
+  "needsReview": [{ "filePath": "/home/me/agents/agent-2.adf", "name": "agent-2", "reason": "unreviewed", "agentId": "…" }],
+  "agents": [{ "filePath": "/home/me/agents/agent-2.adf", "name": "agent-2", "status": "needs_review", "autostart": true, "reviewed": false }]
 }
 ```
+
+`agents` is every agent in the folder with its status after the autostart
+pass (same shape as `GET /tracked-dirs/agents`, with load errors attached).
 
 | Status | Cause |
 |--------|-------|
@@ -1584,6 +1641,17 @@ Body: `{ "path": "<absolute folder>" }`. The folder is tracked right away:
 | `405` | The settings store is read-only |
 | `409` | Already tracked, under any spelling (case and separators are normalized on Windows/macOS), or covered by a tracked parent. `coveredBy` names the tracked entry |
 | `503` | No settings store is configured |
+
+#### `GET /tracked-dirs/agents?path=<tracked folder>`
+
+The agents of one tracked folder and what each needs: `{ path, agents:
+FolderAgent[] }`, where `FolderAgent` is `{ filePath, name, agentId?, status,
+autostart, reviewed, error? }` and `status` is one of `loaded`,
+`needs_review` (never reviewed on this daemon: `POST /agents/review/accept`),
+`not_autostart` (reviewed, loads on request), `stopped` (should have loaded
+but did not; `error` has the load error when known), `password_protected` or
+`unreadable` (`error` says why). `400` without `path`, `404` when the folder
+is not tracked.
 
 #### `DELETE /tracked-dirs?path=<folder>&unload=true|false`
 
@@ -1678,6 +1746,52 @@ summarization call fails (history is preserved).
 
 ```json
 { "agentId": "agent-id", "loop": "researcher", "success": true }
+```
+
+### `GET /agents/:id/context`
+
+One loop's context usage: what the next request would carry, split into
+categories, against the threshold that loop auto-compacts at (Studio's context
+breakdown). `?loop=<name>` picks an inner loop (absent = main); `?items=<n>`
+caps the biggest items listed per category (default 12, max 200).
+
+The figures are the loop executor's own: system prompt and tool schemas are
+measured with the provider's tokenizer when the executor rebuilds them;
+conversation (compaction summary included) and dynamic instructions are
+estimated per read. Categories do not overlap and sum to `totalTokens`:
+`system` (the system prompt minus its injected files), `files` ({{path}}
+injections), `tools` (built-in schemas), one `mcp:<server>` per MCP server,
+`dynamic`, `messages`; sorted biggest first.
+
+`compactThreshold` resolves like the executor: the loop's own
+`compact_threshold`, else the agent's `context.compact_threshold`, else the
+(loop's or agent's) model's, else 100000; `compactThresholdSource` says which
+(`loop` · `agent` · `model` · `default`). `agentCompactThreshold` is the main
+loop's, for comparison. There is no model context-window catalog: the
+threshold is the scale.
+
+`available: false` (and empty `categories`, `null` totals) when the loop has no
+live executor: disabled, never woken, or put to sleep. Unknown agent or loop
+`404`; bad `items` `400`.
+
+```json
+{
+  "agentId": "agent-id",
+  "loop": "main",
+  "available": true,
+  "model": { "provider": "anthropic", "modelId": "claude-sonnet-4-5" },
+  "compactThreshold": 100000,
+  "compactThresholdSource": "default",
+  "agentCompactThreshold": 100000,
+  "totalTokens": 26140,
+  "percent": 26,
+  "categories": [
+    { "id": "mcp:github", "key": "mcp", "label": "MCP github", "tokens": 9120, "count": 26,
+      "items": [{ "name": "create_pull_request", "tokens": 478 }], "note": "Tool schemas from the github MCP server." },
+    { "id": "messages", "key": "messages", "label": "Conversation", "tokens": 5000, "items": [], "note": "…" }
+  ],
+  "breakdown": { "system_prompt_tokens": 7040, "tools_total_tokens": 14000, "messages_tokens": 5000, "…": "Studio's ContextBreakdown" }
+}
 ```
 
 ### `POST /agents/:id/chat`

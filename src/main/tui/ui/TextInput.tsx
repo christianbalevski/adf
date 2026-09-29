@@ -71,6 +71,10 @@ export function TextInput(props: TextInputProps) {
   const historyIndex = useRef<number | null>(null)
   const draft = useRef('')
   const lastEmitted = useRef(value)
+  // The newest value + cursor, ahead of React state: several events in one
+  // tick (a paste then Enter, a burst of keys) each see the previous one's edit.
+  const live = useRef({ value, cursor })
+  live.current = { value, cursor }
 
   useEffect(() => {
     // A value set from outside (prefill, history) puts the cursor at the end.
@@ -84,6 +88,7 @@ export function TextInput(props: TextInputProps) {
 
   const update = (next: string, nextCursor = next.length) => {
     lastEmitted.current = next
+    live.current = { value: next, cursor: Math.max(0, Math.min(nextCursor, next.length)) }
     if (props.value === undefined) setInternal(next)
     props.onChange?.(next)
     setCursor(Math.max(0, Math.min(nextCursor, next.length)))
@@ -93,7 +98,10 @@ export function TextInput(props: TextInputProps) {
     value,
     cursor,
     setValue: (next, c) => update(next, c ?? next.length),
-    insert: text => update(value.slice(0, cursor) + text + value.slice(cursor), cursor + text.length),
+    insert: text => {
+      const { value: v, cursor: c } = live.current
+      update(v.slice(0, c) + text + v.slice(c), c + text.length)
+    },
     clear: () => update('', 0),
   }
   if (props.apiRef) props.apiRef.current = api
@@ -102,10 +110,10 @@ export function TextInput(props: TextInputProps) {
   else if (focusedOwner === self.current) { focusedInput = null; focusedOwner = null }
   useEffect(() => () => { if (focusedOwner === self.current) { focusedInput = null; focusedOwner = null } }, [])
 
-  const wordLeft = (pos: number) => wordLeftOf(value, pos)
-  const wordRight = (pos: number) => wordRightOf(value, pos)
-  const lineStart = (pos: number) => lineStartOf(value, pos)
-  const lineEnd = (pos: number) => lineEndOf(value, pos)
+  const wordLeft = (pos: number) => wordLeftOf(live.current.value, pos)
+  const wordRight = (pos: number) => wordRightOf(live.current.value, pos)
+  const lineStart = (pos: number) => lineStartOf(live.current.value, pos)
+  const lineEnd = (pos: number) => lineEndOf(live.current.value, pos)
 
   const recall = (direction: -1 | 1) => {
     if (history.length === 0) return false
@@ -126,7 +134,15 @@ export function TextInput(props: TextInputProps) {
     return true
   }
 
+  const moveTo = (c: number) => {
+    const v = live.current.value
+    const n = Math.max(0, Math.min(c, v.length))
+    live.current = { value: v, cursor: n }
+    setCursor(n)
+  }
+
   const submit = () => {
+    const { value } = live.current
     // A trailing `\` continues the line, except on a /command (a Windows path: `/track C:\dir\`).
     if (value.endsWith('\\') && !value.startsWith('/')) {
       update(`${value.slice(0, -1)}\n`)
@@ -143,6 +159,7 @@ export function TextInput(props: TextInputProps) {
 
   useKeys((input, key) => {
     if (disabled) return false
+    const { value, cursor } = live.current
     if (onKey?.(input, key, api) === true) return true
     if (key.return && (key.meta || key.shift)) { api.insert('\n'); return true }
     if (key.return) { submit(); return true }
@@ -162,27 +179,27 @@ export function TextInput(props: TextInputProps) {
     const edit = editAction(input, key, lastRawInput())
     if (edit) {
       const next = applyEdit(edit, value, cursor)
-      if (next.value !== value) { historyIndex.current = null; update(next.value, next.cursor) } else setCursor(next.cursor)
+      if (next.value !== value) { historyIndex.current = null; update(next.value, next.cursor) } else moveTo(next.cursor)
       return true
     }
     const wordJump = key.meta || (key.ctrl && value.length > 0)
-    if (key.leftArrow && wordJump) { setCursor(wordLeft(cursor)); return true }
-    if (key.rightArrow && wordJump) { setCursor(wordRight(cursor)); return true }
-    if (key.meta && !key.ctrl && (input === 'b' || input === 'f')) { setCursor(input === 'b' ? wordLeft(cursor) : wordRight(cursor)); return true }
-    if (key.leftArrow && !key.ctrl) { setCursor(c => Math.max(0, c - 1)); return true }
-    if (key.rightArrow && !key.ctrl) { setCursor(c => Math.min(value.length, c + 1)); return true }
+    if (key.leftArrow && wordJump) { moveTo(wordLeft(cursor)); return true }
+    if (key.rightArrow && wordJump) { moveTo(wordRight(cursor)); return true }
+    if (key.meta && !key.ctrl && (input === 'b' || input === 'f')) { moveTo(input === 'b' ? wordLeft(cursor) : wordRight(cursor)); return true }
+    if (key.leftArrow && !key.ctrl) { moveTo(cursor - 1); return true }
+    if (key.rightArrow && !key.ctrl) { moveTo(cursor + 1); return true }
     if (key.upArrow) {
       const start = lineStart(cursor)
       if (start === 0) return recall(-1)
       const prevStart = lineStart(start - 1)
-      setCursor(Math.min(prevStart + (cursor - start), start - 1))
+      moveTo(Math.min(prevStart + (cursor - start), start - 1))
       return true
     }
     if (key.downArrow) {
       const end = lineEnd(cursor)
       if (end === value.length) return recall(1)
       const col = cursor - lineStart(cursor)
-      setCursor(Math.min(end + 1 + col, lineEnd(end + 1)))
+      moveTo(Math.min(end + 1 + col, lineEnd(end + 1)))
       return true
     }
     if (key.backspace) {

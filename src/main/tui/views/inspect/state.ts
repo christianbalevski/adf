@@ -12,6 +12,7 @@ export const INSPECT_VIEW = 'inspect'
 
 export const TABS = [
   { id: 'diag', title: 'Status', description: 'This agent: state, loops, triggers and WebSocket diagnostics' },
+  { id: 'settings', title: 'Settings', description: 'Instructions, tools, compaction, autonomy, messaging and host access, without raw JSON' },
   { id: 'config', title: 'Config', description: 'Agent config; e opens it in $EDITOR and saves it back after validation' },
   { id: 'usage', title: 'Usage', description: 'Token usage by model (this agent) and this session' },
   { id: 'mcp', title: 'MCP', description: 'This agent’s MCP servers: configured, live state, recent logs' },
@@ -45,6 +46,8 @@ export interface InspectState {
   tasksFilter: TaskFilter
   /** /config edit: the Config tab opens $EDITOR once for this request (a timestamp). */
   editRequest?: number
+  /** Settings tab: the highlighted row. */
+  settingsIndex?: number
 }
 
 export const DEFAULT_INSPECT_STATE: InspectState = {
@@ -82,6 +85,6 @@ export function useInspectState(): [InspectState, (patch: Partial<Omit<InspectSt
 export function findTab(name: string): InspectTab | undefined {
   const wanted = name.trim().toLowerCase()
   if (!wanted) return undefined
-  const aliases: Record<string, InspectTab> = { adapters: 'channels', adapter: 'channels', channel: 'channels', umbilical: 'events', event: 'events', status: 'diag', runtime: 'diag', diagnostics: 'diag', identities: 'identity', log: 'logs', table: 'tables', db: 'tables', task: 'tasks', approvals: 'tasks', hil: 'tasks' }
+  const aliases: Record<string, InspectTab> = { adapters: 'channels', adapter: 'channels', channel: 'channels', umbilical: 'events', event: 'events', status: 'diag', runtime: 'diag', diagnostics: 'diag', identities: 'identity', log: 'logs', table: 'tables', db: 'tables', task: 'tasks', approvals: 'tasks', hil: 'tasks', setting: 'settings', prefs: 'settings', instructions: 'settings', tools: 'settings', compaction: 'settings' }
   return (TABS.find(t => t.id === wanted)?.id) ?? aliases[wanted] ?? TABS.find(t => t.id.startsWith(wanted))?.id
 }

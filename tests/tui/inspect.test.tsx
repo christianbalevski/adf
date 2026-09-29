@@ -254,6 +254,9 @@ describe('inspect view against the mock daemon', () => {
     await focusMain()
 
     await tui.press(KEY.right)
+    await tui.waitFor(f => f.includes('Instructions') && f.includes('Compaction') && f.includes('Host access'))
+
+    await tui.press(KEY.right)
     await tui.waitFor(f => f.includes('model_id: mock-model') && f.includes('loops: main + consolidator, researcher'))
 
     await tui.press(KEY.right)

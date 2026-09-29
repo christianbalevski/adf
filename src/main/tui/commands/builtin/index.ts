@@ -14,6 +14,9 @@ import { identityActions, identityCommand, newAgentCommand } from './identity'
 import { authActions, authCommand, loginCommand, logoutCommand } from './auth'
 import { copySiteCommand, openSiteCommand, webActions, webCommand } from './web'
 import { channelsCommand, mcpCommand, providerCommand, setupActions, welcomeCommand } from './setup'
+import { templatesActions, templatesCommand } from './templates'
+import { skillsActions, skillsCommand } from './skills'
+import { contextActions, contextCommand } from './context'
 
 export { createQuitGuard, QUIT_WINDOW_MS } from './quit'
 export { THEMES, applyTheme, findTheme, nextThemeName } from './themes'
@@ -229,6 +232,9 @@ const commands: SlashCommand[] = [
   channelsCommand,
   providerCommand,
   mcpCommand,
+  templatesCommand,
+  skillsCommand,
+  contextCommand,
 ]
 
 const actions: PaletteAction[] = [
@@ -244,6 +250,9 @@ const actions: PaletteAction[] = [
   ...authActions,
   ...webActions,
   ...setupActions,
+  ...templatesActions,
+  ...skillsActions,
+  ...contextActions,
 ]
 
 export const BUILTIN_COMMANDS: CommandContribution = { commands, actions }

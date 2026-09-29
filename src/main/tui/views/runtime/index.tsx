@@ -199,6 +199,7 @@ const runtime: ViewDefinition = {
         { keys: 'r', label: 'Reload the page' },
         { keys: 'enter', label: 'Identity: the identity dialog · Sign-in: the sign-in dialog' },
         { keys: 'c r u', label: 'Identity: create / restore / unlock (when offered)' },
+        { keys: 'enter', label: 'Folders: the selected folder’s agents (loaded, needs review, errors): review + accept + load, or load' },
         { keys: 'a d', label: 'Folders: track a folder (its reviewed autostart agents load now) / stop tracking the selected one (asks; files untouched, optionally unload its agents)' },
         { keys: 'm', label: 'Network: mesh on / off (asks)' },
         { keys: 's', label: 'Network: web server (serves agent sites, APIs, mesh delivery) start / stop (stopping asks)' },

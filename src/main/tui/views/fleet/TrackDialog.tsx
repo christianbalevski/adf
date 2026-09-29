@@ -1,8 +1,9 @@
 // "Track a folder" dialog: a path input with Tab completion over directories
 // (the load dialog's completer, folders only). Enter asks the daemon to track
-// it: the folder's reviewed autostart agents load right away; path problems
-// (not absolute, missing, already tracked / covered by a tracked parent) stay
-// in the dialog so they can be fixed.
+// it: the folder's reviewed autostart agents load right away, then the
+// folder's agents are listed (FolderAgentsDialog: what loaded, what needs
+// review, errors). Path problems (not absolute, missing, already tracked /
+// covered by a tracked parent) stay in the dialog so they can be fixed.
 
 import { useState } from 'react'
 import { sep } from 'node:path'
@@ -16,11 +17,17 @@ import { truncate } from '../../ui/text'
 import type { OverlayProps } from '../types'
 import { expandPath } from './model'
 import { completeFolder, trackFolder } from './folders'
+import { FolderAgentsDialog } from './FolderAgentsDialog'
 
 const LAST_DIR_KEY = 'fleet.track.lastDir'
 const MAX_CANDIDATES = 8
 
-export function TrackDialog({ overlay, close, width }: OverlayProps) {
+/** The Track overlay: the path input, or (props `folder`) that folder's agents. */
+export function TrackDialog(props: OverlayProps) {
+  return props.overlay.props?.folder ? <FolderAgentsDialog {...props} /> : <TrackFolderInput {...props} />
+}
+
+function TrackFolderInput({ overlay, close, width }: OverlayProps) {
   const theme = useTheme()
   const store = useStore()
   const props = (overlay.props ?? {}) as { path?: string }
@@ -64,7 +71,7 @@ export function TrackDialog({ overlay, close, width }: OverlayProps) {
         { keys: 'esc', label: 'cancel' },
       ]}
     >
-      <Text color={theme.color.muted} wrap="wrap">A folder of agents on the daemon’s machine (~ and relative paths resolve here). Its reviewed autostart agents load now and at every daemon start; unreviewed ones are listed for review.</Text>
+      <Text color={theme.color.muted} wrap="wrap">A folder of agents on the daemon’s machine (~ and relative paths resolve here). Its reviewed autostart agents load now and at every daemon start; the rest are listed next, to review or load.</Text>
       <Box borderStyle={theme.ascii ? 'classic' : 'round'} borderColor={theme.color.borderFocus} paddingX={1}>
         <TextInput
           value={value}

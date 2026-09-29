@@ -57,6 +57,8 @@ function FleetView({ width, height, focused }: ViewProps) {
   const statusOf = (id: string) => store.getState().web?.agents[id]?.status
 
   useKeys((input, key) => {
+    // Ctrl/Meta chords belong to the shell (Ctrl+K palette, Ctrl+←/→ loops): never read Ctrl+K as k.
+    if (key.ctrl || key.meta) return false
     const agent = agents[selectedIndex]
     const move = key.upArrow || input === 'k' ? -1 : key.downArrow || input === 'j' ? 1 : 0
     if (move && agents.length) {
@@ -73,7 +75,6 @@ function FleetView({ width, height, focused }: ViewProps) {
       return true
     }
     if (key.return && agent) { openChat(store, agent.summary.id, selectedLoop); return true }
-    if (key.ctrl || key.meta) return false
     if (identityKey(store, identity, input, onboarding)) return true
     if (input === 'n') { openNewAgent(store); return true }
     if (input === 'o') { store.actions.pushOverlay({ kind: LOAD_OVERLAY }); return true }

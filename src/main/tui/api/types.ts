@@ -154,6 +154,14 @@ export interface AgentConfigResult {
   config: AgentConfig
 }
 
+/** GET /agents/:id/tools: one catalog entry (same shape sys_get_config gives the agent). */
+export type AgentToolEntry = import('../../tools/built-in/sys-get-config.tool').ToolDiscoveryEntry
+
+export interface AgentToolsResult {
+  agentId: string
+  tools: AgentToolEntry[]
+}
+
 export interface ContentResult {
   agentId: string
   content: string
@@ -299,6 +307,9 @@ export interface TaskApproveAllResult {
 // --- tracked agent folders ------------------------------------------------
 
 export type {
+  FolderAgent,
+  FolderAgentStatus,
+  FolderAgentsList,
   TrackedDirEntry,
   TrackedDirsList,
   TrackDirResult,
@@ -493,3 +504,9 @@ export class DaemonError extends Error {
     return this.status === null
   }
 }
+
+// --- context usage (/context) -------------------------------------------------
+
+/** GET /agents/:id/context: one loop's context breakdown, categories and compact threshold. */
+export type AgentContextResult = import('../../daemon/context-routes').AgentContextResult
+export type ContextCategory = import('../../../shared/utils/context-breakdown').ContextCategory

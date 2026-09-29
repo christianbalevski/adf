@@ -1,7 +1,8 @@
 // Runtime › Folders: the daemon's tracked agent folders (settings
-// trackedDirectories). a track another (the fleet's Track dialog), d stop
-// tracking the selected one (asks; files untouched, optional unload), r re-read
-// (the counts are a fresh scan: .adf files found / agents loaded from there).
+// trackedDirectories). Enter lists the selected folder's agents (review, load,
+// errors), a track another (the fleet's Track dialog), d stop tracking the
+// selected one (asks; files untouched, optional unload), r re-read (the counts
+// are a fresh scan: .adf files found / agents loaded from there).
 
 import { useEffect } from 'react'
 import { Box, Text } from 'ink'
@@ -13,7 +14,7 @@ import { Table } from '../../ui/Table'
 import { formatClock } from '../../ui/text'
 import type { TrackedDirEntry } from '../../api/types'
 import { useDaemonData } from '../inspect/hooks'
-import { askUntrack, loadFolders, readFolders, TRACK_OVERLAY } from '../fleet/folders'
+import { askUntrack, loadFolders, openFolderAgents, readFolders, TRACK_OVERLAY } from '../fleet/folders'
 
 const CURSOR_KEY = 'runtime.folders.cursor'
 
@@ -36,6 +37,7 @@ export function FoldersTab({ width, height, focused }: { width: number; height: 
     if (input === 'r') { reload(); return true }
     const row = rows[at]
     if ((input === 'd' || key.delete) && row) { askUntrack(store, row.path); return true }
+    if (key.return && row) { openFolderAgents(store, row.path); return true }
     return false
   }, { layer: 'main', active: focused })
 
@@ -60,10 +62,10 @@ export function FoldersTab({ width, height, focused }: { width: number; height: 
 
   return (
     <Box flexDirection="column" width={width} height={height}>
-      <Text color={theme.color.muted} wrap="truncate-end">Folders the daemon scans for agents at start (reviewed autostart agents load). AGENTS = .adf files found, LOADED = running from there.</Text>
+      <Text color={theme.color.muted} wrap="truncate-end">Folders the daemon loads agents from at start (reviewed autostart agents). Enter shows a folder’s agents.</Text>
       <Box flexDirection="column" height={Math.max(2, height - 2)}>{body}</Box>
       <Text color={theme.color.dim} wrap="truncate-end">
-        a track folder {theme.glyph.sep} d stop tracking {theme.glyph.sep} r rescan {theme.glyph.sep} {loading ? 'loading…' : loadedAt ? `as of ${formatClock(loadedAt)}` : ''}
+        enter its agents {theme.glyph.sep} a track folder {theme.glyph.sep} d stop tracking {theme.glyph.sep} r rescan {theme.glyph.sep} {loading ? 'loading…' : loadedAt ? `as of ${formatClock(loadedAt)}` : ''}
       </Text>
     </Box>
   )

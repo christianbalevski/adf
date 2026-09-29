@@ -21,6 +21,9 @@ import { CHANNELS_OVERLAY } from '../setup/channels'
 import { PROVIDER_OVERLAY } from '../setup/provider'
 import { McpDialog } from '../setup/McpDialog'
 import { MCP_OVERLAY } from '../setup/mcp'
+import { TemplatesDialog } from '../templates/TemplatesDialog'
+import { SkillsDialog } from '../skills/SkillsDialog'
+import { ContextDialog } from '../context/ContextDialog'
 
 export { SHELL_KEYS } from './shell-keys'
 
@@ -60,6 +63,9 @@ const BUILTIN_OVERLAYS: Record<string, ComponentType<OverlayProps>> = {
   [CHANNELS_OVERLAY]: ChannelsDialog,
   [PROVIDER_OVERLAY]: ProviderDialog,
   [MCP_OVERLAY]: McpDialog,
+  templates: TemplatesDialog,
+  skills: SkillsDialog,
+  context: ContextDialog,
 }
 
 /** Renders the topmost overlay centered over the body. Built-ins + view-registered kinds. */

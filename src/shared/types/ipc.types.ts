@@ -116,6 +116,12 @@ export interface ProviderConfig {
    * stays empty here and the daemon fills it in when it reads the provider.
    */
   apiKeyStorage?: 'secret-store'
+  /**
+   * Studio reads only, never persisted: why a 'secret-store' key could not be
+   * resolved. 'unavailable' = no usable OS keychain in Studio; 'missing' = the
+   * keychain has no entry for this provider.
+   */
+  apiKeyStatus?: 'unavailable' | 'missing'
 }
 
 export interface McpServerRegistration {

@@ -6,7 +6,9 @@
  */
 
 import { existsSync, statSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { basename, isAbsolute } from 'node:path'
+import { AdfDatabase } from '../adf/adf-database'
+import { isConfigReviewed } from '../services/agent-review'
 import { canonicalizePath, containsPath, isSameOrSubPath } from '../utils/tracked-paths'
 import type { RuntimeAutostartReport, RuntimeAutostartSkipped, RuntimeService } from '../runtime/runtime-service'
 
@@ -30,6 +32,36 @@ export interface TrackedDirsList {
   directories: TrackedDirEntry[]
 }
 
+/**
+ * Where one .adf in a tracked folder stands, and what the owner can do next:
+ * - loaded: running in this daemon
+ * - needs_review: never reviewed here; review it (GET /agents/review), accept
+ *   (POST /agents/review/accept), then load
+ * - not_autostart: reviewed, not set to autostart; load it by hand
+ * - stopped: reviewed autostart agent that is not loaded (stopped, or its load failed: `error`)
+ * - password_protected: its identity is password-encrypted; autostart skips it
+ * - unreadable: not a readable .adf (`error` says why)
+ */
+export type FolderAgentStatus = 'loaded' | 'needs_review' | 'not_autostart' | 'stopped' | 'password_protected' | 'unreadable'
+
+export interface FolderAgent {
+  filePath: string
+  /** The agent's name (file name when unreadable). */
+  name: string
+  agentId?: string
+  status: FolderAgentStatus
+  autostart: boolean
+  reviewed: boolean
+  /** Why it is not running, when known: unreadable file, or the load error from this track's autostart pass. */
+  error?: string
+}
+
+export interface FolderAgentsList {
+  /** The tracked folder, as stored. */
+  path: string
+  agents: FolderAgent[]
+}
+
 export interface TrackDirResult {
   entry: TrackedDirEntry
   /** The full tracked list after the change. */
@@ -40,6 +72,8 @@ export interface TrackDirResult {
   autostart: RuntimeAutostartReport
   /** Autostart agents skipped because the owner has not reviewed them yet (POST /agents/review/accept). */
   needsReview: RuntimeAutostartSkipped[]
+  /** Every agent in the folder after the autostart pass and where it stands (as GET /tracked-dirs/agents). */
+  agents: FolderAgent[]
 }
 
 export interface UntrackDirResult {
@@ -85,6 +119,68 @@ function loadedUnder(runtime: RuntimeService, dir: string): Array<{ agentId: str
     if (containsPath(root, file)) out.push({ agentId: agent.id, filePath: agent.filePath, name: agent.name })
   }
   return out
+}
+
+/**
+ * Each .adf under `dir` (the autostart scan's walk) and where it stands.
+ * `failures` (filePath -> error) carries load errors from an autostart pass
+ * that just ran, so they reach the owner instead of a bare "not loaded".
+ */
+function folderAgents(
+  runtime: RuntimeService,
+  settings: TrackedDirsSettings,
+  dir: string,
+  maxDepth: number,
+  failures: Map<string, string> = new Map(),
+): FolderAgent[] {
+  if (!isDirectory(dir)) return []
+  const loaded = new Map<string, { id: string; name: string }>()
+  for (const agent of runtime.listAgents()) {
+    if (!agent.filePath) continue
+    try { loaded.set(canonicalizePath(agent.filePath), { id: agent.id, name: agent.name }) } catch { /* path gone */ }
+  }
+  const reviewedRaw = settings.get('reviewedAgents')
+  return runtime.scanAdfFiles([dir], maxDepth).map((filePath): FolderAgent => {
+    const fallbackName = basename(filePath, '.adf')
+    let key = filePath
+    try { key = canonicalizePath(filePath) } catch { /* keep as scanned */ }
+    const running = loaded.get(key)
+    const failure = failures.get(filePath)
+    const peek = AdfDatabase.peekBootStatusDetailed(filePath)
+    const boot = peek.status
+    if (!boot || !peek.config) {
+      if (running) return { filePath, name: running.name, agentId: running.id, status: 'loaded', autostart: false, reviewed: true }
+      return {
+        filePath,
+        name: fallbackName,
+        status: 'unreadable',
+        autostart: false,
+        reviewed: false,
+        error: peek.error ? `Not a readable .adf: ${peek.error}` : 'Not a readable .adf.',
+      }
+    }
+    const reviewed = isConfigReviewed(reviewedRaw, peek.config)
+    const base = { filePath, name: boot.agentName || fallbackName, agentId: running?.id ?? boot.agentId, autostart: boot.autostart, reviewed }
+    if (running) return { ...base, status: 'loaded' }
+    const status: FolderAgentStatus = boot.hasEncryptedIdentity
+      ? 'password_protected'
+      : !reviewed ? 'needs_review' : boot.autostart ? 'stopped' : 'not_autostart'
+    return failure ? { ...base, status, error: failure } : { ...base, status }
+  })
+}
+
+/** The stored entry for `raw`: the exact string first (a missing folder cannot be canonicalized), then the same folder under any spelling. */
+function storedMatch(existing: string[], raw: string): string | undefined {
+  return existing.find(d => d === raw) ?? (isAbsolute(raw) ? existing.find(d => sameDir(d, raw)) : undefined)
+}
+
+/** GET /tracked-dirs/agents: the agents in one tracked folder and where each stands. */
+export function listFolderAgents(runtime: RuntimeService, settings: TrackedDirsSettings, input: unknown): FolderAgentsList {
+  if (typeof input !== 'string' || input.trim() === '') throw new TrackedDirError('path is required', 400)
+  const raw = input.trim()
+  const match = storedMatch(storedDirs(settings), raw)
+  if (match === undefined) throw new TrackedDirError(`Not a tracked folder: ${raw}`, 404)
+  return { path: match, agents: folderAgents(runtime, settings, match, maxDepthOf(settings)) }
 }
 
 function describe(runtime: RuntimeService, dir: string, maxDepth: number): TrackedDirEntry {
@@ -138,12 +234,14 @@ export async function trackDir(
 
   const maxDepth = maxDepthOf(settings)
   const autostart = await runtime.autostartFromDirectories([dir], { maxDepth })
+  const failures = new Map(autostart.failed.map(f => [f.filePath, f.error] as const))
   return {
     entry: describe(runtime, dir, maxDepth),
     directories,
     absorbed,
     autostart,
     needsReview: autostart.skipped.filter(s => s.reason === 'unreviewed'),
+    agents: folderAgents(runtime, settings, dir, maxDepth, failures),
   }
 }
 
@@ -159,9 +257,7 @@ export async function untrackDir(
   if (typeof input !== 'string' || input.trim() === '') throw new TrackedDirError('path is required', 400)
   const raw = input.trim()
   const existing = storedDirs(settings)
-  // Exact stored string first (a folder that no longer exists cannot be
-  // canonicalized to match), then the same folder under any spelling.
-  const match = existing.find(d => d === raw) ?? (isAbsolute(raw) ? existing.find(d => sameDir(d, raw)) : undefined)
+  const match = storedMatch(existing, raw)
   if (match === undefined) throw new TrackedDirError(`Not a tracked folder: ${raw}`, 404)
 
   const directories = existing.filter(d => d !== match)

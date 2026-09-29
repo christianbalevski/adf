@@ -139,6 +139,18 @@ describe('TUI shell', () => {
   })
 })
 
+describe('prompt input bursts', () => {
+  it('Enter in the same tick as the typed text submits that text (no stale value)', async () => {
+    const tui = await mount()
+    await tui.waitFor('consolidator')
+    await tui.press('/')
+    await tui.waitFor(f => f.includes('› /'))
+    tui.raw('view loops')
+    tui.raw('\r')
+    await tui.waitFor(() => store.getState().activeView === 'loops')
+  })
+})
+
 describe('contracts', () => {
   it('registers the six feature views with unique ids and hotkeys, and commands without collisions', () => {
     expect(VIEWS.map(v => v.id)).toEqual(['fleet', 'chat', 'files', 'loops', 'inspect', 'runtime'])

@@ -5,15 +5,16 @@
  * optionally started) in the daemon runtime.
  */
 
-import { existsSync, mkdirSync, statSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { basename, isAbsolute, join, resolve } from 'path'
 import { AdfWorkspace } from '../adf/adf-workspace'
-import { AgentTemplatesService } from '../adf/agent-templates'
-import { markConfigReviewed } from '../services/agent-review'
+import { AgentTemplatesService, templateFilePath, templatesDir } from '../adf/agent-templates'
+import { autoLockFields, buildConfigSummary, deriveReviewIdentity, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { readAdfAttestations, verifyAttestation } from '../services/attestation.service'
 import { canonicalizePath, isSameOrSubPath } from '../utils/tracked-paths'
 import { generateAgentName } from '../../shared/utils/agent-names'
-import type { AgentTemplateListResult, ProviderConfig } from '../../shared/types/ipc.types'
+import type { AgentConfigSummary, AgentTemplateListResult, ProviderConfig } from '../../shared/types/ipc.types'
 import type { RuntimeService } from '../runtime/runtime-service'
 import type { DaemonIdentity, DaemonIdentityStatus } from './daemon-identity'
 
@@ -40,6 +41,10 @@ export type AgentCreateErrorCode =
   | 'name_taken'
   | 'template_missing'
   | 'template_unreviewed'
+  | 'template_invalid'
+  | 'password_required'
+  | 'wrong_password'
+  | 'load_failed'
 
 export class AgentCreateError extends Error {
   constructor(
@@ -73,6 +78,26 @@ function isTempLocation(p: string): boolean {
   })
 }
 
+/** `<userData>/templates-trash`: where the daemon puts deleted templates (Studio uses the OS trash). */
+export function templatesTrashDir(): string {
+  return join(templatesDir(), '..', 'templates-trash')
+}
+
+/** Move a template file (and any WAL sidecars) into the trash folder under a unique name. */
+export function moveToTemplatesTrash(filePath: string): string {
+  const dir = resolve(templatesTrashDir())
+  mkdirSync(dir, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const stem = basename(filePath, '.adf')
+  let dest = join(dir, `${stem}-${stamp}.adf`)
+  for (let n = 2; existsSync(dest); n++) dest = join(dir, `${stem}-${stamp}-${n}.adf`)
+  renameSync(filePath, dest)
+  for (const side of ['-wal', '-shm']) {
+    try { if (existsSync(`${filePath}${side}`)) renameSync(`${filePath}${side}`, `${dest}${side}`) } catch { /* best effort */ }
+  }
+  return dest
+}
+
 export class DaemonAgentFactory {
   private templates: AgentTemplatesService | null = null
 
@@ -82,18 +107,126 @@ export class DaemonAgentFactory {
     runtime: RuntimeService
   }) {}
 
-  private templatesService(): AgentTemplatesService {
+  /** Studio's templates service, over the same `<userData>/templates` folder. */
+  templatesService(): AgentTemplatesService {
     if (!this.templates) {
       this.templates = new AgentTemplatesService({
         settings: this.deps.settings,
         getOwnerDid: () => this.deps.identity.service.getOwnerDid(),
         notifyChanged: () => {},
+        // No OS trash without Electron: deleted templates go to a folder of
+        // their own next to the templates folder. Never a hard delete.
+        trashItem: async (filePath) => { moveToTemplatesTrash(filePath) },
       })
     }
     return this.templates
   }
 
-  private requireIdentity(): void {
+  /**
+   * Studio's TEMPLATE_CHECK_REVIEW: the same review summary the agent review
+   * dialog shows, built for a template opened as a temporary workspace.
+   */
+  templateReview(id: string): { needsReview: boolean; reviewed: boolean; summary: AgentConfigSummary } {
+    this.requireIdentity()
+    const file = this.existingTemplateFile(id)
+    const workspace = AdfWorkspace.open(file)
+    try {
+      const config = workspace.getAgentConfig()
+      const reviewed = isConfigReviewed(this.deps.settings.get('reviewedAgents'), config)
+      return { needsReview: !reviewed, reviewed, summary: this.reviewSummary(workspace) }
+    } finally {
+      try { workspace.close() } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Studio's TEMPLATE_REVIEW_ACCEPT: claim the FILE with a fresh identity
+   * under this owner, auto-lock the security fields, mark it reviewed.
+   */
+  acceptTemplateReview(id: string, password?: string): { reviewed: true } {
+    this.requireIdentity()
+    const file = this.existingTemplateFile(id)
+    const service = this.deps.identity.service
+    const workspace = AdfWorkspace.open(file)
+    try {
+      if (!service.getEnvelopeRecipients()) {
+        throw new AgentCreateError('identity_not_ready', 'Owner and runtime encryption keys are unavailable (keystore locked?), so the template cannot be claimed securely.', 409, this.deps.identity.status())
+      }
+      if (workspace.isPasswordProtected()) {
+        if (!password) throw new AgentCreateError('password_required', 'This template is password-protected. Enter its password to accept it.', 400)
+        let derivedKey: Buffer
+        try {
+          derivedKey = workspace.unlockWithPassword(password)
+        } catch {
+          throw new AgentCreateError('wrong_password', 'Wrong password', 403)
+        }
+        workspace.removePassword(derivedKey)
+      }
+      service.claimWorkspace(workspace)
+      const config = workspace.getAgentConfig()
+      const locked = new Set(config.locked_fields ?? [])
+      for (const field of autoLockFields(config)) locked.add(field)
+      config.locked_fields = [...locked]
+      workspace.setAgentConfig(config)
+      this.deps.settings.set('reviewedAgents', markConfigReviewed(this.deps.settings.get('reviewedAgents'), config))
+      return { reviewed: true }
+    } finally {
+      try { workspace.close() } catch { /* ignore */ }
+    }
+  }
+
+  /** Absolute path of template `id`, or a 404. */
+  existingTemplateFile(id: string): string {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id) || id.includes('..')) {
+      throw new AgentCreateError('template_missing', 'Unknown template.', 404)
+    }
+    const file = templateFilePath(id)
+    // Shipped templates are code: a first call before any list creates them.
+    if (!existsSync(file)) this.templatesService().ensureShipped()
+    if (!existsSync(file)) throw new AgentCreateError('template_missing', `${id}.adf is not in the templates folder.`, 404)
+    return file
+  }
+
+  /** Studio's buildReviewSummaryFor (relocatable: false), provider probe left out. */
+  private reviewSummary(workspace: AdfWorkspace): AgentConfigSummary {
+    const config = workspace.getAgentConfig()
+    const svc = this.deps.identity.service
+    const agentDid = workspace.getDid()
+    const ownerAtt = readAdfAttestations(workspace)
+      .filter((a) => a.role === 'owner')
+      .find((a) => verifyAttestation(a, agentDid ? { expectedSubject: agentDid } : undefined))
+    const credentialSlots = workspace.readEnvelopeSlots('credentials') ?? []
+    const identity = deriveReviewIdentity({
+      agentDid,
+      fileOwnerDid: ownerAtt?.issuer ?? workspace.getMeta('adf_owner_did') ?? null,
+      fileRuntimeDid: workspace.getMeta('adf_runtime_did') ?? null,
+      localOwnerDid: svc.getOwnerDid(),
+      localRuntimeDid: svc.getRuntimeDid(),
+      identityEnvelope: workspace.getEnvelopeState('identity'),
+      credentialsEnvelope: workspace.getEnvelopeState('credentials'),
+      sharePasswordSet: credentialSlots.some((s) => s.type === 'password'),
+      filePasswordProtected: workspace.isPasswordProtected(),
+      ownerKeyAvailable: svc.getOwnerEncPrivateKey() !== null,
+    })
+    const appProviders = (this.deps.settings.get('providers') as ProviderConfig[] | undefined) ?? []
+    const embedded = config.providers?.find((p) => p.id === config.model.provider)
+    const localProvider =
+      appProviders.find((p) => p.id === config.model.provider) ??
+      (embedded ? appProviders.find((p) => p.type === embedded.type) : undefined)
+    return {
+      ...buildConfigSummary(config, identity),
+      provider: {
+        configuredId: config.model.provider,
+        configuredType: embedded?.type,
+        modelId: config.model.model_id,
+        // Studio probes credentials here; the daemon only says whether a local provider matches.
+        status: localProvider ? 'unchecked' : 'missing',
+        ...(localProvider ? { resolvedLocalId: localProvider.id } : {}),
+      },
+    }
+  }
+
+  requireIdentity(): void {
     if (this.deps.identity.isReady()) return
     const identity = this.deps.identity.status()
     if (identity.status === 'ready') return
@@ -187,7 +320,16 @@ export class DaemonAgentFactory {
     }
 
     // --- runtime ---
-    const ref = await this.deps.runtime.loadAgent(filePath, { enforceReviewGate: false })
+    // The file is made (reviewed, tracked) even when it cannot load yet (e.g. no
+    // provider configured): say so, so a retry under the same name isn't a
+    // puzzling name_taken.
+    let ref: Awaited<ReturnType<typeof this.deps.runtime.loadAgent>>
+    try {
+      ref = await this.deps.runtime.loadAgent(filePath, { enforceReviewGate: false })
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err)
+      throw new AgentCreateError('load_failed', `Created ${filePath}, but it could not load: ${why} Fix that, then load it (Fleet: o, or POST /agents/load).`, 422)
+    }
     let started = false
     if (input.start === true) {
       await this.deps.runtime.startAgent(ref.id)

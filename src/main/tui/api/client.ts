@@ -7,6 +7,7 @@
 import * as daemonUrlNs from '../../cli/daemon-url'
 import { cjs } from '../interop'
 import { EventStream, type EventStreamOptions } from './sse'
+import { normalizeRuntime } from './normalize'
 import {
   DaemonError,
   MAIN_LOOP,
@@ -24,6 +25,7 @@ import {
   type AgentMcpDiagnostics,
   type AgentTriggersDiagnostics,
   type AgentWsDiagnostics,
+  type AgentToolsResult,
   type AskAnswerResult,
   type AskListResult,
   type AutostartReport,
@@ -71,6 +73,7 @@ import {
   type TaskResolveInput,
   type TaskResolveResult,
   type TaskAlwaysApproveResult,
+  type FolderAgentsList,
   type TrackedDirsList,
   type TrackDirResult,
   type UntrackDirResult,
@@ -244,8 +247,9 @@ export class DaemonClient {
     return this.get('/health')
   }
 
-  runtime(): Promise<RuntimeOverview> {
-    return this.get('/runtime')
+  /** GET /runtime, normalized: a partial or older daemon's response has every section the views read. */
+  async runtime(): Promise<RuntimeOverview> {
+    return normalizeRuntime(await this.get<unknown>('/runtime'))
   }
 
   providers(): Promise<ProviderDiagnostics> {
@@ -682,6 +686,11 @@ export class DaemonClient {
     return this.del('/tracked-dirs', { path, unload: options.unload })
   }
 
+  /** The agents in one tracked folder and where each stands (loaded, needs review, not autostart, stopped + load error). */
+  folderAgents(path: string): Promise<FolderAgentsList> {
+    return this.get('/tracked-dirs/agents', { path })
+  }
+
   asks(agentId: string): Promise<AskListResult> {
     return this.get(`/agents/${enc(agentId)}/asks`)
   }
@@ -759,6 +768,72 @@ export class DaemonClient {
 
   agentWs(agentId: string): Promise<AgentWsDiagnostics> {
     return this.get(`/agents/${enc(agentId)}/runtime/ws`)
+  }
+
+  // --- agent templates (/templates; the list is `templates()`) — owner: src/main/tui/templates ---
+
+  /** Summary + contents (config, seed files, extra files) + whether it is the default. */
+  templateDetail(id: string): Promise<import('../templates/model').TemplateDetail> {
+    return this.get(`/templates/${enc(id)}`)
+  }
+
+  /** Blank, or a duplicate of `fromId`. 201 `{ id, template }`. */
+  createTemplate(input: { name: string; fromId?: string }): Promise<import('../templates/model').TemplateWriteResult> {
+    return this.post('/templates', input)
+  }
+
+  /** Rename and/or notes (`''` clears one). A rename moves the file: use the returned id. */
+  updateTemplate(id: string, patch: { name?: string; description?: string; warning?: string }): Promise<import('../templates/model').TemplateWriteResult> {
+    return this.patch(`/templates/${enc(id)}`, patch)
+  }
+
+  /** Moves the file to the daemon's templates-trash folder (never a hard delete). */
+  deleteTemplate(id: string): Promise<{ deleted: true; id: string; trashFolder: string; defaultId: string }> {
+    return this.del(`/templates/${enc(id)}`)
+  }
+
+  setDefaultTemplate(id: string): Promise<{ defaultId: string }> {
+    return this.post(`/templates/${enc(id)}/default`)
+  }
+
+  /** Shipped templates only: back to the shipped version. */
+  resetTemplate(id: string): Promise<import('../templates/model').TemplateWriteResult> {
+    return this.post(`/templates/${enc(id)}/reset`)
+  }
+
+  templateReview(id: string): Promise<import('../templates/model').TemplateReview> {
+    return this.get(`/templates/${enc(id)}/review`)
+  }
+
+  /** Claims the file under this owner. 400 password_required / 403 wrong_password / 409 identity_not_ready. */
+  acceptTemplateReview(id: string, password?: string): Promise<import('../templates/model').TemplateWriteResult & { reviewed: true }> {
+    return this.post(`/templates/${enc(id)}/review/accept`, password ? { password } : {})
+  }
+
+  putTemplateConfig(id: string, config: AgentConfig): Promise<{ id: string; success: true }> {
+    return this.put(`/templates/${enc(id)}/config`, { config })
+  }
+
+  putTemplateFile(id: string, path: string, content: string): Promise<{ id: string; path: string; success: true }> {
+    return this.put(`/templates/${enc(id)}/files`, { path, content })
+  }
+
+  removeTemplateFile(id: string, path: string): Promise<{ id: string; path: string; success: true }> {
+    return this.del(`/templates/${enc(id)}/files`, { path })
+  }
+
+  // --- agent tool catalog (Inspect › Settings, /tools) -----------------------
+
+  /** Built-in + MCP + declared tools with declared state and descriptions (read-only; write via putConfig). */
+  agentTools(agentId: string): Promise<AgentToolsResult> {
+    return this.get(`/agents/${enc(agentId)}/tools`)
+  }
+
+  // --- context usage (/context) ------------------------------------------------
+
+  /** One loop's context breakdown: categories (biggest `items` per category), compact threshold, total. */
+  agentContext(agentId: string, loop?: string, items?: number): Promise<import('./types').AgentContextResult> {
+    return this.get(`/agents/${enc(agentId)}/context`, { loop: loop && loop !== MAIN_LOOP ? loop : undefined, items })
   }
 }
 

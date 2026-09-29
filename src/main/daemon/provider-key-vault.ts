@@ -10,8 +10,10 @@
  */
 
 import type { SecretBackend } from '../services/owner-secret-store'
+import { providerKeyAccount } from '../services/provider-key-store'
 
-export const SECRET_STORE_KEY_STORAGE = 'secret-store' as const
+// Naming lives in provider-key-store.ts so Studio resolves the same entries.
+export { SECRET_STORE_KEY_STORAGE } from '../services/provider-key-store'
 
 export interface ProviderKeyVault {
   /** False while the store is locked (a passphrase file not unlocked yet, or none created). */
@@ -31,7 +33,8 @@ export class ProviderKeyVaultLockedError extends Error {
 
 /**
  * `scope` keeps two daemons with different settings files apart in one
- * keychain (same hash as the daemon runtime key account).
+ * keychain: settingsScope(settingsPath) from provider-key-store.ts (same hash
+ * as the daemon runtime key account).
  */
 export class SecretBackendProviderKeyVault implements ProviderKeyVault {
   private readonly cache = new Map<string, string | null>()
@@ -39,7 +42,7 @@ export class SecretBackendProviderKeyVault implements ProviderKeyVault {
   constructor(private readonly backend: SecretBackend, private readonly scope: string) {}
 
   private account(providerId: string): string {
-    return `provider-api-key:${this.scope}:${providerId}`
+    return providerKeyAccount(this.scope, providerId)
   }
 
   available(): boolean {

@@ -16,6 +16,10 @@ import { EventsTab } from './EventsTab'
 import { ConfigTab } from './ConfigTab'
 import { AdaptersTab, IdentityTab, LogsTab, McpTab, RuntimeTab, TablesTab, UsageTab } from './DiagTabs'
 import { TasksTab } from './TasksTab'
+import { CHOICE_OVERLAY, COMPACTION_OVERLAY, INSTRUCTIONS_OVERLAY, SettingsTab, TOOLS_OVERLAY } from './SettingsTab'
+import { ToolsOverlay } from './ToolsDialog'
+import { InstructionsOverlay } from './InstructionsDialog'
+import { CompactionOverlay, SettingChoiceOverlay } from './SettingDialogs'
 import { ThemeOverlay } from './overlays'
 import { MODEL_OVERLAY, ModelOverlay } from './model-picker'
 import { EVENT_KEYS } from './event-keys'
@@ -46,6 +50,7 @@ function InspectView({ width: paneWidth, height, focused }: ViewProps) {
     const props = { agentId, width, height: bodyHeight, focused }
     switch (tab) {
       case 'events': body = <EventsTab width={width} height={bodyHeight} focused={focused} scope="agent" filters={state.events} update={events => update({ events })} json={state.json} />; break
+      case 'settings': body = <SettingsTab key={agentId} {...props} label={label} />; break
       case 'config': body = <ConfigTab key={agentId} {...props} label={label} />; break
       case 'diag': body = <RuntimeTab key={agentId} {...props} />; break
       case 'usage': body = <UsageTab key={agentId} {...props} />; break
@@ -72,20 +77,33 @@ const inspect: ViewDefinition = {
   title: 'Inspect',
   key: '5',
   component: InspectView,
-  keyHints: scope => (readInspectState(scope.state()).tab === 'tasks'
-    ? [
+  keyHints: scope => {
+    const tab = readInspectState(scope.state()).tab
+    if (tab === 'settings') {
+      return [
+        { keys: 'enter', label: 'open/toggle' },
+        { keys: 'e', label: 'instructions in $EDITOR' },
+        { keys: 'l', label: 'lock for agent' },
+        { keys: 'r', label: 'reload' },
+        { keys: 'left right', label: 'tab' },
+      ]
+    }
+    if (tab === 'tasks') {
+      return [
         { keys: 'enter', label: 'detail' },
         { keys: 'f', label: 'filter' },
         { keys: 'y', label: 'approve' },
         { keys: 'n', label: 'reject' },
         { keys: 'a', label: 'always' },
       ]
-    : [
-        { keys: 'left right', label: 'tab' },
-        { keys: 'enter', label: 'detail' },
-        { keys: 'r', label: 'refresh' },
-        { keys: 'e', label: 'edit config' },
-      ]),
+    }
+    return [
+      { keys: 'left right', label: 'tab' },
+      { keys: 'enter', label: 'detail' },
+      { keys: 'r', label: 'refresh' },
+      { keys: 'e', label: 'edit config' },
+    ]
+  },
   helpKeys: [
     { keys: [{ keys: 'left right', label: `The selected agent’s tabs: ${TABS.map(t => t.title).join(' ')} ([ ])` }] },
     {
@@ -97,6 +115,42 @@ const inspect: ViewDefinition = {
         { keys: 'f', label: 'Logs: follow' },
         { keys: 'n p', label: 'Tables: next / previous page' },
         { keys: 'r', label: 'Reload' },
+      ],
+    },
+    {
+      title: 'Settings (instructions, tools, compaction, autonomy, messaging, host access)',
+      keys: [
+        { keys: 'enter space', label: 'Open the dialog (Instructions, Tools, Compaction, Visibility, Send mode) or flip the switch; Autonomous and Host access ask first' },
+        { keys: 'e', label: 'Edit the instructions in $EDITOR (also /instructions edit)' },
+        { keys: 'l', label: 'Lock / unlock that section for the agent (its sys_update_config; you can always change it)' },
+        { keys: 'r', label: 'Reload config and context use' },
+      ],
+    },
+    {
+      title: 'Tools dialog (/tools [filter])',
+      keys: [
+        { keys: 'space enter', label: 'Enable / disable (on a group header: the whole group, locked tools skipped)' },
+        { keys: 'v', label: 'Show / hide in the agent’s tool list (hidden tools stay callable from code)' },
+        { keys: 'r', label: 'Require approval (restricted): an LLM call waits for you' },
+        { keys: 'l', label: 'Lock / unlock a built-in tool for the agent (locked: enable and show are fixed until unlocked)' },
+        { keys: '/', label: 'Filter by name or description (Enter keeps it, Esc clears)' },
+      ],
+    },
+    {
+      title: 'Instructions dialog (/instructions)',
+      keys: [
+        { keys: 'ctrl+s', label: 'Save (re-reads first; asks if they changed on the daemon meanwhile)' },
+        { keys: 'enter', label: 'New line' },
+        { keys: 'ctrl+o', label: 'Continue in $EDITOR' },
+        { keys: 'esc', label: 'Cancel (asks when there are unsaved changes)' },
+      ],
+    },
+    {
+      title: 'Compaction dialog (/compaction [tokens|default])',
+      keys: [
+        { keys: 'enter e', label: 'Set the threshold of main or an inner loop (80000 or 80k; default / inherit resets; empty keeps it)' },
+        { keys: 'd', label: 'Back to the default (main) or main’s threshold (an inner loop)' },
+        { keys: 'c', label: 'Compact that loop now (asks)' },
       ],
     },
     {
@@ -120,6 +174,10 @@ const inspect: ViewDefinition = {
   overlays: {
     'inspect.theme': ThemeOverlay,
     [MODEL_OVERLAY]: ModelOverlay,
+    [TOOLS_OVERLAY]: ToolsOverlay,
+    [INSTRUCTIONS_OVERLAY]: InstructionsOverlay,
+    [COMPACTION_OVERLAY]: CompactionOverlay,
+    [CHOICE_OVERLAY]: SettingChoiceOverlay,
   },
 }
 

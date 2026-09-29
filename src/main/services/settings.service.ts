@@ -8,6 +8,7 @@ import { writeJsonAtomic, readJsonOrQuarantine } from '../utils/atomic-json'
 import type { ProviderConfig } from '../../shared/types/ipc.types'
 import type { AdapterRegistration } from '../../shared/types/channel-adapter.types'
 import { OwnerIdentityService } from './owner-identity.service'
+import { KeychainProviderKeys, SECRET_STORE_KEY_STORAGE } from './provider-key-store'
 
 /** Prefix used to mark values encrypted via safeStorage in the JSON file */
 const SAFE_STORAGE_PREFIX = 'safe:'
@@ -218,6 +219,7 @@ export class SettingsService {
     if (key === 'adapters') {
       return withBuiltInAdapterRegistrations(this.data.adapters as AdapterRegistration[] | undefined)
     }
+    if (key === 'providers') return this.withProviderKeys(this.data.providers, false)
     return this.data[key]
   }
 
@@ -225,6 +227,7 @@ export class SettingsService {
     // Compute settings are updated from several independent controls. Merge
     // partial updates so an execution-target write cannot erase machine or
     // host-access settings (and vice versa).
+    if (key === 'providers') value = this.sealProviderKeys(value)
     this.data[key] = mergeSettingsValue(this.data[key], key, value)
     this.scheduleSave(key)
     if (IDENTITY_CRITICAL_KEYS.has(key)) this.flush()
@@ -234,6 +237,7 @@ export class SettingsService {
     const all: Record<string, unknown> = {
       ...this.data,
       adapters: withBuiltInAdapterRegistrations(this.data.adapters as AdapterRegistration[] | undefined),
+      ...('providers' in this.data ? { providers: this.withProviderKeys(this.data.providers, true) } : {}),
     }
     // Never ship key material to the renderer — even encrypted blobs have no
     // business there, and the plaintext fallback (no safeStorage) definitely doesn't.
@@ -254,7 +258,65 @@ export class SettingsService {
   /** Look up a provider by its id (e.g. 'anthropic' or 'custom:m3k9x1'). */
   getProvider(id: string): ProviderConfig | undefined {
     const providers = (this.data['providers'] as ProviderConfig[]) ?? []
-    return providers.find((p) => p.id === id)
+    const provider = providers.find((p) => p.id === id)
+    return provider ? this.withProviderKey(provider, false) : undefined
+  }
+
+  // --- Provider keys held in the OS keychain ('secret-store') ---
+  //
+  // Providers added from the terminal app (daemon) keep their key in the OS
+  // keychain under the account naming of provider-key-store.ts, scoped by this
+  // settings file's path, with an empty apiKey in the file. Reads fill the key
+  // in (cached; the keychain is only opened once a secret-store provider is
+  // read), writes never put it back into the file. Studio-added providers keep
+  // their existing storage.
+
+  private providerKeyStore: KeychainProviderKeys | null = null
+
+  private providerKeys(): KeychainProviderKeys {
+    if (!this.providerKeyStore) this.providerKeyStore = new KeychainProviderKeys(getSettingsPath)
+    return this.providerKeyStore
+  }
+
+  /**
+   * `annotate` (renderer reads): a key that cannot be resolved gets
+   * `apiKeyStatus` so the provider settings can say why instead of showing an
+   * empty key.
+   */
+  private withProviderKey(provider: ProviderConfig, annotate: boolean): ProviderConfig {
+    if (provider.apiKeyStorage !== SECRET_STORE_KEY_STORAGE || provider.apiKey) return provider
+    const keys = this.providerKeys()
+    if (!keys.available()) return annotate ? { ...provider, apiKeyStatus: 'unavailable' } : provider
+    const apiKey = keys.get(provider.id)
+    if (apiKey) return { ...provider, apiKey }
+    return annotate ? { ...provider, apiKeyStatus: 'missing' } : provider
+  }
+
+  private withProviderKeys(providers: unknown, annotate: boolean): unknown {
+    if (!Array.isArray(providers)) return providers
+    if (!providers.some((p) => (p as ProviderConfig | null)?.apiKeyStorage === SECRET_STORE_KEY_STORAGE)) return providers
+    return providers.map((entry) =>
+      entry && typeof entry === 'object' ? this.withProviderKey(entry as ProviderConfig, annotate) : entry)
+  }
+
+  /**
+   * A write never puts a secret-store provider's key in the file. A key that
+   * arrives (echoed back from a read, or newly typed in Studio) goes to the
+   * keychain; when the keychain is unusable it is dropped (logged, never
+   * written as plaintext) and the provider settings show why.
+   */
+  private sealProviderKeys(value: unknown): unknown {
+    if (!Array.isArray(value)) return value
+    return value.map((entry) => {
+      if (!entry || typeof entry !== 'object') return entry
+      const { apiKeyStatus: _transient, ...provider } = entry as ProviderConfig
+      if (provider.apiKeyStorage !== SECRET_STORE_KEY_STORAGE || !provider.apiKey) return provider
+      const keys = this.providerKeys()
+      if (keys.get(provider.id) !== provider.apiKey && !keys.set(provider.id, provider.apiKey)) {
+        console.error(`[Settings] Provider "${provider.id}" keeps its key in the OS keychain, which is not usable here: the new key was not saved.`)
+      }
+      return { ...provider, apiKey: '' }
+    })
   }
 
   /**

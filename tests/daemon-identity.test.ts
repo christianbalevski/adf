@@ -274,6 +274,18 @@ describe('daemon agent creation', () => {
     expect(existsSync(join(agentsDir, 'agent-2.adf'))).toBe(false)
   }, 60_000)
 
+  it('422 load_failed when the new file cannot load (e.g. no provider): the file stays and the message says so', async () => {
+    const { server, runtime } = makeDaemon()
+    await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
+    runtime.loadAgent = (async () => { throw new Error('Provider "" not found.') }) as typeof runtime.loadAgent
+    const res = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir } })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe('load_failed')
+    expect(res.json().error).toContain('Provider "" not found.')
+    expect(res.json().error).toContain(join(agentsDir, 'agent-1.adf'))
+    expect(existsSync(join(agentsDir, 'agent-1.adf'))).toBe(true)
+  }, 60_000)
+
   it('sys_create_adf: DID-less child without an identity, sealed + attested child with one', async () => {
     const { server, identity } = makeDaemon()
     const parentPath = join(agentsDir, 'agent-1.adf')

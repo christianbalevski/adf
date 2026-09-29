@@ -7,6 +7,7 @@ import { useTheme, stateColor } from '../../app/theme'
 import { Spinner } from '../../ui/Spinner'
 import { formatCount, truncate } from '../../ui/text'
 import type { TurnStats } from './model'
+import { pressureOf } from '../../context/model'
 
 export interface FooterProps {
   width: number
@@ -17,6 +18,8 @@ export interface FooterProps {
   since: number
   model: string | undefined
   error?: string
+  /** Context used vs the loop's auto-compact threshold (percent), when known: "ctx 42%". */
+  contextPercent?: number | null
 }
 
 function elapsed(ms: number): string {
@@ -26,7 +29,7 @@ function elapsed(ms: number): string {
   return `${m}m${String(s % 60).padStart(2, '0')}s`
 }
 
-export function Footer({ width, running, state, turn, since, model, error }: FooterProps) {
+export function Footer({ width, running, state, turn, since, model, error, contextPercent }: FooterProps) {
   const theme = useTheme()
   const g = theme.glyph
   const [now, setNow] = useState(Date.now())
@@ -41,6 +44,13 @@ export function Footer({ width, running, state, turn, since, model, error }: Foo
     ? `${g.arrow === '->' ? '^' : '↑'}${formatCount(turn.input)} ${g.arrow === '->' ? 'v' : '↓'}${formatCount(turn.output)} tok`
     : ''
   const modelText = truncate(turn?.model ?? model ?? '', 28)
+  const ctxPressure = contextPercent == null ? null : pressureOf(contextPercent)
+  const ctx = contextPercent == null ? null : (
+    <>
+      <Text color={theme.color.dim}> {g.sep} </Text>
+      <Text color={ctxPressure === 'high' ? theme.color.error : ctxPressure === 'warn' ? theme.color.warn : theme.color.dim} bold={ctxPressure !== 'ok'}>ctx {contextPercent}%</Text>
+    </>
+  )
 
   if (error) {
     return <Box width={width} height={1}><Text wrap="truncate-end" color={theme.color.error}>{g.cross} {error}</Text></Box>
@@ -53,6 +63,7 @@ export function Footer({ width, running, state, turn, since, model, error }: Foo
           <Spinner label={`${state}${g.ellipsis}`} color={theme.color.live} />
           <Text color={theme.color.muted}> {elapsed(now - open)}</Text>
           {tokens ? <Text color={theme.color.dim}> {g.sep} {tokens}</Text> : null}
+          {ctx}
           {modelText ? <Text color={theme.color.dim}> {g.sep} {modelText}</Text> : null}
           <Text color={theme.color.dim}> {g.sep} </Text>
           <Text color={theme.color.accent}>esc</Text>
@@ -68,6 +79,7 @@ export function Footer({ width, running, state, turn, since, model, error }: Foo
         <Text color={stateColor(theme, state)}>{g.ring} {state}</Text>
         {last ? <Text color={theme.color.dim}> {g.sep} {last}</Text> : null}
         {tokens ? <Text color={theme.color.dim}> {g.sep} {tokens}</Text> : null}
+        {ctx}
         {modelText ? <Text color={theme.color.dim}> {g.sep} {modelText}</Text> : null}
       </Text>
     </Box>

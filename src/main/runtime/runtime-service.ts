@@ -64,6 +64,7 @@ import { emitUmbilicalEvent } from './emit-umbilical'
 import { getUmbilicalReplayBuffer } from './umbilical-replay-buffer'
 import { issueOwnerAttestation } from '../services/attestation.service'
 import { mapWithConcurrency } from '../utils/concurrency'
+import { buildToolDiscovery, type ToolDiscoveryEntry } from '../tools/built-in/sys-get-config.tool'
 
 /** Max agents loading concurrently during autostart. */
 const AUTOSTART_CONCURRENCY = 5
@@ -1180,6 +1181,18 @@ export class RuntimeService extends EventEmitter {
   }
 
   /**
+   * The agent's tool catalog: every built-in tool main's registry holds, every
+   * MCP tool its servers advertise, and every declared tool, each with its
+   * declared state (enabled / visible / restricted / locked), source and
+   * description. The same list `sys_get_config` gives the agent (read-only;
+   * change tools with PUT /config).
+   */
+  getAgentTools(agentId: string): { agentId: string; tools: ToolDiscoveryEntry[] } {
+    const managed = this.requireAgent(agentId)
+    return { agentId: managed.id, tools: buildToolDiscovery(managed.config, managed.agent.registry ?? null) }
+  }
+
+  /**
    * Set the agent's display state (same surface as the fleet map's state set).
    *
    * Always routed through the executor so the normal `state_changed` event
@@ -1662,6 +1675,23 @@ export class RuntimeService extends EventEmitter {
     if (!holder) throw new Error(`Ask request "${requestId}" not found${loop ? ` in loop "${loop}"` : ''}`)
     holder.executor.resolveAsk(requestId, answer)
     return { agentId: managed.id, requestId, loop: holder.loop, answered: true }
+  }
+
+  /**
+   * One loop's per-request context breakdown (Studio's context modal; daemon
+   * GET /agents/:id/context). `breakdown` is null when that loop has no live
+   * executor (disabled, never woken, idle-swept) or it is half-initialized.
+   */
+  getAgentContextBreakdown(agentId: string, loop?: string): { agentId: string; loop: string; config: AgentConfig; breakdown: import('../../shared/types/ipc.types').ContextBreakdown | null } {
+    const managed = this.requireAgent(agentId)
+    const loopName = this.requireLoopName(managed, loop)
+    const executor = loopName === MAIN_LOOP ? managed.agent.executor : managed.agent.loopPool.getRuntime(loopName)?.executor
+    return {
+      agentId: managed.id,
+      loop: loopName,
+      config: managed.agent.workspace.getAgentConfig(),
+      breakdown: executor?.getContextBreakdown() ?? null,
+    }
   }
 
   /** Compact one loop's history now (Studio's /compact). Refused mid-turn. */
