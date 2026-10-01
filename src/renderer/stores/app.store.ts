@@ -23,14 +23,17 @@ export type ChatPlacement = 'side' | 'center'
 export type ChatWidth = 'comfortable' | 'full'
 
 /**
- * Global, persisted (settings store): interface typeface. Presets are just
- * family stacks that fall back to the system stack when the face is not
- * installed — nothing is bundled or fetched. `custom` reads `uiFontCustom`.
+ * Global, persisted (settings store): interface typeface. `inter-tight` (the
+ * default) is the bundled brand face; the other presets are family stacks
+ * that fall back to the system stack when the face is not installed.
+ * `custom` reads `uiFontCustom`.
  */
-export type UiFont = 'system' | 'segoe' | 'inter' | 'roboto' | 'sf' | 'calibri' | 'verdana' | 'georgia' | 'custom'
+export type UiFont = 'inter-tight' | 'system' | 'segoe' | 'inter' | 'roboto' | 'sf' | 'calibri' | 'verdana' | 'georgia' | 'custom'
+export const UI_FONT_DEFAULT: UiFont = 'inter-tight'
 export const UI_FONT_SYSTEM_STACK =
   "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif"
 export const UI_FONT_STACKS: Record<Exclude<UiFont, 'custom'>, string> = {
+  'inter-tight': `'Inter Tight Variable', ${UI_FONT_SYSTEM_STACK}`,
   system: UI_FONT_SYSTEM_STACK,
   segoe: `'Segoe UI Variable', 'Segoe UI', ${UI_FONT_SYSTEM_STACK}`,
   inter: `'Inter', ${UI_FONT_SYSTEM_STACK}`,
@@ -42,11 +45,12 @@ export const UI_FONT_STACKS: Record<Exclude<UiFont, 'custom'>, string> = {
 }
 /**
  * Picker rows. `family` is the face to probe for on this machine (null for
- * the system stack, which always resolves) so the picker can flag presets
+ * the bundled face and the system stack, which always resolve) so the picker can flag presets
  * that would silently fall back — on Windows, Inter/SF/Roboto usually would.
  */
 export const UI_FONT_PRESETS: { value: Exclude<UiFont, 'custom'>; label: string; family: string | null }[] = [
-  { value: 'system', label: 'System default', family: null },
+  { value: 'inter-tight', label: 'Inter Tight', family: null },
+  { value: 'system', label: 'System', family: null },
   { value: 'segoe', label: 'Segoe UI', family: 'Segoe UI' },
   { value: 'inter', label: 'Inter', family: 'Inter' },
   { value: 'roboto', label: 'Roboto', family: 'Roboto' },
@@ -342,7 +346,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sidebarWidth: loadStoredSize(SIDEBAR_WIDTH_KEY, SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX),
   rightPanelCollapsed: false,
   theme: 'system',
-  uiFont: 'system',
+  uiFont: UI_FONT_DEFAULT,
   uiFontCustom: '',
   uiScale: 1,
   passwordDialogOpen: false,

@@ -95,7 +95,7 @@ export function IconPicker({
           ref={hostRef}
           role="dialog"
           aria-label="Icon picker"
-          className="absolute left-0 top-full mt-1 z-50 rounded-[var(--adf-ui-container-radius)] overflow-hidden shadow-card"
+          className="absolute left-0 top-full mt-1 z-50 rounded-[var(--adf-ui-container-radius)] overflow-hidden shadow-float"
         />
       )}
     </div>

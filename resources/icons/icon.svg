@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-510.6 -2225.05 2976.9 2976.9" width="1024" height="1024">
+  <title>ADF Studio</title>
+  <!-- App icon master. The .A mark (adf-org/brand/logo/adf-mark-light.svg,
+       unchanged geometry and colours) on a solid paper (#ffffff, light paper token) rounded
+       square. The square is the mark's bounding box plus one dot diameter
+       (510.6) of clear space each side; corner radius 22.5%.
+       Full-bleed: Windows/Linux. scripts/generate-icons.mjs insets it to the
+       Apple 824/1024 grid for macOS. -->
+  <rect x="-510.6" y="-2225.05" width="2976.9" height="2976.9" rx="670" fill="#ffffff"/>
+  <circle cx="255.3" cy="-238.5" r="255.3" fill="#2f5bea"/>
+  <path transform="translate(562.1 0)" fill="#111111" d="M299.6 0H11.2L536.8 -1490H869.2L1393.6 0H1106.4L708.4 -1184.4H696.4ZM309.6 -584.4H1094.8V-367.6H309.6Z"/>
+</svg>

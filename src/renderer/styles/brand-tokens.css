@@ -1,0 +1,181 @@
+/*
+ * VENDORED from adf-org/brand/tokens.css (itself generated from
+ * brand/tokens.json by brand/build-tokens.mjs). Do not edit here.
+ * Regenerate: node scripts/check-brand-tokens.mjs --write
+ * Check:      node scripts/check-brand-tokens.mjs  (ADF_ORG_DIR overrides the sibling ../adf-org)
+ * ---- vendored content below; do not edit ---- */
+/*
+ * ADF design tokens (physics paper). GENERATED from brand/tokens.json by
+ * brand/build-tokens.mjs; do not edit by hand.
+ *
+ * Light is the default. Dark applies when the OS prefers dark and the page has
+ * not set data-theme="light", or when <html data-theme="dark">.
+ * Tokens such as --particle are "r g b" triples: rgb(var(--particle) / 0.5).
+ */
+
+:root {
+  --font-sans: 'Inter Tight Variable', 'Inter Tight', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-serif: 'STIX Two Text Variable', 'STIX Two Text', 'Times New Roman', serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Consolas, monospace;
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.9375rem;
+  --text-base: 1rem;
+  --text-prose: 1.0625rem;
+  --text-lg: 1.1875rem;
+  --text-xl: 1.25rem;
+  --text-2xl: clamp(1.5rem, 1.2rem + 0.9vw, 2rem);
+  --text-3xl: clamp(2.25rem, 1.6rem + 2.4vw, 3.25rem);
+  --text-4xl: clamp(3rem, 1.5rem + 6vw, 7.25rem);
+  --text-cap: 0.9688rem;
+  --leading-tight: 1.05;
+  --leading-snug: 1.25;
+  --leading-ui: 1.5;
+  --leading-prose: 1.65;
+  --tracking-caps: 0.06em;
+  --tracking-tight: -0.022em;
+  --tracking-display: -0.045em;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+  --space-9: 6rem;
+  --space-10: 8rem;
+  --measure: 68ch;
+  --page-max: 78rem;
+  --content-max: 46rem;
+  --sidebar-w: 15.5rem;
+  --toc-w: 13.5rem;
+  --header-h: 3.5rem;
+  --gutter: clamp(1rem, 0.5rem + 2.5vw, 2rem);
+  --grid-pitch: 24px;
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 3px;
+  --radius-lg: 6px;
+  --hairline: 1px;
+  --rule-heavy: 1.5px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 220ms;
+  --dur-slow: 900ms;
+
+  color-scheme: light;
+  --paper: #ffffff;
+  --paper-raised: #ffffff;
+  --paper-sunken: #f6f7fa;
+  --ink: #111111;
+  --ink-muted: #474b54;
+  --ink-faint: #6b707c;
+  --rule: #e6e9ef;
+  --rule-strong: #c9ced8;
+  --blue: #2f5bea;
+  --blue-strong: #1f44bf;
+  --blue-soft: #8a98c4;
+  --tint: #e8eefd;
+  --tint-soft: #f3f6fe;
+  --on-blue: #ffffff;
+  --focus: #2f5bea;
+  --selection: #d9e2fc;
+  --plot: #ffffff;
+  --plot-grid: #e6e9ef;
+  --plot-grid-major: #d7dce5;
+  --particle: 47 91 234;
+  --particle-2: 104 112 132;
+  --buddy-rim: 47 91 234;
+  --buddy-core: 255 255 255;
+  --status-draft: #8a5a0b;
+  --status-draft-bg: #f7eedb;
+  --status-stable: #1f6a52;
+  --status-stable-bg: #e0f0e8;
+  --status-experimental: #6a4a8c;
+  --status-experimental-bg: #efe8f6;
+  --status-deprecated: #a12f29;
+  --status-deprecated-bg: #f8e3e1;
+  --status-info: #2f5bea;
+  --status-info-bg: #e8eefd;
+  --shadow-pop: 0 1px 2px rgb(17 17 17 / 0.06), 0 12px 32px -8px rgb(17 17 17 / 0.18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --paper: #0c0e13;
+    --paper-raised: #11141b;
+    --paper-sunken: #151922;
+    --ink: #eceef3;
+    --ink-muted: #b0b5c2;
+    --ink-faint: #858b99;
+    --rule: #1f2430;
+    --rule-strong: #333a49;
+    --blue: #7f9dff;
+    --blue-strong: #a9bdff;
+    --blue-soft: #5c6b99;
+    --tint: #1a2440;
+    --tint-soft: #131a2c;
+    --on-blue: #0c0e13;
+    --focus: #7f9dff;
+    --selection: #26345e;
+    --plot: #0e1117;
+    --plot-grid: #1a1f29;
+    --plot-grid-major: #252b38;
+    --particle: 127 157 255;
+    --particle-2: 178 186 206;
+    --buddy-rim: 196 210 255;
+    --buddy-core: 255 255 255;
+    --status-draft: #e7bf73;
+    --status-draft-bg: #2e2410;
+    --status-stable: #86cfae;
+    --status-stable-bg: #12291f;
+    --status-experimental: #c6a8e6;
+    --status-experimental-bg: #251d33;
+    --status-deprecated: #ee9b92;
+    --status-deprecated-bg: #331a18;
+    --status-info: #7f9dff;
+    --status-info-bg: #1a2440;
+    --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.4), 0 16px 40px -8px rgb(0 0 0 / 0.6);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --paper: #0c0e13;
+  --paper-raised: #11141b;
+  --paper-sunken: #151922;
+  --ink: #eceef3;
+  --ink-muted: #b0b5c2;
+  --ink-faint: #858b99;
+  --rule: #1f2430;
+  --rule-strong: #333a49;
+  --blue: #7f9dff;
+  --blue-strong: #a9bdff;
+  --blue-soft: #5c6b99;
+  --tint: #1a2440;
+  --tint-soft: #131a2c;
+  --on-blue: #0c0e13;
+  --focus: #7f9dff;
+  --selection: #26345e;
+  --plot: #0e1117;
+  --plot-grid: #1a1f29;
+  --plot-grid-major: #252b38;
+  --particle: 127 157 255;
+  --particle-2: 178 186 206;
+  --buddy-rim: 196 210 255;
+  --buddy-core: 255 255 255;
+  --status-draft: #e7bf73;
+  --status-draft-bg: #2e2410;
+  --status-stable: #86cfae;
+  --status-stable-bg: #12291f;
+  --status-experimental: #c6a8e6;
+  --status-experimental-bg: #251d33;
+  --status-deprecated: #ee9b92;
+  --status-deprecated-bg: #331a18;
+  --status-info: #7f9dff;
+  --status-info-bg: #1a2440;
+  --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.4), 0 16px 40px -8px rgb(0 0 0 / 0.6);
+}

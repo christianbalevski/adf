@@ -231,7 +231,7 @@ export interface AppSettings {
   templatesMigrationSeen?: boolean
   theme?: 'light' | 'dark' | 'system'
   /** Interface typeface preset (UiFont in the renderer's app.store); 'custom' reads uiFontCustom. */
-  uiFont?: 'system' | 'segoe' | 'inter' | 'roboto' | 'sf' | 'calibri' | 'verdana' | 'georgia' | 'custom'
+  uiFont?: 'inter-tight' | 'system' | 'segoe' | 'inter' | 'roboto' | 'sf' | 'calibri' | 'verdana' | 'georgia' | 'custom'
   uiFontCustom?: string
   /** Electron zoom factor for the whole window (1 = 100%). */
   uiScale?: number

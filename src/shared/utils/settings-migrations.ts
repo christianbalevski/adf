@@ -41,7 +41,7 @@ Your private working memory (\`mind.md\`), snapshotted at the start of each sess
 
 /**
  * Run every settings migration in the canonical order (adapters, compute,
- * tool prompts, skills placeholder, soul, mind). Idempotent.
+ * tool prompts, skills placeholder, soul, mind, ui font). Idempotent.
  */
 export function applySettingsMigrations(data: Record<string, unknown>): SettingsMigrationResult {
   const changedKeys = new Set<string>()
@@ -51,7 +51,29 @@ export function applySettingsMigrations(data: Record<string, unknown>): Settings
   if (migrateSkillsPromptPlaceholder(data)) changedKeys.add('toolPrompts')
   if (migrateGlobalSystemPromptSoul(data)) changedKeys.add('globalSystemPrompt')
   if (migrateGlobalSystemPromptMind(data)) changedKeys.add('globalSystemPrompt')
+  for (const key of migrateUiFontBrandDefault(data)) changedKeys.add(key)
   return { changed: changedKeys.size > 0, changedKeys: [...changedKeys] }
+}
+
+/** One-time marker: set once the bundled-brand-font default has been applied. */
+export const UI_FONT_BRAND_MIGRATION_KEY = 'uiFontBrandDefaultApplied'
+
+/**
+ * The interface font default moved from the system stack to the bundled Inter
+ * Tight. Stores still on the old default ('system', which defaults wrote to
+ * disk for everyone) move to it once; any other explicit choice is kept. The
+ * marker makes it one-shot, so picking System afterwards sticks. Deliberately
+ * NOT in createSettingsDefaults: the defaults merge would set it before this
+ * runs and existing stores would never migrate.
+ */
+function migrateUiFontBrandDefault(data: Record<string, unknown>): string[] {
+  if (data[UI_FONT_BRAND_MIGRATION_KEY] === true) return []
+  data[UI_FONT_BRAND_MIGRATION_KEY] = true
+  if (data.uiFont === undefined || data.uiFont === 'system') {
+    data.uiFont = 'inter-tight'
+    return [UI_FONT_BRAND_MIGRATION_KEY, 'uiFont']
+  }
+  return [UI_FONT_BRAND_MIGRATION_KEY]
 }
 
 /**

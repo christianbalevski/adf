@@ -1,4 +1,14 @@
+/* Brand tokens (--paper, --ink, --rule, --blue, --status-*, --shadow-pop,
+   --ease/--dur-*, ...) live in a cascade layer declared BEFORE Tailwind's
+   `theme` layer. The token file also defines --text-*, --leading-*,
+   --tracking-*, --radius-*, --font-* names that collide with Tailwind theme
+   variables; layer order makes Tailwind's own values win for those, so the
+   utility scale only changes where @theme below says so. The file's dark set
+   keys on <html data-theme>, which App.tsx always sets to the resolved theme
+   (alongside the `.dark` class Tailwind's dark variant uses). */
+@layer brand-tokens;
 @import 'tailwindcss';
+@import './brand-tokens.css' layer(brand-tokens);
 
 @custom-variant dark (&:is(.dark *));
 
@@ -14,6 +24,118 @@
   --color-surface-raised: var(--color-neutral-50);
   --color-border-subtle: var(--color-neutral-200);
   --color-accent: var(--color-blue-500);
+
+  /* Brand palette remap (interim; step 12 codemods raw palette classes to
+     semantic tokens and drops this). Palette values are STATIC: components
+     pair `bg-white dark:bg-neutral-900` themselves, so each step is one
+     colour in both themes. All five Tailwind greys share one cool blue-grey
+     ramp whose light end lands on the light brand set and dark end on the
+     dark set. Shade choice follows usage (renderer, 2026-10):
+       light: bg 50/100/200, border 200/300, text 400/500/600/700
+       dark:  bg 700/800/900, border 600/700/800, text 100/200/300/400/500
+
+       step  value    brand anchor                 main use
+       50    #f6f7fa  light --paper-sunken         light wells
+       100   #eceef3  dark --ink                   light hover / dark text
+       200   #e6e9ef  light --rule                 light hairline
+       300   #c9ced8  light --rule-strong          light control border
+       400   #858b99  dark --ink-faint             meta text, both themes
+       500   #6b707c  light --ink-faint            faint text
+       600   #474b54  light --ink-muted            light secondary text
+       700   #333a49  dark --rule-strong           dark control border/hover
+       800   #1f2430  dark --rule                  dark raised bg / hairline
+       900   #151922  dark --paper-sunken          dark panels
+       950   #0c0e13  dark --paper                 darkest
+     Light --ink #111111 and dark --paper-raised #11141b have no step; use
+     the tokens. `white`/`black` are unchanged. red/green/amber/emerald/
+     violet/sky/indigo ramps are untouched (status and categorical colours,
+     step 11). */
+  --color-neutral-50: #f6f7fa;
+  --color-neutral-100: #eceef3;
+  --color-neutral-200: #e6e9ef;
+  --color-neutral-300: #c9ced8;
+  --color-neutral-400: #858b99;
+  --color-neutral-500: #6b707c;
+  --color-neutral-600: #474b54;
+  --color-neutral-700: #333a49;
+  --color-neutral-800: #1f2430;
+  --color-neutral-900: #151922;
+  --color-neutral-950: #0c0e13;
+  --color-zinc-50: #f6f7fa;
+  --color-zinc-100: #eceef3;
+  --color-zinc-200: #e6e9ef;
+  --color-zinc-300: #c9ced8;
+  --color-zinc-400: #858b99;
+  --color-zinc-500: #6b707c;
+  --color-zinc-600: #474b54;
+  --color-zinc-700: #333a49;
+  --color-zinc-800: #1f2430;
+  --color-zinc-900: #151922;
+  --color-zinc-950: #0c0e13;
+  --color-gray-50: #f6f7fa;
+  --color-gray-100: #eceef3;
+  --color-gray-200: #e6e9ef;
+  --color-gray-300: #c9ced8;
+  --color-gray-400: #858b99;
+  --color-gray-500: #6b707c;
+  --color-gray-600: #474b54;
+  --color-gray-700: #333a49;
+  --color-gray-800: #1f2430;
+  --color-gray-900: #151922;
+  --color-gray-950: #0c0e13;
+  --color-slate-50: #f6f7fa;
+  --color-slate-100: #eceef3;
+  --color-slate-200: #e6e9ef;
+  --color-slate-300: #c9ced8;
+  --color-slate-400: #858b99;
+  --color-slate-500: #6b707c;
+  --color-slate-600: #474b54;
+  --color-slate-700: #333a49;
+  --color-slate-800: #1f2430;
+  --color-slate-900: #151922;
+  --color-slate-950: #0c0e13;
+  --color-stone-50: #f6f7fa;
+  --color-stone-100: #eceef3;
+  --color-stone-200: #e6e9ef;
+  --color-stone-300: #c9ced8;
+  --color-stone-400: #858b99;
+  --color-stone-500: #6b707c;
+  --color-stone-600: #474b54;
+  --color-stone-700: #333a49;
+  --color-stone-800: #1f2430;
+  --color-stone-900: #151922;
+  --color-stone-950: #0c0e13;
+
+  /* Blue, centred on brand blue. Light UI uses 500-700 (text/fills) and
+     50-100 (tints); dark UI uses 300/400 (text) and 800/900 at /10-/50
+     alpha (tints).
+       50  #f3f6fe  light --tint-soft     500 #2f5bea  light --blue
+       100 #e8eefd  light --tint          600 #1f44bf  light --blue-strong
+       200 #d9e2fc  light --selection     700 #1a3a9e  (darker step)
+       300 #a9bdff  dark --blue-strong    800 #19307c  (darker step)
+       400 #7f9dff  dark --blue           900 #1b2a63  dark tint at /30-/40
+                                          950 #1a2440  dark --tint */
+  --color-blue-50: #f3f6fe;
+  --color-blue-100: #e8eefd;
+  --color-blue-200: #d9e2fc;
+  --color-blue-300: #a9bdff;
+  --color-blue-400: #7f9dff;
+  --color-blue-500: #2f5bea;
+  --color-blue-600: #1f44bf;
+  --color-blue-700: #1a3a9e;
+  --color-blue-800: #19307c;
+  --color-blue-900: #1b2a63;
+  --color-blue-950: #1a2440;
+
+  /* Shape: brand controls 3px, containers 6px. `rounded` (bare) and
+     sm/md -> 3px; lg/xl/2xl (cards, popovers, modals, composer) -> 6px.
+     xs (2px), full (pills, avatars, status dots) and none are unchanged. */
+  --radius: 3px;
+  --radius-sm: 3px;
+  --radius-md: 3px;
+  --radius-lg: 6px;
+  --radius-xl: 6px;
+  --radius-2xl: 6px;
 }
 
 /* Layered surfaces + whisper hairline. `inline` so utilities emit the
@@ -28,101 +150,127 @@
   --color-hairline: var(--adf-hairline);
   --shadow-card: var(--adf-shadow-card);
   --shadow-subtle: var(--adf-shadow-subtle);
+  /* Floating UI only (menus, popovers): brand --shadow-pop. Named `float`
+     because a theme var called --shadow-pop would shadow the brand one. */
+  --shadow-float: var(--shadow-pop);
   /* `font-mono` utilities follow the app's monospace token. */
   --font-mono: var(--adf-font-mono);
 }
 
 /* Typeface tokens. `--adf-font-ui` is rewritten at runtime from the
    Settings › Appearance font choice (App.tsx); the defaults below are the
-   stacks in effect when nothing is chosen. */
+   stacks in effect when nothing is chosen. The three brand faces are bundled
+   (@fontsource-variable, imported in main.tsx): Inter Tight for UI, STIX Two
+   Text for captions / equations / section numbers, JetBrains Mono for code
+   and ids. */
 :root {
   --adf-font-ui:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
-    Cantarell, sans-serif;
+    'Inter Tight Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   --adf-font-mono:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
-    'Courier New', monospace;
+    'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, 'Liberation Mono', 'Courier New', monospace;
+  --adf-font-serif:
+    'STIX Two Text Variable', 'STIX Two Text', Cambria, Georgia, 'Times New Roman',
+    serif;
+}
+
+/* `font-sans` / `font-serif` utilities follow the typeface tokens
+   (`font-mono` is mapped in the block above). */
+@theme inline {
+  --font-sans: var(--adf-font-ui);
+  --font-serif: var(--adf-font-serif);
+}
+
+/* Inter Tight: stylistic set 1 + kerning. Code faces: ligatures off, so
+   `!=`, `->`, `==` render as typed. */
+body {
+  font-kerning: normal;
+  font-feature-settings: 'ss01' 1, 'kern' 1;
+}
+
+/* Brand weights stop at 600. */
+b,
+strong {
+  font-weight: 600;
+}
+
+code,
+kbd,
+pre,
+samp,
+.font-mono,
+.cm-editor {
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'calt' 0;
 }
 
 /* ADF Studio UI tokens
    Additive, opt-in tokens for Settings and ordinary shared controls. Fleet
-   surfaces intentionally continue to use their existing visual system. */
+   surfaces intentionally continue to use their existing visual system.
+   Values alias the brand tokens (brand-tokens.css), which switch on
+   <html data-theme>, so one block serves both themes; `.dark` below only
+   holds the few steps with no brand equivalent. Brand BRAND.md §10:
+   window = --paper, sidebar = --paper-sunken, panels/dialogs =
+   --paper-raised, hairlines = --rule, control borders = --rule-strong. */
 :root {
-  --adf-ui-canvas: #f7f7f8;
-  --adf-ui-sidebar: #f1f2f3;
-  --adf-ui-surface: #ffffff;
-  --adf-ui-surface-raised: #ffffff;
-  --adf-ui-surface-hover: #f4f4f5;
-  --adf-ui-text: #18181b;
-  --adf-ui-text-muted: #606067;
-  --adf-ui-text-subtle: #8b8b93;
-  --adf-ui-border: #dedee3;
-  --adf-ui-separator: #ececef;
-  --adf-ui-accent: #2563eb;
-  --adf-ui-accent-hover: #1d4ed8;
-  --adf-ui-accent-subtle: #eaf1ff;
-  --adf-ui-focus: rgba(37, 99, 235, 0.42);
-  --adf-ui-danger: #c93636;
-  --adf-ui-danger-subtle: #fff0f0;
-  --adf-ui-success: #15803d;
-  --adf-ui-success-subtle: #ecfdf3;
-  --adf-ui-warning: #a16207;
-  --adf-ui-warning-subtle: #fff8e6;
-  --adf-ui-control-radius: 6px;
-  --adf-ui-container-radius: 9px;
+  --adf-ui-canvas: var(--paper);
+  --adf-ui-sidebar: var(--paper-sunken);
+  --adf-ui-surface: var(--paper-raised);
+  --adf-ui-surface-raised: var(--paper-raised);
+  --adf-ui-surface-hover: var(--paper-sunken);
+  --adf-ui-text: var(--ink);
+  --adf-ui-text-muted: var(--ink-muted);
+  --adf-ui-text-subtle: var(--ink-faint);
+  --adf-ui-border: var(--rule-strong);
+  --adf-ui-separator: var(--rule);
+  --adf-ui-accent: var(--blue);
+  --adf-ui-accent-hover: var(--blue-strong);
+  --adf-ui-accent-subtle: var(--tint);
+  --adf-ui-on-accent: var(--on-blue);
+  --adf-ui-selection: var(--selection);
+  --adf-ui-focus: var(--focus);
+  /* Status colours: deprecated = danger, stable = success, draft = warning. */
+  --adf-ui-danger: var(--status-deprecated);
+  --adf-ui-danger-subtle: var(--status-deprecated-bg);
+  --adf-ui-success: var(--status-stable);
+  --adf-ui-success-subtle: var(--status-stable-bg);
+  --adf-ui-warning: var(--status-draft);
+  --adf-ui-warning-subtle: var(--status-draft-bg);
+  /* Brand shape: controls 3px, containers 6px. */
+  --adf-ui-control-radius: 3px;
+  --adf-ui-container-radius: 6px;
   --adf-ui-control-height: 32px;
   --adf-ui-control-height-compact: 28px;
-  --adf-ui-dialog-shadow: 0 18px 55px rgba(24, 24, 27, 0.18), 0 3px 12px rgba(24, 24, 27, 0.08);
+  /* Dialogs and menus float: the only shadow the brand allows. */
+  --adf-ui-dialog-shadow: var(--shadow-pop);
   /* Brand-logo tile: stays light in BOTH themes so full-color marks read
      consistently (a colored logo on a dark surface would clash/vanish). */
   --adf-ui-logo-tile: #ffffff;
   --adf-ui-logo-tile-border: #e4e4e7;
   /* Surface ladder: 0 = shell chrome (titlebar/statusbar), 1 = main content,
-     2 = side panels (sidebar, dock, drawer), raised = floating cards. */
-  --adf-surface-0: #f4f4f5;
-  --adf-surface-1: #ffffff;
-  --adf-surface-2: #fafafa;
-  --adf-surface-raised: #ffffff;
-  --adf-hairline: rgb(0 0 0 / 0.06);
-  --adf-shadow-card: 0 2px 8px rgb(0 0 0 / 0.08);
-  --adf-shadow-subtle: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.06);
+     2 = side panels (sidebar, dock, drawer), raised = floating cards.
+     Keep main-process getOverlayColors() in sync with surface-0. */
+  --adf-surface-0: var(--paper-sunken);
+  --adf-surface-1: var(--paper);
+  --adf-surface-2: var(--paper-sunken);
+  --adf-surface-raised: var(--paper-raised);
+  --adf-hairline: var(--rule);
+  /* Cards and panels use a hairline, not a shadow. shadow-card is for
+     bordered cards (no ring, the border is the hairline); shadow-subtle is
+     for borderless cards (draws the hairline as a 1px ring). */
+  --adf-shadow-card: none;
+  --adf-shadow-subtle: 0 0 0 1px var(--rule);
 }
 
 .dark {
-  /* Dark Settings sits on the shell's neutral surface ladder (defined
-     below): nav = side-panel tone, content = main-content tone, cards one
-     step up. Pure neutral greys — no blue tint — so it matches the app. */
-  --adf-ui-canvas: var(--adf-surface-1);
-  --adf-ui-sidebar: var(--adf-surface-2);
-  --adf-ui-surface: var(--adf-surface-raised);
-  --adf-ui-surface-raised: #262626;
-  --adf-ui-surface-hover: #2e2e2e;
-  --adf-ui-text: #f4f4f4;
-  --adf-ui-text-muted: #b3b3b3;
-  --adf-ui-text-subtle: #838383;
-  --adf-ui-border: #383838;
-  --adf-ui-separator: #2f2f2f;
-  --adf-ui-accent: #60a5fa;
-  --adf-ui-accent-hover: #93c5fd;
-  --adf-ui-accent-subtle: #1d3150;
-  --adf-ui-focus: rgba(96, 165, 250, 0.48);
-  --adf-ui-danger: #f87171;
-  --adf-ui-danger-subtle: #3b2023;
-  --adf-ui-success: #4ade80;
-  --adf-ui-success-subtle: #173523;
-  --adf-ui-warning: #fbbf24;
-  --adf-ui-warning-subtle: #3a2d16;
-  --adf-ui-dialog-shadow: 0 22px 65px rgba(0, 0, 0, 0.42), 0 3px 12px rgba(0, 0, 0, 0.3);
+  /* Dark steps with no brand token: a hover/raised fill one step above
+     --paper-raised (#11141b). */
+  --adf-ui-surface-raised: var(--paper-sunken);
+  --adf-ui-surface-hover: var(--rule);
   /* Kept light on purpose (see :root) — full-color brand marks read on it. */
   --adf-ui-logo-tile: #f4f4f5;
   --adf-ui-logo-tile-border: rgba(0, 0, 0, 0.28);
-  --adf-surface-0: #0a0a0a;
-  --adf-surface-1: #171717;
-  --adf-surface-2: #121212;
-  --adf-surface-raised: #1f1f1f;
-  --adf-hairline: rgb(255 255 255 / 0.06);
-  --adf-shadow-card: 0 4px 16px rgb(0 0 0 / 0.45);
-  --adf-shadow-subtle: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 4px rgb(0 0 0 / 0.25);
 }
 
 html,
@@ -174,7 +322,7 @@ body,
 .dark body,
 .dark #root {
   background: var(--adf-surface-1);
-  color: #f5f5f5;
+  color: var(--ink);
 }
 
 /* Dark scrollbar */
@@ -671,15 +819,15 @@ select,
 textarea {
   transition-property: color, background-color, border-color, box-shadow,
     outline-color, opacity;
-  transition-duration: 150ms;
-  transition-timing-function: ease;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease);
 }
 
 /* (#4) Native form controls inherit the brand accent instead of OS blue/green. */
 input[type='checkbox'],
 input[type='radio'],
 input[type='range'] {
-  accent-color: var(--color-blue-500);
+  accent-color: var(--blue);
 }
 
 /* (#4) Custom chevron + consistent padding for native selects, replacing the
@@ -694,14 +842,33 @@ select:not([multiple]) {
   padding-right: 28px;
 }
 
-/* (#5) Consistent, accessible focus rings. `:focus-visible` keeps the ring off
-   mouse clicks while showing it for keyboard/AT users. */
+/* (#5) Brand focus ring: 2px --focus outline, 2px offset. `:focus-visible`
+   keeps it off mouse clicks for buttons/links (text fields always match).
+   Base layer: every focusable element, but a component's own
+   `focus-visible:outline-none` utility still wins. Contenteditable editors
+   (CodeMirror) draw their own focus. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  [contenteditable]:focus-visible {
+    outline: none;
+  }
+}
+
+/* Unlayered: the common controls get the ring even where a utility says
+   `outline-none` (keyboard users always see where they are). */
+button:focus-visible,
+[role='button']:focus-visible,
+a:focus-visible,
+summary:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid rgba(59, 130, 246, 0.5);
-  outline-offset: 1px;
-  border-color: rgba(59, 130, 246, 0.6);
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 /* AgentLoop and the home composer give the whole rounded container the focus
@@ -715,13 +882,19 @@ textarea.home-composer-input:focus-visible {
   outline: none;
 }
 
-button:focus-visible,
-[role='button']:focus-visible,
-a:focus-visible,
-summary:focus-visible {
-  outline: 2px solid rgba(59, 130, 246, 0.5);
-  outline-offset: 2px;
-  border-radius: 4px;
+/* Brand reduced motion: every transition and animation collapses to
+   0.01ms (end state, events still fire); smooth scrolling off. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0s !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Webviews (agent browser) run their own guest process and swallow pointer

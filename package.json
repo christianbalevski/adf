@@ -37,7 +37,9 @@
     "registry:check": "node scripts/rebuild-for-node.mjs && node scripts/registry-index.mjs --check",
     "registry:new": "node scripts/rebuild-for-node.mjs && npx tsx scripts/registry-new-agent.ts",
     "stress:runtime": "node scripts/stress-runtime.mjs",
-    "postinstall": "electron-rebuild -f -o better-sqlite3"
+    "postinstall": "electron-rebuild -f -o better-sqlite3",
+    "check:brand": "node scripts/check-brand-tokens.mjs",
+    "icons": "node scripts/generate-icons.mjs"
   },
   "keywords": [
     "agent",
@@ -129,6 +131,9 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@fontsource-variable/inter-tight": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/stix-two-text": "^5.3.0",
     "@redocly/cli": "2.55.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@tailwindcss/vite": "^4.1.18",
@@ -155,6 +160,7 @@
     "ink-testing-library": "^4.0.0",
     "postcss": "^8.5.6",
     "redoc": "2.5.4",
+    "sharp": "^0.35.3",
     "tailwindcss": "^4.1.18",
     "tsx": "4.20.6",
     "typescript": "^5.9.3",

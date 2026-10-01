@@ -125,7 +125,7 @@ export function ContextMenu({ position, items, onClose }: ContextMenuProps) {
       role="menu"
       onKeyDown={handleMenuKeyDown}
       onContextMenu={(e) => e.preventDefault()}
-      className="fixed z-[1000] bg-surface-raised border border-hairline shadow-card rounded-[var(--adf-ui-control-radius)] py-1 min-w-[180px] text-[12px] text-[var(--adf-ui-text)] select-none"
+      className="fixed z-[1000] bg-surface-raised border border-hairline shadow-float rounded-[var(--adf-ui-control-radius)] py-1 min-w-[180px] text-[12px] text-[var(--adf-ui-text)] select-none"
       style={{ left: at.x, top: at.y, visibility: clamped ? 'visible' : 'hidden' }}
     >
       {items.map((item, i) => (

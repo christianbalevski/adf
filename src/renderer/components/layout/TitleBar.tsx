@@ -9,6 +9,7 @@ import { toDisplayState } from '../../hooks/useAgent'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { ApprovalsMenu } from './ApprovalsMenu'
 import { Button } from '../ui'
+import { Wordmark } from '../common/Wordmark'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
@@ -382,8 +383,10 @@ export function TitleBar() {
         {filePath && config ? (
           <AgentTitleCluster />
         ) : (
-          <span className="text-sm text-neutral-600 dark:text-neutral-300 font-medium">
-            ADF Studio
+          <span className="flex items-center gap-2">
+            <Wordmark height={22} />
+            <span aria-hidden className="h-3.5 border-l border-hairline" />
+            <span aria-hidden className="text-xs text-neutral-500 dark:text-neutral-400">Studio</span>
           </span>
         )}
       </div>

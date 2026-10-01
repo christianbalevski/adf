@@ -595,7 +595,7 @@ function TerritoryBanner({
         opacity: bannerOpacity
       }}
     >
-      <span className="font-bold tracking-wide whitespace-nowrap leading-none" style={{ color: nameColor, fontSize: nameSize }}>
+      <span className="font-semibold tracking-wide whitespace-nowrap leading-none" style={{ color: nameColor, fontSize: nameSize }}>
         {label}
       </span>
       <div className="flex items-center mt-2" style={{ gap: pipSize * 0.8, fontSize: subSize }}>
@@ -614,7 +614,7 @@ function TerritoryBanner({
           </span>
         ) : null}
         {pendingCount > 0 && (
-          <span className="flex items-center font-bold text-amber-500" style={{ gap: pipSize * 0.35 }}>
+          <span className="flex items-center font-semibold text-amber-500" style={{ gap: pipSize * 0.35 }}>
             <span className="rounded-full bg-amber-400 animate-pulse" style={{ width: pipSize, height: pipSize }} />
             {pendingCount}
           </span>

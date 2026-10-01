@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applySettingsMigrations, LEGACY_MIND_PROMPT_SECTION } from '../../src/shared/utils/settings-migrations'
+import { applySettingsMigrations, LEGACY_MIND_PROMPT_SECTION, UI_FONT_BRAND_MIGRATION_KEY } from '../../src/shared/utils/settings-migrations'
 import { MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS } from '../../src/shared/constants/adf-defaults'
 
 const CUSTOM_BASE = 'You are a custom agent. Do custom things.'
@@ -187,5 +187,30 @@ describe('settings migrations — {{skills-registry.json}} backfill', () => {
     const second = applySettingsMigrations(data)
     expect(second.changedKeys).not.toContain('toolPrompts')
     expect((data.toolPrompts as Record<string, string>)._skills).toBe(once)
+  })
+})
+
+describe('settings migrations — uiFont brand default', () => {
+  it('moves a store still on the old system default to inter-tight, once', () => {
+    const data: Record<string, unknown> = { uiFont: 'system' }
+    const result = applySettingsMigrations(data)
+    expect(data.uiFont).toBe('inter-tight')
+    expect(data[UI_FONT_BRAND_MIGRATION_KEY]).toBe(true)
+    expect(result.changedKeys).toEqual(expect.arrayContaining(['uiFont', UI_FONT_BRAND_MIGRATION_KEY]))
+  })
+
+  it('keeps an explicit non-default choice', () => {
+    const data: Record<string, unknown> = { uiFont: 'segoe' }
+    const result = applySettingsMigrations(data)
+    expect(data.uiFont).toBe('segoe')
+    expect(result.changedKeys).not.toContain('uiFont')
+  })
+
+  it('keeps System when picked after the migration ran', () => {
+    const data: Record<string, unknown> = { uiFont: 'system', [UI_FONT_BRAND_MIGRATION_KEY]: true }
+    const result = applySettingsMigrations(data)
+    expect(data.uiFont).toBe('system')
+    expect(result.changedKeys).not.toContain('uiFont')
+    expect(result.changedKeys).not.toContain(UI_FONT_BRAND_MIGRATION_KEY)
   })
 })

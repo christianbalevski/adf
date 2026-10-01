@@ -311,7 +311,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
       </button>
 
       {panelOpen && (
-        <div className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} top-8 z-50 w-80 max-h-[60vh] overflow-y-auto rounded-md border border-hairline bg-surface-raised shadow-card`}>
+        <div className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} top-8 z-50 w-80 max-h-[60vh] overflow-y-auto rounded-md border border-hairline bg-surface-raised shadow-float`}>
           {count === 0 && history.length === 0 ? (
             <div className="px-3 py-4 text-xs text-neutral-500 dark:text-neutral-400">
               No notifications
@@ -375,7 +375,7 @@ export function ApprovalToasts() {
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className={`pointer-events-auto w-64 rounded-md border bg-surface-raised shadow-card px-3 py-2 ${
+          className={`pointer-events-auto w-64 rounded-md border bg-surface-raised shadow-float px-3 py-2 ${
             toast.kind === 'ask'
               ? 'border-sky-300 dark:border-sky-700/60'
               : 'border-amber-300 dark:border-amber-700/60'

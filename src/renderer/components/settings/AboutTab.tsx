@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from 'react'
 import { Button, SettingsGroup, SettingsRow } from '../ui'
+import { Wordmark } from '../common/Wordmark'
 import type { AppUpdateCheckResult, AppUpdateState } from '../../../shared/types/ipc.types'
 
 const REPO_URL = 'https://github.com/christianbalevski/adf'
@@ -114,7 +115,7 @@ export function AboutTab() {
 
       {/* Hero */}
       <div className="text-center pb-2">
-        <div className="text-4xl mb-2">📄</div>
+        <Wordmark height={40} className="mb-1" />
         <h3 className="text-lg font-semibold text-neutral-800 dark:text-neutral-100">
           Agent Document Format
         </h3>

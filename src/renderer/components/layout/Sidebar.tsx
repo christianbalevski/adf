@@ -1371,7 +1371,7 @@ const AgentFileRow = memo(function AgentFileRow({
         >
           {/* yellow-400 is the status dot's colour but ~1.5:1 as text on a
               light surface, so light mode takes the darker end of the hue. */}
-          <span className="text-[9px] leading-none font-bold text-amber-600 dark:text-yellow-400 tabular-nums">
+          <span className="text-[9px] leading-none font-semibold text-amber-600 dark:text-yellow-400 tabular-nums">
             {activeLoops}
           </span>
         </Tooltip>
