@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-420 -1910 5185 2330" width="1037" height="466" role="img" aria-label=".ADF">
+  <title>.ADF</title>
+  <defs><filter id="g" x="-2" y="-2" width="5" height="5"><feGaussianBlur stdDeviation="95"/></filter></defs>
+  <circle cx="209.3" cy="-192.6" r="272.1" fill="#7f9dff" opacity="0.45" filter="url(#g)"/>
+  <circle cx="209.3" cy="-192.6" r="209.3" fill="#7f9dff"/>
+  <g fill="#eceef3">
+    <path transform="translate(470.0 0)" d="M299.6 0H11.2L536.8 -1490H869.2L1393.6 0H1106.4L708.4 -1184.4H696.4ZM309.6 -584.4H1094.8V-367.6H309.6Z"/>
+    <path transform="translate(1875.0 0)" d="M613.6 0H235.6V-233.6H600Q755.4 -233.6 859.7 -290.2Q964 -346.8 1016.4 -461Q1068.8 -575.2 1068.8 -746.4Q1068.8 -916.8 1016.8 -1030.1Q964.8 -1143.4 861.9 -1199.9Q759 -1256.4 607.2 -1256.4H228.4V-1490H623.2Q845.4 -1490 1004.9 -1400.8Q1164.4 -1311.6 1250 -1144.9Q1335.6 -978.2 1335.6 -746.4Q1335.6 -513.8 1249.6 -346.5Q1163.6 -179.2 1002.1 -89.6Q840.6 0 613.6 0ZM377.6 -1490V0H108V-1490Z"/>
+    <path transform="translate(3281.0 0)" d="M108 0V-1490H1063.6V-1263.6H377.6V-817.2H997.2V-594H377.6V0Z"/>
+  </g>
+</svg>

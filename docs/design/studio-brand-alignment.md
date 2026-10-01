@@ -51,7 +51,7 @@ Branch: `feat/brand-alignment`.
 - Reduced motion also freezes `animate-spin` spinners; check on screen.
 - Windows title-bar overlay follows OS theme, not the in-app choice (pre-existing).
 - Font migration moves users on `system` to Inter Tight once (`uiFontBrandDefaultApplied` marker); deliberate System pickers move too.
-- README logo `docs/assets/adf-github-readme-logo.svg` is off-brand; replace with wordmark light/dark in `<picture>`.
+- README: wordmark in `<picture>`, brand voice pass done. Screenshots in `docs/assets/screenshots/` show the old styling; recapture after release.
 - White icon tile has no edge on light taskbars/docks; brand forbids outlines.
 
 ## Follow-ups from steps 6-8
