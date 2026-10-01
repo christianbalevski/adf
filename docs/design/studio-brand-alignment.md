@@ -21,7 +21,7 @@ Branch: `feat/brand-alignment`.
 | 10 | ava in empty states, onboarding, About; UI copy voice pass | todo |
 | 11 | Mesh/fleet, `loop-color.ts`, `UsageChart.tsx` hardcoded colours to tokens | todo |
 | 12 | Codemod raw palette classes to semantic tokens; drop step 2 remap; lint rule | todo |
-| 13 | TUI brand theme | todo |
+| 13 | TUI brand theme | done |
 
 ## Open decisions
 
@@ -59,7 +59,9 @@ Branch: `feat/brand-alignment`.
 - Title bar stays 40 px (`h-10`); `--header-h` 56 px would need Windows `titleBarOverlay.height` and macOS traffic-light `y` changes.
 - BottomPanel (Logs/Tasks) is always dark (`bg-neutral-950`, ~25 classes in LogsPanel/TasksPanel); move to `--paper-sunken` (step 12).
 - Right dock is `--paper-raised`; the side chat sits on #11141b in dark. Decide if chat in the dock should be `--paper`.
-- Not touched: red count badges, amber approvals count, green/red Approve/Reject fills in ApprovalControls, SettingsPage step circles, SlashCommandPalette, "Agent asked" cards (Tailwind blues).
+- Done: count badges (status pairs), Approve primary / Reject quiet danger, "Agent asked" cards. Still raw: SettingsPage step circles, SlashCommandPalette, status dots, ToolCallModal diff colours, StatusBar context meter, amber/red buttons in AgentConfig and SettingsPage (step 12).
+- ApprovalsMenu shows one blue Approve per pending row; revisit if it reads as too much blue.
+- TUI: `adf`/`adf-light` carry brand palettes; old amber palette kept as `parchment`. `docs/cli/reference.md` edited by hand; regenerate with `npm run docs:cli` (tsx currently fails loading `src/main/tui/views/files/external.ts`).
 - No shared status badge component; InboxPanel maps to brand pairs locally. Extract one in step 12.
 - `loop-color.ts` `wash` field is unused after the chat wash removal (step 11).
 - Shiki: core + JS engine (~340 KB) load on first code block; grammars load per language. Blocks highlight once their fence closes.

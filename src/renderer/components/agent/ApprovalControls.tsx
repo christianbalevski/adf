@@ -103,12 +103,12 @@ export function ApprovalControls({
       {/* Approve split button */}
       <span className="relative inline-flex">
         <button
-          className={`${btn} font-medium rounded bg-green-500 hover:bg-green-600 text-white transition-colors inline-flex items-center gap-1`}
+          className={`${btn} font-medium rounded border border-transparent bg-[var(--adf-ui-accent)] hover:bg-[var(--adf-ui-accent-hover)] text-[var(--adf-ui-on-accent)] transition-colors inline-flex items-center gap-1`}
           onClick={split('approve', onApprove)}
           title="Approve — click the caret for more"
         >
           <span>Approve</span>
-          <span className={`${caretW} text-center border-l border-white/30 -mr-1 pl-0.5 leading-none`}>▾</span>
+          <span className={`${caretW} text-center border-l border-current/30 -mr-1 pl-0.5 leading-none`}>▾</span>
         </button>
         {menu === 'approve' && host(
           <DropMenu {...popProps(anchor)} onClose={() => setMenu(null)}>
@@ -126,12 +126,12 @@ export function ApprovalControls({
       {/* Reject split button */}
       <span className="relative inline-flex">
         <button
-          className={`${btn} font-medium rounded bg-red-500 hover:bg-red-600 text-white transition-colors inline-flex items-center gap-1`}
+          className={`${btn} font-medium rounded border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] hover:bg-[var(--adf-ui-danger-subtle)] text-[var(--adf-ui-danger)] transition-colors inline-flex items-center gap-1`}
           onClick={split('reject', () => onReject())}
           title="Reject — click the caret for more"
         >
           <span>Reject</span>
-          <span className={`${caretW} text-center border-l border-white/30 -mr-1 pl-0.5 leading-none`}>▾</span>
+          <span className={`${caretW} text-center border-l border-[var(--adf-ui-border)] -mr-1 pl-0.5 leading-none`}>▾</span>
         </button>
         {menu === 'reject' && host(
           <DropMenu {...popProps(anchor)} onClose={() => setMenu(null)}>
@@ -169,7 +169,7 @@ export function ApprovalControls({
               <span className="text-[9px] text-neutral-400 dark:text-neutral-500">Enter to submit · Esc to cancel</span>
               <button
                 onClick={submitFeedback}
-                className="px-2 py-0.5 text-[10px] font-medium rounded bg-red-500 hover:bg-red-600 text-white"
+                className="px-2 py-0.5 text-[10px] font-medium rounded border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] hover:bg-[var(--adf-ui-danger-subtle)] text-[var(--adf-ui-danger)]"
               >
                 Submit
               </button>

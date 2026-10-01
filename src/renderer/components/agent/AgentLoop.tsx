@@ -624,7 +624,7 @@ const LogEntryRow = memo(({
             <div className="max-h-64 overflow-y-auto px-1.5 pb-2 pt-1 text-xs text-[var(--ink-muted)]">
               {hasText && <ThinkingContent content={entry.content} />}
               {(encrypted || (preserved && !hasText)) && (
-                <p className="mt-1 text-[10px] italic text-neutral-400 dark:text-neutral-500">
+                <p className="mt-1 text-[10px] italic text-[var(--ink-faint)]">
                   {encrypted
                     ? 'Encrypted reasoning \u2014 not human-readable. The provider returns only an opaque/signed block; it is retained and sent back to the model to preserve tool-call continuity.'
                     : 'Reasoning preserved for tool-call continuity. Displayed traces are provider-side summaries, not the full reasoning.'}
@@ -717,14 +717,14 @@ const LogEntryRow = memo(({
               >
                 {toolName}
               </span>
-              {toolResultIsError === true && <span className="shrink-0 text-red-500" title="Error">&#x2718;</span>}
+              {toolResultIsError === true && <span className="shrink-0 text-[var(--adf-ui-danger)]" title="Error">&#x2718;</span>}
             </div>
             {!pendingApprovalRequestId && overrideOutcome && (
               <div className="px-1.5 pb-1">
                 <span className={`text-[10px] font-medium ${
                   overrideOutcome === 'approved'
-                    ? 'text-green-600 dark:text-green-400'
-                    : 'text-red-500 dark:text-red-400'
+                    ? 'text-[var(--status-stable)]'
+                    : 'text-[var(--status-deprecated)]'
                 }`}>
                   {overrideOutcome === 'approved' ? 'Approved — ran in the calling shell/code' : 'Denied'}
                 </span>
@@ -751,27 +751,27 @@ const LogEntryRow = memo(({
             )}
           </div>
           {entry.metadata?.name === 'ask' && (entry.metadata?.input as { question?: string })?.question && (
-            <div className="mt-1 border border-blue-400 dark:border-blue-600 rounded-lg overflow-hidden">
+            <div className={`mt-1 overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--rule)] bg-[var(--paper)] ${pendingAsk && !askAnswer ? 'border-l-2 border-l-[var(--blue)]' : ''}`}>
               <div className="p-2.5">
-                <div className="text-[10px] font-semibold uppercase text-blue-500 dark:text-blue-400 mb-1">
+                <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
                   Agent asked
                 </div>
-                <div className="text-sm text-blue-700 dark:text-blue-300 whitespace-pre-wrap">
+                <div className="text-sm text-[var(--ink)] whitespace-pre-wrap">
                   {(entry.metadata.input as { question: string }).question}
                 </div>
               </div>
               {askAnswer && (
-                <div className="border-t border-blue-200 dark:border-blue-800 bg-blue-50/60 dark:bg-blue-900/10 p-2.5">
-                  <div className="text-[10px] font-semibold uppercase text-neutral-500 dark:text-neutral-400 mb-1">
+                <div className="border-t border-[var(--rule)] bg-[var(--paper-sunken)] p-2.5">
+                  <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
                     User response
                   </div>
-                  <div className="text-sm text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap break-words">
+                  <div className="text-sm text-[var(--ink)] whitespace-pre-wrap break-words">
                     {askAnswer}
                   </div>
                 </div>
               )}
               {pendingAsk && !askAnswer && (
-                <div className="border-t border-blue-200 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-900/10 px-2.5 py-1.5 text-xs text-blue-600 dark:text-blue-300">
+                <div className="border-t border-[var(--rule)] bg-[var(--tint-soft)] px-2.5 py-1.5 text-xs text-[var(--ink-muted)]">
                   Awaiting response
                 </div>
               )}
@@ -894,27 +894,27 @@ const LogEntryRow = memo(({
         </div>
       )}
       {entry.type === 'system' && entry.metadata?.isAsk && (
-        <div className="border border-blue-400 dark:border-blue-600 rounded-lg overflow-hidden">
+        <div className={`overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--rule)] bg-[var(--paper)] ${pendingAsk && !askAnswer ? 'border-l-2 border-l-[var(--blue)]' : ''}`}>
           <div className="p-2.5">
-            <div className="text-[10px] font-semibold uppercase text-blue-500 dark:text-blue-400 mb-1">
+            <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
               Agent asked
             </div>
-            <div className="text-sm text-blue-700 dark:text-blue-300 whitespace-pre-wrap">
+            <div className="text-sm text-[var(--ink)] whitespace-pre-wrap">
               {entry.content}
             </div>
           </div>
           {askAnswer && (
-            <div className="border-t border-blue-200 dark:border-blue-800 bg-blue-50/60 dark:bg-blue-900/10 p-2.5">
-              <div className="text-[10px] font-semibold uppercase text-neutral-500 dark:text-neutral-400 mb-1">
+            <div className="border-t border-[var(--rule)] bg-[var(--paper-sunken)] p-2.5">
+              <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
                 User response
               </div>
-              <div className="text-sm text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap break-words">
+              <div className="text-sm text-[var(--ink)] whitespace-pre-wrap break-words">
                 {askAnswer}
               </div>
             </div>
           )}
           {pendingAsk && !askAnswer && (
-            <div className="border-t border-blue-200 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-900/10 px-2.5 py-1.5 text-xs text-blue-600 dark:text-blue-300">
+            <div className="border-t border-[var(--rule)] bg-[var(--tint-soft)] px-2.5 py-1.5 text-xs text-[var(--ink-muted)]">
               Awaiting response
             </div>
           )}
@@ -2067,7 +2067,7 @@ function LoopStream({ loop }: { loop: string }) {
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10">
           <button
             onClick={handleApproveAllGated}
-            className="px-3 py-1 text-xs font-medium rounded-full bg-green-500 hover:bg-green-600 text-white shadow-md transition-colors"
+            className="px-3 py-1 text-xs font-medium rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] shadow-float transition-colors"
             title="Approve all pending gated tool calls at once — protection/lock overrides still need individual review"
           >
             Approve all {gatedPendingCount} tool calls
@@ -2077,11 +2077,11 @@ function LoopStream({ loop }: { loop: string }) {
 
       {/* Post-batch note: how many protection overrides still need attention. */}
       {approveAllNote && (
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-3 py-1 text-xs rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300 shadow-md">
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-3 py-1 text-xs rounded-[var(--adf-ui-control-radius)] border border-[var(--rule)] bg-[var(--status-draft-bg)] text-[var(--status-draft)] shadow-float">
           <span>{approveAllNote}</span>
           <button
             onClick={() => setApproveAllNote(null)}
-            className="text-amber-500 hover:text-amber-700 dark:hover:text-amber-100"
+            className="text-[var(--status-draft)] opacity-70 hover:opacity-100"
             title="Dismiss"
           >
             ✕

@@ -107,7 +107,7 @@ const refresh: SlashCommand = {
 
 const theme: SlashCommand = {
   name: 'theme',
-  args: '[adf|adf-light|adf-contrast|adf-mono|next]',
+  args: '[adf|adf-light|adf-contrast|parchment|adf-mono|next]',
   description: 'Pick a color theme (no argument opens the picker)',
   complete: partial => [...themeNames(), 'next', 'light', 'dark', 'mono'].filter(n => n.startsWith(partial.trim())),
   run: ctx => { ctx.actions.pushOverlay({ kind: 'inspect.theme', props: ctx.args[0] ? { name: ctx.args[0] } : {} }) },

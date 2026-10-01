@@ -113,7 +113,7 @@ function ApprovalRow({
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <span
-            className={`shrink-0 ${isAsk ? 'text-sky-600 dark:text-sky-400' : 'text-amber-600 dark:text-amber-400'}`}
+            className={`shrink-0 ${isAsk ? 'text-[var(--status-info)]' : 'text-[var(--adf-ui-warning)]'}`}
             title={isAsk ? 'Question' : 'Tool approval'}
           >
             {isAsk ? <AskIcon /> : <ShieldIcon />}
@@ -127,7 +127,7 @@ function ApprovalRow({
             </span>
           )}
           {isProtection && (
-            <span className="shrink-0 px-1 rounded text-[10px] leading-4 bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">
+            <span className="shrink-0 px-1 rounded text-[10px] leading-4 bg-[var(--status-deprecated-bg)] text-[var(--status-deprecated)]">
               override
             </span>
           )}
@@ -149,7 +149,7 @@ function ApprovalRow({
       </div>
 
       {error && (
-        <div className="mt-1 text-[10px] text-red-600 dark:text-red-400">{error}</div>
+        <div className="mt-1 text-[10px] text-[var(--adf-ui-danger)]">{error}</div>
       )}
 
       <div className="mt-1.5 flex items-center gap-1.5">
@@ -167,14 +167,14 @@ function ApprovalRow({
             <button
               onClick={() => void respond(true)}
               disabled={busy}
-              className="px-2 py-0.5 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] disabled:opacity-50"
+              className="px-2 py-0.5 rounded text-[11px] font-medium border border-transparent bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] disabled:opacity-50"
             >
               Approve
             </button>
             <button
               onClick={() => void respond(false)}
               disabled={busy}
-              className="px-2 py-0.5 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] disabled:opacity-50"
+              className="px-2 py-0.5 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)] disabled:opacity-50"
             >
               Reject
             </button>
@@ -187,9 +187,9 @@ function ApprovalRow({
 
 /** Outcome word + its (muted) colour. 'expired' is deliberately colourless. */
 const OUTCOME_APPEARANCE: Record<NotificationOutcome, { label: string; tone: string }> = {
-  approved: { label: 'approved', tone: 'text-green-600 dark:text-green-500' },
-  rejected: { label: 'rejected', tone: 'text-red-600 dark:text-red-500' },
-  answered: { label: 'answered', tone: 'text-sky-600 dark:text-sky-500' },
+  approved: { label: 'approved', tone: 'text-[var(--status-stable)]' },
+  rejected: { label: 'rejected', tone: 'text-[var(--status-deprecated)]' },
+  answered: { label: 'answered', tone: 'text-[var(--status-info)]' },
   // No one decided — the agent stopped, the turn was interrupted, or the
   // auto-deny timer fired. Reading that as "rejected" would be a lie.
   expired: { label: 'expired', tone: 'text-neutral-400 dark:text-neutral-500' },
@@ -297,14 +297,14 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
           panelOpen
             ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
             : count > 0
-              ? 'text-amber-600 dark:text-amber-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+              ? 'text-[var(--adf-ui-warning)] hover:bg-neutral-200 dark:hover:bg-neutral-700'
               : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
         }`}
       >
         <BellIcon />
         {/* Pending only. A badge that counted history would never reach zero. */}
         {count > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-[3px] flex items-center justify-center rounded-full bg-amber-500 text-white text-[9px] font-semibold leading-none tabular-nums">
+          <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-[3px] flex items-center justify-center rounded-full bg-[var(--status-draft-bg)] text-[var(--status-draft)] text-[9px] font-semibold leading-none tabular-nums">
             {count > 99 ? '99+' : count}
           </span>
         )}
@@ -378,7 +378,7 @@ export function ApprovalToasts() {
           className="pointer-events-auto w-64 rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-surface-raised shadow-float px-3 py-2"
         >
           <div className="flex items-start gap-2">
-            <span className={`mt-0.5 shrink-0 ${toast.kind === 'ask' ? 'text-sky-600 dark:text-sky-400' : 'text-amber-600 dark:text-amber-400'}`}>
+            <span className={`mt-0.5 shrink-0 ${toast.kind === 'ask' ? 'text-[var(--status-info)]' : 'text-[var(--adf-ui-warning)]'}`}>
               {toast.kind === 'ask' ? <AskIcon /> : <ShieldIcon />}
             </span>
             <div className="min-w-0 flex-1">
@@ -391,7 +391,7 @@ export function ApprovalToasts() {
               <div className="mt-1 flex items-center gap-2">
                 <button
                   onClick={() => { dismissToast(toast.id); setPanelOpen(true) }}
-                  className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
+                  className="text-[11px] text-[var(--adf-ui-accent)] hover:underline"
                 >
                   Review
                 </button>

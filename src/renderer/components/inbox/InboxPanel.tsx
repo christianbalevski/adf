@@ -469,7 +469,7 @@ const VerificationBadge = memo(function VerificationBadge({ meta }: { meta?: Rec
   if (idVerified === false) {
     return (
       <span
-        className="text-[9px] px-1.5 py-0.5 rounded-full shrink-0 bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 font-medium"
+        className="text-[9px] px-1.5 py-0.5 rounded-full shrink-0 bg-[var(--status-draft-bg)] text-[var(--status-draft)] font-medium"
         title="Sender identity not cryptographically verified (WebSocket)"
       >
         unverified

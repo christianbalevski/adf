@@ -84,7 +84,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
                 <span className="flex items-center gap-1.5">
                   Inbox
                   {unreadInboxCount > 0 && (
-                    <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-semibold text-white bg-red-500 rounded-full">
+                    <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-semibold leading-none tabular-nums text-[var(--status-deprecated)] bg-[var(--status-deprecated-bg)] rounded-full">
                       {unreadInboxCount}
                     </span>
                   )}
@@ -195,7 +195,7 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
             <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
           </svg>
           {unreadInboxCount > 0 && (
-            <span className="absolute -top-1.5 -right-1.5 inline-flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-semibold text-white bg-red-500 rounded-full">
+            <span className="absolute -top-1.5 -right-1.5 inline-flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-semibold leading-none tabular-nums text-[var(--status-deprecated)] bg-[var(--status-deprecated-bg)] rounded-full">
               {unreadInboxCount}
             </span>
           )}

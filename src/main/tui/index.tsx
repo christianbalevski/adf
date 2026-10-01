@@ -63,7 +63,7 @@ Options:
   --view <id>          Start view: chat | files | loops | inspect | fleet | runtime
   --agent <id|handle>  Preselect an agent
   --loop <name>        Preselect one of its loops (default main)
-  --theme <name>       adf (dark) | adf-light | adf-contrast | adf-mono (also ADF_TUI_THEME)
+  --theme <name>       adf (dark) | adf-light | adf-contrast | parchment | adf-mono (also ADF_TUI_THEME)
   --mono               No color (also NO_COLOR=1)
   --ascii              ASCII glyphs (also ADF_TUI_ASCII=1)
   --no-alt-screen      Render in the main screen buffer (also turns mouse mode off)

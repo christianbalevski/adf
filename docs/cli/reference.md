@@ -125,7 +125,7 @@ ADF_DAEMON_ALLOWED_HOSTS, ADF_DAEMON_BEHIND_PROXY
 | `--view <id>` | Start view: chat \| files \| loops \| inspect \| fleet \| runtime |
 | `--agent <id\|handle>` | Preselect an agent |
 | `--loop <name>` | Preselect one of its loops (default main) |
-| `--theme <name>` | adf (dark) \| adf-light \| adf-contrast \| adf-mono (also ADF_TUI_THEME) |
+| `--theme <name>` | adf (dark) \| adf-light \| adf-contrast \| parchment \| adf-mono (also ADF_TUI_THEME) |
 | `--mono` | No color (also NO_COLOR=1) |
 | `--ascii` | ASCII glyphs (also ADF_TUI_ASCII=1) |
 | `--no-alt-screen` | Render in the main screen buffer (also turns mouse mode off) |
@@ -192,7 +192,7 @@ Type `/` in the prompt; `Tab` completes names and arguments. Commands work from 
 | `/view <chat\|files\|loops\|inspect\|fleet\|runtime>` |  | Switch the main pane |
 | `/agent <handle\|id> [loop]` | `/a` | Select an agent, and optionally one of its loops (default main) |
 | `/refresh` | `/r` | Re-read agents, loops and approvals from the daemon |
-| `/theme [adf\|adf-light\|adf-contrast\|adf-mono\|next]` |  | Pick a color theme (no argument opens the picker) |
+| `/theme [adf\|adf-light\|adf-contrast\|parchment\|adf-mono\|next]` |  | Pick a color theme (no argument opens the picker) |
 | `/url [daemon-url] [--token <token>]` |  | Show the daemon URL, or reconnect to another daemon (for a remote daemon pass --token or set ADF_DAEMON_TOKEN) |
 | `/auth` |  | Provider sign-in: ChatGPT and Grok status, sign in, sign out |
 | `/login [chatgpt\|grok]` |  | Sign the daemon in to ChatGPT (browser) or Grok (device code) |
