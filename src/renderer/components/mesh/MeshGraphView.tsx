@@ -2742,7 +2742,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
               onClick={() => setShortcutsOpen((v) => !v)}
               title="Keyboard commands (?)"
             >
-              <span className="text-[13px] font-bold !text-neutral-700 dark:!text-neutral-300">?</span>
+              <span className="text-[13px] font-semibold !text-neutral-700 dark:!text-neutral-300">?</span>
             </ControlButton>
             <ControlButton
               onClick={() => void window.adfApi?.setFullscreen?.(!isFullscreen)}

@@ -44,7 +44,7 @@ export function Tooltip({ tip, children, className, style, delay = 500 }: {
       {pos &&
         createPortal(
           <div
-            className="fixed z-[1000] max-w-[264px] px-2 py-1.5 text-[10px] leading-snug whitespace-pre-line [overflow-wrap:anywhere] rounded-md shadow-lg pointer-events-none bg-neutral-800 text-neutral-100 dark:bg-neutral-700 dark:text-neutral-100 border border-neutral-700 dark:border-neutral-600"
+            className="fixed z-[1000] max-w-[264px] px-2 py-1.5 text-[10px] leading-snug whitespace-pre-line [overflow-wrap:anywhere] rounded-md shadow-float pointer-events-none bg-[var(--adf-ui-surface)] text-[var(--adf-ui-text)] border border-[var(--adf-ui-border)]"
             style={{ left: pos.x, top: pos.y, transform: `translate(-50%, ${pos.below ? '0' : '-100%'})` }}
           >
             {tip}

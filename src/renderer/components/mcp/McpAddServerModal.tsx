@@ -1033,7 +1033,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               <button
                 onClick={handleConnect}
                 disabled={!canLaunch || hasPlaceholders || test.phase === 'running'}
-                className="px-3 py-1.5 text-xs font-medium rounded-md border border-blue-500 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-40"
+                className="px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] disabled:opacity-40"
               >
                 {test.phase === 'running'
                   ? (isOAuth ? 'Signing in…' : draft.auth ? 'Authorizing…' : 'Connecting…')
@@ -1042,7 +1042,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               <button
                 onClick={handleSave}
                 disabled={!canLaunch || hasPlaceholders || hasPendingRequiredCreds}
-                className="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
+                className="px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] disabled:opacity-40"
               >
                 Save
               </button>

@@ -7,7 +7,7 @@ It is a client of the daemon; quitting leaves every agent running.
 ```bash
 adf                                   # open it (starts the daemon if needed)
 adf --view loops --agent agent-1 --loop consolidator
-adf --theme adf-light                 # adf | adf-light | adf-contrast | adf-mono
+adf --theme adf-light                 # adf | adf-light | adf-contrast | parchment | adf-mono
 ```
 
 All options: [reference](reference.md#terminal-app-options). The app needs a
@@ -255,7 +255,9 @@ agent site offline.
 
 ## Themes and terminals
 
-- Themes: `adf` (dark, default), `adf-light`, `adf-contrast`, `adf-mono`.
+- Themes: `adf` (dark, default) and `adf-light` use the ADF brand colors;
+  `adf-contrast` is `adf` with brighter text and borders; `parchment` is
+  the earlier warm palette; `adf-mono` has no color.
   `/theme` picks one for the session; `--theme` or `ADF_TUI_THEME` makes it
   stick. `NO_COLOR` always wins.
 - `--ascii` for consoles without box-drawing or braille glyphs.

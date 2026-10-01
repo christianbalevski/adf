@@ -246,7 +246,7 @@ export function AppShell() {
             <div
               ref={rightPanelRef}
               style={{ width: rightPanelWidth }}
-              className="shrink-0 flex flex-col bg-surface-2"
+              className="shrink-0 flex flex-col bg-[var(--adf-ui-surface)] border-l border-hairline"
             >
               <RightDock reserveWindowControls={dockUnderWindowControls} />
             </div>

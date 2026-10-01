@@ -74,8 +74,8 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
               onClick={() => setRightPanel(tab)}
               className={`px-4 text-xs font-medium ${
                 rightPanel === tab
-                  ? 'text-blue-600 border-b-2 border-blue-500'
-                  : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
+                  ? 'text-[var(--adf-ui-text)] border-b-2 border-[var(--adf-ui-text)]'
+                  : 'text-[var(--adf-ui-text-muted)] border-b-2 border-transparent hover:text-[var(--adf-ui-text)]'
               }`}
             >
               {/* Always plural: main is itself a loop, and the panel shows the
@@ -84,7 +84,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
                 <span className="flex items-center gap-1.5">
                   Inbox
                   {unreadInboxCount > 0 && (
-                    <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-semibold text-white bg-red-500 rounded-full">
+                    <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-semibold leading-none tabular-nums text-[var(--status-deprecated)] bg-[var(--status-deprecated-bg)] rounded-full">
                       {unreadInboxCount}
                     </span>
                   )}
@@ -103,7 +103,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
               onClick={() => setAgentSubTab(sub)}
               className={`flex-1 px-2 py-1.5 text-[11px] font-medium ${
                 agentSubTab === sub
-                  ? 'text-blue-600 dark:text-blue-400 bg-surface-2'
+                  ? 'text-[var(--adf-ui-text)] bg-[var(--adf-ui-accent-subtle)]'
                   : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300'
               }`}
             >
@@ -145,7 +145,7 @@ function RightDockIconButton({
       title={title}
       className={`w-8 h-8 flex items-center justify-center rounded-md ${
         active
-          ? 'bg-blue-100 text-blue-600 dark:bg-blue-900 dark:text-blue-400'
+          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
           : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
       }`}
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -170,7 +170,7 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
 
   return (
     <div
-      className="w-10 shrink-0 bg-surface-2 flex flex-col items-center py-2 gap-1"
+      className="w-10 shrink-0 bg-[var(--adf-ui-surface)] border-l border-hairline flex flex-col items-center py-2 gap-1"
       // The whole bar lives under the window-controls overlay's horizontal span
       // when it's the top-right element (fleet map open), so drop the icons
       // below the controls' height. That top padding also doubles as the
@@ -195,7 +195,7 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
             <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
           </svg>
           {unreadInboxCount > 0 && (
-            <span className="absolute -top-1.5 -right-1.5 inline-flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-semibold text-white bg-red-500 rounded-full">
+            <span className="absolute -top-1.5 -right-1.5 inline-flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-semibold leading-none tabular-nums text-[var(--status-deprecated)] bg-[var(--status-deprecated-bg)] rounded-full">
               {unreadInboxCount}
             </span>
           )}

@@ -157,7 +157,7 @@ function PhasePlaceholder({ agentName, state, onRetry }: { agentName: string; st
         <div className="mt-4 flex justify-center gap-2">
           {(failed || phase === 'stopped') && (
             <button
-              className="rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-accent)] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[var(--adf-ui-accent-hover)] dark:text-neutral-950"
+              className="rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-accent)] px-3 py-1.5 text-[11px] font-medium text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)]"
               onClick={() => openSettingsAt('compute')}
             >
               Open Settings › Compute

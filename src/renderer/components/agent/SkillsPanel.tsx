@@ -27,7 +27,7 @@ import {
   type ParsedRegistry,
   type RegistryEntry
 } from '../../../shared/utils/skills-panel'
-import { renderMarkdownToSafeHtml } from '../../utils/markdown'
+import { renderMarkdownToSafeHtml, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { elideMiddle, splitSkillDocument } from '../../../shared/utils/skill-preview'
 import { agentChanged, setSkillMuted, syncOpenTab } from '../../utils/skills-state'
 import { Dialog } from '../common/Dialog'
@@ -425,7 +425,7 @@ export function SkillsPanel() {
             </p>
             <button
               onClick={() => setCatalogOpen(true)}
-              className="mt-3 px-3 py-1.5 text-xs font-medium text-white bg-blue-500 hover:bg-blue-600 rounded-lg cursor-pointer"
+              className="mt-3 px-3 py-1.5 text-xs font-medium bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] rounded-lg cursor-pointer"
             >
               Browse catalog
             </button>
@@ -1077,9 +1077,11 @@ function SkillPreview({
     () => (state?.status === 'ready' ? splitSkillDocument(state.content) : null),
     [state]
   )
+  const highlightVersion = useMarkdownHighlightVersion()
   const bodyHtml = useMemo(
     () => (parsed && parsed.body ? renderMarkdownToSafeHtml(parsed.body) : ''),
-    [parsed]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [parsed, highlightVersion]
   )
   const files = entry.files ?? []
 

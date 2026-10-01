@@ -14,44 +14,72 @@ export interface ThemeChoice {
 
 const ADF_DARK: ThemeColors = { ...createTheme({ mono: false, env: {} }).color }
 
-/** Ink on paper: for light terminal backgrounds. */
+/** ADF brand, light (brand/tokens.css light values): for light terminal backgrounds. */
 const ADF_LIGHT: ThemeColors = {
-  text: '#2B2925',
-  muted: '#6B6456',
-  dim: '#A39C8E',
-  accent: '#A8641A',
-  live: '#1F7A70',
-  loop: '#6A4BB0',
-  user: '#A8641A',
-  assistant: '#2B2925',
-  thinking: '#8A8476',
-  tool: '#2F6DA8',
-  success: '#3F7F3A',
-  warn: '#9A6A00',
-  error: '#B83232',
-  info: '#2F6DA8',
-  border: '#C9C2B2',
-  borderFocus: '#A8641A',
-  selectionFg: '#FFFDF7',
-  selectionBg: '#A8641A',
-  surface: '#EFEADF',
-  overlay: '#F7F3EA',
+  text: '#111111', // ink
+  muted: '#474B54', // ink-muted
+  dim: '#6B707C', // ink-faint
+  accent: '#2F5BEA', // blue
+  live: '#1F44BF', // blue-strong
+  loop: '#6A4A8C', // status: experimental
+  user: '#2F5BEA', // blue
+  assistant: '#111111', // ink
+  thinking: '#6B707C', // ink-faint
+  tool: '#474B54', // ink-muted
+  success: '#1F6A52', // status: stable
+  warn: '#8A5A0B', // status: draft
+  error: '#A12F29', // status: deprecated
+  info: '#474B54', // ink-muted
+  border: '#C9CED8', // rule-strong
+  borderFocus: '#2F5BEA', // blue
+  selectionFg: '#FFFFFF', // paper (on a blue fill)
+  selectionBg: '#2F5BEA', // blue
+  surface: '#F6F7FA', // paper-sunken
+  overlay: '#F6F7FA', // paper-sunken
 }
 
-/** Stronger contrast on dark backgrounds (dim text readable on low-quality displays). */
+/** Brand dark with brighter text and borders (dim text readable on low-quality displays). */
 const ADF_CONTRAST: ThemeColors = {
   ...ADF_DARK,
-  text: '#F2EEE4',
-  muted: '#C4BDAE',
-  dim: '#8C8577',
-  border: '#7A7466',
-  thinking: '#A8A294',
+  text: '#FFFFFF',
+  assistant: '#FFFFFF',
+  muted: '#D4D8E1',
+  dim: '#B0B5C2',
+  thinking: '#B0B5C2',
+  tool: '#D4D8E1',
+  info: '#D4D8E1',
+  border: '#858B99',
+}
+
+/** The pre-brand warm palette: amber accent, teal live, violet loops. */
+const PARCHMENT: ThemeColors = {
+  text: '#D9D4C7',
+  muted: '#9A9384',
+  dim: '#5F5A50',
+  accent: '#E3A857',
+  live: '#4DB6AC',
+  loop: '#A98BE3',
+  user: '#E3A857',
+  assistant: '#D9D4C7',
+  thinking: '#7F7A6E',
+  tool: '#6FA8DC',
+  success: '#8CC084',
+  warn: '#E0B050',
+  error: '#E06C6C',
+  info: '#6FA8DC',
+  border: '#4A463E',
+  borderFocus: '#E3A857',
+  selectionFg: '#1B1A17',
+  selectionBg: '#E3A857',
+  surface: '#23211D',
+  overlay: '#2B2823',
 }
 
 export const THEMES: ThemeChoice[] = [
-  { name: 'adf', label: 'ADF dark', description: 'Ink & parchment on a dark terminal (default)', colors: ADF_DARK },
-  { name: 'adf-light', label: 'ADF light', description: 'Ink on paper, for light terminal backgrounds', colors: ADF_LIGHT },
+  { name: 'adf', label: 'ADF dark', description: 'ADF brand colors on a dark terminal (default)', colors: ADF_DARK },
+  { name: 'adf-light', label: 'ADF light', description: 'ADF brand colors on a light terminal', colors: ADF_LIGHT },
   { name: 'adf-contrast', label: 'ADF high contrast', description: 'Brighter text and borders on dark backgrounds', colors: ADF_CONTRAST },
+  { name: 'parchment', label: 'Parchment', description: 'The earlier warm palette: amber accent on a dark terminal', colors: PARCHMENT },
   { name: 'adf-mono', label: 'Mono', description: 'No color (like NO_COLOR): bold and inverse carry emphasis', colors: undefined },
 ]
 

@@ -28,17 +28,18 @@ interface Props {
  * Tab chrome, VS Code style. The bar is one recessed surface; its bottom
  * hairline is an absolutely positioned sibling under the tabs rather than a
  * border, so the selected tab (opaque, content-coloured, z-above) covers it
- * and opens straight into the content below. The accent sits on the TOP edge
- * as an inset shadow (a border would shift the tab's height). Focus rings
+ * and opens straight into the content below. The active tab is ink text with
+ * a quiet ink-faint mark on its TOP edge, drawn as an inset shadow (a border
+ * would shift the tab's height); no blue fill. Focus rings
  * are drawn inset: the file strip scrolls horizontally, and an outset ring
  * gets clipped to a stray vertical bar at the tab's edge.
  */
 const TAB_BASE =
   'group relative z-10 flex items-center gap-1.5 px-3 text-xs font-medium whitespace-nowrap transition-colors focus-visible:[outline-offset:-2px]'
 const TAB_ACTIVE =
-  'bg-surface-1 text-neutral-800 dark:text-neutral-200 shadow-[inset_0_2px_0_0_var(--color-blue-500)]'
+  'bg-surface-1 text-[var(--adf-ui-text)] shadow-[inset_0_2px_0_0_var(--adf-ui-text-subtle)]'
 const TAB_IDLE =
-  'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-500/10 hover:text-neutral-700 dark:hover:text-neutral-200'
+  'text-[var(--adf-ui-text-muted)] hover:bg-neutral-500/10 hover:text-[var(--adf-ui-text)]'
 const TAB_ICON_BUTTON =
   'w-4 h-4 flex items-center justify-center rounded-sm hover:bg-neutral-500/20'
 
@@ -60,17 +61,12 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
       {chatTab && (
         <>
           {/* Pinned outside the scroller: with many files open the file strip
-              scrolls under it and Loops stays put. Tinted with the accent so
-              it reads as the agent's slot, not another document. */}
+              scrolls under it and Loops stays put. */}
           <button
             type="button"
             onClick={chatTab.onSelect}
             title="Loops — the agent's chat"
-            className={`${TAB_BASE} shrink-0 ${
-              chatTab.active
-                ? 'bg-[color-mix(in_srgb,var(--color-blue-500)_10%,var(--adf-surface-1))] text-blue-700 dark:text-blue-300 shadow-[inset_0_2px_0_0_var(--color-blue-500)]'
-                : 'text-neutral-500 dark:text-neutral-400 hover:bg-blue-500/10 hover:text-blue-700 dark:hover:text-blue-300'
-            }`}
+            className={`${TAB_BASE} shrink-0 ${chatTab.active ? TAB_ACTIVE : TAB_IDLE}`}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
@@ -146,7 +142,7 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
                   </svg>
                 </span>
               )}
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${tab.isDirty ? 'bg-blue-500' : 'bg-transparent'}`} />
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${tab.isDirty ? 'bg-[var(--adf-ui-text-muted)]' : 'bg-transparent'}`} />
               <span
                 onClick={(e) => {
                   e.stopPropagation()

@@ -87,7 +87,7 @@ export function StatusBar() {
   }
 
   return (
-    <div className="h-7 bg-surface-0 border-t border-hairline flex items-center px-3 gap-4 text-xs text-neutral-500 dark:text-neutral-400">
+    <div className="h-7 bg-surface-0 border-t border-hairline flex items-center px-3 gap-4 text-xs text-[var(--adf-ui-text-subtle)]">
       {/* Everything left of the version describes the open agent. Home has none,
           so the group is absent there rather than a row of blank labels. */}
       {filePath && (
@@ -98,21 +98,21 @@ export function StatusBar() {
             <span className="text-sm leading-none">{config.icon || pickAgentIcon(config.id)}</span>
             <span className="font-medium text-neutral-700 dark:text-neutral-200 truncate">{config.name}</span>
           </span>
-          <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
+          <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
         </>
       )}
       <AgentStatus />
-      <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
+      <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
       <span>{config?.model?.model_id ?? 'No model'}</span>
-      <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
+      <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
       <button
         onClick={handleSave}
-        className="hover:text-neutral-700 dark:hover:text-neutral-200"
+        className="hover:text-[var(--adf-ui-text)]"
         title="Save"
       >
         {isDirty ? 'Unsaved changes' : 'Saved'}
       </button>
-      <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
+      <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
       <ContextGauge
         tokenUsage={tokenUsage}
         tokenEstimate={tokenEstimate}
@@ -127,7 +127,7 @@ export function StatusBar() {
         threshold={compactThreshold}
         initialLoop={viewedLoop}
       />
-      <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
+      <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
       <button
         onClick={() => {
           if (showLogsPanel && bottomPanelTab === 'logs') {
@@ -137,7 +137,7 @@ export function StatusBar() {
             if (!showLogsPanel) toggleLogsPanel()
           }
         }}
-        className={`flex items-center gap-1 hover:text-neutral-700 dark:hover:text-neutral-200 ${showLogsPanel && bottomPanelTab === 'logs' ? 'text-blue-500' : ''}`}
+        className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${showLogsPanel && bottomPanelTab === 'logs' ? 'text-[var(--adf-ui-text)]' : ''}`}
         title="Toggle Logs Panel"
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -155,7 +155,7 @@ export function StatusBar() {
             if (!showLogsPanel) toggleLogsPanel()
           }
         }}
-        className={`flex items-center gap-1 hover:text-neutral-700 dark:hover:text-neutral-200 ${showLogsPanel && bottomPanelTab === 'tasks' ? 'text-blue-500' : ''}`}
+        className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${showLogsPanel && bottomPanelTab === 'tasks' ? 'text-[var(--adf-ui-text)]' : ''}`}
         title="Toggle Tasks Panel"
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -169,7 +169,7 @@ export function StatusBar() {
       <span className="ml-auto" />
       <UpdateBadge />
       <span
-        className="tabular-nums text-neutral-400 dark:text-neutral-500"
+        className="tabular-nums"
         title="ADF Studio version"
       >
         {appVersion ? `v${appVersion}` : ''}
@@ -178,8 +178,8 @@ export function StatusBar() {
         role="status"
         className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
             meshEnabled
-              ? 'bg-green-100 text-green-700 dark:bg-green-900/35 dark:text-green-300'
-              : 'bg-neutral-200 text-neutral-500 dark:bg-neutral-700 dark:text-neutral-400'
+              ? 'bg-[var(--status-stable-bg)] text-[var(--status-stable)]'
+              : 'border border-[var(--adf-ui-border)] text-[var(--adf-ui-text-subtle)]'
         }`}
         title={meshEnabled ? `Mesh is running with ${activeAgentCount} participating agents` : 'Mesh is off; manage it in Settings > Networking'}
       >
@@ -191,7 +191,7 @@ export function StatusBar() {
         disabled={!isAnythingRunning}
         className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
           isAnythingRunning
-            ? 'text-red-600 hover:bg-red-500 hover:text-white dark:text-red-400'
+            ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
             : 'cursor-default text-neutral-300 dark:text-neutral-600'
         }`}
         title={isAnythingRunning ? 'Stop all agents and disable mesh' : 'Nothing running'}
@@ -241,8 +241,8 @@ function UpdateBadge() {
     : update.status === 'error' ? 'Update failed'
     : 'Update'
   const tone =
-    update.status === 'error' ? 'text-red-600 hover:bg-red-100 dark:text-red-400 dark:hover:bg-red-900/40'
-    : 'text-blue-600 hover:bg-blue-100 dark:text-blue-400 dark:hover:bg-blue-900/40'
+    update.status === 'error' ? 'text-[var(--status-deprecated)] hover:bg-[var(--status-deprecated-bg)]'
+    : 'text-[var(--status-info)] hover:bg-[var(--status-info-bg)]'
 
   return (
     <Tooltip tip={tip}>

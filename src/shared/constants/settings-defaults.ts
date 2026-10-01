@@ -20,8 +20,9 @@ export function createSettingsDefaults(): Record<string, unknown> {
     // the one-time `agentTemplateForChildren` migration has already run.
     theme: 'light',
     // Interface typeface preset + free-text family for 'custom'; see
-    // UI_FONT_STACKS in the renderer's app.store.
-    uiFont: 'system',
+    // UI_FONT_STACKS in the renderer's app.store. 'inter-tight' is bundled;
+    // older stores on 'system' move to it once (settings-migrations).
+    uiFont: 'inter-tight',
     uiFontCustom: '',
     // Electron zoom factor for the whole window (1 = 100%).
     uiScale: 1,

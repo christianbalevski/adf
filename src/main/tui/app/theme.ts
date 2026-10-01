@@ -68,28 +68,33 @@ export interface Theme {
   glyph: ThemeGlyphs
 }
 
-/** "Ink & parchment": warm document accent, teal umbilical, violet loops. */
+/**
+ * ADF brand, dark (brand/tokens.css dark values). Neutral ink on paper, one
+ * blue for accent / focus / selection, status colors for state. Hex values;
+ * Ink (chalk) downsamples them to 256 or 16 colors on terminals without
+ * truecolor.
+ */
 const ADF_COLORS: ThemeColors = {
-  text: '#D9D4C7',
-  muted: '#9A9384',
-  dim: '#5F5A50',
-  accent: '#E3A857',
-  live: '#4DB6AC',
-  loop: '#A98BE3',
-  user: '#E3A857',
-  assistant: '#D9D4C7',
-  thinking: '#7F7A6E',
-  tool: '#6FA8DC',
-  success: '#8CC084',
-  warn: '#E0B050',
-  error: '#E06C6C',
-  info: '#6FA8DC',
-  border: '#4A463E',
-  borderFocus: '#E3A857',
-  selectionFg: '#1B1A17',
-  selectionBg: '#E3A857',
-  surface: '#23211D',
-  overlay: '#2B2823',
+  text: '#ECEEF3', // ink
+  muted: '#B0B5C2', // ink-muted
+  dim: '#858B99', // ink-faint
+  accent: '#7F9DFF', // blue
+  live: '#A9BDFF', // blue-strong
+  loop: '#C6A8E6', // status: experimental
+  user: '#7F9DFF', // blue
+  assistant: '#ECEEF3', // ink
+  thinking: '#858B99', // ink-faint
+  tool: '#B0B5C2', // ink-muted
+  success: '#86CFAE', // status: stable
+  warn: '#E7BF73', // status: draft
+  error: '#EE9B92', // status: deprecated
+  info: '#B0B5C2', // ink-muted
+  border: '#333A49', // rule-strong
+  borderFocus: '#7F9DFF', // blue
+  selectionFg: '#0C0E13', // paper (on a blue fill)
+  selectionBg: '#7F9DFF', // blue
+  surface: '#151922', // paper-sunken
+  overlay: '#151922', // paper-sunken
 }
 
 const MONO_COLORS: ThemeColors = Object.fromEntries(

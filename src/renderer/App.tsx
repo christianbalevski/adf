@@ -207,6 +207,10 @@ export default function App() {
     const applyTheme = (isDark: boolean) => {
       const html = document.documentElement
       const body = document.body
+      // Brand tokens (brand-tokens.css) key on data-theme; `.dark` drives
+      // Tailwind's dark variant. Always set the resolved value so an explicit
+      // choice beats the OS prefers-color-scheme branch of the token file.
+      html.dataset.theme = isDark ? 'dark' : 'light'
       if (isDark) {
         html.classList.add('dark')
         body.classList.remove('bg-neutral-50', 'text-neutral-900')

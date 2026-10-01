@@ -337,7 +337,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
                 onClick={() => setMode(value)}
                 className={`px-2 py-1.5 text-xs rounded-lg border transition-colors ${
                   mode === value
-                    ? 'bg-blue-500 text-white border-blue-500'
+                    ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)] border-[var(--adf-ui-border)]'
                     : 'bg-white dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 border-neutral-300 dark:border-neutral-600 hover:bg-neutral-50 dark:hover:bg-neutral-600'
                 }`}
               >
@@ -484,7 +484,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
                 onClick={() => { setScope(value); if (value === 'system') setLoop('main') }}
                 className={`px-2 py-1.5 text-xs rounded-lg border transition-colors capitalize ${
                   scope === value
-                    ? 'bg-blue-500 text-white border-blue-500'
+                    ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)] border-[var(--adf-ui-border)]'
                     : 'bg-white dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 border-neutral-300 dark:border-neutral-600 hover:bg-neutral-50 dark:hover:bg-neutral-600'
                 }`}
               >
@@ -580,7 +580,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
           <button
             onClick={handleSubmit}
             disabled={saving}
-            className="px-3 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
+            className="px-3 py-1.5 text-xs bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] rounded-lg disabled:opacity-50"
           >
             {saving ? (isEdit ? 'Saving...' : 'Creating...') : (isEdit ? 'Save' : 'Create Timer')}
           </button>

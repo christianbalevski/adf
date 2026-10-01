@@ -207,7 +207,7 @@ export function Header({ width, hits }: { width: number; hits?: HeaderHits }) {
   // The first app view's gap is the group separator (same width as a gap).
   const renderTab = (view: ViewDefinition, separated: boolean) => {
     const isActive = view.id === active
-    // Focused tab bar (Esc): the current tab turns teal and underlined, the others brighten.
+    // Focused tab bar (Esc): the current tab takes the live color and an underline, the others brighten.
     const focusedTab = isActive && tabsFocused && !onAgent
     return (
       <Text key={view.id}>

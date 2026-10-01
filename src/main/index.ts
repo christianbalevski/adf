@@ -303,8 +303,8 @@ if (adfArg) fileToOpen = adfArg
 
 function getOverlayColors(): { color: string; symbolColor: string } {
   return nativeTheme.shouldUseDarkColors
-    ? { color: '#262626', symbolColor: '#e5e5e5' }
-    : { color: '#f5f5f5', symbolColor: '#404040' }
+    ? { color: '#0c0e13', symbolColor: '#b0b5c2' } // brand dark --paper / --ink-muted (title bar, BRAND §10)
+    : { color: '#ffffff', symbolColor: '#474b54' } // brand light --paper / --ink-muted
 }
 
 function createWindow(): BrowserWindow {
@@ -317,7 +317,7 @@ function createWindow(): BrowserWindow {
     minHeight: 600,
     // Paint only once the renderer is ready — avoids the white flash.
     show: false,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0a0a0a' : '#fafafa',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0c0e13' : '#ffffff', // brand --paper
     icon: join(__dirname, '../../resources/icon.png'),
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     // Windows/Linux: keep the menu bar out of the custom titlebar UI while

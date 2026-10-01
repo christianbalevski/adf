@@ -275,7 +275,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
         </label>
         <button
           onClick={() => { setEditingId(null); setModalOpen(true) }}
-          className="px-2.5 py-1 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700"
+          className="px-2.5 py-1 text-xs font-medium rounded-md bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)]"
         >
           + Add MCP Server
         </button>

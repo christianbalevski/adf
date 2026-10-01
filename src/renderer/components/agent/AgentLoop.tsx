@@ -7,7 +7,7 @@ import { toDisplayState } from '../../hooks/useAgent'
 import { pickOldestSeq } from '../../hooks/live-seq'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { nanoid } from 'nanoid'
-import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer } from '../../utils/markdown'
+import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
 import { loopColor } from '../../utils/loop-color'
 import { getLoopActivity, isTurnCompleteMarker } from '../../utils/loop-activity'
@@ -251,17 +251,21 @@ const MarkdownEntry = memo(({ content }: { content: string }) => {
   if (!renderIncrementally.current) renderIncrementally.current = createIncrementalMarkdownRenderer(encodeAdfFileUrls)
   const mountedContent = useRef(content)
   const streamed = content !== mountedContent.current
-  const [settled, setSettled] = useState<{ source: string; html: string } | null>(null)
-  const streamingHtml = useMemo(() => renderIncrementally.current!(content), [content])
+  // Ticks when a Shiki grammar finishes loading, so plain fallback blocks re-render highlighted.
+  const highlightVersion = useMarkdownHighlightVersion()
+  const [settled, setSettled] = useState<{ source: string; html: string; v: number } | null>(null)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const streamingHtml = useMemo(() => renderIncrementally.current!(content), [content, highlightVersion])
+  const isSettled = settled?.source === content && settled.v === highlightVersion
   useEffect(() => {
-    if (!streamed || settled?.source === content) return
+    if (!streamed || isSettled) return
     const timer = setTimeout(
-      () => setSettled({ source: content, html: renderMarkdown(content) }),
+      () => setSettled({ source: content, html: renderMarkdown(content), v: highlightVersion }),
       MARKDOWN_SETTLE_MS
     )
     return () => clearTimeout(timer)
-  }, [streamed, content, settled])
-  const html = settled?.source === content ? settled.html : streamingHtml
+  }, [streamed, content, isSettled, highlightVersion])
+  const html = isSettled ? settled.html : streamingHtml
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const anchor = (e.target as HTMLElement).closest('a[href]')
     if (!anchor) return
@@ -483,6 +487,11 @@ function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairInde
   return Math.max(0, completedAt - startedAt)
 }
 
+/** Brand §10 "Tool calls, logs": sunken, hairline, ink-muted mono. Standalone
+ *  log rows get the box; rows inside an activity group sit in the group's box. */
+const LOG_BOX = 'overflow-hidden rounded-lg border border-[var(--rule)] bg-[var(--paper-sunken)]'
+const LOG_ROW_HOVER = 'transition-colors duration-[var(--dur-fast)] ease-[var(--ease)] hover:bg-[color-mix(in_srgb,var(--rule)_55%,transparent)]'
+
 const LogEntryRow = memo(({
   entry,
   expandedThinking,
@@ -565,7 +574,7 @@ const LogEntryRow = memo(({
       {continuing && <span className="sr-only">Agent continuing</span>}
       {entry.type === 'user' && (
         <div className="flex flex-col items-end gap-0.5">
-          <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-lg border border-[var(--adf-ui-focus)] bg-[var(--adf-ui-accent-subtle)] px-3 py-2 text-[var(--adf-ui-text)]">
+          <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-lg bg-[var(--paper-sunken)] px-3 py-2 text-[var(--ink)]">
             {entry.content}
           </div>
           {Array.isArray(entry.metadata?.imagePreviewUrls) && entry.metadata.imagePreviewUrls.length > 0 && (
@@ -575,13 +584,13 @@ const LogEntryRow = memo(({
                   key={`${url}-${index}`}
                   src={url}
                   alt="uploaded image"
-                  className="max-h-64 max-w-full rounded-lg border border-neutral-200 dark:border-neutral-700"
+                  className="max-h-64 max-w-full rounded-lg border border-[var(--rule)]"
                 />
               ))}
             </div>
           )}
           {entry.timestamp > 0 && (
-            <span className="text-[10px] text-neutral-400 dark:text-neutral-500 mr-1">
+            <span className="mr-1 text-[10px] text-[var(--ink-faint)]">
               {formatLoopTime(entry.timestamp)}
             </span>
           )}
@@ -599,23 +608,23 @@ const LogEntryRow = memo(({
           ? `${reasoningTokens.toLocaleString()} tokens`
           : `~${Math.ceil(entry.content.length / 4).toLocaleString()} tokens`
         return (
-        <div className="overflow-hidden">
+        <div className={compact ? 'overflow-hidden' : LOG_BOX}>
           <button
             onClick={() => onToggleThinking(entry.id)}
-            className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
+            className={`flex w-full items-center gap-1.5 px-1.5 py-1 font-mono text-xs text-[var(--ink-muted)] ${LOG_ROW_HOVER}`}
           >
             <span className={continuing ? 'adf-shimmer-text adf-shimmer-text--activity' : undefined}>Thinking{encrypted ? ' (encrypted)' : ''}</span>
-            <span className="ml-auto flex items-center gap-2 text-neutral-400 dark:text-neutral-500">
+            <span className="ml-auto flex items-center gap-2 text-[var(--ink-faint)]">
               {hasText
                 ? thinkingSize
                 : (encrypted ? '\uD83D\uDD12 not human-readable' : thinkingSize)}
             </span>
           </button>
           {expandedThinking.has(entry.id) && (
-            <div className="max-h-64 overflow-y-auto px-1 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
+            <div className="max-h-64 overflow-y-auto px-1.5 pb-2 pt-1 text-xs text-[var(--ink-muted)]">
               {hasText && <ThinkingContent content={entry.content} />}
               {(encrypted || (preserved && !hasText)) && (
-                <p className="mt-1 text-[10px] italic text-neutral-400 dark:text-neutral-500">
+                <p className="mt-1 text-[10px] italic text-[var(--ink-faint)]">
                   {encrypted
                     ? 'Encrypted reasoning \u2014 not human-readable. The provider returns only an opaque/signed block; it is retained and sent back to the model to preserve tool-call continuity.'
                     : 'Reasoning preserved for tool-call continuity. Displayed traces are provider-side summaries, not the full reasoning.'}
@@ -648,7 +657,7 @@ const LogEntryRow = memo(({
           <div>
             <MarkdownEntry content={entry.content} />
             {entry.timestamp > 0 && (
-              <div className="mt-0.5 px-1 text-[10px] text-neutral-400 dark:text-neutral-500">
+              <div className="mt-0.5 px-1 text-[10px] text-[var(--ink-faint)]">
                 {formatLoopTime(entry.timestamp)}
               </div>
             )}
@@ -663,29 +672,29 @@ const LogEntryRow = memo(({
         </div>
       )}
       {showStatusChange && (
-        <div className="px-1.5 py-1 font-mono text-[11px] leading-5 text-neutral-500 dark:text-neutral-500">
+        <div className="px-1.5 py-1 font-mono text-xs leading-5 text-[var(--ink-muted)]">
           <span className={continuing ? 'adf-shimmer-text adf-shimmer-text--activity' : undefined}>{statusValue}</span>
         </div>
       )}
       {entry.type === 'tool_call' && toolName !== 'say' && !showStatusChange && (
         <>
           <div
-            className={`group cursor-pointer overflow-hidden rounded border-l transition-colors ${toolRail} ${
+            className={`group cursor-pointer overflow-hidden ${
+              compact ? `rounded border-l ${toolRail}` : `rounded-lg border ${toolRail === 'border-transparent' ? 'border-[var(--rule)]' : toolRail}`
+            } transition-colors duration-[var(--dur-fast)] ease-[var(--ease)] ${
               pendingApprovalRequestId
                 ? 'bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-warning)]'
                 : toolResultIsError === true
                   ? 'bg-red-50/70 hover:bg-red-50 dark:bg-red-950/20 dark:hover:bg-red-950/30'
-                  : 'hover:bg-neutral-100/70 dark:hover:bg-neutral-700/30'
+                  : compact
+                    ? 'hover:bg-[color-mix(in_srgb,var(--rule)_55%,transparent)]'
+                    : 'bg-[var(--paper-sunken)] hover:bg-[color-mix(in_srgb,var(--rule)_55%,var(--paper-sunken))]'
             }`}
             onClick={() => onToolClick(entry)}
           >
-            <div className="flex min-w-0 items-center gap-2 px-1 py-1">
+            <div className="flex min-w-0 items-center gap-2 px-1.5 py-1">
               <span
-                className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${
-                  toolReason
-                    ? 'font-normal text-neutral-700 dark:text-neutral-300'
-                    : 'font-mono text-xs text-neutral-700 dark:text-neutral-300'
-                }`}
+                className="min-w-0 flex-1 truncate font-mono text-xs leading-5 text-[var(--ink-muted)]"
                 title={toolSummary}
               >
                 <span className={continuing ? 'inline-block max-w-full truncate align-bottom adf-shimmer-text adf-shimmer-text--activity' : undefined}>
@@ -694,26 +703,28 @@ const LogEntryRow = memo(({
               </span>
               {toolTarget && (
                 <span
-                  className="max-w-[40%] shrink-0 truncate font-mono text-[10px] text-neutral-400 dark:text-neutral-500"
+                  className="max-w-[40%] shrink-0 truncate font-mono text-[11px] text-[var(--ink-faint)]"
                   title={toolTarget}
                 >
                   {toolTarget}
                 </span>
               )}
               <span
-                className={`max-w-[35%] shrink-0 truncate font-mono text-[10px] ${toolAccent.name}`}
+                className={`max-w-[35%] shrink-0 truncate font-mono text-[11px] ${
+                  toolResultIsError === true || pendingApprovalRequestId ? toolAccent.name : 'text-[var(--ink-faint)]'
+                }`}
                 title={toolName}
               >
                 {toolName}
               </span>
-              {toolResultIsError === true && <span className="shrink-0 text-red-500" title="Error">&#x2718;</span>}
+              {toolResultIsError === true && <span className="shrink-0 text-[var(--adf-ui-danger)]" title="Error">&#x2718;</span>}
             </div>
             {!pendingApprovalRequestId && overrideOutcome && (
-              <div className="px-1 pb-1">
+              <div className="px-1.5 pb-1">
                 <span className={`text-[10px] font-medium ${
                   overrideOutcome === 'approved'
-                    ? 'text-green-600 dark:text-green-400'
-                    : 'text-red-500 dark:text-red-400'
+                    ? 'text-[var(--status-stable)]'
+                    : 'text-[var(--status-deprecated)]'
                 }`}>
                   {overrideOutcome === 'approved' ? 'Approved — ran in the calling shell/code' : 'Denied'}
                 </span>
@@ -740,27 +751,27 @@ const LogEntryRow = memo(({
             )}
           </div>
           {entry.metadata?.name === 'ask' && (entry.metadata?.input as { question?: string })?.question && (
-            <div className="mt-1 border border-blue-400 dark:border-blue-600 rounded-lg overflow-hidden">
+            <div className={`mt-1 overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--rule)] bg-[var(--paper)] ${pendingAsk && !askAnswer ? 'border-l-2 border-l-[var(--blue)]' : ''}`}>
               <div className="p-2.5">
-                <div className="text-[10px] font-semibold uppercase text-blue-500 dark:text-blue-400 mb-1">
+                <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
                   Agent asked
                 </div>
-                <div className="text-sm text-blue-700 dark:text-blue-300 whitespace-pre-wrap">
+                <div className="text-sm text-[var(--ink)] whitespace-pre-wrap">
                   {(entry.metadata.input as { question: string }).question}
                 </div>
               </div>
               {askAnswer && (
-                <div className="border-t border-blue-200 dark:border-blue-800 bg-blue-50/60 dark:bg-blue-900/10 p-2.5">
-                  <div className="text-[10px] font-semibold uppercase text-neutral-500 dark:text-neutral-400 mb-1">
+                <div className="border-t border-[var(--rule)] bg-[var(--paper-sunken)] p-2.5">
+                  <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
                     User response
                   </div>
-                  <div className="text-sm text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap break-words">
+                  <div className="text-sm text-[var(--ink)] whitespace-pre-wrap break-words">
                     {askAnswer}
                   </div>
                 </div>
               )}
               {pendingAsk && !askAnswer && (
-                <div className="border-t border-blue-200 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-900/10 px-2.5 py-1.5 text-xs text-blue-600 dark:text-blue-300">
+                <div className="border-t border-[var(--rule)] bg-[var(--tint-soft)] px-2.5 py-1.5 text-xs text-[var(--ink-muted)]">
                   Awaiting response
                 </div>
               )}
@@ -771,7 +782,7 @@ const LogEntryRow = memo(({
               <img
                 src={toolResultImageUrl}
                 alt={(entry.metadata?.input as { path?: string })?.path ?? 'image'}
-                className="max-w-full max-h-64 rounded-lg border border-neutral-200 dark:border-neutral-700"
+                className="max-h-64 max-w-full rounded-lg border border-[var(--rule)]"
               />
             </div>
           )}
@@ -792,20 +803,20 @@ const LogEntryRow = memo(({
         const label = TRIGGER_LABELS[triggerType] ?? 'Trigger'
         const isExpanded = expandedTriggers.has(entry.id)
         return (
-          <div className="overflow-hidden">
+          <div className={compact ? 'overflow-hidden' : LOG_BOX}>
             <button
               onClick={() => onToggleTrigger(entry.id)}
-              className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
+              className={`flex w-full items-center gap-1.5 px-1.5 py-1 font-mono text-xs text-[var(--ink-muted)] ${LOG_ROW_HOVER}`}
             >
               <span>{label}</span>
               {entry.timestamp > 0 && (
-                <span className="text-neutral-400 dark:text-neutral-500 ml-auto">
+                <span className="ml-auto text-[var(--ink-faint)]">
                   {formatLoopTime(entry.timestamp)}
                 </span>
               )}
             </button>
             {isExpanded && (
-              <div className="max-h-64 overflow-y-auto whitespace-pre-wrap px-1 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
+              <div className="max-h-64 overflow-y-auto whitespace-pre-wrap px-1.5 pb-2 pt-1 font-mono text-xs text-[var(--ink-muted)]">
                 {entry.content}
               </div>
             )}
@@ -823,18 +834,18 @@ const LogEntryRow = memo(({
         // Sides are coloured individually on purpose: a blanket `border-neutral-*`
         // also sets border-left-color, and which of the two wins would then
         // depend on Tailwind's emit order rather than on intent.
-        <div className={`rounded-md border-y border-r border-l-[3px] border-y-neutral-200 border-r-neutral-200 bg-neutral-50/60 p-1.5 dark:border-y-neutral-700 dark:border-r-neutral-700 dark:bg-neutral-800/35 ${sender.rail}`}>
-          <div className="flex items-center gap-1.5 mb-0.5">
-            <span className={`text-[10px] font-semibold ${sender.label}`}>
+        <div className={`rounded-lg border-y border-r border-l-2 border-y-[var(--rule)] border-r-[var(--rule)] bg-[var(--paper)] px-2.5 py-2 ${sender.rail}`}>
+          <div className="mb-1 flex items-center gap-1.5">
+            <span className={`font-mono text-[11px] ${sender.label}`}>
               {`from loop:${fromLoop}`}
             </span>
             {entry.timestamp > 0 && (
-              <span className="ml-auto text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="ml-auto text-[10px] text-[var(--ink-faint)]">
                 {formatLoopTime(entry.timestamp)}
               </span>
             )}
           </div>
-          <div className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-snug text-neutral-700 dark:text-neutral-300">
+          <div className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-snug text-[var(--ink)]">
             {entry.content}
           </div>
         </div>
@@ -845,18 +856,18 @@ const LogEntryRow = memo(({
         const label = CONTEXT_LABELS[category] ?? 'Context Injected'
         const isExpanded = expandedContexts.has(entry.id)
         return (
-          <div className="overflow-hidden">
+          <div className={compact ? 'overflow-hidden' : LOG_BOX}>
             <button
               onClick={() => onToggleContext(entry.id)}
-              className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-left text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
+              className={`flex w-full items-center gap-1.5 px-1.5 py-1 text-left font-mono text-xs text-[var(--ink-muted)] ${LOG_ROW_HOVER}`}
             >
               <span>{label}</span>
-              <span className="text-neutral-400 dark:text-neutral-500 ml-auto">
+              <span className="ml-auto text-[var(--ink-faint)]">
                 {`~${Math.ceil(entry.content.length / 4).toLocaleString()} tokens`}
               </span>
             </button>
             {isExpanded && (
-              <div className="max-h-64 overflow-y-auto whitespace-pre-wrap px-1 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
+              <div className="max-h-64 overflow-y-auto whitespace-pre-wrap px-1.5 pb-2 pt-1 font-mono text-xs text-[var(--ink-muted)]">
                 {entry.content}
               </div>
             )}
@@ -864,11 +875,10 @@ const LogEntryRow = memo(({
         )
       })()}
       {entry.type === 'compaction' && (
-        <div className="border border-dashed border-neutral-300 dark:border-neutral-600 bg-neutral-100 dark:bg-neutral-800/60 rounded-lg p-2.5">
+        <div className="rounded-lg border border-[var(--rule)] bg-[var(--paper-sunken)] p-2.5">
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-neutral-400 dark:bg-neutral-500 inline-block" />
-              <span className="text-[10px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
+              <span className="text-[11px] font-semibold text-[var(--ink-muted)]">
                 Loop compacted{entry.metadata?.audited ? <> &middot; Prior context audited</> : null}
               </span>
             </div>
@@ -878,40 +888,40 @@ const LogEntryRow = memo(({
               </span>
             )}
           </div>
-          <div className="text-xs text-neutral-600 dark:text-neutral-400 whitespace-pre-wrap break-words">
+          <div className="whitespace-pre-wrap break-words text-xs text-[var(--ink-muted)]">
             {entry.content}
           </div>
         </div>
       )}
       {entry.type === 'system' && entry.metadata?.isAsk && (
-        <div className="border border-blue-400 dark:border-blue-600 rounded-lg overflow-hidden">
+        <div className={`overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--rule)] bg-[var(--paper)] ${pendingAsk && !askAnswer ? 'border-l-2 border-l-[var(--blue)]' : ''}`}>
           <div className="p-2.5">
-            <div className="text-[10px] font-semibold uppercase text-blue-500 dark:text-blue-400 mb-1">
+            <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
               Agent asked
             </div>
-            <div className="text-sm text-blue-700 dark:text-blue-300 whitespace-pre-wrap">
+            <div className="text-sm text-[var(--ink)] whitespace-pre-wrap">
               {entry.content}
             </div>
           </div>
           {askAnswer && (
-            <div className="border-t border-blue-200 dark:border-blue-800 bg-blue-50/60 dark:bg-blue-900/10 p-2.5">
-              <div className="text-[10px] font-semibold uppercase text-neutral-500 dark:text-neutral-400 mb-1">
+            <div className="border-t border-[var(--rule)] bg-[var(--paper-sunken)] p-2.5">
+              <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
                 User response
               </div>
-              <div className="text-sm text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap break-words">
+              <div className="text-sm text-[var(--ink)] whitespace-pre-wrap break-words">
                 {askAnswer}
               </div>
             </div>
           )}
           {pendingAsk && !askAnswer && (
-            <div className="border-t border-blue-200 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-900/10 px-2.5 py-1.5 text-xs text-blue-600 dark:text-blue-300">
+            <div className="border-t border-[var(--rule)] bg-[var(--tint-soft)] px-2.5 py-1.5 text-xs text-[var(--ink-muted)]">
               Awaiting response
             </div>
           )}
         </div>
       )}
       {entry.type === 'system' && !isSuspendEntry && !entry.metadata?.isAsk && (
-        <div className="text-xs text-neutral-400 dark:text-neutral-500 text-center">
+        <div className="text-center text-xs text-[var(--ink-faint)]">
           {entry.content}
         </div>
       )}
@@ -946,18 +956,19 @@ const LogEntryRow = memo(({
         const channel = entry.metadata?.channel as string
         const isIncoming = direction === 'incoming'
         return (
-          <div className="rounded-lg border border-neutral-200 bg-neutral-50/60 p-2.5 dark:border-neutral-700 dark:bg-neutral-800/35">
-            <div className="flex items-center gap-1.5 mb-1">
-              <span className="text-[10px] font-semibold text-neutral-500 dark:text-neutral-400">
-                {isIncoming ? `From: ${fromAgent}` : `To: ${toAgent}`}
+          <div className="rounded-lg border border-[var(--rule)] bg-[var(--paper)] px-2.5 py-2">
+            <div className="mb-1 flex min-w-0 items-center gap-1.5 text-[11px] text-[var(--ink-muted)]">
+              <span className="shrink-0">{isIncoming ? 'From' : 'To'}</span>
+              <span className="min-w-0 truncate font-mono text-[var(--ink)]" title={isIncoming ? fromAgent : toAgent}>
+                {isIncoming ? fromAgent : toAgent}
               </span>
               {channel && (
-                <span className="rounded-full bg-neutral-200/70 px-1.5 py-0.5 text-[9px] text-neutral-500 dark:bg-neutral-700/70 dark:text-neutral-400">
+                <span className="shrink-0 rounded-[var(--radius-sm)] border border-[var(--rule)] px-1 font-mono text-[10px] text-[var(--ink-faint)]">
                   {channel}
                 </span>
               )}
             </div>
-            <div className="whitespace-pre-wrap text-xs text-neutral-700 dark:text-neutral-300">
+            <div className="whitespace-pre-wrap text-xs text-[var(--ink)]">
               {entry.content}
             </div>
           </div>
@@ -1024,9 +1035,6 @@ function LoopStream({ loop }: { loop: string }) {
   // stays at the panel edge and code blocks keep their own overflow scroll.
   const capColumn = useAppStore(selectChatColumnCapped)
   const columnClass = capColumn ? 'mx-auto w-full max-w-4xl' : 'w-full'
-  // This loop's identity colour — used for the composer focus ring so the
-  // thread you are typing into is identifiable without reading the tab strip.
-  const loopStyle = loopColor(loop)
 
   const handleApprovalRespond = useCallback((requestId: string, approved: boolean, feedback?: string) => {
     window.adfApi?.respondToolApproval(requestId, approved, feedback)
@@ -1126,12 +1134,6 @@ function LoopStream({ loop }: { loop: string }) {
   )
   const [expandedActivityGroups, setExpandedActivityGroups] = useState<Set<string>>(new Set())
   const [collapsedActivityGroups, setCollapsedActivityGroups] = useState<Set<string>>(new Set())
-  const lastActivityIndex = useMemo(() => {
-    for (let index = displayItems.length - 1; index >= 0; index--) {
-      if (displayItems[index].kind === 'activity') return index
-    }
-    return -1
-  }, [displayItems])
 
   const getVirtualItemKey = useCallback(
     (index: number) => displayItems[index]?.id ?? index,
@@ -1921,12 +1923,12 @@ function LoopStream({ loop }: { loop: string }) {
           cleared loop. Only shown once the user scrolls up to the top of the
           loaded window. */}
       {earlierCount > 0 && atTop && (
-        <div className="flex items-center justify-center gap-2 px-3 py-1 text-xs text-neutral-400 dark:text-neutral-500">
+        <div className="flex items-center justify-center gap-2 px-3 py-1 text-xs text-[var(--ink-faint)]">
           <span>{earlierCount} earlier {earlierCount === 1 ? 'entry' : 'entries'} not shown</span>
           <button
             onClick={handleLoadOlder}
             disabled={loadingOlder}
-            className="underline hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors disabled:opacity-50"
+            className="underline transition-colors hover:text-[var(--ink)] disabled:opacity-50"
           >
             {loadingOlder ? 'Loading…' : 'Load older'}
           </button>
@@ -1935,20 +1937,13 @@ function LoopStream({ loop }: { loop: string }) {
 
       {/* Log */}
       <div className="relative flex-1 min-h-0">
-      {/* Same ambient wash as the home screen, in this loop's colour: the pane
-          reads as a continuation of home, and an inner loop's tab tints it. */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 h-80"
-        style={{
-          background: `radial-gradient(80% 70% at 50% 0%, color-mix(in srgb, ${loopStyle.wash} 16%, transparent), transparent 100%)`
-        }}
-      />
+      {/* No ambient loop-colour wash (brand: no tinted page backgrounds). Loop
+          identity stays on the tab underline and on `loop_send` card rails. */}
       <div ref={scrollRef} onScroll={handleScroll} className="absolute inset-0 overflow-y-auto">
       <div className={columnClass}>
         {displayItems.length === 0 && !isActive && !starting && (
-          <p className="text-sm text-neutral-400 dark:text-neutral-500 text-center mt-8">
-            Agent output will appear here.
+          <p className="mt-8 text-center text-sm text-[var(--ink-faint)]">
+            No messages yet.
           </p>
         )}
         {displayItems.length > 0 && (
@@ -1964,7 +1959,6 @@ function LoopStream({ loop }: { loop: string }) {
               if (!displayItem) return null
               const attentionRequired = displayItem.kind === 'activity' && activityHasPendingInput(displayItem.entries)
               const openByDefault = displayItem.kind === 'activity' && activityHasImage(displayItem.entries)
-              const isTailGroup = displayItem.kind === 'activity' && virtualItem.index === lastActivityIndex
               const isLiveTail = displayItem.kind === 'activity'
                 && displayItem.entries.some((entry) => entry.id === activity.entryId)
               const activityDurationMs = displayItem.kind === 'activity'
@@ -1992,7 +1986,9 @@ function LoopStream({ loop }: { loop: string }) {
                   : TOOL_FAMILY_STYLES[activitySummary.family]
               const activityExpanded = displayItem.kind === 'activity'
                 && (attentionRequired
-                  || ((isTailGroup || openByDefault || expandedActivityGroups.has(displayItem.id))
+                  // Brand §10: tool calls collapsed by default. The live tail
+                  // shows its current step, pulsing, in the collapsed header.
+                  || ((openByDefault || expandedActivityGroups.has(displayItem.id))
                     && !collapsedActivityGroups.has(displayItem.id)))
 
               return (
@@ -2011,21 +2007,24 @@ function LoopStream({ loop }: { loop: string }) {
                   {displayItem.kind === 'entry' ? (
                     <div className="py-1">{renderLogEntry(displayItem.entry)}</div>
                   ) : (
-                    <div className="py-1">
+                    <div className="px-3 py-1">
+                     <div className={LOG_BOX}>
                       <button
                         type="button"
                         onClick={() => toggleActivityGroup(displayItem.id, activityExpanded)}
                         aria-expanded={activityExpanded}
-                        className="flex w-full items-center gap-1.5 rounded px-3 py-1 text-left text-xs text-neutral-400 transition-colors hover:bg-neutral-100/70 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-300"
+                        className={`flex w-full items-center gap-1.5 px-1.5 py-1 text-left font-mono text-xs text-[var(--ink-muted)] ${LOG_ROW_HOVER}`}
                       >
-                        <span className="shrink-0 text-[11px] leading-none" aria-hidden>{activityExpanded ? '\u25BC' : '\u25B6'}</span>
-                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${activityAccent.dot}`} aria-hidden />
-                        <span className={`shrink-0 font-medium text-neutral-500 dark:text-neutral-400 ${activityExpanded ? 'flex-1 text-left' : ''}`}>
+                        <span className="shrink-0 text-[10px] leading-none text-[var(--ink-faint)]" aria-hidden>{activityExpanded ? '\u25BC' : '\u25B6'}</span>
+                        {(activityHasError || activityHasPending) && (
+                          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${activityAccent.dot}`} aria-hidden />
+                        )}
+                        <span className={`shrink-0 text-[var(--ink-faint)] ${activityExpanded ? 'flex-1 text-left' : ''}`}>
                           ({displayItem.entries.length} {displayItem.entries.length === 1 ? 'step' : 'steps'})
                         </span>
                         {!activityExpanded && <span
                           data-agent-continuing={isLiveTail || undefined}
-                          className="min-w-0 flex-1 truncate text-left font-medium text-neutral-500 dark:text-neutral-400"
+                          className="min-w-0 flex-1 truncate text-left"
                           title={activitySummary.label}
                         >
                           <span className={isLiveTail ? 'inline-block max-w-full truncate align-bottom adf-shimmer-text adf-shimmer-text--activity' : undefined}>
@@ -2034,18 +2033,19 @@ function LoopStream({ loop }: { loop: string }) {
                           {isLiveTail && <span className="sr-only"> — agent continuing</span>}
                         </span>}
                         {activityDurationMs != null && !isLiveTail && (
-                          <span className="shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
+                          <span className="shrink-0 tabular-nums text-[var(--ink-faint)]">
                             {formatActivityDuration(activityDurationMs)}
                           </span>
                         )}
                       </button>
                       {activityExpanded && (
-                        <div className="pl-2">
+                        <div className="border-t border-[var(--rule)] py-0.5">
                           {displayItem.entries.map((entry) => (
                             <div key={entry.id}>{renderLogEntry(entry, true)}</div>
                           ))}
                         </div>
                       )}
+                     </div>
                     </div>
                   )}
                 </div>
@@ -2054,7 +2054,7 @@ function LoopStream({ loop }: { loop: string }) {
           </div>
         )}
         {activity.phase && (
-          <div className="px-4 py-2 text-xs text-neutral-500 dark:text-neutral-400" role="status">
+          <div className="px-4 py-2 font-mono text-xs text-[var(--ink-muted)]" role="status">
             <span className="adf-shimmer-text adf-shimmer-text--activity">{activity.phase}</span>
           </div>
         )}
@@ -2067,7 +2067,7 @@ function LoopStream({ loop }: { loop: string }) {
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10">
           <button
             onClick={handleApproveAllGated}
-            className="px-3 py-1 text-xs font-medium rounded-full bg-green-500 hover:bg-green-600 text-white shadow-md transition-colors"
+            className="px-3 py-1 text-xs font-medium rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] shadow-float transition-colors"
             title="Approve all pending gated tool calls at once — protection/lock overrides still need individual review"
           >
             Approve all {gatedPendingCount} tool calls
@@ -2077,11 +2077,11 @@ function LoopStream({ loop }: { loop: string }) {
 
       {/* Post-batch note: how many protection overrides still need attention. */}
       {approveAllNote && (
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-3 py-1 text-xs rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300 shadow-md">
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-3 py-1 text-xs rounded-[var(--adf-ui-control-radius)] border border-[var(--rule)] bg-[var(--status-draft-bg)] text-[var(--status-draft)] shadow-float">
           <span>{approveAllNote}</span>
           <button
             onClick={() => setApproveAllNote(null)}
-            className="text-amber-500 hover:text-amber-700 dark:hover:text-amber-100"
+            className="text-[var(--status-draft)] opacity-70 hover:opacity-100"
             title="Dismiss"
           >
             ✕
@@ -2096,7 +2096,7 @@ function LoopStream({ loop }: { loop: string }) {
         {showScrollBtn && (
           <button
             onClick={scrollToBottom}
-            className="pointer-events-auto w-7 h-7 flex items-center justify-center rounded-full bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300 shadow-md hover:bg-neutral-300 dark:hover:bg-neutral-600 transition-colors"
+            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--rule-strong)] bg-[var(--paper)] text-[var(--ink-muted)] transition-colors duration-[var(--dur-fast)] ease-[var(--ease)] hover:bg-[var(--paper-sunken)] hover:text-[var(--ink)]"
             title="Scroll to bottom"
           >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -2151,36 +2151,36 @@ function LoopStream({ loop }: { loop: string }) {
             {activeAsk && (
               <div className="mb-1.5 px-1 space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">Agent asks:</span>
+                  <span className="text-xs font-semibold text-[var(--ink)]">Agent asks</span>
                   <Button type="button" size="compact" variant="ghost" onClick={handleSkipAsk} className="h-6 px-1.5 text-[10px]">
                     Skip
                   </Button>
                 </div>
-                <div className="text-xs text-blue-700 dark:text-blue-300 whitespace-pre-wrap">
+                <div className="whitespace-pre-wrap text-xs text-[var(--ink-muted)]">
                   {activeAsk.question}
                 </div>
               </div>
             )}
             {messageQueue.length > 0 && (
               <div className="mb-1 px-1 space-y-0.5">
-                <span className="text-[10px] font-medium text-amber-600/80 dark:text-amber-400/80">
+                <span className="text-[10px] font-medium text-[var(--ink-muted)]">
                   Queued ({messageQueue.length})
                 </span>
                 <div className="max-h-[6.5rem] overflow-y-auto space-y-0.5">
                   {messageQueue.map((msg) => (
-                    <div key={msg.id} className="flex items-center gap-1 text-xs bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200/40 dark:border-amber-800/30 rounded px-1.5 py-0.5">
-                      <span className="flex-1 truncate text-neutral-700 dark:text-neutral-300">{msg.text}</span>
+                    <div key={msg.id} className="flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--rule)] bg-[var(--paper-sunken)] px-1.5 py-0.5 text-xs">
+                      <span className="flex-1 truncate text-[var(--ink)]">{msg.text}</span>
                       <button
                         type="button"
                         onClick={() => handleInterruptSend(msg.id)}
-                        className="text-[10px] text-blue-500 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                        className="text-[10px] text-[var(--blue)] hover:underline"
                       >
                         Send now
                       </button>
                       <button
                         type="button"
                         onClick={() => removeFromQueue(msg.id)}
-                        className="text-[10px] text-neutral-400 hover:text-red-500 dark:hover:text-red-400"
+                        className="text-[10px] text-[var(--ink-faint)] hover:text-[var(--ink)]"
                       >
                         &times;
                       </button>
@@ -2209,17 +2209,18 @@ function LoopStream({ loop }: { loop: string }) {
                 }}
               />
             )}
-            <div className={`relative overflow-hidden rounded-2xl border bg-surface-raised shadow-card transition-[border-color,box-shadow] ${
+            {/* Brand §10 input: paper, --rule-strong hairline, radius 3. The
+                textarea's own outline is suppressed (globals.css), so the box
+                draws the one global focus outline (2px --focus, 2px offset). */}
+            <div className={`relative overflow-hidden rounded-[var(--radius-sm)] border bg-[var(--paper)] focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--focus)] ${
               draggingOverInput
-                ? 'border-[var(--adf-ui-accent)] ring-2 ring-[var(--adf-ui-focus)]'
+                ? 'border-[var(--blue)] outline outline-2 outline-offset-2 outline-[var(--focus)]'
                 : activeAsk
-                  ? 'border-blue-400 dark:border-blue-600'
-                  // Focus is a quiet lift — a firmer hairline and deeper shadow —
-                  // not a coloured ring; the caret already says where you are.
-                  : 'border-hairline focus-within:border-black/15 focus-within:shadow-lg dark:focus-within:border-white/15'
+                  ? 'border-[var(--blue)]'
+                  : 'border-[var(--rule-strong)]'
             }`}>
               {draggingOverInput && (
-                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-blue-50/90 text-sm font-medium text-blue-600 dark:bg-blue-950/70 dark:text-blue-300">
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[color-mix(in_srgb,var(--tint)_92%,transparent)] text-sm font-medium text-[var(--ink)]">
                   Drop to attach
                 </div>
               )}
@@ -2228,19 +2229,15 @@ function LoopStream({ loop }: { loop: string }) {
                   {attachments.map((attachment) => (
                     <span
                       key={attachment.id}
-                      className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] ${
-                        attachment.native
-                          ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300'
-                          : 'border-neutral-200 bg-neutral-50 text-neutral-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300'
-                      }`}
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--rule)] bg-[var(--paper-sunken)] px-2 py-1 text-[11px] text-[var(--ink)]"
                       title={attachment.path}
                     >
                       <span className="truncate max-w-[10rem]">{attachment.name}</span>
-                      <span className="shrink-0 text-neutral-400">{attachment.native ? attachment.kind : 'ref'}</span>
+                      <span className="shrink-0 font-mono text-[var(--ink-faint)]">{attachment.native ? attachment.kind : 'ref'}</span>
                       <button
                         type="button"
                         onClick={() => removeAttachment(attachment.id)}
-                        className="shrink-0 text-neutral-400 hover:text-red-500"
+                        className="shrink-0 text-[var(--ink-faint)] hover:text-[var(--ink)]"
                         title="Remove attachment"
                       >
                         &times;
@@ -2266,7 +2263,7 @@ function LoopStream({ loop }: { loop: string }) {
                   type="button"
                   onClick={handlePickFiles}
                   disabled={!!activeAsk || uploadingFiles}
-                  className="mb-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                  className="mb-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--ink-muted)] transition-colors duration-[var(--dur-fast)] ease-[var(--ease)] hover:bg-[var(--paper-sunken)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40"
                   title="Attach files"
                 >
                   <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
@@ -2283,20 +2280,20 @@ function LoopStream({ loop }: { loop: string }) {
                   aria-controls={slashOpen ? 'loop-slash-palette' : undefined}
                   aria-activedescendant={slashOpen && slashRows.length > 0 ? `loop-slash-palette-${slashIndex}` : undefined}
                   placeholder={
-                    activeAsk ? 'Type your answer...'
-                    : state === 'active' ? `Queue something for ${agentName}...`
+                    activeAsk ? 'Your answer'
+                    : state === 'active' ? `Queue a message for ${agentName}`
                     : state === 'off' ? `What should ${agentName} do?`
                     : `What should ${agentName} do?`
                   }
                   rows={1}
-                  className="loop-composer-input block min-h-[2.5rem] min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent px-1.5 py-2.5 text-sm leading-5 text-neutral-900 placeholder:text-neutral-400 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+                  className="loop-composer-input block min-h-[2.5rem] min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent px-1.5 py-2.5 text-sm leading-5 text-[var(--ink)] placeholder:text-[var(--ink-faint)]"
                 />
                 <Button
                   type="submit"
                   disabled={!canSubmit}
                   size="default"
                   variant={state === 'active' && !activeAsk ? 'secondary' : 'primary'}
-                  className="mb-1 w-[var(--adf-ui-control-height)] shrink-0 !rounded-full px-0 [&_svg]:shrink-0"
+                  className="mb-1 w-[var(--adf-ui-control-height)] shrink-0 px-0 [&_svg]:shrink-0"
                   title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
                   aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
                 >
@@ -2310,7 +2307,7 @@ function LoopStream({ loop }: { loop: string }) {
                 </Button>
               </div>
               {uploadingFiles && (
-                <div className="px-3 pb-1.5 text-[11px] text-neutral-400 dark:text-neutral-500">Uploading...</div>
+                <div className="px-3 pb-1.5 text-[11px] text-[var(--ink-faint)]">Uploading</div>
               )}
             </div>
             </div>
@@ -2456,10 +2453,10 @@ function LoopTab({ name, label, active, onSelect, scrollIntoViewOnActive = false
       // match a sender-coloured `loop_send` card against without clicking. The
       // label text stays neutral until selected, so selection still reads.
       // `main` is not in the legend and keeps its bare inactive strip.
-      className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium transition-colors ${
+      className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium transition-colors duration-[var(--dur-fast)] ease-[var(--ease)] ${
         active
           ? `${identity.underline} ${identity.accent}`
-          : `${identity.underlineMuted} text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300`
+          : `${identity.underlineMuted} text-[var(--ink-faint)] hover:text-[var(--ink-muted)]`
       }`}
     >
       <span className={`relative h-2 w-2 shrink-0 transition-opacity ${dotMuted ? 'opacity-60' : ''}`} title={dot.label} aria-hidden>
@@ -2501,7 +2498,7 @@ function PromoteChatToCenter() {
       onClick={() => setChatPlacement('center')}
       title={label}
       aria-label={label}
-      className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+      className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--ink-faint)] transition-colors duration-[var(--dur-fast)] ease-[var(--ease)] hover:bg-[var(--paper-sunken)] hover:text-[var(--ink-muted)]"
     >
       {/* maximize / arrows-out-corners */}
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2596,10 +2593,10 @@ export function AgentLoop() {
           loop is always one click away, then a hairline divider, then the inner
           loops in a horizontally scrollable row. The promote button sits
           outside the tablist — it is a panel control, not a loop. */}
-      <div className="flex shrink-0 items-center border-b border-neutral-200 px-2 dark:border-neutral-700">
+      <div className="flex shrink-0 items-center border-b border-[var(--rule)] px-2">
         <div role="tablist" aria-label="Agent loops" className="flex min-w-0 flex-1 items-center">
           <LoopTab name={MAIN_LOOP} label="main" active={current === MAIN_LOOP} onSelect={setActiveLoop} />
-          <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-neutral-200 dark:bg-neutral-700" />
+          <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-[var(--rule)]" />
           <div role="presentation" className="relative min-w-0 flex-1">
             <div
               ref={stripRef}
@@ -2621,7 +2618,7 @@ export function AgentLoop() {
             {canScrollRight && (
               <span
                 aria-hidden
-                className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white to-transparent dark:from-neutral-900"
+                className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[var(--paper)] to-transparent"
               />
             )}
           </div>

@@ -65,7 +65,7 @@ export function InboxPanel() {
                 onClick={() => setFilter(f)}
                 className={`flex-1 px-2 py-1 text-[10px] font-medium transition-colors ${
                   filter === f
-                    ? 'bg-blue-500 text-white'
+                    ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
                     : 'bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-700'
                 } ${f !== 'all' ? 'border-l border-neutral-200 dark:border-neutral-700' : ''}`}
               >
@@ -231,10 +231,10 @@ const OutboxRow = memo(function OutboxRow({ message, onClick }: { message: Rende
 
 const OutboxStatusBadge = memo(function OutboxStatusBadge({ status }: { status: RendererOutboxMessage['status'] }) {
   const styles: Record<RendererOutboxMessage['status'], string> = {
-    pending: 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400',
-    sent: 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400',
-    delivered: 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400',
-    failed: 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400'
+    pending: 'bg-[var(--status-draft-bg)] text-[var(--status-draft)]',
+    sent: 'bg-[var(--status-info-bg)] text-[var(--status-info)]',
+    delivered: 'bg-[var(--status-stable-bg)] text-[var(--status-stable)]',
+    failed: 'bg-[var(--status-deprecated-bg)] text-[var(--status-deprecated)]'
   }
   return (
     <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${styles[status]}`}>
@@ -425,9 +425,9 @@ const RawMessageSection = memo(function RawMessageSection({ rawMessage }: { rawM
 
 const StatusBadge = memo(function StatusBadge({ status }: { status: InboxMessage['status'] }) {
   const styles: Record<InboxMessage['status'], string> = {
-    unread: 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400',
-    read: 'bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400',
-    archived: 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
+    unread: 'bg-[var(--status-info-bg)] text-[var(--status-info)]',
+    read: 'bg-[var(--paper-sunken)] text-[var(--ink-faint)]',
+    archived: 'bg-[var(--status-stable-bg)] text-[var(--status-stable)]'
   }
 
   return (
@@ -469,7 +469,7 @@ const VerificationBadge = memo(function VerificationBadge({ meta }: { meta?: Rec
   if (idVerified === false) {
     return (
       <span
-        className="text-[9px] px-1.5 py-0.5 rounded-full shrink-0 bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 font-medium"
+        className="text-[9px] px-1.5 py-0.5 rounded-full shrink-0 bg-[var(--status-draft-bg)] text-[var(--status-draft)] font-medium"
         title="Sender identity not cryptographically verified (WebSocket)"
       >
         unverified

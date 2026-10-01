@@ -288,7 +288,7 @@ export function IdentityPanel() {
             <p className="text-xs text-neutral-400">No DID generated</p>
             <button
               onClick={handleGenerateKeys}
-              className="px-3 py-1 text-[11px] bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+              className="px-3 py-1 text-[11px] bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] rounded-lg"
             >
               Generate Keys
             </button>
@@ -362,7 +362,7 @@ export function IdentityPanel() {
                     new DID. Revoking access later means rotating the keys upstream.
                   </p>
                   <div className="flex gap-2">
-                    <button onClick={handleSetSharePassword} className="px-2 py-1 text-[10px] bg-blue-500 text-white rounded hover:bg-blue-600">Set</button>
+                    <button onClick={handleSetSharePassword} className="px-2 py-1 text-[10px] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] rounded">Set</button>
                     <button onClick={() => { setShareOpen(false); setSharePassword(''); setShareError('') }} className="px-2 py-1 text-[10px] text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded">Cancel</button>
                   </div>
                 </div>
@@ -399,7 +399,7 @@ export function IdentityPanel() {
                     placeholder="Share password"
                     className="flex-1 px-2 py-1 text-xs bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded"
                   />
-                  <button onClick={handleUnlockCredentials} className="px-2 py-1 text-[10px] bg-blue-500 text-white rounded hover:bg-blue-600">Unlock</button>
+                  <button onClick={handleUnlockCredentials} className="px-2 py-1 text-[10px] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] rounded">Unlock</button>
                 </div>
                 {unlockError && <p className="text-[10px] text-red-500">{unlockError}</p>}
               </div>
@@ -661,7 +661,7 @@ export function IdentityPanel() {
             <button
               onClick={handleAddKey}
               disabled={!addKeyPurpose.trim() || !addKeyValue}
-              className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
+              className="px-4 py-1.5 text-xs bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] rounded-lg disabled:opacity-50"
             >
               Save
             </button>

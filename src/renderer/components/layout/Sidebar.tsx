@@ -508,7 +508,7 @@ export function Sidebar() {
 
   if (collapsed) {
     return (
-      <div className="w-10 bg-surface-2 flex flex-col items-center py-2 gap-1">
+      <div className="w-10 bg-surface-2 border-r border-hairline flex flex-col items-center py-2 gap-1">
         <button
           onClick={toggleSidebar}
           title="Expand sidebar"
@@ -525,7 +525,7 @@ export function Sidebar() {
   }
 
   return (
-    <div className="w-full bg-surface-2 flex flex-col overflow-hidden">
+    <div className="w-full bg-surface-2 border-r border-hairline flex flex-col overflow-hidden">
       {/* Single header row: search · new · open · collapse. The search box
           doubles as the panel's title, so there is no separate label. */}
       <div className="h-9 px-2.5 flex items-center gap-1 shrink-0">
@@ -1325,7 +1325,7 @@ const AgentFileRow = memo(function AgentFileRow({
       data-active={isActive || undefined}
       className={`group flex items-center gap-1.5 py-[3px] text-[11px] leading-4 cursor-pointer ${
         isActive
-          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-accent)] [--row-bg:var(--adf-ui-accent-subtle)]'
+          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)] [--row-bg:var(--adf-ui-accent-subtle)]'
           : `${isRunning ? 'text-[var(--adf-ui-text)]' : 'text-[var(--adf-ui-text-muted)]'} hover:bg-[var(--adf-ui-surface-hover)] [--row-bg:var(--adf-surface-2)] hover:[--row-bg:var(--adf-ui-surface-hover)]`
       }`}
       style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: '6px' }}
@@ -1371,7 +1371,7 @@ const AgentFileRow = memo(function AgentFileRow({
         >
           {/* yellow-400 is the status dot's colour but ~1.5:1 as text on a
               light surface, so light mode takes the darker end of the hue. */}
-          <span className="text-[9px] leading-none font-bold text-amber-600 dark:text-yellow-400 tabular-nums">
+          <span className="text-[9px] leading-none font-semibold text-amber-600 dark:text-yellow-400 tabular-nums">
             {activeLoops}
           </span>
         </Tooltip>

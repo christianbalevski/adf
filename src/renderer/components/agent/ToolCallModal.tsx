@@ -420,13 +420,13 @@ export const ToolCallModal = memo(function ToolCallModal({
   const status = awaitingApproval
     ? { label: 'awaiting approval', cls: 'bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400' }
     : isError
-      ? { label: 'error', cls: 'bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400' }
+      ? { label: 'error', cls: 'bg-[var(--status-deprecated-bg)] text-[var(--status-deprecated)]' }
       : result
-        ? { label: 'ok', cls: 'bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400' }
+        ? { label: 'ok', cls: 'bg-[var(--status-stable-bg)] text-[var(--status-stable)]' }
         : overrideOutcome === 'approved'
-          ? { label: 'approved', cls: 'bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400' }
+          ? { label: 'approved', cls: 'bg-[var(--status-stable-bg)] text-[var(--status-stable)]' }
           : overrideOutcome === 'denied'
-            ? { label: 'denied', cls: 'bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400' }
+            ? { label: 'denied', cls: 'bg-[var(--status-deprecated-bg)] text-[var(--status-deprecated)]' }
             : { label: 'running…', cls: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400' }
   const accent = awaitingApproval ? ATTENTION_TOOL_STYLE : isError ? ERROR_TOOL_STYLE : TOOL_FAMILY_STYLES[getToolFamily(toolName)]
 
@@ -439,7 +439,7 @@ export const ToolCallModal = memo(function ToolCallModal({
       onClick={onClose}
     >
       <div
-        className="w-[640px] max-w-[92vw] max-h-[82vh] flex flex-col rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 shadow-2xl overflow-hidden"
+        className="w-[640px] max-w-[92vw] max-h-[82vh] flex flex-col rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)] border border-[var(--adf-ui-border)] shadow-float overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -468,7 +468,7 @@ export const ToolCallModal = memo(function ToolCallModal({
               onClick={() => setShowRaw((v) => !v)}
               className={`px-2 py-0.5 text-[11px] font-medium rounded-full shrink-0 transition-colors ${
                 showRaw
-                  ? 'bg-blue-500 text-white'
+                  ? 'border border-[var(--adf-ui-border)] bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
                   : 'border border-neutral-200 dark:border-neutral-700 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800'
               }`}
             >

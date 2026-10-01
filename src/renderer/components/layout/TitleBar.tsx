@@ -9,6 +9,7 @@ import { toDisplayState } from '../../hooks/useAgent'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { ApprovalsMenu } from './ApprovalsMenu'
 import { Button } from '../ui'
+import { Wordmark } from '../common/Wordmark'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
@@ -34,8 +35,8 @@ function NavButton({
       title={title}
       className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
         active
-          ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
-          : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
+          : 'text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]'
       }`}
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
@@ -320,8 +321,8 @@ export function TitleBar() {
       <div
         className={`h-full flex items-center shrink-0 ${
           leftPaneWidth
-            ? 'bg-surface-2'
-            : 'bg-surface-0'
+            ? 'bg-surface-2 border-r border-hairline'
+            : 'bg-[var(--adf-ui-canvas)] border-b border-hairline'
         }`}
         style={leftPaneWidth ? { width: leftPaneWidth, maxWidth: showSettings ? undefined : `${SIDEBAR_MAX_VW}vw` } : undefined}
       >
@@ -376,14 +377,16 @@ export function TitleBar() {
         </nav>
       </div>
 
-      <div className="h-full flex-1 min-w-0 bg-surface-0 border-b border-hairline flex items-center">
+      <div className="h-full flex-1 min-w-0 bg-[var(--adf-ui-canvas)] border-b border-hairline text-[var(--adf-ui-text-muted)] flex items-center">
 
       <div className="flex-1 min-w-0 px-3 flex items-center justify-center pointer-events-none">
         {filePath && config ? (
           <AgentTitleCluster />
         ) : (
-          <span className="text-sm text-neutral-600 dark:text-neutral-300 font-medium">
-            ADF Studio
+          <span className="flex items-center gap-2">
+            <Wordmark height={22} />
+            <span aria-hidden className="h-3.5 border-l border-hairline" />
+            <span aria-hidden className="text-xs text-neutral-500 dark:text-neutral-400">Studio</span>
           </span>
         )}
       </div>

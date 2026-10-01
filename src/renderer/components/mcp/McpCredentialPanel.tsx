@@ -612,7 +612,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
                           <button
                             onClick={() => handleSaveAdfCredentials(file.filePath)}
                             disabled={isSaving}
-                            className="px-3 py-1 text-[11px] bg-blue-500 hover:bg-blue-600 disabled:bg-blue-400 text-white rounded-md font-medium transition-colors"
+                            className="px-3 py-1 text-[11px] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] disabled:opacity-50 rounded-md font-medium transition-colors"
                           >
                             {isSaving ? 'Saving...' : 'Save to ADF'}
                           </button>
