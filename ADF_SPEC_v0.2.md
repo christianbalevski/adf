@@ -1,7 +1,6 @@
 # ADF File Format Specification
 
 **Version:** 0.2
-**Status:** Draft
 **Revision:** 2026-10
 
 The Agent Document Format (`.adf`) is a SQLite database that stores one localized agent (§1.3): its identity, configuration, documents, conversation history, messages, scheduled work and operational records.

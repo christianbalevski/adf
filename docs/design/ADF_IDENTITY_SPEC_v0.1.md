@@ -1,4 +1,4 @@
-# ADF Identity & Key Protection — Spec v0.1 (draft)
+# ADF Identity & Key Protection — Spec v0.1
 
 Status: **implemented** (D1–D17, schema v24) — extends `../../ADF_SPEC_v0.2.md` §5.2 and
 §8; builds on the key-backed identity work in `660b17c` (mnemonic-rooted owner DID,

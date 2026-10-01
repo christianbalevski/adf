@@ -1,36 +1,41 @@
 <p align="center">
-  <img src="./docs/assets/adf-github-readme-logo.svg" alt=".adf" width="280">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/brand/adf-wordmark-dark.svg">
+    <img src="./docs/assets/brand/adf-wordmark-light.svg" alt=".ADF" width="240">
+  </picture>
 </p>
 
-<h1 align="center">ADF — Agent Document Format</h1>
+<h1 align="center">Agent Document Format</h1>
 
 <p align="center">
-  <b>An open file format for AI agents, with a reference runtime.</b><br>
+  <b>Agents, localized.</b><br>
+  An open file format for AI agents, with a reference runtime.<br>
   An <code>.adf</code> file is one localized agent: its identity, state and behaviour in a single SQLite file (<a href="ADF_SPEC_v0.2.md#13-one-file-one-agent">what's inside</a>).
 </p>
 
 <p align="center">
-  🌐 <a href="https://agentdocumentformat.org"><b>agentdocumentformat.org</b></a>
+  <a href="https://agentdocumentformat.org"><b>agentdocumentformat.org</b></a>
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="ADF_SPEC_v0.2.md"><img src="https://img.shields.io/badge/ADF%20spec-v0.2-8b5cf6.svg" alt="ADF spec v0.2"></a>
-  <a href="ALF_SPEC_v0.1.md"><img src="https://img.shields.io/badge/ALF%20protocol-v0.1-8b5cf6.svg" alt="ALF protocol v0.1"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-444.svg" alt="Platform: macOS, Linux, Windows">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2f5bea.svg" alt="License: MIT"></a>
+  <a href="ADF_SPEC_v0.2.md"><img src="https://img.shields.io/badge/ADF%20spec-v0.2-2f5bea.svg" alt="ADF spec v0.2"></a>
+  <a href="ALF_SPEC_v0.1.md"><img src="https://img.shields.io/badge/ALF%20protocol-v0.1-2f5bea.svg" alt="ALF protocol v0.1"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-474b54.svg" alt="Platform: macOS, Linux, Windows">
 </p>
 
 <p align="center">
-  <a href="https://youtu.be/_N1UiMjvH2U" title="Watch the ADF demo on YouTube">
-    <img src="https://img.youtube.com/vi/_N1UiMjvH2U/maxresdefault.jpg" alt="ADF demo video — click to play on YouTube" width="800">
-  </a>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/brand/adf-localization-dark.gif">
+    <img src="./docs/assets/brand/adf-localization-light.gif" alt="An agent's parts, spread loosely across an AI company, the cloud and an app, are pulled into one bounded orbital-shaped entity labelled ava.adf." width="800">
+  </picture>
   <br>
-  <sub>▶ Click to watch the demo on YouTube</sub>
+  <sub>Where an agent lives. At t = 0 its parts are spread across systems run by other people. At t = 2026 they are held in one file, ava.adf.</sub>
 </p>
 
 ![The ADF Studio window with a fleet of agents in the sidebar, a markdown document open in the center editor, and the Loop panel on the right showing a conversation with tool calls, reasoning blocks, and token counts.](docs/assets/screenshots/studio-agent-loop.png)
 
-This repository contains the spec, the runtime daemon, the CLI, and the desktop **ADF Studio** — the reference implementation of ADF.
+This repository contains the spec, the runtime daemon, the CLI, and the desktop app ADF Studio. Together they are the reference implementation of ADF.
 
 ## Download ADF Studio
 
@@ -55,42 +60,42 @@ adf
 
 Studio and the CLI share the same settings file and owner identity (OS keychain) on one machine; `adf` will not start a daemon next to a running Studio. After an upgrade run `adf daemon restart`. See the [ADF CLI docs](docs/cli/index.md): [getting started](docs/cli/getting-started.md), [terminal app](docs/cli/terminal-app.md), [reference](docs/cli/reference.md).
 
-## Highlights
+## Capabilities
 
-- 📄 **The agent is a file.** Copy or move the file to copy or move the agent. [Contents](ADF_SPEC_v0.2.md#13-one-file-one-agent).
-- 🖥️ **ADF Studio** — a desktop IDE for agents: author them, follow their turns, configure their tools, approve restricted tool calls.
-- 🗺️ **The fleet map** — an RTS-style command surface. Every agent is a tile on a hex map; select, message, hold, and command whole groups with hotkeys.
-- 🔌 **Any model provider** — Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio…), or a ChatGPT / Grok subscription via OAuth.
-- 🧰 **Built-in tools and services** — sandboxed code execution, lambdas, timers, triggers, skills, MCP servers, container-backed compute, HTTP serving, WebSockets.
-- ⚙️ **Work without a model call** — lambdas run on a trigger, a timer, or a message, and middleware sits on the inbox, outbox, routes, and fetches. A model turn runs only when a trigger, timer or message starts one.
-- 🧠 **Inner loops** — up to 16 inner loops (side loops) next to the main loop, each with its own transcript, goal and tool subset, all stored in the agent's one file.
-- 🖲️ **A computer of its own** — a visible Linux desktop and a managed Chromium an agent can drive, with screen handoff when a login needs you.
-- 🤝 **Agent-to-agent mesh** — agents discover and message each other across runtimes over the ALF protocol (LAN, tailnet, or direct address), with DIDs, signatures, and optional E2E encryption.
-- 💬 **Channels** — bridge agents to Telegram, Discord, Slack, WhatsApp, and email.
-- 🔍 **No Secrets** — everything injected into an agent's context is stored in the file and viewable in the UI.
-- 🛡️ **Human-in-the-loop** — restricted tools pause for your approval, inline on the fleet map or in a full-context modal.
+- **One file per agent.** Copy or move the file to copy or move the agent ([what's inside](ADF_SPEC_v0.2.md#13-one-file-one-agent)).
+- **ADF Studio:** a desktop IDE for agents. Author them, follow their turns, configure their tools and approve restricted tool calls.
+- **Fleet map:** an RTS-style command surface. Every agent is a tile on a hex map; select, message, hold and command whole groups with hotkeys.
+- **Model providers:** Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio and others), or a ChatGPT or Grok subscription via OAuth.
+- **Built-in tools and services:** sandboxed code execution, lambdas, timers, triggers, skills, MCP servers, container-backed compute, HTTP serving and WebSockets.
+- **Code path:** lambdas run on a trigger, a timer or a message, and middleware sits on the inbox, outbox, routes and fetches. A model turn runs only when a trigger, timer or message starts one.
+- **Inner loops:** up to 16 inner loops (side loops) next to the main loop, each with its own transcript, goal and tool subset, all stored in the agent's file.
+- **Computer use:** a visible Linux desktop and a managed Chromium an agent can drive, with screen handoff when a login needs you.
+- **Agent mesh:** agents discover and message each other across runtimes over the ALF protocol (LAN, tailnet or direct address), with DIDs, signatures and optional end-to-end encryption.
+- **Channels:** connect agents to Telegram, Discord, Slack, WhatsApp and email.
+- **Visible context:** everything injected into an agent's context is stored in the file and viewable in the UI.
+- **Human in the loop:** restricted tools pause for your approval, inline on the fleet map or in a full-context modal.
 
-## See it
+## Screenshots
 
 <table>
   <tr>
     <td width="50%">
       <img src="docs/assets/screenshots/fleet-map-needs-you.png" alt="The fleet map with agent districts on a hex map; one agent tile is amber with a pending approval, and the alert bar shows a Needs you queue with fleet token-burn rates.">
-      <p align="center"><i>The fleet map — agents as an RTS</i></p>
+      <p align="center"><i>Fleet map</i></p>
     </td>
     <td width="50%">
       <img src="docs/assets/screenshots/hil-approval-modal.png" alt="The human-in-the-loop approval modal: an agent wants to call sys_update_config, with the full formatted arguments and Approve / Reject buttons.">
-      <p align="center"><i>Human-in-the-loop tool approval</i></p>
+      <p align="center"><i>Tool approval</i></p>
     </td>
   </tr>
   <tr>
     <td width="50%">
       <img src="docs/assets/screenshots/home-dashboard.png" alt="The Home dashboard with status tiles for providers, containers, agents, and networking, all green.">
-      <p align="center"><i>The home dashboard</i></p>
+      <p align="center"><i>Home dashboard</i></p>
     </td>
     <td width="50%">
       <img src="docs/assets/screenshots/agent-loop-conversation.png" alt="The Loop panel showing a conversation with context blocks, reasoning, and tool calls inline.">
-      <p align="center"><i>The Loop — every thought and tool call, auditable</i></p>
+      <p align="center"><i>Loop panel with reasoning and tool calls</i></p>
     </td>
   </tr>
 </table>
@@ -108,11 +113,11 @@ npm run dev        # launches ADF Studio
 
 Then, in Studio:
 
-1. **Connect a provider** — Settings → Providers → **Add provider**, pick a service from the catalog, paste an API key (or sign in, for the ChatGPT and Grok subscription tiles).
-2. **Create an agent** — click **New .adf** in the sidebar and name it.
-3. **Talk to it** — open the Loop tab and send a message.
+1. **Connect a provider.** Settings → Providers → **Add provider**, pick a service from the catalog, paste an API key (or sign in, for the ChatGPT and Grok subscription tiles).
+2. **Create an agent.** Click **New .adf** in the sidebar and name it.
+3. **Send a message.** Open the Loop tab and send a message.
 
-The `.adf` file it creates *is* the agent — configuration, memory, files, loop, and runtime state. See [Getting Started](docs/getting-started.md) for the full walkthrough.
+The `.adf` file it creates is the agent: configuration, memory, files, loops and runtime state. See [Getting Started](docs/getting-started.md) for the full walkthrough.
 
 ### Run the daemon and CLI
 
@@ -158,7 +163,7 @@ npm test               # full Vitest suite
 npm run test:lifecycle # lifecycle, dispatch, handoff, shutdown, recovery
 ```
 
-## Why ADF
+## Motivation
 
 AI agents read on your behalf, write on your behalf, remember things for
 you, and increasingly decide things for you. Almost every major one is
@@ -177,7 +182,7 @@ implements the spec can run it, the same way any photo viewer can open a
 JPEG.
 
 <details>
-<summary><b>How ADF got here</b></summary>
+<summary><b>History</b></summary>
 
 ADF started smaller. The idea was a document that comes with its own
 agent attached, shipped together, so the agent knows the document's
@@ -205,29 +210,29 @@ inevitable.
 
 ## Documentation
 
-**New here?** [What ADF Studio can do](docs/CAPABILITIES.md) is the full
-capability catalogue — plain terms up front, mechanisms and internals further
+[What ADF Studio can do](docs/CAPABILITIES.md) is the full
+capability catalogue: plain terms first, mechanisms and internals further
 down.
 
 | Start here | Reference |
 |---|---|
-| [Getting Started](docs/getting-started.md) | [ADF spec v0.2](ADF_SPEC_v0.2.md) — the file format |
-| [ADF Studio tour](docs/ADF_STUDIO_DOCS.md) | [ALF spec v0.1](ALF_SPEC_v0.1.md) — the agent communication protocol |
-| [Core Concepts](docs/core-concepts.md) | [Identity spec v0.1](docs/design/ADF_IDENTITY_SPEC_v0.1.md) — DIDs, envelopes, attestations |
+| [Getting Started](docs/getting-started.md) | [ADF spec v0.2](ADF_SPEC_v0.2.md): the file format |
+| [ADF Studio tour](docs/ADF_STUDIO_DOCS.md) | [ALF spec v0.1](ALF_SPEC_v0.1.md): the agent communication protocol |
+| [Core Concepts](docs/core-concepts.md) | [Identity spec v0.1](docs/design/ADF_IDENTITY_SPEC_v0.1.md): DIDs, envelopes, attestations |
 | [Fleet map guide](docs/guides/fleet-map.md) | [ADF CLI](docs/cli/index.md), [terminal app](docs/cli/terminal-app.md) and [HTTP API](docs/daemon/http-api.md) |
 | [Creating agents](docs/guides/creating-agents.md) | [Tools catalog](docs/guides/tools.md) |
 | [Daemon quick start](docs/daemon/getting-started.md) | [Security architecture](docs/guides/security-architecture.md) |
 
-The full guide index lives in [`docs/`](docs/index.md) — messaging, code execution, MCP integration, compute, serving, timers, triggers, memory management, and more. Every guide is also fetchable as raw markdown, so agents can read their own documentation.
+The full guide index lives in [`docs/`](docs/index.md): messaging, code execution, MCP integration, compute, serving, timers, triggers, memory management, and more. Every guide is also fetchable as raw markdown, so agents can read their own documentation.
 
-## What's in here
+## Repository layout
 
-- **`ADF_SPEC_v0.2.md`** — the file format specification.
-- **`ALF_SPEC_v0.1.md`** — the agent communication protocol specification.
-- **`src/main/`** — the runtime, daemon, CLI, providers, tools, mesh, and IPC.
-- **`src/renderer/`** — the Electron Studio UI.
-- **`docs/`** — guides for using ADF Studio and building agents.
-- **`tests/`** — test suite.
+- **`ADF_SPEC_v0.2.md`**: the file format specification.
+- **`ALF_SPEC_v0.1.md`**: the agent communication protocol specification.
+- **`src/main/`**: the runtime, daemon, CLI, providers, tools, mesh, and IPC.
+- **`src/renderer/`**: the Electron Studio UI.
+- **`docs/`**: guides for using ADF Studio and building agents.
+- **`tests/`**: test suite.
 
 ## Status
 
@@ -247,7 +252,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 ---
 
