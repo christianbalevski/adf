@@ -35,8 +35,8 @@ function NavButton({
       title={title}
       className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
         active
-          ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
-          : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
+          : 'text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]'
       }`}
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
@@ -321,8 +321,8 @@ export function TitleBar() {
       <div
         className={`h-full flex items-center shrink-0 ${
           leftPaneWidth
-            ? 'bg-surface-2'
-            : 'bg-surface-0'
+            ? 'bg-surface-2 border-r border-hairline'
+            : 'bg-[var(--adf-ui-canvas)] border-b border-hairline'
         }`}
         style={leftPaneWidth ? { width: leftPaneWidth, maxWidth: showSettings ? undefined : `${SIDEBAR_MAX_VW}vw` } : undefined}
       >
@@ -377,7 +377,7 @@ export function TitleBar() {
         </nav>
       </div>
 
-      <div className="h-full flex-1 min-w-0 bg-surface-0 border-b border-hairline flex items-center">
+      <div className="h-full flex-1 min-w-0 bg-[var(--adf-ui-canvas)] border-b border-hairline text-[var(--adf-ui-text-muted)] flex items-center">
 
       <div className="flex-1 min-w-0 px-3 flex items-center justify-center pointer-events-none">
         {filePath && config ? (

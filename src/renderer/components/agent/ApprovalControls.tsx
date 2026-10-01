@@ -147,7 +147,7 @@ export function ApprovalControls({
           <div
             {...(() => {
               const p = popProps(anchor)
-              return { className: `${p.className} w-64 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-xl p-2`, style: p.style }
+              return { className: `${p.className} w-64 rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] shadow-float p-2`, style: p.style }
             })()}
           >
             <div className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1">
@@ -185,7 +185,7 @@ function DropMenu({ children, onClose, className, style }: { children: React.Rea
   return (
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
-      <div className={`${className} min-w-max rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-xl py-1`} style={style}>
+      <div className={`${className} min-w-max rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] shadow-float py-1`} style={style}>
         {children}
       </div>
     </>

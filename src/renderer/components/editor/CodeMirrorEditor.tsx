@@ -2,16 +2,22 @@ import { useEffect, useRef, useCallback, type MutableRefObject } from 'react'
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { bracketMatching, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
+import { bracketMatching, indentOnInput } from '@codemirror/language'
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search'
 import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
-import { oneDark } from '@codemirror/theme-one-dark'
+import { githubLight, githubDarkDimmed, readOnlyChrome } from './codemirror-theme'
 import { loadLanguage } from './codemirror-languages'
 import { useAppStore } from '../../stores/app.store'
 
 // Stringifying the whole doc on every keystroke is the expensive part of the
 // change path; debounce it and flush on any teardown.
 const CHANGE_DEBOUNCE_MS = 250
+
+// Read-only file views sit on the sunken code well (BRAND.md §10); an editable
+// file keeps the panel's --paper.
+function readOnlyExtensions(readOnly: boolean) {
+  return readOnly ? [EditorState.readOnly.of(true), readOnlyChrome] : EditorState.readOnly.of(false)
+}
 
 interface Props {
   filePath: string
@@ -91,7 +97,6 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
         closeBrackets(),
         autocompletion(),
         highlightSelectionMatches(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         keymap.of([
           ...defaultKeymap,
           ...historyKeymap,
@@ -99,9 +104,9 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
           ...closeBracketsKeymap,
           indentWithTab
         ]),
-        themeCompartment.current.of(isDark ? oneDark : []),
+        themeCompartment.current.of(isDark ? githubDarkDimmed : githubLight),
         languageCompartment.current.of([]),
-        readOnlyCompartment.current.of(EditorState.readOnly.of(!!readOnly)),
+        readOnlyCompartment.current.of(readOnlyExtensions(!!readOnly)),
         lineWrapCompartment.current.of(lineWrap ? EditorView.lineWrapping : []),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged || isExternalUpdate.current) return
@@ -167,7 +172,7 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
 
     const applyDark = (isDark: boolean) => {
       view.dispatch({
-        effects: themeCompartment.current.reconfigure(isDark ? oneDark : [])
+        effects: themeCompartment.current.reconfigure(isDark ? githubDarkDimmed : githubLight)
       })
     }
 
@@ -189,7 +194,7 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
     const view = viewRef.current
     if (!view || view.destroyed) return
     view.dispatch({
-      effects: readOnlyCompartment.current.reconfigure(EditorState.readOnly.of(!!readOnly))
+      effects: readOnlyCompartment.current.reconfigure(readOnlyExtensions(!!readOnly))
     })
   }, [readOnly])
 

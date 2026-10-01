@@ -269,7 +269,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
                       </div>
                     </details>
                     <div className="flex items-center gap-2">
-                      <Button variant="primary" size="compact" loading={saving === file.filePath} disabled={saving === file.filePath} onClick={() => void save(file.filePath)}>
+                      <Button variant="secondary" size="compact" loading={saving === file.filePath} disabled={saving === file.filePath} onClick={() => void save(file.filePath)}>
                         {saving === file.filePath ? 'Saving…' : 'Save to agent'}
                       </Button>
                       {st === 'ok' && <span className="text-[11px] text-[var(--adf-ui-success)]">Saved</span>}

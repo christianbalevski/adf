@@ -303,8 +303,8 @@ if (adfArg) fileToOpen = adfArg
 
 function getOverlayColors(): { color: string; symbolColor: string } {
   return nativeTheme.shouldUseDarkColors
-    ? { color: '#151922', symbolColor: '#b0b5c2' } // brand dark --paper-sunken / --ink-muted (= --adf-surface-0)
-    : { color: '#f6f7fa', symbolColor: '#474b54' } // brand light --paper-sunken / --ink-muted
+    ? { color: '#0c0e13', symbolColor: '#b0b5c2' } // brand dark --paper / --ink-muted (title bar, BRAND §10)
+    : { color: '#ffffff', symbolColor: '#474b54' } // brand light --paper / --ink-muted
 }
 
 function createWindow(): BrowserWindow {

@@ -217,7 +217,7 @@ function ShareIllustration({ name, icon }: { name: string; icon?: string }) {
           </div>
           <div className="space-y-1.5 px-2.5 py-2.5">
             <div className="h-5 w-28 rounded-2xl rounded-bl-sm bg-[var(--adf-ui-separator)]" />
-            <div className="ml-auto flex w-fit items-center gap-1.5 rounded-2xl rounded-br-sm bg-[var(--adf-ui-accent)] px-2 py-1 text-[10.5px] font-medium text-white dark:text-neutral-950">
+            <div className="ml-auto flex w-fit items-center gap-1.5 rounded-2xl rounded-br-sm bg-[var(--adf-ui-accent)] px-2 py-1 text-[10.5px] font-medium text-[var(--adf-ui-on-accent)]">
               <DocGlyph size={14} />
               <span className="max-w-[110px] truncate">{label}</span>
             </div>

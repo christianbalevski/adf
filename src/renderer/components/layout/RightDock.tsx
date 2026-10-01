@@ -74,8 +74,8 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
               onClick={() => setRightPanel(tab)}
               className={`px-4 text-xs font-medium ${
                 rightPanel === tab
-                  ? 'text-blue-600 border-b-2 border-blue-500'
-                  : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
+                  ? 'text-[var(--adf-ui-text)] border-b-2 border-[var(--adf-ui-text)]'
+                  : 'text-[var(--adf-ui-text-muted)] border-b-2 border-transparent hover:text-[var(--adf-ui-text)]'
               }`}
             >
               {/* Always plural: main is itself a loop, and the panel shows the
@@ -103,7 +103,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
               onClick={() => setAgentSubTab(sub)}
               className={`flex-1 px-2 py-1.5 text-[11px] font-medium ${
                 agentSubTab === sub
-                  ? 'text-blue-600 dark:text-blue-400 bg-surface-2'
+                  ? 'text-[var(--adf-ui-text)] bg-[var(--adf-ui-accent-subtle)]'
                   : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300'
               }`}
             >
@@ -145,7 +145,7 @@ function RightDockIconButton({
       title={title}
       className={`w-8 h-8 flex items-center justify-center rounded-md ${
         active
-          ? 'bg-blue-100 text-blue-600 dark:bg-blue-900 dark:text-blue-400'
+          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
           : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
       }`}
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -170,7 +170,7 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
 
   return (
     <div
-      className="w-10 shrink-0 bg-surface-2 flex flex-col items-center py-2 gap-1"
+      className="w-10 shrink-0 bg-[var(--adf-ui-surface)] border-l border-hairline flex flex-col items-center py-2 gap-1"
       // The whole bar lives under the window-controls overlay's horizontal span
       // when it's the top-right element (fleet map open), so drop the icons
       // below the controls' height. That top padding also doubles as the

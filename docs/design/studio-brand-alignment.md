@@ -14,9 +14,9 @@ Branch: `feat/brand-alignment`.
 | 4 | App icon from `.A` mark; wordmark in title bar and About | done (unverified on screen) |
 | 5 | Radius 3/6; hairlines replace card shadows; `shadow-pop` for floating UI; motion tokens; reduced motion; focus ring | done (unverified on screen) |
 | 5b | Type scale: move `text-[10px]` (552), `text-[11px]` (342), `text-xs` up toward 13 px dense / 15 px UI; check sidebar, fleet, logs | todo |
-| 6 | Primitives and shell: one primary per view, quiet buttons, sidebar active `--tint`, status bar, dialogs | todo |
-| 7 | Chat surfaces: user sunken, tool calls collapsed mono, booktabs tables | todo |
-| 8 | Shiki in chat; CodeMirror GitHub themes; `editor.css` on tokens | todo |
+| 6 | Primitives and shell: one primary per view, quiet buttons, sidebar active `--tint`, status bar, dialogs | done (unverified on screen) |
+| 7 | Chat surfaces: user sunken, tool calls collapsed mono, booktabs tables | done (unverified on screen) |
+| 8 | Shiki in chat; CodeMirror GitHub themes; `editor.css` on tokens | done (unverified on screen) |
 | 9 | Orbital avatars (`orbital.js`, seeded by DID, bitmap cache, animate running only) | todo; placement open, see below |
 | 10 | ava in empty states, onboarding, About; UI copy voice pass | todo |
 | 11 | Mesh/fleet, `loop-color.ts`, `UsageChart.tsx` hardcoded colours to tokens | todo |
@@ -53,3 +53,13 @@ Branch: `feat/brand-alignment`.
 - Font migration moves users on `system` to Inter Tight once (`uiFontBrandDefaultApplied` marker); deliberate System pickers move too.
 - README logo `docs/assets/adf-github-readme-logo.svg` is off-brand; replace with wordmark light/dark in `<picture>`.
 - White icon tile has no edge on light taskbars/docks; brand forbids outlines.
+
+## Follow-ups from steps 6-8
+
+- Title bar stays 40 px (`h-10`); `--header-h` 56 px would need Windows `titleBarOverlay.height` and macOS traffic-light `y` changes.
+- BottomPanel (Logs/Tasks) is always dark (`bg-neutral-950`, ~25 classes in LogsPanel/TasksPanel); move to `--paper-sunken` (step 12).
+- Right dock is `--paper-raised`; the side chat sits on #11141b in dark. Decide if chat in the dock should be `--paper`.
+- Not touched: red count badges, amber approvals count, green/red Approve/Reject fills in ApprovalControls, SettingsPage step circles, SlashCommandPalette, "Agent asked" cards (Tailwind blues).
+- No shared status badge component; InboxPanel maps to brand pairs locally. Extract one in step 12.
+- `loop-color.ts` `wash` field is unused after the chat wash removal (step 11).
+- Shiki: core + JS engine (~340 KB) load on first code block; grammars load per language. Blocks highlight once their fence closes.

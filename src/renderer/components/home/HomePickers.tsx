@@ -43,7 +43,7 @@ function Popover({ open, onClose, children, align = 'left' }: {
     <div
       ref={ref}
       role="menu"
-      className={`absolute bottom-full z-20 mb-1.5 min-w-[220px] max-w-[340px] max-h-[min(70vh,520px)] overflow-y-auto rounded-lg border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] p-1 shadow-lg ${align === 'right' ? 'right-0' : 'left-0'}`}
+      className={`absolute bottom-full z-20 mb-1.5 min-w-[220px] max-w-[340px] max-h-[min(70vh,520px)] overflow-y-auto rounded-lg border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] p-1 shadow-float ${align === 'right' ? 'right-0' : 'left-0'}`}
     >
       {children}
     </div>
@@ -243,7 +243,7 @@ export function ProviderPickerChip() {
         <button
           type="button"
           onClick={openPicker}
-          className="inline-flex h-6 items-center gap-1 rounded-full border border-[var(--adf-ui-accent)] bg-[var(--adf-ui-accent-subtle)] px-2 text-[11.5px] font-medium text-[var(--adf-ui-accent)] transition-colors hover:bg-[var(--adf-ui-accent)] hover:text-white dark:hover:text-neutral-950"
+          className="inline-flex h-6 items-center gap-1 rounded-full border border-[var(--adf-ui-accent)] bg-[var(--adf-ui-accent-subtle)] px-2 text-[11.5px] font-medium text-[var(--adf-ui-accent)] transition-colors hover:bg-[var(--adf-ui-accent)] hover:text-[var(--adf-ui-on-accent)]"
         >
           <PlusIcon />
           Connect a provider

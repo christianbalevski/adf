@@ -118,7 +118,7 @@ export function ConnectProviderCard() {
             Agents need a model to run. Add a cloud key or a local server; it takes a minute.
           </span>
         </span>
-        <span className="inline-flex h-7 shrink-0 items-center rounded-full bg-[var(--adf-ui-accent)] px-3 text-[12px] font-medium text-white dark:text-neutral-950">
+        <span className="inline-flex h-7 shrink-0 items-center rounded-full bg-[var(--adf-ui-accent)] px-3 text-[12px] font-medium text-[var(--adf-ui-on-accent)]">
           Connect
         </span>
       </button>

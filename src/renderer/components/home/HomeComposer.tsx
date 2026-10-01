@@ -245,20 +245,20 @@ export function HomeComposer() {
 
       <div className="mx-auto w-full max-w-3xl px-4">
       <div
-        className={`home-composer relative rounded-2xl border bg-[var(--adf-ui-surface)] shadow-sm transition-colors focus-within:border-[var(--adf-ui-accent)] ${dragOver ? 'border-[var(--adf-ui-accent)]' : 'border-[var(--adf-ui-border)]'}`}
+        className={`home-composer relative rounded-[var(--radius-sm)] border bg-[var(--paper)] focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--focus)] ${dragOver ? 'border-[var(--blue)] outline outline-2 outline-offset-2 outline-[var(--focus)]' : 'border-[var(--rule-strong)]'}`}
         onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDragOver(true) } }}
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false) }}
         onDrop={(e) => { e.preventDefault(); setDragOver(false); if (!busy) addFiles(e.dataTransfer.files) }}
       >
         {dragOver && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--adf-ui-accent-subtle)] text-sm font-medium text-[var(--adf-ui-accent)]">
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[var(--adf-ui-accent-subtle)] text-sm font-medium text-[var(--adf-ui-text)]">
             Drop to attach
           </div>
         )}
         {files.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
             {files.map((f, i) => (
-              <span key={`${f.name}-${i}`} className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-2 py-1 text-[11px] text-[var(--adf-ui-text-muted)]">
+              <span key={`${f.name}-${i}`} className="inline-flex max-w-full items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--rule)] bg-[var(--paper-sunken)] px-2 py-1 text-[11px] text-[var(--adf-ui-text-muted)]">
                 <span className="max-w-[12rem] truncate">{f.name}</span>
                 <button type="button" onClick={() => removeFile(i)} aria-label={`Remove ${f.name}`} className="shrink-0 text-[var(--adf-ui-text-subtle)] hover:text-[var(--adf-ui-danger)]">&times;</button>
               </span>
@@ -292,7 +292,7 @@ export function HomeComposer() {
               onClick={() => fileInputRef.current?.click()}
               disabled={busy}
               aria-label="Attach files"
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--adf-ui-text-muted)] transition-colors hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)] disabled:opacity-40"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--adf-ui-text-muted)] transition-colors hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)] disabled:opacity-40"
             >
               <svg width="14" height="14" viewBox="0 0 18 18" fill="none" aria-hidden>
                 <path d="M9 3.25v11.5M3.25 9h11.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
@@ -310,7 +310,7 @@ export function HomeComposer() {
             onClick={() => void send()}
             disabled={!canSend}
             aria-label="Send"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--adf-ui-accent)] text-white transition-opacity disabled:opacity-35 dark:text-neutral-950"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] transition-[opacity,background-color] duration-[var(--dur-fast)] ease-[var(--ease)] hover:bg-[var(--adf-ui-accent-hover)] disabled:opacity-35"
           >
             {busy ? (
               <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden>

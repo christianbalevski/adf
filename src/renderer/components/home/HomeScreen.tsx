@@ -35,17 +35,6 @@ export function HomeScreen() {
     <HomeProvidersProvider>
     <div className="relative flex flex-1 flex-col overflow-hidden">
       <div className="relative flex-1 overflow-y-auto">
-        {/* Ambient wash across the whole pane: the accent at a whisper, so the
-            screen has a top and a bottom instead of one flat sheet. */}
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 h-80"
-          style={{
-            background:
-              'radial-gradient(80% 70% at 50% 0%, color-mix(in srgb, var(--adf-ui-accent) 16%, transparent), transparent 100%)'
-          }}
-        />
-
         <div className="relative mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pb-6 pt-8">
           {hasAgents && <HomeStatusLine data={data} />}
 

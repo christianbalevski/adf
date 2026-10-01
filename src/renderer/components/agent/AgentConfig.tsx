@@ -456,7 +456,7 @@ function McpInstallModal({ open, onClose, serverConfig, onInstalled }: McpInstal
           <button
             onClick={handleSave}
             disabled={!npmPackage || !testResult?.success}
-            className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 text-sm bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Install
           </button>
@@ -548,7 +548,7 @@ function SandboxInstallModal({ open, onClose, packages }: SandboxInstallModalPro
             <button
               onClick={handleInstall}
               disabled={installing}
-              className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-3 py-1.5 text-sm bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {installing ? 'Installing...' : 'Install All'}
             </button>
@@ -3661,7 +3661,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       key={tier}
                       className={`flex-1 px-2 py-0.5 text-[10px] font-medium transition-colors ${
                         (local.messaging?.visibility ?? 'localhost') === tier
-                          ? 'bg-blue-500 text-white'
+                          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
                           : 'bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-700'
                       } ${i > 0 ? 'border-l border-neutral-200 dark:border-neutral-700' : ''}`}
                       onClick={() => {
@@ -3686,7 +3686,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       key={mode}
                       className={`flex-1 px-2 py-0.5 text-[10px] font-medium transition-colors ${
                         (local.messaging?.mode ?? 'respond_only') === mode
-                          ? 'bg-blue-500 text-white'
+                          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
                           : 'bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-700'
                       } ${i > 0 ? 'border-l border-neutral-200 dark:border-neutral-700' : ''}`}
                       onClick={() => {
@@ -3737,7 +3737,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     key={lvl}
                     className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${
                       currentLevel === lvl
-                        ? 'bg-blue-500 text-white'
+                        ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
                         : 'bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-700'
                     } ${i > 0 ? 'border-l border-neutral-200 dark:border-neutral-700' : ''}`}
                     onClick={() => {
@@ -3903,7 +3903,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     setTableProtection(newProtectedTable, newTableProtection)
                     setNewProtectedTable('')
                   }}
-                  className="w-full sm:w-auto px-2 py-1 text-xs bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full sm:w-auto px-2 py-1 text-xs border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Add
                 </button>
@@ -4788,7 +4788,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 type="button"
                 data-testid="pre-llm-hook-save"
                 onClick={savePreLlmHook}
-                className="px-2.5 py-1 text-[10px] rounded-md bg-blue-500 text-white hover:bg-blue-600 font-medium"
+                className="px-2.5 py-1 text-[10px] rounded-md border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] font-medium"
               >
                 {local.pre_llm_hook ? 'Save changes' : 'Save hook'}
               </button>
@@ -6223,7 +6223,7 @@ function DidListPicker({
           placeholder={placeholder}
         />
         {dropdownOpen && filtered.length > 0 && (
-          <div className="absolute z-50 left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-lg">
+          <div className="absolute z-50 left-0 right-0 mt-1 max-h-40 overflow-y-auto rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] shadow-float">
             {filtered.map((agent) => (
               <button
                 key={agent.did}

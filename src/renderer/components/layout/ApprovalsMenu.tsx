@@ -158,7 +158,7 @@ function ApprovalRow({
           // dropdown row, so this hands off to the agent's own composer.
           <button
             onClick={() => onJump(approval.filePath)}
-            className="px-2 py-0.5 rounded text-[11px] font-medium bg-sky-600 text-white hover:bg-sky-700"
+            className="px-2 py-0.5 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)]"
           >
             Respond
           </button>
@@ -167,14 +167,14 @@ function ApprovalRow({
             <button
               onClick={() => void respond(true)}
               disabled={busy}
-              className="px-2 py-0.5 rounded text-[11px] font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+              className="px-2 py-0.5 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] disabled:opacity-50"
             >
               Approve
             </button>
             <button
               onClick={() => void respond(false)}
               disabled={busy}
-              className="px-2 py-0.5 rounded text-[11px] font-medium bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-600 disabled:opacity-50"
+              className="px-2 py-0.5 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] disabled:opacity-50"
             >
               Reject
             </button>
@@ -295,7 +295,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
         aria-label={label}
         className={`relative w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
           panelOpen
-            ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
+            ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
             : count > 0
               ? 'text-amber-600 dark:text-amber-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
               : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
@@ -311,7 +311,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
       </button>
 
       {panelOpen && (
-        <div className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} top-8 z-50 w-80 max-h-[60vh] overflow-y-auto rounded-md border border-hairline bg-surface-raised shadow-float`}>
+        <div className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} top-8 z-50 w-80 max-h-[60vh] overflow-y-auto rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-surface-raised shadow-float`}>
           {count === 0 && history.length === 0 ? (
             <div className="px-3 py-4 text-xs text-neutral-500 dark:text-neutral-400">
               No notifications
@@ -375,11 +375,7 @@ export function ApprovalToasts() {
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className={`pointer-events-auto w-64 rounded-md border bg-surface-raised shadow-float px-3 py-2 ${
-            toast.kind === 'ask'
-              ? 'border-sky-300 dark:border-sky-700/60'
-              : 'border-amber-300 dark:border-amber-700/60'
-          }`}
+          className="pointer-events-auto w-64 rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-surface-raised shadow-float px-3 py-2"
         >
           <div className="flex items-start gap-2">
             <span className={`mt-0.5 shrink-0 ${toast.kind === 'ask' ? 'text-sky-600 dark:text-sky-400' : 'text-amber-600 dark:text-amber-400'}`}>
