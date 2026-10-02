@@ -1,7 +1,7 @@
 import { nanoid } from 'nanoid'
 import type { ToolRegistry } from '../tools/tool-registry'
 import type { AdfWorkspace } from '../adf/adf-workspace'
-import { isReservedMcpRuntimePurpose, mcpRuntimeIdentityAccess } from '../adf/adf-workspace'
+import { isReservedMcpRuntimePurpose, mcpRuntimeIdentityAccess, isCodeForbiddenIdentityWrite } from '../adf/adf-workspace'
 import type { AgentConfig, ModelConfig, CodeExecutionConfig, MetaProtectionLevel, FileProtectionLevel, AlfAttestation } from '../../shared/types/adf-v02.types'
 import { CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, FILE_PROTECTION_LEVELS } from '../../shared/types/adf-v02.types'
 import { readAdfAttestations, addPeerAttestation, issuePeerAttestation } from '../services/attestation.service'
@@ -1084,8 +1084,19 @@ export class AdfCallHandler {
       }
     }
 
+    // Runtime-owned key material (crypto:signing/envelope/kdf) is never
+    // code-writable — overwriting it would let an agent swap its own identity
+    // or wedge its envelopes. This is an integrity invariant, not owner policy.
+    if (isCodeForbiddenIdentityWrite(input.purpose)) {
+      this.logCall('warn', 'set_identity', input.purpose, 'Blocked: crypto:* key material is not code-writable')
+      return {
+        error: `"${input.purpose}" is runtime-managed key material (crypto:*) and cannot be written from agent code.`,
+        errorCode: 'IDENTITY_FORBIDDEN',
+      }
+    }
+
     try {
-      this.workspace.setIdentity(input.purpose, input.value, true)
+      this.workspace.setIdentityFromCode(input.purpose, input.value)
       this.logCall('info', 'set_identity', input.purpose, 'Identity stored from code')
       return { result: { success: true, purpose: input.purpose } }
     } catch (err) {

@@ -9,6 +9,7 @@ import type { ArgumentNode } from '../parser/ast'
 // Relative, not the @shared alias: this is a VALUE import, and the alias is
 // only resolved by the bundler — other command modules (meta.ts) do the same.
 import { SETTABLE_STATES } from '../../../../shared/types/adf-v02.types'
+import { isCodeForbiddenIdentityWrite, isReservedMcpRuntimePurpose, mcpRuntimeIdentityAccess } from '../../../adf/adf-workspace'
 
 /** Statically resolve an argument to its literal string, or null when it
  *  depends on runtime state (variables, substitutions). */
@@ -374,12 +375,28 @@ const exportHandler: CommandHandler = {
       value = value.slice(1, -1)
     }
 
+    // The shell is agent-driven code, so `export` must not overwrite
+    // runtime-owned key material (crypto:*) or an owner-locked MCP runtime
+    // identity. Reject those BEFORE touching session env, and surface the
+    // rejection rather than silently "succeeding".
+    const purpose = key.toLowerCase()
+    if (isCodeForbiddenIdentityWrite(purpose)) {
+      return err(`export: "${purpose}" is runtime-managed key material (crypto:*) and cannot be set from the shell`)
+    }
+    if (isReservedMcpRuntimePurpose(purpose) && !mcpRuntimeIdentityAccess(purpose).writeUnlocked) {
+      return err(`export: "${purpose}" is a runtime-managed MCP identity, locked by owner policy`)
+    }
+
     // Write to session env
     ctx.env.export(key, value)
 
-    // Also persist to adf_identity
+    // Also persist to adf_identity via the code-facing sink (guard above is the
+    // primary gate; the sink is defense in depth). Persistence failure is
+    // non-fatal for export, as before.
     try {
-      ctx.workspace.setIdentity(key.toLowerCase(), value)
+      const ws = ctx.workspace as { setIdentityFromCode?: (p: string, v: string) => void; setIdentity: (p: string, v: string) => void }
+      if (typeof ws.setIdentityFromCode === 'function') ws.setIdentityFromCode(purpose, value)
+      else ws.setIdentity(purpose, value)
     } catch { /* identity write failure is non-fatal for export */ }
 
     // export is SILENT (like a real shell) — emitting `KEY=value` to stdout

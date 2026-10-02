@@ -105,6 +105,32 @@ export class DbExecuteTool implements Tool {
       }
     }
 
+    // Fail-closed enforcement on the objects the statement actually touches,
+    // resolved statically. Text checks above are defeated by quoted identifiers
+    // (SQLite accepts 'adf_identity' as a table name, and sanitizeSQL blanks it
+    // as a string literal), so CREATE local_x AS SELECT * FROM 'adf_identity'
+    // reaches here with a clean-looking sanitized string. Mapping opened root
+    // pages back to their tables catches the real read/write targets:
+    //   - no adf_* table may be read or written (blocks CTAS exfil into local_*)
+    //   - every write target must be a local_* table (or an internal
+    //     sqlite_* b-tree touched as DDL/autoincrement bookkeeping)
+    try {
+      const analysis = workspace.analyzeSQL?.(sql, params)
+      if (analysis) {
+        const touched = [...analysis.reads, ...analysis.writes]
+        const adf = touched.find(t => t.startsWith('adf_'))
+        if (adf) {
+          return { content: `Cannot access adf_* system tables from db_execute ("${adf}"). Only local_* tables are allowed.`, isError: true }
+        }
+        const badWrite = [...analysis.writes].find(t => !(t.startsWith('local_') || t.startsWith('sqlite_')))
+        if (badWrite) {
+          return { content: `Write operations are only allowed on local_* tables ("${badWrite}").`, isError: true }
+        }
+      }
+    } catch (error) {
+      return { content: `SQL error: ${String(error)}`, isError: true }
+    }
+
     if (tableName?.startsWith('local_')) {
       const isAuthorized = (input as Record<string, unknown>)?._authorized === true
       const protection = workspace.getAgentConfig?.().security?.table_protections?.[tableName] ?? 'none'
