@@ -812,6 +812,9 @@ export function assembleAgent<P extends AgentProfileName>(
     // The first loop appearing (or the last one leaving) flips main's
     // loop_send/loop_list registration; a loop_manage toggle flips its own.
     syncLoopToolRegistration(updatedConfig)
+    // Host tools registered while declared (sys_code, sys_lambda, npm_*):
+    // a declaration added on a running agent registers its tool here.
+    registry.syncDeclared(updatedConfig.tools ?? [])
     loopPool.reconcile(updatedConfig)
     refreshEffectiveRuntime()
     if (configOptions?.notifyHost === false) return

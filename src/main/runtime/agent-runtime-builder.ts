@@ -398,24 +398,25 @@ export class AgentRuntimeBuilder {
     agentId: string,
     adfCallHandler: AdfCallHandler | null,
   ): void {
-    if (!this.codeSandboxService) return
-    if (config.tools.some(t => t.name === 'sys_code')) {
-      registry.register(new SysCodeTool(
-        this.codeSandboxService,
-        agentId,
-        adfCallHandler ?? undefined,
-        config.limits?.execution_timeout_ms,
-      ))
-    }
+    const sandbox = this.codeSandboxService
+    if (!sandbox) return
+    // Registered while declared, including declarations added later on the
+    // running agent (ToolRegistry.provideDeclared).
+    registry.provideDeclared('sys_code', () => new SysCodeTool(
+      sandbox,
+      agentId,
+      adfCallHandler ?? undefined,
+      config.limits?.execution_timeout_ms,
+    ), config.tools)
     // Normal sys_lambda access remains declaration-dependent. A hook that is
     // added live uses its private registry/backend instead of this shared path.
-    if (adfCallHandler && config.tools.some(t => t.name === 'sys_lambda')) {
-      registry.register(new SysLambdaTool(
-        this.codeSandboxService,
+    if (adfCallHandler) {
+      registry.provideDeclared('sys_lambda', () => new SysLambdaTool(
+        sandbox,
         adfCallHandler,
         agentId,
         config.limits?.execution_timeout_ms,
-      ))
+      ), config.tools)
     }
   }
 

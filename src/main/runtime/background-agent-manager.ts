@@ -1210,15 +1210,17 @@ export class BackgroundAgentManager extends EventEmitter {
       })
     }
 
-    // Register sys_code tool if declared in agent config
-    if (this.codeSandboxService && config.tools.some((t) => t.name === 'sys_code')) {
-      agentToolRegistry.register(new SysCodeTool(this.codeSandboxService, filePath, adfCallHandler ?? undefined, config.limits?.execution_timeout_ms))
+    // Registered while declared, including declarations added later on the
+    // running agent (ToolRegistry.provideDeclared).
+    const sandbox = this.codeSandboxService
+    if (sandbox) {
+      agentToolRegistry.provideDeclared('sys_code', () => new SysCodeTool(sandbox, filePath, adfCallHandler ?? undefined, config.limits?.execution_timeout_ms), config.tools)
     }
 
     // Normal sys_lambda access remains declaration-dependent. A live-added
     // hook has a private backend and does not need this shared registration.
-    if (this.codeSandboxService && adfCallHandler && config.tools.some((t) => t.name === 'sys_lambda')) {
-      agentToolRegistry.register(new SysLambdaTool(this.codeSandboxService, adfCallHandler, filePath, config.limits?.execution_timeout_ms))
+    if (sandbox && adfCallHandler) {
+      agentToolRegistry.provideDeclared('sys_lambda', () => new SysLambdaTool(sandbox, adfCallHandler, filePath, config.limits?.execution_timeout_ms), config.tools)
     }
 
     // Compute tools: always register (shared container is always available)

@@ -3940,15 +3940,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
     currentAdfCallHandler = adfCallHandler
 
-    // Register sys_code with adf handler
-    if (config.tools.some((t) => t.name === 'sys_code')) {
-      agentToolRegistry.register(new SysCodeTool(codeSandboxService, capturedFilePath, adfCallHandler ?? undefined, config.limits?.execution_timeout_ms))
-    }
+    // Registered while declared, including declarations added later on the
+    // running agent (ToolRegistry.provideDeclared).
+    agentToolRegistry.provideDeclared('sys_code', () => new SysCodeTool(codeSandboxService, capturedFilePath, adfCallHandler ?? undefined, config.limits?.execution_timeout_ms), config.tools)
 
     // Normal sys_lambda access remains declaration-dependent. A live-added
     // hook uses its private registry/backend instead of this agent registry.
-    if (adfCallHandler && config.tools.some((t) => t.name === 'sys_lambda')) {
-      agentToolRegistry.register(new SysLambdaTool(codeSandboxService, adfCallHandler, capturedFilePath, config.limits?.execution_timeout_ms))
+    if (adfCallHandler) {
+      agentToolRegistry.provideDeclared('sys_lambda', () => new SysLambdaTool(codeSandboxService, adfCallHandler, capturedFilePath, config.limits?.execution_timeout_ms), config.tools)
     }
 
     // Register npm_install / npm_uninstall with sandbox packages service
@@ -3974,12 +3973,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         codeSandboxService.setUserPackages(sandboxPackagesService.getBasePath(), names)
       }
 
-      if (config.tools.some((t) => t.name === 'npm_install')) {
-        agentToolRegistry.register(new NpmInstallTool(sandboxPackagesService, () => refreshUserPackages()))
-      }
-      if (config.tools.some((t) => t.name === 'npm_uninstall')) {
-        agentToolRegistry.register(new NpmUninstallTool(() => refreshUserPackages()))
-      }
+      agentToolRegistry.provideDeclared('npm_install', () => new NpmInstallTool(sandboxPackagesService, () => refreshUserPackages()), config.tools)
+      agentToolRegistry.provideDeclared('npm_uninstall', () => new NpmUninstallTool(() => refreshUserPackages()), config.tools)
     }
 
     const connectConfiguredMcpServer = async (

@@ -59,6 +59,35 @@ export class ToolRegistry {
     return result
   }
 
+  /** Host-built tools that exist while their declaration does (provideDeclared). */
+  private declaredFactories: Map<string, () => Tool> = new Map()
+
+  /**
+   * Register `name` for as long as the agent config declares it (enabled or
+   * not), now and again on every config change via syncDeclared. For host
+   * tools whose registration follows declaration presence — sys_code,
+   * sys_lambda, npm_install, npm_uninstall. Without the re-sync, a tool the
+   * owner declared on a running agent stayed unregistered ("not available")
+   * until a restart. Access is still gated by the declaration on every call
+   * path; this only decides whether an instance exists to be gated.
+   */
+  provideDeclared(name: string, make: () => Tool, declarations: ToolDeclaration[]): void {
+    this.declaredFactories.set(name, make)
+    this.syncDeclared(declarations)
+  }
+
+  /** Re-apply provideDeclared against a new config's declarations. */
+  syncDeclared(declarations: ToolDeclaration[]): void {
+    const declared = new Set(declarations.map((d) => d.name))
+    for (const [name, make] of this.declaredFactories) {
+      if (declared.has(name)) {
+        if (!this.tools.has(name)) this.register(make())
+      } else {
+        this.unregister(name)
+      }
+    }
+  }
+
   get(name: string): Tool | undefined {
     return this.tools.get(name)
   }
