@@ -1467,9 +1467,10 @@ function LoopStream({ loop }: { loop: string }) {
     const mimeType = inferMimeType(file)
     const kind = uploadKind(mimeType)
     const bytes = new Uint8Array(await file.arrayBuffer())
-    const uploadPath = `loop-upload/${Date.now()}-${nanoid(6)}/${sanitizeUploadName(file.name)}`
-    const result = await window.adfApi?.uploadFile(uploadPath, Array.from(bytes), mimeType)
-    if (!result?.success) return null
+    const result = await window.adfApi?.uploadFile(
+      `loop-upload/${sanitizeUploadName(file.name)}`, Array.from(bytes), mimeType, { unique: true })
+    if (!result?.success || !result.path) return null
+    const uploadPath = result.path
 
     const supportedNative = kind !== 'file' && mediaSupport[kind]
     const withinLimit = kind !== 'file' && bytes.length <= mediaLimits[kind]

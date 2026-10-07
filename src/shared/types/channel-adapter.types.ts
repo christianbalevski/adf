@@ -68,8 +68,14 @@ export interface AdapterContext {
    * dedup may return undefined.
    */
   ingest(msg: InboundMessage): string | null | undefined
-  /** Write an attachment to the agent's internal file store */
-  writeAttachment(path: string, data: Buffer, mimeType?: string): void
+  /**
+   * Write an attachment to the agent's internal file store. A different file
+   * already at the path is kept and the new one is numbered (`a.png` →
+   * `a-2.png`); identical bytes reuse the existing path. Returns the path the
+   * attachment was saved at. Hosts that predate numbering return undefined
+   * and the requested path is used.
+   */
+  writeAttachment(path: string, data: Buffer, mimeType?: string): string | void
   /** Get the adapter's configuration from the agent config */
   getConfig(): AdapterInstanceConfig
   /** Read a credential from the agent's identity keystore */

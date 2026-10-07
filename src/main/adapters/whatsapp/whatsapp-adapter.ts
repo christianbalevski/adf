@@ -520,9 +520,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
           const ext = (media.mime ?? '').split('/')[1]?.split(';')[0] ?? 'bin'
           const baseName = content.documentMessage?.fileName ?? `${media.kind}_${msg.key.id}.${ext}`
           const importPath = `imported/whatsapp/${baseName}`
-          this.ctx.writeAttachment(importPath, buffer, media.mime ?? undefined)
+          const savedPath = this.ctx.writeAttachment(importPath, buffer, media.mime ?? undefined) || importPath
           attachments.push({
-            path: importPath,
+            path: savedPath,
             filename: baseName,
             mimeType: media.mime ?? 'application/octet-stream',
             size: buffer.length

@@ -282,8 +282,8 @@ const api: AdfApi = {
 
   // Internal files
   getInternalFiles: () => ipcRenderer.invoke(IPC.DOC_GET_FILES),
-  uploadFile: (path: string, data: number[], mimeType?: string) =>
-    ipcRenderer.invoke(IPC.DOC_UPLOAD_FILE, { path, data, mimeType }),
+  uploadFile: (path: string, data: number[], mimeType?: string, options?: { unique?: boolean }) =>
+    ipcRenderer.invoke(IPC.DOC_UPLOAD_FILE, { path, data, mimeType, unique: options?.unique }),
   importPaths: (hostPaths: string[]) =>
     ipcRenderer.invoke(IPC.DOC_IMPORT_PATHS, { paths: hostPaths }),
   pickAndImport: () =>

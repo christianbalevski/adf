@@ -713,9 +713,8 @@ export class ChannelAdapterManager extends EventEmitter {
         return { ingested: state.ingested, deduped: state.deduped }
       },
 
-      writeAttachment: (path: string, data: Buffer, mimeType?: string) => {
-        workspace.writeFileBuffer(path, data, mimeType)
-      },
+      writeAttachment: (path: string, data: Buffer, mimeType?: string) =>
+        workspace.writeFileBufferUnique(path, data, mimeType),
 
       getConfig: () => config,
 

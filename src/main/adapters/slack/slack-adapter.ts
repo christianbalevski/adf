@@ -317,9 +317,9 @@ export class SlackAdapter implements ChannelAdapter {
         const buffer = Buffer.from(await response.arrayBuffer())
         const filename = file.name ?? `file_${file.id}`
         const importPath = `imported/slack/${filename}`
-        this.ctx.writeAttachment(importPath, buffer, file.mimetype)
+        const savedPath = this.ctx.writeAttachment(importPath, buffer, file.mimetype) || importPath
         attachments.push({
-          path: importPath,
+          path: savedPath,
           filename,
           mimeType: file.mimetype ?? 'application/octet-stream',
           size: buffer.length

@@ -337,7 +337,7 @@ export interface AdfApi {
 
   // Internal files
   getInternalFiles: () => Promise<{ files: Array<{ path: string; size: number; mime_type?: string; protection: 'read_only' | 'no_delete' | 'none'; authorized: boolean; created_at: string; updated_at: string }> }>
-  uploadFile: (path: string, data: number[], mimeType?: string) => Promise<{ success: boolean }>
+  uploadFile: (path: string, data: number[], mimeType?: string, options?: { unique?: boolean }) => Promise<{ success: boolean; path?: string }>
   importPaths: (hostPaths: string[]) => Promise<{ success: boolean; count: number }>
   pickAndImport: () => Promise<{ success: boolean; count: number }>
   deleteInternalFile: (path: string) => Promise<{ success: boolean }>

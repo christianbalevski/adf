@@ -207,9 +207,9 @@ export class TelegramAdapter implements ChannelAdapter {
               const buffer = Buffer.from(await response.arrayBuffer())
               const filename = `photo_${photo.file_id}.jpg`
               const importPath = `imported/telegram/${filename}`
-              this.ctx.writeAttachment(importPath, buffer, 'image/jpeg')
+              const savedPath = this.ctx.writeAttachment(importPath, buffer, 'image/jpeg') || importPath
               attachments.push({
-                path: importPath, filename, mimeType: 'image/jpeg',
+                path: savedPath, filename, mimeType: 'image/jpeg',
                 size: buffer.length
               })
             }
@@ -231,9 +231,9 @@ export class TelegramAdapter implements ChannelAdapter {
               const buffer = Buffer.from(await response.arrayBuffer())
               const filename = doc.file_name ?? `doc_${doc.file_id}`
               const importPath = `imported/telegram/${filename}`
-              this.ctx.writeAttachment(importPath, buffer, doc.mime_type)
+              const savedPath = this.ctx.writeAttachment(importPath, buffer, doc.mime_type) || importPath
               attachments.push({
-                path: importPath, filename, mimeType: doc.mime_type ?? 'application/octet-stream',
+                path: savedPath, filename, mimeType: doc.mime_type ?? 'application/octet-stream',
                 size: buffer.length
               })
             }
@@ -255,9 +255,9 @@ export class TelegramAdapter implements ChannelAdapter {
               const buffer = Buffer.from(await response.arrayBuffer())
               const filename = `voice_${voice.file_id}.ogg`
               const importPath = `imported/telegram/${filename}`
-              this.ctx.writeAttachment(importPath, buffer, voice.mime_type ?? 'audio/ogg')
+              const savedPath = this.ctx.writeAttachment(importPath, buffer, voice.mime_type ?? 'audio/ogg') || importPath
               attachments.push({
-                path: importPath, filename, mimeType: voice.mime_type ?? 'audio/ogg',
+                path: savedPath, filename, mimeType: voice.mime_type ?? 'audio/ogg',
                 size: buffer.length
               })
             }
@@ -282,9 +282,9 @@ export class TelegramAdapter implements ChannelAdapter {
               const ext = video.mime_type?.split('/')[1] ?? 'mp4'
               const filename = video.file_name ?? `video_${video.file_id}.${ext}`
               const importPath = `imported/telegram/${filename}`
-              this.ctx.writeAttachment(importPath, buffer, video.mime_type ?? 'video/mp4')
+              const savedPath = this.ctx.writeAttachment(importPath, buffer, video.mime_type ?? 'video/mp4') || importPath
               attachments.push({
-                path: importPath, filename, mimeType: video.mime_type ?? 'video/mp4',
+                path: savedPath, filename, mimeType: video.mime_type ?? 'video/mp4',
                 size: buffer.length
               })
             }
@@ -307,9 +307,9 @@ export class TelegramAdapter implements ChannelAdapter {
               const buffer = Buffer.from(await response.arrayBuffer())
               const filename = `videonote_${vn.file_id}.mp4`
               const importPath = `imported/telegram/${filename}`
-              this.ctx.writeAttachment(importPath, buffer, 'video/mp4')
+              const savedPath = this.ctx.writeAttachment(importPath, buffer, 'video/mp4') || importPath
               attachments.push({
-                path: importPath, filename, mimeType: 'video/mp4',
+                path: savedPath, filename, mimeType: 'video/mp4',
                 size: buffer.length
               })
             }
@@ -332,9 +332,9 @@ export class TelegramAdapter implements ChannelAdapter {
               const buffer = Buffer.from(await response.arrayBuffer())
               const filename = audio.file_name ?? `audio_${audio.file_id}.${audio.mime_type?.split('/')[1] ?? 'mp3'}`
               const importPath = `imported/telegram/${filename}`
-              this.ctx.writeAttachment(importPath, buffer, audio.mime_type ?? 'audio/mpeg')
+              const savedPath = this.ctx.writeAttachment(importPath, buffer, audio.mime_type ?? 'audio/mpeg') || importPath
               attachments.push({
-                path: importPath, filename, mimeType: audio.mime_type ?? 'audio/mpeg',
+                path: savedPath, filename, mimeType: audio.mime_type ?? 'audio/mpeg',
                 size: buffer.length
               })
             }
@@ -357,9 +357,9 @@ export class TelegramAdapter implements ChannelAdapter {
               const buffer = Buffer.from(await response.arrayBuffer())
               const filename = anim.file_name ?? `animation_${anim.file_id}.mp4`
               const importPath = `imported/telegram/${filename}`
-              this.ctx.writeAttachment(importPath, buffer, anim.mime_type ?? 'video/mp4')
+              const savedPath = this.ctx.writeAttachment(importPath, buffer, anim.mime_type ?? 'video/mp4') || importPath
               attachments.push({
-                path: importPath, filename, mimeType: anim.mime_type ?? 'video/mp4',
+                path: savedPath, filename, mimeType: anim.mime_type ?? 'video/mp4',
                 size: buffer.length
               })
             }

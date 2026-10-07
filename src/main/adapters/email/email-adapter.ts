@@ -692,9 +692,9 @@ export class EmailAdapter implements ChannelAdapter {
       const filename = att.filename || `attachment_${Date.now()}`
       const importPath = `imported/email_${safeSender}/${filename}`
       try {
-        this.ctx.writeAttachment(importPath, att.content, att.contentType)
+        const savedPath = this.ctx.writeAttachment(importPath, att.content, att.contentType) || importPath
         attachments.push({
-          path: importPath,
+          path: savedPath,
           filename,
           mimeType: att.contentType,
           size: att.size

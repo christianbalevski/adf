@@ -572,9 +572,9 @@ export class DiscordAdapter implements ChannelAdapter {
         const filename = att.name ?? `attachment_${att.id}`
         const importPath = `imported/discord/${filename}`
         const mimeType = att.contentType ?? 'application/octet-stream'
-        this.ctx.writeAttachment(importPath, buffer, mimeType)
+        const savedPath = this.ctx.writeAttachment(importPath, buffer, mimeType) || importPath
         attachments.push({
-          path: importPath,
+          path: savedPath,
           filename,
           mimeType,
           size: buffer.length

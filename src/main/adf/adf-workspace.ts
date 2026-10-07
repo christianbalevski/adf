@@ -179,6 +179,19 @@ export interface EnvelopeRecipients {
 const ENVELOPE_NAMES: EnvelopeName[] = ['identity', 'credentials']
 const ENVELOPE_PURPOSE_PREFIX = 'crypto:envelope:'
 
+/**
+ * The nth name for a file path: n = 1 is the path itself, later ones put
+ * `-n` before the extension (`a/report.pdf` → `a/report-2.pdf`). A leading
+ * dot is part of the name, not an extension (`.env` → `.env-2`).
+ */
+export function numberedPath(path: string, n: number): string {
+  if (n <= 1) return path
+  const slash = path.lastIndexOf('/')
+  const dot = path.lastIndexOf('.')
+  if (dot <= slash + 1) return `${path}-${n}`
+  return `${path.slice(0, dot)}-${n}${path.slice(dot)}`
+}
+
 /** Sealed OAuth token store purpose — `mcp:<name>:oauth`. */
 const MCP_OAUTH_PURPOSE_RE = /^mcp:[^:]+:oauth$/
 /** Credential-file purposes — `mcp:<name>:file:<declared path>`. */
@@ -1947,6 +1960,26 @@ export class AdfWorkspace {
     this.db.writeFile(relativePath, content, mimeType, protection)
     this.emitUmbilical('file.written', { path: relativePath, bytes: content.length })
     this.emitFileChange(relativePath, existed ? 'modified' : 'created', content, previous, this.fileChangeMeta(relativePath))
+  }
+
+  /**
+   * Write a file without replacing a different one already at that path.
+   * A taken name gets a number before its extension (`report.pdf` →
+   * `report-2.pdf`). The same bytes already stored under the name or one of
+   * its numbered copies are reused rather than written again, so a re-delivered
+   * attachment or a re-uploaded file does not pile up copies.
+   * Returns the path the content lives at.
+   */
+  writeFileBufferUnique(relativePath: string, content: Buffer, mimeType?: string): string {
+    for (let n = 1; ; n++) {
+      const candidate = numberedPath(relativePath, n)
+      const existing = this.db.readFile(candidate)
+      if (!existing) {
+        this.writeFileBuffer(candidate, content, mimeType)
+        return candidate
+      }
+      if (existing.content.equals(content)) return candidate
+    }
   }
 
   /** File metadata for a change event — skipped entirely when no sink is registered. */

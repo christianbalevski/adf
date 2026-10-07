@@ -3363,13 +3363,19 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return { files: currentWorkspace.listFiles() }
   })
 
-  ipcMain.handle(IPC.DOC_UPLOAD_FILE, async (_event, { path, data, mimeType }: { path: string; data: number[]; mimeType?: string }) => {
+  // `unique` keeps an existing file with the same name and numbers the new
+  // one instead. The name is picked here, not in the renderer, because
+  // parallel uploads would otherwise race each other to the same free name.
+  ipcMain.handle(IPC.DOC_UPLOAD_FILE, async (_event, { path, data, mimeType, unique }: { path: string; data: number[]; mimeType?: string; unique?: boolean }) => {
     if (!currentWorkspace) return { success: false }
     const buffer = Buffer.from(new Uint8Array(data))
-    withSource('system:studio', currentWorkspace.getAgentConfig().id, () => {
-      currentWorkspace!.writeFileBuffer(path, buffer, mimeType ?? 'application/octet-stream')
+    const savedPath = withSource('system:studio', currentWorkspace.getAgentConfig().id, () => {
+      const mime = mimeType ?? 'application/octet-stream'
+      if (unique) return currentWorkspace!.writeFileBufferUnique(path, buffer, mime)
+      currentWorkspace!.writeFileBuffer(path, buffer, mime)
+      return path
     })
-    return { success: true }
+    return { success: true, path: savedPath }
   })
 
   ipcMain.handle(IPC.DOC_IMPORT_PATHS, async (_event, { paths }: { paths: string[] }) => {
