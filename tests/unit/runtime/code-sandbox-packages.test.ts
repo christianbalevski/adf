@@ -156,4 +156,64 @@ describe('CodeSandboxService', () => {
       }
     })
   })
+  describe('per-agent packages', () => {
+    // The "not available" error lists every module the sandbox can see.
+    const listModules = 'try { __require("nonexistent-probe"); return ""; } catch (e) { return e.message; }'
+
+    it("shows an agent's own packages only to sandboxes it owns", async () => {
+      const sandbox = new CodeSandboxService()
+      sandbox.setStdlib('/tmp/fake-stdlib', [])
+      sandbox.setUserPackages('/tmp/fake-sandbox-packages', ['shared-pkg'])
+      sandbox.setAgentPackageSource(['/agents/a.adf', 'id-a'], () => ['only-a'])
+      try {
+        const own = await sandbox.execute('/agents/a.adf', listModules, 5000)
+        expect(own.result).toContain('only-a')
+        expect(own.result).toContain('shared-pkg')
+
+        // A derived sandbox (lambda, mesh route) is owned via the agent option.
+        const lambda = await sandbox.execute('/agents/a.adf:lambda:x.js', listModules, 5000, undefined, undefined, { agent: 'id-a' })
+        expect(lambda.result).toContain('only-a')
+
+        const other = await sandbox.execute('/agents/b.adf', listModules, 5000)
+        expect(other.result).toContain('shared-pkg')
+        expect(other.result).not.toContain('only-a')
+      } finally {
+        sandbox.destroyAll()
+      }
+    })
+
+    it('reads package lists at each execution, so installs and settings apply live', async () => {
+      const sandbox = new CodeSandboxService()
+      sandbox.setStdlib('/tmp/fake-stdlib', [])
+      let runtime = ['runtime-1']
+      let own: string[] = []
+      sandbox.setUserPackages('/tmp/fake-sandbox-packages', () => runtime)
+      sandbox.setAgentPackageSource(['/agents/a.adf'], () => own)
+      try {
+        const before = await sandbox.execute('/agents/a.adf', listModules, 5000)
+        expect(before.result).not.toContain('just-installed')
+
+        own = ['just-installed']
+        runtime = ['runtime-2']
+        const after = await sandbox.execute('/agents/a.adf', listModules, 5000)
+        expect(after.result).toContain('just-installed')
+        expect(after.result).toContain('runtime-2')
+        expect(after.result).not.toContain('runtime-1')
+      } finally {
+        sandbox.destroyAll()
+      }
+    })
+
+    it('keeps a newer source when an older one is cleared', () => {
+      const sandbox = new CodeSandboxService()
+      const older = (): string[] => ['old']
+      const newer = (): string[] => ['new']
+      sandbox.setAgentPackageSource(['k'], older)
+      sandbox.setAgentPackageSource(['k'], newer)
+      sandbox.clearAgentPackageSource(['k'], older)
+      expect(sandbox.getUserPackageModules('k')).toContain('new')
+      sandbox.clearAgentPackageSource(['k'], newer)
+      expect(sandbox.getUserPackageModules('k')).toEqual([])
+    })
+  })
 })

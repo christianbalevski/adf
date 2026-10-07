@@ -13,6 +13,7 @@ import type { ToolDeclaration } from '../../../src/shared/types/adf-v02.types'
 import type { CreateMessageOptions, LLMProvider } from '../../../src/main/providers/provider.interface'
 import type { LLMResponse } from '../../../src/shared/types/provider.types'
 import type { Tool } from '../../../src/main/tools/tool.interface'
+import type { SandboxPackagesService } from '../../../src/main/services/sandbox-packages.service'
 
 /**
  * Host tools registered while declared (sys_code, sys_lambda, npm_*) must
@@ -70,7 +71,11 @@ afterEach(async () => {
   while (cleanups.length) await cleanups.pop()!()
 })
 
-async function startAgent(tools: ToolDeclaration[], provider: LLMProvider) {
+async function startAgent(
+  tools: ToolDeclaration[],
+  provider: LLMProvider,
+  extra: { packages?: string[]; sandbox?: CodeSandboxService } = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), 'adf-hot-reload-'))
   const filePath = join(dir, 'hot.adf')
   createHeadlessAgent({ filePath, name: 'hot', provider, createOptions: { tools } }).dispose()
@@ -78,15 +83,21 @@ async function startAgent(tools: ToolDeclaration[], provider: LLMProvider) {
   const config = workspace.getAgentConfig()
   config.tools = tools
   config.recovery = { ...(config.recovery ?? {}), auto_retry: false }
+  if (extra.packages) {
+    config.code_execution = { ...config.code_execution, packages: extra.packages.map((name) => ({ name, version: '1.0.0' })) }
+  }
   workspace.setAgentConfig(config)
-  const agent = await new AgentRuntimeBuilder({ codeSandboxService: new CodeSandboxService() }).build({
+  const sandbox = extra.sandbox ?? new CodeSandboxService()
+  // Construction only stores the service; nothing here installs anything.
+  const sandboxPackagesService = {} as SandboxPackagesService
+  const agent = await new AgentRuntimeBuilder({ codeSandboxService: sandbox, sandboxPackagesService }).build({
     workspace, filePath, config, provider,
   })
   cleanups.push(async () => {
     try { await agent.disposeAsync() } catch { /* cleanup */ }
     rmSync(dir, { recursive: true, force: true })
   })
-  return { agent, workspace }
+  return { agent, workspace, filePath, config }
 }
 
 describe('declared host tools on a running agent', () => {
@@ -122,6 +133,33 @@ describe('declared host tools on a running agent', () => {
     workspace.setAgentConfig(updated)
     agent.applyConfigChange(updated)
     expect(agent.registry.get('sys_code')).toBeUndefined()
+  })
+})
+
+describe('npm tools and packages on daemon agents', () => {
+  it('registers npm_install when it is declared mid-run', async () => {
+    const { agent, workspace } = await startAgent([], new ScriptedProvider(() => text('ok')))
+    expect(agent.registry.get('npm_install')).toBeUndefined()
+
+    const updated = workspace.getAgentConfig()
+    updated.tools = [{ name: 'npm_install', enabled: true, visible: true }]
+    workspace.setAgentConfig(updated)
+    agent.applyConfigChange(updated)
+    expect(agent.registry.get('npm_install')).toBeDefined()
+  })
+
+  it("exposes an agent's packages to its own sandboxes only, until it is disposed", async () => {
+    const sandbox = new CodeSandboxService()
+    const { agent, filePath, config } = await startAgent([], new ScriptedProvider(() => text('ok')), {
+      packages: ['vega-lite'],
+      sandbox,
+    })
+    expect(sandbox.getUserPackageModules(filePath)).toContain('vega-lite')
+    expect(sandbox.getUserPackageModules(config.id)).toContain('vega-lite')
+    expect(sandbox.getUserPackageModules('/some/other.adf')).not.toContain('vega-lite')
+
+    await agent.disposeAsync()
+    expect(sandbox.getUserPackageModules(filePath)).not.toContain('vega-lite')
   })
 })
 

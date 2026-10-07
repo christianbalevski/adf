@@ -182,6 +182,11 @@ const codeSandboxService = new CodeSandboxService()
 // agent in one process, so it is exactly where the cap has to bind.
 codeSandboxService.setMaxWorkers(settings.get('sandboxMaxWorkers') as number | undefined)
 const sandboxPackagesService = new SandboxPackagesService()
+// Runtime packages (Settings > Packages) are importable by every agent; read
+// at each execution so a settings change applies without a restart. Each
+// agent's own packages are added on top (assembleAgent).
+codeSandboxService.setUserPackages(sandboxPackagesService.getBasePath(), () =>
+  ((settings.get('sandboxPackages') as Array<{ name: string }> | undefined) ?? []).map((p) => p.name))
 const sandboxStdlibService = new SandboxStdlibService()
 const podmanService = new PodmanService()
 // Container MCP servers that attach over CDP ask for the managed browser before spawning.
@@ -210,6 +215,7 @@ if (settings.get('meshEnabled') !== false) {
 const agentRuntimeBuilder = new AgentRuntimeBuilder({
   settings,
   codeSandboxService,
+  sandboxPackagesService,
   podmanService,
   credentialEnvelopeLockedHint: daemonEncKey
     ? `Make the owner identity available (\`adf identity restore\` / \`adf identity unlock\`, or /identity in the TUI), or add this daemon's runtime key (${daemonEncKey.pubKeyPath}) to Studio's trusted daemon keys (trustedDaemonEncKeys) and open the agent in Studio once.`

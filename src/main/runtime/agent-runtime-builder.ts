@@ -8,6 +8,8 @@ import {
   ComputeExecTool,
   FsTransferTool,
   SysCodeTool,
+  NpmInstallTool,
+  NpmUninstallTool,
   SysLambdaTool,
   SysFetchTool,
   SysGetConfigTool,
@@ -28,6 +30,7 @@ import { resolveHostEnv } from '../services/host-exec.service'
 import type { WsConnectionManager } from '../services/ws-connection-manager'
 import type { PodmanService } from '../services/podman.service'
 import type { CodeSandboxService } from './code-sandbox'
+import type { SandboxPackagesService } from '../services/sandbox-packages.service'
 import type { LLMProvider } from '../providers/provider.interface'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { AgentConfig, ModelConfig } from '../../shared/types/adf-v02.types'
@@ -67,6 +70,8 @@ const MCP_CONNECT_BUDGET_MS = 25_000
 export interface AgentRuntimeBuilderOptions {
   settings?: RuntimeSettingsStore
   codeSandboxService?: CodeSandboxService | null
+  /** Backs npm_install / npm_uninstall. Absent = those tools are not offered. */
+  sandboxPackagesService?: SandboxPackagesService | null
   podmanService?: PodmanService | null
   wsConnectionManager?: WsConnectionManager | null
   mcpPackageResolver?: PackageResolver
@@ -110,6 +115,7 @@ export interface BuildAgentRuntimeOptions {
 export class AgentRuntimeBuilder {
   private readonly settings?: RuntimeSettingsStore
   private readonly codeSandboxService: CodeSandboxService | null
+  private readonly sandboxPackagesService: SandboxPackagesService | null
   private readonly podmanService: PodmanService | null
   private readonly wsConnectionManager: WsConnectionManager | null
   private readonly mcpPackageResolver: PackageResolver
@@ -125,6 +131,7 @@ export class AgentRuntimeBuilder {
   constructor(opts: AgentRuntimeBuilderOptions = {}) {
     this.settings = opts.settings
     this.codeSandboxService = opts.codeSandboxService ?? null
+    this.sandboxPackagesService = opts.sandboxPackagesService ?? null
     this.podmanService = opts.podmanService ?? null
     this.wsConnectionManager = opts.wsConnectionManager ?? null
     this.mcpPackageResolver = opts.mcpPackageResolver ?? new PackageResolver('mcp-servers')
@@ -417,6 +424,11 @@ export class AgentRuntimeBuilder {
         agentId,
         config.limits?.execution_timeout_ms,
       ), config.tools)
+    }
+    const packages = this.sandboxPackagesService
+    if (packages) {
+      registry.provideDeclared('npm_install', () => new NpmInstallTool(packages), config.tools)
+      registry.provideDeclared('npm_uninstall', () => new NpmUninstallTool(), config.tools)
     }
   }
 

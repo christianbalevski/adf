@@ -890,7 +890,9 @@ export class CodeSandboxService {
   private stdlibBasePath: string | null = null
   private stdlibModules: string[] = []
   private userPkgBasePath: string | null = null
-  private userPkgModules: string[] = []
+  private userPkgModules: string[] | (() => string[]) = []
+  /** Per-agent package lists, keyed by owning agent (see setAgentPackageSource). */
+  private agentPackageSources: Map<string, () => string[]> = new Map()
 
   /** Sandbox ids each agent has created, so destroyForAgent() reaps exactly
    *  those. Prefix matching used to do this, but sandbox ids are absolute
@@ -916,15 +918,50 @@ export class CodeSandboxService {
     this.stdlibModules = modules
   }
 
-  /** Configure user-installed package path and visible module names for the sandbox. */
-  setUserPackages(basePath: string, modules: string[]): void {
+  /**
+   * Configure the installed-package path and the RUNTIME packages (Settings >
+   * Packages), which every agent's sandboxes can import. Pass a reader to
+   * follow the setting live; it runs at each execution. An agent's own
+   * packages come on top of these, from setAgentPackageSource.
+   */
+  setUserPackages(basePath: string, modules: string[] | (() => string[])): void {
     this.userPkgBasePath = basePath
     this.userPkgModules = modules
   }
 
-  /** Module names currently visible to sandboxed code (process-wide). */
-  getUserPackageModules(): string[] {
-    return [...this.userPkgModules]
+  private runtimePackageModules(): string[] {
+    if (typeof this.userPkgModules !== 'function') return this.userPkgModules
+    try { return this.userPkgModules() } catch { return [] }
+  }
+
+  /**
+   * The packages one agent installed (its code_execution.packages), importable
+   * only by sandboxes that agent owns. `read` runs at each execution, so a
+   * package the agent just installed is importable on its next run with no
+   * refresh step. `keys` are every id the agent's sandboxes are owned under —
+   * the `agent` execute option, which is the file path for most callers and
+   * the config id for some (mesh routes, middleware).
+   */
+  setAgentPackageSource(keys: string[], read: () => string[]): void {
+    for (const key of keys) this.agentPackageSources.set(key, read)
+  }
+
+  clearAgentPackageSource(keys: string[], read?: () => string[]): void {
+    for (const key of keys) {
+      // A newer assembly of the same agent may already own the key.
+      if (read && this.agentPackageSources.get(key) !== read) continue
+      this.agentPackageSources.delete(key)
+    }
+  }
+
+  /** Module names visible to `agent`'s sandboxes: runtime packages plus its own. */
+  getUserPackageModules(agent?: string): string[] {
+    const runtime = this.runtimePackageModules()
+    const read = agent ? this.agentPackageSources.get(agent) : undefined
+    if (!read) return [...runtime]
+    let own: string[] = []
+    try { own = read() } catch { /* an unreadable config hides only its own packages */ }
+    return [...new Set([...runtime, ...own])]
   }
 
   /**
@@ -1027,7 +1064,9 @@ export class CodeSandboxService {
         stdlibBasePath: this.stdlibBasePath,
         stdlibModules: this.stdlibModules,
         userPkgBasePath: this.userPkgBasePath,
-        userPkgModules: this.userPkgModules
+        // Per execution: a worker serves one owner, but the list must follow
+        // that agent's installs and the runtime list as they change.
+        userPkgModules: this.getUserPackageModules(options?.agent ?? agentId)
       })
     }
 

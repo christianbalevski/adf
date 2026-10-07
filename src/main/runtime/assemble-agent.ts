@@ -318,6 +318,14 @@ export function assembleAgent<P extends AgentProfileName>(
   // bridge. `pre_llm_hook` is live config: adding it after assembly must take
   // effect on the next turn, rather than finding a start-time null runner.
   // Its presence still never exposes sys_lambda in provider schemas.
+  // The agent's own npm packages, visible only to sandboxes it owns, read from
+  // its live config at each execution (so npm_install needs no refresh step).
+  // Keyed by both ids hosts own sandboxes under: file path and config id.
+  const packageKeys = [workspace.getFilePath(), config.id].filter((key): key is string => !!key)
+  const readAgentPackages = (): string[] =>
+    (workspace.getAgentConfig().code_execution?.packages ?? []).map((pkg) => pkg.name)
+  codeSandboxService?.setAgentPackageSource(packageKeys, readAgentPackages)
+
   const preLlmHookRunner = codeSandboxService && adfCallHandler
     ? new PreLlmHookRunner(workspace, codeSandboxService, adfCallHandler, config.id)
     : null
@@ -351,7 +359,7 @@ export function assembleAgent<P extends AgentProfileName>(
       toolPrompts: options.toolPrompts ?? {},
       compactionPrompt: options.compactionPrompt,
       sources,
-      sandboxModules: codeSandboxService?.getUserPackageModules(),
+      sandboxModules: codeSandboxService?.getUserPackageModules(packageKeys[0]),
     }))
   }
   refreshEffectiveRuntime()
@@ -901,6 +909,8 @@ export function assembleAgent<P extends AgentProfileName>(
     try { workspace.setOnFileChangeCallback(null) } catch { /* workspace may already be closed */ }
     try { workspace.setOnSkillRegistryChangedCallback(null) } catch { /* workspace may already be closed */ }
     try { adapterManager?.off('inbound', onAdapterInbound) } catch { /* best effort */ }
+    // Identity-checked: a newer assembly of the same agent keeps its source.
+    codeSandboxService?.clearAgentPackageSource(packageKeys, readAgentPackages)
 
     executor.onToolCallIntercepted = undefined
     executor.onTaskCreated = undefined

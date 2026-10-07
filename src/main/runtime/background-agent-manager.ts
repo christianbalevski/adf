@@ -14,7 +14,7 @@ import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { isConfigReviewed } from '../services/agent-review'
 import { ToolRegistry } from '../tools/tool-registry'
-import { SysCodeTool, SysLambdaTool, SysGetConfigTool, SysFetchTool, FsTransferTool, ComputeExecTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, McpInstallTool, McpRestartTool, McpUninstallTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
+import { SysCodeTool, SysLambdaTool, NpmInstallTool, NpmUninstallTool, SysGetConfigTool, SysFetchTool, FsTransferTool, ComputeExecTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, McpInstallTool, McpRestartTool, McpUninstallTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from './stream-binding-manager'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
@@ -25,6 +25,7 @@ import { RuntimeGate } from './runtime-gate'
 import { approvalHub } from './approval-hub'
 import { SystemScopeHandler } from './system-scope-handler'
 import type { CodeSandboxService } from './code-sandbox'
+import type { SandboxPackagesService } from '../services/sandbox-packages.service'
 import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { ensureCoreToolDeclarations } from './core-tool-declarations'
 import { McpClientManager } from '../services/mcp-client-manager'
@@ -270,6 +271,7 @@ export class BackgroundAgentManager extends EventEmitter {
   private toolPrompts: Record<string, string>
   private compactionPrompt: string | undefined
   private codeSandboxService: CodeSandboxService | null = null
+  private sandboxPackagesService: SandboxPackagesService | null = null
   private mcpPackageResolver = new PackageResolver('mcp-servers')
   private uvxPackageResolver: UvxPackageResolver | null = null
   private uvManager: UvManager | null = null
@@ -345,6 +347,10 @@ export class BackgroundAgentManager extends EventEmitter {
 
   setCodeSandboxService(service: CodeSandboxService): void {
     this.codeSandboxService = service
+  }
+
+  setSandboxPackagesService(service: SandboxPackagesService): void {
+    this.sandboxPackagesService = service
   }
 
   setPodmanService(service: PodmanService): void {
@@ -1221,6 +1227,11 @@ export class BackgroundAgentManager extends EventEmitter {
     // hook has a private backend and does not need this shared registration.
     if (sandbox && adfCallHandler) {
       agentToolRegistry.provideDeclared('sys_lambda', () => new SysLambdaTool(sandbox, adfCallHandler, filePath, config.limits?.execution_timeout_ms), config.tools)
+    }
+    const packages = this.sandboxPackagesService
+    if (packages) {
+      agentToolRegistry.provideDeclared('npm_install', () => new NpmInstallTool(packages), config.tools)
+      agentToolRegistry.provideDeclared('npm_uninstall', () => new NpmUninstallTool(), config.tools)
     }
 
     // Compute tools: always register (shared container is always available)

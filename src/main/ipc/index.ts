@@ -1957,6 +1957,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   toolRegistry = new ToolRegistry()
   registerBuiltInTools(toolRegistry)
 
+  // Runtime packages (Settings > Packages) are importable by every agent.
+  // Read from settings at each execution, so a Settings change applies live.
+  codeSandboxService.setUserPackages(sandboxPackagesService.getBasePath(), () =>
+    ((settings.get('sandboxPackages') as Array<{ name: string }> | undefined) ?? []).map((p) => p.name))
+
   // Global sandbox worker ceiling. The service is the process-wide singleton,
   // so this is the one place that bounds how many V8 isolates every agent's
   // lambdas can claim between them. 0/absent = CPU-derived default.
@@ -1989,6 +1994,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   const bgCompactionPrompt = (settings.get('compactionPrompt') as string | undefined) ?? undefined
   backgroundAgentManager = new BackgroundAgentManager(settings, basePrompt, toolPrompts, bgCompactionPrompt)
   backgroundAgentManager.setCodeSandboxService(codeSandboxService)
+  backgroundAgentManager.setSandboxPackagesService(sandboxPackagesService)
   backgroundAgentManager.setPodmanService(podmanService)
   backgroundAgentManager.setWsConnectionManager(wsConnectionManager)
   backgroundAgentManager.setUvxPackageResolver(uvxPackageResolver)
@@ -3950,32 +3956,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       agentToolRegistry.provideDeclared('sys_lambda', () => new SysLambdaTool(codeSandboxService, adfCallHandler, capturedFilePath, config.limits?.execution_timeout_ms), config.tools)
     }
 
-    // Register npm_install / npm_uninstall with sandbox packages service
-    {
-      // Compute visible packages: agent config + runtime-level (from settings)
-      const agentPkgs = config.code_execution?.packages ?? []
-      const runtimePkgs = (settings.get('sandboxPackages') as Array<{ name: string; version: string }>) ?? []
-      const allVisibleNames = [
-        ...new Set([...runtimePkgs.map((p) => p.name), ...agentPkgs.map((p) => p.name)])
-      ]
-
-      if (allVisibleNames.length > 0) {
-        codeSandboxService.setUserPackages(sandboxPackagesService.getBasePath(), allVisibleNames)
-      }
-
-      const refreshUserPackages = () => {
-        const freshConfig = capturedWorkspace.getAgentConfig()
-        const freshAgentPkgs = freshConfig.code_execution?.packages ?? []
-        const freshRuntimePkgs = (settings.get('sandboxPackages') as Array<{ name: string; version: string }>) ?? []
-        const names = [
-          ...new Set([...freshRuntimePkgs.map((p) => p.name), ...freshAgentPkgs.map((p) => p.name)])
-        ]
-        codeSandboxService.setUserPackages(sandboxPackagesService.getBasePath(), names)
-      }
-
-      agentToolRegistry.provideDeclared('npm_install', () => new NpmInstallTool(sandboxPackagesService, () => refreshUserPackages()), config.tools)
-      agentToolRegistry.provideDeclared('npm_uninstall', () => new NpmUninstallTool(() => refreshUserPackages()), config.tools)
-    }
+    // Package visibility needs no wiring here: the sandbox reads runtime
+    // packages from settings and the agent's own from its config at each
+    // execution (registerAllIpcHandlers, assembleAgent).
+    agentToolRegistry.provideDeclared('npm_install', () => new NpmInstallTool(sandboxPackagesService), config.tools)
+    agentToolRegistry.provideDeclared('npm_uninstall', () => new NpmUninstallTool(), config.tools)
 
     const connectConfiguredMcpServer = async (
       freshConfig: AgentConfig,
