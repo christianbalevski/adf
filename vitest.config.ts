@@ -15,7 +15,7 @@ export default defineConfig({
       // exited unexpectedly"). They never load native modules.
       // Each test drives a real ink render against a mock daemon; on a loaded
       // CI runner (macOS: 400 files in parallel) a whole chat turn can pass 5s.
-      { extends: true, test: { name: 'tui', include: ['tests/tui/**/*.test.{ts,tsx}'], pool: 'threads', testTimeout: 15_000 } },
+      { extends: true, test: { name: 'tui', include: ['tests/tui/**/*.test.{ts,tsx}'], setupFiles: ['tests/tui/no-browser.setup.ts'], pool: 'threads', testTimeout: 15_000 } },
       { extends: true, test: { name: 'unit', exclude: [...exclude, 'tests/tui/**'] } },
     ],
   },
