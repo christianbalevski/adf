@@ -18,6 +18,7 @@ The script rasterises with `sharp` (librsvg) and writes the `.ico` and `.icns` c
 | `resources/icons/png/<n>x<n>.png` | 16, 24, 32, 48, 64, 128, 256, 512, 1024 | full-bleed | Linux (`electron-builder.yml` uses `512x512.png`) |
 | `resources/icons/win/icon.ico` | 16, 24, 32, 48, 64, 128, 256 (32-bit BMP entries) | full-bleed | Windows app, installer, `.adf` file association |
 | `resources/icons/mac/icon.icns` | 16 to 1024 (PNG entries) | Apple grid: 824 px tile in a 1024 px canvas | macOS app, `.adf` file association |
+| `resources/tray/trayTemplate.png`, `@2x` | 18x16, 36x32 | bare mark, black + alpha (macOS template image) | macOS menu bar icon (`src/main/tray/`) |
 
 Every size is rendered from the vector, not downscaled from 1024. Check 16 and 32 px after any change: the mark must stay legible there (brand minimum is 16 px).
 

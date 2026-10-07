@@ -242,6 +242,8 @@ export interface AppSettings {
   toolPrompts?: Record<string, string>
   /** OS notifications for agent events. Absent = enabled. */
   nativeNotificationsEnabled?: boolean
+  /** macOS menu bar icon with running agents and pending approvals. Absent = enabled. */
+  menuBarEnabled?: boolean
   /** Background update check against GitHub Releases (packaged builds). Absent = enabled. */
   updateChecksEnabled?: boolean
   /** Fetch the live MCP / agent registries from GitHub. Off = bundled + cached only. Absent = enabled. */

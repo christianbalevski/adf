@@ -38,6 +38,9 @@ export function createSettingsDefaults(): Record<string, unknown> {
     // focused. On by default: an agent blocked on a human the user cannot see
     // is exactly the failure this exists to prevent.
     nativeNotificationsEnabled: true,
+    // macOS menu bar icon: running agents, requests waiting on the user, and
+    // today's tokens, reachable with the window closed.
+    menuBarEnabled: true,
     // Owner opt-outs for traffic Studio starts on its own: the background
     // update check (GitHub Releases), the MCP / agent registry fetches (GitHub
     // raw), and provider connection checks. Off = no request; see docs/NETWORK.md.

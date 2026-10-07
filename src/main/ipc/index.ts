@@ -163,6 +163,8 @@ import { BackgroundAgentManager, toDisplayState } from '../runtime/background-ag
 import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
 import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
+import { MenuBarController } from '../tray/menu-bar'
+import type { MenuBarAction, MenuBarAgent, MenuBarSnapshot } from '../tray/menu-bar-model'
 import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
 import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { providerSelectionChanged } from '../providers/provider-selection'
@@ -313,6 +315,7 @@ let settings: SettingsService
 /** The <userData>/templates folder: every agent Studio creates starts from one of these. */
 let templatesService: AgentTemplatesService
 let nativeNotifier: NativeNotifier | null = null
+let menuBar: MenuBarController | null = null
 let meshManager: MeshManager | null = null
 let backgroundAgentManager: BackgroundAgentManager | null = null
 let backgroundEventBatcher: BackgroundEventBatcher | null = null
@@ -820,6 +823,8 @@ function issueAttestationsForCurrentOwner(workspace: AdfWorkspace): void {
 
 /** Set by registerAllIpcHandlers; recreates the window from a notification click. */
 let showMainWindowHook: (() => BrowserWindow | null) | null = null
+/** Set by registerAllIpcHandlers; main/index.ts's open-file flow (queues for a loading renderer). */
+let openFileHook: ((filePath: string) => void) | null = null
 
 type ApprovalRevealPayload = { filePath?: string; notificationId?: string }
 /** A notification reveal waiting for a loading renderer (APPROVALS_GET_PENDING_REVEAL). */
@@ -851,26 +856,86 @@ function focusMainWindow(): BrowserWindow | null {
  * effects the policy must not own: creating toasts, asking who has focus,
  * reading the user's toggle, and pushing the deep link at the renderer.
  */
-function createNativeNotifierPlatform(): NativeNotifierPlatform {
-  const sendReveal = (payload: ApprovalRevealPayload): void => {
-    const send = (win: BrowserWindow): void => {
-      if (win.isDestroyed() || win.webContents.isDestroyed()) return
-      try { win.webContents.send(IPC.APPROVALS_REVEAL, payload) } catch { /* window going away */ }
-    }
-    // macOS: the app outlives its last window, so recreate it if needed.
-    const win = focusMainWindow() ?? showMainWindowHook?.() ?? null
-    if (!win || win.isDestroyed()) return
-    if (!win.webContents.isLoading()) {
-      send(win)
+/**
+ * Jump Studio to one pending approval (or, with an empty payload, the bell
+ * panel). Shared by OS notification clicks and the menu bar icon.
+ */
+function sendReveal(payload: ApprovalRevealPayload): void {
+  const send = (win: BrowserWindow): void => {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) return
+    try { win.webContents.send(IPC.APPROVALS_REVEAL, payload) } catch { /* window going away */ }
+  }
+  // macOS: the app outlives its last window, so recreate it if needed.
+  const win = focusMainWindow() ?? showMainWindowHook?.() ?? null
+  if (!win || win.isDestroyed()) return
+  if (!win.webContents.isLoading()) {
+    send(win)
+    return
+  }
+  // A loading renderer may not have registered its listener yet (the same
+  // race OPEN_FILE_GET_PENDING covers): queue for its pull, and push once
+  // loaded as a backstop. Handling the reveal twice is harmless.
+  pendingApprovalReveal = payload
+  win.webContents.once('did-finish-load', () => send(win))
+}
+
+/** Live state for the menu bar icon, read each time its menu opens. */
+function getMenuBarSnapshot(): MenuBarSnapshot {
+  const agents = new Map<string, MenuBarAgent>()
+  for (const s of backgroundAgentManager?.getStatuses() ?? []) {
+    agents.set(s.filePath, {
+      filePath: s.filePath,
+      name: basename(s.filePath, '.adf'),
+      state: s.state,
+      activeLoops: s.activeLoops
+    })
+  }
+  // The open agent runs outside the background manager; during a handoff
+  // both may report it, and the foreground executor is the live one.
+  if (currentFilePath && agentExecutor) {
+    agents.set(currentFilePath, {
+      filePath: currentFilePath,
+      name: basename(currentFilePath, '.adf'),
+      state: toDisplayState(agentExecutor.getState()),
+      foreground: true
+    })
+  }
+  return {
+    surface: 'ADF Studio',
+    pending: approvalHub.snapshot(),
+    agents: [...agents.values()],
+    tokensToday: getTokenUsageService().getSummary().today
+  }
+}
+
+function handleMenuBarAction(action: MenuBarAction): void {
+  switch (action.type) {
+    case 'reveal':
+      sendReveal({ filePath: action.notification.filePath, notificationId: action.notification.id })
+      return
+    case 'open-agent':
+      openFileHook?.(action.filePath)
+      return
+    case 'show':
+      focusMainWindow() ?? showMainWindowHook?.()
+      return
+    case 'settings': {
+      const win = focusMainWindow() ?? showMainWindowHook?.() ?? null
+      if (!win || win.isDestroyed()) return
+      const send = (): void => {
+        if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send(IPC.MENU_ACTION, 'open-settings')
+      }
+      if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send)
+      else send()
       return
     }
-    // A loading renderer may not have registered its listener yet (the same
-    // race OPEN_FILE_GET_PENDING covers): queue for its pull, and push once
-    // loaded as a backstop. Handling the reveal twice is harmless.
-    pendingApprovalReveal = payload
-    win.webContents.once('did-finish-load', () => send(win))
+    case 'quit':
+      app.quit()
+      return
   }
+}
 
+function createNativeNotifierPlatform(): NativeNotifierPlatform {
   return {
     isSupported: () => {
       try { return Notification.isSupported() } catch { return false }
@@ -1784,10 +1849,13 @@ function setLiveAgentName(filePath: string, name: string): void {
 export interface IpcHostHooks {
   /** Show the main window, creating it when none exists (see main/index.ts). */
   showMainWindow?: () => BrowserWindow | null
+  /** Open an .adf in the main window, as a Finder double-click does. */
+  openFile?: (filePath: string) => void
 }
 
 export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   showMainWindowHook = hooks.showMainWindow ?? null
+  openFileHook = hooks.openFile ?? null
   settings = new SettingsService()
   initApplicationMenu(settings)
 
@@ -1872,6 +1940,19 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   nativeNotifier = new NativeNotifier(createNativeNotifierPlatform())
   nativeNotifier.seed(approvalHub.snapshot())
   approvalHub.subscribe((snapshot) => nativeNotifier?.apply(snapshot))
+
+  // Menu bar icon (macOS only: template images and a menu bar to put them in
+  // are a Mac concept). The count beside it tracks the same hub; the menu
+  // itself is built when clicked. On by default, off via Settings.
+  if (process.platform === 'darwin') {
+    menuBar = new MenuBarController({
+      iconPath: join(__dirname, '../../resources/tray/trayTemplate.png'),
+      getSnapshot: getMenuBarSnapshot,
+      onAction: handleMenuBarAction
+    })
+    menuBar.setEnabled(settings.get('menuBarEnabled') !== false)
+    approvalHub.subscribe(() => menuBar?.refresh())
+  }
 
   toolRegistry = new ToolRegistry()
   registerBuiltInTools(toolRegistry)
@@ -1978,6 +2059,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         }
       }
     }
+
+    // The icon's tooltip counts running agents.
+    if (event.type === 'agent_started' || event.type === 'agent_stopped') menuBar?.refresh()
 
     // Apply a deferred file rename once the agent that held the file stopped
     if (event.type === 'agent_stopped') {
@@ -5252,6 +5336,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // releases waiting executions immediately instead of on restart.
     if ('sandboxMaxWorkers' in newSettings) {
       codeSandboxService.setMaxWorkers(newSettings.sandboxMaxWorkers as number | undefined)
+    }
+    if ('menuBarEnabled' in newSettings) {
+      menuBar?.setEnabled(newSettings.menuBarEnabled !== false)
     }
     return { success: true }
   })
@@ -9344,6 +9431,7 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
   // Retract any OS toast still on screen: clicking one after the app is gone
   // points at an agent that no longer exists.
   try { nativeNotifier?.dispose() } catch { /* best effort */ }
+  try { menuBar?.dispose() } catch { /* best effort */ }
   // Flush debounced token usage data before anything can go wrong.
   try { getTokenUsageService().flush() }
   catch (e) { console.error('[Cleanup] token usage flush error:', e) }

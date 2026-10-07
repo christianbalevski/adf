@@ -10,6 +10,7 @@
 //   resources/icons/png/<n>x<n>.png    16..1024, full-bleed (Linux)
 //   resources/icons/win/icon.ico       16,24,32,48,64,128,256 (32-bit BMP)
 //   resources/icons/mac/icon.icns      16..1024 PNG, Apple 824/1024 grid
+//   resources/tray/trayTemplate[@2x].png  macOS menu bar, the bare .A mark
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -112,3 +113,31 @@ out('icon.png', await render(1024))
 for (const s of [16, 24, 32, 48, 64, 128, 256, 512, 1024]) out(`icons/png/${s}x${s}.png`, await render(s))
 out('icons/win/icon.ico', await ico([16, 24, 32, 48, 64, 128, 256]))
 out('icons/mac/icon.icns', await icns())
+
+// macOS menu bar: the .A mark alone, as a template image. Template images are
+// black + alpha only (macOS recolors them for light and dark menu bars), so
+// the paper square goes and the blue dot turns black with the A. The viewBox
+// crops to the mark: dot left edge to A right foot, apex to dot bottom.
+const MARK_BOX = '0 -1490 1955.7 1506.8'
+const markSvg = Buffer.from(
+  svg.toString()
+    .replace(/<rect[^>]*\/>/, '')
+    .replace(/fill="#[0-9a-f]{6}"/gi, 'fill="#000000"')
+    .replace(/viewBox="[^"]*"/, `viewBox="${MARK_BOX}"`)
+    .replace(/ width="\d+" height="\d+"/, '')
+)
+// An 18x16pt slot with a 13pt-tall glyph, the size of the system's status icons.
+const tray = async (scale) => {
+  const [w, h] = [18 * scale, 16 * scale]
+  const glyph = await sharp(markSvg, { density: 72 * 8 })
+    .resize({ height: 13 * scale })
+    .png()
+    .toBuffer()
+  const { width: gw } = await sharp(glyph).metadata()
+  return sharp({ create: { width: w, height: h, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+    .composite([{ input: glyph, left: Math.floor((w - gw) / 2), top: Math.floor((h - 13 * scale) / 2) }])
+    .png({ compressionLevel: 9 })
+    .toBuffer()
+}
+out('tray/trayTemplate.png', await tray(1))
+out('tray/trayTemplate@2x.png', await tray(2))

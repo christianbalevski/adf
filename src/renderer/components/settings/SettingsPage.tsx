@@ -1348,6 +1348,7 @@ export function SettingsPage() {
   const [computeContainerImage, setComputeContainerImage] = useState('docker.io/library/node:20-alpine')
   const [computeExecutionTargets, setComputeExecutionTargets] = useState<ExecutionTarget[]>([])
   const [nativeNotifications, setNativeNotifications] = useState(true)
+  const [menuBar, setMenuBar] = useState(true)
   const [updateChecks, setUpdateChecks] = useState(true)
   const [remoteCatalogs, setRemoteCatalogs] = useState(true)
   const [providerChecks, setProviderChecks] = useState(true)
@@ -1503,6 +1504,7 @@ export function SettingsPage() {
         (settings.toolPrompts as Record<string, string>) ?? { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS }
       )
       setNativeNotifications(settings.nativeNotificationsEnabled !== false)
+      setMenuBar(settings.menuBarEnabled !== false)
       setUpdateChecks(settings.updateChecksEnabled !== false)
       setRemoteCatalogs(settings.remoteCatalogsEnabled !== false)
       setProviderChecks(settings.providerChecksEnabled !== false)
@@ -1870,6 +1872,28 @@ export function SettingsPage() {
                 </span>
               </label>
             </SettingsRow>
+            {window.adfApi?.platform === 'darwin' && (
+              <SettingsRow
+                label="Menu bar icon"
+                description="Show an ADF icon in the macOS menu bar. Its menu lists running agents and requests waiting on you, and the number beside it counts those requests. Clicking an item opens it in Studio."
+              >
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={menuBar}
+                    onChange={async (e) => {
+                      const enabled = e.target.checked
+                      setMenuBar(enabled)
+                      await writeSetting({ menuBarEnabled: enabled })
+                    }}
+                    className="rounded text-blue-500"
+                  />
+                  <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
+                    {menuBar ? 'On' : 'Off'}
+                  </span>
+                </label>
+              </SettingsRow>
+            )}
           </SettingsGroup>
 
           <SettingsGroup title="Privacy" description="Studio sends no telemetry. These switches cover the requests it makes on its own; docs/NETWORK.md lists every connection.">

@@ -491,7 +491,7 @@ app.whenReady().then(() => {
     app.once('before-quit', () => stopStallMonitor())
   }
 
-  registerAllIpcHandlers({ showMainWindow })
+  registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
   ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {
     mainWindow?.setFullScreen(!!fullscreen)
