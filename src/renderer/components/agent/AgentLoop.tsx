@@ -1090,8 +1090,14 @@ function LoopStream({ loop }: { loop: string }) {
     setPendingSuspend(null, loop)
   }, [setPendingSuspend, loop])
 
-  // Track whether user is at the bottom of the scroll container
-  const isAtBottom = useRef(true)
+  // Whether the view follows the tail. Only the user leaving the bottom turns
+  // it off (wheel up, an upward key, a scrollbar or touch drag); reaching the
+  // bottom again, or sending, turns it back on. Content growing never does:
+  // a row being measured or a step landing opens a gap below a pinned view for
+  // a frame, and reading that gap as "the user scrolled away" is what dropped
+  // the tail under the composer.
+  const followTail = useRef(true)
+  const userDragging = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   // Whether the user has scrolled up to the top of the loaded window — the
   // earlier-entries boundary banner only shows there.
@@ -1165,10 +1171,39 @@ function LoopStream({ loop }: { loop: string }) {
     const el = scrollRef.current
     if (!el) return
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-    isAtBottom.current = atBottom
-    if (atBottom) setShowScrollBtn(false)
+    if (atBottom) {
+      followTail.current = true
+      setShowScrollBtn(false)
+    } else if (userDragging.current) {
+      followTail.current = false
+    }
     setAtTop(el.scrollTop < 40)
   }, [])
+
+  // The user's own scroll gestures — the only things that stop following.
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    const el = scrollRef.current
+    if (e.deltaY < 0 && el && el.scrollTop > 0) followTail.current = false
+  }, [])
+  const handleScrollKey = useCallback((e: React.KeyboardEvent) => {
+    const target = e.target as HTMLElement
+    if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+    if (e.key === 'ArrowUp' || e.key === 'PageUp' || e.key === 'Home' || (e.key === ' ' && e.shiftKey)) {
+      followTail.current = false
+    }
+  }, [])
+  // A scrollbar drag or touch pan: scroll events while it lasts are the user's.
+  // A press on the scrollbar targets the scroller itself; one on a row (a
+  // block header click) targets the row and is not a scroll gesture.
+  const startUserDrag = useCallback(() => {
+    userDragging.current = true
+    const end = (): void => { userDragging.current = false }
+    window.addEventListener('pointerup', end, { once: true })
+    window.addEventListener('touchend', end, { once: true })
+  }, [])
+  const handleScrollbarPointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.target === e.currentTarget) startUserDrag()
+  }, [startUserDrag])
 
   // The active (first, in log order) pending approval. Auto-scroll keys on its
   // requestId so we only move the viewport when a NEW approval becomes active
@@ -1190,6 +1225,9 @@ function LoopStream({ loop }: { loop: string }) {
     }
     if (lastScrolledApprovalRef.current === activeApproval.requestId) return
     lastScrolledApprovalRef.current = activeApproval.requestId
+    // A deliberate move to the approval: stop pinning so the smooth scroll is
+    // not fought. Landing at the bottom (the usual case) resumes following.
+    followTail.current = false
     const index = displayItems.findIndex((item) =>
       item.kind === 'entry'
         ? item.entry.id === activeApproval.logEntryId
@@ -1273,24 +1311,29 @@ function LoopStream({ loop }: { loop: string }) {
   // write, and a delta lands ~20×/s — scheduling on rAF collapses the pair into
   // a single scrollHeight read + scrollTop write per painted frame. The
   // stick-to-bottom rule is unchanged: a user who has scrolled up is never
-  // yanked, because `isAtBottom` is re-checked when the frame runs.
+  // yanked, because `followTail` is re-checked when the frame runs.
   const pinFrame = useRef<number | null>(null)
   const schedulePin = useCallback(() => {
     if (pinFrame.current !== null) return
     pinFrame.current = requestAnimationFrame(() => {
       pinFrame.current = null
       const el = scrollRef.current
-      if (el && isAtBottom.current) el.scrollTop = el.scrollHeight
+      if (el && followTail.current) el.scrollTop = el.scrollHeight
     })
   }, [])
+  // Clear the id with the frame: schedulePin treats a non-null id as "a pin is
+  // already coming", so a cancelled id left behind (StrictMode's mount-cleanup-
+  // mount, a hot reload) would block every later pin and the log would stop
+  // following for good.
   useEffect(() => () => {
     if (pinFrame.current !== null) cancelAnimationFrame(pinFrame.current)
+    pinFrame.current = null
   }, [])
 
   // Auto-scroll to bottom when new content arrives
   useEffect(() => {
     if (!scrollRef.current) return
-    if (isAtBottom.current) schedulePin()
+    if (followTail.current) schedulePin()
     else setShowScrollBtn(true)
   }, [logVersion, schedulePin])
 
@@ -1302,7 +1345,7 @@ function LoopStream({ loop }: { loop: string }) {
   // only if the user was already at the bottom (never fight a scrolled-up user).
   const virtualTotalSize = virtualizer.getTotalSize()
   useEffect(() => {
-    if (isAtBottom.current) schedulePin()
+    if (followTail.current) schedulePin()
   }, [virtualTotalSize, activity.phase, schedulePin])
 
   // The composer grows as the user types (up to MAX_INPUT_ROWS), shrinking the
@@ -1313,7 +1356,7 @@ function LoopStream({ loop }: { loop: string }) {
     const el = scrollRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => {
-      if (isAtBottom.current) el.scrollTop = el.scrollHeight
+      if (followTail.current) el.scrollTop = el.scrollHeight
     })
     observer.observe(el)
     return () => observer.disconnect()
@@ -1330,7 +1373,7 @@ function LoopStream({ loop }: { loop: string }) {
   // user had scrolled up to read) so the logVersion / total-size effects keep
   // the new entry in view rather than raising the scroll-to-bottom button.
   const pinToBottom = useCallback(() => {
-    isAtBottom.current = true
+    followTail.current = true
     setShowScrollBtn(false)
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
   }, [])
@@ -1939,7 +1982,15 @@ function LoopStream({ loop }: { loop: string }) {
       <div className="relative flex-1 min-h-0">
       {/* No ambient loop-colour wash (brand: no tinted page backgrounds). Loop
           identity stays on the tab underline and on `loop_send` card rails. */}
-      <div ref={scrollRef} onScroll={handleScroll} className="absolute inset-0 overflow-y-auto">
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        onWheel={handleWheel}
+        onKeyDown={handleScrollKey}
+        onPointerDown={handleScrollbarPointerDown}
+        onTouchStart={startUserDrag}
+        className="absolute inset-0 overflow-y-auto"
+      >
       <div className={columnClass}>
         {displayItems.length === 0 && !isActive && !starting && (
           <p className="mt-8 text-center text-sm text-[var(--ink-faint)]">
@@ -1986,9 +2037,10 @@ function LoopStream({ loop }: { loop: string }) {
                   : TOOL_FAMILY_STYLES[activitySummary.family]
               const activityExpanded = displayItem.kind === 'activity'
                 && (attentionRequired
-                  // Brand §10: tool calls collapsed by default. The live tail
-                  // shows its current step, pulsing, in the collapsed header.
-                  || ((openByDefault || expandedActivityGroups.has(displayItem.id))
+                  // Brand §10: tool calls collapsed by default — except the block
+                  // the agent is working in, which stays open so its steps can
+                  // be followed as they land, and folds once the work ends.
+                  || ((openByDefault || isLiveTail || expandedActivityGroups.has(displayItem.id))
                     && !collapsedActivityGroups.has(displayItem.id)))
 
               return (
