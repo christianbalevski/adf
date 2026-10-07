@@ -67,6 +67,10 @@ export function StatusBar() {
   // whichever loop is on screen (an inner loop may compact at its own point).
   const compactThreshold = resolveLoopThreshold(config, MAIN_LOOP)
   const viewedThreshold = resolveLoopThreshold(config, viewedLoop)
+  // Same follow-the-tab rule for the model: an inner loop may think with its
+  // own, and inherits the host's when it declares none.
+  const viewedModel =
+    (viewedLoop !== MAIN_LOOP && config?.loops?.find((l) => l.name === viewedLoop)?.model) || config?.model
 
   const handleSave = async () => {
     const result = await window.adfApi?.saveFile()
@@ -103,7 +107,7 @@ export function StatusBar() {
       )}
       <AgentStatus />
       <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
-      <span>{config?.model?.model_id ?? 'No model'}</span>
+      <span>{viewedModel?.model_id ?? 'No model'}</span>
       <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
       <button
         onClick={handleSave}
@@ -169,10 +173,16 @@ export function StatusBar() {
       <span className="ml-auto" />
       <UpdateBadge />
       <span
-        className="tabular-nums"
-        title="ADF Studio version"
+        className="flex items-center gap-1 tabular-nums"
+        title={import.meta.env.DEV ? 'ADF Studio version (running from npm run dev)' : 'ADF Studio version'}
       >
         {appVersion ? `v${appVersion}` : ''}
+        {/* Dev builds look identical to the installed app; this tells them apart. */}
+        {import.meta.env.DEV && (
+          <span className="rounded px-1 text-[10px] font-semibold uppercase tracking-wider bg-[var(--status-draft-bg)] text-[var(--status-draft)]">
+            dev
+          </span>
+        )}
       </span>
       <span
         role="status"
