@@ -1056,7 +1056,13 @@ Example 200 (`application/json`):
     "mind": {
       "files": 0,
       "tokens": 0,
-      "updatedThisWeek": 0
+      "updatedThisWeek": 0,
+      "strata": {
+        "older": 0,
+        "quarter": 0,
+        "month": 0,
+        "week": 0
+      }
     },
     "skills": {
       "count": 0,
@@ -13807,6 +13813,11 @@ Raw maturity counts read from the agent's file.
 | `contents.mind.files` | integer | yes |  |
 | `contents.mind.tokens` | integer | yes | SUM(size) / 4 |
 | `contents.mind.updatedThisWeek` | integer | yes | mind/ files whose updated_at is within the last 7 days |
+| `contents.mind.strata` | object | yes | Current mind/ tokens (size / 4, rounded, the seeded mind/log.md header taken off that file) split by each file's updated_at. A boundary belongs to the younger band. |
+| `contents.mind.strata.older` | integer | yes | Last updated more than 90 days ago |
+| `contents.mind.strata.quarter` | integer | yes | Last updated more than 30 and at most 90 days ago |
+| `contents.mind.strata.month` | integer | yes | Last updated more than 7 and at most 30 days ago |
+| `contents.mind.strata.week` | integer | yes | Last updated at most 7 days ago |
 | `contents.skills` | object | yes | Skills the agent installed or changed (the Experience stat rule) |
 | `contents.skills.count` | integer | yes |  |
 | `contents.skills.tokens` | integer | yes | Size of every file under those skills' directories / 4; registry entries without files add 0 |

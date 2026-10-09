@@ -7,7 +7,8 @@
 
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import { POWER_LEVEL_MAX } from '../../../../shared/utils/agent-stats'
-import type { ActivityDay, AgentContents, ExperienceStat, PowerStat, StatFactor, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
+import { MEMORY_STRATA_BANDS, MEMORY_STRATA_DAYS } from '../../../../shared/types/agent-vitals.types'
+import type { ActivityDay, AgentContents, ExperienceStat, MemoryStrata, MemoryStratum, PowerStat, StatFactor, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
 
 // =============================================================================
 // Level bar
@@ -618,4 +619,115 @@ export function contentsRows(c: AgentContents): ContentsRow[] {
   if (c.skills.count > 0) rows.push({ key: 'skills', label: 'Skills', text: `${plural(c.skills.count, 'skill')} · ${approxTokens(c.skills.tokens)} tokens` })
   if (c.tables.count > 0) rows.push({ key: 'tables', label: 'Tables', text: `${plural(c.tables.count, 'table')} · ${rowsLabel(c.tables.rows)}` })
   return rows
+}
+
+/** The folded Contents section as one line: "Memory ~20k · 5 skills · 3 tables". Empty when all are 0. */
+export function contentsFoldedLine(c: AgentContents): string {
+  const parts: string[] = []
+  if (c.mind.files > 0) parts.push(`Memory ${approxTokens(c.mind.tokens)}`)
+  if (c.skills.count > 0) parts.push(plural(c.skills.count, 'skill'))
+  if (c.tables.count > 0) parts.push(plural(c.tables.count, 'table'))
+  return parts.join(' · ')
+}
+
+// =============================================================================
+// Memory strata
+// =============================================================================
+
+const { week: WEEK_DAYS, month: MONTH_DAYS, quarter: QUARTER_DAYS } = MEMORY_STRATA_DAYS
+
+/** When a band's files were last updated, as the tooltip says it. */
+const STRATUM_AGE: Record<MemoryStratum, string> = {
+  older: `over ${QUARTER_DAYS} days ago`,
+  quarter: `${MONTH_DAYS}–${QUARTER_DAYS} days ago`,
+  month: `${WEEK_DAYS}–${MONTH_DAYS} days ago`,
+  week: `in the last ${WEEK_DAYS} days`
+}
+
+export interface StrataSegment {
+  band: MemoryStratum
+  tokens: number
+  /** Share of the strip, 0..100, one decimal. */
+  pct: number
+  /** "~12k tokens last updated over 90 days ago" */
+  tip: string
+}
+
+/** Non-empty bands, oldest first (left to right on the strip). Empty when memory is 0. */
+export function strataSegments(strata: MemoryStrata | undefined): StrataSegment[] {
+  if (!strata) return []
+  const tokens = (b: MemoryStratum): number => (Number.isFinite(strata[b]) && strata[b] > 0 ? strata[b] : 0)
+  const total = MEMORY_STRATA_BANDS.reduce((n, b) => n + tokens(b), 0)
+  if (total <= 0) return []
+  return MEMORY_STRATA_BANDS.filter((b) => tokens(b) > 0).map((band) => ({
+    band,
+    tokens: tokens(band),
+    pct: Math.round((tokens(band) / total) * 1000) / 10,
+    tip: `${approxTokens(tokens(band))} tokens last updated ${STRATUM_AGE[band]}`
+  }))
+}
+
+/** "Memory by last update: ~12k tokens over 90 days ago, ~1k tokens in the last 7 days" */
+export function strataSummary(segments: StrataSegment[]): string {
+  return `Memory by last update: ${segments.map((s) => `${approxTokens(s.tokens)} tokens ${STRATUM_AGE[s.band]}`).join(', ')}`
+}
+
+// =============================================================================
+// Overflow folds
+// =============================================================================
+
+/** One folded section and the height folding it saved (0 until measured). */
+export interface Fold<K extends string> {
+  key: K
+  saved: number
+}
+
+export interface FoldState<K extends string> {
+  /** Folded sections in the order they folded. */
+  folds: Fold<K>[]
+  /** Content height just before the last fold. */
+  before: number
+}
+
+/**
+ * One overflow check. While the content is taller than the space, fold the
+ * next enabled section in `order` (one per check: the next check measures
+ * what it saved). While it fits, unfold the last fold, then the one before,
+ * as long as the content plus what that fold saved still fits, so an unfold
+ * never overflows and re-folds. A disabled section unfolds at once. Returns
+ * `s` itself when nothing changed.
+ */
+export function foldStep<K extends string>(
+  s: FoldState<K>,
+  order: readonly K[],
+  enabled: Record<K, boolean>,
+  content: number,
+  avail: number
+): FoldState<K> {
+  let folds = s.folds.filter((f) => enabled[f.key])
+  let before = s.before
+  let changed = folds.length !== s.folds.length
+  const last = folds[folds.length - 1]
+  if (last && last.saved === 0) {
+    folds = [...folds.slice(0, -1), { key: last.key, saved: Math.max(1, s.before - content) }]
+    changed = true
+  }
+  if (avail > 0) {
+    if (content > avail) {
+      const next = order.find((k) => enabled[k] && !folds.some((f) => f.key === k))
+      if (next !== undefined) {
+        folds = [...folds, { key: next, saved: 0 }]
+        before = content
+        changed = true
+      }
+    } else {
+      let h = content
+      while (folds.length > 0 && h + folds[folds.length - 1].saved <= avail) {
+        h += folds[folds.length - 1].saved
+        folds = folds.slice(0, -1)
+        changed = true
+      }
+    }
+  }
+  return changed ? { folds, before } : s
 }

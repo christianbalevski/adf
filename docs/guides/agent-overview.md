@@ -1,6 +1,6 @@
 ---
 type: reference
-description: How the agent Overview scores Experience, Reach, Access and Autonomy, what each input measures, agent metrics, and the Contents rows
+description: How the agent Overview scores Experience, Reach, Access and Autonomy, what each input measures, agent metrics, the Contents rows with memory strata, and how the panel folds to fit
 see_also:
   - memory-management.md — compaction, the compaction threshold and loop audit, which the contexts-worked count reads
   - tools.md — tool access controls (enabled, restricted) that the Access and Autonomy factors read
@@ -11,7 +11,7 @@ see_also:
 
 The Overview is the agent card in Studio's right dock. It shows a header (status line, description, context fill, next wake, 7-day cost, model, age), four stats (Reach, Access, Autonomy, Experience), the agent's metrics, and three lower sections: Coming up (the next three timer wakes), Activity (finished turns per local day over 14 days, with cost per day) and Contents.
 
-This page states how every number is computed. The scoring is in `src/shared/utils/agent-stats.ts`; the inputs are measured in `src/main/services/agent-vitals.ts`. The tables below are checked against the exported constants by `tests/unit/shared/agent-overview-doc.test.ts`.
+This page states how every number is computed. The scoring is in `src/shared/utils/agent-stats.ts`; the inputs are measured in `src/main/services/agent-vitals.ts`. The tables below are checked against the exported constants (and `MEMORY_STRATA_DAYS` in `src/shared/types/agent-vitals.types.ts`) by `tests/unit/shared/agent-overview-doc.test.ts`.
 
 The daemon serves the same reads: [`GET /agents/:id/vitals`](../daemon/api-reference.md#op-getagentvitals) (header, stats, metrics) and [`GET /agents/:id/activity`](../daemon/api-reference.md#op-getagentactivity) (the lower sections). See the [API guide](../daemon/api-guide.md).
 
@@ -283,11 +283,33 @@ The Contents section reads paths, timestamps and sizes from `adf_files` (never c
 
 | Row | Shows | Computed as | Opens |
 |-----|-------|-------------|-------|
-| Memory | `~20k tokens · 12 files`, and `N updated this week` | Files under `mind/`; total bytes / 4, rounded (the seeded log header is included). Updated this week: `mind/` files whose `updated_at` is within the last 7 days; not shown when 0. | Files |
+| Memory | `~20k tokens · 12 files`, and `N updated this week` | Files under `mind/`; total bytes / 4, rounded (the seeded log header is included). Strip: see [Memory strata](#memory-strata). Updated this week: `mind/` files whose `updated_at` is within the last 7 days; not shown when 0. | Files |
 | Skills | `5 skills · ~18k tokens` | Skills, by the rule under [Measurement](#measurement); bytes of the files under `skills/<name>/` for those skills / 4, rounded | Agent > Skills |
 | Tables | `3 tables · 2.1k rows` | `local_*` tables, first 50 by name; rows summed over those tables | Files |
 
 A row with a count of 0 is not shown. The section is hidden when all three are 0.
+
+### Memory strata
+
+Under the Memory row a thin strip splits the current `mind/` tokens by when each file was last updated. It is computed from the files as they are now, with no history kept: each file's bytes go to one band by its `updated_at`, and each band's bytes / 4, rounded, are its tokens. The seeded `mind/log.md` header is taken off that file's bytes, as for the Experience memory signal, so the band totals can be slightly below the row's token count.
+
+| Band | Constant | Days | Last updated |
+|------|----------|------|--------------|
+| `week` | `MEMORY_STRATA_DAYS.week` | 7 | at most 7 days ago |
+| `month` | `MEMORY_STRATA_DAYS.month` | 30 | more than 7 and at most 30 days ago |
+| `quarter` | `MEMORY_STRATA_DAYS.quarter` | 90 | more than 30 and at most 90 days ago |
+| `older` | | | more than 90 days ago |
+
+A file updated exactly on a boundary belongs to the younger band. The strip's width is the total; segments run oldest (left, darkest) to newest (right, lightest). A band with 0 tokens has no segment, and the strip is hidden when all bands are 0. Each segment's tooltip gives its tokens and age, for example `~12k tokens last updated over 90 days ago`. The daemon returns the bands as `contents.mind.strata`.
+
+## Fitting the panel
+
+The Overview does not scroll at its usual sizes. When its content is taller than the dock, it folds sections in this order, one at a time, until it fits:
+
+1. The Activity chart becomes a fact in the facts line (`5 turns / 14d`).
+2. The Contents rows and the strata strip become one line in the Contents title row (`Memory ~20k · 5 skills · 3 tables`).
+
+Each fold remembers the height it saved. When space returns, folds are undone in reverse order, each only when the content plus the height it saved fits, so a section does not fold and unfold repeatedly. If the content is still too tall with both folded, the panel scrolls.
 
 ## Header cost
 

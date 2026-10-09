@@ -18,6 +18,7 @@ import {
   REACH_POINTS,
   VISIBILITY_POINTS
 } from '../../../src/shared/utils/agent-stats'
+import { MEMORY_STRATA_DAYS } from '../../../src/shared/types/agent-vitals.types'
 
 const DOC = readFileSync(join(__dirname, '../../../docs/guides/agent-overview.md'), 'utf-8')
 
@@ -33,6 +34,7 @@ add('VISIBILITY_POINTS', VISIBILITY_POINTS)
 add('REACH_POINTS', REACH_POINTS)
 add('AUTONOMY_POINTS', AUTONOMY_POINTS)
 add('POWER_MAX', POWER_MAX)
+add('MEMORY_STRATA_DAYS', MEMORY_STRATA_DAYS)
 expected.set('POWER_LEVEL_MAX', POWER_LEVEL_MAX)
 expected.set('POWER_HIGH_OPEN_SHARE', POWER_HIGH_OPEN_SHARE)
 
@@ -51,7 +53,7 @@ function docRows(): Map<string, string> {
   return rows
 }
 
-describe('agent-overview.md matches agent-stats.ts', () => {
+describe('agent-overview.md matches agent-stats.ts and MEMORY_STRATA_DAYS', () => {
   const rows = docRows()
 
   it('documents every constant', () => {

@@ -18451,7 +18451,8 @@
                 "required": [
                   "files",
                   "tokens",
-                  "updatedThisWeek"
+                  "updatedThisWeek",
+                  "strata"
                 ],
                 "properties": {
                   "files": {
@@ -18464,6 +18465,34 @@
                   "updatedThisWeek": {
                     "type": "integer",
                     "description": "mind/ files whose updated_at is within the last 7 days"
+                  },
+                  "strata": {
+                    "type": "object",
+                    "description": "Current mind/ tokens (size / 4, rounded, the seeded mind/log.md header taken off that file) split by each file's updated_at. A boundary belongs to the younger band.",
+                    "required": [
+                      "older",
+                      "quarter",
+                      "month",
+                      "week"
+                    ],
+                    "properties": {
+                      "older": {
+                        "type": "integer",
+                        "description": "Last updated more than 90 days ago"
+                      },
+                      "quarter": {
+                        "type": "integer",
+                        "description": "Last updated more than 30 and at most 90 days ago"
+                      },
+                      "month": {
+                        "type": "integer",
+                        "description": "Last updated more than 7 and at most 30 days ago"
+                      },
+                      "week": {
+                        "type": "integer",
+                        "description": "Last updated at most 7 days ago"
+                      }
+                    }
                   }
                 }
               },

@@ -26,13 +26,17 @@
  *   gap 6, Contents 47: 29 + one meter/legend line 18 (as measured)
  * Contents is now one 18 px row per non-empty group (Memory, Skills,
  * Tables) instead of the meter line: 29 + 18 per row, 47 / 65 / 83 for
- * 1 / 2 / 3 rows, so the agent above with all three is ~577 (by reasoning,
- * not re-measured). Metric bars sit on their 18 px line and add nothing.
- * Worst case (3-line status, 3 metrics + "+N", 3 Contents rows) is ~678:
- * useChartFold folds the Activity chart (61 with its gap) into the facts
- * line, ~617, which fits 660. At 590 (zoom 1.1) the worst case scrolls
- * by ~27; 1-2 Contents rows still fit. Anything taller (banners, expanded "+N",
- * a smaller window) scrolls.
+ * 1 / 2 / 3 rows, plus the memory strata strip under the Memory row
+ * (4 px + 2 px gap = 6, ≤ 8 by rule): 53 / 71 / 89, so the agent above with
+ * all three is ~583 (by reasoning, not re-measured). Metric bars sit on
+ * their 18 px line and add nothing.
+ * Worst case (3-line status, 3 metrics + "+N", 3 Contents rows + strip) is
+ * ~684. useOverflowFolds folds in order: the Activity chart (61 with its
+ * gap) into the facts line, ~623, which fits 660; then, if it still
+ * overflows, the Contents rows and strip into the section's title line
+ * (89 -> 25 + 0, saves ~64), ~559, which fits 590 (zoom 1.1). Unfolds run in
+ * reverse. Anything taller (banners, expanded "+N", a smaller window)
+ * scrolls.
  * Keep new rows inside this budget: cap lists with a row limit + "+N".
  */
 
@@ -57,11 +61,13 @@ import {
   agentStatusLabel,
   compactCount,
   configTargetFor,
+  contentsRows,
   decideLevelUp,
   experienceContributors,
   experienceHeadline,
   experienceTooltip,
   experienceValueText,
+  foldStep,
   hasActivity,
   levelBarParts,
   overviewFacts,
@@ -71,6 +77,7 @@ import {
   sparkFact,
   visibleItems,
   OVERVIEW_ROW_LIMIT,
+  type FoldState,
   type LevelBarParts,
   type PowerItem
 } from './agent-overview-model'
@@ -127,44 +134,41 @@ function useLiveActivity(nextWakeAt: number | undefined, now: number): { state: 
   }, [log, structuralVersion, state, starting, approvals, asks, suspend, nextWakeAt, now])
 }
 
+/** Sections that fold when the panel would scroll, first to fold first. */
+const FOLD_ORDER = ['chart', 'contents'] as const
+type FoldKey = typeof FOLD_ORDER[number]
+type Folded = Record<FoldKey, boolean>
+const NONE_FOLDED: Folded = { chart: false, contents: false }
+
 /**
- * Fold the Activity chart (the lowest-priority section) into the facts line
- * while the panel would otherwise scroll in the dock. Unfolds once the
- * content plus what folding saved fits again, so it cannot flap.
+ * Fold sections while the panel would otherwise scroll in the dock: the
+ * Activity chart into the facts line first, then the Contents rows into one
+ * line. Unfolds in reverse order, each once the content plus what folding it
+ * saved fits again, so it cannot flap (foldStep).
  */
-function useChartFold(rootRef: React.RefObject<HTMLDivElement | null>, enabled: boolean, filePath: string | null): boolean {
-  const [folded, setFolded] = useState(false)
-  const foldedRef = useRef(false)
-  const beforeRef = useRef(0)
-  const savedRef = useRef(0)
+function useOverflowFolds(rootRef: React.RefObject<HTMLDivElement | null>, enabled: Folded, filePath: string | null): Folded {
+  const [folded, setFolded] = useState<Folded>(NONE_FOLDED)
+  const stateRef = useRef<FoldState<FoldKey>>({ folds: [], before: 0 })
+  const { chart, contents } = enabled
   useLayoutEffect(() => {
     const root = rootRef.current
     const scroller = root?.parentElement
     if (!root || !scroller) return
-    const set = (v: boolean) => {
-      foldedRef.current = v
-      setFolded(v)
+    const on: Folded = { chart, contents }
+    const apply = (s: FoldState<FoldKey>) => {
+      stateRef.current = s
+      setFolded({ chart: s.folds.some((f) => f.key === 'chart'), contents: s.folds.some((f) => f.key === 'contents') })
     }
-    set(false)
+    apply({ folds: [], before: 0 })
     const check = () => {
-      const content = root.offsetHeight
-      const avail = scroller.clientHeight
-      if (!foldedRef.current) {
-        if (enabled && avail > 0 && content > avail) {
-          beforeRef.current = content
-          savedRef.current = 0
-          set(true)
-        }
-        return
-      }
-      if (!savedRef.current) savedRef.current = Math.max(1, beforeRef.current - content)
-      if (!enabled || content + savedRef.current <= avail) set(false)
+      const next = foldStep(stateRef.current, FOLD_ORDER, on, root.offsetHeight, scroller.clientHeight)
+      if (next !== stateRef.current) apply(next)
     }
     const ro = new ResizeObserver(check)
     ro.observe(root)
     ro.observe(scroller)
     return () => ro.disconnect()
-  }, [rootRef, enabled, filePath])
+  }, [rootRef, chart, contents, filePath])
   return folded
 }
 
@@ -226,7 +230,11 @@ export function AgentOverview() {
   const vitals = useOverviewRead(filePath, state, config, readVitals)
   const activity = useOverviewRead(filePath, state, config, readActivity)
   const rootRef = useRef<HTMLDivElement>(null)
-  const chartFolded = useChartFold(rootRef, !!activity && hasActivity(activity.daily), filePath)
+  const folded = useOverflowFolds(rootRef, {
+    chart: !!activity && hasActivity(activity.daily),
+    contents: !!activity && contentsRows(activity.contents).length > 0
+  }, filePath)
+  const chartFolded = folded.chart
   const [now, setNow] = useState(() => Date.now())
   const live = useLiveActivity(vitals?.nextWakeAt, now)
   const pulsing = useLevelUpPulse(vitals?.did, vitals?.stats.experience.level)
@@ -306,7 +314,7 @@ export function AgentOverview() {
         {vitals && vitals.metrics?.length > 0 && <MetricList metrics={vitals.metrics} />}
       </section>
 
-      <OverviewActivity activity={activity} now={now} chartFolded={chartFolded} />
+      <OverviewActivity activity={activity} now={now} chartFolded={chartFolded} contentsFolded={folded.contents} />
     </div>
   )
 }

@@ -25,9 +25,10 @@ import type {
   AgentMetric,
   AgentPowerInputs,
   AgentVitals,
+  MemoryStrata,
   UpcomingWake
 } from '../../shared/types/agent-vitals.types'
-import { UPCOMING_TEXT_MAX } from '../../shared/types/agent-vitals.types'
+import { MEMORY_STRATA_DAYS, UPCOMING_TEXT_MAX } from '../../shared/types/agent-vitals.types'
 import { powerInputsFromConfig, scheduleIntervalMs, scoreAgent } from '../../shared/utils/agent-stats'
 import { bucketByLocalDay, windowStartMs } from '../../shared/utils/agent-activity'
 import { parseMetric } from '../../shared/utils/agent-metrics'
@@ -544,9 +545,41 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 /** bytes / 4, rounded: the overview's token estimate. */
 const approxTokens = (bytes: number): number => Math.round(bytes / 4)
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Current `mind/` tokens by the age of each file's updated_at: `week` (at
+ * most 7 days), `month` (30), `quarter` (90), `older`. A boundary belongs to
+ * the younger band. Bytes as memoryTokens counts them: the seeded
+ * `mind/log.md` header is taken off that file. One grouped query; ISO
+ * timestamps compare lexically.
+ */
+export function readMemoryStrata(q: Sql, now = Date.now()): MemoryStrata {
+  const since = (days: number): string => new Date(now - days * DAY_MS).toISOString()
+  const strata: MemoryStrata = { older: 0, quarter: 0, month: 0, week: 0 }
+  const rows = safe(
+    q,
+    `SELECT CASE
+        WHEN updated_at >= ? THEN 'week'
+        WHEN updated_at >= ? THEN 'month'
+        WHEN updated_at >= ? THEN 'quarter'
+        ELSE 'older' END AS band,
+      SUM(CASE WHEN path = 'mind/log.md' THEN MAX(COALESCE(size, 0) - ?, 0) ELSE COALESCE(size, 0) END) AS bytes
+     FROM adf_files WHERE path LIKE 'mind/%' GROUP BY band`,
+    (r) => r as Array<{ band: keyof MemoryStrata; bytes: number | null }>,
+    [],
+    [since(MEMORY_STRATA_DAYS.week), since(MEMORY_STRATA_DAYS.month), since(MEMORY_STRATA_DAYS.quarter), MIND_LOG_SEED_BYTES]
+  )
+  for (const r of rows) {
+    if (r.band in strata && typeof r.bytes === 'number' && Number.isFinite(r.bytes)) strata[r.band] = approxTokens(r.bytes)
+  }
+  return strata
+}
+
 /**
  * The Contents section: mind/ files and the agent's skills as counts and
- * approximate tokens, local tables as counts and rows. Aggregates only.
+ * approximate tokens (mind also by age band), local tables as counts and
+ * rows. Aggregates only.
  */
 export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>, now = Date.now()): AgentContents {
   const weekAgo = now - WEEK_MS
@@ -571,7 +604,7 @@ export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>,
   for (const t of tables) rows += safe(q, `SELECT COUNT(*) AS n FROM "${t}"`, (r) => firstNumber(r), 0)
 
   return {
-    mind: { files: mindFiles, tokens: approxTokens(mindBytes), updatedThisWeek: mindRecent },
+    mind: { files: mindFiles, tokens: approxTokens(mindBytes), updatedThisWeek: mindRecent, strata: readMemoryStrata(q, now) },
     skills: { count: agentSkills.size, tokens: approxTokens(skillBytes) },
     tables: { count: tables.length, rows }
   }

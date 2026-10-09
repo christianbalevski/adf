@@ -2,7 +2,8 @@
  * The overview's lower sections, under the stats: Coming up, the 14-day
  * Activity sparkline and Contents. Each hides when it has nothing to show.
  * Sized to the height budget in AgentOverview.tsx, which folds the
- * sparkline into its facts line when the panel would scroll.
+ * sparkline into its facts line, then the Contents rows into one line, when
+ * the panel would scroll.
  *
  * Timers, per-day turns and contents come from `adf:agent:activity`
  * (AgentVitalsService.getAgentActivity, read by AgentOverview with the same
@@ -15,17 +16,20 @@ import { MAIN_LOOP, useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
 import { useInboxStore } from '../../../stores/inbox.store'
 import { Tooltip } from '../../common/Tooltip'
-import type { ActivityDay, AgentActivity, AgentContents, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
+import type { ActivityDay, AgentActivity, AgentContents, MemoryStratum, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
 import type { OverviewReader } from './useOverviewRead'
 import {
   COMING_UP_ROW_LIMIT,
   compactCount,
+  contentsFoldedLine,
   contentsRows,
   dayTooltip,
   formatUntil,
   hasActivity,
   sparkHeights,
   sparkSummary,
+  strataSegments,
+  strataSummary,
   timerRowText,
   visibleItems,
   waitingItems,
@@ -45,23 +49,25 @@ function openLoops(): void {
   useAppStore.getState().expandRightPanelToTab('loop')
 }
 
-export function OverviewActivity({ activity, now, chartFolded }: {
+export function OverviewActivity({ activity, now, chartFolded, contentsFolded }: {
   activity: AgentActivity | null
   now: number
   /** The sparkline is a fact in the stats' facts line instead. */
   chartFolded: boolean
+  /** Contents shows as one line in its title row, without rows or strip. */
+  contentsFolded: boolean
 }) {
   if (!activity) return null
   return (
     <>
       <ComingUp activity={activity} now={now} />
       {!chartFolded && <ActivitySpark daily={activity.daily} partial={activity.dailyPartial} />}
-      <Contents contents={activity.contents} />
+      <Contents contents={activity.contents} folded={contentsFolded} />
     </>
   )
 }
 
-function Section({ title, aside, children }: { title: string; aside?: React.ReactNode; children: React.ReactNode }) {
+function Section({ title, aside, children }: { title: string; aside?: React.ReactNode; children?: React.ReactNode }) {
   return (
     <section className="border-t border-[var(--rule)] pt-1.5 space-y-1">
       <div className="flex items-baseline justify-between gap-2 leading-[18px]">
@@ -257,11 +263,25 @@ const CONTENTS_ROW = ROW.replace('py-0.5', 'py-0')
  * Memory (`mind/`, what the agent recorded since creation), Skills (loaded
  * capability) and Tables, one row each, no shared meter or total: memory and
  * skills are different things. Rows with nothing in them are left out; the
- * section hides when all are.
+ * section hides when all are. Under Memory, the strata strip. Folded: one
+ * line ("Memory ~20k · 5 skills · 3 tables") in the title row.
  */
-function Contents({ contents }: { contents: AgentContents }) {
+function Contents({ contents, folded }: { contents: AgentContents; folded: boolean }) {
   const rows = useMemo(() => contentsRows(contents), [contents])
   if (rows.length === 0) return null
+  if (folded) {
+    const line = contentsFoldedLine(contents)
+    return (
+      <Section
+        title="Contents"
+        aside={
+          <Tooltip tip={line} className="min-w-0">
+            <button type="button" onClick={openFiles} className="block max-w-full truncate text-[11.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] tabular-nums">{line}</button>
+          </Tooltip>
+        }
+      />
+    )
+  }
   return (
     <Section title="Contents">
       <ul>
@@ -274,9 +294,39 @@ function Contents({ contents }: { contents: AgentContents }) {
               </span>
               {r.aside && <span className={WHEN}>{r.aside}</span>}
             </button>
+            {r.key === 'mind' && <MemoryStrata contents={contents} />}
           </li>
         ))}
       </ul>
     </Section>
+  )
+}
+
+/** Sequential, one ink family: settled memory darkest (most emphatic in dark), fresh lightest. */
+const STRATUM_FILL: Record<MemoryStratum, string> = {
+  older: 'var(--ink)',
+  quarter: 'var(--ink-muted)',
+  month: 'var(--ink-faint)',
+  week: 'var(--rule-strong)'
+}
+
+/**
+ * The memory's tokens by when each file was last updated, oldest left. 4 px
+ * plus a 2 px gap under the Memory row; a 2 px surface gap between segments.
+ * No legend: each segment's tooltip names its band, the aria-label all of
+ * them. Hidden when memory (less the seeded log header) is 0.
+ */
+function MemoryStrata({ contents }: { contents: AgentContents }) {
+  const segments = useMemo(() => strataSegments(contents.mind.strata), [contents])
+  if (segments.length === 0) return null
+  return (
+    <div role="img" aria-label={strataSummary(segments)} className="mt-0.5 flex h-1 gap-[2px]">
+      {segments.map((s) => (
+        // Hit area 12 px tall, layout height 4.
+        <Tooltip key={s.band} tip={s.tip} delay={0} className="block -my-1 py-1 min-w-[3px]" style={{ flex: `${s.tokens} 1 0px` }}>
+          <span className="block h-1 rounded-[1px]" style={{ background: STRATUM_FILL[s.band] }} />
+        </Tooltip>
+      ))}
+    </div>
   )
 }

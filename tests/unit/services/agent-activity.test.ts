@@ -11,8 +11,9 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
-import { AgentVitalsService, FORCE_MIN_INTERVAL_MS, HEAVY_MIN_AGE_MS, readAgentActivity, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
+import { AgentVitalsService, FORCE_MIN_INTERVAL_MS, HEAVY_MIN_AGE_MS, readAgentActivity, readMemoryStrata, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
 import { localDateKey } from '../../../src/shared/utils/date-key'
+import { DEFAULT_MIND_LOG_CONTENT } from '../../../src/shared/types/adf-v02.types'
 
 const dir = mkdtempSync(join(tmpdir(), 'adf-agent-activity-'))
 const file = join(dir, 'agent-1.adf')
@@ -122,7 +123,7 @@ describe('readAgentActivity', () => {
     const mind = q("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM adf_files WHERE path LIKE 'mind/%'")[0] as { n: number; bytes: number }
     expect(mind.n).toBeGreaterThan(0)
     // Only people.md is inside the last 7 days: old.md and the seeded files are older.
-    expect(a.contents.mind).toEqual({ files: mind.n, tokens: Math.round(mind.bytes / 4), updatedThisWeek: 1 })
+    expect(a.contents.mind).toEqual({ files: mind.n, tokens: Math.round(mind.bytes / 4), updatedThisWeek: 1, strata: readMemoryStrata(q, now) })
     // research (file) + legacy (registry only, 0 tokens); starter excluded.
     expect(a.contents.skills).toEqual({ count: 2, tokens: Math.round('# skills/research/SKILL.md'.length / 4) })
     expect(a.contents.tables).toEqual({ count: 1, rows: 3 })
@@ -146,6 +147,41 @@ describe('readAgentActivity', () => {
     sql("INSERT INTO adf_audit (source, start_seq, end_seq, entry_count, size_bytes, data, created_at) VALUES ('loop', 1, 2, 2, 1, x'00', ?)", [now - 2 * DAY])
     expect(readAgentActivity((s, p) => ws.querySQL(s, p), now).dailyPartial).toBe(true)
     sql("DELETE FROM adf_audit WHERE source = 'loop'")
+  })
+})
+
+describe('readMemoryStrata', () => {
+  const sw = AdfWorkspace.create(join(dir, 'agent-2.adf'), { name: 'agent-2' })
+  opened.push(sw)
+  const q = (st: string, p?: unknown[]): unknown[] => sw.querySQL(st, p)
+  const put = (path: string, bytes: number, updatedMs: number): void => {
+    sw.executeSQL(
+      'INSERT OR REPLACE INTO adf_files (path, content, mime_type, size, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [path, Buffer.alloc(bytes, 'a'), 'text/markdown', bytes, iso(updatedMs), iso(updatedMs)]
+    )
+  }
+
+  it('splits mind/ bytes by updated_at age, boundaries in the younger band', () => {
+    sw.executeSQL("DELETE FROM adf_files WHERE path LIKE 'mind/%'")
+    put('mind/w-edge.md', 400, now - 7 * DAY)
+    put('mind/w.md', 400, now - HOUR)
+    put('mind/m-start.md', 800, now - 7 * DAY - 1)
+    put('mind/m-edge.md', 800, now - 30 * DAY)
+    put('mind/q-start.md', 1200, now - 30 * DAY - 1)
+    put('mind/q-edge.md', 1200, now - 90 * DAY)
+    put('mind/o.md', 4000, now - 90 * DAY - 1)
+    put('notes/not-mind.md', 9999, now)
+    expect(readMemoryStrata(q, now)).toEqual({ week: 200, month: 400, quarter: 600, older: 1000 })
+  })
+
+  it('takes the seeded log header off mind/log.md only', () => {
+    sw.executeSQL("DELETE FROM adf_files WHERE path LIKE 'mind/%'")
+    const seed = Buffer.byteLength(DEFAULT_MIND_LOG_CONTENT)
+    put('mind/log.md', seed, now - 100 * DAY)
+    expect(readMemoryStrata(q, now)).toEqual({ week: 0, month: 0, quarter: 0, older: 0 })
+    put('mind/log.md', seed + 400, now - HOUR)
+    put('mind/other.md', seed, now - HOUR)
+    expect(readMemoryStrata(q, now).week).toBe(Math.round((400 + seed) / 4))
   })
 })
 

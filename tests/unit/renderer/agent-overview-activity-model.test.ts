@@ -2,16 +2,21 @@ import { describe, expect, it } from 'vitest'
 import {
   approxTokens,
   compactInput,
+  contentsFoldedLine,
   contentsRows,
   dayTooltip,
+  foldStep,
   formatUntil,
   hasActivity,
   rowsLabel,
   sparkFact,
   sparkHeights,
   sparkSummary,
+  strataSegments,
+  strataSummary,
   timerRowText,
-  waitingItems
+  waitingItems,
+  type FoldState
 } from '../../../src/renderer/components/agent/overview/agent-overview-model'
 import type { ActivityDay, UpcomingWake } from '../../../src/shared/types/agent-vitals.types'
 
@@ -118,7 +123,7 @@ describe('sparkline', () => {
 
 describe('contents', () => {
   const contents = (mind: number, mindTokens: number, skills: number, skillTokens: number, tables: number, rows: number, recent = 0) => ({
-    mind: { files: mind, tokens: mindTokens, updatedThisWeek: recent },
+    mind: { files: mind, tokens: mindTokens, updatedThisWeek: recent, strata: { older: 0, quarter: 0, month: 0, week: mindTokens } },
     skills: { count: skills, tokens: skillTokens },
     tables: { count: tables, rows }
   })
@@ -144,5 +149,92 @@ describe('contents', () => {
       { key: 'tables', label: 'Tables', text: '1 table · 1 row' }
     ])
     expect(contentsRows(contents(0, 0, 0, 0, 0, 0))).toEqual([])
+  })
+
+  it('folds into one line', () => {
+    expect(contentsFoldedLine(contents(12, 20_000, 5, 18_000, 3, 2100))).toBe('Memory ~20k · 5 skills · 3 tables')
+    expect(contentsFoldedLine(contents(0, 0, 1, 10, 1, 1))).toBe('1 skill · 1 table')
+    expect(contentsFoldedLine(contents(2, 40, 0, 0, 0, 0))).toBe('Memory ~40')
+    expect(contentsFoldedLine(contents(0, 0, 0, 0, 0, 0))).toBe('')
+  })
+})
+
+describe('memory strata', () => {
+  it('segments run oldest to newest with widths as shares of the total', () => {
+    const segs = strataSegments({ older: 12_000, quarter: 3000, month: 0, week: 1000 })
+    expect(segs.map((s) => s.band)).toEqual(['older', 'quarter', 'week'])
+    expect(segs.map((s) => s.pct)).toEqual([75, 18.8, 6.3])
+    expect(segs.map((s) => s.tokens)).toEqual([12_000, 3000, 1000])
+  })
+
+  it('tooltips name tokens and age', () => {
+    const tips = strataSegments({ older: 12_000, quarter: 3000, month: 800, week: 1000 }).map((s) => s.tip)
+    expect(tips).toEqual([
+      '~12k tokens last updated over 90 days ago',
+      '~3k tokens last updated 30–90 days ago',
+      '~800 tokens last updated 7–30 days ago',
+      '~1k tokens last updated in the last 7 days'
+    ])
+  })
+
+  it('summary for screen readers', () => {
+    expect(strataSummary(strataSegments({ older: 12_000, quarter: 0, month: 0, week: 500 })))
+      .toBe('Memory by last update: ~12k tokens over 90 days ago, ~500 tokens in the last 7 days')
+  })
+
+  it('no strip when memory is 0 or missing', () => {
+    expect(strataSegments({ older: 0, quarter: 0, month: 0, week: 0 })).toEqual([])
+    expect(strataSegments(undefined)).toEqual([])
+  })
+})
+
+describe('overflow folds', () => {
+  type K = 'chart' | 'contents'
+  const ORDER = ['chart', 'contents'] as const
+  const both = { chart: true, contents: true }
+  const empty: FoldState<K> = { folds: [], before: 0 }
+  const keys = (s: FoldState<K>) => s.folds.map((f) => f.key)
+
+  it('folds the chart first, then contents, one per check', () => {
+    let s = foldStep(empty, ORDER, both, 700, 600)
+    expect(keys(s)).toEqual(['chart'])
+    // Chart folded saved 60; still too tall: contents next.
+    s = foldStep(s, ORDER, both, 640, 600)
+    expect(s.folds).toEqual([{ key: 'chart', saved: 60 }, { key: 'contents', saved: 0 }])
+    s = foldStep(s, ORDER, both, 580, 600)
+    expect(s.folds).toEqual([{ key: 'chart', saved: 60 }, { key: 'contents', saved: 60 }])
+    // Nothing left to fold: unchanged object.
+    const t = foldStep(s, ORDER, both, 580, 600)
+    expect(t).toBe(s)
+  })
+
+  it('unfolds in reverse order only when what the fold saved fits', () => {
+    const s: FoldState<K> = { folds: [{ key: 'chart', saved: 60 }, { key: 'contents', saved: 60 }], before: 640 }
+    // 580 + 60 > 630: stays.
+    expect(foldStep(s, ORDER, both, 580, 630)).toBe(s)
+    // 580 + 60 <= 650: contents unfolds; chart (640 + 60 > 650) stays.
+    expect(keys(foldStep(s, ORDER, both, 580, 650))).toEqual(['chart'])
+    // Room for both: both unfold, contents first.
+    expect(keys(foldStep(s, ORDER, both, 580, 800))).toEqual([])
+  })
+
+  it('does not flip-flop at the threshold', () => {
+    let s = foldStep(empty, ORDER, both, 610, 600)
+    s = foldStep(s, ORDER, both, 550, 600)
+    expect(s.folds).toEqual([{ key: 'chart', saved: 60 }])
+    // 550 + 60 = 610 > 600: stays folded however often it checks.
+    for (let i = 0; i < 3; i++) expect(foldStep(s, ORDER, both, 550, 600)).toBe(s)
+  })
+
+  it('skips a disabled section and unfolds one that becomes disabled', () => {
+    const s = foldStep(empty, ORDER, { chart: false, contents: true }, 700, 600)
+    expect(keys(s)).toEqual(['contents'])
+    const folded: FoldState<K> = { folds: [{ key: 'chart', saved: 60 }], before: 640 }
+    expect(keys(foldStep(folded, ORDER, { chart: false, contents: true }, 580, 600))).toEqual([])
+  })
+
+  it('waits for a measured height', () => {
+    const s = foldStep(empty, ORDER, both, 700, 0)
+    expect(s).toBe(empty)
   })
 })

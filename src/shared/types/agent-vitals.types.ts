@@ -249,14 +249,31 @@ export interface ActivityDay {
   costPartial?: boolean
 }
 
+/** Memory strata bands, oldest first: the order the Overview strip draws them. */
+export const MEMORY_STRATA_BANDS = ['older', 'quarter', 'month', 'week'] as const
+export type MemoryStratum = typeof MEMORY_STRATA_BANDS[number]
+
+/**
+ * Upper age, in days, of each band but `older`: a file last updated at most
+ * this many days ago (inclusive) falls in the youngest band that holds it.
+ */
+export const MEMORY_STRATA_DAYS = { week: 7, month: 30, quarter: 90 } as const
+
+/** Approximate tokens of `mind/` per age band of the file's updated_at. */
+export type MemoryStrata = Record<MemoryStratum, number>
+
 /**
  * What the agent's file holds, in three groups. Tokens are approximate
  * (bytes / 4, rounded) and given for mind and skills only: table data is
  * rarely read into context, so its size is not comparable.
  */
 export interface AgentContents {
-  /** Files under `mind/`: count, SUM(size) / 4, and files with updated_at in the last 7 days. */
-  mind: { files: number; tokens: number; updatedThisWeek: number }
+  /**
+   * Files under `mind/`: count, SUM(size) / 4, files with updated_at in the
+   * last 7 days, and `strata`: the same tokens (less the seeded `mind/log.md`
+   * header) split by each file's updated_at into MEMORY_STRATA_DAYS bands.
+   */
+  mind: { files: number; tokens: number; updatedThisWeek: number; strata: MemoryStrata }
   /**
    * Skills the agent installed or changed (the Experience stat's rule) and
    * the tokens of every file under those skills' directories. Registry
