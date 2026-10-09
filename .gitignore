@@ -23,3 +23,6 @@ registry/*.adf-shm
 CLAUDE.md
 .cursor/
 .codex/
+
+# npm pack output
+*.tgz
