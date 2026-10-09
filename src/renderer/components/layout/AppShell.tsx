@@ -201,61 +201,70 @@ export function AppShell() {
             leaves the map anyway, so the tree is dead weight there. */}
         {!showSettings && !showMeshGraph && <SidebarFrame><Sidebar /></SidebarFrame>}
 
-        {showMeshGraph ? (
-          <div className="flex-1 flex flex-col overflow-hidden bg-surface-1">
-            <div className="flex-1 overflow-hidden">
-              <Suspense fallback={<ViewFallback />}>
-                <MeshGraphView />
-              </Suspense>
-            </div>
-            {/* Same Logs/Tasks drawer the editor gets — the status-bar
-                toggles otherwise point at a panel the map paints over */}
-            {showLogsPanel && filePath && <BottomPanel />}
-          </div>
-        ) : (
-          <div className="flex-1 flex flex-col overflow-hidden bg-surface-1">
-            <div className="flex-1 flex flex-col overflow-hidden">
-              <Suspense fallback={<ViewFallback />}>
-                {showSettings ? (
-                  <SettingsPage />
-                ) : filePath ? (
-                  <EditorPanel />
-                ) : (
-                  <HomeScreen />
-                )}
-              </Suspense>
-            </div>
-            {showLogsPanel && filePath && !showSettings && <BottomPanel />}
-          </div>
-        )}
+        {/* Everything right of the tree, status bar included: the sidebar runs
+            the full window height, and the status bar starts at the same left
+            edge as the titlebar's agent name. With no tree (collapsed, fleet
+            map) the column is the whole width and so is the bar. */}
+        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          <div className="flex-1 flex overflow-hidden">
+            {showMeshGraph ? (
+              <div className="flex-1 flex flex-col overflow-hidden bg-surface-1">
+                <div className="flex-1 overflow-hidden">
+                  <Suspense fallback={<ViewFallback />}>
+                    <MeshGraphView />
+                  </Suspense>
+                </div>
+                {/* Same Logs/Tasks drawer the editor gets — the status-bar
+                    toggles otherwise point at a panel the map paints over */}
+                {showLogsPanel && filePath && <BottomPanel />}
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col overflow-hidden bg-surface-1">
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  <Suspense fallback={<ViewFallback />}>
+                    {showSettings ? (
+                      <SettingsPage />
+                    ) : filePath ? (
+                      <EditorPanel />
+                    ) : (
+                      <HomeScreen />
+                    )}
+                  </Suspense>
+                </div>
+                {showLogsPanel && filePath && !showSettings && <BottomPanel />}
+              </div>
+            )}
 
-        {/* Right panel — visible in both mesh and editor views. In mesh view
-            the real titlebar is hidden, so the dock is the window's top-right
-            element and must clear the native window-controls overlay itself. */}
-        {filePath && !showSettings && rightPanelCollapsed && (
-          <RightDockIconBar reserveWindowControls={dockUnderWindowControls} />
-        )}
-        {filePath && !showSettings && !rightPanelCollapsed && (
-          <>
-            {/* Resize handle */}
-            <div
-              onMouseDown={handleMouseDown}
-              onDoubleClick={resetRightPanelWidth}
-              className="shrink-0 w-1 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors bg-transparent"
-            />
-            <div
-              ref={rightPanelRef}
-              style={{ width: rightPanelWidth }}
-              className="shrink-0 flex flex-col bg-[var(--adf-ui-surface)] border-l border-hairline"
-            >
-              <RightDock reserveWindowControls={dockUnderWindowControls} />
-            </div>
-          </>
-        )}
+            {/* Right panel — visible in both mesh and editor views. In mesh view
+                the real titlebar is hidden, so the dock is the window's top-right
+                element and must clear the native window-controls overlay itself. */}
+            {filePath && !showSettings && rightPanelCollapsed && (
+              <RightDockIconBar reserveWindowControls={dockUnderWindowControls} />
+            )}
+            {filePath && !showSettings && !rightPanelCollapsed && (
+              <>
+                {/* Resize handle */}
+                <div
+                  onMouseDown={handleMouseDown}
+                  onDoubleClick={resetRightPanelWidth}
+                  className="shrink-0 w-1 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors bg-transparent"
+                />
+                <div
+                  ref={rightPanelRef}
+                  style={{ width: rightPanelWidth }}
+                  className="shrink-0 flex flex-col bg-[var(--adf-ui-surface)] border-l border-hairline"
+                >
+                  <RightDock reserveWindowControls={dockUnderWindowControls} />
+                </div>
+              </>
+            )}
+          </div>
+
+          {meshEnabled && !showSettings && <MeshTrafficBar />}
+          {!showSettings && <StatusBar />}
+        </div>
       </div>
 
-      {meshEnabled && !showSettings && <MeshTrafficBar />}
-      {!showSettings && <StatusBar />}
       {/* Outside the view switch: an off-screen agent's approval must announce
           itself on the fleet map and in Settings too, not only in the editor. */}
       <ApprovalToasts />

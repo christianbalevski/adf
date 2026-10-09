@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getLoopActivity } from '../../../src/renderer/utils/loop-activity'
+import { getLiveStep, getLoopActivity } from '../../../src/renderer/utils/loop-activity'
 import type { AgentLogEntry } from '../../../src/renderer/stores/agent.store'
 
 const active = { active: true, starting: false, waiting: false }
@@ -69,5 +69,28 @@ describe('loop activity', () => {
   it('shows startup without animating a stale step', () => {
     expect(getLoopActivity([user, call, result], { ...active, starting: true }))
       .toEqual({ entryId: null, phase: 'Starting agent…' })
+  })
+})
+
+describe('live step', () => {
+  const reasoned = entry('reasoned', 'tool_call', { name: 'fs_read', input: { path: 'a.md', _reason: 'Read the draft' } })
+  const done = entry('done', 'system')
+  done.content = 'Turn complete'
+
+  it('shows the latest call by its reason, falling back to the tool name', () => {
+    expect(getLiveStep([user, reasoned])).toEqual({ text: 'Read the draft', running: true })
+    expect(getLiveStep([user, call])).toEqual({ text: 'loop_manage', running: true })
+  })
+
+  it('stops running once a result, thinking or prose follows the call', () => {
+    expect(getLiveStep([user, reasoned, result])).toEqual({ text: 'Read the draft', running: false })
+    expect(getLiveStep([user, reasoned, entry('t', 'thinking')])).toEqual({ text: 'Read the draft', running: false })
+  })
+
+  it('never carries a call over from an earlier turn', () => {
+    expect(getLiveStep([user])).toBeNull()
+    expect(getLiveStep([reasoned, done])).toBeNull()
+    expect(getLiveStep([reasoned, user])).toBeNull()
+    expect(getLiveStep([reasoned, entry('trigger', 'trigger')])).toBeNull()
   })
 })

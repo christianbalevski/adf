@@ -332,7 +332,8 @@ export interface StatusOpts {
 
 /**
  * The card face's state line: "Running fs_write", "Waiting for you ·
- * 2 approvals", "Idle · wakes in 56 min", "Stopped".
+ * 2 approvals", "Wakes in 56 min", "Stopped". Plain idle is '' (the
+ * titlebar's dot says it).
  */
 export function agentStatusLabel(state: AgentState | null | undefined, opts: StatusOpts = {}): string {
   if (opts.starting) return 'Starting'
@@ -350,8 +351,12 @@ export function agentStatusLabel(state: AgentState | null | undefined, opts: Sta
   switch (state) {
     case 'active':
       return opts.toolName ? `Running ${opts.toolName}` : 'Thinking'
-    case 'idle':
-      return `Idle${wake}`
+    case 'idle': {
+      // The titlebar's dot already says idle; only the wake time is news here.
+      if (!wake) return ''
+      const when = wake.slice(3)
+      return when[0].toUpperCase() + when.slice(1)
+    }
     case 'hibernate':
       return `Hibernating${wake}`
     case 'suspended':

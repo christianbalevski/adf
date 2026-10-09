@@ -4,13 +4,10 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useAppStore } from '../../stores/app.store'
-import { AgentStatus } from '../agent/AgentStatus'
 import { Tooltip } from '../common/Tooltip'
 import { loopColor } from '../../utils/loop-color'
 import { ContextBreakdownModal, formatTokens, resolveLoopThreshold } from './ContextBreakdownModal'
 import type { AppUpdateState } from '../../../shared/types/ipc.types'
-import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
-import { useOpenAgentOrbitalSeed } from '../orbital/useOrbitalSeed'
 
 function contextGaugeTooltip(u: TokenUsage, estimate: number | null, threshold: number): string {
   // The full breakdown lives in the click-through modal — keep the hover terse.
@@ -39,7 +36,6 @@ function MeshIcon() {
 
 export function StatusBar() {
   const config = useAgentStore((s) => s.config)
-  const orbitalSeed = useOpenAgentOrbitalSeed()
   // The gauge is about ONE context window, and each loop has its own — so it
   // follows the loop tab the user is looking at. `viewedLoop` is `main` until
   // the loops panel says otherwise, which is exactly the old behaviour.
@@ -94,23 +90,11 @@ export function StatusBar() {
 
   return (
     <div className="h-7 bg-surface-0 border-t border-hairline flex items-center px-3 gap-4 text-xs text-[var(--adf-ui-text-subtle)]">
-      {/* Everything left of the version describes the open agent. Home has none,
-          so the group is absent there rather than a row of blank labels. */}
+      {/* Everything left of the version describes the open agent's session; its
+          name and state live in the titlebar. Home has no agent, so the group
+          is absent there rather than a row of blank labels. */}
       {filePath && (
         <>
-      {config && (
-        <>
-          <span className="flex items-center gap-1.5 min-w-0 max-w-44" title="The open agent — everything left of the version number describes it">
-            <OrbitalAvatar seed={orbitalSeed} icon={config.icon} iconSeed={config.id} size={14} emojiSize={14} />
-            <span className="font-medium text-neutral-700 dark:text-neutral-200 truncate">{config.name}</span>
-          </span>
-          <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
-        </>
-      )}
-      <AgentStatus />
-      <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
-      <span>{viewedModel?.model_id ?? 'No model'}</span>
-      <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
       <button
         onClick={handleSave}
         className="hover:text-[var(--adf-ui-text)]"
@@ -119,6 +103,8 @@ export function StatusBar() {
         {isDirty ? 'Unsaved changes' : 'Saved'}
       </button>
       <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
+      {/* The model sits beside the gauge: the percentage is of its window. */}
+      <span>{viewedModel?.model_id ?? 'No model'}</span>
       <ContextGauge
         tokenUsage={tokenUsage}
         tokenEstimate={tokenEstimate}

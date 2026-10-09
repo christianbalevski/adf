@@ -1,8 +1,8 @@
 /**
  * Agent overview: the right dock's first tab. A centred card face mirroring
- * the agent's ALF card (the agent's own status line as a speech bubble above
- * the orbital, name and @handle, description, Public / Verified owner
- * badges) and a state line with the model; then four levelled stats
+ * the agent's ALF card (orbital, name and @handle, description, Public /
+ * Verified owner badges) and a state line with the model; the agent's own
+ * status line lives in the titlebar, not here. Then four levelled stats
  * (Experience, Reach, Access, Autonomy) and a facts line (7-day cost, age,
  * next wake).
  *
@@ -15,8 +15,10 @@
  * Height budget, measured in the dev build over CDP (CSS px, dock 307 px
  * wide). The dock's scroll area is window height - 108: 660 in a 1366x768
  * window at zoom 1.0, 590 at zoom 1.1. A real agent with every section
- * (2-line status and description, both badges, 2 Coming up rows + "+N",
- * chart, contents with tables) measured 541:
+ * (2-line status bubble and description, both badges, 2 Coming up rows +
+ * "+N", chart, contents with tables) measured 541 back when the card had the
+ * status bubble (46-62 px, since removed; everything below is that much
+ * shorter now):
  *   padding 16
  *   card face 217: bubble 46 (3 lines: 62) + 6, orbital 64, name 4+20,
  *     description 2+32, badges 4+18, state 2+19
@@ -30,7 +32,7 @@
  * (4 px + 2 px gap = 6, ≤ 8 by rule): 53 / 71 / 89, so the agent above with
  * all three is ~583 (by reasoning, not re-measured). Metric bars sit on
  * their 18 px line and add nothing.
- * Worst case (3-line status, 3 metrics + "+N", 3 Contents rows + strip) is
+ * Worst case (then: 3-line status, 3 metrics + "+N", 3 Contents rows + strip) is
  * ~684. useOverflowFolds folds in order: the Activity chart (61 with its
  * gap) into the facts line, ~623, which fits 660; then, if it still
  * overflows, the Contents rows and strip into the section's title line
@@ -49,7 +51,6 @@ import { useAppStore } from '../../../stores/app.store'
 import { useDocumentStore } from '../../../stores/document.store'
 import { getLoopActivity } from '../../../utils/loop-activity'
 import { Tooltip } from '../../common/Tooltip'
-import { SpeechBubble } from '../../common/SpeechBubble'
 import { orbitalMotionStateFor, useOpenAgentOrbitalSeed } from '../../orbital'
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import type { AgentMetric, AgentVitals, ExperienceStat, PowerStat } from '../../../../shared/types/agent-vitals.types'
@@ -224,7 +225,6 @@ function openConfigFor(configPath: string): void {
 export function AgentOverview() {
   const filePath = useDocumentStore((s) => s.filePath)
   const config = useAgentStore((s) => s.config)
-  const statusText = useAgentStore((s) => s.statusText)
   const seed = useOpenAgentOrbitalSeed()
   const state = useAgentStore((s) => s.state)
   const vitals = useOverviewRead(filePath, state, config, readVitals)
@@ -250,20 +250,17 @@ export function AgentOverview() {
   const handle = config?.handle || vitals?.handle || ''
   const model = config?.model?.model_id || vitals?.model
   const motion = orbitalMotionStateFor(live.state, live.toolRunning)
-  // Live store first (updates as the agent writes), the file's values otherwise.
-  const status = statusText.trim() || vitals?.status || ''
   const description = (config ? config.description?.trim() : vitals?.description) || ''
   const isPublic = config ? !!config.serving?.public?.enabled : !!vitals?.public
 
   // The state line already says when an idle agent wakes.
-  const showsWake = live.label.includes(' · wakes') || live.label.includes(' · wake due')
+  const showsWake = /\bwake/i.test(live.label)
   const facts = vitals ? overviewFacts(vitals, now).filter((f) => !(showsWake && f.id === 'wake')) : []
   if (chartFolded && activity) facts.push({ id: 'messages', text: sparkFact(activity.daily) })
 
   return (
     <div ref={rootRef} className="px-3 py-2 space-y-1.5 text-[var(--ink)]">
       <header className="flex flex-col items-center text-center">
-        {status && <StatusBubble text={status} />}
         <div
           className={`shrink-0 rounded-full ${pulsing ? 'pulse-ring' : ''}`}
           style={{ width: ORBITAL_SIZE, height: ORBITAL_SIZE }}
@@ -285,10 +282,12 @@ export function AgentOverview() {
             {vitals?.ownerVerified && <Badge>Verified owner</Badge>}
           </div>
         )}
-        <p className="mt-0.5 max-w-full truncate text-[12px] leading-[18px]">
-          {live.label}
-          {model && <span className="text-[var(--ink-muted)]"> · <span className="font-mono text-[11.5px]">{model}</span></span>}
-        </p>
+        {(live.label || model) && (
+          <p className="mt-0.5 max-w-full truncate text-[12px] leading-[18px]">
+            {live.label}
+            {model && <span className="text-[var(--ink-muted)]">{live.label && ' · '}<span className="font-mono text-[11.5px]">{model}</span></span>}
+          </p>
+        )}
       </header>
 
       <section className="space-y-1.5">
@@ -316,33 +315,6 @@ export function AgentOverview() {
 
       <OverviewActivity activity={activity} now={now} chartFolded={chartFolded} contentsFolded={folded.contents} />
     </div>
-  )
-}
-
-/**
- * The agent's own status line (adf_meta `status`) above the orbital, in the
- * home page's bubble with the tail pointing down at it. Static (persistent
- * state, not a quip). As wide as the panel, three lines at most; the full
- * text is in the tooltip only when it is cut.
- */
-function StatusBubble({ text }: { text: string }) {
-  const ref = useRef<HTMLSpanElement>(null)
-  const [clamped, setClamped] = useState(false)
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const check = () => setClamped(el.scrollHeight > el.clientHeight + 1)
-    check()
-    const ro = new ResizeObserver(check)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [text])
-  return (
-    <Tooltip tip={text} disabled={!clamped} className="mb-1.5 block w-fit max-w-full">
-      <SpeechBubble tail="bottom" className="relative">
-        <span ref={ref} className="line-clamp-3 break-words">{text}</span>
-      </SpeechBubble>
-    </Tooltip>
   )
 }
 

@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore, SIDEBAR_MAX_VW } from '../../stores/app.store'
 import { SIDEBAR_WIDTH_VAR } from './SidebarFrame'
-import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { toDisplayState } from '../../hooks/useAgent'
 import { startForegroundAgent } from '../../utils/start-agent'
@@ -12,6 +11,7 @@ import { Button } from '../ui'
 import { Wordmark } from '../common/Wordmark'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { useOpenAgentOrbitalSeed } from '../orbital/useOrbitalSeed'
+import { getLiveStep } from '../../utils/loop-activity'
 
 
 
@@ -42,10 +42,33 @@ function NavButton({
   )
 }
 
+/** Fast calls would flicker the line; each reason stays up at least this long. */
+const LIVE_STEP_HOLD_MS = 1500
+
 /**
- * The open agent's identity cluster — icon, name, dirty dot, state dot,
- * status text, serving globe. Shared between the app titlebar and the fleet
- * map's top bar so "which agent is open?" reads identically everywhere.
+ * `value`, but a shown value stays up for at least `ms` before the next one
+ * replaces it. Clearing to null is immediate, so going idle never lags.
+ */
+function useMinHold(value: string | null, ms: number): string | null {
+  const [shown, setShown] = useState(value)
+  const shownAt = useRef(0)
+  useEffect(() => {
+    if (value === shown) return
+    const show = () => { setShown(value); shownAt.current = Date.now() }
+    const wait = value === null || shown === null ? 0 : shownAt.current + ms - Date.now()
+    if (wait <= 0) { show(); return }
+    const t = setTimeout(show, wait)
+    return () => clearTimeout(t)
+  }, [value, shown, ms])
+  return shown
+}
+
+/**
+ * The open agent's identity cluster — icon, name, dirty dot, state dot, and
+ * what the main loop is doing: the latest call's `_reason` while active, the
+ * agent's own status text once it settles. Shared between the app titlebar
+ * and the fleet map's top bar so "which agent is open?" reads identically
+ * everywhere.
  * Renders null while no file/config is open. `onActivate` makes the whole
  * cluster a click target (the map uses it to fly to the agent's tile).
  */
@@ -59,73 +82,11 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
   // In-flight start for this file — the store still says 'off' until it returns.
   const starting = useAppStore((s) => (filePath ? s.startingFilePaths.has(filePath) : false))
 
-  const foregroundActive = agentState !== 'off'
-
-  const isServing = !!(
-    config?.serving?.public?.enabled ||
-    config?.serving?.shared?.enabled ||
-    (config?.serving?.api && config.serving.api.length > 0)
-  )
-  const [meshServerStatus, setMeshServerStatus] = useState<{
-    running: boolean
-    port: number
-    host: string
-  }>({ running: false, port: 7295, host: '127.0.0.1' })
-
-  useEffect(() => {
-    if (isServing) {
-      window.adfApi?.getMeshServerStatus().then(setMeshServerStatus)
-    }
-  }, [isServing, agentState])
-
-  const servingHandle = useMemo(() => {
-    if (!isServing) return null
-    return config?.handle || (filePath
-      ? filePath
-          .replace(/.*[\\/]/, '')
-          .replace(/\.adf$/, '')
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-+|-+$/g, '')
-      : 'agent')
-  }, [isServing, config?.handle, filePath])
-
-  const servingUrl = useMemo(() => {
-    if (!servingHandle || !meshServerStatus.running) return null
-    const displayHost = meshServerStatus.host === '0.0.0.0' ? '127.0.0.1' : meshServerStatus.host
-    return `http://${displayHost}:${meshServerStatus.port}/agents/${servingHandle}/`
-  }, [servingHandle, meshServerStatus])
-
-  const servingActive = isServing && meshServerStatus.running && foregroundActive
-
-  // Visible container browser — one click opens the live noVNC viewer tab
-  // (same path as AgentConfig's "Open computer view", minus the scrolling).
-  const hasBrowser = !!config?.compute?.enabled && config.compute.browser !== false
-  const browserActive = hasBrowser && foregroundActive
-  const [browserOpening, setBrowserOpening] = useState(false)
-  const openBrowserView = useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!browserActive || browserOpening || !config || !filePath) return
-    setBrowserOpening(true)
-    try {
-      const info = await window.adfApi?.getBrowserSessionInfo({ agentName: config.name, agentId: config.id })
-      // The tab opens in every phase: a container that is provisioning,
-      // stopped, or failed shows that instead of a blank viewer.
-      if (info) {
-        useEditorTabsStore.getState().openBrowserTab({
-          agentFilePath: filePath,
-          containerName: info.containerName,
-          agentId: config.id,
-          agentName: config.name,
-          hostPort: info.hostPort,
-          phase: info.phase,
-          detail: info.detail,
-        })
-      }
-    } catch { /* viewer is best-effort */ } finally {
-      setBrowserOpening(false)
-    }
-  }, [browserActive, browserOpening, config, filePath])
+  // Main loop only: inner loops run their own errands and never speak here.
+  const liveText = useAgentStore((s) => getLiveStep(s.log)?.text ?? null)
+  const liveRunning = useAgentStore((s) => getLiveStep(s.log)?.running ?? false)
+  const active = agentState === 'active'
+  const heldText = useMinHold(active ? liveText : null, LIVE_STEP_HOLD_MS)
 
   const stateColors: Record<string, { color: string; ring?: boolean; pulse?: boolean }> = {
     active: { color: 'bg-yellow-400', pulse: true },
@@ -178,65 +139,26 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
             Starting&hellip;
           </span>
         </span>
+      ) : active ? (
+        <span
+          className="min-w-0 flex-1 text-neutral-500 dark:text-neutral-400 truncate"
+          title={heldText ?? undefined}
+        >
+          {/* While a call runs, its reason shimmers; between calls the last one stays, dimmed. */}
+          <span className={heldText === liveText && !liveRunning
+            ? 'inline-block max-w-full truncate align-bottom text-neutral-400 dark:text-neutral-500'
+            : 'inline-block max-w-full truncate align-bottom adf-shimmer-text adf-shimmer-text--activity'}>
+            {heldText ?? 'Thinking\u2026'}
+          </span>
+        </span>
       ) : statusText ? (
         <span
           className="min-w-0 flex-1 text-neutral-500 dark:text-neutral-400 truncate"
           title={statusText}
         >
-          <span className={agentState === 'active'
-            ? 'inline-block max-w-full truncate align-bottom adf-shimmer-text adf-shimmer-text--activity'
-            : undefined}>
-            {statusText}
-          </span>
+          {statusText}
         </span>
       ) : null}
-      {isServing && servingHandle && (
-        servingActive && servingUrl ? (
-          <a
-            href={servingUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={servingUrl}
-            onClick={(e) => e.stopPropagation()}
-            className="pointer-events-auto shrink-0 text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="2" y1="12" x2="22" y2="12" />
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-            </svg>
-          </a>
-        ) : (
-          <span className="shrink-0 text-neutral-400 dark:text-neutral-500" title={`/${servingHandle}/ (inactive)`}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="2" y1="12" x2="22" y2="12" />
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-            </svg>
-          </span>
-        )
-      )}
-      {hasBrowser && (
-        <button
-          type="button"
-          onClick={openBrowserView}
-          disabled={!browserActive || browserOpening}
-          title={browserActive
-            ? (browserOpening ? 'Opening computer…' : "Open this agent's computer")
-            : 'Computer (agent off)'}
-          className={`pointer-events-auto shrink-0 flex items-center ${browserActive
-            ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer'
-            : 'text-neutral-400 dark:text-neutral-500 cursor-default'} ${browserOpening ? 'animate-pulse' : ''}`}
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="3" width="20" height="14" rx="2" />
-            <line x1="8" y1="21" x2="16" y2="21" />
-            <line x1="12" y1="17" x2="12" y2="21" />
-          </svg>
-        </button>
-      )}
     </div>
   )
 }
@@ -375,7 +297,10 @@ export function TitleBar() {
 
       <div className="h-full flex-1 min-w-0 bg-[var(--adf-ui-canvas)] border-b border-hairline text-[var(--adf-ui-text-muted)] flex items-center">
 
-      <div className="flex-1 min-w-0 px-3 flex items-center justify-center pointer-events-none">
+      {/* An open agent's line changes every call, so it starts at the left
+          edge (a centred cluster would shift the name each time); the static
+          wordmark stays centred. */}
+      <div className={`flex-1 min-w-0 px-3 flex items-center ${filePath && config ? 'justify-start' : 'justify-center'} pointer-events-none`}>
         {filePath && config ? (
           <AgentTitleCluster />
         ) : (
