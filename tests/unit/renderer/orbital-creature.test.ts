@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   BEAT_MIN_MS,
   BEAT_SPREAD_MS,
+  CALM_MOOD,
   DOZE_AFTER_MS,
   OrbitalCreature,
   TURN_RAD_S
 } from '../../../src/renderer/components/orbital/orbital-creature'
+import { creatureMoodFor, QUIET_CREATURE } from '../../../src/renderer/components/orbital/orbital-motion'
 
 const FRAME_MS = 1000 / 60
 
@@ -157,5 +159,133 @@ describe('OrbitalCreature', () => {
     run(c, 100, 1000)
     expect(c.out.sx).toBeGreaterThan(rest)
     expect(c.out.y).toBeLessThan(0)
+  })
+
+  describe('quiet options', () => {
+    it('scales hop height, lean and gaze down', () => {
+      const loud = new OrbitalCreature({ size: 100, rand: seq(0.99) })
+      const quiet = new OrbitalCreature({ size: 100, rand: seq(0.99), amplitude: 0.5, gazeRange: 0.6 })
+      const peak = (c: OrbitalCreature) => {
+        c.step(0, 0)
+        c.hop(0, 0.2, 400)
+        let minY = 0
+        run(c, 0, 1400, () => { minY = Math.min(minY, c.out.y) })
+        return minY
+      }
+      expect(peak(quiet)).toBeCloseTo(peak(loud) * 0.5, 0)
+      run(loud, 1400, 3400, (t) => loud.pointer(t, 5000, 0))
+      run(quiet, 1400, 3400, (t) => quiet.pointer(t, 5000, 0))
+      expect(quiet.out.gaze[0]).toBeCloseTo(loud.out.gaze[0] * 0.6, 2)
+      expect(quiet.out.rot).toBeCloseTo(loud.out.rot * 0.5, 3)
+    })
+
+    it('spaces idle beats by beatMinMs and dozes after dozeAfterMs', () => {
+      const c = new OrbitalCreature({ size: 64, rand: seq(0, 0.5, 0), ...QUIET_CREATURE })
+      let firstBeat = -1
+      let now = 0
+      while (now < 12_000) {
+        now = run(c, now, now + 1000, (t) => { if (firstBeat < 0 && c.beating) firstBeat = t })
+        c.activity(now)
+      }
+      expect(firstBeat).toBeGreaterThanOrEqual(QUIET_CREATURE.beatMinMs!)
+      now = run(c, now, now + QUIET_CREATURE.dozeAfterMs! - 1000)
+      expect(c.doze).toBeLessThan(0.01)
+      run(c, now, now + 8000)
+      expect(c.doze).toBeGreaterThan(0.9)
+    })
+  })
+
+  describe('moods', () => {
+    it('maps agent state to behaviour', () => {
+      expect(creatureMoodFor('idle')).toBe(CALM_MOOD)
+      const thinking = creatureMoodFor('thinking')
+      const tool = creatureMoodFor('tool')
+      expect(thinking.turn).toBeGreaterThan(1)
+      expect(thinking.awake && thinking.active && !thinking.beats).toBe(true)
+      expect(tool.phase).toBeGreaterThan(thinking.phase)
+      expect(tool.spins).toBe(true)
+      expect(creatureMoodFor('thinking', true).attentive).toBe(true)
+      expect(creatureMoodFor('idle', true).attentive).toBe(true)
+      expect(creatureMoodFor('error').alpha).toBeLessThan(1)
+      expect(creatureMoodFor('error').turn).toBeLessThan(1)
+      expect(creatureMoodFor('off').sleep).toBe(1)
+      expect(creatureMoodFor('suspended').sleep).toBe(1)
+      expect(creatureMoodFor('hibernate').sleep).toBe(2)
+      expect(creatureMoodFor('off', true).attentive).toBe(false)
+    })
+
+    it('thinking turns faster and never dozes', () => {
+      const c = new OrbitalCreature({ size: 64, rand: seq(0.99) })
+      c.setMood(0, creatureMoodFor('thinking'))
+      run(c, 0, DOZE_AFTER_MS + 5000)
+      expect(c.doze).toBe(0)
+      expect(c.out.spin).toBeCloseTo(TURN_RAD_S * 2.5, 1)
+      expect(c.out.phase).toBe(2)
+    })
+
+    it('a tool turn spins now and then', () => {
+      const c = new OrbitalCreature({ size: 64, rand: seq(0) })
+      c.step(0, 0)
+      c.setMood(0, creatureMoodFor('tool'))
+      let maxSpin = 0
+      run(c, 0, 3000, () => { maxSpin = Math.max(maxSpin, c.out.spin) })
+      expect(maxSpin).toBeGreaterThan(TURN_RAD_S * 3 + 1)
+    })
+
+    it('waiting looks up and hops every few seconds', () => {
+      const c = new OrbitalCreature({ size: 64, rand: seq(0.5) })
+      c.step(0, 0)
+      c.setMood(0, creatureMoodFor('idle', true))
+      let hops = 0
+      let wasHopping = false
+      run(c, 0, 10_000, () => {
+        if (c.hopping && !wasHopping) hops++
+        wasHopping = c.hopping > 0
+      })
+      expect(hops).toBeGreaterThanOrEqual(3)
+      expect(c.out.gaze[1]).toBeLessThan(-0.25)
+      expect(c.doze).toBe(0)
+    })
+
+    it('settles with a hop when a turn ends, not into an error', () => {
+      const c = new OrbitalCreature({ size: 64, rand: seq(0.99) })
+      c.step(0, 0)
+      c.setMood(0, creatureMoodFor('thinking'))
+      c.setMood(10, creatureMoodFor('idle'))
+      expect(c.hopping).toBe(1)
+      const d = new OrbitalCreature({ size: 64, rand: seq(0.99) })
+      d.step(0, 0)
+      d.setMood(0, creatureMoodFor('tool'))
+      d.setMood(10, creatureMoodFor('error'))
+      expect(d.hopping).toBe(0)
+    })
+
+    it('error is still-ish and dim', () => {
+      const c = new OrbitalCreature({ size: 64, rand: seq(0.99) })
+      c.setMood(0, creatureMoodFor('error'))
+      run(c, 0, 1000)
+      expect(c.out.spin).toBeLessThan(TURN_RAD_S * 0.5)
+      expect(c.out.alpha).toBeLessThan(1)
+      expect(c.out.alpha).toBeGreaterThan(0.7)
+    })
+
+    it('off dozes at once and stays asleep on activity, still breathing; hibernate dozes deeper', () => {
+      const off = new OrbitalCreature({ size: 64, rand: seq(0.99) })
+      off.setMood(0, creatureMoodFor('off'))
+      let now = run(off, 0, 6000)
+      expect(off.doze).toBeGreaterThan(0.9)
+      off.activity(now)
+      expect(off.hopping).toBe(0)
+      let lo = Infinity
+      let hi = 0
+      now = run(off, now, now + 9000, () => { lo = Math.min(lo, off.out.sx); hi = Math.max(hi, off.out.sx) })
+      expect(off.doze).toBeGreaterThan(0.9)
+      expect(hi - lo).toBeGreaterThan(0.03)
+      const hib = new OrbitalCreature({ size: 64, rand: seq(0.99) })
+      hib.setMood(0, creatureMoodFor('hibernate'))
+      run(hib, 0, 6000)
+      expect(hib.out.alpha).toBeLessThan(off.out.alpha)
+      expect(hib.out.spin).toBeLessThan(off.out.spin)
+    })
   })
 })

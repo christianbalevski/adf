@@ -33,6 +33,7 @@
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { OverviewActivity, readActivity } from './OverviewActivity'
+import { OverviewOrbital } from './OverviewOrbital'
 import { useOverviewRead, type OverviewReader } from './useOverviewRead'
 import { useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
@@ -40,7 +41,7 @@ import { useDocumentStore } from '../../../stores/document.store'
 import { getLoopActivity } from '../../../utils/loop-activity'
 import { Tooltip } from '../../common/Tooltip'
 import { SpeechBubble } from '../../common/SpeechBubble'
-import { LiveOrbital, orbitalMotionStateFor, useOpenAgentOrbitalSeed } from '../../orbital'
+import { orbitalMotionStateFor, useOpenAgentOrbitalSeed } from '../../orbital'
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import type { AgentMetric, AgentVitals, ExperienceStat, PowerStat } from '../../../../shared/types/agent-vitals.types'
 import { POWER_LEVEL_MAX } from '../../../../shared/utils/agent-stats'
@@ -87,7 +88,7 @@ const STAT_NAMES: Record<StatKey, string> = {
 const readVitals: OverviewReader<AgentVitals> = (filePath, force) => window.adfApi?.getAgentVitals?.(filePath, { force })
 
 /** What the agent is doing right now, for the state line and orbital motion. */
-function useLiveActivity(nextWakeAt: number | undefined, now: number): { state: AgentState; label: string; toolRunning: boolean } {
+function useLiveActivity(nextWakeAt: number | undefined, now: number): { state: AgentState; label: string; toolRunning: boolean; waiting: boolean } {
   const state = useAgentStore((s) => s.state)
   const starting = useAgentStore((s) => s.starting)
   const log = useAgentStore((s) => s.log)
@@ -112,7 +113,8 @@ function useLiveActivity(nextWakeAt: number | undefined, now: number): { state: 
     return {
       state,
       label: agentStatusLabel(state, { starting, toolName, approvals, asks, suspend, nextWakeAt, now }),
-      toolRunning: toolName !== null
+      toolRunning: toolName !== null,
+      waiting
     }
     // structuralVersion: the log array is mutated in place for streamed deltas.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -252,7 +254,7 @@ export function AgentOverview() {
           className={`shrink-0 rounded-full ${pulsing ? 'pulse-ring' : ''}`}
           style={{ width: ORBITAL_SIZE, height: ORBITAL_SIZE }}
         >
-          <LiveOrbital seed={seed} size={ORBITAL_SIZE} state={motion} />
+          <OverviewOrbital seed={seed} size={ORBITAL_SIZE} state={motion} waiting={live.waiting} />
         </div>
         <h2 className="mt-1 max-w-full truncate text-[15px] font-semibold leading-5" title={name}>
           {name}

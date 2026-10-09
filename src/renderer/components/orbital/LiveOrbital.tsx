@@ -8,7 +8,8 @@
  * kicks.
  *
  * With `creature` (an OrbitalCreature) it is alive instead: frames run all
- * the time (paused while the document is hidden or it is unmounted), the
+ * the time (paused while the document is hidden, it is scrolled out of view
+ * or not displayed, or it is unmounted), the
  * shape turns slowly and cycles its phase whatever `state` says, and the
  * creature moves it: gaze, lean, hops, doze. The canvas redraws at most
  * DRAW_FPS; the creature's lean, hop and scale go on the canvas as a CSS
@@ -161,9 +162,18 @@ export const LiveOrbital = forwardRef<LiveOrbitalHandle, LiveOrbitalProps>(funct
       unsub?.()
       unsub = null
     }
+    // Alive: no frames while it is off screen or not displayed.
+    let visible = true
+    const io = alive && typeof IntersectionObserver !== 'undefined'
+      ? new IntersectionObserver((entries) => {
+        visible = entries[entries.length - 1].isIntersecting
+        if (visible) wake()
+        else stop()
+      })
+      : null
     const needsFrames = () => {
       const p = props.current
-      if (p.reduce) return false
+      if (p.reduce || !visible) return false
       return alive || isOrbitalMoving(orbitalMotion(p.state)) || Math.abs(sim.current.vel) > 0.01
     }
     let lastDraw = -Infinity
@@ -203,7 +213,9 @@ export const LiveOrbital = forwardRef<LiveOrbitalHandle, LiveOrbitalProps>(funct
     }
     draw()
     wake()
+    io?.observe(canvas)
     return () => {
+      io?.disconnect()
       stop()
       wakeRef.current = () => {}
       redrawRef.current = () => {}

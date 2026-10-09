@@ -5,6 +5,7 @@
  */
 
 import type { AgentState } from '../../../shared/types/ipc.types'
+import { CALM_MOOD, type CreatureMood, type CreatureOptions } from './orbital-creature'
 
 /** States LiveOrbital distinguishes; 'active' splits on what the turn is doing. */
 export type OrbitalMotionState =
@@ -63,4 +64,47 @@ export function orbitalMotionStateFor(state: AgentState | null | undefined, tool
 
 export function isOrbitalMoving(m: OrbitalMotion): boolean {
   return m.spin !== 0 || m.phase !== 0
+}
+
+const MOODS = {
+  idle: CALM_MOOD,
+  thinking: { ...CALM_MOOD, turn: 2.5, phase: 2, beats: false, awake: true, active: true },
+  tool: { ...CALM_MOOD, turn: 3, phase: 4, beats: false, awake: true, spins: true, active: true },
+  waiting: { ...CALM_MOOD, phase: 1.2, beats: false, awake: true, attentive: true },
+  error: { ...CALM_MOOD, turn: 0.3, phase: 0.3, alpha: 0.8, beats: false },
+  off: { ...CALM_MOOD, beats: false, sleep: 1 },
+  hibernate: { ...CALM_MOOD, beats: false, sleep: 2 }
+} satisfies Record<string, CreatureMood>
+
+/**
+ * How an alive orbital acts out an agent's state, on top of its own life
+ * (OrbitalCreature.setMood): thinking turns and cycles faster, a tool faster
+ * still with an occasional spin, waiting on the user (approval, ask) perks up
+ * and looks at them, an error goes still-ish and a little dim, stopped dozes,
+ * hibernating dozes deeper. Returns shared constants: compare by identity.
+ */
+export function creatureMoodFor(state: OrbitalMotionState, waiting = false): CreatureMood {
+  if (waiting && state !== 'off' && state !== 'suspended' && state !== 'hibernate') return MOODS.waiting
+  switch (state) {
+    case 'thinking':
+    case 'tool':
+    case 'error':
+    case 'hibernate':
+      return MOODS[state]
+    case 'off':
+    case 'suspended':
+      return MOODS.off
+    case 'idle':
+    default:
+      return MOODS.idle
+  }
+}
+
+/** The quieter creature of a small (about 64 px) header orbital, e.g. the agent overview. */
+export const QUIET_CREATURE: Omit<CreatureOptions, 'size'> = {
+  amplitude: 0.55,
+  gazeRange: 0.7,
+  beatMinMs: 10_000,
+  beatSpreadMs: 10_000,
+  dozeAfterMs: 30_000
 }

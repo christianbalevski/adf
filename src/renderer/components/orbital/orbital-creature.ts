@@ -15,6 +15,12 @@
  *   wakes on activity with a small hop;
  * - reactions: hop, spin, perk (hover), busy (faster phase while creating).
  *
+ * Options scale it down for a smaller, quieter orbital (amplitude, gaze
+ * range, beat spacing, doze delay). A mood (`setMood`, see creatureMoodFor in
+ * orbital-motion.ts) layers an agent's real state on top: turn and phase
+ * speed, dimming, forced doze, attentive perk hops, occasional tool spins,
+ * and a small settle hop when a turn ends.
+ *
  * `out` is one object reused every frame; nothing allocates per step.
  */
 
@@ -44,6 +50,39 @@ export interface CreatureOptions {
   rand?: () => number
   /** Quiet time before dozing, ms. */
   dozeAfterMs?: number
+  /** Scales movement: lean, hop height, squash, beat spin, perk lift. 1 = home. */
+  amplitude?: number
+  /** Scales how far the core looks, 0..1. */
+  gazeRange?: number
+  /** Idle beats come every beatMinMs + up to beatSpreadMs. */
+  beatMinMs?: number
+  beatSpreadMs?: number
+}
+
+/** An agent's state as the creature acts it out (creatureMoodFor). */
+export interface CreatureMood {
+  /** Multiplier on TURN_RAD_S. */
+  turn: number
+  /** Multiplier on the spec's phase speed. */
+  phase: number
+  /** Opacity ceiling 0..1. */
+  alpha: number
+  /** Idle beats allowed. */
+  beats: boolean
+  /** Never dozes (something is happening). */
+  awake: boolean
+  /** 0 normal; 1 dozing whatever the user does; 2 dozing deeper. */
+  sleep: 0 | 1 | 2
+  /** Looks up at the user, perked, with a small hop every few seconds. */
+  attentive: boolean
+  /** Occasional small spins (running a tool). */
+  spins: boolean
+  /** A turn is running; leaving it settles with a small hop. */
+  active: boolean
+}
+
+export const CALM_MOOD: CreatureMood = {
+  turn: 1, phase: 1, alpha: 1, beats: true, awake: false, sleep: 0, attentive: false, spins: false, active: false
 }
 
 /** Base axial turn, rad/s. Slow: the shape should read as resting, not busy. */
@@ -57,6 +96,12 @@ const BEAT_QUIET_MS = 1500
 const LEAN_MAX = 0.12
 const MAX_HOPS = 3
 const HOP_ANTICIPATION_MS = 110
+/** Attentive: a small hop every ATTEND_MIN_MS + up to ATTEND_SPREAD_MS. */
+export const ATTEND_MIN_MS = 2600
+export const ATTEND_SPREAD_MS = 1200
+/** Tool: a small spin every TOOL_SPIN_MIN_MS + up to TOOL_SPIN_SPREAD_MS. */
+export const TOOL_SPIN_MIN_MS = 3500
+export const TOOL_SPIN_SPREAD_MS = 4000
 
 interface Hop { t0: number; dur: number; h: number }
 type BeatKind = 'spin' | 'look'
@@ -70,6 +115,13 @@ export class OrbitalCreature {
   size: number
   private readonly rand: () => number
   private readonly dozeAfter: number
+  private readonly amp: number
+  private readonly gazeRange: number
+  private readonly beatMin: number
+  private readonly beatSpread: number
+  private mood: CreatureMood = CALM_MOOD
+  private nextAttend = 0
+  private nextToolSpin = 0
   private started = false
   private clock = 0
   private lastActivity = 0
@@ -103,6 +155,10 @@ export class OrbitalCreature {
     this.size = opts.size
     this.rand = opts.rand ?? Math.random
     this.dozeAfter = opts.dozeAfterMs ?? DOZE_AFTER_MS
+    this.amp = opts.amplitude ?? 1
+    this.gazeRange = opts.gazeRange ?? 1
+    this.beatMin = opts.beatMinMs ?? BEAT_MIN_MS
+    this.beatSpread = opts.beatSpreadMs ?? BEAT_SPREAD_MS
     for (let i = 0; i < MAX_HOPS; i++) this.hops.push({ t0: 0, dur: 0, h: 0 })
   }
 
@@ -111,10 +167,11 @@ export class OrbitalCreature {
   get busy(): boolean { return this.busyOn }
   get beating(): BeatKind | null { return this.beat }
   get hopping(): number { return this.nHops }
+  get currentMood(): CreatureMood { return this.mood }
 
   /** The user did something (pointer, keys). Wakes it; a deep doze wakes with a hop. */
   activity(now: number): void {
-    if (this.dz > 0.6) {
+    if (this.dz > 0.6 && this.mood.sleep === 0) {
       this.dz = 0.6
       this.hop(now, 0.08, 300)
     }
@@ -149,7 +206,7 @@ export class OrbitalCreature {
     const j = this.hops[slot]
     j.t0 = now
     j.dur = dur
-    j.h = h * this.size
+    j.h = h * this.size * this.amp
   }
 
   /** Add spin, rad/s; decays over about a second. */
@@ -163,6 +220,21 @@ export class OrbitalCreature {
   /** Something is being made: phase runs faster, it turns faster, no dozing or idle beats. */
   setBusy(on: boolean): void { this.busyOn = on }
 
+  /**
+   * Act out an agent state (creatureMoodFor). Leaving an active turn for idle
+   * or waiting settles with a small hop; becoming attentive hops soon.
+   */
+  setMood(now: number, mood: CreatureMood): void {
+    const prev = this.mood
+    if (prev === mood) return
+    this.mood = mood
+    if (mood.attentive && !prev.attentive) this.nextAttend = now + 400
+    if (mood.spins && !prev.spins) this.nextToolSpin = now + 1500 + this.rand() * 2000
+    // Not into an error or a doze: those stay still.
+    if (prev.active && !mood.active && mood.sleep === 0 && mood.turn >= 1) this.hop(now, 0.07, 300)
+    if (mood.sleep === 0 && prev.sleep > 0) this.lastActivity = now
+  }
+
   /** Doze now (as if quiet for long enough). */
   sleep(now: number): void { this.lastActivity = now - this.dozeAfter - 1 }
 
@@ -171,25 +243,41 @@ export class OrbitalCreature {
     if (!this.started) {
       this.started = true
       this.lastActivity = now
-      this.nextBeat = now + BEAT_MIN_MS + this.rand() * BEAT_SPREAD_MS
+      this.nextBeat = now + this.beatMin + this.rand() * this.beatSpread
     }
+    const m = this.mood
+    const amp = this.amp
     this.clock += dt
     const quiet = now - this.lastActivity
-    const dozy = quiet > this.dozeAfter && !this.busyOn
+    const dozy = !this.busyOn && !m.awake && (m.sleep > 0 || quiet > this.dozeAfter)
     this.dz = lerp(this.dz, dozy ? 1 : 0, ease(dt, dozy ? 1.4 : 0.25))
     if (this.dz < 0.001) this.dz = 0
     const dz = this.dz
-    this.perkLevel = lerp(this.perkLevel, this.perkTarget * (1 - dz), ease(dt, 0.15))
+    const deep = m.sleep === 2
+    const perkT = Math.max(this.perkTarget, m.attentive ? 0.6 : 0)
+    this.perkLevel = lerp(this.perkLevel, perkT * (1 - dz), ease(dt, 0.15))
+
+    // Mood beats: attentive hops, tool spins.
+    if (dz < 0.1 && !this.busyOn) {
+      if (m.attentive && this.nHops === 0 && now >= this.nextAttend) {
+        this.hop(now, 0.07, 280)
+        this.nextAttend = now + ATTEND_MIN_MS + this.rand() * ATTEND_SPREAD_MS
+      }
+      if (m.spins && now >= this.nextToolSpin) {
+        this.spin(2.5 * amp)
+        this.nextToolSpin = now + TOOL_SPIN_MIN_MS + this.rand() * TOOL_SPIN_SPREAD_MS
+      }
+    }
 
     // Idle beats.
-    if (!this.beat && this.nHops === 0 && !this.busyOn && dz < 0.1 && now >= this.nextBeat) {
+    if (!this.beat && this.nHops === 0 && !this.busyOn && m.beats && dz < 0.1 && now >= this.nextBeat) {
       if (now - this.lastNearby < BEAT_QUIET_MS) this.nextBeat = now + BEAT_QUIET_MS
       else {
         const r = this.rand()
         if (r < 0.45) this.hop(now, 0.1, 340)
         else if (r < 0.72) this.startBeat(now, 'spin', 800)
         else this.startBeat(now, 'look', 1900)
-        this.nextBeat = now + BEAT_MIN_MS + this.rand() * BEAT_SPREAD_MS
+        this.nextBeat = now + this.beatMin + this.rand() * this.beatSpread
       }
     }
     let look: number | null = null
@@ -197,17 +285,17 @@ export class OrbitalCreature {
     if (this.beat) {
       const u = (now - this.beatT0) / this.beatDur
       if (u >= 1) this.beat = null
-      else if (this.beat === 'spin') beatSpin = 6 * Math.sin(Math.PI * u)
+      else if (this.beat === 'spin') beatSpin = 6 * amp * Math.sin(Math.PI * u)
       else look = Math.sin(u * Math.PI * 2)
     }
 
     // Spin and phase.
     this.spinVel *= Math.exp(-dt / 0.9)
     if (Math.abs(this.spinVel) < 0.01) this.spinVel = 0
-    const base = this.busyOn ? TURN_RAD_S * 4 : TURN_RAD_S
-    o.spin = (base + beatSpin + (this.nHops ? 1 : 0)) * (1 - 0.7 * dz) + this.spinVel
-    o.phase = (this.busyOn ? 4 : 1) * (1 - 0.6 * dz)
-    o.alpha = 1 - 0.35 * dz
+    const base = TURN_RAD_S * (this.busyOn ? 4 : m.turn)
+    o.spin = (base + beatSpin + (this.nHops ? amp : 0)) * (1 - (deep ? 0.85 : 0.7) * dz) + this.spinVel
+    o.phase = (this.busyOn ? 4 : m.phase) * (1 - (deep ? 0.8 : 0.6) * dz)
+    o.alpha = (this.busyOn ? 1 : m.alpha) * (1 - (deep ? 0.5 : 0.35) * dz)
 
     // Hops: anticipation crouch, flight with stretch, landing wobble.
     let lift = 0
@@ -219,16 +307,16 @@ export class OrbitalCreature {
       if (el < 0) continue
       if (el < HOP_ANTICIPATION_MS) {
         const e = Math.sin((el / HOP_ANTICIPATION_MS) * Math.PI / 2)
-        sx *= 1 + 0.1 * e
-        sy *= 1 - 0.12 * e
+        sx *= 1 + 0.1 * amp * e
+        sy *= 1 - 0.12 * amp * e
         continue
       }
       const u = (el - HOP_ANTICIPATION_MS) / j.dur
       if (u < 1) {
         const st = Math.sin(Math.PI * u)
         lift += j.h * st
-        sx *= 1 - 0.05 * st
-        sy *= 1 + 0.08 * st
+        sx *= 1 - 0.05 * amp * st
+        sy *= 1 + 0.08 * amp * st
       } else {
         const tl = (u - 1) * j.dur
         if (tl > 700) {
@@ -240,17 +328,17 @@ export class OrbitalCreature {
           i--
           continue
         }
-        const k = 0.1 * Math.exp(-tl / 120) * Math.cos(tl / 40)
+        const k = 0.1 * amp * Math.exp(-tl / 120) * Math.cos(tl / 40)
         sx *= 1 + k
         sy *= 1 - k
       }
     }
-    const breath = 1 + (0.025 + 0.01 * dz) * Math.sin((this.clock * 2 * Math.PI) / lerp(4.6, 8, dz))
+    const breath = 1 + (0.025 + 0.01 * dz) * Math.sin((this.clock * 2 * Math.PI) / lerp(4.6, deep ? 10 : 8, dz))
     const perk = 1 + 0.05 * this.perkLevel
     o.sx = sx * breath * perk
     o.sy = sy * breath * perk * (1 - 0.04 * dz)
     o.x = 0
-    o.y = -(lift + 3 * this.perkLevel)
+    o.y = -(lift + 3 * amp * this.perkLevel)
 
     // Gaze: glance target, look-around, pointer, else a slow wander.
     let gx = 0.3 * Math.cos(this.clock * 0.37)
@@ -267,8 +355,15 @@ export class OrbitalCreature {
       this.toward(this.px, this.py)
       gx = this.tx
       gy = this.ty
+    } else if (m.attentive) {
+      gx = 0
+      gy = -0.6
     }
-    if (this.hasPointer) leanT = clamp(this.px / 500, -1, 1) * LEAN_MAX
+    // Attentive: at the user, or up, never down at the floor.
+    if (m.attentive && gy > -0.3) gy = -0.3
+    gx *= this.gazeRange
+    gy *= this.gazeRange
+    if (this.hasPointer) leanT = clamp(this.px / 500, -1, 1) * LEAN_MAX * amp
     if (dz > 0.01) {
       gx = lerp(gx, 0, dz)
       gy = lerp(gy, 0.55, dz)
