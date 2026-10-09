@@ -1,15 +1,18 @@
 /**
  * Agent overview: the right dock's first tab. The agent's live orbital, name,
- * DID, what it is doing, context use, four stats (Experience, Reach, Access,
- * Autonomy) and a facts line (7-day cost, age, next wake).
+ * what it is doing, model, context use, four levelled stats (Experience,
+ * Reach, Access, Autonomy) and a facts line (7-day cost, age, next wake).
  *
- * Stats come from `adf:agent:vitals` (main/services/agent-vitals.ts). There is
- * no push event, so the panel refetches on open, when a turn ends, when the
- * config changes, and every 10 s while it is showing (the slow part is cached
- * in main, so a poll costs little).
+ * Stats come from `adf:agent:vitals` (main/services/agent-vitals.ts), the
+ * sections under them from `adf:agent:activity` (OverviewActivity). There is
+ * no push event, so both refetch on open, when a turn ends, when the config
+ * changes, and every 10 s while the panel shows (useOverviewRead; main caches
+ * both reads, so a poll costs little).
  */
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { OverviewActivity } from './OverviewActivity'
+import { useOverviewRead, type OverviewReader } from './useOverviewRead'
 import { MAIN_LOOP, useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
 import { useDocumentStore } from '../../../stores/document.store'
@@ -17,26 +20,28 @@ import { getLoopActivity } from '../../../utils/loop-activity'
 import { Tooltip } from '../../common/Tooltip'
 import { LiveOrbital, orbitalMotionStateFor, useOpenAgentOrbitalSeed } from '../../orbital'
 import { resolveLoopThreshold } from '../../../../shared/utils/context-breakdown'
-import type { AgentConfig } from '../../../../shared/types/adf-v02.types'
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import type { AgentVitals, ExperienceStat, PowerStat } from '../../../../shared/types/agent-vitals.types'
 import {
+  HIGH_POWER_LABEL,
   LEVELS_STORAGE_KEY,
   agentStatusLabel,
   compactCount,
   configTargetFor,
   decideLevelUp,
+  experienceContributors,
+  experienceHeadline,
   experienceTooltip,
-  formatPoints,
+  levelBarParts,
   overviewFacts,
   parseStoredLevels,
-  powerSegments,
+  powerSections,
   powerTooltip,
-  shortDid,
-  type SegmentKind
+  visibleItems,
+  type LevelBarParts,
+  type PowerItem
 } from './agent-overview-model'
 
-const POLL_MS = 10_000
 const ORBITAL_SIZE = 112
 const PULSE_MS = 1200
 
@@ -53,48 +58,7 @@ const STAT_NAMES: Record<StatKey, string> = {
 // Data
 // =============================================================================
 
-function useAgentVitals(filePath: string | null, state: AgentState, config: AgentConfig | null): AgentVitals | null {
-  const [entry, setEntry] = useState<{ path: string; vitals: AgentVitals } | null>(null)
-  const seq = useRef(0)
-
-  const fetchVitals = useCallback((force: boolean) => {
-    const api = window.adfApi
-    if (!filePath || !api?.getAgentVitals) return
-    const id = ++seq.current
-    api.getAgentVitals(filePath, { force }).then(
-      (vitals) => {
-        if (id === seq.current && vitals) setEntry({ path: filePath, vitals })
-      },
-      () => {}
-    )
-  }, [filePath])
-
-  // Panel open, agent switch, and any config change (Studio edits and the
-  // runtime's own both land in the store). Debounced so a burst of saves is
-  // one read.
-  useEffect(() => {
-    const t = setTimeout(() => fetchVitals(true), 250)
-    return () => clearTimeout(t)
-  }, [fetchVitals, config])
-
-  // A turn just ended: loop rows, files and cost moved.
-  const prevState = useRef(state)
-  useEffect(() => {
-    const was = prevState.current
-    prevState.current = state
-    if (was === 'active' && state !== 'active') fetchVitals(true)
-  }, [state, fetchVitals])
-
-  // Light poll while the panel is mounted (it only is while its tab shows).
-  useEffect(() => {
-    const t = setInterval(() => {
-      if (!document.hidden) fetchVitals(false)
-    }, POLL_MS)
-    return () => clearInterval(t)
-  }, [fetchVitals])
-
-  return entry && entry.path === filePath ? entry.vitals : null
-}
+const readVitals: OverviewReader<AgentVitals> = (filePath, force) => window.adfApi?.getAgentVitals?.(filePath, { force })
 
 /** What the main loop is doing right now, for the status line and orbital motion. */
 function useLiveActivity(): { state: AgentState; label: string; toolRunning: boolean } {
@@ -181,7 +145,7 @@ export function AgentOverview() {
   const tokenEstimate = useAgentStore((s) => s.tokenEstimate)
   const seed = useOpenAgentOrbitalSeed()
   const live = useLiveActivity()
-  const vitals = useAgentVitals(filePath, live.state, config)
+  const vitals = useOverviewRead(filePath, live.state, config, readVitals)
   const pulsing = useLevelUpPulse(vitals?.did, vitals?.stats.experience.level)
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -218,7 +182,6 @@ export function AgentOverview() {
         </div>
         <div className="min-w-0 flex-1 pt-2 space-y-1">
           <h2 className="text-[15px] font-semibold leading-tight truncate" title={name}>{name}</h2>
-          {vitals?.did && <DidRow did={vitals.did} />}
           <p className="text-[12px] text-[var(--ink-muted)] truncate">
             {live.label}
             {model && <> · <span className="font-mono text-[11.5px]">{model}</span></>}
@@ -227,60 +190,28 @@ export function AgentOverview() {
         </div>
       </header>
 
-      {vitals && <StatGrid vitals={vitals} />}
+      <section className="space-y-2">
+        {vitals && <StatGrid vitals={vitals} />}
 
-      {facts.length > 0 && (
-        <p className="text-[12px] text-[var(--ink-muted)] tabular-nums">
-          {facts.map((f, i) => (
-            <span key={f.id}>
-              {i > 0 && ' · '}
-              {f.id === 'cost' && vitals?.cost7dPartial ? (
-                <Tooltip tip="Some calls had no known price, so the real cost is higher.">
-                  <span className="underline decoration-dotted decoration-[var(--ink-faint)] underline-offset-2">{f.text}</span>
-                </Tooltip>
-              ) : (
-                f.text
-              )}
-            </span>
-          ))}
-        </p>
-      )}
-    </div>
-  )
-}
-
-function DidRow({ did }: { did: string }) {
-  const [copied, setCopied] = useState(false)
-  useEffect(() => {
-    if (!copied) return
-    const t = setTimeout(() => setCopied(false), 1200)
-    return () => clearTimeout(t)
-  }, [copied])
-  const copy = () => {
-    navigator.clipboard?.writeText(did).then(() => setCopied(true), () => {})
-  }
-  return (
-    <div className="flex items-center gap-1 min-w-0">
-      <Tooltip tip={did} className="min-w-0 truncate">
-        <span className="font-mono text-[11.5px] text-[var(--ink-muted)]">{shortDid(did)}</span>
-      </Tooltip>
-      <button
-        type="button"
-        onClick={copy}
-        aria-label={copied ? 'DID copied' : 'Copy DID'}
-        className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-[var(--ink-faint)] hover:text-[var(--ink)] hover:bg-[var(--paper-sunken)]"
-      >
-        {copied ? (
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-        ) : (
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <rect x="9" y="9" width="13" height="13" rx="2" />
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-          </svg>
+        {facts.length > 0 && (
+          <p className="text-[12px] text-[var(--ink-muted)] tabular-nums">
+            {facts.map((f, i) => (
+              <span key={f.id}>
+                {i > 0 && ' · '}
+                {f.id === 'cost' && vitals?.cost7dPartial ? (
+                  <Tooltip tip="Some calls had no known price, so the real cost is higher.">
+                    <span className="underline decoration-dotted decoration-[var(--ink-faint)] underline-offset-2">{f.text}</span>
+                  </Tooltip>
+                ) : (
+                  f.text
+                )}
+              </span>
+            ))}
+          </p>
         )}
-      </button>
+      </section>
+
+      <OverviewActivity filePath={filePath} state={live.state} config={config} now={now} />
     </div>
   )
 }
@@ -337,6 +268,13 @@ function StatGrid({ vitals }: { vitals: AgentVitals }) {
     autonomy: powerTooltip(stats.autonomy)
   }
 
+  const bars: Record<StatKey, LevelBarParts> = {
+    experience: levelBarParts(stats.experience),
+    reach: levelBarParts(stats.reach),
+    access: levelBarParts(stats.access),
+    autonomy: levelBarParts(stats.autonomy)
+  }
+
   const cell = (key: StatKey, className: string) => (
     <Tooltip tip={tips[key]} disabled={open === key} className={`block ${className}`}>
       <button
@@ -348,7 +286,7 @@ function StatGrid({ vitals }: { vitals: AgentVitals }) {
         aria-expanded={open === key}
         className={`w-full h-full text-left px-3 py-2.5 transition-colors hover:bg-[var(--paper-sunken)] ${open === key ? 'bg-[var(--paper-sunken)]' : ''}`}
       >
-        {key === 'experience' ? <ExperienceCell stat={stats.experience} /> : <PowerCell name={STAT_NAMES[key]} stat={stats[key]} />}
+        <StatCell name={STAT_NAMES[key]} level={stats[key].level} bar={bars[key]} />
       </button>
     </Tooltip>
   )
@@ -363,9 +301,10 @@ function StatGrid({ vitals }: { vitals: AgentVitals }) {
       </div>
       {open && (
         <StatPopover
+          key={open}
           top={popTop}
           anchor={cellRefs.current[open] ?? null}
-          title={STAT_NAMES[open]}
+          title={`${STAT_NAMES[open]} · Lv ${stats[open].level}`}
           onClose={close}
         >
           {open === 'experience'
@@ -377,43 +316,34 @@ function StatGrid({ vitals }: { vitals: AgentVitals }) {
   )
 }
 
-function ExperienceCell({ stat }: { stat: ExperienceStat }) {
-  const pct = Math.round(Math.min(1, Math.max(0, stat.progress)) * 100)
+function StatCell({ name, level, bar }: { name: string; level: number; bar: LevelBarParts }) {
   return (
     <span className="block space-y-1.5">
       <span className="flex items-baseline justify-between gap-2">
-        <span className="text-[13px] font-semibold">Experience</span>
-        <span className="font-mono text-[12px] tabular-nums">Lv {stat.level}</span>
+        <span className="text-[13px] font-semibold">{name}</span>
+        <span className="font-mono text-[12px] tabular-nums">Lv {level}</span>
       </span>
-      <span className="block h-1.5 rounded-full bg-[var(--rule)] overflow-hidden" aria-hidden="true">
-        <span className="block h-full rounded-full bg-[var(--ink)]" style={{ width: `${pct}%` }} />
-      </span>
+      <LevelBar parts={bar} />
     </span>
   )
 }
 
-function PowerCell({ name, stat }: { name: string; stat: PowerStat }) {
-  return (
-    <span className="flex items-center justify-between gap-2 min-h-[22px]">
-      <span className="text-[13px] font-semibold">{name}</span>
-      <Segments kinds={powerSegments(stat)} />
-    </span>
-  )
-}
+/** Diagonal hatch for the gated share: present but held back. */
+const GATED_FILL = 'repeating-linear-gradient(135deg, var(--ink-muted) 0 1.5px, transparent 1.5px 3.5px)'
 
-const SEGMENT_CLASS: Record<SegmentKind, string> = {
-  open: 'bg-[var(--ink)]',
-  'open-high': 'bg-[var(--status-draft)]',
-  gated: 'border-[1.5px] border-[var(--ink-muted)]',
-  empty: 'bg-[var(--rule)]'
-}
-
-function Segments({ kinds }: { kinds: SegmentKind[] }) {
+/** Progress to the next level; solid = runs without asking, hatched = asks first. */
+function LevelBar({ parts }: { parts: LevelBarParts }) {
   return (
-    <span className="flex gap-[3px]" aria-hidden="true">
-      {kinds.map((k, i) => (
-        <span key={i} className={`block w-[10px] h-[10px] rounded-[2px] ${SEGMENT_CLASS[k]}`} />
-      ))}
+    <span className="flex h-1.5 rounded-full bg-[var(--rule)] overflow-hidden" aria-hidden="true">
+      {parts.openPct > 0 && (
+        <span
+          className="block h-full"
+          style={{ width: `${parts.openPct}%`, background: parts.high ? 'var(--status-draft)' : 'var(--ink)' }}
+        />
+      )}
+      {parts.gatedPct > 0 && (
+        <span className="block h-full" style={{ width: `${parts.gatedPct}%`, backgroundImage: GATED_FILL }} />
+      )}
     </span>
   )
 }
@@ -478,74 +408,107 @@ function StatPopover({ top, anchor, title, onClose, children }: {
 }
 
 function PowerDetail({ stat, onNavigate }: { stat: PowerStat; onNavigate: (configPath: string) => void }) {
-  const factors = stat.factors.slice().sort((a, b) => b.points - a.points)
-  const hasGated = factors.some((f) => f.gated && f.points > 0)
+  const sections = powerSections(stat)
+  const empty = sections.open.length + sections.gated.length + sections.limits.length === 0
   return (
     <>
-      <p className="text-[12px] text-[var(--ink-muted)] tabular-nums">
-        {stat.segments} of 5{stat.gated > 0 ? `, ${stat.gated} gated` : ''}
-      </p>
-      {factors.length === 0 ? (
-        <p className="text-[12px] text-[var(--ink-muted)]">No settings add to this yet.</p>
-      ) : (
-        <ul className="-mx-1.5">
-          {factors.map((f) => (
-            <li key={f.id}>
-              <button
-                type="button"
-                onClick={() => onNavigate(f.configPath)}
-                className="w-full flex items-center gap-2 px-1.5 py-1 rounded text-left text-[12px] hover:bg-[var(--paper-sunken)]"
-              >
-                <FactorMarker kind={f.points < 0 ? 'mitigation' : f.gated ? 'gated' : 'open'} />
-                <span className={`flex-1 min-w-0 ${f.points < 0 ? 'text-[var(--ink-muted)]' : ''}`}>{f.label}</span>
-                <span className="font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">{formatPoints(f.points)}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+      {stat.high && (
+        <p className="text-[12px] text-[var(--status-draft)]">{HIGH_POWER_LABEL}.</p>
       )}
-      <p className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--ink-faint)]">
-        <span className="flex items-center gap-1"><FactorMarker kind="open" />Runs without approval</span>
-        {hasGated && <span className="flex items-center gap-1"><FactorMarker kind="gated" />Needs approval</span>}
-      </p>
+      {empty && <p className="text-[12px] text-[var(--ink-muted)]">No settings add to this yet.</p>}
+      <PowerSection title="Runs without asking" marker="open" items={sections.open} onNavigate={onNavigate} />
+      <PowerSection title="Asks you first" marker="gated" items={sections.gated} onNavigate={onNavigate} />
+      <PowerSection title="Limits" marker="mitigation" items={sections.limits} onNavigate={onNavigate} />
     </>
+  )
+}
+
+function PowerSection({ title, marker, items, onNavigate }: {
+  title: string
+  marker: 'open' | 'gated' | 'mitigation'
+  items: PowerItem[]
+  onNavigate: (configPath: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  if (items.length === 0) return null
+  const { shown, hidden } = visibleItems(items, expanded)
+  return (
+    <section>
+      <h4 className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--ink-muted)]">
+        <FactorMarker kind={marker} />
+        {title}
+      </h4>
+      <ul className="-mx-1.5 mt-0.5">
+        {shown.map((item) => (
+          <li key={item.key}>
+            <button
+              type="button"
+              onClick={() => onNavigate(item.configPath)}
+              className={`w-full px-1.5 py-0.5 rounded text-left text-[12px] hover:bg-[var(--paper-sunken)] ${marker === 'mitigation' ? 'text-[var(--ink-muted)]' : ''}`}
+            >
+              {item.text}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {hidden > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-0.5 text-[11.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] underline-offset-2 hover:underline"
+        >
+          {hidden} more
+        </button>
+      )}
+    </section>
   )
 }
 
 function FactorMarker({ kind }: { kind: 'open' | 'gated' | 'mitigation' }) {
   if (kind === 'mitigation') {
-    return <span className="shrink-0 w-[8px] h-[2px] bg-[var(--ink-faint)]" aria-label="Lowers this stat" role="img" />
+    return <span className="shrink-0 w-[8px] h-[2px] bg-[var(--ink-faint)]" aria-hidden="true" />
   }
   return (
     <span
-      role="img"
-      aria-label={kind === 'gated' ? 'Needs approval' : 'Runs without approval'}
+      aria-hidden="true"
       className={`shrink-0 block w-[8px] h-[8px] rounded-[2px] ${kind === 'gated' ? 'border-[1.5px] border-[var(--ink-muted)]' : 'bg-[var(--ink)]'}`}
     />
   )
 }
 
 function ExperienceDetail({ stat }: { stat: ExperienceStat }) {
+  const lines = experienceContributors(stat)
   const rows = stat.breakdown.filter((b) => b.value > 0 && Math.round(b.xp) > 0)
   return (
     <>
-      <p className="text-[12px] text-[var(--ink-muted)] tabular-nums">
-        Level {stat.level} · {compactCount(Math.floor(stat.score))} of {compactCount(stat.nextLevelAt)} XP
-      </p>
-      {rows.length > 0 && (
-        <table className="w-full text-[12px]">
-          <tbody>
-            {rows.map((b) => (
-              <tr key={b.id}>
-                <td className="py-0.5">{b.label}</td>
-                <td className="py-0.5 pl-2 text-right font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">{compactCount(b.value)}</td>
-                <td className="py-0.5 pl-2 text-right font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">+{compactCount(Math.round(b.xp))} XP</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <p className="text-[12px] text-[var(--ink-muted)] tabular-nums">{experienceHeadline(stat)}</p>
+      {lines.length > 0 && (
+        <ul className="text-[12px] space-y-0.5">
+          {lines.map((line) => <li key={line}>{line}</li>)}
+        </ul>
       )}
-      <p className="text-[12px] text-[var(--ink-muted)]">{stat.nextLevel.hint}.</p>
+      <details className="text-[12px]">
+        <summary className="cursor-pointer text-[11.5px] text-[var(--ink-muted)] hover:text-[var(--ink)]">How XP adds up</summary>
+        <div className="pt-1.5 space-y-1.5">
+          <p className="text-[var(--ink-muted)] tabular-nums">
+            {compactCount(Math.floor(stat.score))} XP · Lv {stat.level + 1} at {compactCount(Math.ceil(stat.nextLevelAt))} XP
+          </p>
+          {rows.length > 0 && (
+            <table className="w-full">
+              <tbody>
+                {rows.map((b) => (
+                  <tr key={b.id}>
+                    <td className="py-0.5">{b.label}</td>
+                    <td className="py-0.5 pl-2 text-right font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">{compactCount(b.value)}</td>
+                    <td className="py-0.5 pl-2 text-right font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">+{compactCount(Math.round(b.xp))} XP</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <p className="text-[var(--ink-muted)]">{stat.nextLevel.hint}.</p>
+        </div>
+      </details>
     </>
   )
 }

@@ -1426,14 +1426,11 @@ const AgentFileRow = memo(function AgentFileRow({
   )
 })
 
-/** Sidebar avatar size (BRAND.md section 10: 40 px orbital avatars). */
-const AVATAR_PX = 40
-
 /**
- * The agent's orbital with the status dot as a corner badge. A stopped agent
- * is drawn at half opacity with no badge, so a quiet tree stays muted and the
- * running agents stand out; the badge then adds the finer state. The orbital
- * turns only while the agent is active.
+ * The agent's orbital with the status dot as a corner badge, in the same
+ * 16 px slot the emoji used. A stopped agent is drawn faded with no badge, so
+ * a quiet tree stays muted and the running agents stand out; the badge then
+ * adds the finer state. The orbital turns only while the agent is active.
  */
 const AgentAvatar = memo(function AgentAvatar({
   seed,
@@ -1451,18 +1448,14 @@ const AgentAvatar = memo(function AgentAvatar({
   const busy = starting || stopping
   const showBadge = busy || state !== 'not_participating'
   return (
-    <span className="relative shrink-0 flex items-center justify-center" style={{ width: AVATAR_PX, height: AVATAR_PX }}>
-      <OrbitalAvatar
-        seed={seed}
-        size={AVATAR_PX}
-        animated={state === 'active'}
-        state={running || busy ? undefined : 'off'}
-        className="transition-opacity"
-      />
+    <span className="relative shrink-0 w-4 h-4 flex items-center justify-center">
+      <span className={`flex transition-opacity ${running || busy ? '' : 'opacity-70'}`}>
+        <OrbitalAvatar seed={seed} size={16} animated={state === 'active'} />
+      </span>
       {showBadge && (
         // A ring in the row's own colour lifts the badge off the orbital beneath
         // it; the row sets --row-bg for rest, hover and selected.
-        <span className="absolute bottom-0.5 right-0.5 flex rounded-full shadow-[0_0_0_1.5px_var(--row-bg,var(--adf-surface-2))]">
+        <span className="absolute -bottom-0.5 -right-0.5 flex rounded-full shadow-[0_0_0_1.5px_var(--row-bg,var(--adf-surface-2))]">
           <StatusDot state={state} starting={starting} stopping={stopping} />
         </span>
       )}

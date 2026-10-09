@@ -2,13 +2,14 @@
 // adf:agent:vitals, from the same AgentVitalsService.
 //
 //   GET /agents/:id/vitals?force=1
+//   GET /agents/:id/activity?force=1   (the overview's lower sections)
 //
 // Studio hands the service its executor/workspace state; the daemon hands it
 // the RuntimeService's loaded agents (createDaemonVitalsDeps). A loaded agent
 // is read out of its open workspace; a tracked agent that is not loaded is
 // read from its file with a readonly peek.
 
-import type { FastifyInstance, FastifyReply } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { AgentVitalsDeps, AgentVitalsService } from '../services/agent-vitals'
 import { overlayLiveStates } from '../services/agent-vitals'
 import { toDisplayState } from '../runtime/display-state'
@@ -36,6 +37,7 @@ export interface DaemonVitalsSources {
   mesh?: DaemonVitalsMesh
   ws?: { getConnections(agentFilePath?: string): unknown[] }
   getAgentCost?: AgentVitalsDeps['getAgentCost']
+  getAgentDailyCost?: AgentVitalsDeps['getAgentDailyCost']
 }
 
 /** How old the fleet scan behind agentsSpawned may get before a vitals read redoes it. */
@@ -64,6 +66,7 @@ export function createDaemonVitalsDeps(src: DaemonVitalsSources): AgentVitalsDep
     getLiveExecStates: liveStates,
     getOpenWorkspaces: () => live().map((a) => ({ filePath: a.filePath, workspace: a.workspace })),
     getAgentCost: src.getAgentCost,
+    getAgentDailyCost: src.getAgentDailyCost,
   }
 }
 
@@ -97,26 +100,49 @@ export function registerVitalsRoutes(
   deps: { runtime: VitalsRuntime; vitals: AgentVitalsService; settings?: TrackedDirsSettings },
 ): void {
   let lastFleetScan = 0
-  server.get<{ Params: { id: string }; Querystring: { force?: string } }>('/agents/:id/vitals', async (request, reply) => {
+  type Req = { Params: { id: string }; Querystring: { force?: string } }
+
+  /** Validate `force` and resolve the file; sends the error reply and returns null on failure. */
+  const target = (request: FastifyRequest<Req>, reply: FastifyReply, what: string): { filePath: string; forced: boolean } | null => {
     const force = request.query.force
     if (force !== undefined && !['1', '0', 'true', 'false'].includes(force)) {
-      return reply.code(400).send({ error: 'force must be 1, 0, true or false', code: 'bad_request' })
+      reply.code(400).send({ error: 'force must be 1, 0, true or false', code: 'bad_request' })
+      return null
     }
-    const target = resolveVitalsFile(request.params.id, deps.runtime, deps.vitals, deps.settings)
-    if (!target) return reply.code(404).send({ error: `Unknown agent "${request.params.id}"`, code: 'not_found' })
-    if (!target.filePath) {
-      return reply.code(409).send({ error: 'Agent has no .adf file; vitals are read from the file.', code: 'conflict' })
+    const found = resolveVitalsFile(request.params.id, deps.runtime, deps.vitals, deps.settings)
+    if (!found) {
+      reply.code(404).send({ error: `Unknown agent "${request.params.id}"`, code: 'not_found' })
+      return null
     }
-    const forced = force === '1' || force === 'true'
+    if (!found.filePath) {
+      reply.code(409).send({ error: `Agent has no .adf file; ${what} read from the file.`, code: 'conflict' })
+      return null
+    }
+    return { filePath: found.filePath, forced: force === '1' || force === 'true' }
+  }
+
+  server.get<Req>('/agents/:id/vitals', async (request, reply) => {
+    const t = target(request, reply, 'vitals are')
+    if (!t) return reply
     try {
       // agentsSpawned counts children in the last fleet scan. Studio's fleet
       // poll keeps that fresh; the daemon has no poll, so refresh it here.
       const now = Date.now()
-      if (forced || now - lastFleetScan > FLEET_SCAN_MAX_AGE_MS) {
+      if (t.forced || now - lastFleetScan > FLEET_SCAN_MAX_AGE_MS) {
         await deps.vitals.getFleetStatus()
         lastFleetScan = now
       }
-      return await deps.vitals.getAgentVitals(target.filePath, { force: forced })
+      return await deps.vitals.getAgentVitals(t.filePath, { force: t.forced })
+    } catch (err) {
+      return fail(reply, err)
+    }
+  })
+
+  server.get<Req>('/agents/:id/activity', async (request, reply) => {
+    const t = target(request, reply, 'activity is')
+    if (!t) return reply
+    try {
+      return await deps.vitals.getAgentActivity(t.filePath, { force: t.forced })
     } catch (err) {
       return fail(reply, err)
     }

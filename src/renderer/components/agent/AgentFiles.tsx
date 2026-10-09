@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
+import { useAppStore } from '../../stores/app.store'
 import { Dialog } from '../common/Dialog'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
@@ -420,6 +421,21 @@ export function AgentFiles() {
     }
   }
 
+  // The overview's "What it knows" asks for a table: expand it once the list
+  // has it, then scroll to it. Unknown names are dropped.
+  const pendingTable = useAppStore((s) => s.pendingFilesTable)
+  useEffect(() => {
+    if (!pendingTable || tables.length === 0) return
+    useAppStore.getState().setPendingFilesTable(null)
+    if (!tables.some((t) => t.name === pendingTable)) return
+    if (expandedTable !== pendingTable) void toggleTable(pendingTable)
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-table-name="${CSS.escape(pendingTable)}"]`)?.scrollIntoView({ block: 'nearest' })
+    })
+    // toggleTable is recreated every render; the request is consumed once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingTable, tables])
+
   const handleDropTable = async (name: string) => {
     await window.adfApi?.dropLocalTable(name)
     if (expandedTable === name) {
@@ -684,7 +700,7 @@ export function AgentFiles() {
           {tables.map((table) => {
             const isExpanded = expandedTable === table.name
             return (
-              <div key={table.name}>
+              <div key={table.name} data-table-name={table.name}>
                 <div className="flex items-center group">
                   <button
                     onClick={() => toggleTable(table.name)}

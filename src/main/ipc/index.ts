@@ -149,7 +149,7 @@ import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { openSharedMnemonicStore } from '../services/owner-secret-store'
 import { AdfDatabase } from '../adf/adf-database'
 import { AgentVitalsService, overlayLiveStates } from '../services/agent-vitals'
-import type { AgentVitals } from '../../shared/types/agent-vitals.types'
+import type { AgentActivity, AgentVitals } from '../../shared/types/agent-vitals.types'
 import { resolveDefaultProvider, applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { generateAgentName } from '../../shared/utils/agent-names'
 import { cloneAdfFile } from '../adf/clone-fixup'
@@ -5813,7 +5813,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       if (currentFilePath && currentWorkspace) out.push({ filePath: currentFilePath, workspace: currentWorkspace })
       return out
     },
-    getAgentCost: (agentId) => getTokenUsageService().getAgentCost(agentId)
+    getAgentCost: (agentId) => getTokenUsageService().getAgentCost(agentId),
+    getAgentDailyCost: (agentId, dates) => getTokenUsageService().getAgentDailyCost(agentId, dates)
   })
   const getFleetStatus = (): Promise<FleetStatusResult> => agentVitals.getFleetStatus()
 
@@ -5823,6 +5824,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // skips the cache (the renderer passes it after turn_complete).
   ipcMain.handle(IPC.AGENT_VITALS, async (_event, args: { filePath: string; force?: boolean }): Promise<AgentVitals> =>
     agentVitals.getAgentVitals(args.filePath, { force: args.force }))
+
+  // Overview's lower sections. Same cache rules and refetch triggers as vitals.
+  ipcMain.handle(IPC.AGENT_ACTIVITY, async (_event, args: { filePath: string; force?: boolean }): Promise<AgentActivity> =>
+    agentVitals.getAgentActivity(args.filePath, { force: args.force }))
 
   // The fleet map's 5s poll in ONE round-trip. It used to fire five separate
   // invokes every cycle; each is the same handler body as before, just called

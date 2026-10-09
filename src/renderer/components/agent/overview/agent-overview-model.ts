@@ -1,37 +1,46 @@
 /**
- * Pure helpers for the agent overview panel: power-bar segments, tooltip
- * one-liners, the facts line, level-up decisions and where a stat factor's
- * config lives. No React, no IO; unit-tested in
+ * Pure helpers for the agent overview panel: level bars, tooltip one-liners,
+ * popover sections, the facts line, level-up decisions and where a stat
+ * factor's config lives. No React, no IO; unit-tested in
  * tests/unit/renderer/agent-overview-model.test.ts.
  */
 
 import type { AgentState } from '../../../../shared/types/ipc.types'
-import type { ExperienceStat, PowerStat } from '../../../../shared/types/agent-vitals.types'
+import type { ActivityDay, ActivityEvent, ExperienceStat, PowerStat, StatFactor } from '../../../../shared/types/agent-vitals.types'
+import { RECENT_LIMIT, mergeRecent } from '../../../../shared/utils/agent-activity'
 
-export const POWER_SEGMENTS = 5
+// =============================================================================
+// Level bar
+// =============================================================================
 
-/**
- * One drawn segment. `open` = solid ink, `open-high` = open at position 4 or
- * 5 (warn colour), `gated` = outlined (needs approval), `empty` = track.
- */
-export type SegmentKind = 'open' | 'open-high' | 'gated' | 'empty'
+/** Words for the warn colour (brand: a status colour always carries a label). */
+export const HIGH_POWER_LABEL = 'Much of this runs without asking'
 
-/** Open segments fill first, then gated; the rest stay empty. */
-export function powerSegments(stat: Pick<PowerStat, 'open' | 'gated'>): SegmentKind[] {
-  const open = clampInt(stat.open, 0, POWER_SEGMENTS)
-  const gated = clampInt(stat.gated, 0, POWER_SEGMENTS - open)
-  const out: SegmentKind[] = []
-  for (let i = 0; i < POWER_SEGMENTS; i++) {
-    if (i < open) out.push(i >= 3 ? 'open-high' : 'open')
-    else if (i < open + gated) out.push('gated')
-    else out.push('empty')
-  }
-  return out
+export interface LevelBarParts {
+  /** Width of the solid (open) fill, 0..100. */
+  openPct: number
+  /** Width of the light (gated) fill after it, 0..100. openPct + gatedPct = progress. */
+  gatedPct: number
+  /** Draw the open fill in the warn colour. */
+  high: boolean
 }
 
-function clampInt(n: number, lo: number, hi: number): number {
-  if (!Number.isFinite(n)) return lo
-  return Math.max(lo, Math.min(hi, Math.round(n)))
+function toPct(n: number): number {
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, n * 100)) : 0
+}
+
+/**
+ * The bar shows progress to the next level. For a power stat the fill splits
+ * by the stat's open share: solid for what runs without asking, light for
+ * what asks first. Experience (no open/gated) is all solid.
+ */
+export function levelBarParts(stat: { progress: number; open?: number; gated?: number; high?: boolean }): LevelBarParts {
+  const total = toPct(stat.progress)
+  const open = Math.max(0, stat.open ?? 0)
+  const gated = Math.max(0, stat.gated ?? 0)
+  const share = open + gated > 0 ? open / (open + gated) : stat.gated === undefined ? 1 : 0
+  const openPct = Math.round(total * share * 10) / 10
+  return { openPct, gatedPct: Math.round((total - openPct) * 10) / 10, high: !!stat.high }
 }
 
 /** 950 → "950", 1234 → "1.2k", 12_345 → "12k", 1_500_000 → "1.5M". */
@@ -56,22 +65,34 @@ function lowerFirst(s: string): string {
   return s ? s.charAt(0).toLowerCase() + s.slice(1) : s
 }
 
-/** "4 of 5, 3 gated · serves a public web page, 3 HTTP API routes" */
+function stripParenthetical(label: string): string {
+  return label.replace(/\s*\([^)]*\)\s*$/, '')
+}
+
+/** "Lv 7, mostly asks you first · serves a public web page, 3 HTTP API routes" */
 export function powerTooltip(stat: PowerStat, maxFactors = 2): string {
-  const head = stat.gated > 0
-    ? `${stat.segments} of ${POWER_SEGMENTS}, ${stat.gated} gated`
-    : `${stat.segments} of ${POWER_SEGMENTS}`
+  let head = `Lv ${stat.level}`
+  if (stat.points > 0 && stat.gated > 0) {
+    const share = stat.gated / stat.points
+    head += share >= 0.99 ? ', all asks you first' : share >= 0.5 ? ', mostly asks you first' : ', some asks you first'
+  }
+  if (stat.high) head += `. ${HIGH_POWER_LABEL}`
   const top = stat.factors
     .filter((f) => f.points > 0)
     .slice()
     .sort((a, b) => b.points - a.points)
     .slice(0, maxFactors)
     // Parentheticals (event lists, "needs approval") belong in the popover.
-    .map((f) => lowerFirst(f.label.replace(/\s*\([^)]*\)\s*$/, '')))
+    .map((f) => lowerFirst(stripParenthetical(f.label)))
   return top.length ? `${head} · ${top.join(', ')}` : head
 }
 
-/** "1.2k loop messages · 18 files · 3 skills · next level in 40 XP" */
+/** "340 XP to Lv 22" */
+export function experienceHeadline(exp: ExperienceStat): string {
+  return `${compactCount(Math.ceil(exp.nextLevel.xp))} XP to Lv ${exp.level + 1}`
+}
+
+/** "1.2k loop messages · 18 files · 3 skills · 340 XP to Lv 22" */
 export function experienceTooltip(exp: ExperienceStat): string {
   const value = (id: string): number => exp.breakdown.find((b) => b.id === id)?.value ?? 0
   const parts: string[] = []
@@ -81,14 +102,130 @@ export function experienceTooltip(exp: ExperienceStat): string {
   if (loops > 0) parts.push(plural(loops, 'loop message'))
   if (files > 0) parts.push(plural(files, 'file'))
   if (skills > 0) parts.push(plural(skills, 'skill'))
-  parts.push(`next level in ${compactCount(Math.ceil(exp.nextLevel.xp))} XP`)
+  parts.push(experienceHeadline(exp))
   return parts.join(' · ')
 }
 
-/** Signed points for the popover: "+1", "+0.5", "-0.25". */
-export function formatPoints(points: number): string {
-  const r = Math.round(points * 100) / 100
-  return r > 0 ? `+${r}` : String(r)
+const CONTRIBUTOR_NOUN: Record<string, [string, string]> = {
+  loopEntries: ['loop message', 'loop messages'],
+  filesWritten: ['file written', 'files written'],
+  skills: ['skill', 'skills'],
+  localTables: ['database table', 'database tables'],
+  localRows: ['database row', 'database rows'],
+  compactions: ['compaction', 'compactions'],
+  agentsSpawned: ['agent created', 'agents created'],
+  ageDays: ['day active', 'days active']
+}
+
+/** Plain lines for what earned the most XP, largest first: "1.2k loop messages". */
+export function experienceContributors(exp: ExperienceStat, max = 5): string[] {
+  return exp.breakdown
+    .filter((b) => b.value > 0 && b.xp >= 0.5)
+    .slice()
+    .sort((a, b) => b.xp - a.xp)
+    .slice(0, max)
+    .map((b) => {
+      const noun = CONTRIBUTOR_NOUN[b.id] ?? [b.label.toLowerCase(), b.label.toLowerCase()]
+      return plural(b.value, noun[0], noun[1])
+    })
+}
+
+// =============================================================================
+// Power popover sections
+// =============================================================================
+
+/** Items shown per section before "N more". */
+export const SECTION_LIMIT = 5
+
+export interface PowerItem {
+  /** Stable React key: the fold group, or the factor id. */
+  key: string
+  text: string
+  /** Factors folded into this line. */
+  count: number
+  /** Where the first folded factor is configured. */
+  configPath: string
+  /** Sum of the folded points. Sort key only; never shown. */
+  points: number
+}
+
+export interface PowerSections {
+  /** "Runs without asking" */
+  open: PowerItem[]
+  /** "Asks you first" */
+  gated: PowerItem[]
+  /** "Limits": mitigations. */
+  limits: PowerItem[]
+}
+
+/** Tool factors that fold into one line per kind. */
+const TOOL_GROUP: Record<string, string> = {
+  fs_read: 'files',
+  fs_write: 'files',
+  fs_delete: 'files',
+  db_execute: 'files',
+  fs_transfer: 'files',
+  sys_code: 'code',
+  sys_lambda: 'code',
+  adf_shell: 'code',
+  sys_fetch: 'network',
+  ws_connect: 'network',
+  stream_bind: 'network'
+}
+
+const GROUP_PHRASE: Record<string, (n: number) => string> = {
+  files: (n) => `${n} file and data tools`,
+  code: (n) => `${n} code tools`,
+  network: (n) => `${n} network tools`,
+  mcp: (n) => `${n} MCP servers`,
+  'mcp-credentials': (n) => `${n} MCP servers hold credentials`,
+  adapters: (n) => `${n} chat channels`
+}
+
+/** The fold group a factor belongs to, or null when it stands alone. */
+export function factorGroup(id: string): string | null {
+  if (id.startsWith('tool:')) return TOOL_GROUP[id.slice(5)] ?? null
+  if (/^mcp:.+:credentials$/.test(id)) return 'mcp-credentials'
+  if (id.startsWith('mcp:')) return 'mcp'
+  if (id.startsWith('adapter:')) return 'adapters'
+  return null
+}
+
+/** Fold same-kind factors into one line with a count; a group of one keeps its own label. */
+export function foldFactors(factors: StatFactor[]): PowerItem[] {
+  const items: PowerItem[] = []
+  const byGroup = new Map<string, PowerItem>()
+  for (const f of factors) {
+    const group = factorGroup(f.id)
+    const existing = group ? byGroup.get(group) : undefined
+    if (group && existing) {
+      existing.count++
+      existing.points += f.points
+      existing.text = GROUP_PHRASE[group](existing.count)
+      continue
+    }
+    const item: PowerItem = { key: group ?? f.id, text: stripParenthetical(f.label), count: 1, configPath: f.configPath, points: f.points }
+    if (group) byGroup.set(group, item)
+    items.push(item)
+  }
+  return items
+}
+
+/** Split factors into the popover's three sections, folded, heaviest first. */
+export function powerSections(stat: Pick<PowerStat, 'factors'>): PowerSections {
+  const positive = stat.factors.filter((f) => f.points > 0)
+  const byWeight = (a: PowerItem, b: PowerItem): number => b.points - a.points
+  return {
+    open: foldFactors(positive.filter((f) => !f.gated)).sort(byWeight),
+    gated: foldFactors(positive.filter((f) => f.gated)).sort(byWeight),
+    limits: foldFactors(stat.factors.filter((f) => f.points < 0)).sort((a, b) => a.points - b.points)
+  }
+}
+
+/** The first `limit` items unless expanded, and how many are hidden. */
+export function visibleItems<T>(items: T[], expanded: boolean, limit = SECTION_LIMIT): { shown: T[]; hidden: number } {
+  if (expanded || items.length <= limit) return { shown: items, hidden: 0 }
+  return { shown: items.slice(0, limit), hidden: items.length - limit }
 }
 
 // =============================================================================
@@ -142,15 +279,6 @@ export function overviewFacts(v: FactsInput, now: number): Fact[] {
 // =============================================================================
 // Header
 // =============================================================================
-
-/** "did:key:z6MkhaXg…Y9fQ" → "did:key:z6Mk…Y9fQ". */
-export function shortDid(did: string): string {
-  const cut = did.lastIndexOf(':')
-  const prefix = did.slice(0, cut + 1)
-  const id = did.slice(cut + 1)
-  if (id.length <= 10) return did
-  return `${prefix}${id.slice(0, 4)}…${id.slice(-4)}`
-}
 
 export function agentStatusLabel(
   state: AgentState | null | undefined,
@@ -239,4 +367,164 @@ export function configTargetFor(configPath: string): ConfigTarget {
     model: 'Model'
   }
   return section[head] ? { subTab: 'config', section: section[head] } : { subTab: 'config' }
+}
+
+// =============================================================================
+// Activity sections
+// =============================================================================
+
+/** "just now", "4 min ago", "3 h ago", "2 days ago". */
+export function formatAgo(at: number, now: number): string {
+  const ms = now - at
+  if (!Number.isFinite(ms) || ms < 60_000) return 'just now'
+  const min = Math.floor(ms / 60_000)
+  if (min < 60) return `${min} min ago`
+  const h = Math.floor(ms / 3_600_000)
+  if (h < 48) return `${h} h ago`
+  return `${Math.floor(ms / 86_400_000)} days ago`
+}
+
+/** "in 4 min", "in 3 h", "in 2 days", "due". */
+export function formatUntil(at: number, now: number): string {
+  const ms = at - now
+  if (!Number.isFinite(ms) || ms <= 0) return 'due'
+  const min = Math.round(ms / 60_000)
+  if (min < 1) return 'in under a minute'
+  if (min < 60) return `in ${min} min`
+  const h = Math.round(ms / 3_600_000)
+  if (h < 48) return `in ${h} h`
+  return `in ${Math.round(ms / 86_400_000)} days`
+}
+
+const MAIN_LOOP_NAME = 'main'
+
+/** One recent-activity line: plain words plus an optional monospace part (tool name, path). */
+export interface EventText {
+  lead: string
+  mono?: string
+  tail?: string
+}
+
+export function activityEventText(e: ActivityEvent): EventText {
+  switch (e.kind) {
+    case 'turn':
+      return e.loop && e.loop !== MAIN_LOOP_NAME ? { lead: 'Turn finished in ', mono: e.loop } : { lead: 'Turn finished' }
+    case 'tool':
+      return { lead: '', mono: e.label, tail: e.count && e.count > 1 ? ` ×${e.count}` : undefined }
+    case 'message_in':
+      return { lead: `Message from ${e.label}` }
+    case 'message_out':
+      return { lead: `Message to ${e.label}` }
+    case 'file':
+      return { lead: 'Wrote ', mono: e.label }
+    case 'error':
+      return { lead: e.label }
+  }
+}
+
+
+/** The slice of an agent-store log entry the live merge reads. */
+export interface LiveLogEntry {
+  type: string
+  content: string
+  timestamp: number
+  metadata?: Record<string, unknown>
+}
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : ''
+}
+
+/**
+ * Store log entries newer than `since` as activity events, newest first:
+ * tool calls, failed tool results, errors and inter-agent messages. A turn's
+ * end is not in the log; the refetch when the turn ends brings it.
+ */
+export function liveLogEvents(log: LiveLogEntry[], since: number): ActivityEvent[] {
+  const out: ActivityEvent[] = []
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i]
+    if (!(e.timestamp > since)) break
+    const m = e.metadata ?? {}
+    if (e.type === 'tool_call' && str(m.name)) out.push({ kind: 'tool', at: e.timestamp, label: str(m.name) })
+    else if (e.type === 'tool_result' && m.isError === true) out.push({ kind: 'error', at: e.timestamp, label: `${str(m.name) || 'A tool call'} failed` })
+    else if (e.type === 'error') out.push({ kind: 'error', at: e.timestamp, label: shortLine(e.content) || 'Error' })
+    else if (e.type === 'inter_agent') {
+      const incoming = m.direction === 'incoming'
+      const party = str(incoming ? m.fromAgent : m.toAgent) || 'unknown'
+      out.push({ kind: incoming ? 'message_in' : 'message_out', at: e.timestamp, label: party })
+    }
+  }
+  return out
+}
+
+function shortLine(s: string, max = 80): string {
+  const line = s.trim().split(/\r?\n/, 1)[0] ?? ''
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line
+}
+
+/** Server events plus live log entries after the read, grouped, newest first. */
+export function mergeLiveActivity(server: ActivityEvent[], log: LiveLogEntry[], since: number, limit = RECENT_LIMIT): ActivityEvent[] {
+  return mergeRecent([liveLogEvents(log, since), server], limit)
+}
+
+/** Something waiting on the user, from the agent store's pending maps. */
+export interface WaitingItem {
+  key: string
+  text: string
+  loop: string
+}
+
+/**
+ * Pending approvals ("Approve fs_write") and asks ("Answer: <question>") for
+ * every loop, main first. The tool name comes from the approval's log entry.
+ */
+export function waitingItems(slices: Array<{
+  loop: string
+  log: Array<LiveLogEntry & { id: string }>
+  approvals: Iterable<string>
+  asks: Iterable<[string, { question: string }]>
+}>): WaitingItem[] {
+  const out: WaitingItem[] = []
+  for (const s of slices) {
+    const where = s.loop === MAIN_LOOP_NAME ? '' : ` in ${s.loop}`
+    for (const id of s.approvals) {
+      const entry = s.log.find((e) => e.id === id)
+      const name = str(entry?.metadata?.name)
+      out.push({ key: `approval:${s.loop}:${id}`, text: `${name ? `Approve ${name}` : 'Approve a tool call'}${where}`, loop: s.loop })
+    }
+    for (const [id, ask] of s.asks) {
+      const q = shortLine(ask.question, 60)
+      out.push({ key: `ask:${s.loop}:${id}`, text: `${q ? `Answer: ${q}` : 'Answer a question'}${where}`, loop: s.loop })
+    }
+  }
+  return out
+}
+
+export function sparkSummary(daily: ActivityDay[]): string {
+  const total = daily.reduce((n, d) => n + d.turns, 0)
+  return `${total === 1 ? '1 turn' : `${compactCount(total)} turns`} in the last ${daily.length} days`
+}
+
+const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** "Mon 6 Oct · 4 turns · $0.12" (cost only when the ledger has it). */
+export function dayTooltip(day: ActivityDay, isToday = false): string {
+  const [y, mo, d] = day.date.split('-').map(Number)
+  const date = new Date(y, (mo || 1) - 1, d || 1)
+  const head = isToday ? 'Today' : `${WEEKDAY[date.getDay()]} ${date.getDate()} ${MONTH[date.getMonth()]}`
+  const parts = [head, day.turns === 1 ? '1 turn' : `${compactCount(day.turns)} turns`]
+  if (typeof day.costUsd === 'number') parts.push(`${formatCost(day.costUsd)}${day.costPartial ? ' or more' : ''}`)
+  return parts.join(' · ')
+}
+
+/** Bar heights in px for the sparkline: 0 for an empty day, at least 2 px otherwise. */
+export function sparkHeights(daily: ActivityDay[], height: number): number[] {
+  const max = daily.reduce((m, d) => Math.max(m, d.turns), 0)
+  return daily.map((d) => (d.turns > 0 && max > 0 ? Math.max(2, Math.round((d.turns / max) * height)) : 0))
+}
+
+export function rowsLabel(n: number): string {
+  return plural(n, 'row')
 }

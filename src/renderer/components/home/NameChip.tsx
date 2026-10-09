@@ -33,7 +33,7 @@ function pickOthers(list: readonly string[], avoid: string, n: number): string[]
  * clicking the name types one. A roll spins the adjective column up
  * and the plant column down and lands in under a second. Typed names only
  * have to be file names; rolled ones are always adjective-plant. `onSpin`
- * is told about every roll so the composer can react after a few, and
+ * is told about every roll (home renews the identity with it), and
  * `onInvalid` gets the reason a typed name was refused.
  */
 export function NameChip({ name, onChange, onSpin, onInvalid, refused = 0 }: {

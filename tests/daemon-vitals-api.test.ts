@@ -30,7 +30,7 @@ import { createDaemonVitalsDeps } from '../src/main/daemon/vitals-routes'
 import { overlayLiveStates } from '../src/main/services/agent-vitals'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { MockLLMProvider, createHeadlessAgent } from '../src/main/runtime/headless'
-import type { AgentVitals } from '../src/shared/types/agent-vitals.types'
+import type { AgentActivity, AgentVitals } from '../src/shared/types/agent-vitals.types'
 import type { MeshAgentStatus } from '../src/shared/types/ipc.types'
 
 const cleanups: Array<() => Promise<unknown> | unknown> = []
@@ -82,8 +82,10 @@ describe('GET /agents/:id/vitals', () => {
     expect(body).toEqual(expect.objectContaining({ live: true, handle: 'agent-1', agentId }))
     expect(body.ageDays).toBeGreaterThan(0)
     for (const stat of [body.stats.reach, body.stats.access, body.stats.autonomy]) {
-      expect(stat.segments).toBe(stat.gated + stat.open)
-      expect(stat.segments).toBeLessThanOrEqual(5)
+      expect(stat.points).toBeCloseTo(stat.gated + stat.open)
+      expect(stat.level).toBeGreaterThanOrEqual(1)
+      expect(stat.progress).toBeGreaterThanOrEqual(0)
+      expect(stat.progress).toBeLessThan(1)
     }
     expect(body.stats.experience.level).toBeGreaterThanOrEqual(1)
 
@@ -129,6 +131,49 @@ describe('GET /agents/:id/vitals', () => {
     const badForce = await server.inject({ method: 'GET', url: `/agents/${memory.id}/vitals?force=yes` })
     expect(badForce.statusCode).toBe(400)
     expect(badForce.json().code).toBe('bad_request')
+  })
+})
+
+describe('GET /agents/:id/activity', () => {
+  it('reads a loaded agent: 14 local days, wakes, recent events and what it knows', async () => {
+    const { dir, runtime, server } = setup()
+    const { filePath, agentId } = seedAgent(dir, 1)
+    await runtime.loadAgent(filePath)
+    const live = runtime.listLiveAgents().find(a => a.agentId === agentId)!
+    live.workspace.writeFile('notes/today.md', 'hello')
+    live.workspace.addTimer({ mode: 'interval', every_ms: 600_000 }, Date.now() + 600_000, 'Check the inbox', ['agent'])
+
+    const res = await server.inject({ method: 'GET', url: '/agents/agent-1/activity' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as AgentActivity
+    expect(body.live).toBe(true)
+    expect(body.daily).toHaveLength(14)
+    expect(body.upcoming).toEqual([expect.objectContaining({ scope: 'agent', label: 'Check the inbox' })])
+    expect(body.knowledge.files.map(f => f.path)).toContain('notes/today.md')
+    expect(body.recent).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'file', label: 'notes/today.md' })]))
+
+    // A write lands on the next forced read, by agent id.
+    live.workspace.writeFile('notes/later.md', 'more')
+    const forced = (await server.inject({ method: 'GET', url: `/agents/${agentId}/activity?force=1` })).json() as AgentActivity
+    expect(forced.knowledge.filesTotal).toBe(body.knowledge.filesTotal + 1)
+  })
+
+  it('reads a tracked agent that is not loaded from its file', async () => {
+    const { dir, server } = setup({ tracked: true })
+    seedAgent(dir, 2)
+    const res = await server.inject({ method: 'GET', url: '/agents/agent-2/activity' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual(expect.objectContaining({ live: false, dailyPartial: false, upcoming: [] }))
+  })
+
+  it('answers 404, 409 and 400 like vitals', async () => {
+    const { runtime, server } = setup({ tracked: true })
+    const memory = runtime.createAgent({ name: 'agent-3', provider: new MockLLMProvider() })
+    expect((await server.inject({ method: 'GET', url: '/agents/agent-9/activity' })).statusCode).toBe(404)
+    const noFile = await server.inject({ method: 'GET', url: `/agents/${memory.id}/activity` })
+    expect(noFile.statusCode).toBe(409)
+    expect(noFile.json()).toEqual({ error: 'Agent has no .adf file; activity is read from the file.', code: 'conflict' })
+    expect((await server.inject({ method: 'GET', url: `/agents/${memory.id}/activity?force=yes` })).statusCode).toBe(400)
   })
 })
 

@@ -174,6 +174,8 @@ const api: AdfApi = {
   getMeshFleetStatus: () => ipcRenderer.invoke(IPC.MESH_FLEET_STATUS),
   getAgentVitals: (filePath: string, opts?: { force?: boolean }) =>
     ipcRenderer.invoke(IPC.AGENT_VITALS, { filePath, force: opts?.force }),
+  getAgentActivity: (filePath: string, opts?: { force?: boolean }) =>
+    ipcRenderer.invoke(IPC.AGENT_ACTIVITY, { filePath, force: opts?.force }),
   getMeshTokenBurn: () => ipcRenderer.invoke(IPC.MESH_TOKEN_BURN),
   onMeshEvent: (callback: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>

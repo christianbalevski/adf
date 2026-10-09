@@ -37,7 +37,7 @@ examples: [Base URL and authentication](api-guide.md#base-url-and-authentication
 |------|--------|-------|
 | Health and contract | `GET /health` (no token), `GET /openapi.json`, `POST /daemon/shutdown` | [Authentication](api-guide.md#base-url-and-authentication) |
 | Events | `GET /events` (SSE), `GET /agents/:id/umbilical/events` | [The event stream](api-guide.md#the-event-stream) |
-| Agents and files | `/agents`, `/agents/load`, `/agents/:id/{start,stop,unload,interrupt,abort,state,status,vitals}`, `/agents/autostart`, `/agents/review`, `/tracked-dirs` | [Agents and files](api-guide.md#agents-and-files) |
+| Agents and files | `/agents`, `/agents/load`, `/agents/:id/{start,stop,unload,interrupt,abort,state,status,vitals,activity}`, `/agents/autostart`, `/agents/review`, `/tracked-dirs` | [Agents and files](api-guide.md#agents-and-files) |
 | Loops | `/agents/:id/loops[/:name]`, `loop` on chat, history, abort, interrupt, compact and timers | [Loops](api-guide.md#loops) |
 | Chat and history | `POST /agents/:id/chat`, `GET\|DELETE /agents/:id/chat`, `GET /agents/:id/loop`, `POST /agents/:id/trigger` | [Chat turns](api-guide.md#chat-turns-and-reading-results) |
 | Approvals, asks, suspends | `/agents/:id/tasks[...]`, `/agents/:id/asks[...]`, `/agents/:id/suspend/respond` | [HIL](api-guide.md#approvals-questions-and-suspends-hil) |

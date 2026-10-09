@@ -1,14 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { IdentityDraft } from '../../../shared/types/ipc.types'
-import { LiveOrbital } from '../orbital'
-import { Tooltip } from '../common/Tooltip'
-
-const DID_HEAD = 'did:key:z6Mk'.length
-
-/** did:key:z6Mk…ab12 */
-export function shortDid(did: string): string {
-  return did.length > DID_HEAD + 8 ? `${did.slice(0, DID_HEAD)}…${did.slice(-4)}` : did
-}
+import { LiveOrbital, type LiveOrbitalHandle } from '../orbital'
+import { usePrefersReducedMotion } from '../orbital/orbital-env'
 
 function discard(d: IdentityDraft | null): void {
   if (d) window.adfApi.discardIdentityDraft(d.draftId).catch(() => {})
@@ -17,32 +10,55 @@ function discard(d: IdentityDraft | null): void {
 /**
  * The next agent's identity, minted in main before the agent exists. The
  * private key never leaves main; this holds only { draftId, did }. `renew`
- * drops the current draft and mints another (the reroll, and after a send,
- * whose create consumed it). The draft is dropped on unmount. Mints that
- * land after a newer renew, or after unmount, are discarded on arrival.
+ * drops the current draft and mints another (on a name reroll, and after a
+ * send, whose create consumed it). At most one mint is in flight: renews
+ * that land while one is pending coalesce, and the stale result is discarded
+ * on arrival and replaced by one fresh mint, so rapid rerolls never leak
+ * drafts and the latest renew always wins. The draft is dropped on unmount.
  */
-export function useIdentityDraft(): { draft: IdentityDraft | null; renew: () => void; current: () => IdentityDraft | null } {
+export interface IdentityDraftHandle {
+  draft: IdentityDraft | null
+  renew: () => void
+  current: () => IdentityDraft | null
+}
+
+export function useIdentityDraft(): IdentityDraftHandle {
   const [draft, setDraft] = useState<IdentityDraft | null>(null)
   const held = useRef<IdentityDraft | null>(null)
   const seq = useRef(0)
   const alive = useRef(false)
+  const inflight = useRef(false)
 
-  const renew = useCallback(() => {
-    const mine = ++seq.current
-    discard(held.current)
-    held.current = null
+  const mint = useCallback(() => {
+    const mine = seq.current
+    inflight.current = true
+    const settle = (): boolean => {
+      inflight.current = false
+      if (!alive.current) return false
+      // A renew came in while this mint was out: mint once more for it.
+      if (mine !== seq.current) { mint(); return false }
+      return true
+    }
     window.adfApi.mintIdentityDraft().then(
       (next) => {
-        if (!alive.current || mine !== seq.current) { discard(next); return }
+        if (!settle()) { discard(next); return }
         held.current = next
         setDraft(next)
       },
       (err) => {
+        if (!settle()) return
         console.warn('[home] Could not mint an identity draft:', err)
-        if (alive.current && mine === seq.current) setDraft(null)
+        setDraft(null)
       }
     )
   }, [])
+
+  const renew = useCallback(() => {
+    seq.current++
+    discard(held.current)
+    held.current = null
+    if (!inflight.current) mint()
+  }, [mint])
 
   useEffect(() => {
     alive.current = true
@@ -60,44 +76,50 @@ export function useIdentityDraft(): { draft: IdentityDraft | null; renew: () => 
 }
 
 /**
- * The next agent's orbital, seeded by its real DID. Typing in the name turns
- * it (spinImpulse); the DID alone decides the shape, so the only way to a
- * different shape is a new identity.
+ * The next agent's orbital, centred on home where the empty-state icon was,
+ * seeded by its real DID (never shown). Typing in the name turns it
+ * (spinImpulse); the DID alone decides the shape, and a name reroll brings a
+ * new identity: the new shape comes in with a short fade-scale and a spin
+ * kick (instant under reduced motion). `children` overlays the orbital box
+ * (the reroll quip bubble).
  */
-export function NextAgentIdentity({ did, spinImpulse, onReroll, disabled }: {
+export function NextAgentOrbital({ did, spinImpulse, children }: {
   did: string | null
   spinImpulse: number
-  onReroll: () => void
-  disabled?: boolean
+  children?: React.ReactNode
 }) {
+  const orbital = useRef<LiveOrbitalHandle>(null)
+  const box = useRef<HTMLDivElement>(null)
+  const reduce = usePrefersReducedMotion()
+  const lastDid = useRef(did)
+  const kickNext = useRef(false)
+  // The fade starts before paint, so the new shape's first frame is already
+  // faded. The kick waits for the passive effect: LiveOrbital zeroes its spin
+  // on a new seed in its own effect, which runs before this parent's.
+  useLayoutEffect(() => {
+    const prev = lastDid.current
+    lastDid.current = did
+    if (!prev || !did || prev === did || reduce) return
+    kickNext.current = true
+    box.current?.animate(
+      [{ opacity: 0.25, transform: 'scale(0.92)' }, { opacity: 1, transform: 'scale(1)' }],
+      { duration: 260, easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)' }
+    )
+  }, [did, reduce])
+  useEffect(() => {
+    if (!kickNext.current) return
+    kickNext.current = false
+    orbital.current?.kick(4)
+  }, [did])
+
   return (
-    <div className="flex w-[104px] shrink-0 flex-col items-center gap-1">
-      <LiveOrbital seed={did} size={96} spinImpulse={spinImpulse} />
-      <div className="flex max-w-full items-center gap-0.5">
-        {did ? (
-          <Tooltip tip={did} className="min-w-0">
-            <span title={did} className="block truncate font-mono text-[10px] text-[var(--adf-ui-text-subtle)]">
-              {shortDid(did)}
-            </span>
-          </Tooltip>
-        ) : (
-          <span className="font-mono text-[10px] text-[var(--adf-ui-text-subtle)]">&nbsp;</span>
-        )}
-        <Tooltip tip="New identity" className="shrink-0">
-          <button
-            type="button"
-            onClick={onReroll}
-            disabled={disabled}
-            aria-label="New identity"
-            className="flex h-5 w-5 items-center justify-center rounded-full text-[var(--adf-ui-text-muted)] transition-colors hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)] disabled:opacity-40"
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M3 4v6h6M21 20v-6h-6" />
-              <path d="M21 10A9 9 0 0 0 5.6 6.3L3 10M3 14a9 9 0 0 0 15.4 3.7L21 14" />
-            </svg>
-          </button>
-        </Tooltip>
+    <div className="relative" style={{ width: ORBITAL_PX, height: ORBITAL_PX }}>
+      <div ref={box}>
+        <LiveOrbital ref={orbital} seed={did} size={ORBITAL_PX} spinImpulse={spinImpulse} />
       </div>
+      {children}
     </div>
   )
 }
+
+const ORBITAL_PX = 112

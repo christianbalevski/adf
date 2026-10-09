@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
-  MAX_SEGMENTS,
+  EXPERIENCE_CURVE,
+  POWER_CURVE,
+  POWER_HIGH_OPEN_LEVEL,
+  levelForXp,
+  levelPosition,
   powerInputsFromConfig,
   scheduleIntervalMs,
   scoreAccess,
@@ -8,6 +12,7 @@ import {
   scoreExperience,
   scoreReach,
   toPowerStat,
+  xpForLevel,
   type PowerTableInputs
 } from '../../../src/shared/utils/agent-stats'
 import { DEFAULT_TOOLS, type AgentConfig } from '../../../src/shared/types/adf-v02.types'
@@ -43,6 +48,41 @@ function withTool(name: string, patch: { enabled?: boolean; restricted?: boolean
   return { tools }
 }
 
+/** A heavily equipped agent: public, autonomous, host access, every tool open. */
+function heavyInputs(): AgentPowerInputs {
+  return inputs({
+    autonomous: true,
+    autostart: true,
+    tools: DEFAULT_TOOLS.map((t) => ({ ...t, enabled: true, restricted: false })),
+    messaging: { receive: true, mode: 'proactive', visibility: 'public' },
+    serving: {
+      public: { enabled: true },
+      shared: { enabled: true },
+      api: Array.from({ length: 4 }, (_, i) => ({ method: 'GET' as const, path: `/r${i}`, lambda: 'api.ts:handler' }))
+    },
+    adapters: { telegram: { enabled: true }, slack: { enabled: true } } as AgentConfig['adapters'],
+    ws_connections: [
+      { id: 'a', url: 'wss://example.test/a', enabled: true },
+      { id: 'b', url: 'wss://example.test/b', enabled: true }
+    ],
+    compute: { enabled: true, host_access: true, allowed_targets: ['host'] },
+    code_execution: { network: true, packages: Array.from({ length: 5 }, (_, i) => ({ name: `pkg-${i}`, version: '1.0.0' })) } as AgentConfig['code_execution'],
+    mcp: { servers: ['github', 'files', 'search'].map((name) => ({ name, transport: 'stdio' as const, env_keys: ['TOKEN'] })) },
+    loops: [{}, {}] as AgentConfig['loops']
+  }, { credentials: { plain: 4, sealed: 0 }, privateKey: 'plain', timers: { active: 3, fastestIntervalMs: 60_000 } })
+}
+
+const HEAVY_XP: AgentExperienceInputs = {
+  loopEntries: 30_000,
+  filesWritten: 200,
+  skills: 10,
+  localTables: 8,
+  localRows: 20_000,
+  compactions: 150,
+  agentsSpawned: 3,
+  ageDays: 120
+}
+
 const factor = (id: string, points: number, gated = false): StatFactor => ({ id, label: id, points, gated, configPath: id })
 
 const EMPTY_XP: AgentExperienceInputs = {
@@ -56,36 +96,116 @@ const EMPTY_XP: AgentExperienceInputs = {
   ageDays: 0
 }
 
-describe('toPowerStat', () => {
-  it('caps at 5 segments and keeps segments = open + gated', () => {
-    const s = toPowerStat([factor('a', 4), factor('b', 4, true)])
-    expect(s.segments).toBe(MAX_SEGMENTS)
-    expect(s.open).toBe(4)
-    expect(s.gated).toBe(1)
-    expect(s.rawPoints).toBe(8)
+describe('level curve', () => {
+  const curves = { experience: EXPERIENCE_CURVE, power: POWER_CURVE }
+
+  for (const [name, curve] of Object.entries(curves)) {
+    it(`${name}: Lv 1 at zero, monotonic, exact at every boundary`, () => {
+      expect(levelForXp(0, curve)).toBe(1)
+      expect(levelForXp(-5, curve)).toBe(1)
+      expect(levelForXp(Number.NaN, curve)).toBe(1)
+      let prev = 1
+      for (let x = 0; x <= 12_000; x += curve.scale / 7) {
+        const lv = levelForXp(x, curve)
+        expect(lv).toBeGreaterThanOrEqual(prev)
+        prev = lv
+      }
+      for (let lv = 2; lv <= 40; lv++) {
+        const at = xpForLevel(lv, curve)
+        expect(xpForLevel(lv + 1, curve)).toBeGreaterThan(at)
+        expect(levelForXp(at, curve)).toBe(lv)
+        expect(levelForXp(at - 1e-6, curve)).toBe(lv - 1)
+        const pos = levelPosition(at, curve)
+        expect(pos).toMatchObject({ level: lv, levelStart: at, nextLevelAt: xpForLevel(lv + 1, curve) })
+        expect(pos.progress).toBeCloseTo(0)
+      }
+    })
+  }
+
+  it('experience bands get relatively narrower as levels rise', () => {
+    let prevShare = Infinity
+    for (let lv = 2; lv <= 40; lv++) {
+      const share = (xpForLevel(lv + 1, EXPERIENCE_CURVE) - xpForLevel(lv, EXPERIENCE_CURVE)) / xpForLevel(lv, EXPERIENCE_CURVE)
+      expect(share).toBeLessThan(prevShare)
+      prevShare = share
+    }
+    // Lv 20 is about 11% wide, against 100% for a log2 curve.
+    const lv20 = (xpForLevel(21, EXPERIENCE_CURVE) - xpForLevel(20, EXPERIENCE_CURVE)) / xpForLevel(20, EXPERIENCE_CURVE)
+    expect(lv20).toBeLessThan(0.15)
   })
 
-  it('fills open segments before gated ones', () => {
-    const s = toPowerStat([factor('a', 6), factor('b', 3, true)])
-    expect(s).toMatchObject({ segments: 5, open: 5, gated: 0 })
+  it('experience calibration anchors', () => {
+    const lv = (xp: number): number => levelForXp(xp, EXPERIENCE_CURVE)
+    expect(lv(9)).toBe(2)
+    expect(lv(4800)).toBe(22)
+    expect(lv(7000)).toBe(26)
+    expect(lv(10_000)).toBe(30)
+    expect(lv(7000) - lv(4800)).toBeGreaterThanOrEqual(3)
+  })
+
+  it('progress is in [0,1) mid-level', () => {
+    const mid = (xpForLevel(5, EXPERIENCE_CURVE) + xpForLevel(6, EXPERIENCE_CURVE)) / 2
+    expect(levelPosition(mid, EXPERIENCE_CURVE)).toMatchObject({ level: 5, progress: 0.5 })
+  })
+})
+
+describe('toPowerStat', () => {
+  it('places uncapped points on the power curve, gated points included', () => {
+    const s = toPowerStat([factor('a', 9), factor('b', 9, true)])
+    expect(s).toMatchObject({ points: 18, open: 9, gated: 9, rawPoints: 18 })
+    expect(s.level).toBe(levelForXp(18, POWER_CURVE))
+    expect(s.openLevel).toBe(levelForXp(9, POWER_CURVE))
+    expect(s.level).toBeGreaterThan(20)
   })
 
   it('applies mitigations to open points first, then gated', () => {
-    expect(toPowerStat([factor('a', 2), factor('b', 2, true), factor('m', -1)])).toMatchObject({ segments: 3, open: 1, gated: 2 })
-    expect(toPowerStat([factor('a', 1), factor('b', 2, true), factor('m', -2)])).toMatchObject({ segments: 1, open: 0, gated: 1 })
+    expect(toPowerStat([factor('a', 2), factor('b', 2, true), factor('m', -1)])).toMatchObject({ points: 3, open: 1, gated: 2, rawPoints: 3 })
+    expect(toPowerStat([factor('a', 1), factor('b', 2, true), factor('m', -2)])).toMatchObject({ points: 1, open: 0, gated: 1 })
+    expect(toPowerStat([factor('a', 1), factor('m', -3)])).toMatchObject({ points: 0, level: 1, rawPoints: -2 })
   })
 
-  it('shows any nonzero capability as at least one segment', () => {
-    expect(toPowerStat([factor('a', 0.25)])).toMatchObject({ segments: 1, open: 1 })
-    expect(toPowerStat([])).toMatchObject({ segments: 0, open: 0, gated: 0 })
+  it('is Lv 1 with nothing', () => {
+    expect(toPowerStat([])).toMatchObject({ level: 1, progress: 0, points: 0, open: 0, gated: 0, high: false })
+  })
+
+  it('flags high only when the open points alone reach the threshold', () => {
+    const needed = xpForLevel(POWER_HIGH_OPEN_LEVEL, POWER_CURVE)
+    expect(toPowerStat([factor('a', needed)]).high).toBe(true)
+    expect(toPowerStat([factor('a', needed - 0.25)]).high).toBe(false)
+    // Same level, but gated: not high.
+    expect(toPowerStat([factor('a', needed, true)])).toMatchObject({ high: false, level: POWER_HIGH_OPEN_LEVEL })
+  })
+})
+
+describe('power calibration', () => {
+  it('a default fresh agent is low single digits on all three', () => {
+    const d = inputs()
+    for (const s of [scoreAccess(d), scoreReach(d), scoreAutonomy(d)]) {
+      expect(s.level).toBeGreaterThanOrEqual(2)
+      expect(s.level).toBeLessThanOrEqual(4)
+      expect(s.high).toBe(false)
+    }
+  })
+
+  it('a heavily equipped agent lands in the same range as a heavily used agent\'s Experience', () => {
+    const h = heavyInputs()
+    const exp = scoreExperience(HEAVY_XP).level
+    expect(exp).toBeGreaterThanOrEqual(18)
+    expect(exp).toBeLessThanOrEqual(30)
+    for (const s of [scoreAccess(h), scoreReach(h), scoreAutonomy(h)]) {
+      expect(s.level).toBeGreaterThanOrEqual(18)
+      expect(s.level).toBeLessThanOrEqual(30)
+      expect(Math.abs(s.level - exp)).toBeLessThanOrEqual(6)
+      expect(s.high).toBe(true)
+    }
   })
 })
 
 describe('Access', () => {
   it('a default agent sits low', () => {
     const s = scoreAccess(inputs())
-    expect(s.segments).toBeGreaterThanOrEqual(1)
-    expect(s.segments).toBeLessThanOrEqual(3)
+    expect(s.points).toBe(1.75)
+    expect(s.level).toBe(3)
   })
 
   it('restricted tools count as gated, unrestricted as open', () => {
@@ -94,6 +214,7 @@ describe('Access', () => {
     expect(gated.factors.find((f) => f.id === 'tool:compute_exec')).toMatchObject({ gated: true, configPath: 'tools.compute_exec' })
     expect(open.factors.find((f) => f.id === 'tool:compute_exec')?.gated).toBe(false)
     expect(open.open).toBeGreaterThan(gated.open)
+    expect(open.level).toBe(gated.level)
   })
 
   it('host access and host compute targets add points', () => {
@@ -145,10 +266,9 @@ describe('Access', () => {
     expect(plain.points).toBeGreaterThan(sealed.points)
   })
 
-  it('everything on saturates at 5', () => {
-    const tools = DEFAULT_TOOLS.map((t) => ({ ...t, enabled: true, restricted: false }))
-    const s = scoreAccess(inputs({ tools, compute: { enabled: true, host_access: true, allowed_targets: ['host'] }, code_execution: { network: true } as AgentConfig['code_execution'] }, { privateKey: 'plain', credentials: { plain: 10, sealed: 0 } }))
-    expect(s).toMatchObject({ segments: 5, open: 5, gated: 0 })
+  it('is uncapped: more MCP servers keep raising it', () => {
+    const servers = (n: number) => ({ mcp: { servers: Array.from({ length: n }, (_, i) => ({ name: `s${i}`, transport: 'stdio' as const })) } })
+    expect(scoreAccess(inputs(servers(30))).level).toBeGreaterThan(scoreAccess(inputs(servers(20))).level)
   })
 })
 
@@ -162,7 +282,7 @@ describe('Reach', () => {
 
   it('receive off removes inbound reach', () => {
     const s = scoreReach(inputs({ messaging: { receive: false, mode: 'listen_only', visibility: 'public' } }))
-    expect(s.segments).toBe(0)
+    expect(s).toMatchObject({ points: 0, level: 1 })
   })
 
   it('respond_only and listen_only reduce outbound', () => {
@@ -186,7 +306,7 @@ describe('Reach', () => {
     expect(s.factors.find((f) => f.id === 'messaging:send')?.gated).toBe(true)
   })
 
-  it('public page, routes, shared files, adapters and ws connections add up and cap', () => {
+  it('public page, routes, shared files, adapters and ws connections add up; per-kind counts cap', () => {
     const s = scoreReach(inputs({
       messaging: { receive: true, mode: 'proactive', visibility: 'public' },
       serving: {
@@ -197,8 +317,8 @@ describe('Reach', () => {
       adapters: { telegram: { enabled: true }, email: { enabled: false } },
       ws_connections: [{ id: 'a', url: 'wss://example.test', enabled: true }]
     }))
-    expect(s.segments).toBe(5)
-    expect(s.factors.find((f) => f.id === 'serving:api')?.points).toBe(1.5)
+    expect(s.level).toBeGreaterThanOrEqual(18)
+    expect(s.factors.find((f) => f.id === 'serving:api')?.points).toBe(3)
     expect(s.factors.find((f) => f.id === 'adapter:telegram')).toBeDefined()
     expect(s.factors.find((f) => f.id === 'adapter:email')).toBeUndefined()
   })
@@ -206,7 +326,7 @@ describe('Reach', () => {
 
 describe('Autonomy', () => {
   it('a default agent is low', () => {
-    expect(scoreAutonomy(inputs()).segments).toBeLessThanOrEqual(2)
+    expect(scoreAutonomy(inputs()).level).toBeLessThanOrEqual(4)
   })
 
   it('autonomous, autostart, fast timers raise it', () => {
@@ -253,26 +373,18 @@ describe('Experience', () => {
     expect(e.nextLevel.xp).toBeGreaterThan(0)
   })
 
-  it('a first session reaches level 2-3', () => {
-    const short = scoreExperience({ ...EMPTY_XP, loopEntries: 20, filesWritten: 1 })
+  it('a first session reaches level 2-4', () => {
     const typical = scoreExperience({ ...EMPTY_XP, loopEntries: 60, filesWritten: 3 })
-    expect(short.level).toBeGreaterThanOrEqual(2)
-    expect(typical.level).toBeLessThanOrEqual(3)
+    const long = scoreExperience({ ...EMPTY_XP, loopEntries: 200, filesWritten: 10, skills: 1 })
+    expect(typical.level).toBeGreaterThanOrEqual(2)
+    expect(long.level).toBeLessThanOrEqual(4)
   })
 
-  it('a heavily used months-old agent reaches level 10-12', () => {
-    const heavy = scoreExperience({
-      loopEntries: 30_000,
-      filesWritten: 200,
-      skills: 10,
-      localTables: 8,
-      localRows: 20_000,
-      compactions: 150,
-      agentsSpawned: 3,
-      ageDays: 120
-    })
-    expect(heavy.level).toBeGreaterThanOrEqual(10)
-    expect(heavy.level).toBeLessThanOrEqual(12)
+  it('a heavily used months-old agent reaches level 20-30', () => {
+    const heavy = scoreExperience(HEAVY_XP)
+    expect(heavy.score).toBeGreaterThan(4000)
+    expect(heavy.level).toBeGreaterThanOrEqual(20)
+    expect(heavy.level).toBeLessThanOrEqual(30)
   })
 
   it('is monotonic in every input', () => {
@@ -299,25 +411,23 @@ describe('Experience', () => {
     expect(scoreExperience({ ...EMPTY_XP, ageDays: 365 }).level).toBe(1)
   })
 
-  it('level boundaries: one level per doubling, progress in [0,1)', () => {
-    for (let lv = 2; lv <= 14; lv++) {
-      // Files only: score = 1 + n exactly, so n = 2^lv - 1 lands on the boundary.
-      const at = scoreExperience({ ...EMPTY_XP, filesWritten: 2 ** lv - 1 })
-      expect(at.level).toBe(lv)
-      expect(at.progress).toBeCloseTo(0)
-      expect(at.levelStart).toBe(2 ** lv)
-      expect(at.nextLevelAt).toBe(2 ** (lv + 1))
+  it('uses the experience curve: score is the plain XP sum', () => {
+    for (const n of [5, 24, 59, 700, 4229]) {
+      // Files only: score = n exactly.
+      const e = scoreExperience({ ...EMPTY_XP, filesWritten: n })
+      expect(e.score).toBe(n)
+      expect(e.level).toBe(levelForXp(n, EXPERIENCE_CURVE))
+      expect(e.levelStart).toBeLessThanOrEqual(n)
+      expect(e.nextLevelAt).toBeGreaterThan(n)
     }
-    const mid = scoreExperience({ ...EMPTY_XP, filesWritten: 11 })
-    expect(mid.level).toBe(3)
-    expect(mid.progress).toBeCloseTo(0.5)
   })
 
   it('next-level hint matches the remaining XP', () => {
     const e = scoreExperience({ ...EMPTY_XP, loopEntries: 60 })
     expect(e.nextLevel.xp).toBeCloseTo(e.nextLevelAt - e.score)
     expect(e.nextLevel.loopEntries).toBe(Math.ceil(e.nextLevel.xp / 0.1))
-    expect(e.nextLevel.hint).toBe('Level 3 needs 1 more XP: about 10 loop messages, 1 file or 1 skill')
+    expect(e.level).toBe(2)
+    expect(e.nextLevel.hint).toBe(`Lv 3 needs ${Math.ceil(e.nextLevel.xp)} more XP: about ${e.nextLevel.loopEntries} loop messages, ${e.nextLevel.files} files or ${e.nextLevel.skills} skills`)
   })
 
   it('omits agents spawned when unknown', () => {

@@ -723,7 +723,7 @@
           "Agents"
         ],
         "summary": "Agent vitals",
-        "description": "Studio's overview card for one agent: header facts (context size, next wake, 7-day cost, model, age) and four stats: Reach, Access and Autonomy (5-segment power bars with the factors behind them) and Experience (a level from maturity counts). `{id}` names a loaded agent (id, handle or name, as every /agents/{id} route) or, when no loaded agent matches, a tracked agent that is not loaded (agent id or handle from its file). A loaded agent is read from its open workspace (`live: true`); any other file is read with a readonly open. Results are cached: a live agent's for at most 2 s and until its database changes, any other file's until its mtime or size changes. `force=1` skips the cache. `agentsSpawned` counts tracked agents whose parent DID names this agent, from a fleet scan at most 30 s old (`force=1` rescans). `contextTokens` and `contextThreshold` are present only for a loaded agent whose executor has reported usage; `cost7dUsd` only when the usage ledger has rows for this agent.",
+        "description": "Studio's overview card for one agent: header facts (context size, next wake, 7-day cost, model, age) and four levelled stats: Reach, Access and Autonomy (levels from config points, with the factors behind them) and Experience (a level from maturity counts). `{id}` names a loaded agent (id, handle or name, as every /agents/{id} route) or, when no loaded agent matches, a tracked agent that is not loaded (agent id or handle from its file). A loaded agent is read from its open workspace (`live: true`); any other file is read with a readonly open. Results are cached: a live agent's for at most 2 s and until its database changes, any other file's until its mtime or size changes. `force=1` skips the cache. `agentsSpawned` counts tracked agents whose parent DID names this agent, from a fleet scan at most 30 s old (`force=1` rescans). `contextTokens` and `contextThreshold` are present only for a loaded agent whose executor has reported usage; `cost7dUsd` only when the usage ledger has rows for this agent.",
         "operationId": "getAgentVitals",
         "parameters": [
           {
@@ -777,6 +777,77 @@
                 },
                 "example": {
                   "error": "Agent has no .adf file; vitals are read from the file.",
+                  "code": "conflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/agents/{id}/activity": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Agent activity",
+        "description": "The lower sections of Studio's agent overview: the next three timer wakes, the eight most recent events, 14 local days of finished turns with the usage ledger's cost per day, and what the agent keeps (skills, `local_*` tables, files it wrote). `{id}` resolves as in `GET /agents/{id}/vitals`. Recent events come from the newest 200 loop rows (tool calls, finished turns, failed tool results; consecutive calls of one tool fold into one line with `count`), the newest inbox and outbox messages, `error` rows of the agent log and the newest files the agent wrote. A finished turn is an assistant loop row without a tool call. The first read counts turns over at most the newest 5,000 loop rows and later reads add only new rows, so turns compacted away before the first read are not counted; `dailyPartial` is true when the row cap or a compaction cuts into the window. Files and skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.",
+        "operationId": "getAgentActivity",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "description": "Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Activity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentActivity"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "The agent is loaded without an .adf file; activity is read from the file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Agent has no .adf file; activity is read from the file.",
                   "code": "conflict"
                 }
               }
@@ -17989,31 +18060,64 @@
       },
       "AgentPowerStat": {
         "type": "object",
-        "description": "Reach, Access or Autonomy: a 5-segment power bar. `segments` is `gated` + `open`.",
+        "description": "Reach, Access or Autonomy: a level from uncapped points. xpForLevel(L) = 0.75 * (L - 1); level = largest L with xpForLevel(L) <= points. Gated points count toward the level. `points` is `open` + `gated`.",
         "required": [
-          "segments",
-          "gated",
+          "level",
+          "progress",
+          "points",
           "open",
+          "gated",
+          "levelStart",
+          "nextLevelAt",
+          "openLevel",
+          "high",
           "rawPoints",
           "factors"
         ],
         "properties": {
-          "segments": {
+          "level": {
             "type": "integer",
-            "minimum": 0,
-            "maximum": 5
+            "minimum": 1
           },
-          "gated": {
-            "type": "integer",
-            "description": "Segments whose capability needs approval"
+          "progress": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Progress within the current level"
+          },
+          "points": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Points behind the level, after mitigations"
           },
           "open": {
+            "type": "number",
+            "description": "Points whose capability runs without approval (mitigations come off these first)"
+          },
+          "gated": {
+            "type": "number",
+            "description": "Points whose capability needs approval"
+          },
+          "levelStart": {
+            "type": "number",
+            "description": "Points at which the current level starts"
+          },
+          "nextLevelAt": {
+            "type": "number",
+            "description": "Points at which the next level starts"
+          },
+          "openLevel": {
             "type": "integer",
-            "description": "Segments whose capability runs without approval"
+            "minimum": 1,
+            "description": "Level the open points alone reach"
+          },
+          "high": {
+            "type": "boolean",
+            "description": "True when openLevel >= 15: much of this runs without anyone asking"
           },
           "rawPoints": {
             "type": "number",
-            "description": "Sum of factor points before the cap"
+            "description": "Sum of factor points, mitigations included"
           },
           "factors": {
             "type": "array",
@@ -18044,7 +18148,7 @@
           },
           "points": {
             "type": "number",
-            "description": "Contribution before the 5-segment cap; negative for mitigations"
+            "description": "Points this factor adds (uncapped); negative for mitigations"
           },
           "gated": {
             "type": "boolean",
@@ -18058,7 +18162,7 @@
       },
       "AgentExperienceStat": {
         "type": "object",
-        "description": "Experience. `level` is floor(log2(score)).",
+        "description": "Experience. xpForLevel(L) = 5 * (L - 1)^2.25; level = largest L with xpForLevel(L) <= score.",
         "required": [
           "level",
           "progress",
@@ -18081,7 +18185,7 @@
           },
           "score": {
             "type": "number",
-            "description": "Total XP"
+            "description": "Total XP (sum of signal XP)"
           },
           "levelStart": {
             "type": "number",
@@ -18131,7 +18235,7 @@
           },
           "nextLevel": {
             "type": "object",
-            "description": "What one more level takes, in units of the cheapest signals",
+            "description": "What one more level takes (xp = nextLevelAt - score), in units of the cheapest signals",
             "required": [
               "xp",
               "loopEntries",
@@ -18207,6 +18311,226 @@
           "ageDays": {
             "type": "number",
             "description": "Days since adf_created_at"
+          }
+        }
+      },
+      "AgentActivity": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "computedAt",
+          "live",
+          "upcoming",
+          "recent",
+          "daily",
+          "dailyPartial",
+          "knowledge"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "computedAt": {
+            "type": "number",
+            "description": "When this read was computed (ms epoch)"
+          },
+          "live": {
+            "type": "boolean",
+            "description": "True when read from the workspace of a loaded agent"
+          },
+          "upcoming": {
+            "type": "array",
+            "maxItems": 3,
+            "description": "Next non-expired timers, soonest first",
+            "items": {
+              "$ref": "#/components/schemas/AgentUpcomingWake"
+            }
+          },
+          "recent": {
+            "type": "array",
+            "maxItems": 8,
+            "description": "Most recent first",
+            "items": {
+              "$ref": "#/components/schemas/AgentActivityEvent"
+            }
+          },
+          "daily": {
+            "type": "array",
+            "minItems": 14,
+            "maxItems": 14,
+            "description": "14 local days, oldest first; the last is today",
+            "items": {
+              "$ref": "#/components/schemas/AgentActivityDay"
+            }
+          },
+          "dailyPartial": {
+            "type": "boolean",
+            "description": "True when the turn scan hit its row cap or compaction removed rows inside the window (the oldest days may read low)"
+          },
+          "knowledge": {
+            "type": "object",
+            "required": [
+              "skills",
+              "tables",
+              "files",
+              "filesTotal"
+            ],
+            "properties": {
+              "skills": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "string"
+                },
+                "description": "Skills the agent installed or changed, by name"
+              },
+              "tables": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "rows"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "example": "local_notes"
+                    },
+                    "rows": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "files": {
+                "type": "array",
+                "maxItems": 20,
+                "description": "Files the agent wrote, newest first",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "path",
+                    "updatedAt",
+                    "size"
+                  ],
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "description": "ISO 8601"
+                    },
+                    "size": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "filesTotal": {
+                "type": "integer",
+                "description": "All files the agent wrote"
+              }
+            }
+          }
+        }
+      },
+      "AgentUpcomingWake": {
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "scope",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "at": {
+            "type": "number",
+            "description": "next_wake_at (ms epoch)"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "system",
+              "agent"
+            ],
+            "description": "`system` runs a lambda; `agent` wakes a loop"
+          },
+          "label": {
+            "type": "string",
+            "description": "Payload, else lambda, else the schedule kind (at most 80 characters)"
+          }
+        }
+      },
+      "AgentActivityEvent": {
+        "type": "object",
+        "required": [
+          "kind",
+          "at",
+          "label"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "turn",
+              "tool",
+              "message_in",
+              "message_out",
+              "file",
+              "error"
+            ]
+          },
+          "at": {
+            "type": "number",
+            "description": "ms epoch (the newest of a folded run)"
+          },
+          "label": {
+            "type": "string",
+            "description": "tool: tool name. message_in, message_out: the other party. file: path. error: short message. turn: loop name"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 2,
+            "description": "Consecutive calls of one tool folded into this line"
+          },
+          "seq": {
+            "type": "integer",
+            "description": "adf_loop seq (loop-derived events)"
+          },
+          "loop": {
+            "type": "string",
+            "description": "Loop the event came from (loop-derived events)"
+          }
+        }
+      },
+      "AgentActivityDay": {
+        "type": "object",
+        "required": [
+          "date",
+          "turns"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "Local YYYY-MM-DD"
+          },
+          "turns": {
+            "type": "integer",
+            "description": "Finished turns still in adf_loop"
+          },
+          "costUsd": {
+            "type": "number",
+            "description": "USD from the usage ledger; absent when it has no rows that day"
+          },
+          "costPartial": {
+            "type": "boolean",
+            "description": "Some calls that day had no price"
           }
         }
       }

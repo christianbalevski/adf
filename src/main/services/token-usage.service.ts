@@ -388,6 +388,28 @@ export class TokenUsageService {
   }
 
   /**
+   * USD per local day for one agent, from the per-agent ledger. Only the
+   * given `YYYY-MM-DD` keys are read; days without rows are absent.
+   * `partial` when some of that day's calls carried no price.
+   */
+  getAgentDailyCost(agentId: string, dates: string[]): Record<string, { usd: number; partial: boolean }> {
+    const ledger = this.getAgentLedger().getUsageData()
+    const out: Record<string, { usd: number; partial: boolean }> = {}
+    for (const date of dates) {
+      const byModel = ledger[date]?.[agentId]
+      if (!byModel) continue
+      let usd = 0
+      let partial = false
+      for (const entry of Object.values(byModel)) {
+        if (entry.cost_usd !== undefined) usd += entry.cost_usd
+        else if (entry.input + entry.output > 0) partial = true
+      }
+      out[date] = { usd, partial }
+    }
+    return out
+  }
+
+  /**
    * Get all token usage data
    */
   getUsageData(): TokenUsageData {

@@ -1,19 +1,25 @@
 import { describe, it, expect } from 'vitest'
 import {
+  HIGH_POWER_LABEL,
+  SECTION_LIMIT,
   agentStatusLabel,
   compactCount,
   configTargetFor,
   decideLevelUp,
+  experienceContributors,
+  experienceHeadline,
   experienceTooltip,
-  formatPoints,
+  factorGroup,
+  foldFactors,
   formatWake,
+  levelBarParts,
   overviewFacts,
   parseStoredLevels,
-  powerSegments,
+  powerSections,
   powerTooltip,
-  shortDid
+  visibleItems
 } from '../../../src/renderer/components/agent/overview/agent-overview-model'
-import { scoreExperience, toPowerStat } from '../../../src/shared/utils/agent-stats'
+import { POWER_CURVE, POWER_HIGH_OPEN_LEVEL, scoreExperience, toPowerStat, xpForLevel } from '../../../src/shared/utils/agent-stats'
 import type { AgentExperienceInputs, StatFactor } from '../../../src/shared/types/agent-vitals.types'
 
 const factor = (id: string, label: string, points: number, gated = false, configPath = 'tools.x'): StatFactor => ({
@@ -32,59 +38,148 @@ const experienceInputs = (over: Partial<AgentExperienceInputs> = {}): AgentExper
   ...over
 })
 
-describe('powerSegments', () => {
-  it('fills open first, then gated, then empty', () => {
-    expect(powerSegments({ open: 1, gated: 2 })).toEqual(['open', 'gated', 'gated', 'empty', 'empty'])
+describe('levelBarParts', () => {
+  it('splits the progress fill by the open share', () => {
+    expect(levelBarParts({ progress: 0.5, open: 3, gated: 1, high: false })).toEqual({ openPct: 37.5, gatedPct: 12.5, high: false })
   })
 
-  it('marks open segments at positions 4 and 5 as high', () => {
-    expect(powerSegments({ open: 5, gated: 0 })).toEqual(['open', 'open', 'open', 'open-high', 'open-high'])
-    expect(powerSegments({ open: 4, gated: 1 })).toEqual(['open', 'open', 'open', 'open-high', 'gated'])
+  it('is all hatched when everything asks first, all solid when nothing does', () => {
+    expect(levelBarParts({ progress: 0.4, open: 0, gated: 2 })).toEqual({ openPct: 0, gatedPct: 40, high: false })
+    expect(levelBarParts({ progress: 0.4, open: 2, gated: 0 })).toEqual({ openPct: 40, gatedPct: 0, high: false })
   })
 
-  it('never draws gated segments in the high colour', () => {
-    expect(powerSegments({ open: 0, gated: 5 })).toEqual(['gated', 'gated', 'gated', 'gated', 'gated'])
+  it('treats experience (no open/gated) as solid', () => {
+    expect(levelBarParts({ progress: 0.25 })).toEqual({ openPct: 25, gatedPct: 0, high: false })
   })
 
-  it('clamps out-of-range input to five segments', () => {
-    expect(powerSegments({ open: 9, gated: 3 })).toHaveLength(5)
-    expect(powerSegments({ open: -1, gated: Number.NaN })).toEqual(['empty', 'empty', 'empty', 'empty', 'empty'])
+  it('clamps bad progress and carries the high flag', () => {
+    expect(levelBarParts({ progress: Number.NaN, open: 1, gated: 0 })).toMatchObject({ openPct: 0, gatedPct: 0 })
+    expect(levelBarParts({ progress: 3, open: 1, gated: 1, high: true })).toEqual({ openPct: 50, gatedPct: 50, high: true })
   })
 
-  it('matches segments = open + gated from the scorer', () => {
-    const stat = toPowerStat([factor('a', 'A', 1.5), factor('b', 'B', 2, true)])
-    const kinds = powerSegments(stat)
-    expect(kinds.filter((k) => k !== 'empty')).toHaveLength(stat.segments)
-    expect(kinds.filter((k) => k === 'gated')).toHaveLength(stat.gated)
+  it('matches the scorer', () => {
+    const stat = toPowerStat([factor('a', 'A', 1.5), factor('b', 'B', 2, true), factor('c', 'C', 0.2)])
+    const parts = levelBarParts(stat)
+    expect(parts.openPct + parts.gatedPct).toBeCloseTo(stat.progress * 100, 0)
   })
 })
 
 describe('powerTooltip', () => {
-  it('names the count, the gated share and the two largest factors', () => {
+  it('names the level, how much asks first and the two largest factors', () => {
     const stat = toPowerStat([
-      factor('serving:public', 'Serves a public web page', 2),
+      factor('serving:public', 'Serves a public web page', 3),
       factor('serving:api', '3 HTTP API routes', 1.5),
       factor('messaging:send', 'Sends messages on its own', 1, true),
       factor('security:signed_only', 'Only accepts signed messages', -0.5)
     ])
-    expect(powerTooltip(stat)).toBe(`${stat.segments} of 5, ${stat.gated} gated · serves a public web page, 3 HTTP API routes`)
+    expect(powerTooltip(stat)).toBe(`Lv ${stat.level}, some asks you first · serves a public web page, 3 HTTP API routes`)
   })
 
   it('leaves out the gated part when nothing is gated', () => {
     const stat = toPowerStat([factor('a', 'Reads its own files', 0.25)])
-    expect(powerTooltip(stat)).toBe('1 of 5 · reads its own files')
+    expect(powerTooltip(stat)).toBe('Lv 1 · reads its own files')
   })
 
-  it('drops trailing parentheticals from factor labels', () => {
+  it('drops trailing parentheticals and says when most asks first', () => {
     const stat = toPowerStat([
       factor('triggers', 'Wakes on 2 event types (on_inbox, on_timer)', 1),
-      factor('tool:sys_update_config', 'Changes its own config (needs approval)', 0.5, true)
+      factor('tool:sys_update_config', 'Changes its own config (needs approval)', 1.5, true)
     ])
-    expect(powerTooltip(stat)).toBe('2 of 5, 1 gated · wakes on 2 event types, changes its own config')
+    expect(powerTooltip(stat)).toBe(`Lv ${stat.level}, mostly asks you first · changes its own config, wakes on 2 event types`)
   })
 
-  it('is just the count with no factors', () => {
-    expect(powerTooltip(toPowerStat([]))).toBe('0 of 5')
+  it('labels the warn state in words', () => {
+    const stat = toPowerStat([factor('a', 'Runs commands on the host machine', xpForLevel(POWER_HIGH_OPEN_LEVEL, POWER_CURVE))])
+    expect(stat.high).toBe(true)
+    expect(powerTooltip(stat)).toContain(HIGH_POWER_LABEL)
+  })
+
+  it('is just the level with no factors', () => {
+    expect(powerTooltip(toPowerStat([]))).toBe('Lv 1')
+  })
+})
+
+describe('power sections', () => {
+  const f = (id: string, label: string, points: number, gated = false, configPath = 'tools.x'): StatFactor => factor(id, label, points, gated, configPath)
+
+  it('groups factors by kind', () => {
+    expect(factorGroup('tool:fs_read')).toBe('files')
+    expect(factorGroup('tool:sys_fetch')).toBe('network')
+    expect(factorGroup('tool:compute_exec')).toBeNull()
+    expect(factorGroup('mcp:github')).toBe('mcp')
+    expect(factorGroup('mcp:github:credentials')).toBe('mcp-credentials')
+    expect(factorGroup('adapter:telegram')).toBe('adapters')
+    expect(factorGroup('serving:public')).toBeNull()
+  })
+
+  it('folds same-kind factors into one counted line, keeping the first config path', () => {
+    const items = foldFactors([
+      f('tool:fs_read', 'Reads its own files', 0.25, false, 'tools.fs_read'),
+      f('tool:fs_write', 'Writes its own files', 0.25, false, 'tools.fs_write'),
+      f('tool:db_execute', 'Writes to its database tables', 0.25, false, 'tools.db_execute'),
+      f('mcp:a', 'MCP server a', 0.5, false, 'mcp.servers'),
+      f('mcp:b', 'MCP server b', 0.5, false, 'mcp.servers'),
+      f('mcp:c', 'MCP server c', 0.5, false, 'mcp.servers'),
+      f('tool:compute_exec', 'Runs commands on compute targets', 1, false, 'tools.compute_exec')
+    ])
+    expect(items.map((i) => [i.text, i.count, i.configPath])).toEqual([
+      ['3 file and data tools', 3, 'tools.fs_read'],
+      ['3 MCP servers', 3, 'mcp.servers'],
+      ['Runs commands on compute targets', 1, 'tools.compute_exec']
+    ])
+    expect(items[1].points).toBe(1.5)
+  })
+
+  it('a group of one keeps its own label, minus the parenthetical', () => {
+    expect(foldFactors([f('mcp:github', 'MCP server github (tools need approval)', 0.5, true)])[0].text).toBe('MCP server github')
+  })
+
+  it('splits open, gated and limits, heaviest first, with no points in the text', () => {
+    const stat = toPowerStat([
+      f('tool:fs_read', 'Reads its own files', 0.25),
+      f('compute:host_access', 'May run MCP servers on the host machine', 2, false, 'compute.host_access'),
+      f('tool:compute_exec', 'Runs commands on compute targets (needs approval)', 1, true),
+      f('mcp:github', 'MCP server github (tools need approval)', 0.5, true, 'mcp.servers'),
+      f('mcp:files', 'MCP server files (tools need approval)', 0.5, true, 'mcp.servers'),
+      f('tools:restricted', '3 tools need approval', -0.75, false, 'tools[].restricted')
+    ])
+    const s = powerSections(stat)
+    expect(s.open.map((i) => i.text)).toEqual(['May run MCP servers on the host machine', 'Reads its own files'])
+    expect(s.gated.map((i) => i.text)).toEqual(['Runs commands on compute targets', '2 MCP servers'])
+    expect(s.limits.map((i) => i.text)).toEqual(['3 tools need approval'])
+    for (const i of [...s.open, ...s.gated, ...s.limits]) expect(i.text).not.toMatch(/[+-]\d/)
+  })
+
+  it('shows at most SECTION_LIMIT items until expanded', () => {
+    const items = Array.from({ length: SECTION_LIMIT + 3 }, (_, i) => i)
+    expect(visibleItems(items, false)).toEqual({ shown: items.slice(0, SECTION_LIMIT), hidden: 3 })
+    expect(visibleItems(items, true)).toEqual({ shown: items, hidden: 0 })
+    expect(visibleItems([1, 2], false)).toEqual({ shown: [1, 2], hidden: 0 })
+  })
+})
+
+describe('experience popover', () => {
+  it('heads with the XP to the next level', () => {
+    const exp = scoreExperience(experienceInputs({ filesWritten: 10 }))
+    expect(exp.level).toBe(2)
+    expect(experienceHeadline(exp)).toBe(`${Math.ceil(exp.nextLevelAt - 10)} XP to Lv 3`)
+  })
+
+  it('lists the top contributors as plain lines, largest first', () => {
+    const exp = scoreExperience(experienceInputs({ loopEntries: 30_000, filesWritten: 200, skills: 10, compactions: 150, localRows: 4, agentsSpawned: 3 }))
+    expect(experienceContributors(exp)).toEqual([
+      '30k loop messages',
+      '150 compactions',
+      '200 files written',
+      '10 skills',
+      '3 agents created'
+    ])
+    expect(experienceContributors(exp, 2)).toHaveLength(2)
+  })
+
+  it('skips zero and negligible signals and uses the singular for one', () => {
+    const exp = scoreExperience(experienceInputs({ skills: 1, ageDays: 400 }))
+    expect(experienceContributors(exp)).toEqual(['1 skill'])
   })
 })
 
@@ -92,13 +187,13 @@ describe('experienceTooltip', () => {
   it('lists loop messages, files and skills, then the XP to the next level', () => {
     const exp = scoreExperience(experienceInputs({ loopEntries: 1234, filesWritten: 18, skills: 3 }))
     expect(experienceTooltip(exp)).toBe(
-      `1.2k loop messages · 18 files · 3 skills · next level in ${compactCount(Math.ceil(exp.nextLevel.xp))} XP`
+      `1.2k loop messages · 18 files · 3 skills · ${compactCount(Math.ceil(exp.nextLevel.xp))} XP to Lv ${exp.level + 1}`
     )
   })
 
   it('omits zero counts', () => {
     const exp = scoreExperience(experienceInputs())
-    expect(experienceTooltip(exp)).toBe('next level in 3 XP')
+    expect(experienceTooltip(exp)).toBe('5 XP to Lv 2')
   })
 
   it('uses the singular for one', () => {
@@ -114,12 +209,6 @@ describe('number formatting', () => {
     expect(compactCount(1234)).toBe('1.2k')
     expect(compactCount(12_345)).toBe('12k')
     expect(compactCount(1_500_000)).toBe('1.5M')
-  })
-
-  it('signs points', () => {
-    expect(formatPoints(1)).toBe('+1')
-    expect(formatPoints(0.25)).toBe('+0.25')
-    expect(formatPoints(-0.5)).toBe('-0.5')
   })
 })
 
@@ -145,11 +234,6 @@ describe('overviewFacts', () => {
 })
 
 describe('header helpers', () => {
-  it('shortens a did:key', () => {
-    expect(shortDid('did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK')).toBe('did:key:z6Mk…2doK')
-    expect(shortDid('did:key:z6Mk')).toBe('did:key:z6Mk')
-  })
-
   it('labels agent state', () => {
     expect(agentStatusLabel('active', { toolName: 'fs_write' })).toBe('Running fs_write')
     expect(agentStatusLabel('active')).toBe('Thinking')

@@ -218,6 +218,7 @@ has passed review on this machine.
 |------|------|
 | Loaded agents | `GET /agents` (summaries), `GET /agents/:id/status` (`runtimeState`, `degraded`, …) |
 | Overview card (Studio's agent vitals) | `GET /agents/:id/vitals[?force=1]`: header facts (context, next wake, 7-day cost, model, age) and the Reach, Access, Autonomy and Experience stats. Works for a loaded agent and for a tracked agent that is not loaded (by agent id or handle). Cached; `force=1` rereads |
+| Overview activity (Studio's agent overview, lower sections) | `GET /agents/:id/activity[?force=1]`: the next three timer wakes, the eight most recent events (finished turns, tool calls with runs of one tool folded, messages, files written, errors), 14 local days of finished turns with cost per day, and the agent's skills, `local_*` tables (with row counts) and the files it wrote. Resolves `:id` like `/vitals`. Cached; `force=1` rereads |
 | Every agent on disk, loaded or not | `GET /tracked-dirs/agents/all`: each tracked folder with its agents and a `status`: `loaded`, `stopped` (should run, did not: `error` says why), `not_autostart`, `needs_review`, `password_protected`, `unreadable` |
 | Track / untrack a folder | `POST /tracked-dirs {path}` (loads its autostart agents at once; unreviewed ones come back in `needsReview`), `DELETE /tracked-dirs?path=…&unload=true` |
 | Load a file | `POST /agents/load {filePath}` (bypasses review unless `requireReview: true`) |

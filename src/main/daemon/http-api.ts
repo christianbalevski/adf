@@ -686,6 +686,7 @@ export function createDaemonHttpApi(
       mesh: opts.mesh,
       ws: opts.wsService,
       getAgentCost: (agentId) => getTokenUsageService().getAgentCost(agentId),
+      getAgentDailyCost: (agentId, dates) => getTokenUsageService().getAgentDailyCost(agentId, dates),
     })),
   })
 

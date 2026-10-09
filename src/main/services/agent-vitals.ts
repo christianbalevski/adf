@@ -18,8 +18,17 @@ import { canonicalizePath, containsPath } from '../utils/tracked-paths'
 import { deriveHandle } from '../utils/handle'
 import type { AgentConfig, TimerSchedule } from '../../shared/types/adf-v02.types'
 import type { AgentState, FleetAgentStatus, FleetStatusResult, MeshAgentStatus } from '../../shared/types/ipc.types'
-import type { AgentExperienceInputs, AgentPowerInputs, AgentVitals } from '../../shared/types/agent-vitals.types'
+import type {
+  ActivityEvent,
+  AgentActivity,
+  AgentExperienceInputs,
+  AgentPowerInputs,
+  AgentVitals,
+  UpcomingWake
+} from '../../shared/types/agent-vitals.types'
 import { powerInputsFromConfig, scheduleIntervalMs, scoreAgent } from '../../shared/utils/agent-stats'
+import { bucketByLocalDay, mergeRecent, windowStartMs } from '../../shared/utils/agent-activity'
+import { localDateKey } from '../../shared/utils/date-key'
 
 /** Display/identity metadata the fleet map needs per agent. */
 export type FleetMeta = NonNullable<ReturnType<typeof AdfDatabase.peekFleetMeta>>
@@ -44,6 +53,8 @@ export interface AgentVitalsDeps {
   getOpenWorkspaces(): Array<{ filePath: string; workspace: VitalsWorkspace }>
   /** 7-day cost from the per-agent usage ledger. */
   getAgentCost?(agentId: string): { usd: number; partial: boolean } | null
+  /** Per-day cost from the per-agent usage ledger, keyed by local date; days without rows are absent. */
+  getAgentDailyCost?(agentId: string, dates: string[]): Record<string, { usd: number; partial: boolean }>
   now?(): number
 }
 
@@ -135,6 +146,73 @@ const SKILL_FILE = /^skills\/([^/]+)\//
 /** Writes this soon after adf_created_at are the creation itself (seed files). */
 const CREATION_GRACE_MS = 10_000
 
+interface FileRow {
+  path: string
+  updated_at: string
+  size?: number
+}
+
+/**
+ * ISO time after which a file write is the agent's own (adf_created_at plus
+ * the creation grace). '' when the creation time is unknown: every file counts.
+ */
+export function agentWriteCutoff(createdAt: string | null | undefined): string {
+  const createdMs = createdAt ? Date.parse(createdAt) : NaN
+  return Number.isFinite(createdMs) ? new Date(createdMs + CREATION_GRACE_MS).toISOString() : ''
+}
+
+/**
+ * Split adf_files rows into the agent's own writes and the skills it
+ * installed or changed. ISO strings compare lexically (both sides come from
+ * Date.toISOString). Registry entries without files (legacy loader catalogs)
+ * count as skills too; starter skills stay excluded.
+ */
+export function classifyFiles<F extends FileRow>(files: F[], cutoff: string, registrySkills: string[] = []): { mine: F[]; agentSkills: Set<string> } {
+  const mine: F[] = []
+  const agentSkills = new Set<string>()
+  const starterSkills = new Set<string>()
+  for (const f of files) {
+    if (DERIVED_FILES.has(f.path)) continue
+    const own = !cutoff || f.updated_at > cutoff
+    const skill = SKILL_FILE.exec(f.path)?.[1]
+    if (own) {
+      mine.push(f)
+      if (skill) agentSkills.add(skill)
+    } else if (skill) {
+      starterSkills.add(skill)
+    }
+  }
+  for (const name of registrySkills) if (!starterSkills.has(name)) agentSkills.add(name)
+  return { mine, agentSkills }
+}
+
+/** Skill names in skills-registry.json (object or array form). */
+function readRegistrySkills(q: Sql): string[] {
+  return safe(
+    q,
+    "SELECT content FROM adf_files WHERE path = 'skills-registry.json'",
+    (rows) => {
+      const c = (rows[0] as { content?: Buffer | string } | undefined)?.content
+      if (!c) return [] as string[]
+      const parsed = JSON.parse(Buffer.isBuffer(c) ? c.toString('utf-8') : String(c)) as { skills?: Record<string, unknown> | Array<{ name?: string }> }
+      const skills = parsed.skills
+      if (Array.isArray(skills)) return skills.map((s) => s?.name).filter((n): n is string => typeof n === 'string')
+      return skills && typeof skills === 'object' ? Object.keys(skills) : []
+    },
+    [] as string[]
+  )
+}
+
+/** `local_*` table names (safe identifiers only). */
+function listLocalTables(q: Sql): string[] {
+  return safe(
+    q,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'local\\_%' ESCAPE '\\' ORDER BY name",
+    (rows) => (rows as Array<{ name: string }>).map((r) => r.name).filter((n) => /^local_[A-Za-z0-9_]+$/.test(n)),
+    [] as string[]
+  )
+}
+
 export interface VitalsSlowPart {
   meta: FleetMeta
   power: AgentPowerInputs
@@ -178,8 +256,7 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
   }
   // Files seeded at creation land a few ms after adf_created_at; anything the
   // agent writes comes much later (a turn takes seconds).
-  const createdMs = meta.createdAt ? Date.parse(meta.createdAt) : NaN
-  const cutoff = Number.isFinite(createdMs) ? new Date(createdMs + CREATION_GRACE_MS).toISOString() : ''
+  const cutoff = agentWriteCutoff(meta.createdAt)
 
   // Identity: purposes and sealing only, never values.
   const identity = safe(
@@ -223,51 +300,15 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
   )
 
   // Files changed after creation. Template instances carry their template's
-  // older timestamps, so starter files never count. ISO strings compare
-  // lexically (both sides come from Date.toISOString).
-  const files = safe(
-    q,
-    'SELECT path, updated_at FROM adf_files',
-    (rows) => rows as Array<{ path: string; updated_at: string }>,
-    []
+  // older timestamps, so starter files never count.
+  const { mine, agentSkills } = classifyFiles(
+    safe(q, 'SELECT path, updated_at FROM adf_files', (rows) => rows as FileRow[], []),
+    cutoff,
+    readRegistrySkills(q)
   )
-  let filesWritten = 0
-  const agentSkills = new Set<string>()
-  const starterSkills = new Set<string>()
-  for (const f of files) {
-    if (DERIVED_FILES.has(f.path)) continue
-    const mine = !cutoff || f.updated_at > cutoff
-    const skill = SKILL_FILE.exec(f.path)?.[1]
-    if (mine) {
-      filesWritten++
-      if (skill) agentSkills.add(skill)
-    } else if (skill) {
-      starterSkills.add(skill)
-    }
-  }
-  // Registry entries without files (legacy loader catalogs) count too;
-  // starter skills stay excluded. Deduped by name.
-  const registry = safe(
-    q,
-    "SELECT content FROM adf_files WHERE path = 'skills-registry.json'",
-    (rows) => {
-      const c = (rows[0] as { content?: Buffer | string } | undefined)?.content
-      if (!c) return [] as string[]
-      const parsed = JSON.parse(Buffer.isBuffer(c) ? c.toString('utf-8') : String(c)) as { skills?: Record<string, unknown> | Array<{ name?: string }> }
-      const skills = parsed.skills
-      if (Array.isArray(skills)) return skills.map((s) => s?.name).filter((n): n is string => typeof n === 'string')
-      return skills && typeof skills === 'object' ? Object.keys(skills) : []
-    },
-    [] as string[]
-  )
-  for (const name of registry) if (!starterSkills.has(name)) agentSkills.add(name)
+  const filesWritten = mine.length
 
-  const tables = safe(
-    q,
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'local\\_%' ESCAPE '\\'",
-    (rows) => (rows as Array<{ name: string }>).map((r) => r.name).filter((n) => /^local_[A-Za-z0-9_]+$/.test(n)),
-    [] as string[]
-  )
+  const tables = listLocalTables(q)
   let localRows = 0
   for (const t of tables) localRows += safe(q, `SELECT COUNT(*) AS n FROM "${t}"`, (r) => firstNumber(r), 0)
 
@@ -302,8 +343,262 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
 }
 
 // =============================================================================
+// Activity: upcoming wakes, recent events, per-day turns, what it knows
+// =============================================================================
+
+/** config.id, the per-agent ledger's key. */
+function readAgentId(q: Sql): string | null {
+  return safe(q, "SELECT json_extract(config_json, '$.id') AS v FROM adf_config WHERE id = 1", (r) => {
+    const v = (r[0] as { v?: unknown } | undefined)?.v
+    return typeof v === 'string' && v ? v : null
+  }, null)
+}
+
+/** Newest adf_loop rows scanned for recent events (rowid range, PK order). */
+const RECENT_LOOP_ROWS = 200
+/** adf_loop rows scanned at most for the per-day turn counts. */
+export const DAILY_SCAN_CAP = 5_000
+const RECENT_MESSAGES = 8
+const RECENT_LOG_ERRORS = 5
+const RECENT_FILES = 5
+const MAX_SKILLS = 50
+const MAX_TABLES = 50
+const MAX_FILES = 20
+const LABEL_MAX = 80
+
+/** The part of AgentActivity read from the file (costs and identity come from the service). */
+export type ActivityRead = Omit<AgentActivity, 'filePath' | 'computedAt' | 'live'>
+
+function shortLabel(s: unknown, max = LABEL_MAX): string {
+  const line = typeof s === 'string' ? s.trim().split(/\r?\n/, 1)[0] : ''
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line
+}
+
+/** A DID is long; keep the method, the start and the tail. */
+function shortParty(alias: unknown, address: unknown): string {
+  if (typeof alias === 'string' && alias.trim()) return shortLabel(alias, 40)
+  const a = typeof address === 'string' ? address : ''
+  if (a.startsWith('did:') && a.length > 28) return `${a.slice(0, 16)}…${a.slice(-4)}`
+  return shortLabel(a, 40) || 'unknown'
+}
+
+function scheduleLabel(raw: string): string {
+  let s: TimerSchedule | null = null
+  try { s = JSON.parse(raw) as TimerSchedule } catch { s = null }
+  if (!s) return 'Timer'
+  if (s.mode === 'cron') return shortLabel(`cron ${s.cron}`)
+  if (s.mode === 'interval') {
+    const min = Math.round(s.every_ms / 60_000)
+    if (min < 1) return `Every ${Math.max(1, Math.round(s.every_ms / 1000))} s`
+    if (min < 120) return `Every ${min} min`
+    return `Every ${Math.round(min / 60)} h`
+  }
+  return 'One-time wake'
+}
+
+interface LoopBlockRow {
+  seq: number
+  role: string
+  at: number
+  loop: string | null
+  type: string | null
+  name: string | null
+  id: string | null
+  tuid: string | null
+  err: number | null
+}
+
+/**
+ * Events from the newest loop rows, newest first. One query: the content
+ * blocks are unpacked by json_each in SQLite, so only names and flags cross
+ * into JS, never tool inputs or results.
+ */
+function readLoopEvents(q: Sql): ActivityEvent[] {
+  const sql = (loopCol: string): string => `
+    SELECT l.seq AS seq, l.role AS role, l.created_at AS at, ${loopCol} AS loop,
+      json_extract(j.value, '$.type') AS type, json_extract(j.value, '$.name') AS name,
+      json_extract(j.value, '$.id') AS id, json_extract(j.value, '$.tool_use_id') AS tuid,
+      json_extract(j.value, '$.is_error') AS err
+    FROM (SELECT * FROM adf_loop ORDER BY seq DESC LIMIT ${RECENT_LOOP_ROWS}) l,
+      json_each(CASE WHEN json_valid(l.content_json) AND json_type(l.content_json) = 'array' THEN l.content_json ELSE '[]' END) j
+    WHERE j.type = 'object'
+    ORDER BY l.seq ASC, j.key ASC`
+  const rows = safe(q, sql('l.loop'), (r) => r as LoopBlockRow[], safe(q, sql("'main'"), (r) => r as LoopBlockRow[], []))
+
+  // Oldest first so a result can name the call before it.
+  const toolNames = new Map<string, string>()
+  const bySeq = new Map<number, LoopBlockRow[]>()
+  for (const r of rows) {
+    if (r.type === 'tool_use' && r.id && r.name) toolNames.set(r.id, r.name)
+    const list = bySeq.get(r.seq)
+    if (list) list.push(r)
+    else bySeq.set(r.seq, [r])
+  }
+  const out: ActivityEvent[] = []
+  for (const [seq, blocks] of [...bySeq.entries()].reverse()) {
+    const first = blocks[0]
+    const at = typeof first.at === 'number' ? first.at : 0
+    const loop = first.loop || 'main'
+    if (first.role === 'assistant') {
+      const calls = blocks.filter((b) => b.type === 'tool_use' && b.name)
+      if (calls.length === 0) out.push({ kind: 'turn', at, label: loop, seq, loop })
+      for (const c of calls.reverse()) out.push({ kind: 'tool', at, label: c.name as string, seq, loop })
+    } else {
+      for (const b of blocks.slice().reverse()) {
+        if (b.type !== 'tool_result' || !b.err) continue
+        const name = (b.tuid && toolNames.get(b.tuid)) || 'A tool call'
+        out.push({ kind: 'error', at, label: `${name} failed`, seq, loop })
+      }
+    }
+  }
+  return out
+}
+
+/** State of the per-day turn scan for one file. */
+export interface TurnScan {
+  /** Highest adf_loop seq this scan has seen. */
+  lastSeq: number
+  /** Turn times inside the window. */
+  times: number[]
+  /** The cold scan stopped at DAILY_SCAN_CAP with rows older than it still inside the window. */
+  capped: boolean
+}
+
+/**
+ * Finished-turn times since `since`: assistant rows without a tool call.
+ * `prior` (the last scan of this file) makes it incremental: only rows above
+ * its high-water seq are read, so a running agent pays for its new rows, not
+ * for 14 days of history on every change. Cold, or when more than
+ * DAILY_SCAN_CAP rows arrived since, it reads the newest DAILY_SCAN_CAP
+ * rowids. `role` precedes content_json in the row, so user rows are rejected
+ * before their content is touched.
+ */
+function readTurnTimes(q: Sql, since: number, prior?: TurnScan): TurnScan {
+  const maxSeq = safe(q, 'SELECT MAX(seq) AS n FROM adf_loop', (r) => firstNumber(r), 0)
+  const floor = Math.max(0, maxSeq - DAILY_SCAN_CAP)
+  const base = prior && prior.lastSeq >= floor && prior.lastSeq <= maxSeq ? prior : null
+  const from = base ? base.lastSeq : floor
+  const fresh = safe(
+    q,
+    `SELECT created_at AS t FROM adf_loop WHERE seq > ? AND role = 'assistant' AND created_at >= ? AND instr(content_json, '"type":"tool_use"') = 0`,
+    (r) => (r as Array<{ t: number }>).map((x) => x.t),
+    [] as number[],
+    [from, since]
+  )
+  if (base) return { lastSeq: maxSeq, times: [...base.times.filter((t) => t >= since), ...fresh], capped: base.capped }
+  const firstAt = (where: string, params: unknown[]): number | null =>
+    safe(q, `SELECT created_at AS t FROM adf_loop ${where} ORDER BY seq LIMIT 1`, (r) => {
+      const t = (r[0] as { t?: number } | undefined)?.t
+      return typeof t === 'number' ? t : null
+    }, null, params)
+  // Capped: rows below the floor exist and the first scanned row is inside the window.
+  let capped = false
+  if (floor > 0) {
+    const firstScanned = firstAt('WHERE seq > ?', [floor])
+    capped = firstScanned !== null && firstScanned > since && firstAt('WHERE seq <= ?', [floor]) !== null
+  }
+  return { lastSeq: maxSeq, times: fresh, capped }
+}
+
+/**
+ * Everything the overview's lower sections read from the file. Every query is
+ * bounded: timers and messages by LIMIT on an indexed column, loop events by
+ * the newest RECENT_LOOP_ROWS rowids, the per-day count by DAILY_SCAN_CAP
+ * rowids, local tables and skills by MAX_*. adf_files is read path +
+ * timestamps only (as the vitals read does).
+ */
+export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): ActivityRead & { turnScan: TurnScan } {
+  const createdAt = safe(
+    q,
+    "SELECT COALESCE((SELECT value FROM adf_meta WHERE key = 'adf_created_at'), (SELECT json_extract(config_json, '$.metadata.created_at') FROM adf_config WHERE id = 1)) AS v",
+    (r) => (r[0] as { v?: string | null } | undefined)?.v ?? null,
+    null as string | null
+  )
+  const cutoff = agentWriteCutoff(createdAt)
+
+  // Coming up: next three wakes (idx_adf_timers_wake).
+  type TimerRow = { id: number; next_wake_at: number; scope: string | null; payload: string | null; lambda: string | null; schedule_json: string }
+  const timerCols = 'id, next_wake_at, scope, payload, lambda, schedule_json'
+  const timers = safe(
+    q,
+    `SELECT ${timerCols} FROM adf_timers WHERE expired = 0 ORDER BY next_wake_at LIMIT 3`,
+    (r) => r as TimerRow[],
+    safe(q, `SELECT ${timerCols} FROM adf_timers ORDER BY next_wake_at LIMIT 3`, (r) => r as TimerRow[], [])
+  )
+  const upcoming: UpcomingWake[] = timers.map((t) => {
+    let scope: UpcomingWake['scope'] = 'system'
+    try {
+      const parsed = JSON.parse(t.scope ?? '[]') as unknown
+      if (Array.isArray(parsed) && parsed[0] === 'agent') scope = 'agent'
+    } catch { /* default */ }
+    return { id: t.id, at: t.next_wake_at, scope, label: shortLabel(t.payload) || shortLabel(t.lambda) || scheduleLabel(t.schedule_json) }
+  })
+
+  // Files: one path/timestamp scan, shared by recent events and knowledge.
+  const { mine, agentSkills } = classifyFiles(
+    safe(q, 'SELECT path, updated_at, size FROM adf_files', (rows) => rows as FileRow[], []),
+    cutoff,
+    readRegistrySkills(q)
+  )
+  mine.sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0))
+
+  // Recent events from every source, merged newest first.
+  const fileEvents: ActivityEvent[] = mine.slice(0, RECENT_FILES).map((f) => ({ kind: 'file', at: Date.parse(f.updated_at) || 0, label: f.path }))
+  const inbox = safe(
+    q,
+    `SELECT "from" AS addr, sender_alias AS alias, received_at AS at FROM adf_inbox ORDER BY received_at DESC LIMIT ${RECENT_MESSAGES}`,
+    (r) => (r as Array<{ addr: string; alias: string | null; at: number }>).map((m): ActivityEvent => ({ kind: 'message_in', at: m.at, label: shortParty(m.alias, m.addr) })),
+    []
+  )
+  const outbox = safe(
+    q,
+    `SELECT "to" AS addr, recipient_alias AS alias, created_at AS at FROM adf_outbox ORDER BY created_at DESC LIMIT ${RECENT_MESSAGES}`,
+    (r) => (r as Array<{ addr: string; alias: string | null; at: number }>).map((m): ActivityEvent => ({ kind: 'message_out', at: m.at, label: shortParty(m.alias, m.addr) })),
+    []
+  )
+  // idx_adf_logs_level; rowid order inside the index entry.
+  const logErrors = safe(
+    q,
+    `SELECT message, created_at AS at FROM adf_logs WHERE level = 'error' ORDER BY id DESC LIMIT ${RECENT_LOG_ERRORS}`,
+    (r) => (r as Array<{ message: string; at: number }>).map((m): ActivityEvent => ({ kind: 'error', at: m.at, label: shortLabel(m.message) || 'Error' })),
+    []
+  )
+  const recent = mergeRecent([readLoopEvents(q), fileEvents, inbox, outbox, logErrors])
+
+  const since = windowStartMs(now)
+  const turns = readTurnTimes(q, since, prior)
+  // Compacted: a loop snapshot was archived inside the window, so older rows of it are gone.
+  const compacted = safe(q, "SELECT 1 AS n FROM adf_audit WHERE source = 'loop' AND created_at >= ? LIMIT 1", (r) => r.length > 0, false, [since])
+  const daily = bucketByLocalDay(turns.times, now).map(({ date, count }) => ({ date, turns: count }))
+
+  // What it knows.
+  const tableNames = listLocalTables(q).slice(0, MAX_TABLES)
+  const tables = tableNames.map((name) => ({ name, rows: safe(q, `SELECT COUNT(*) AS n FROM "${name}"`, (r) => firstNumber(r), 0) }))
+
+  return {
+    upcoming,
+    recent,
+    daily,
+    dailyPartial: turns.capped || compacted,
+    knowledge: {
+      skills: [...agentSkills].sort((a, b) => a.localeCompare(b)).slice(0, MAX_SKILLS),
+      tables,
+      files: mine.slice(0, MAX_FILES).map((f) => ({ path: f.path, updatedAt: f.updated_at, size: typeof f.size === 'number' ? f.size : 0 })),
+      filesTotal: mine.length
+    },
+    turnScan: turns
+  }
+}
+
+// =============================================================================
 // Service
 // =============================================================================
+
+interface CacheEntry<T> {
+  key: string
+  at: number
+  value: T
+}
 
 /** A live agent's slow part is recomputed at most this often. */
 const LIVE_MIN_INTERVAL_MS = 2_000
@@ -321,7 +616,10 @@ export class AgentVitalsService {
   /** Last fleet result, for the spawned-children count. */
   private lastFleet: FleetAgentStatus[] | null = null
 
-  private slowCache = new Map<string, { key: string; at: number; slow: VitalsSlowPart }>()
+  private slowCache = new Map<string, CacheEntry<VitalsSlowPart>>()
+  private activityCache = new Map<string, CacheEntry<ActivityRead & { agentId: string | null }>>()
+  /** Last per-day turn scan per file; makes the next one incremental. */
+  private turnScans = new Map<string, TurnScan>()
   private workspaceIds = new WeakMap<object, number>()
   private nextWorkspaceId = 1
 
@@ -478,39 +776,53 @@ export class AgentVitalsService {
 
   /** Drop the cached slow part (e.g. after a config change made elsewhere). */
   invalidate(filePath?: string): void {
-    if (filePath) this.slowCache.delete(filePath)
-    else this.slowCache.clear()
+    if (filePath) {
+      this.slowCache.delete(filePath)
+      this.activityCache.delete(filePath)
+      this.turnScans.delete(filePath)
+    } else {
+      this.slowCache.clear()
+      this.activityCache.clear()
+      this.turnScans.clear()
+    }
   }
 
   /**
-   * Slow part, cached. Live agents: keyed by the connection's total_changes()
+   * One cached read. Live agents: keyed by the connection's total_changes()
    * (any write — a finished turn, a config change — bumps it) and recomputed
    * at most every LIVE_MIN_INTERVAL_MS. Files nobody has open: keyed by the
-   * file's and its WAL's mtime/size, read with one readonly peek.
+   * file's and its WAL's mtime/size, read with one readonly peek. `salt`
+   * joins the key (the activity read's local day, so it rolls at midnight).
    */
-  private async getSlowPart(filePath: string, force: boolean): Promise<{ slow: VitalsSlowPart; live: boolean }> {
+  private async cachedRead<T>(
+    cache: Map<string, CacheEntry<T>>,
+    filePath: string,
+    force: boolean,
+    read: (q: Sql) => T,
+    salt = ''
+  ): Promise<{ value: T; live: boolean; at: number }> {
     // Let other IPC work run before the synchronous reads.
     await new Promise<void>((resolve) => setImmediate(resolve))
     const ws = this.findOpenWorkspace(filePath)
-    const cached = this.slowCache.get(filePath)
+    const cached = cache.get(filePath)
     const now = this.now()
     let key: string
     if (ws) {
-      if (!force && cached?.key.startsWith('live:') && now - cached.at < LIVE_MIN_INTERVAL_MS) {
-        return { slow: cached.slow, live: true }
+      if (!force && cached?.key.startsWith('live:') && cached.key.endsWith(`|${salt}`) && now - cached.at < LIVE_MIN_INTERVAL_MS) {
+        return { value: cached.value, live: true, at: cached.at }
       }
       const changes = safe(ws.querySQL.bind(ws), 'SELECT total_changes() AS n', (r) => firstNumber(r), -1)
-      key = `live:${this.workspaceId(ws)}:${changes}`
+      key = `live:${this.workspaceId(ws)}:${changes}|${salt}`
     } else {
       const [main, wal] = await Promise.all([
         fsp.stat(filePath),
         fsp.stat(`${filePath}-wal`).catch(() => null)
       ])
-      key = `file:${main.mtimeMs}:${main.size}:${wal?.mtimeMs ?? 0}:${wal?.size ?? 0}`
+      key = `file:${main.mtimeMs}:${main.size}:${wal?.mtimeMs ?? 0}:${wal?.size ?? 0}|${salt}`
     }
     if (!force && cached && cached.key === key) {
       if (ws) cached.at = now
-      return { slow: cached.slow, live: !!ws }
+      return { value: cached.value, live: !!ws, at: cached.at }
     }
 
     // The read is synchronous, so no second caller can arrive mid-read and
@@ -518,16 +830,22 @@ export class AgentVitalsService {
     // wrapper's `finally` ran before the entry was set, so every later
     // cache miss and every `force` got the first read back forever.)
     try {
-      const slow = ws
-        ? readVitalsSlowPart((sql, params) => ws.querySQL(sql, params))
-        : AdfDatabase.peek(filePath, (db) => readVitalsSlowPart((sql, params) => db.prepare(sql).all(...(params ?? []))))
-      this.slowCache.set(filePath, { key, at: this.now(), slow })
-      return { slow, live: !!ws }
+      const value = ws
+        ? read((sql, params) => ws.querySQL(sql, params))
+        : AdfDatabase.peek(filePath, (db) => read((sql, params) => db.prepare(sql).all(...(params ?? []))))
+      const at = this.now()
+      cache.set(filePath, { key, at, value })
+      return { value, live: !!ws, at }
     } catch (err) {
       // Transient lock on a peek: serve the last good read.
-      if (cached) return { slow: cached.slow, live: !!ws }
+      if (cached) return { value: cached.value, live: !!ws, at: cached.at }
       throw err
     }
+  }
+
+  private async getSlowPart(filePath: string, force: boolean): Promise<{ slow: VitalsSlowPart; live: boolean }> {
+    const { value, live } = await this.cachedRead(this.slowCache, filePath, force, readVitalsSlowPart)
+    return { slow: value, live }
   }
 
   /** Children in the last fleet scan whose parent reference names this agent. */
@@ -569,6 +887,39 @@ export class AgentVitalsService {
       cost7dPartial: cost ? cost.partial : undefined,
       stats: scoreAgent(slow.power, maturity),
       maturity
+    }
+  }
+
+  /**
+   * The overview's lower sections: next wakes, recent events, 14 days of
+   * finished turns with the ledger's cost per day, and what the agent keeps
+   * (skills, local tables, files it wrote). Cached like the vitals slow part;
+   * the per-day cost is read from the in-memory ledger on every call.
+   */
+  async getAgentActivity(filePath: string, opts?: { force?: boolean }): Promise<AgentActivity> {
+    const now = this.now()
+    const { value, live, at } = await this.cachedRead(
+      this.activityCache,
+      filePath,
+      !!opts?.force,
+      (q) => {
+        const { turnScan, ...read } = readAgentActivity(q, this.now(), this.turnScans.get(filePath))
+        this.turnScans.set(filePath, turnScan)
+        return { ...read, agentId: readAgentId(q) }
+      },
+      localDateKey(new Date(now))
+    )
+    const { agentId, ...read } = value
+    const costs = agentId && this.deps.getAgentDailyCost ? this.deps.getAgentDailyCost(agentId, read.daily.map((d) => d.date)) : {}
+    return {
+      filePath,
+      computedAt: at,
+      live,
+      ...read,
+      daily: read.daily.map((d) => {
+        const c = costs[d.date]
+        return c ? { ...d, costUsd: c.usd, ...(c.partial ? { costPartial: true } : {}) } : d
+      })
     }
   }
 }

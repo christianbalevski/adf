@@ -8,17 +8,10 @@ import { FolderPickerChip, ProviderPickerChip, TemplatePickerChip } from './Home
 import { useHomeProviders } from './HomeProviders'
 import { useTemplatesStore } from '../../hooks/useTemplates'
 import { NameChip } from './NameChip'
-import { NextAgentIdentity, useIdentityDraft } from './NextAgentIdentity'
+import type { IdentityDraftHandle } from './NextAgentIdentity'
 import { generateAgentName } from '../../../shared/utils/agent-names'
 
 const MAX_ROWS = 8
-/** Caption lines by roll count, highest first so one click shows one line. */
-const SPIN_LINES: ReadonlyArray<readonly [number, string]> = [
-  [15, "Ok chill! This thing was vibe coded, don't break it!"],
-  [12, 'I guess not lol'],
-  [8, "Can't find what you're looking for? Maybe the next spin will be it"],
-  [4, 'You can rename it later.'],
-]
 /** Suggestion rows above the bar, each a slow marquee; drawn from the pool per visit. */
 const MARQUEE_ROWS = 3
 const CHIPS_PER_ROW = 7
@@ -42,7 +35,14 @@ function saveSuggestionsOn(on: boolean): void {
  * creates the agent; the provider sheet opens on the first start, from the
  * same path every start uses.
  */
-export function HomeComposer() {
+export function HomeComposer({ identity, onReroll, onCreated }: {
+  /** The next agent's identity draft, owned by HomeScreen (its orbital shows there). */
+  identity: IdentityDraftHandle
+  /** A name reroll: HomeScreen renews the identity with it and counts it. */
+  onReroll: () => void
+  /** After a successful create, before the next agent's name and identity land. */
+  onCreated?: () => void
+}) {
   const { createQuickAgent } = useAdfFile()
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
   const setChatPlacement = useAppStore((s) => s.setChatPlacement)
@@ -65,28 +65,14 @@ export function HomeComposer() {
   // A name is drawn the first time the composer shows and kept until a send.
   useEffect(() => { if (!homeName) setHomeName(generateAgentName()) }, [homeName, setHomeName])
   const name = homeName ?? ''
-  // The next agent's DID, minted ahead so its orbital shows while it is
-  // being named. The create adopts exactly this identity.
-  const { draft: identityDraft, renew: renewIdentity, current: currentIdentity } = useIdentityDraft()
-  // The caption reacts to how many times the name has been rolled for this
-  // agent: the obvious at four, then a nudge, a shrug, and a plea. Each line
-  // once per agent, and the count resets with every send.
-  const spins = useRef(0)
-  const [hint, setHint] = useState<string | null>(null)
-  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const shown = useRef<Set<number>>(new Set())
-  const onSpin = useCallback(() => {
-    spins.current += 1
-    const say = (at: number, line: string) => {
-      if (spins.current < at || shown.current.has(at)) return
-      shown.current.add(at)
-      setHint(line)
-      if (hintTimer.current) clearTimeout(hintTimer.current)
-      hintTimer.current = setTimeout(() => setHint(null), 5000)
-    }
-    for (const [at, line] of SPIN_LINES) say(at, line)
-  }, [])
+  // The create adopts exactly the identity whose orbital is on screen.
+  const { renew: renewIdentity, current: currentIdentity } = identity
   const [busy, setBusy] = useState(false)
+  // While a create is out it holds the current draft; a reroll then would
+  // discard the draft it is adopting. Send renews it afterwards anyway.
+  const busyRef = useRef(false)
+  busyRef.current = busy
+  const reroll = useCallback(() => { if (!busyRef.current) onReroll() }, [onReroll])
   const [error, setError] = useState<string | null>(null)
   // A refused name (bad characters, or already a file in the folder) turns
   // the chip red, shakes it, and puts the reason in red under the box. The
@@ -213,8 +199,7 @@ export function HomeComposer() {
       // The next agent gets its own name and identity (the create used this one).
       setHomeName(generateAgentName())
       renewIdentity()
-      spins.current = 0
-      shown.current.clear()
+      onCreated?.()
       setShowMeshGraph(false)
       // The loop takes the stage: the agent's first turn is the whole point
       // of the screen the user is about to see.
@@ -226,7 +211,7 @@ export function HomeComposer() {
     } finally {
       setBusy(false)
     }
-  }, [busy, createQuickAgent, defaultTemplateId, files, homeFolder, homeModelId, homeName, homeTemplateId, currentIdentity, openTemplateReview, providerId, refuseName, renewIdentity, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setHomeTemplateId, setShowMeshGraph, setText, text])
+  }, [busy, createQuickAgent, defaultTemplateId, files, homeFolder, homeModelId, homeName, homeTemplateId, currentIdentity, onCreated, openTemplateReview, providerId, refuseName, renewIdentity, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setHomeTemplateId, setShowMeshGraph, setText, text])
   sendRef.current = send
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -256,14 +241,8 @@ export function HomeComposer() {
       {suggestionsOn && <SuggestionMarquee rows={rows} onPick={fill} disabled={busy} />}
 
       <div className="mx-auto w-full max-w-3xl px-4">
-      {/* The next agent's orbital beside the box, from its real DID. Hidden
-          on narrow windows, where the box needs the width. */}
-      <div className="flex items-start gap-3">
-      <div className="hidden sm:block">
-        <NextAgentIdentity did={identityDraft?.did ?? null} spinImpulse={name.length} onReroll={renewIdentity} disabled={busy} />
-      </div>
       <div
-        className={`home-composer relative min-w-0 flex-1 rounded-[var(--radius-sm)] border bg-[var(--paper)] focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--focus)] ${dragOver ? 'border-[var(--blue)] outline outline-2 outline-offset-2 outline-[var(--focus)]' : 'border-[var(--rule-strong)]'}`}
+        className={`home-composer relative rounded-[var(--radius-sm)] border bg-[var(--paper)] focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--focus)] ${dragOver ? 'border-[var(--blue)] outline outline-2 outline-offset-2 outline-[var(--focus)]' : 'border-[var(--rule-strong)]'}`}
         onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDragOver(true) } }}
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false) }}
         onDrop={(e) => { e.preventDefault(); setDragOver(false); if (!busy) addFiles(e.dataTransfer.files) }}
@@ -318,7 +297,7 @@ export function HomeComposer() {
             </button>
             {/* Bad characters: the chip shakes on its own and keeps the old
                 name; only the reason goes red below. Taken names go red too. */}
-            {name && <NameChip name={name} onChange={onNameChange} onSpin={onSpin} onInvalid={setError} refused={refused} />}
+            {name && <NameChip name={name} onChange={onNameChange} onSpin={reroll} onInvalid={setError} refused={refused} />}
             <TemplatePickerChip />
             <ProviderPickerChip />
             <FolderPickerChip />
@@ -343,7 +322,6 @@ export function HomeComposer() {
           </button>
         </div>
       </div>
-      </div>
 
       {error && <p className="mt-2 text-[12px] text-[var(--adf-ui-danger)]">{error}</p>}
       <div className="mt-1.5 flex items-center justify-between">
@@ -356,9 +334,7 @@ export function HomeComposer() {
           {suggestionsOn ? 'Hide suggestions' : 'Show suggestions'}
         </button>
         <span className="text-[10.5px] text-[var(--adf-ui-text-subtle)]">
-          {busy
-            ? `Creating ${name || 'the agent'}…`
-            : hint ?? 'Create a new agent'}
+          {busy ? `Creating ${name || 'the agent'}…` : 'Create a new agent'}
         </span>
       </div>
       </div>

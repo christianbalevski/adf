@@ -546,3 +546,6 @@ export type ContextCategory = import('../../../shared/utils/context-breakdown').
 
 /** GET /agents/:id/vitals: header facts and the four scored stats (Studio's overview card). */
 export type AgentVitals = import('../../../shared/types/agent-vitals.types').AgentVitals
+
+/** GET /agents/:id/activity: next wakes, recent events, 14-day turns and cost, skills/tables/files. */
+export type AgentActivity = import('../../../shared/types/agent-vitals.types').AgentActivity

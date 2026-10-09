@@ -101,7 +101,7 @@ export function StatusBar() {
       {config && (
         <>
           <span className="flex items-center gap-1.5 min-w-0 max-w-44" title="The open agent — everything left of the version number describes it">
-            <OrbitalAvatar seed={orbitalSeed} size={16} />
+            <OrbitalAvatar seed={orbitalSeed} size={14} />
             <span className="font-medium text-neutral-700 dark:text-neutral-200 truncate">{config.name}</span>
           </span>
           <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />

@@ -6,13 +6,13 @@
 
 import type { MessagingMode, Visibility } from './adf-v02.types'
 
-/** One line of a stat's breakdown popover. */
+/** One line of a stat's breakdown. */
 export interface StatFactor {
   /** Stable id, e.g. `tool:compute_exec`, `mcp:github`, `visibility`. */
   id: string
   /** Plain technical English, shown as is. */
   label: string
-  /** Contribution before the 5-segment cap. Negative for mitigations. */
+  /** Power points this factor adds (uncapped). Negative for mitigations. */
   points: number
   /** True when the capability needs human approval (restricted tool, sealed secret). */
   gated: boolean
@@ -20,15 +20,30 @@ export interface StatFactor {
   configPath: string
 }
 
-/** Reach / Access / Autonomy: a 5-segment power bar. */
+/**
+ * Reach / Access / Autonomy. A level on the shared curve in
+ * `src/shared/utils/agent-stats.ts` (POWER_CURVE), from uncapped points.
+ * Gated points count toward the level; `open` and `gated` say how it splits.
+ */
 export interface PowerStat {
-  /** Filled segments, 0..5. Always `gated + open`. */
-  segments: number
-  /** Segments whose capability needs approval. */
-  gated: number
-  /** Segments whose capability runs without approval. */
+  /** >= 1. */
+  level: number
+  /** 0..1 within the current level. */
+  progress: number
+  /** Points behind the level: `open + gated`, after mitigations, >= 0. */
+  points: number
+  /** Points whose capability runs without approval (mitigations taken off these first). */
   open: number
-  /** Sum of factor points before the cap (mitigations included). */
+  /** Points whose capability needs approval. */
+  gated: number
+  /** Points at which the current level starts and the next one starts. */
+  levelStart: number
+  nextLevelAt: number
+  /** Level the open points alone would reach. */
+  openLevel: number
+  /** True when `openLevel >= POWER_HIGH_OPEN_LEVEL`: much of this runs without anyone asking. */
+  high: boolean
+  /** Sum of factor points, mitigations included (can be negative). */
   rawPoints: number
   factors: StatFactor[]
 }
@@ -63,17 +78,17 @@ export interface ExperienceSignal {
 }
 
 export interface ExperienceStat {
-  /** >= 1. floor(log2(score)). */
+  /** >= 1. Largest L with xpForLevel(L) <= score (EXPERIENCE_CURVE). */
   level: number
   /** 0..1 within the current level. */
   progress: number
-  /** Total XP (1 + sum of signal XP). */
+  /** Total XP (sum of signal XP). */
   score: number
   /** XP at which the current level starts and the next one starts. */
   levelStart: number
   nextLevelAt: number
   breakdown: ExperienceSignal[]
-  /** What one more level takes, in units of the cheapest signals. */
+  /** What one more level takes, in units of the cheapest signals. `xp` = nextLevelAt - score. */
   nextLevel: { xp: number; loopEntries: number; files: number; skills: number; hint: string }
 }
 
@@ -144,4 +159,93 @@ export interface AgentVitals {
   cost7dPartial?: boolean
   stats: AgentStats
   maturity: AgentExperienceInputs
+}
+
+// =============================================================================
+// Activity (the overview's lower sections)
+// =============================================================================
+
+/** One timer due soon. */
+export interface UpcomingWake {
+  id: number
+  /** next_wake_at, ms epoch. */
+  at: number
+  /** 'system' runs a lambda; 'agent' wakes a loop. */
+  scope: 'system' | 'agent'
+  /** Payload, else lambda, else the schedule kind. At most 80 chars. */
+  label: string
+}
+
+export type ActivityEventKind = 'turn' | 'tool' | 'message_in' | 'message_out' | 'file' | 'error'
+
+/** One line of "Recent activity". */
+export interface ActivityEvent {
+  kind: ActivityEventKind
+  /** ms epoch (the latest of a group). */
+  at: number
+  /**
+   * tool: the tool name. message_in / message_out: the other party.
+   * file: the path. error: a short message. turn: the loop name.
+   */
+  label: string
+  /** Consecutive same-tool calls folded into this line (tool only, >= 2). */
+  count?: number
+  /** adf_loop seq for loop-derived events. */
+  seq?: number
+  /** Loop the event came from (loop-derived events). */
+  loop?: string
+}
+
+/** One local calendar day of the activity sparkline. */
+export interface ActivityDay {
+  /** Local `YYYY-MM-DD`. */
+  date: string
+  /** Finished turns (assistant rows without a tool call) still in adf_loop. */
+  turns: number
+  /** USD from the per-agent usage ledger. Absent when the ledger has no rows that day. */
+  costUsd?: number
+  /** Some calls that day had no price (costUsd is a lower bound). */
+  costPartial?: boolean
+}
+
+export interface KnowledgeTable {
+  name: string
+  rows: number
+}
+
+export interface KnowledgeFile {
+  path: string
+  /** ISO updated_at. */
+  updatedAt: string
+  size: number
+}
+
+/** Result of `adf:agent:activity` and `GET /agents/:id/activity`. */
+export interface AgentActivity {
+  filePath: string
+  /** ms epoch this read was computed. */
+  computedAt: number
+  live: boolean
+  /** Next (at most 3) non-expired timers, soonest first. */
+  upcoming: UpcomingWake[]
+  /** Most recent first, at most 8, consecutive same-tool calls grouped. */
+  recent: ActivityEvent[]
+  /** 14 local days, oldest first; the last is today. */
+  daily: ActivityDay[]
+  /**
+   * True when the per-day scan stopped at its row cap before reaching the
+   * window's first day, or compaction removed rows inside the window: the
+   * oldest days may read low.
+   */
+  dailyPartial: boolean
+  knowledge: {
+    /** Skills the agent installed or changed (starter skills excluded), by name. At most 50. */
+    skills: string[]
+    /** `local_*` tables with row counts, by name. At most 50. */
+    tables: KnowledgeTable[]
+    /** Files the agent wrote, newest first (starter files and skills-registry.json excluded). At most 20. */
+    files: KnowledgeFile[]
+    /** All files the agent wrote (the same rule), for "N more". */
+    filesTotal: number
+  }
 }

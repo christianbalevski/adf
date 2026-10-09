@@ -11,7 +11,7 @@ import type { ContentBlock } from '../shared/types/provider.types'
 import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
-import type { AgentVitals } from '../shared/types/agent-vitals.types'
+import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 
 export interface AdfApi {
   // App
@@ -190,6 +190,8 @@ export interface AdfApi {
   getMeshFleetStatus: () => Promise<FleetStatusResult>
   /** Overview card vitals for one agent. `force` skips the main-process cache (use after turn_complete). */
   getAgentVitals: (filePath: string, opts?: { force?: boolean }) => Promise<AgentVitals>
+  /** Overview's lower sections: next wakes, recent events, 14-day activity, what it knows. */
+  getAgentActivity: (filePath: string, opts?: { force?: boolean }) => Promise<AgentActivity>
   getMeshTokenBurn: () => Promise<FleetBurnResult>
   onMeshEvent: (callback: (event: MeshEvent) => void) => () => void
   getMeshDebug: () => Promise<MeshDebugInfo>

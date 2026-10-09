@@ -236,6 +236,8 @@ describe('OpenAPI response conformance', () => {
       await call('GET', `${A}/status`, '/agents/agent-9/status')
       await call('GET', `${A}/vitals`, `${a}/vitals`) // in-memory agent: 409
       await call('GET', `${A}/vitals`, '/agents/agent-9/vitals')
+      await call('GET', `${A}/activity`, `${a}/activity`) // in-memory agent: 409
+      await call('GET', `${A}/activity`, '/agents/agent-9/activity')
       await call('GET', `${A}/logs/after`, `${a}/logs/after?afterId=0`)
       await call('GET', `${A}/loops/{name}`, `${a}/loops/main`)
       await call('GET', `${A}/identity/{purpose}`, `${a}/identity/provider:x:apiKey`)

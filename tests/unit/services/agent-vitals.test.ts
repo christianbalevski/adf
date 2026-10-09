@@ -112,8 +112,8 @@ describe('agent vitals', () => {
     expect(v.maturity).toMatchObject({ loopEntries: 0, filesWritten: 0, localTables: 0, localRows: 0, skills: 0, compactions: 0 })
     expect(v.stats.experience.level).toBe(1)
     expect(v.cost7dUsd).toBe(1.25)
-    expect(v.stats.access.segments).toBeGreaterThan(0)
-    expect(v.stats.reach.segments).toBeGreaterThan(0)
+    expect(v.stats.access.points).toBeGreaterThan(0)
+    expect(v.stats.reach.points).toBeGreaterThan(0)
   })
 
   it('counts the agent\'s own work and agrees between live and peeked reads', async () => {

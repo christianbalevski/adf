@@ -49,6 +49,16 @@ describe('per-agent usage ledger', () => {
     expect(service.getAgentCost(AGENT_ID, 7, eightDaysOn)).toBeNull()
   })
 
+  it('per-day cost: only the asked days, absent when no rows, partial per day', () => {
+    makeDir()
+    const service = new TokenUsageService()
+    service.recordUsage('anthropic', 'model-a', 10, 5, { cost_usd: 0.5, agent: AGENT_ID })
+    service.recordUsage('anthropic', 'model-b', 10, 5, { agent: AGENT_ID })
+    const today = localDateKey()
+    expect(service.getAgentDailyCost(AGENT_ID, ['2000-01-01', today])).toEqual({ [today]: { usd: 0.5, partial: true } })
+    expect(service.getAgentDailyCost('agent-unknown', [today])).toEqual({})
+  })
+
   it('flush writes both ledgers', () => {
     const dir = makeDir()
     const service = new TokenUsageService()

@@ -2,14 +2,40 @@
  * Agent stat scoring for the overview card. Pure: no IO, no clock reads
  * (callers pass ages in), so every number here is reproducible in a test.
  *
- * Reach, Access and Autonomy are 5-segment power bars. Each capability adds a
- * fixed number of points from the tables below; mitigations add negative
- * points. The total is capped at 5 segments. A factor is `gated` when using it
- * needs human approval (a `restricted` tool, a sealed secret); the bar shows
- * open segments first because those run without anyone asking.
+ * All four stats are levels on one curve family:
  *
- * Experience is a level derived from what is in the file right now, so it can
- * go down when the agent deletes its own work. See EXPERIENCE_WEIGHTS.
+ *   xpForLevel(L) = scale * (L - 1) ^ exponent
+ *   level(x)      = largest L >= 1 with xpForLevel(L) <= x
+ *
+ * Experience (EXPERIENCE_CURVE, scale 5, exponent 2.25) is fed XP from what is
+ * in the file right now, so it can go down when the agent deletes its own
+ * work. With exponent > 1 a level costs more XP the higher it is, but each
+ * band is a smaller share of the total (Lv 2 spans 5..24, Lv 20 spans
+ * 3.8k..4.2k, about 11%), so 4.8k and 7k XP sit four levels apart.
+ *
+ * Reach, Access and Autonomy (POWER_CURVE, scale 0.75, exponent 1) are fed
+ * uncapped points from the tables below; mitigations add negative points.
+ * The exponent is 1 because config points are additive and a maxed-out agent
+ * has only about 8-10 times the points of a fresh one; exponent 2 would need
+ * a 100x spread to cover the same Lv 3 to Lv 22 range. Every 0.75 points is
+ * one level.
+ *
+ * A factor is `gated` when using it needs human approval (a `restricted`
+ * tool, a sealed secret). Gated points count toward the level; the card
+ * draws them lighter. `high` flags a stat whose open points alone reach
+ * POWER_HIGH_OPEN_LEVEL.
+ *
+ * Calibration (asserted in tests/unit/shared/agent-stats.test.ts):
+ *   Experience                                            XP      Lv
+ *     brand-new agent                                      0       1
+ *     first session (~60 loop rows, 3 files)               9       2
+ *     heavy, months old (30k rows, 200 files, 10 skills,
+ *       8 tables / 20k rows, 150 compactions, 3 children) ~4150   20
+ *     4.8k / 7k / 10k XP                                  22 / 26 / 30
+ *   Power                                               points    Lv
+ *     default fresh agent: Access, Reach, Autonomy     1.75, 2, 2   3, 3, 3
+ *     heavily equipped public, autonomous agent with
+ *       host access (HEAVY fixture in the tests)  16.5, 17, 14.25  23, 23, 20
  */
 
 import type { AgentConfig, TimerSchedule } from '../types/adf-v02.types'
@@ -23,7 +49,55 @@ import type {
   StatFactor
 } from '../types/agent-vitals.types'
 
-export const MAX_SEGMENTS = 5
+// =============================================================================
+// Level curve
+// =============================================================================
+
+export interface LevelCurve {
+  /** XP (or points) at which Lv 2 starts. */
+  scale: number
+  /** Growth of the cost per level. 1 = every level costs `scale`. */
+  exponent: number
+}
+
+export const EXPERIENCE_CURVE: LevelCurve = { scale: 5, exponent: 2.25 }
+export const POWER_CURVE: LevelCurve = { scale: 0.75, exponent: 1 }
+
+/** Open level at which a power stat is drawn in the warn colour. */
+export const POWER_HIGH_OPEN_LEVEL = 15
+
+/** XP at which `level` starts. Lv 1 starts at 0. */
+export function xpForLevel(level: number, curve: LevelCurve): number {
+  if (!(level > 1)) return 0
+  return curve.scale * (level - 1) ** curve.exponent
+}
+
+/** Largest level whose start is <= xp; 1 for xp <= 0. */
+export function levelForXp(xp: number, curve: LevelCurve): number {
+  if (!(xp > 0) || !Number.isFinite(xp)) return 1
+  let level = 1 + Math.floor((xp / curve.scale) ** (1 / curve.exponent))
+  // Float error in the root can land one off at an exact boundary.
+  while (xpForLevel(level + 1, curve) <= xp) level++
+  while (level > 1 && xpForLevel(level, curve) > xp) level--
+  return level
+}
+
+export interface LevelPosition {
+  level: number
+  /** 0..1 within the level. */
+  progress: number
+  levelStart: number
+  nextLevelAt: number
+}
+
+export function levelPosition(xp: number, curve: LevelCurve): LevelPosition {
+  const x = Number.isFinite(xp) && xp > 0 ? xp : 0
+  const level = levelForXp(x, curve)
+  const levelStart = xpForLevel(level, curve)
+  const nextLevelAt = xpForLevel(level + 1, curve)
+  const progress = Math.min(1, Math.max(0, (x - levelStart) / (nextLevelAt - levelStart)))
+  return { level, progress, levelStart, nextLevelAt }
+}
 
 // =============================================================================
 // Points tables
@@ -31,7 +105,7 @@ export const MAX_SEGMENTS = 5
 
 /**
  * Access: what the agent can do. A default agent (files, sandbox code,
- * sys_fetch, a sealed key) lands at about 2 segments.
+ * sys_fetch) has 1.75 points, Lv 3.
  */
 export const ACCESS_TOOL_POINTS: Record<string, { points: number; label: string }> = {
   fs_read: { points: 0.25, label: 'Reads its own files' },
@@ -66,55 +140,56 @@ export const ACCESS_POINTS = {
 
 /**
  * Reach: who can reach the agent and whom it reaches. Inbound points scale
- * with messaging.visibility; a default agent (localhost, proactive) is 2.
+ * with messaging.visibility; a default agent (localhost, proactive) has 2
+ * points, Lv 3.
  */
 export const VISIBILITY_POINTS: Record<string, number> = {
   off: 0,
   directory: 0.5,
   localhost: 1,
   lan: 2,
-  public: 3
+  public: 4
 }
 
 export const REACH_POINTS = {
   sendProactive: 1,
   sendRespondOnly: 0.5,
-  publicPage: 2,
+  publicPage: 3,
   apiRoute: 0.5,
-  apiRouteCap: 1.5,
-  sharedFiles: 0.5,
-  adapter: 1,
-  adapterRestrictedDm: 0.5,
+  apiRouteCap: 3,
+  sharedFiles: 1,
+  adapter: 2.5,
+  adapterRestrictedDm: 1,
   wsConnection: 0.5,
-  wsConnectionCap: 1,
+  wsConnectionCap: 2,
   /** Mitigation: messages must be signed. */
   signedOnly: -0.5
 } as const
 
-/** Autonomy: how much it does with nobody in the chat. */
+/** Autonomy: how much it does with nobody in the chat. A default agent has 2 points, Lv 3. */
 export const AUTONOMY_POINTS = {
-  autonomous: 1.5,
-  autostart: 1,
-  timers: 0.5,
-  timerFast: 1, // fastest interval <= 5 min
-  timerHourly: 0.5, // fastest interval <= 1 h
+  autonomous: 3,
+  autostart: 2,
+  timers: 1,
+  timerFast: 2, // fastest interval <= 5 min
+  timerHourly: 1, // fastest interval <= 1 h
   trigger: 0.25,
-  triggerCap: 1,
+  triggerCap: 1.5,
   proactive: 0.5,
-  createAgents: 1,
-  updateConfig: 0.5,
-  sideLoop: 0.25,
-  sideLoopCap: 0.5,
+  createAgents: 3,
+  updateConfig: 1,
+  sideLoop: 0.5,
+  sideLoopCap: 1.5,
   /** Mitigation per enabled restricted tool. */
   restrictedTool: -0.25,
   restrictedToolCap: -1
 } as const
 
 // =============================================================================
-// Power bar arithmetic
+// Power arithmetic
 // =============================================================================
 
-/** Collapse factors into segments: mitigations eat open points first, total capped at 5. */
+/** Sum factors into open / gated points (mitigations eat open points first) and place them on POWER_CURVE. */
 export function toPowerStat(factors: StatFactor[]): PowerStat {
   let open = 0
   let gated = 0
@@ -129,13 +204,23 @@ export function toPowerStat(factors: StatFactor[]): PowerStat {
     gated = Math.max(0, gated + open)
     open = 0
   }
-  const total = Math.min(MAX_SEGMENTS, open + gated)
-  let segments = Math.round(total)
-  if (total > 0 && segments === 0) segments = 1
-  let openSeg = Math.min(segments, Math.round(Math.min(open, MAX_SEGMENTS)))
-  if (open > 0 && openSeg === 0) openSeg = Math.min(segments, 1)
+  const points = open + gated
+  const pos = levelPosition(points, POWER_CURVE)
+  const openLevel = levelForXp(open, POWER_CURVE)
   const rawPoints = factors.reduce((s, f) => s + f.points, 0)
-  return { segments, open: openSeg, gated: segments - openSeg, rawPoints, factors }
+  return {
+    level: pos.level,
+    progress: pos.progress,
+    points,
+    open,
+    gated,
+    levelStart: pos.levelStart,
+    nextLevelAt: pos.nextLevelAt,
+    openLevel,
+    high: openLevel >= POWER_HIGH_OPEN_LEVEL,
+    rawPoints,
+    factors
+  }
 }
 
 function toolMap(inputs: AgentPowerInputs): Map<string, { restricted: boolean }> {
@@ -178,7 +263,7 @@ export function scoreAccess(inputs: AgentPowerInputs): PowerStat {
   if (exec && inputs.compute.allowedTargets.includes('host')) {
     factors.push({
       id: 'compute:host_target',
-      label: 'compute_exec may run on the host machine',
+      label: 'Runs commands on the host machine',
       points: ACCESS_POINTS.computeHostTarget,
       gated: exec.restricted,
       configPath: 'compute.allowed_targets'
@@ -461,16 +546,9 @@ export function scoreAutonomy(inputs: AgentPowerInputs): PowerStat {
 // =============================================================================
 
 /**
- * XP per unit. score = 1 + sum(signal XP); level = floor(log2(score)), at
- * least 1. Doubling the XP buys one level, so the log is applied once, at
- * the level, and the signals stay linear (local rows are square-rooted so a
- * bulk import cannot buy levels).
- *
- * Calibration (see tests):
- *   brand-new agent (no loop rows, template files only)      score 1      Lv 1
- *   first session (~60 loop rows, 3 files)                   score ~10    Lv 3
- *   heavy, months old (~30k rows, 200 files, 10 skills,
- *     8 tables / 20k rows, 150 compactions, 3 children)     score ~4000  Lv 11-12
+ * XP per unit. score = sum(signal XP), placed on EXPERIENCE_CURVE. Signals
+ * stay linear (local rows are square-rooted so a bulk import cannot buy
+ * levels); the curve does the flattening.
  */
 export const EXPERIENCE_WEIGHTS = {
   /** Per lifetime loop row (a turn is usually several rows). */
@@ -524,31 +602,26 @@ export function experienceSignals(inputs: AgentExperienceInputs): ExperienceSign
 
 export function scoreExperience(inputs: AgentExperienceInputs): ExperienceStat {
   const breakdown = experienceSignals(inputs)
-  const score = 1 + breakdown.reduce((s, b) => s + b.xp, 0)
-  const raw = Math.floor(Math.log2(score))
-  const level = Math.max(1, raw)
-  // Level 1 also covers the clamped range [1, 2), so it spans [1, 4).
-  const levelStart = level === 1 ? 1 : 2 ** level
-  const nextLevelAt = 2 ** (level + 1)
-  const progress = Math.min(1, Math.max(0, (score - levelStart) / (nextLevelAt - levelStart)))
-  const xp = Math.max(0, nextLevelAt - score)
+  const score = breakdown.reduce((s, b) => s + b.xp, 0)
+  const pos = levelPosition(score, EXPERIENCE_CURVE)
+  const xp = Math.max(0, pos.nextLevelAt - score)
   const w = EXPERIENCE_WEIGHTS
   const loopEntries = Math.ceil(xp / w.loopEntries)
   const files = Math.ceil(xp / w.filesWritten)
   const skills = Math.ceil(xp / w.skills)
   return {
-    level,
-    progress,
+    level: pos.level,
+    progress: pos.progress,
     score,
-    levelStart,
-    nextLevelAt,
+    levelStart: pos.levelStart,
+    nextLevelAt: pos.nextLevelAt,
     breakdown,
     nextLevel: {
       xp,
       loopEntries,
       files,
       skills,
-      hint: `Level ${level + 1} needs ${Math.ceil(xp)} more XP: about ${plural(loopEntries, 'loop message')}, ${plural(files, 'file')} or ${plural(skills, 'skill')}`
+      hint: `Lv ${pos.level + 1} needs ${Math.ceil(xp)} more XP: about ${plural(loopEntries, 'loop message')}, ${plural(files, 'file')} or ${plural(skills, 'skill')}`
     }
   }
 }

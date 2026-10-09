@@ -1,11 +1,12 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useTrackedDirs } from '../../hooks/useTrackedDirs'
 import { useMesh } from '../../hooks/useMesh'
 import { useDashboardData } from './useDashboardData'
 import { HomeComposer } from './HomeComposer'
 import { HomeStatusLine } from './HomeStatusLine'
 import { ConnectProviderCard, HomeProvidersProvider } from './HomeProviders'
-import { HomeExplainer } from './HomeExplainer'
+import { HomeExplainer, useRerollQuips } from './HomeExplainer'
+import { useIdentityDraft } from './NextAgentIdentity'
 
 /**
  * Home, shown when no .adf is open. One face, first run or not: the status
@@ -18,6 +19,15 @@ export function HomeScreen() {
   const { loadDirectories } = useTrackedDirs()
   const { enableMesh } = useMesh()
   const data = useDashboardData()
+  // The next agent's DID, minted ahead so its orbital shows in the middle
+  // while it is being named. The composer's create adopts exactly this one.
+  const identity = useIdentityDraft()
+  // One reroll: a new name brings a new identity (so a new orbital), and the
+  // orbital comments on the count. Typing a name keeps the identity.
+  const quips = useRerollQuips()
+  const { renew } = identity
+  const { spin, reset: resetQuips } = quips
+  const onReroll = useCallback(() => { renew(); spin() }, [renew, spin])
 
   // Auto-enable mesh on launch if the user had it on last session, and
   // load the tracked directories so the sidebar sees the list.
@@ -42,7 +52,7 @@ export function HomeScreen() {
               until a provider exists, the card asking for one. The card goes
               the moment there is one; the chip in the composer takes over. */}
           <div className="flex flex-1 flex-col items-center justify-center gap-10 py-10">
-            <HomeExplainer />
+            <HomeExplainer did={identity.draft?.did ?? null} quip={quips.quip} />
             <ConnectProviderCard />
           </div>
         </div>
@@ -56,7 +66,7 @@ export function HomeScreen() {
           className="pointer-events-none absolute inset-x-0 -top-10 h-10"
           style={{ background: 'linear-gradient(to bottom, transparent, var(--adf-ui-canvas))' }}
         />
-        <HomeComposer />
+        <HomeComposer identity={identity} onReroll={onReroll} onCreated={resetQuips} />
       </div>
     </div>
     </HomeProvidersProvider>
