@@ -11,7 +11,11 @@
 //   resources/icons/win/icon.ico       16,24,32,48,64,128,256 (32-bit BMP)
 //   resources/icons/mac/icon.icns      16..1024 PNG, Apple 824/1024 grid
 //   resources/tray/trayTemplate[@2x].png  macOS menu bar, the bare .A mark
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+//   resources/icons/mac/AppIcon.icon   Icon Composer source, light + dark
+//   resources/icons/mac/Assets.car     compiled from it (macOS + Xcode 26 only)
+import { readFileSync, writeFileSync, mkdirSync, rmSync, mkdtempSync, copyFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import sharp from 'sharp'
@@ -141,3 +145,51 @@ const tray = async (scale) => {
 }
 out('tray/trayTemplate.png', await tray(1))
 out('tray/trayTemplate@2x.png', await tray(2))
+
+// macOS 26 dark mode: an Icon Composer bundle whose fills switch per
+// appearance (light = the icon.svg colours, dark = the dark brand tokens:
+// paper #0c0e13, ink #eceef3, blue #7f9dff). Each layer is the mark element
+// alone on the icon.svg canvas, so its position matches the .icns exactly.
+const srgb = (hex) => 'srgb:' + [1, 3, 5].map((i) => (parseInt(hex.slice(i, i + 2), 16) / 255).toFixed(5)).join(',') + ',1.00000'
+const fills = (light, dark) => [
+  { value: { solid: srgb(light) } },
+  { appearance: 'dark', value: { solid: srgb(dark) } },
+]
+const source = svg.toString()
+const svgOpen = source.match(/<svg[^>]*>/)[0]
+const layer = (re) => Buffer.from(`${svgOpen}${source.match(re)[0]}</svg>\n`)
+const iconDir = join(res, 'icons/mac/AppIcon.icon')
+rmSync(iconDir, { recursive: true, force: true })
+out('icons/mac/AppIcon.icon/Assets/a.svg', layer(/<path[^>]*\/>/))
+out('icons/mac/AppIcon.icon/Assets/dot.svg', layer(/<circle[^>]*\/>/))
+out('icons/mac/AppIcon.icon/icon.json', Buffer.from(JSON.stringify({
+  'fill-specializations': fills('#ffffff', '#0c0e13'),
+  groups: [{
+    layers: [
+      { 'fill-specializations': fills('#111111', '#eceef3'), 'image-name': 'a.svg', name: 'a' },
+      { 'fill-specializations': fills('#2f5bea', '#7f9dff'), 'image-name': 'dot.svg', name: 'dot' },
+    ],
+    shadow: { kind: 'neutral', opacity: 0.5 },
+    translucency: { enabled: false, value: 0.5 },
+  }],
+  'supported-platforms': { squares: ['macOS'] },
+}, null, 2) + '\n'))
+
+// Compiled here rather than by electron-builder (mac.icon: *.icon) because
+// that needs Xcode 26's actool on the release runner. Assets.car is committed;
+// electron-builder.yml ships it and sets CFBundleIconName.
+try {
+  const tmp = mkdtempSync(join(tmpdir(), 'adf-icon-'))
+  execFileSync('actool', [
+    iconDir, '--compile', tmp, '--app-icon', 'AppIcon', '--include-all-app-icons',
+    '--output-partial-info-plist', join(tmp, 'info.plist'), '--platform', 'macosx',
+    '--target-device', 'mac', '--minimum-deployment-target', '11.0',
+    '--enable-on-demand-resources', 'NO', '--development-region', 'en',
+    '--errors', '--warnings',
+  ], { stdio: ['ignore', 'ignore', 'inherit'] })
+  copyFileSync(join(tmp, 'Assets.car'), join(res, 'icons/mac/Assets.car'))
+  rmSync(tmp, { recursive: true, force: true })
+  console.log('icons/mac/Assets.car  compiled')
+} catch (e) {
+  console.warn(`icons/mac/Assets.car  NOT rebuilt (needs macOS + Xcode 26 actool): ${e.message}`)
+}
