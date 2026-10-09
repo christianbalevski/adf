@@ -36,8 +36,6 @@ export interface DaemonVitalsSources {
   settings?: TrackedDirsSettings
   mesh?: DaemonVitalsMesh
   ws?: { getConnections(agentFilePath?: string): unknown[] }
-  getAgentCost?: AgentVitalsDeps['getAgentCost']
-  getAgentDailyCost?: AgentVitalsDeps['getAgentDailyCost']
 }
 
 /** How old the fleet scan behind agentsSpawned may get before a vitals read redoes it. */
@@ -65,8 +63,6 @@ export function createDaemonVitalsDeps(src: DaemonVitalsSources): AgentVitalsDep
     getWsConnectionCount: (filePath) => (src.ws ? src.ws.getConnections(filePath).length || undefined : undefined),
     getLiveExecStates: liveStates,
     getOpenWorkspaces: () => live().map((a) => ({ filePath: a.filePath, workspace: a.workspace })),
-    getAgentCost: src.getAgentCost,
-    getAgentDailyCost: src.getAgentDailyCost,
   }
 }
 

@@ -50,7 +50,6 @@ function service(fake: Fake): AgentVitalsService {
     getWsConnectionCount: () => 2,
     getLiveExecStates: () => fake.states,
     getOpenWorkspaces: () => fake.workspaces,
-    getAgentCost: () => ({ usd: 1.25, partial: false }),
     now: () => fake.now
   }
   return new AgentVitalsService(deps)
@@ -115,7 +114,7 @@ describe('agent vitals', () => {
     expect(v.maturity).toMatchObject({ contextsWorked: 0, messages: 0, filesWritten: 0, localTables: 0, localRows: 0, skills: 0 })
     expect(v.stats.experience.level).toBe(1)
     expect(v.metrics).toEqual([])
-    expect(v.cost7dUsd).toBe(1.25)
+    expect(v.cost7dUsd).toBeUndefined()
     expect(v.stats.access.points).toBeGreaterThan(0)
     expect(v.stats.reach.points).toBeGreaterThan(0)
   })

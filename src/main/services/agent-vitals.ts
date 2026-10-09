@@ -30,13 +30,24 @@ import type {
 } from '../../shared/types/agent-vitals.types'
 import { MEMORY_STRATA_DAYS, UPCOMING_TEXT_MAX } from '../../shared/types/agent-vitals.types'
 import { powerInputsFromConfig, scheduleIntervalMs, scoreAgent } from '../../shared/utils/agent-stats'
-import { bucketByLocalDay, windowStartMs } from '../../shared/utils/agent-activity'
+import { windowStartMs } from '../../shared/utils/agent-activity'
+import { readDailyActivity, recentCost, scanLoopRows, startLoopDayScan, maxLoopSeq, type LoopDayScan } from './agent-daily'
 import { parseMetric } from '../../shared/utils/agent-metrics'
 import { localDateKey } from '../../shared/utils/date-key'
 import { resolveLoopThreshold } from '../../shared/utils/context-breakdown'
 import { verifyAttestation } from './attestation.service'
 
 const MIND_LOG_SEED_BYTES = Buffer.byteLength(DEFAULT_MIND_LOG_CONTENT)
+
+/**
+ * Bytes of a `mind/` file that count as the agent's memory: its size, less
+ * the seeded header on `mind/log.md`. The one rule behind memoryTokens,
+ * Contents' memory tokens and the strata.
+ */
+export function memoryBytes(path: string, size: unknown): number {
+  const bytes = typeof size === 'number' && Number.isFinite(size) ? size : 0
+  return path === 'mind/log.md' ? Math.max(0, bytes - MIND_LOG_SEED_BYTES) : bytes
+}
 
 /** Display/identity metadata the fleet map needs per agent. */
 export type FleetMeta = NonNullable<ReturnType<typeof AdfDatabase.peekFleetMeta>>
@@ -59,10 +70,6 @@ export interface AgentVitalsDeps {
   getLiveExecStates(): Array<{ filePath: string; state: AgentState }>
   /** Workspaces already open in this process. Later entries win (foreground last). */
   getOpenWorkspaces(): Array<{ filePath: string; workspace: VitalsWorkspace }>
-  /** 7-day cost from the per-agent usage ledger. */
-  getAgentCost?(agentId: string): { usd: number; partial: boolean } | null
-  /** Per-day cost from the per-agent usage ledger, keyed by local date; days without rows are absent. */
-  getAgentDailyCost?(agentId: string, dates: string[]): Record<string, { usd: number; partial: boolean }>
   now?(): number
 }
 
@@ -366,6 +373,8 @@ export interface VitalsCheapPart {
 export interface VitalsHeavyPart {
   maturity: Omit<AgentExperienceInputs, 'agentsSpawned' | 'ageDays' | 'messages'>
   summaryScan: SummaryScan
+  /** USD over the last 7 local days from priced adf_loop rows (agent-daily.ts); absent without usage records. */
+  cost7d?: { usd: number; partial: boolean }
 }
 
 /** True when adf_attestations holds an owner attestation about `did` that is unexpired and verifies. */
@@ -500,8 +509,8 @@ export function readVitalsHeavyPart(q: Sql, cheap: Pick<VitalsCheapPart, 'config
   const filesWritten = mine.filter((f) => !f.path.startsWith('mind/')).length
   // The seeded mind/log.md header is not the agent's memory: with memory XP
   // square-rooted, even its ~40 tokens would lift a brand-new agent to Lv 2.
-  const mindBytes = safe(q, "SELECT SUM(size) AS n FROM adf_files WHERE path LIKE 'mind/%'", (r) => firstNumber(r), 0)
-  const memoryTokens = Math.round(Math.max(0, mindBytes - MIND_LOG_SEED_BYTES) / 4)
+  const mindFiles = safe(q, "SELECT path, size FROM adf_files WHERE path LIKE 'mind/%'", (rows) => rows as Array<{ path: string; size: unknown }>, [])
+  const memoryTokens = Math.round(mindFiles.reduce((n, f) => n + memoryBytes(f.path, f.size), 0) / 4)
 
   // COUNT(*) is a full scan per table: rows are summed over the first
   // MAX_TABLES only, as Contents does, so an agent with hundreds of tables
@@ -525,19 +534,8 @@ export function readVitalsHeavyPart(q: Sql, cheap: Pick<VitalsCheapPart, 'config
 }
 
 // =============================================================================
-// Activity: upcoming wakes, per-day turns, contents
+// Activity: upcoming wakes, per-day messages and cost, contents
 // =============================================================================
-
-/** config.id, the per-agent ledger's key. */
-function readAgentId(q: Sql): string | null {
-  return safe(q, "SELECT json_extract(config_json, '$.id') AS v FROM adf_config WHERE id = 1", (r) => {
-    const v = (r[0] as { v?: unknown } | undefined)?.v
-    return typeof v === 'string' && v ? v : null
-  }, null)
-}
-
-/** adf_loop rows scanned at most for the per-day turn counts. */
-export const DAILY_SCAN_CAP = 5_000
 
 /** Contents' "updated this week" window. */
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
@@ -550,36 +548,28 @@ const DAY_MS = 24 * 60 * 60 * 1000
 /**
  * Current `mind/` tokens by the age of each file's updated_at: `week` (at
  * most 7 days), `month` (30), `quarter` (90), `older`. A boundary belongs to
- * the younger band. Bytes as memoryTokens counts them: the seeded
- * `mind/log.md` header is taken off that file. One grouped query; ISO
- * timestamps compare lexically.
+ * the younger band. Bytes by memoryBytes (the seeded `mind/log.md` header is
+ * not memory). ISO timestamps compare lexically.
  */
 export function readMemoryStrata(q: Sql, now = Date.now()): MemoryStrata {
   const since = (days: number): string => new Date(now - days * DAY_MS).toISOString()
-  const strata: MemoryStrata = { older: 0, quarter: 0, month: 0, week: 0 }
-  const rows = safe(
-    q,
-    `SELECT CASE
-        WHEN updated_at >= ? THEN 'week'
-        WHEN updated_at >= ? THEN 'month'
-        WHEN updated_at >= ? THEN 'quarter'
-        ELSE 'older' END AS band,
-      SUM(CASE WHEN path = 'mind/log.md' THEN MAX(COALESCE(size, 0) - ?, 0) ELSE COALESCE(size, 0) END) AS bytes
-     FROM adf_files WHERE path LIKE 'mind/%' GROUP BY band`,
-    (r) => r as Array<{ band: keyof MemoryStrata; bytes: number | null }>,
-    [],
-    [since(MEMORY_STRATA_DAYS.week), since(MEMORY_STRATA_DAYS.month), since(MEMORY_STRATA_DAYS.quarter), MIND_LOG_SEED_BYTES]
-  )
+  const week = since(MEMORY_STRATA_DAYS.week)
+  const month = since(MEMORY_STRATA_DAYS.month)
+  const quarter = since(MEMORY_STRATA_DAYS.quarter)
+  const bytes: MemoryStrata = { older: 0, quarter: 0, month: 0, week: 0 }
+  const rows = safe(q, "SELECT path, size, updated_at FROM adf_files WHERE path LIKE 'mind/%'", (r) => r as Array<{ path: string; size: unknown; updated_at: string }>, [])
   for (const r of rows) {
-    if (r.band in strata && typeof r.bytes === 'number' && Number.isFinite(r.bytes)) strata[r.band] = approxTokens(r.bytes)
+    const at = String(r.updated_at ?? '')
+    const band: keyof MemoryStrata = at >= week ? 'week' : at >= month ? 'month' : at >= quarter ? 'quarter' : 'older'
+    bytes[band] += memoryBytes(r.path, r.size)
   }
-  return strata
+  return { older: approxTokens(bytes.older), quarter: approxTokens(bytes.quarter), month: approxTokens(bytes.month), week: approxTokens(bytes.week) }
 }
 
 /**
  * The Contents section: mind/ files and the agent's skills as counts and
  * approximate tokens (mind also by age band), local tables as counts and
- * rows. Aggregates only.
+ * rows. Aggregates only. Mind tokens use memoryBytes, as memoryTokens does.
  */
 export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>, now = Date.now()): AgentContents {
   const weekAgo = now - WEEK_MS
@@ -591,7 +581,7 @@ export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>,
     const size = typeof f.size === 'number' && Number.isFinite(f.size) ? f.size : 0
     if (f.path.startsWith('mind/')) {
       mindFiles++
-      mindBytes += size
+      mindBytes += memoryBytes(f.path, size)
       if (Date.parse(f.updated_at) >= weekAgo) mindRecent++
       continue
     }
@@ -610,59 +600,13 @@ export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>,
   }
 }
 
-/** The part of AgentActivity read from the file (costs and identity come from the service). */
+/** The part of AgentActivity read from the file. */
 export type ActivityRead = Omit<AgentActivity, 'filePath' | 'computedAt' | 'live'>
 
 /** Payload text cut to UPCOMING_TEXT_MAX; undefined when empty. */
 function upcomingText(v: unknown): string | undefined {
   if (typeof v !== 'string' || !v.trim()) return undefined
   return v.length > UPCOMING_TEXT_MAX ? `${v.slice(0, UPCOMING_TEXT_MAX - 1)}…` : v
-}
-
-/** State of the per-day turn scan for one file. */
-export interface TurnScan {
-  /** Highest adf_loop seq this scan has seen. */
-  lastSeq: number
-  /** Turn times inside the window. */
-  times: number[]
-  /** The cold scan stopped at DAILY_SCAN_CAP with rows older than it still inside the window. */
-  capped: boolean
-}
-
-/**
- * Finished-turn times since `since`: assistant rows without a tool call.
- * `prior` (the last scan of this file) makes it incremental: only rows above
- * its high-water seq are read, so a running agent pays for its new rows, not
- * for 14 days of history on every change. Cold, or when more than
- * DAILY_SCAN_CAP rows arrived since, it reads the newest DAILY_SCAN_CAP
- * rowids. `role` precedes content_json in the row, so user rows are rejected
- * before their content is touched.
- */
-function readTurnTimes(q: Sql, since: number, prior?: TurnScan): TurnScan {
-  const maxSeq = safe(q, 'SELECT MAX(seq) AS n FROM adf_loop', (r) => firstNumber(r), 0)
-  const floor = Math.max(0, maxSeq - DAILY_SCAN_CAP)
-  const base = prior && prior.lastSeq >= floor && prior.lastSeq <= maxSeq ? prior : null
-  const from = base ? base.lastSeq : floor
-  const fresh = safe(
-    q,
-    `SELECT created_at AS t FROM adf_loop WHERE seq > ? AND role = 'assistant' AND created_at >= ? AND instr(content_json, '"type":"tool_use"') = 0`,
-    (r) => (r as Array<{ t: number }>).map((x) => x.t),
-    [] as number[],
-    [from, since]
-  )
-  if (base) return { lastSeq: maxSeq, times: [...base.times.filter((t) => t >= since), ...fresh], capped: base.capped }
-  const firstAt = (where: string, params: unknown[]): number | null =>
-    safe(q, `SELECT created_at AS t FROM adf_loop ${where} ORDER BY seq LIMIT 1`, (r) => {
-      const t = (r[0] as { t?: number } | undefined)?.t
-      return typeof t === 'number' ? t : null
-    }, null, params)
-  // Capped: rows below the floor exist and the first scanned row is inside the window.
-  let capped = false
-  if (floor > 0) {
-    const firstScanned = firstAt('WHERE seq > ?', [floor])
-    capped = firstScanned !== null && firstScanned > since && firstAt('WHERE seq <= ?', [floor]) !== null
-  }
-  return { lastSeq: maxSeq, times: fresh, capped }
 }
 
 /** Coming up: the next three wakes (idx_adf_timers_wake). Cheap. */
@@ -687,15 +631,15 @@ export function readUpcoming(q: Sql): UpcomingWake[] {
   })
 }
 
-/** The scanning part of the activity read: per-day turns and contents. */
-export type ActivityHeavyRead = Omit<ActivityRead, 'upcoming'> & { turnScan: TurnScan }
+/** The scanning part of the activity read: per-day messages and cost, contents. */
+export type ActivityHeavyRead = Omit<ActivityRead, 'upcoming'> & { dayScan: LoopDayScan }
 
 /**
- * Per-day turns and contents. Every query is bounded: the per-day count by
- * DAILY_SCAN_CAP rowids (incremental with `prior`), local tables by
- * MAX_TABLES. adf_files is read path, timestamps and size only, never content.
+ * Per-day messages and cost (agent-daily.ts; incremental with `prior`) and
+ * contents. Local tables are bounded by MAX_TABLES; adf_files is read path,
+ * timestamps and size only, never content.
  */
-export function readActivityHeavy(q: Sql, now: number, prior?: TurnScan): ActivityHeavyRead {
+export function readActivityHeavy(q: Sql, now: number, prior?: LoopDayScan): ActivityHeavyRead {
   const createdAt = safe(
     q,
     "SELECT COALESCE((SELECT value FROM adf_meta WHERE key = 'adf_created_at'), (SELECT json_extract(config_json, '$.metadata.created_at') FROM adf_config WHERE id = 1)) AS v",
@@ -708,22 +652,12 @@ export function readActivityHeavy(q: Sql, now: number, prior?: TurnScan): Activi
   const files = safe(q, 'SELECT path, updated_at, size FROM adf_files', (rows) => rows as FileRow[], [])
   const { agentSkills } = classifyFiles(files, cutoff, readRegistrySkills(q))
 
-  const since = windowStartMs(now)
-  const turns = readTurnTimes(q, since, prior)
-  // Compacted: a loop snapshot was archived inside the window, so older rows of it are gone.
-  const compacted = safe(q, `SELECT 1 AS n FROM adf_audit WHERE ${LOOP_AUDIT_WHERE} AND created_at >= ? LIMIT 1`, (r) => r.length > 0, false, [since])
-  const daily = bucketByLocalDay(turns.times, now).map(({ date, count }) => ({ date, turns: count }))
-
-  return {
-    daily,
-    dailyPartial: turns.capped || compacted,
-    contents: readContents(q, files, agentSkills, now),
-    turnScan: turns
-  }
+  const { daily, scan } = readDailyActivity(q, now, prior)
+  return { daily, contents: readContents(q, files, agentSkills, now), dayScan: scan }
 }
 
 /** Everything the overview's lower sections read from the file. */
-export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): ActivityRead & { turnScan: TurnScan } {
+export function readAgentActivity(q: Sql, now: number, prior?: LoopDayScan): ActivityRead & { dayScan: LoopDayScan } {
   return { upcoming: readUpcoming(q), ...readActivityHeavy(q, now, prior) }
 }
 
@@ -756,6 +690,8 @@ const LIVE_MIN_INTERVAL_MS = 2_000
 export const HEAVY_MIN_AGE_MS = 30_000
 /** adf_loop seqs per step of a cold compaction-summary scan. */
 const SUMMARY_SCAN_CHUNK = 2_000
+/** adf_loop seqs per step of a cold activity-window scan (warmDayScan). */
+const DAY_SCAN_CHUNK = 2_000
 /** `force` re-reads the scanning part at most this often. */
 export const FORCE_MIN_INTERVAL_MS = 2_000
 
@@ -774,9 +710,15 @@ export class AgentVitalsService {
   private lastFleetAt = 0
 
   private slowCache = new Map<string, SplitEntry<VitalsCheapPart, VitalsHeavyPart>>()
-  private activityCache = new Map<string, SplitEntry<{ upcoming: UpcomingWake[]; agentId: string | null }, Omit<ActivityHeavyRead, 'turnScan'>>>()
-  /** Last per-day turn scan per file; makes the next one incremental. */
-  private turnScans = new Map<string, TurnScan>()
+  private activityCache = new Map<string, SplitEntry<{ upcoming: UpcomingWake[] }, Omit<ActivityHeavyRead, 'dayScan'>>>()
+  /**
+   * Per-row adf_loop scan of the activity window per file, shared by the
+   * vitals (7-day cost) and activity (per-day chart) reads; makes the next
+   * one incremental.
+   */
+  private dayScans = new Map<string, LoopDayScan>()
+  /** In-flight cold day scans, so a vitals and an activity read share one. */
+  private dayScanWarming = new Map<string, Promise<void>>()
   /** Last compaction-summary scan per file; makes the next one incremental. */
   private summaryScans = new Map<string, SummaryScan>()
   private workspaceIds = new WeakMap<object, number>()
@@ -950,12 +892,12 @@ export class AgentVitalsService {
     if (filePath) {
       this.slowCache.delete(filePath)
       this.activityCache.delete(filePath)
-      this.turnScans.delete(filePath)
+      this.dayScans.delete(filePath)
       this.summaryScans.delete(filePath)
     } else {
       this.slowCache.clear()
       this.activityCache.clear()
-      this.turnScans.clear()
+      this.dayScans.clear()
       this.summaryScans.clear()
     }
   }
@@ -1045,6 +987,45 @@ export class AgentVitalsService {
     if (!this.summaryScans.has(filePath)) this.summaryScans.set(filePath, scan)
   }
 
+  /**
+   * The first day scan of a file for the current window, in DAY_SCAN_CHUNK
+   * seq ranges with the event loop free between them: reading created_at
+   * walks each row's content overflow, about 3 ms per 1 000 rows. A live
+   * agent is read through its workspace; a closed file through one readonly
+   * peek per chunk. Later reads are incremental (refreshLoopDayScan).
+   * Concurrent callers share one warm-up.
+   */
+  private warmDayScan(filePath: string): Promise<void> {
+    const since = windowStartMs(this.now())
+    if (this.dayScans.get(filePath)?.since === since) return Promise.resolve()
+    let warming = this.dayScanWarming.get(filePath)
+    if (!warming) {
+      warming = this.runDayScanWarmUp(filePath, since)
+        .catch(() => { /* the heavy read scans synchronously instead */ })
+        .finally(() => this.dayScanWarming.delete(filePath))
+      this.dayScanWarming.set(filePath, warming)
+    }
+    return warming
+  }
+
+  private async runDayScanWarmUp(filePath: string, since: number): Promise<void> {
+    const ws = this.findOpenWorkspace(filePath)
+    const run = <T>(read: (q: Sql) => T): T =>
+      ws
+        ? read((sql, params) => ws.querySQL(sql, params))
+        : AdfDatabase.peek(filePath, (db) => read((sql, params) => db.prepare(sql).all(...(params ?? []))))
+    let scan = run((q) => startLoopDayScan(q, since))
+    const maxSeq = run(maxLoopSeq)
+    while (scan.lastSeq < maxSeq) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      // Closed or reopened meanwhile: the next read starts over.
+      if (this.findOpenWorkspace(filePath) !== ws) return
+      const upTo = Math.min(maxSeq, scan.lastSeq + DAY_SCAN_CHUNK)
+      scan = run((q) => scanLoopRows(q, scan, upTo))
+    }
+    if (this.dayScans.get(filePath)?.since !== since) this.dayScans.set(filePath, scan)
+  }
+
   /** Children in the last fleet scan whose parent reference names this agent. */
   private countSpawned(meta: FleetMeta): number | null {
     if (!this.lastFleet) return null
@@ -1056,6 +1037,7 @@ export class AgentVitalsService {
   async getAgentVitals(filePath: string, opts?: { force?: boolean }): Promise<AgentVitals> {
     const ws = this.findOpenWorkspace(filePath)
     if (ws && !this.summaryScans.has(filePath)) await this.warmSummaryScan(filePath, ws)
+    await this.warmDayScan(filePath)
     const { entry, live } = await this.splitRead(
       this.slowCache,
       filePath,
@@ -1064,7 +1046,10 @@ export class AgentVitalsService {
       (q, cheap) => {
         const heavy = readVitalsHeavyPart(q, cheap, this.summaryScans.get(filePath))
         this.summaryScans.set(filePath, heavy.summaryScan)
-        return heavy
+        const { daily, scan } = readDailyActivity(q, this.now(), this.dayScans.get(filePath))
+        this.dayScans.set(filePath, scan)
+        const cost7d = recentCost(daily)
+        return cost7d ? { ...heavy, cost7d } : heavy
       }
     )
     const { cheap, heavy } = entry
@@ -1078,7 +1063,7 @@ export class AgentVitalsService {
       ageDays
     }
     const ctx = live ? this.deps.getContextGauge(filePath) : undefined
-    const cost = cheap.meta.agentId && this.deps.getAgentCost ? this.deps.getAgentCost(cheap.meta.agentId) : null
+    const cost = heavy.cost7d
     return {
       filePath,
       computedAt: entry.at,
@@ -1106,39 +1091,26 @@ export class AgentVitalsService {
   }
 
   /**
-   * The overview's lower sections: next wakes, 14 days of
-   * finished turns with the ledger's cost per day, and what the file holds
+   * The overview's lower sections: next wakes, 14 days of messages and cost
+   * per day (agent-daily.ts, from the file alone), and what the file holds
    * (mind and skills with approximate tokens, local tables with rows). Cached
-   * like the vitals: wakes are the cheap part, turns and contents the heavy one.
-   * The per-day cost is read from the in-memory ledger on every call.
+   * like the vitals: wakes are the cheap part, days and contents the heavy one.
    */
   async getAgentActivity(filePath: string, opts?: { force?: boolean }): Promise<AgentActivity> {
     const now = this.now()
+    await this.warmDayScan(filePath)
     const { entry, live } = await this.splitRead(
       this.activityCache,
       filePath,
       !!opts?.force,
-      (q) => ({ upcoming: readUpcoming(q), agentId: readAgentId(q) }),
+      (q) => ({ upcoming: readUpcoming(q) }),
       (q) => {
-        const { turnScan, ...read } = readActivityHeavy(q, this.now(), this.turnScans.get(filePath))
-        this.turnScans.set(filePath, turnScan)
+        const { dayScan, ...read } = readActivityHeavy(q, this.now(), this.dayScans.get(filePath))
+        this.dayScans.set(filePath, dayScan)
         return read
       },
       localDateKey(new Date(now))
     )
-    const { agentId, upcoming } = entry.cheap
-    const read = entry.heavy
-    const costs = agentId && this.deps.getAgentDailyCost ? this.deps.getAgentDailyCost(agentId, read.daily.map((d) => d.date)) : {}
-    return {
-      filePath,
-      computedAt: entry.at,
-      live,
-      upcoming,
-      ...read,
-      daily: read.daily.map((d) => {
-        const c = costs[d.date]
-        return c ? { ...d, costUsd: c.usd, ...(c.partial ? { costPartial: true } : {}) } : d
-      })
-    }
+    return { filePath, computedAt: entry.at, live, upcoming: entry.cheap.upcoming, ...entry.heavy }
   }
 }

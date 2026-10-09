@@ -9,7 +9,7 @@ see_also:
 
 # Agent Overview
 
-The Overview is the agent card in Studio's right dock. It shows a header (status line, description, context fill, next wake, 7-day cost, model, age), four stats (Reach, Access, Autonomy, Experience), the agent's metrics, and three lower sections: Coming up (the next three timer wakes), Activity (finished turns per local day over 14 days, with cost per day) and Contents.
+The Overview is the agent card in Studio's right dock. It shows a header (status line, description, context fill, next wake, 7-day cost, model, age), four stats (Reach, Access, Autonomy, Experience), the agent's metrics, and three lower sections: Coming up (the next three timer wakes), Activity (messages per local day over 14 days, with cost per day) and Contents.
 
 This page states how every number is computed. The scoring is in `src/shared/utils/agent-stats.ts`; the inputs are measured in `src/main/services/agent-vitals.ts`. The tables below are checked against the exported constants (and `MEMORY_STRATA_DAYS` in `src/shared/types/agent-vitals.types.ts`) by `tests/unit/shared/agent-overview-doc.test.ts`.
 
@@ -277,13 +277,53 @@ Examples:
 - `metric:disk` = `{"value": 64, "label": "Disk used", "unit": "%", "max": 100, "target": 80}` shows **Disk used**, a bar at 64 % with a tick at 80 %, and `64%`.
 - `metric:focus` = `{"value": 42, "unit": "h", "target": 50}` shows **focus** and `42 / 50 h`.
 
+## Activity
+
+The Activity chart shows messages per local calendar day over 14 days, today at the right, with cost per day in each bar's tooltip. Everything comes from the `.adf` file, so the chart is the same in any Studio and on the daemon. The computation is in `src/main/services/agent-daily.ts`.
+
+### Messages
+
+A message is one `adf_loop` row of any role: user input, a model reply or tool call, a tool result, a compaction summary. This is the unit of the Experience message count.
+
+- **Live rows**: rows still in `adf_loop`, counted on the local day of their `created_at`.
+- **Compacted rows**: compaction, clears and loop deletion move rows into `adf_audit` (sources `loop` and `loop:<name>`) when loop audit is on. Only each archive's metadata is read (`source`, `start_seq`, `end_seq`, `entry_count`, `created_at`); the archived data is never read or decompressed, so the rows' own times are unknown. The archive's count is spread evenly over an estimated span and each day gets its share, rounded.
+
+The span of one archive is estimated as follows.
+
+| Bound | Value |
+|-------|-------|
+| End | The archive's `created_at`, or the `created_at` of the first live row after `end_seq` when that is earlier. `seq` grows with time, so every archived row was written before that row. |
+| Start | The latest of: the previous archive of the same loop (`created_at`), the `created_at` of the last live row before `start_seq`, and the end minus `ARCHIVE_SPREAD_MAX_MS`. |
+
+| Constant | Value (ms) |
+|----------|------------|
+| `ARCHIVE_SPREAD_MAX_MS` | 86 400 000 |
+
+The counted entries are `entry_count` less the live rows of the same loop still inside `start_seq`..`end_seq` (a rebuilt loop re-inserts rows it archived). An archive whose seq range a later archive of the same loop contains is an older snapshot of the same rows and is skipped. With loop audit off nothing is archived, and compacted rows are not counted.
+
+A day that includes at least one estimated message is marked `estimated`. Its tooltip ends with `includes compacted history, timing estimated`, and the summary line has a tooltip saying so.
+
+### Cost
+
+The cost of a day is the sum over its live `adf_loop` rows of the cost of the call that produced each row. A row's `tokens` cell holds that call's usage record: `{input, output, cache_read, cache_write, reasoning, cost_usd}` (all optional). Rows that no call produced have none.
+
+- When the record has `cost_usd` (the provider's reported cost, or the pricing-table estimate made when the call ran), that is the row's cost.
+- Rows created before 2026-08-27 (`LOOP_COST_RECORDED_SINCE_MS`), when records did not carry `cost_usd`, are priced from the model and token counts with Studio's pricing table (`src/main/runtime/llm-pricing.ts`).
+- Any other record has no price: the call ran on a subscription provider, with estimated usage, or on a model the table does not price. Legacy cells that hold a bare integer have no price either.
+
+A day's `costUsd` is present when at least one of its rows has a price. `costPartial` is set when some row had a record without a price or the day includes compacted messages, whose cost is not recorded. The tooltip shows `$0.12`, `$0.12 or more` (partial), or `cost not recorded` (partial with no priced row).
+
+### Reads
+
+The first read of a file scans the window's `adf_loop` rows once. Its first `seq` is found by a binary search on `created_at`. Reading `created_at` walks a row's content, so this scan runs in steps of 2 000 rows with other work let through between them. Later reads add only rows above the highest scanned `seq`. An index-only count over the scanned range detects deleted rows (compaction, clears), which are then dropped. `adf_audit` is located by a binary search on `id` and read only from `ARCHIVE_SPREAD_MAX_MS` before the window.
+
 ## Contents
 
 The Contents section reads paths, timestamps and sizes from `adf_files` (never content) and counts `local_*` tables. It has one row per group. Memory is what the agent recorded in `mind/` since it was created; skills are loaded artifacts that hint at what it can do. The two are kept apart: there is no shared bar or token total.
 
 | Row | Shows | Computed as | Opens |
 |-----|-------|-------------|-------|
-| Memory | `~20k tokens · 12 files`, and `N updated this week` | Files under `mind/`; total bytes / 4, rounded (the seeded log header is included). Strip: see [Memory strata](#memory-strata). Updated this week: `mind/` files whose `updated_at` is within the last 7 days; not shown when 0. | Files |
+| Memory | `~20k tokens · 12 files`, and `N updated this week` | Files under `mind/`; total bytes / 4, rounded (the seeded `mind/log.md` header taken off that file, as for the Experience memory signal). Strip: see [Memory strata](#memory-strata). Updated this week: `mind/` files whose `updated_at` is within the last 7 days; not shown when 0. | Files |
 | Skills | `5 skills · ~18k tokens` | Skills, by the rule under [Measurement](#measurement); bytes of the files under `skills/<name>/` for those skills / 4, rounded | Agent > Skills |
 | Tables | `3 tables · 2.1k rows` | `local_*` tables, first 50 by name; rows summed over those tables | Files |
 
@@ -291,7 +331,7 @@ A row with a count of 0 is not shown. The section is hidden when all three are 0
 
 ### Memory strata
 
-Under the Memory row a thin strip splits the current `mind/` tokens by when each file was last updated. It is computed from the files as they are now, with no history kept: each file's bytes go to one band by its `updated_at`, and each band's bytes / 4, rounded, are its tokens. The seeded `mind/log.md` header is taken off that file's bytes, as for the Experience memory signal, so the band totals can be slightly below the row's token count.
+Under the Memory row a thin strip splits the current `mind/` tokens by when each file was last updated. It is computed from the files as they are now, with no history kept: each file's bytes go to one band by its `updated_at`, and each band's bytes / 4, rounded, are its tokens. The seeded `mind/log.md` header is taken off that file's bytes, as for the Memory row and the Experience memory signal, so the band totals match the row's token count up to rounding.
 
 | Band | Constant | Days | Last updated |
 |------|----------|------|--------------|
@@ -306,22 +346,22 @@ A file updated exactly on a boundary belongs to the younger band. The strip's wi
 
 The Overview does not scroll at its usual sizes. When its content is taller than the dock, it folds sections in this order, one at a time, until it fits:
 
-1. The Activity chart becomes a fact in the facts line (`5 turns / 14d`).
+1. The Activity chart becomes a fact in the facts line (`5 messages / 14d`).
 2. The Contents rows and the strata strip become one line in the Contents title row (`Memory ~20k · 5 skills · 3 tables`).
 
 Each fold remembers the height it saved. When space returns, folds are undone in reverse order, each only when the content plus the height it saved fits, so a section does not fold and unfold repeatedly. If the content is still too tall with both folded, the panel scrolls.
 
 ## Header cost
 
-The 7-day cost is the sum of `cost_usd` in the per-agent usage ledger for this agent's `config.id` over the last 7 local calendar days, today included. It is absent when the ledger has no rows for the agent in that window. It is marked partial when some calls in the window had tokens but no price; the sum is then a lower bound. The Activity chart's cost per day reads the same ledger.
+The 7-day cost is the Activity chart's cost (see [Cost](#cost)) summed over the last 7 local calendar days, today included. It is absent when no row in that window has a price. It is marked partial when a day in the window is; the sum is then a lower bound.
 
 ## Caching
 
 Each read (vitals and activity) has a cheap part and a heavy part.
 
 - **Cheap part** (config, identity rows, timers, metrics, the message high-water mark, next wakes): re-read when the source changes. For an agent open in this process the source key is the connection's `total_changes()`, re-read at most every 2 seconds. For a file no one has open it is the mtime and size of the file and its WAL, read through one read-only open.
-- **Heavy part** (the `adf_files` scan, `local_*` row counts, contexts of work, the per-day turn scan): reused for up to 30 seconds (`HEAVY_MIN_AGE_MS`) even when the database changed.
+- **Heavy part** (the `adf_files` scan, `local_*` row counts, contexts of work, the per-day message and cost read): reused for up to 30 seconds (`HEAVY_MIN_AGE_MS`) even when the database changed.
 - **Force** (`force=1` on the daemon endpoints): re-reads the cheap part and re-reads the heavy part unless it is younger than 2 seconds (`FORCE_MIN_INTERVAL_MS`).
 - The activity read is also dropped when the local date changes.
 
-The `[Loop Compacted` summary scan and the per-day turn scan are incremental: each later read reads only `adf_loop` rows above the last scan's highest `seq`.
+The `[Loop Compacted` summary scan and the per-day message scan are incremental: each later read reads only `adf_loop` rows above the last scan's highest `seq`.

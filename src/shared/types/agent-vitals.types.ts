@@ -179,9 +179,9 @@ export interface AgentVitals {
   contextThreshold?: number
   /** Earliest next_wake_at among non-expired timers (ms epoch). */
   nextWakeAt?: number
-  /** USD over the last 7 local days, from the per-agent usage ledger. Absent when the ledger has no rows for this agent. */
+  /** USD over the last 7 local days, summed from the priced adf_loop rows (the Activity chart's cost). Absent when no row in the window has a price. */
   cost7dUsd?: number
-  /** True when some calls in the window had no price (cost7dUsd is then a lower bound). */
+  /** True when some calls in the window had no recorded price or were compacted (cost7dUsd is then a lower bound). */
   cost7dPartial?: boolean
   /** adf_meta rows keyed `metric:<name>`, by key, at most 20 (parsed by `src/shared/utils/agent-metrics.ts`). Not part of any stat. */
   metrics: AgentMetric[]
@@ -241,11 +241,17 @@ export interface UpcomingWake {
 export interface ActivityDay {
   /** Local `YYYY-MM-DD`. */
   date: string
-  /** Finished turns (assistant rows without a tool call) still in adf_loop. */
-  turns: number
-  /** USD from the per-agent usage ledger. Absent when the ledger has no rows that day. */
+  /**
+   * adf_loop rows (every role: user input, replies, tool calls and results)
+   * created that day, plus that day's estimated share of compacted rows
+   * archived in adf_audit.
+   */
+  messages: number
+  /** Some of the day's messages are compacted history whose timing is estimated. */
+  estimated?: boolean
+  /** USD of the day's priced adf_loop rows. Absent when none had a price. */
   costUsd?: number
-  /** Some calls that day had no price (costUsd is a lower bound). */
+  /** Some calls that day had no recorded price, or were compacted (costUsd, if present, is a lower bound). */
   costPartial?: boolean
 }
 
@@ -294,11 +300,5 @@ export interface AgentActivity {
   upcoming: UpcomingWake[]
   /** 14 local days, oldest first; the last is today. */
   daily: ActivityDay[]
-  /**
-   * True when the per-day scan stopped at its row cap before reaching the
-   * window's first day, or compaction removed rows inside the window: the
-   * oldest days may read low.
-   */
-  dailyPartial: boolean
   contents: AgentContents
 }

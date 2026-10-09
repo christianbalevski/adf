@@ -300,7 +300,7 @@ export interface FactsInput {
 }
 
 export interface Fact {
-  id: 'cost' | 'age' | 'wake' | 'turns'
+  id: 'cost' | 'age' | 'wake' | 'messages'
   text: string
 }
 
@@ -539,39 +539,48 @@ export function waitingItems(slices: Array<{
   return out
 }
 
-/** Any finished turn or known cost in the window; the chart hides otherwise. */
+/** Any message or known cost in the window; the chart hides otherwise. */
 export function hasActivity(daily: ActivityDay[]): boolean {
-  return daily.some((d) => d.turns > 0 || (d.costUsd ?? 0) > 0)
+  return daily.some((d) => d.messages > 0 || (d.costUsd ?? 0) > 0)
 }
 
-/** The folded chart as a fact: "5 turns / 14d". */
+const messagesLabel = (n: number): string => (n === 1 ? '1 message' : `${compactCount(n)} messages`)
+
+/** The folded chart as a fact: "5 messages / 14d". */
 export function sparkFact(daily: ActivityDay[]): string {
-  const total = daily.reduce((n, d) => n + d.turns, 0)
-  return `${total === 1 ? '1 turn' : `${compactCount(total)} turns`} / ${daily.length}d`
+  return `${messagesLabel(daily.reduce((n, d) => n + d.messages, 0))} / ${daily.length}d`
 }
 
 export function sparkSummary(daily: ActivityDay[]): string {
-  const total = daily.reduce((n, d) => n + d.turns, 0)
-  return `${total === 1 ? '1 turn' : `${compactCount(total)} turns`} in the last ${daily.length} days`
+  return `${messagesLabel(daily.reduce((n, d) => n + d.messages, 0))} in the last ${daily.length} days`
 }
+
+/** The summary's note when some days include compacted history. */
+export const ESTIMATED_TIP = 'Includes compacted history; when those messages were sent is estimated.'
 
 const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-/** "Mon 6 Oct · 4 turns · $0.12" (cost only when the ledger has it). */
+/**
+ * "Mon 6 Oct · 4 messages · $0.12". Cost: the priced sum (`or more` when
+ * some calls had no price or were compacted), `cost not recorded` when the
+ * day has calls but none priced. Compacted days end with a note.
+ */
 export function dayTooltip(day: ActivityDay, isToday = false): string {
   const [y, mo, d] = day.date.split('-').map(Number)
   const date = new Date(y, (mo || 1) - 1, d || 1)
   const head = isToday ? 'Today' : `${WEEKDAY[date.getDay()]} ${date.getDate()} ${MONTH[date.getMonth()]}`
-  const parts = [head, day.turns === 1 ? '1 turn' : `${compactCount(day.turns)} turns`]
+  const parts = [head, messagesLabel(day.messages)]
   if (typeof day.costUsd === 'number') parts.push(`${formatCost(day.costUsd)}${day.costPartial ? ' or more' : ''}`)
+  else if (day.costPartial) parts.push('cost not recorded')
+  if (day.estimated) parts.push('includes compacted history, timing estimated')
   return parts.join(' · ')
 }
 
 /** Bar heights in px for the sparkline: 0 for an empty day, at least 2 px otherwise. */
 export function sparkHeights(daily: ActivityDay[], height: number): number[] {
-  const max = daily.reduce((m, d) => Math.max(m, d.turns), 0)
-  return daily.map((d) => (d.turns > 0 && max > 0 ? Math.max(2, Math.round((d.turns / max) * height)) : 0))
+  const max = daily.reduce((m, d) => Math.max(m, d.messages), 0)
+  return daily.map((d) => (d.messages > 0 && max > 0 ? Math.max(2, Math.round((d.messages / max) * height)) : 0))
 }
 
 export function rowsLabel(n: number): string {

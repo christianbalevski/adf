@@ -5812,9 +5812,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       }
       if (currentFilePath && currentWorkspace) out.push({ filePath: currentFilePath, workspace: currentWorkspace })
       return out
-    },
-    getAgentCost: (agentId) => getTokenUsageService().getAgentCost(agentId),
-    getAgentDailyCost: (agentId, dates) => getTokenUsageService().getAgentDailyCost(agentId, dates)
+    }
   })
   const getFleetStatus = (): Promise<FleetStatusResult> => agentVitals.getFleetStatus()
 

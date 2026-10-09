@@ -28,13 +28,6 @@ export interface TokenUsageExtras {
   cache_write?: number
   reasoning?: number
   cost_usd?: number
-  /**
-   * Agent config id (UUID). When set, the call is also recorded in the
-   * per-agent ledger (`token-usage-agents.json`, shape
-   * date → agent id → model → entry) that the agent vitals card reads for its
-   * 7-day cost. Never stored in the main ledger.
-   */
-  agent?: string
 }
 
 export interface TokenUsageData {
@@ -53,8 +46,6 @@ export interface TokenUsageData {
 }
 
 type UsageEntry = TokenUsageData[string][string][string]
-
-const AGENT_LEDGER_FILE = 'token-usage-agents.json'
 
 const EXTRA_KEYS = ['cache_read', 'cache_write', 'reasoning', 'cost_usd'] as const
 
@@ -161,19 +152,11 @@ export class TokenUsageService {
    *  writing leaves the in-memory view to the synchronous one. */
   private saveGeneration = 0
   private static readonly SAVE_DEBOUNCE_MS = 5000
-  /** Per-agent ledger, created on first agent-tagged call. Same merge semantics. */
-  private agentLedger: TokenUsageService | null = null
 
-  constructor(fileName = 'token-usage.json') {
+  constructor() {
     const userDataPath = getUserDataPath()
-    this.filePath = join(userDataPath, fileName)
+    this.filePath = join(userDataPath, 'token-usage.json')
     this.data = this.readDisk() ?? {}
-  }
-
-  /** The per-agent ledger (date → agent id → model → entry). */
-  getAgentLedger(): TokenUsageService {
-    if (!this.agentLedger) this.agentLedger = new TokenUsageService(AGENT_LEDGER_FILE)
-    return this.agentLedger
   }
 
   /**
@@ -324,7 +307,6 @@ export class TokenUsageService {
    * costs at most one debounce window of counts — this ledger is analytics).
    */
   flush(): void {
-    this.agentLedger?.flush()
     if (this.saveTimer) {
       clearTimeout(this.saveTimer)
       this.saveTimer = null
@@ -357,56 +339,6 @@ export class TokenUsageService {
 
     // Debounced save to disk
     this.scheduleSave()
-
-    if (extras?.agent) {
-      const { agent, ...rest } = extras
-      this.getAgentLedger().recordUsage(agent, model, inputTokens, outputTokens, rest)
-    }
-  }
-
-  /**
-   * USD over the last `days` local calendar days (today included) for one
-   * agent, from the per-agent ledger. null when the agent has no rows in the
-   * window; `partial` when some of its calls carried no price.
-   */
-  getAgentCost(agentId: string, days = 7, now = new Date()): { usd: number; partial: boolean } | null {
-    const ledger = this.getAgentLedger().getUsageData()
-    let usd = 0
-    let partial = false
-    let found = false
-    for (let i = 0; i < days; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
-      const byModel = ledger[localDateKey(d)]?.[agentId]
-      if (!byModel) continue
-      for (const entry of Object.values(byModel)) {
-        found = true
-        if (entry.cost_usd !== undefined) usd += entry.cost_usd
-        else if (entry.input + entry.output > 0) partial = true
-      }
-    }
-    return found ? { usd, partial } : null
-  }
-
-  /**
-   * USD per local day for one agent, from the per-agent ledger. Only the
-   * given `YYYY-MM-DD` keys are read; days without rows are absent.
-   * `partial` when some of that day's calls carried no price.
-   */
-  getAgentDailyCost(agentId: string, dates: string[]): Record<string, { usd: number; partial: boolean }> {
-    const ledger = this.getAgentLedger().getUsageData()
-    const out: Record<string, { usd: number; partial: boolean }> = {}
-    for (const date of dates) {
-      const byModel = ledger[date]?.[agentId]
-      if (!byModel) continue
-      let usd = 0
-      let partial = false
-      for (const entry of Object.values(byModel)) {
-        if (entry.cost_usd !== undefined) usd += entry.cost_usd
-        else if (entry.input + entry.output > 0) partial = true
-      }
-      out[date] = { usd, partial }
-    }
-    return out
   }
 
   /**
@@ -433,7 +365,6 @@ export class TokenUsageService {
     }
     // Drop the unflushed delta too — a clear means "forget everything so far",
     // not "forget everything except the last five seconds".
-    this.agentLedger?.clearAll()
     this.data = {}
     this.pending = {}
     this.pendingClear = true

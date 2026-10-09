@@ -843,7 +843,7 @@ Example 200 (`application/json`):
 
 **Agent vitals**
 
-Studio's overview card for one agent: header facts (context size, next wake, 7-day cost, model, age) and four levelled stats: Reach, Access and Autonomy (levels from config points, with the factors behind them) and Experience (a level from maturity counts). `{id}` names a loaded agent (id, handle or name, as every /agents/{id} route) or, when no loaded agent matches, a tracked agent that is not loaded (agent id or handle from its file). A loaded agent is read from its open workspace (`live: true`); any other file is read with a readonly open. Results are cached: a live agent's for at most 2 s and until its database changes, any other file's until its mtime or size changes. `force=1` skips the cache. `agentsSpawned` counts tracked agents whose parent DID names this agent, from a fleet scan at most 30 s old (`force=1` rescans). `contextTokens` and `contextThreshold` are present only for a loaded agent whose executor has reported usage; `cost7dUsd` only when the usage ledger has rows for this agent.
+Studio's overview card for one agent: header facts (context size, next wake, 7-day cost, model, age) and four levelled stats: Reach, Access and Autonomy (levels from config points, with the factors behind them) and Experience (a level from maturity counts). `{id}` names a loaded agent (id, handle or name, as every /agents/{id} route) or, when no loaded agent matches, a tracked agent that is not loaded (agent id or handle from its file). A loaded agent is read from its open workspace (`live: true`); any other file is read with a readonly open. Results are cached: a live agent's for at most 2 s and until its database changes, any other file's until its mtime or size changes. `force=1` skips the cache. `agentsSpawned` counts tracked agents whose parent DID names this agent, from a fleet scan at most 30 s old (`force=1` rescans). `contextTokens` and `contextThreshold` are present only for a loaded agent whose executor has reported usage; `cost7dUsd` only when some adf_loop row of the last 7 local days has a price (the row's recorded `cost_usd`; rows from before 2026-08-27 without one are priced from Studio's pricing table).
 
 Operation `getAgentVitals` · bearer token
 
@@ -1002,7 +1002,7 @@ Example 200 (`application/json`):
 
 **Agent activity**
 
-The lower sections of Studio's agent overview: the next three timer wakes (raw lambda and input, or loop and prompt), 14 local days of finished turns with the usage ledger's cost per day, and what the file holds (`mind/` files and skills with approximate tokens, `local_*` tables with rows). `{id}` resolves as in `GET /agents/{id}/vitals`. A finished turn is an assistant loop row without a tool call. The first read counts turns over at most the newest 5,000 loop rows and later reads add only new rows, so turns compacted away before the first read are not counted; `dailyPartial` is true when the row cap or a compaction cuts into the window. Skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.
+The lower sections of Studio's agent overview: the next three timer wakes (raw lambda and input, or loop and prompt), 14 local days of messages and cost per day, and what the file holds (`mind/` files and skills with approximate tokens, `local_*` tables with rows). `{id}` resolves as in `GET /agents/{id}/vitals`. Everything is read from the .adf file. Messages per day: `adf_loop` rows of every role by `created_at`, plus compacted rows archived in `adf_audit` (metadata only, never the archived data): each archive's `entry_count` is spread evenly over an estimated span ending at its `created_at` and at most 24 h long, and days that include such counts have `estimated: true`. Cost per day: the sum of the day's priced loop rows; `costPartial` when some call had no recorded price or was compacted. The first read scans the window's loop rows once; later reads add only new rows. Skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.
 
 Operation `getAgentActivity` · bearer token
 
@@ -1046,12 +1046,12 @@ Example 200 (`application/json`):
   "daily": [
     {
       "date": "string",
-      "turns": 0,
+      "messages": 0,
+      "estimated": true,
       "costUsd": 0,
       "costPartial": true
     }
   ],
-  "dailyPartial": true,
   "contents": {
     "mind": {
       "files": 0,
@@ -13703,8 +13703,8 @@ Data of the `stream.gap` control frame: the resume could not be exact; reload st
 | `contextTokens` | integer |  | Last API-reported context size (loaded agents only) |
 | `contextThreshold` | integer |  | Compact threshold (present with contextTokens) |
 | `nextWakeAt` | number |  | Earliest next_wake_at among non-expired timers (ms epoch) |
-| `cost7dUsd` | number |  | USD over the last 7 local days, from the usage ledger |
-| `cost7dPartial` | boolean |  | True when some calls had no price (cost7dUsd is a lower bound) |
+| `cost7dUsd` | number |  | USD over the last 7 local days, summed from the agent's priced adf_loop rows (the activity read's daily cost) |
+| `cost7dPartial` | boolean |  | True when some calls in the window had no recorded price or were compacted (cost7dUsd is a lower bound) |
 | `metrics` | object[] | yes | adf_meta rows whose key starts with `metric:`, by key, at most 20. A value is a plain string, or a JSON object `{"value": number\|string, "label"?, "unit"?, "min"?, "max"?, "target"?}`; parsed fields are returned beside `raw`. A value that is not such an object is returned as `value` = `raw`. Not part of any stat. |
 | `metrics[].name` | string | yes | Key without the `metric:` prefix |
 | `metrics[].label` | string | yes | The object's `label` when given, else `name` |
@@ -13807,11 +13807,10 @@ Raw maturity counts read from the agent's file.
 | `live` | boolean | yes | True when read from the workspace of a loaded agent |
 | `upcoming` | [AgentUpcomingWake](#schema-agentupcomingwake)[] | yes | Next non-expired timers, soonest first |
 | `daily` | [AgentActivityDay](#schema-agentactivityday)[] | yes | 14 local days, oldest first; the last is today |
-| `dailyPartial` | boolean | yes | True when the turn scan hit its row cap or compaction removed rows inside the window (the oldest days may read low) |
 | `contents` | object | yes | What the file holds, in three groups. Tokens are approximate (bytes / 4, rounded) and given for mind and skills only: table data is rarely read into context. |
 | `contents.mind` | object | yes | Files under mind/ |
 | `contents.mind.files` | integer | yes |  |
-| `contents.mind.tokens` | integer | yes | SUM(size) / 4 |
+| `contents.mind.tokens` | integer | yes | SUM(size) / 4, rounded, the seeded mind/log.md header taken off that file |
 | `contents.mind.updatedThisWeek` | integer | yes | mind/ files whose updated_at is within the last 7 days |
 | `contents.mind.strata` | object | yes | Current mind/ tokens (size / 4, rounded, the seeded mind/log.md header taken off that file) split by each file's updated_at. A boundary belongs to the younger band. |
 | `contents.mind.strata.older` | integer | yes | Last updated more than 90 days ago |
@@ -13848,6 +13847,7 @@ One timer due soon, as raw pieces. `system` timers carry `lambda` and `input`; `
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `date` | string | yes | Local YYYY-MM-DD |
-| `turns` | integer | yes | Finished turns still in adf_loop |
-| `costUsd` | number |  | USD from the usage ledger; absent when it has no rows that day |
-| `costPartial` | boolean |  | Some calls that day had no price |
+| `messages` | integer | yes | adf_loop rows of every role created that day, plus the day's estimated share of compacted rows archived in adf_audit |
+| `estimated` | boolean |  | Some of the day's messages are compacted history whose timing is estimated (spread evenly over a span ending at the archive's creation) |
+| `costUsd` | number |  | USD of the day's priced adf_loop rows (cost_usd in the row's usage record); absent when none had a price |
+| `costPartial` | boolean |  | Some calls that day had no recorded price, or were compacted (their cost is not recorded); costUsd is a lower bound |

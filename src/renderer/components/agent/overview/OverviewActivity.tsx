@@ -5,7 +5,7 @@
  * sparkline into its facts line, then the Contents rows into one line, when
  * the panel would scroll.
  *
- * Timers, per-day turns and contents come from `adf:agent:activity`
+ * Timers, per-day messages and cost, and contents come from `adf:agent:activity`
  * (AgentVitalsService.getAgentActivity, read by AgentOverview with the same
  * triggers as vitals). Approvals, asks and the unread count are read live
  * from the renderer stores.
@@ -24,6 +24,7 @@ import {
   contentsFoldedLine,
   contentsRows,
   dayTooltip,
+  ESTIMATED_TIP,
   formatUntil,
   hasActivity,
   sparkHeights,
@@ -61,7 +62,7 @@ export function OverviewActivity({ activity, now, chartFolded, contentsFolded }:
   return (
     <>
       <ComingUp activity={activity} now={now} />
-      {!chartFolded && <ActivitySpark daily={activity.daily} partial={activity.dailyPartial} />}
+      {!chartFolded && <ActivitySpark daily={activity.daily} />}
       <Contents contents={activity.contents} folded={contentsFolded} />
     </>
   )
@@ -184,15 +185,13 @@ function TimerRow({ t, now }: { t: UpcomingWake; now: number }) {
 // Activity sparkline
 // =============================================================================
 
-const PARTIAL_TIP = 'Older loop history was compacted away or is past the scan limit, so earlier days may read low.'
-
 /**
  * One bar per local day, today at the right in full ink, the rest
  * de-emphasised. No axes: the summary line names the total and each bar's
- * tooltip gives the day, turns and cost. A hidden table carries the same
+ * tooltip gives the day, messages and cost. A hidden table carries the same
  * numbers for screen readers.
  */
-function ActivitySpark({ daily, partial }: { daily: ActivityDay[]; partial: boolean }) {
+function ActivitySpark({ daily }: { daily: ActivityDay[] }) {
   const heights = useMemo(() => sparkHeights(daily, SPARK_HEIGHT), [daily])
   if (!hasActivity(daily)) return null
   const summary = sparkSummary(daily)
@@ -201,8 +200,8 @@ function ActivitySpark({ daily, partial }: { daily: ActivityDay[]; partial: bool
     <Section
       title="Activity"
       aside={
-        partial ? (
-          <Tooltip tip={PARTIAL_TIP}>
+        daily.some((d) => d.estimated) ? (
+          <Tooltip tip={ESTIMATED_TIP}>
             <span className="text-[11.5px] text-[var(--ink-muted)] tabular-nums underline decoration-dotted decoration-[var(--ink-faint)] underline-offset-2">{summary}</span>
           </Tooltip>
         ) : (
@@ -228,14 +227,14 @@ function ActivitySpark({ daily, partial }: { daily: ActivityDay[]; partial: bool
           table itself its full height extended the dock's scroll area. */}
       <div className="sr-only">
       <table>
-        <caption>Finished turns per day</caption>
-        <thead><tr><th>Day</th><th>Turns</th><th>Cost</th></tr></thead>
+        <caption>Messages per day</caption>
+        <thead><tr><th>Day</th><th>Messages</th><th>Cost</th></tr></thead>
         <tbody>
           {daily.map((d) => (
             <tr key={d.date}>
               <td>{d.date}</td>
-              <td>{d.turns}</td>
-              <td>{typeof d.costUsd === 'number' ? `$${d.costUsd.toFixed(2)}` : ''}</td>
+              <td>{d.messages}{d.estimated ? ' (includes compacted history, timing estimated)' : ''}</td>
+              <td>{typeof d.costUsd === 'number' ? `$${d.costUsd.toFixed(2)}${d.costPartial ? ' or more' : ''}` : d.costPartial ? 'cost not recorded' : ''}</td>
             </tr>
           ))}
         </tbody>

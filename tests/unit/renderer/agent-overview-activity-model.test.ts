@@ -94,18 +94,25 @@ describe('waiting items', () => {
 })
 
 describe('sparkline', () => {
-  const day = (date: string, turns: number, costUsd?: number, costPartial?: boolean): ActivityDay => ({ date, turns, costUsd, costPartial })
+  const day = (date: string, messages: number, costUsd?: number, costPartial?: boolean, estimated?: boolean): ActivityDay =>
+    ({ date, messages, costUsd, costPartial, estimated })
 
   it('summary and day tooltip', () => {
-    expect(sparkSummary([day('2026-10-07', 1), day('2026-10-08', 2)])).toBe('3 turns in the last 2 days')
-    expect(dayTooltip(day('2026-10-05', 4, 0.123))).toBe('Mon 5 Oct · 4 turns · $0.12')
-    expect(dayTooltip(day('2026-10-08', 1, 2, true), true)).toBe('Today · 1 turn · $2.00 or more')
-    expect(dayTooltip(day('2026-10-06', 0))).toBe('Tue 6 Oct · 0 turns')
+    expect(sparkSummary([day('2026-10-07', 1), day('2026-10-08', 2)])).toBe('3 messages in the last 2 days')
+    expect(dayTooltip(day('2026-10-05', 4, 0.123))).toBe('Mon 5 Oct · 4 messages · $0.12')
+    expect(dayTooltip(day('2026-10-08', 1, 2, true), true)).toBe('Today · 1 message · $2.00 or more')
+    expect(dayTooltip(day('2026-10-06', 0))).toBe('Tue 6 Oct · 0 messages')
   })
 
-  it('folded chart fact; no chart without turns or cost', () => {
-    expect(sparkFact([day('2026-10-07', 1), day('2026-10-08', 4)])).toBe('5 turns / 2d')
-    expect(sparkFact([day('2026-10-08', 1)])).toBe('1 turn / 1d')
+  it('tooltip: unpriced calls and compacted history', () => {
+    expect(dayTooltip(day('2026-10-06', 3, undefined, true))).toBe('Tue 6 Oct · 3 messages · cost not recorded')
+    expect(dayTooltip(day('2026-10-06', 40, undefined, true, true))).toBe('Tue 6 Oct · 40 messages · cost not recorded · includes compacted history, timing estimated')
+    expect(dayTooltip(day('2026-10-06', 40, 0.5, true, true))).toBe('Tue 6 Oct · 40 messages · $0.50 or more · includes compacted history, timing estimated')
+  })
+
+  it('folded chart fact; no chart without messages or cost', () => {
+    expect(sparkFact([day('2026-10-07', 1), day('2026-10-08', 4)])).toBe('5 messages / 2d')
+    expect(sparkFact([day('2026-10-08', 1)])).toBe('1 message / 1d')
     expect(hasActivity([day('a', 0), day('b', 0)])).toBe(false)
     expect(hasActivity([day('a', 0, 0.01)])).toBe(true)
   })

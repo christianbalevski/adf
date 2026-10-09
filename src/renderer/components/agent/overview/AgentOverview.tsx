@@ -258,7 +258,7 @@ export function AgentOverview() {
   // The state line already says when an idle agent wakes.
   const showsWake = live.label.includes(' · wakes') || live.label.includes(' · wake due')
   const facts = vitals ? overviewFacts(vitals, now).filter((f) => !(showsWake && f.id === 'wake')) : []
-  if (chartFolded && activity) facts.push({ id: 'turns', text: sparkFact(activity.daily) })
+  if (chartFolded && activity) facts.push({ id: 'messages', text: sparkFact(activity.daily) })
 
   return (
     <div ref={rootRef} className="px-3 py-2 space-y-1.5 text-[var(--ink)]">

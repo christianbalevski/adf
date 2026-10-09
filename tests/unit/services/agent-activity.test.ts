@@ -1,8 +1,9 @@
 /**
  * AgentVitalsService.getAgentActivity / readAgentActivity against real .adf
- * files: upcoming wakes (raw lambda/input, loop/prompt), per-day turns,
- * contents (counts and approximate tokens), the
- * ledger's per-day cost, caching, and the closed-file peek path.
+ * files: upcoming wakes (raw lambda/input, loop/prompt), per-day messages
+ * and cost from the file's loop rows, contents (counts and approximate
+ * tokens), caching, and the closed-file peek path. The per-day computation
+ * itself is covered in agent-daily.test.ts.
  */
 
 import { randomUUID } from 'crypto'
@@ -11,7 +12,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
-import { AgentVitalsService, FORCE_MIN_INTERVAL_MS, HEAVY_MIN_AGE_MS, readAgentActivity, readMemoryStrata, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
+import { AgentVitalsService, FORCE_MIN_INTERVAL_MS, HEAVY_MIN_AGE_MS, memoryBytes, readAgentActivity, readMemoryStrata, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
 import { localDateKey } from '../../../src/shared/utils/date-key'
 import { DEFAULT_MIND_LOG_CONTENT } from '../../../src/shared/types/adf-v02.types'
 
@@ -107,46 +108,51 @@ describe('readAgentActivity', () => {
     expect('recent' in a).toBe(false)
   })
 
-  it('counts finished turns per local day, today last', () => {
+  it('counts messages of every role and loop per local day, today last', () => {
     const a = readAgentActivity((s, p) => ws.querySQL(s, p), now)
     expect(a.daily).toHaveLength(14)
     expect(a.daily[13].date).toBe(localDateKey(new Date(now)))
-    const byDate = Object.fromEntries(a.daily.map((d) => [d.date, d.turns]))
-    expect(byDate[localDateKey(new Date(now - 3 * DAY + 1000))]).toBe(1)
-    expect(a.daily.reduce((n, d) => n + d.turns, 0)).toBe(3)
-    expect(a.dailyPartial).toBe(false)
+    const byDate = Object.fromEntries(a.daily.map((d) => [d.date, d.messages]))
+    expect(byDate[localDateKey(new Date(now - 3 * DAY + 1000))]).toBeGreaterThanOrEqual(1)
+    expect(a.daily.reduce((n, d) => n + d.messages, 0)).toBe(12)
+    expect(a.daily.some((d) => d.estimated || d.costUsd !== undefined || d.costPartial)).toBe(false)
   })
 
   it('sums mind, agent skills and local tables; starter skills and derived files excluded', () => {
     const q = (s: string, p?: unknown[]): unknown[] => ws.querySQL(s, p)
     const a = readAgentActivity(q, now)
-    const mind = q("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM adf_files WHERE path LIKE 'mind/%'")[0] as { n: number; bytes: number }
-    expect(mind.n).toBeGreaterThan(0)
+    const mind = q("SELECT path, size FROM adf_files WHERE path LIKE 'mind/%'") as Array<{ path: string; size: number }>
+    expect(mind.length).toBeGreaterThan(0)
+    // The seeded mind/log.md header is not memory, here as in memoryTokens and the strata.
+    expect(mind.some((f) => f.path === 'mind/log.md')).toBe(true)
+    const bytes = mind.reduce((n, f) => n + memoryBytes(f.path, f.size), 0)
+    expect(bytes).toBe(mind.reduce((n, f) => n + f.size, 0) - Buffer.byteLength(DEFAULT_MIND_LOG_CONTENT))
     // Only people.md is inside the last 7 days: old.md and the seeded files are older.
-    expect(a.contents.mind).toEqual({ files: mind.n, tokens: Math.round(mind.bytes / 4), updatedThisWeek: 1, strata: readMemoryStrata(q, now) })
+    expect(a.contents.mind).toEqual({ files: mind.length, tokens: Math.round(bytes / 4), updatedThisWeek: 1, strata: readMemoryStrata(q, now) })
     // research (file) + legacy (registry only, 0 tokens); starter excluded.
     expect(a.contents.skills).toEqual({ count: 2, tokens: Math.round('# skills/research/SKILL.md'.length / 4) })
     expect(a.contents.tables).toEqual({ count: 1, rows: 3 })
   })
 
-  it('scans turns incrementally from the last high-water seq', () => {
+  it('scans incrementally from the last high-water seq', () => {
     const q = (s: string, p?: unknown[]): unknown[] => ws.querySQL(s, p)
     const first = readAgentActivity(q, now)
-    expect(first.turnScan.times).toHaveLength(3)
+    expect(first.dayScan.rows.size).toBe(12)
+    const firstLastSeq = first.dayScan.lastSeq
     loopRow('assistant', [{ type: 'text', text: 'another' }], now - 60_000)
-    const next = readAgentActivity(q, now, first.turnScan)
-    expect(next.turnScan.lastSeq).toBeGreaterThan(first.turnScan.lastSeq)
-    expect(next.daily.reduce((n, d) => n + d.turns, 0)).toBe(4)
-    // A scan it already did is not redone: a prior with an invented time stays counted.
-    const seeded = readAgentActivity(q, now, { ...next.turnScan, times: [...next.turnScan.times, now - 2 * DAY] })
-    expect(seeded.daily.reduce((n, d) => n + d.turns, 0)).toBe(5)
+    const next = readAgentActivity(q, now, first.dayScan)
+    expect(next.dayScan.lastSeq).toBeGreaterThan(firstLastSeq)
+    expect(next.daily.reduce((n, d) => n + d.messages, 0)).toBe(13)
     sql("DELETE FROM adf_loop WHERE content_json LIKE '%another%'")
+    expect(readAgentActivity(q, now, next.dayScan).daily.reduce((n, d) => n + d.messages, 0)).toBe(12)
   })
 
-  it('flags the window partial when a loop snapshot was archived inside it', () => {
-    sql("INSERT INTO adf_audit (source, start_seq, end_seq, entry_count, size_bytes, data, created_at) VALUES ('loop', 1, 2, 2, 1, x'00', ?)", [now - 2 * DAY])
-    expect(readAgentActivity((s, p) => ws.querySQL(s, p), now).dailyPartial).toBe(true)
-    sql("DELETE FROM adf_audit WHERE source = 'loop'")
+  it('adds compacted history from adf_audit, marked estimated', () => {
+    sql("INSERT INTO adf_audit (source, start_seq, end_seq, entry_count, size_bytes, data, created_at) VALUES ('loop:main', 900001, 900004, 4, 1, x'00', ?)", [now - 2 * DAY])
+    const a = readAgentActivity((s, p) => ws.querySQL(s, p), now)
+    expect(a.daily.reduce((n, d) => n + d.messages, 0)).toBe(16)
+    expect(a.daily.some((d) => d.estimated)).toBe(true)
+    sql("DELETE FROM adf_audit WHERE source = 'loop:main'")
   })
 })
 
@@ -197,20 +203,24 @@ describe('AgentVitalsService.getAgentActivity', () => {
       getWsConnectionCount: () => undefined,
       getLiveExecStates: () => [],
       getOpenWorkspaces: () => (open ? [{ filePath: file, workspace: ws as VitalsWorkspace }] : []),
-      getAgentDailyCost: (id, dates) => (id === agentId ? { [dates[dates.length - 1]]: { usd: 0.42, partial: true } } : {}),
       now: () => clock.now
     }
     return new AgentVitalsService(deps)
   }
 
-  it('adds the ledger cost to its day and caches until the database changes', async () => {
+  it('reads cost from the loop rows, shares it with the vitals, and caches until the database changes', async () => {
     const clock = { now }
     const svc = service(true, clock)
+    sql("INSERT INTO adf_loop (role, content_json, model, tokens, created_at, loop) VALUES ('assistant', '[]', 'm', ?, ?, 'main')", [JSON.stringify({ input: 10, output: 5, cost_usd: 0.42 }), now - 60_000])
+    sql("INSERT INTO adf_loop (role, content_json, model, tokens, created_at, loop) VALUES ('assistant', '[]', 'm', ?, ?, 'main')", [JSON.stringify({ input: 10, output: 5 }), now - 50_000])
     const a = await svc.getAgentActivity(file)
     expect(a.live).toBe(true)
     expect(a.filePath).toBe(file)
     expect(a.daily[13]).toEqual(expect.objectContaining({ costUsd: 0.42, costPartial: true }))
     expect(a.daily[12].costUsd).toBeUndefined()
+    const v = await svc.getAgentVitals(file)
+    expect(v).toMatchObject({ cost7dUsd: 0.42, cost7dPartial: true })
+    sql("DELETE FROM adf_loop WHERE content_json = '[]'")
 
     // Inside the live minimum interval: the cached read, untouched.
     clock.now = now + 1_000

@@ -168,7 +168,7 @@ describe('GET /agents/:id/activity', () => {
     seedAgent(dir, 2)
     const res = await server.inject({ method: 'GET', url: '/agents/agent-2/activity' })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual(expect.objectContaining({ live: false, dailyPartial: false, upcoming: [] }))
+    expect(res.json()).toEqual(expect.objectContaining({ live: false, upcoming: [] }))
   })
 
   it('answers 404, 409 and 400 like vitals', async () => {
