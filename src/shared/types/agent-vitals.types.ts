@@ -61,7 +61,7 @@ export interface AgentExperienceInputs {
   contextsWorked: number
   /** adf_files rows changed after the agent was created (template starter files and `mind/` excluded). */
   filesWritten: number
-  /** Approximate tokens in `mind/` files: SUM(size) / 4, rounded. */
+  /** Approximate tokens in `mind/` files: SUM(size) less the seeded `mind/log.md` header, / 4, rounded. */
   memoryTokens: number
   /** `local_*` tables. */
   localTables: number

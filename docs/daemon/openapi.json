@@ -18333,7 +18333,7 @@
           },
           "memoryTokens": {
             "type": "integer",
-            "description": "Approximate tokens in `mind/` files (total bytes / 4)"
+            "description": "Approximate tokens in `mind/` files: total bytes, less the seeded `mind/log.md` header, / 4"
           },
           "localTables": {
             "type": "integer",

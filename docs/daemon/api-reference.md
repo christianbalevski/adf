@@ -13777,7 +13777,7 @@ Raw maturity counts read from the agent's file.
 |---|---|---|---|
 | `contextsWorked` | number | yes | Contexts of work over every loop (main, side, deleted): archived loop snapshots in adf_audit (one context at half the loop's compaction threshold or more, else its share) or live compaction summaries when loop audit is off, plus each live loop's current fill as a 0..1 share of its compaction threshold |
 | `filesWritten` | integer | yes | adf_files rows changed after the agent was created, `mind/` excluded |
-| `memoryTokens` | integer | yes | Approximate tokens in `mind/` files (total bytes / 4) |
+| `memoryTokens` | integer | yes | Approximate tokens in `mind/` files: total bytes, less the seeded `mind/log.md` header, / 4 |
 | `localTables` | integer | yes | `local_*` tables |
 | `localRows` | integer | yes | Rows across `local_*` tables |
 | `skills` | integer | yes | Distinct skills the agent installed or changed |
