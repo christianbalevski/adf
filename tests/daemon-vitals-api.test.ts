@@ -27,7 +27,7 @@ vi.mock('electron', () => {
 
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { createDaemonVitalsDeps } from '../src/main/daemon/vitals-routes'
-import { overlayLiveStates } from '../src/main/services/agent-vitals'
+import { FORCE_MIN_INTERVAL_MS, overlayLiveStates } from '../src/main/services/agent-vitals'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { MockLLMProvider, createHeadlessAgent } from '../src/main/runtime/headless'
 import type { AgentActivity, AgentVitals } from '../src/shared/types/agent-vitals.types'
@@ -36,6 +36,7 @@ import type { MeshAgentStatus } from '../src/shared/types/ipc.types'
 const cleanups: Array<() => Promise<unknown> | unknown> = []
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   for (const fn of cleanups.splice(0).reverse()) await fn()
 })
 
@@ -93,6 +94,8 @@ describe('GET /agents/:id/vitals', () => {
     // Same agent by id. A write lands on the next forced read.
     const live = runtime.listLiveAgents().find(a => a.agentId === agentId)!
     live.workspace.writeFile('notes/today.md', 'hello')
+    // force re-reads the scans only FORCE_MIN_INTERVAL_MS after the last one.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + FORCE_MIN_INTERVAL_MS)
     const forced = (await server.inject({ method: 'GET', url: `/agents/${agentId}/vitals?force=1` })).json() as AgentVitals
     expect(forced.maturity.filesWritten).toBe(body.maturity.filesWritten + 1)
     expect(forced.computedAt).toBeGreaterThanOrEqual(body.computedAt)
@@ -153,6 +156,8 @@ describe('GET /agents/:id/activity', () => {
 
     // A write lands on the next forced read, by agent id.
     live.workspace.writeFile('mind/later.md', 'x'.repeat(400))
+    // force re-reads the scans only FORCE_MIN_INTERVAL_MS after the last one.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + FORCE_MIN_INTERVAL_MS)
     const forced = (await server.inject({ method: 'GET', url: `/agents/${agentId}/activity?force=1` })).json() as AgentActivity
     expect(forced.contents.mind.files).toBe(body.contents.mind.files + 1)
     expect(forced.contents.mind.tokens).toBe(body.contents.mind.tokens + 100)

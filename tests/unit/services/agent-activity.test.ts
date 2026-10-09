@@ -11,7 +11,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
-import { AgentVitalsService, readAgentActivity, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
+import { AgentVitalsService, FORCE_MIN_INTERVAL_MS, HEAVY_MIN_AGE_MS, readAgentActivity, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
 import { localDateKey } from '../../../src/shared/utils/date-key'
 
 const dir = mkdtempSync(join(tmpdir(), 'adf-agent-activity-'))
@@ -183,11 +183,39 @@ describe('AgentVitalsService.getAgentActivity', () => {
     expect(cached.computedAt).toBe(now + 5_000)
     expect(cached.contents).toEqual(a.contents)
 
+    // A write inside HEAVY_MIN_AGE_MS: wakes re-read, the scanned contents reused.
     file_('mind/later.md', iso(now))
+    sql("UPDATE adf_timers SET payload = 'moved' WHERE id = ?", [a.upcoming[0].id])
     clock.now = now + 10_000
+    const cheap = await svc.getAgentActivity(file)
+    expect(cheap.computedAt).toBe(now + 10_000)
+    expect(cheap.upcoming[0]).toEqual(expect.objectContaining({ id: a.upcoming[0].id }))
+    expect(JSON.stringify(cheap.upcoming[0])).toContain('moved')
+    expect(cheap.contents).toEqual(a.contents)
+
+    // Past it, the next change re-reads the scans too.
+    sql("UPDATE adf_timers SET payload = 'moved again' WHERE id = ?", [a.upcoming[0].id])
+    clock.now = now + HEAVY_MIN_AGE_MS + 1
     const fresh = await svc.getAgentActivity(file)
-    expect(fresh.computedAt).toBe(now + 10_000)
     expect(fresh.contents.mind.files).toBe(a.contents.mind.files + 1)
+    sql("DELETE FROM adf_files WHERE path = 'mind/later.md'")
+    sql("UPDATE adf_timers SET payload = 'Check the inbox' WHERE id = ?", [a.upcoming[0].id])
+  })
+
+  it('force re-reads the scans, at most every FORCE_MIN_INTERVAL_MS', async () => {
+    const clock = { now }
+    const svc = service(true, clock)
+    const a = await svc.getAgentActivity(file)
+    file_('mind/forced.md', iso(now))
+    // Too soon after the last scan: force re-reads the cheap part only.
+    clock.now = now + FORCE_MIN_INTERVAL_MS - 1
+    const early = await svc.getAgentActivity(file, { force: true })
+    expect(early.computedAt).toBe(clock.now)
+    expect(early.contents).toEqual(a.contents)
+    clock.now = now + FORCE_MIN_INTERVAL_MS
+    const forced = await svc.getAgentActivity(file, { force: true })
+    expect(forced.contents.mind.files).toBe(a.contents.mind.files + 1)
+    sql("DELETE FROM adf_files WHERE path = 'mind/forced.md'")
   })
 
   it('reads a closed file through a readonly peek', async () => {

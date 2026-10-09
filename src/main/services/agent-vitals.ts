@@ -141,6 +141,15 @@ function safe<T>(q: Sql, sql: string, map: (rows: unknown[]) => T, fallback: T, 
   }
 }
 
+/** safe() whose fallback (usually the older schema's query) runs only when the query fails. */
+function safeOr<T>(q: Sql, sql: string, map: (rows: unknown[]) => T, orElse: () => T, params?: unknown[]): T {
+  try {
+    return map(q(sql, params))
+  } catch {
+    return orElse()
+  }
+}
+
 const firstNumber = (rows: unknown[], col = 'n'): number => {
   const v = (rows[0] as Record<string, unknown> | undefined)?.[col]
   return typeof v === 'number' && Number.isFinite(v) ? v : 0
@@ -231,6 +240,42 @@ const BASELINE_KEY = 'context_baseline_tokens'
 const loopOfSource = (source: string): string => (source === 'loop' ? 'main' : source.slice('loop:'.length) || 'main')
 const clamp01 = (x: number): number => (Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : 0)
 
+/** Live `[Loop Compacted` summary rows of one file, and how far the scan has read. */
+export interface SummaryScan {
+  /** Highest adf_loop seq this scan has seen. */
+  lastSeq: number
+  hits: Array<{ seq: number; loop: string }>
+}
+
+/**
+ * Live compaction summary rows. The LIKE runs over the whole content, so with
+ * `prior` (the last scan of this file) only rows above its high-water seq are
+ * matched; earlier hits are kept while their rows still exist (a primary-key
+ * lookup). seq is AUTOINCREMENT, so rows never appear below the high-water mark.
+ * `upTo` stops the scan at that seq, so a cold scan can run in chunks.
+ */
+export function readSummaryScan(q: Sql, prior?: SummaryScan, upTo = Infinity): SummaryScan {
+  const maxSeq = Math.min(upTo, safe(q, 'SELECT MAX(seq) AS n FROM adf_loop', (r) => firstNumber(r), 0))
+  const base = prior && prior.lastSeq <= maxSeq ? prior : null
+  const sql = (loopCol: string): string =>
+    `SELECT seq, ${loopCol} AS loop FROM adf_loop WHERE seq > ? AND seq <= ? AND role = 'user' AND content_json LIKE '%[Loop Compacted%'`
+  type Hit = { seq: number; loop: string | null }
+  const params = [base ? base.lastSeq : 0, maxSeq]
+  const fresh = safeOr(q, sql('loop'), (r) => r as Hit[], () => safe(q, sql("'main'"), (r) => r as Hit[], [], params), params)
+  let kept: SummaryScan['hits'] = []
+  if (base && base.hits.length > 0) {
+    const alive = new Set(safe(
+      q,
+      'SELECT seq FROM adf_loop WHERE seq IN (SELECT value FROM json_each(?))',
+      (r) => (r as Array<{ seq: number }>).map((x) => x.seq),
+      [] as number[],
+      [JSON.stringify(base.hits.map((h) => h.seq))]
+    ))
+    kept = base.hits.filter((h) => alive.has(h.seq))
+  }
+  return { lastSeq: maxSeq, hits: [...kept, ...fresh.map((h) => ({ seq: h.seq, loop: h.loop || 'main' }))] }
+}
+
 /**
  * Contexts of work over every loop the file knows: config.loops, live
  * adf_loop streams, and deleted loops whose stream was archived to adf_audit.
@@ -248,13 +293,13 @@ const clamp01 = (x: number): number => (Number.isFinite(x) ? Math.min(1, Math.ma
  * as a 0..1 share of the loop's compaction threshold. Thresholds resolve as
  * the executor does (resolveLoopThreshold); a deleted loop uses the host's.
  */
-export function readContextsWorked(q: Sql, config: Partial<AgentConfig>): number {
+export function readContextsWorked(q: Sql, config: Partial<AgentConfig>, summaryScan: SummaryScan = readSummaryScan(q)): number {
   const threshold = (loop: string): number => resolveLoopThreshold(config as AgentConfig, loop)
   const loops = new Set<string>(['main', ...(config.loops ?? []).map((l) => l?.name).filter((n): n is string => typeof n === 'string' && !!n)])
 
   type LoopCount = { loop: string | null; n: number }
-  const live = safe(q, 'SELECT loop, COUNT(*) AS n FROM adf_loop GROUP BY loop', (r) => r as LoopCount[],
-    safe(q, "SELECT 'main' AS loop, COUNT(*) AS n FROM adf_loop", (r) => r as LoopCount[], []))
+  const live = safeOr(q, 'SELECT loop, COUNT(*) AS n FROM adf_loop GROUP BY loop', (r) => r as LoopCount[],
+    () => safe(q, "SELECT 'main' AS loop, COUNT(*) AS n FROM adf_loop", (r) => r as LoopCount[], []))
   const liveRows = new Map<string, number>()
   for (const r of live) {
     const name = r.loop || 'main'
@@ -271,11 +316,7 @@ export function readContextsWorked(q: Sql, config: Partial<AgentConfig>): number
   }
 
   const summaries = new Map<string, number>()
-  const summarySql = (loopCol: string): string =>
-    `SELECT ${loopCol} AS loop, COUNT(*) AS n FROM adf_loop WHERE role = 'user' AND content_json LIKE '%[Loop Compacted%' GROUP BY 1`
-  for (const r of safe(q, summarySql('loop'), (rows) => rows as LoopCount[], safe(q, summarySql("'main'"), (rows) => rows as LoopCount[], []))) {
-    summaries.set(r.loop || 'main', r.n)
-  }
+  for (const h of summaryScan.hits) summaries.set(h.loop, (summaries.get(h.loop) ?? 0) + 1)
 
   const baselines = new Map<string, number>()
   for (const r of safe(q, `SELECT key, value FROM adf_meta WHERE key = '${BASELINE_KEY}' OR key LIKE '${BASELINE_KEY}:%'`, (rows) => rows as Array<{ key: string; value: string }>, [])) {
@@ -291,9 +332,10 @@ export function readContextsWorked(q: Sql, config: Partial<AgentConfig>): number
     if (!liveRows.get(loop)) continue
     let tokens = baselines.get(loop)
     if (tokens === undefined) {
-      const bytesSql = (where: string): string => `SELECT SUM(length(content_json)) AS n FROM adf_loop ${where}`
+      // octet_length reads the stored size without loading the text.
+      const bytesSql = (where: string): string => `SELECT SUM(octet_length(content_json)) AS n FROM adf_loop ${where}`
       const bytes = loop === 'main'
-        ? safe(q, bytesSql("WHERE loop = 'main'"), (r) => firstNumber(r), safe(q, bytesSql(''), (r) => firstNumber(r), 0))
+        ? safeOr(q, bytesSql("WHERE loop = 'main'"), (r) => firstNumber(r), () => safe(q, bytesSql(''), (r) => firstNumber(r), 0))
         : safe(q, bytesSql('WHERE loop = ?'), (r) => firstNumber(r), 0, [loop])
       tokens = bytes / 4
     }
@@ -302,14 +344,26 @@ export function readContextsWorked(q: Sql, config: Partial<AgentConfig>): number
   return Math.round(total * 100) / 100
 }
 
-export interface VitalsSlowPart {
+/**
+ * The cheap reads behind the card: config, identity and timer rows, metrics,
+ * the message high-water mark. Small tables and primary keys only, so it may
+ * run on every overview read.
+ */
+export interface VitalsCheapPart {
+  config: Partial<AgentConfig>
   meta: FleetMeta
   power: AgentPowerInputs
-  maturity: Omit<AgentExperienceInputs, 'agentsSpawned' | 'ageDays'>
+  messages: number
   metrics: AgentMetric[]
   nextWakeAt?: number
   /** The ALF card face: description, public flag, verified owner attestation. */
   card: { description?: string; public: boolean; ownerVerified: boolean }
+}
+
+/** The expensive reads: the adf_files scan, local table counts, contexts worked. */
+export interface VitalsHeavyPart {
+  maturity: Omit<AgentExperienceInputs, 'agentsSpawned' | 'ageDays' | 'messages'>
+  summaryScan: SummaryScan
 }
 
 /** True when adf_attestations holds an owner attestation about `did` that is unexpired and verifies. */
@@ -324,12 +378,7 @@ function readOwnerVerified(q: Sql, did: string | null): boolean {
   return false
 }
 
-/**
- * Every read the card needs, against one connection. Aggregates only (MAX,
- * COUNT, column lists without blobs except the skills registry), so a live
- * agent's connection is held for a few milliseconds.
- */
-export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
+export function readVitalsCheapPart(q: Sql): VitalsCheapPart {
   const config = safe<Partial<AgentConfig>>(
     q,
     'SELECT config_json FROM adf_config WHERE id = 1',
@@ -358,9 +407,6 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
     parentDid: getMeta('adf_parent_did') || null,
     createdAt: getMeta('adf_created_at') || config.metadata?.created_at || null
   }
-  // Files seeded at creation land a few ms after adf_created_at; anything the
-  // agent writes comes much later (a turn takes seconds).
-  const cutoff = agentWriteCutoff(meta.createdAt)
 
   // Identity: purposes and sealing only, never values.
   const identity = safe(
@@ -380,11 +426,12 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
   }
 
   // Timers: non-expired rows. `expired` arrived in a later schema; fall back.
-  const timerRows = safe(
+  type TimerRow = { schedule_json: string; next_wake_at: number }
+  const timerRows = safeOr(
     q,
     'SELECT schedule_json, next_wake_at FROM adf_timers WHERE expired = 0',
-    (rows) => rows as Array<{ schedule_json: string; next_wake_at: number }>,
-    safe(q, 'SELECT schedule_json, next_wake_at FROM adf_timers', (rows) => rows as Array<{ schedule_json: string; next_wake_at: number }>, [])
+    (rows) => rows as TimerRow[],
+    () => safe(q, 'SELECT schedule_json, next_wake_at FROM adf_timers', (rows) => rows as TimerRow[], [])
   )
   let fastestIntervalMs: number | undefined
   let nextWakeAt: number | undefined
@@ -404,6 +451,42 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
     safe(q, 'SELECT MAX(seq) AS n FROM adf_loop', (r) => firstNumber(r), 0)
   )
 
+  const metrics = safe(
+    q,
+    "SELECT key, value FROM adf_meta WHERE key LIKE 'metric:%' ORDER BY key LIMIT 20",
+    (rows) => (rows as Array<{ key: string; value: unknown }>).map((r) => ({ name: r.key.slice('metric:'.length), value: r.value == null ? '' : String(r.value) })),
+    [] as AgentMetric[]
+  )
+
+  return {
+    config,
+    meta,
+    power: powerInputsFromConfig(config, {
+      credentials,
+      privateKey,
+      timers: { active: timerRows.length, fastestIntervalMs }
+    }),
+    messages,
+    metrics,
+    nextWakeAt,
+    card: {
+      ...(config.description?.trim() ? { description: config.description.trim() } : {}),
+      public: config.serving?.public?.enabled ?? false,
+      ownerVerified: readOwnerVerified(q, meta.did)
+    }
+  }
+}
+
+/**
+ * The Experience inputs that scan: adf_files (paths and timestamps, no
+ * content), local table row counts, contexts worked. `prior` makes the
+ * compaction-summary LIKE incremental.
+ */
+export function readVitalsHeavyPart(q: Sql, cheap: Pick<VitalsCheapPart, 'config' | 'meta'>, prior?: SummaryScan): VitalsHeavyPart {
+  // Files seeded at creation land a few ms after adf_created_at; anything the
+  // agent writes comes much later (a turn takes seconds).
+  const cutoff = agentWriteCutoff(cheap.meta.createdAt)
+
   // Files changed after creation. Template instances carry their template's
   // older timestamps, so starter files never count. mind/ counts as memory
   // tokens instead.
@@ -418,13 +501,6 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
   const mindBytes = safe(q, "SELECT SUM(size) AS n FROM adf_files WHERE path LIKE 'mind/%'", (r) => firstNumber(r), 0)
   const memoryTokens = Math.round(Math.max(0, mindBytes - MIND_LOG_SEED_BYTES) / 4)
 
-  const metrics = safe(
-    q,
-    "SELECT key, value FROM adf_meta WHERE key LIKE 'metric:%' ORDER BY key LIMIT 20",
-    (rows) => (rows as Array<{ key: string; value: unknown }>).map((r) => ({ name: r.key.slice('metric:'.length), value: r.value == null ? '' : String(r.value) })),
-    [] as AgentMetric[]
-  )
-
   // COUNT(*) is a full scan per table: rows are summed over the first
   // MAX_TABLES only, as Contents does, so an agent with hundreds of tables
   // cannot stall the main process on every refresh.
@@ -432,29 +508,17 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
   let localRows = 0
   for (const t of tables.slice(0, MAX_TABLES)) localRows += safe(q, `SELECT COUNT(*) AS n FROM "${t}"`, (r) => firstNumber(r), 0)
 
+  const summaryScan = readSummaryScan(q, prior)
   return {
-    meta,
-    power: powerInputsFromConfig(config, {
-      credentials,
-      privateKey,
-      timers: { active: timerRows.length, fastestIntervalMs }
-    }),
     maturity: {
-      contextsWorked: readContextsWorked(q, config),
+      contextsWorked: readContextsWorked(q, cheap.config, summaryScan),
       filesWritten,
       memoryTokens,
       localTables: tables.length,
       localRows,
-      skills: agentSkills.size,
-      messages
+      skills: agentSkills.size
     },
-    metrics,
-    nextWakeAt,
-    card: {
-      ...(config.description?.trim() ? { description: config.description.trim() } : {}),
-      public: config.serving?.public?.enabled ?? false,
-      ownerVerified: readOwnerVerified(q, meta.did)
-    }
+    summaryScan
   }
 }
 
@@ -561,22 +625,8 @@ function readTurnTimes(q: Sql, since: number, prior?: TurnScan): TurnScan {
   return { lastSeq: maxSeq, times: fresh, capped }
 }
 
-/**
- * Everything the overview's lower sections read from the file. Every query is
- * bounded: timers by LIMIT on an indexed column, the per-day count by DAILY_SCAN_CAP
- * rowids, local tables by MAX_TABLES. adf_files is read path, timestamps
- * and size only, never content.
- */
-export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): ActivityRead & { turnScan: TurnScan } {
-  const createdAt = safe(
-    q,
-    "SELECT COALESCE((SELECT value FROM adf_meta WHERE key = 'adf_created_at'), (SELECT json_extract(config_json, '$.metadata.created_at') FROM adf_config WHERE id = 1)) AS v",
-    (r) => (r[0] as { v?: string | null } | undefined)?.v ?? null,
-    null as string | null
-  )
-  const cutoff = agentWriteCutoff(createdAt)
-
-  // Coming up: next three wakes (idx_adf_timers_wake).
+/** Coming up: the next three wakes (idx_adf_timers_wake). Cheap. */
+export function readUpcoming(q: Sql): UpcomingWake[] {
   type TimerRow = { id: number; next_wake_at: number; scope: string | null; payload: string | null; lambda: string | null; loop: string | null }
   const readTimers = (cols: string, where: string): TimerRow[] | null =>
     safe(q, `SELECT ${cols} FROM adf_timers ${where} ORDER BY next_wake_at LIMIT 3`, (r) => r as TimerRow[], null as TimerRow[] | null)
@@ -585,7 +635,7 @@ export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): Activi
     readTimers('id, next_wake_at, scope, payload, lambda, NULL AS loop', 'WHERE expired = 0') ??
     readTimers('id, next_wake_at, scope, payload, lambda, NULL AS loop', '') ??
     []
-  const upcoming: UpcomingWake[] = timers.map((t) => {
+  return timers.map((t) => {
     let scope: UpcomingWake['scope'] = 'system'
     try {
       const parsed = JSON.parse(t.scope ?? '[]') as unknown
@@ -595,6 +645,24 @@ export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): Activi
     if (scope === 'agent') return { id: t.id, at: t.next_wake_at, scope, loop: t.loop || 'main', ...(text ? { prompt: text } : {}) }
     return { id: t.id, at: t.next_wake_at, scope, ...(t.lambda ? { lambda: t.lambda } : {}), ...(text ? { input: text } : {}) }
   })
+}
+
+/** The scanning part of the activity read: per-day turns and contents. */
+export type ActivityHeavyRead = Omit<ActivityRead, 'upcoming'> & { turnScan: TurnScan }
+
+/**
+ * Per-day turns and contents. Every query is bounded: the per-day count by
+ * DAILY_SCAN_CAP rowids (incremental with `prior`), local tables by
+ * MAX_TABLES. adf_files is read path, timestamps and size only, never content.
+ */
+export function readActivityHeavy(q: Sql, now: number, prior?: TurnScan): ActivityHeavyRead {
+  const createdAt = safe(
+    q,
+    "SELECT COALESCE((SELECT value FROM adf_meta WHERE key = 'adf_created_at'), (SELECT json_extract(config_json, '$.metadata.created_at') FROM adf_config WHERE id = 1)) AS v",
+    (r) => (r[0] as { v?: string | null } | undefined)?.v ?? null,
+    null as string | null
+  )
+  const cutoff = agentWriteCutoff(createdAt)
 
   // Files: one path/timestamp/size scan for contents.
   const files = safe(q, 'SELECT path, updated_at, size FROM adf_files', (rows) => rows as FileRow[], [])
@@ -607,7 +675,6 @@ export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): Activi
   const daily = bucketByLocalDay(turns.times, now).map(({ date, count }) => ({ date, turns: count }))
 
   return {
-    upcoming,
     daily,
     dailyPartial: turns.capped || compacted,
     contents: readContents(q, files, agentSkills),
@@ -615,18 +682,42 @@ export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): Activi
   }
 }
 
+/** Everything the overview's lower sections read from the file. */
+export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): ActivityRead & { turnScan: TurnScan } {
+  return { upcoming: readUpcoming(q), ...readActivityHeavy(q, now, prior) }
+}
+
 // =============================================================================
 // Service
 // =============================================================================
 
-interface CacheEntry<T> {
+/**
+ * One cached read in two parts. `cheap` follows the source key; `heavy`
+ * (the scans) is reused while younger than HEAVY_MIN_AGE_MS.
+ */
+interface SplitEntry<C, H> {
+  /** Source: the open workspace's total_changes(), or the file's and WAL's mtime/size. */
   key: string
+  /** The activity read's local day: a new day re-reads everything. */
+  salt: string
   at: number
-  value: T
+  cheap: C
+  heavyAt: number
+  heavy: H
 }
 
-/** A live agent's slow part is recomputed at most this often. */
+/** A live agent's cheap part is re-read at most this often. */
 const LIVE_MIN_INTERVAL_MS = 2_000
+/**
+ * The scanning part is reused for this long even when the database moved: a
+ * running agent writes every few seconds, and the scans (adf_files, local
+ * tables, loop rows) are what costs main-thread time. `force` skips it.
+ */
+export const HEAVY_MIN_AGE_MS = 30_000
+/** adf_loop seqs per step of a cold compaction-summary scan. */
+const SUMMARY_SCAN_CHUNK = 2_000
+/** `force` re-reads the scanning part at most this often. */
+export const FORCE_MIN_INTERVAL_MS = 2_000
 
 export class AgentVitalsService {
   // Ghost metadata cache, keyed by file path. Two jobs:
@@ -642,10 +733,12 @@ export class AgentVitalsService {
   private lastFleet: FleetAgentStatus[] | null = null
   private lastFleetAt = 0
 
-  private slowCache = new Map<string, CacheEntry<VitalsSlowPart>>()
-  private activityCache = new Map<string, CacheEntry<ActivityRead & { agentId: string | null }>>()
+  private slowCache = new Map<string, SplitEntry<VitalsCheapPart, VitalsHeavyPart>>()
+  private activityCache = new Map<string, SplitEntry<{ upcoming: UpcomingWake[]; agentId: string | null }, Omit<ActivityHeavyRead, 'turnScan'>>>()
   /** Last per-day turn scan per file; makes the next one incremental. */
   private turnScans = new Map<string, TurnScan>()
+  /** Last compaction-summary scan per file; makes the next one incremental. */
+  private summaryScans = new Map<string, SummaryScan>()
   private workspaceIds = new WeakMap<object, number>()
   private nextWorkspaceId = 1
 
@@ -818,72 +911,98 @@ export class AgentVitalsService {
       this.slowCache.delete(filePath)
       this.activityCache.delete(filePath)
       this.turnScans.delete(filePath)
+      this.summaryScans.delete(filePath)
     } else {
       this.slowCache.clear()
       this.activityCache.clear()
       this.turnScans.clear()
+      this.summaryScans.clear()
     }
   }
 
   /**
-   * One cached read. Live agents: keyed by the connection's total_changes()
-   * (any write — a finished turn, a config change — bumps it) and recomputed
-   * at most every LIVE_MIN_INTERVAL_MS. Files nobody has open: keyed by the
-   * file's and its WAL's mtime/size, read with one readonly peek. `salt`
-   * joins the key (the activity read's local day, so it rolls at midnight).
+   * One cached read in two parts against one connection. Live agents: keyed by
+   * the connection's total_changes() (any write — a finished turn, a config
+   * change — bumps it), re-read at most every LIVE_MIN_INTERVAL_MS. Files
+   * nobody has open: keyed by the file's and its WAL's mtime/size, read with
+   * one readonly peek. A new key re-reads `cheap`; `heavy` (the scans) is
+   * reused until it is HEAVY_MIN_AGE_MS old. `force` re-reads `cheap` always
+   * and `heavy` unless it is younger than FORCE_MIN_INTERVAL_MS. `salt` (the
+   * activity read's local day) drops both when it changes.
    */
-  private async cachedRead<T>(
-    cache: Map<string, CacheEntry<T>>,
+  private async splitRead<C, H>(
+    cache: Map<string, SplitEntry<C, H>>,
     filePath: string,
     force: boolean,
-    read: (q: Sql) => T,
+    readCheap: (q: Sql) => C,
+    readHeavy: (q: Sql, cheap: C) => H,
     salt = ''
-  ): Promise<{ value: T; live: boolean; at: number }> {
+  ): Promise<{ entry: SplitEntry<C, H>; live: boolean }> {
     // Let other IPC work run before the synchronous reads.
     await new Promise<void>((resolve) => setImmediate(resolve))
     const ws = this.findOpenWorkspace(filePath)
     const cached = cache.get(filePath)
+    const fresh = cached && cached.salt === salt ? cached : undefined
     const now = this.now()
     let key: string
     if (ws) {
-      if (!force && cached?.key.startsWith('live:') && cached.key.endsWith(`|${salt}`) && now - cached.at < LIVE_MIN_INTERVAL_MS) {
-        return { value: cached.value, live: true, at: cached.at }
-      }
+      if (!force && fresh?.key.startsWith('live:') && now - fresh.at < LIVE_MIN_INTERVAL_MS) return { entry: fresh, live: true }
       const changes = safe(ws.querySQL.bind(ws), 'SELECT total_changes() AS n', (r) => firstNumber(r), -1)
-      key = `live:${this.workspaceId(ws)}:${changes}|${salt}`
+      key = `live:${this.workspaceId(ws)}:${changes}`
     } else {
       const [main, wal] = await Promise.all([
         fsp.stat(filePath),
         fsp.stat(`${filePath}-wal`).catch(() => null)
       ])
-      key = `file:${main.mtimeMs}:${main.size}:${wal?.mtimeMs ?? 0}:${wal?.size ?? 0}|${salt}`
+      key = `file:${main.mtimeMs}:${main.size}:${wal?.mtimeMs ?? 0}:${wal?.size ?? 0}`
     }
-    if (!force && cached && cached.key === key) {
-      if (ws) cached.at = now
-      return { value: cached.value, live: !!ws, at: cached.at }
+    if (!force && fresh && fresh.key === key) {
+      if (ws) fresh.at = now
+      return { entry: fresh, live: !!ws }
     }
+    const heavyAge = fresh ? now - fresh.heavyAt : Infinity
+    const reuseHeavy = fresh !== undefined && heavyAge < (force ? FORCE_MIN_INTERVAL_MS : HEAVY_MIN_AGE_MS)
 
     // The read is synchronous, so no second caller can arrive mid-read and
     // there is nothing to dedupe. (An in-flight map here once stuck: the async
     // wrapper's `finally` ran before the entry was set, so every later
     // cache miss and every `force` got the first read back forever.)
+    const run = (q: Sql): { cheap: C; heavy: H } => {
+      const cheap = readCheap(q)
+      return { cheap, heavy: reuseHeavy ? fresh!.heavy : readHeavy(q, cheap) }
+    }
     try {
-      const value = ws
-        ? read((sql, params) => ws.querySQL(sql, params))
-        : AdfDatabase.peek(filePath, (db) => read((sql, params) => db.prepare(sql).all(...(params ?? []))))
+      const { cheap, heavy } = ws
+        ? run((sql, params) => ws.querySQL(sql, params))
+        : AdfDatabase.peek(filePath, (db) => run((sql, params) => db.prepare(sql).all(...(params ?? []))))
       const at = this.now()
-      cache.set(filePath, { key, at, value })
-      return { value, live: !!ws, at }
+      const entry: SplitEntry<C, H> = { key, salt, at, cheap, heavy, heavyAt: reuseHeavy ? fresh!.heavyAt : at }
+      cache.set(filePath, entry)
+      return { entry, live: !!ws }
     } catch (err) {
       // Transient lock on a peek: serve the last good read.
-      if (cached) return { value: cached.value, live: !!ws, at: cached.at }
+      if (cached) return { entry: cached, live: !!ws }
       throw err
     }
   }
 
-  private async getSlowPart(filePath: string, force: boolean): Promise<{ slow: VitalsSlowPart; live: boolean }> {
-    const { value, live } = await this.cachedRead(this.slowCache, filePath, force, readVitalsSlowPart)
-    return { slow: value, live }
+  /**
+   * A live agent's first compaction-summary scan, in SUMMARY_SCAN_CHUNK seq
+   * ranges with the event loop free between them: the LIKE reads every user
+   * row's content, which on a long unbroken loop is tens of milliseconds.
+   * Later scans only read rows above the high-water mark.
+   */
+  private async warmSummaryScan(filePath: string, ws: VitalsWorkspace): Promise<void> {
+    const q: Sql = (sql, params) => ws.querySQL(sql, params)
+    const maxSeq = safe(q, 'SELECT MAX(seq) AS n FROM adf_loop', (r) => firstNumber(r), 0)
+    let scan: SummaryScan = { lastSeq: 0, hits: [] }
+    while (scan.lastSeq < maxSeq) {
+      scan = readSummaryScan(q, scan, scan.lastSeq + SUMMARY_SCAN_CHUNK)
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      // Closed or reopened meanwhile: the next read starts over.
+      if (this.findOpenWorkspace(filePath) !== ws) return
+    }
+    if (!this.summaryScans.has(filePath)) this.summaryScans.set(filePath, scan)
   }
 
   /** Children in the last fleet scan whose parent reference names this agent. */
@@ -895,40 +1014,53 @@ export class AgentVitalsService {
   }
 
   async getAgentVitals(filePath: string, opts?: { force?: boolean }): Promise<AgentVitals> {
-    const { slow, live } = await this.getSlowPart(filePath, !!opts?.force)
+    const ws = this.findOpenWorkspace(filePath)
+    if (ws && !this.summaryScans.has(filePath)) await this.warmSummaryScan(filePath, ws)
+    const { entry, live } = await this.splitRead(
+      this.slowCache,
+      filePath,
+      !!opts?.force,
+      readVitalsCheapPart,
+      (q, cheap) => {
+        const heavy = readVitalsHeavyPart(q, cheap, this.summaryScans.get(filePath))
+        this.summaryScans.set(filePath, heavy.summaryScan)
+        return heavy
+      }
+    )
+    const { cheap, heavy } = entry
     const now = this.now()
-    const createdMs = slow.meta.createdAt ? Date.parse(slow.meta.createdAt) : NaN
+    const createdMs = cheap.meta.createdAt ? Date.parse(cheap.meta.createdAt) : NaN
     const ageDays = Number.isFinite(createdMs) ? Math.max(0, (now - createdMs) / 86_400_000) : 0
     const maturity: AgentExperienceInputs = {
-      ...slow.maturity,
-      agentsSpawned: this.countSpawned(slow.meta),
+      ...heavy.maturity,
+      messages: cheap.messages,
+      agentsSpawned: this.countSpawned(cheap.meta),
       ageDays
     }
     const ctx = live ? this.deps.getContextGauge(filePath) : undefined
-    const cost = slow.meta.agentId && this.deps.getAgentCost ? this.deps.getAgentCost(slow.meta.agentId) : null
-    const cachedAt = this.slowCache.get(filePath)?.at ?? now
+    const cost = cheap.meta.agentId && this.deps.getAgentCost ? this.deps.getAgentCost(cheap.meta.agentId) : null
     return {
       filePath,
-      computedAt: cachedAt,
+      computedAt: entry.at,
       live,
-      handle: slow.meta.handle || deriveHandle(filePath),
-      name: slow.meta.name ?? undefined,
-      did: slow.meta.did ?? undefined,
-      agentId: slow.meta.agentId ?? undefined,
-      model: slow.meta.model ?? undefined,
-      createdAt: slow.meta.createdAt ?? undefined,
+      handle: cheap.meta.handle || deriveHandle(filePath),
+      name: cheap.meta.name ?? undefined,
+      did: cheap.meta.did ?? undefined,
+      agentId: cheap.meta.agentId ?? undefined,
+      model: cheap.meta.model ?? undefined,
+      createdAt: cheap.meta.createdAt ?? undefined,
       ageDays,
-      ...(slow.meta.status?.trim() ? { status: slow.meta.status.trim() } : {}),
-      ...(slow.card.description ? { description: slow.card.description } : {}),
-      public: slow.card.public,
-      ownerVerified: slow.card.ownerVerified,
+      ...(cheap.meta.status?.trim() ? { status: cheap.meta.status.trim() } : {}),
+      ...(cheap.card.description ? { description: cheap.card.description } : {}),
+      public: cheap.card.public,
+      ownerVerified: cheap.card.ownerVerified,
       contextTokens: ctx && ctx.tokens > 0 ? ctx.tokens : undefined,
       contextThreshold: ctx && ctx.tokens > 0 ? ctx.threshold : undefined,
-      nextWakeAt: slow.nextWakeAt,
+      nextWakeAt: cheap.nextWakeAt,
       cost7dUsd: cost ? cost.usd : undefined,
       cost7dPartial: cost ? cost.partial : undefined,
-      metrics: slow.metrics,
-      stats: scoreAgent(slow.power, maturity),
+      metrics: cheap.metrics,
+      stats: scoreAgent(cheap.power, maturity),
       maturity
     }
   }
@@ -936,28 +1068,32 @@ export class AgentVitalsService {
   /**
    * The overview's lower sections: next wakes, 14 days of
    * finished turns with the ledger's cost per day, and what the file holds
-   * (mind and skills with approximate tokens, local tables with rows). Cached like the vitals slow part;
-   * the per-day cost is read from the in-memory ledger on every call.
+   * (mind and skills with approximate tokens, local tables with rows). Cached
+   * like the vitals: wakes are the cheap part, turns and contents the heavy one.
+   * The per-day cost is read from the in-memory ledger on every call.
    */
   async getAgentActivity(filePath: string, opts?: { force?: boolean }): Promise<AgentActivity> {
     const now = this.now()
-    const { value, live, at } = await this.cachedRead(
+    const { entry, live } = await this.splitRead(
       this.activityCache,
       filePath,
       !!opts?.force,
+      (q) => ({ upcoming: readUpcoming(q), agentId: readAgentId(q) }),
       (q) => {
-        const { turnScan, ...read } = readAgentActivity(q, this.now(), this.turnScans.get(filePath))
+        const { turnScan, ...read } = readActivityHeavy(q, this.now(), this.turnScans.get(filePath))
         this.turnScans.set(filePath, turnScan)
-        return { ...read, agentId: readAgentId(q) }
+        return read
       },
       localDateKey(new Date(now))
     )
-    const { agentId, ...read } = value
+    const { agentId, upcoming } = entry.cheap
+    const read = entry.heavy
     const costs = agentId && this.deps.getAgentDailyCost ? this.deps.getAgentDailyCost(agentId, read.daily.map((d) => d.date)) : {}
     return {
       filePath,
-      computedAt: at,
+      computedAt: entry.at,
       live,
+      upcoming,
       ...read,
       daily: read.daily.map((d) => {
         const c = costs[d.date]

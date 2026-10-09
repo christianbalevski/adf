@@ -10,7 +10,8 @@ export type OverviewReader<T> = (filePath: string, force: boolean) => Promise<T>
 /**
  * A cached main-process read the overview refetches on open, agent switch,
  * config change (debounced), when the main loop leaves 'active', and every
- * 10 s while the document is visible. `reader` must be stable (module level).
+ * 10 s while the document is visible. Only a config change and a finished
+ * turn force a fresh read; main rate-limits even those. `reader` must be stable (module level).
  * Results for another file never show.
  */
 export function useOverviewRead<T>(
@@ -35,13 +36,17 @@ export function useOverviewRead<T>(
     )
   }, [filePath, reader])
 
-  // Panel open, agent switch, and any config change (Studio edits and the
-  // runtime's own both land in the store). Debounced so a burst of saves is
-  // one read.
+  // Panel open and agent switch: the cached read (main re-reads what moved).
+  // A config change on the same agent (Studio edits and the runtime's own both
+  // land in the store) forces one, debounced so a burst of saves is one read.
+  const configSeen = useRef<{ path: string | null; config: AgentConfig | null } | null>(null)
   useEffect(() => {
-    const t = setTimeout(() => fetchNow(true), 250)
+    const prev = configSeen.current
+    configSeen.current = { path: filePath, config }
+    const force = prev !== null && prev.path === filePath && prev.config !== null && prev.config !== config
+    const t = setTimeout(() => fetchNow(force), force ? 250 : 0)
     return () => clearTimeout(t)
-  }, [fetchNow, config])
+  }, [fetchNow, filePath, config])
 
   // A turn just ended: loop rows, files and cost moved.
   const prevState = useRef(state)

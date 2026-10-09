@@ -10,7 +10,7 @@ import { join } from 'path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { AdfDatabase } from '../../../src/main/adf/adf-database'
-import { AgentVitalsService, readContextsWorked, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
+import { AgentVitalsService, FORCE_MIN_INTERVAL_MS, HEAVY_MIN_AGE_MS, readContextsWorked, readSummaryScan, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
 import { DEFAULT_MIND_LOG_CONTENT, type AgentConfig } from '../../../src/shared/types/adf-v02.types'
 import { appendAdfAttestation, createAttestation } from '../../../src/main/services/attestation.service'
 import { extractRawPublicKey, generateEd25519KeyPair, publicKeyToDid } from '../../../src/main/crypto/identity-crypto'
@@ -206,6 +206,68 @@ describe('agent vitals', () => {
     // An attestation about another subject does not count.
     ws.setMeta('adf_did', did(generateEd25519KeyPair()))
     expect((await svc.getAgentVitals(file, { force: true })).ownerVerified).toBe(false)
+  })
+})
+
+describe('vitals cache ages', () => {
+  it('a running agent: cheap parts follow every write, scans wait HEAVY_MIN_AGE_MS unless forced', async () => {
+    const file = join(dir, 'agent-4.adf')
+    const ws = create(file, 'agent-4')
+    const later = new Date(Date.now() + 3_600_000).toISOString()
+    const write = (path: string): void => {
+      ws.writeFile(path, 'x')
+      ws.executeSQL('UPDATE adf_files SET updated_at = ? WHERE path = ?', [later, path])
+    }
+    const t0 = Date.now()
+    const fake: Fake = { mesh: [], states: [], workspaces: [{ filePath: file, workspace: ws }], now: t0 }
+    const svc = service(fake)
+    const first = await svc.getAgentVitals(file)
+    expect(first.maturity.filesWritten).toBe(0)
+
+    // Inside HEAVY_MIN_AGE_MS the database moved: status and messages are new, the file scan is not.
+    write('notes/a.md')
+    ws.setMeta('status', 'Writing notes')
+    ws.appendToLoop('user', [{ type: 'text', text: 'hi' }])
+    fake.now = t0 + 10_000
+    const cheap = await svc.getAgentVitals(file)
+    expect(cheap.status).toBe('Writing notes')
+    expect(cheap.maturity.messages).toBe(1)
+    expect(cheap.maturity.filesWritten).toBe(0)
+
+    // Forced: the scans re-read.
+    fake.now = t0 + 11_000
+    expect((await svc.getAgentVitals(file, { force: true })).maturity.filesWritten).toBe(1)
+
+    // A second force inside FORCE_MIN_INTERVAL_MS re-reads the cheap part only.
+    write('notes/b.md')
+    ws.setMeta('status', 'Still writing')
+    fake.now = t0 + 11_000 + FORCE_MIN_INTERVAL_MS - 1
+    const spam = await svc.getAgentVitals(file, { force: true })
+    expect(spam.status).toBe('Still writing')
+    expect(spam.maturity.filesWritten).toBe(1)
+
+    // Past HEAVY_MIN_AGE_MS the next change re-reads the scans unforced.
+    ws.setMeta('status', 'Done')
+    fake.now = t0 + 11_000 + HEAVY_MIN_AGE_MS
+    expect((await svc.getAgentVitals(file)).maturity.filesWritten).toBe(2)
+  })
+})
+
+describe('compaction summary scan', () => {
+  it('is incremental and drops rows that are gone', () => {
+    const ws = create(join(dir, 'summary.adf'), 'agent-5')
+    const q = (sql: string, params?: unknown[]): unknown[] => ws.querySQL(sql, params)
+    ws.appendToLoop('user', [{ type: 'text', text: '[Loop Compacted] one' }])
+    ws.appendToLoop('assistant', [{ type: 'text', text: 'ok' }])
+    const first = readSummaryScan(q)
+    expect(first.hits).toHaveLength(1)
+    ws.appendToLoop('user', [{ type: 'text', text: '[Loop Compacted] two' }])
+    const next = readSummaryScan(q, first)
+    expect(next.hits).toHaveLength(2)
+    // Rows below the high-water mark are not matched again.
+    expect(readSummaryScan(q, { ...next, hits: [] }).hits).toEqual([])
+    ws.executeSQL('DELETE FROM adf_loop WHERE seq = ?', [first.hits[0].seq])
+    expect(readSummaryScan(q, next).hits).toEqual([next.hits[1]])
   })
 })
 
