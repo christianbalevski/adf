@@ -1,14 +1,10 @@
 /**
- * Pure helpers behind the overview's activity sections, shared by the main
- * process (AgentVitalsService.getAgentActivity) and the renderer (merging the
- * live log into the recent list). No IO.
+ * Pure helpers behind the overview's activity sparkline
+ * (AgentVitalsService.getAgentActivity). No IO.
  */
 
-import type { ActivityEvent } from '../types/agent-vitals.types'
 import { localDateKey } from './date-key'
 
-/** Lines in "Recent activity". */
-export const RECENT_LIMIT = 8
 /** Days in the activity sparkline. */
 export const ACTIVITY_DAYS = 14
 
@@ -39,29 +35,4 @@ export function bucketByLocalDay(timestamps: number[], now: number, days = ACTIV
     if (n !== undefined) counts.set(k, n + 1)
   }
   return keys.map((date) => ({ date, count: counts.get(date) ?? 0 }))
-}
-
-/**
- * Fold runs of consecutive tool calls with the same name into one line
- * ("fs_write ×4"). Input and output are newest first; a group keeps its
- * newest time and seq.
- */
-export function groupToolRuns(events: ActivityEvent[]): ActivityEvent[] {
-  const out: ActivityEvent[] = []
-  for (const e of events) {
-    const prev = out[out.length - 1]
-    if (prev && e.kind === 'tool' && prev.kind === 'tool' && prev.label === e.label) {
-      prev.count = (prev.count ?? 1) + (e.count ?? 1)
-      continue
-    }
-    out.push({ ...e })
-  }
-  return out
-}
-
-/** Merge event lists newest first (stable on ties), group tool runs, keep `limit`. */
-export function mergeRecent(lists: ActivityEvent[][], limit = RECENT_LIMIT): ActivityEvent[] {
-  const all = lists.flat().map((e, i) => ({ e, i }))
-  all.sort((a, b) => b.e.at - a.e.at || a.i - b.i)
-  return groupToolRuns(all.map((x) => x.e)).slice(0, limit)
 }

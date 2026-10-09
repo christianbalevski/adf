@@ -880,6 +880,10 @@ Example 200 (`application/json`):
   "model": "string",
   "createdAt": "string",
   "ageDays": 0,
+  "status": "string",
+  "description": "string",
+  "public": true,
+  "ownerVerified": true,
   "contextTokens": 0,
   "contextThreshold": 0,
   "nextWakeAt": 0,
@@ -998,7 +1002,7 @@ Example 200 (`application/json`):
 
 **Agent activity**
 
-The lower sections of Studio's agent overview: the next three timer wakes, the eight most recent events, 14 local days of finished turns with the usage ledger's cost per day, and what the file holds (`mind/` files and skills with approximate tokens, `local_*` tables with rows). `{id}` resolves as in `GET /agents/{id}/vitals`. Recent events come from the newest 200 loop rows (tool calls, finished turns, failed tool results; consecutive calls of one tool fold into one line with `count`), the newest inbox and outbox messages, `error` rows of the agent log and the newest files the agent wrote. A finished turn is an assistant loop row without a tool call. The first read counts turns over at most the newest 5,000 loop rows and later reads add only new rows, so turns compacted away before the first read are not counted; `dailyPartial` is true when the row cap or a compaction cuts into the window. Recent files and skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.
+The lower sections of Studio's agent overview: the next three timer wakes (raw lambda and input, or loop and prompt), 14 local days of finished turns with the usage ledger's cost per day, and what the file holds (`mind/` files and skills with approximate tokens, `local_*` tables with rows). `{id}` resolves as in `GET /agents/{id}/vitals`. A finished turn is an assistant loop row without a tool call. The first read counts turns over at most the newest 5,000 loop rows and later reads add only new rows, so turns compacted away before the first read are not counted; `dailyPartial` is true when the row cap or a compaction cuts into the window. Skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.
 
 Operation `getAgentActivity` · bearer token
 
@@ -1033,17 +1037,10 @@ Example 200 (`application/json`):
       "id": 0,
       "at": 0,
       "scope": "system",
-      "label": "string"
-    }
-  ],
-  "recent": [
-    {
-      "kind": "turn",
-      "at": 0,
-      "label": "string",
-      "count": 2,
-      "seq": 0,
-      "loop": "string"
+      "lambda": "string",
+      "input": "string",
+      "loop": "string",
+      "prompt": "string"
     }
   ],
   "daily": [
@@ -13692,6 +13689,10 @@ Data of the `stream.gap` control frame: the resume could not be exact; reload st
 | `model` | string |  |  |
 | `createdAt` | string |  | adf_created_at (ISO 8601) |
 | `ageDays` | number | yes |  |
+| `status` | string |  | The agent's own status line (adf_meta `status`); absent when unset |
+| `description` | string |  | config.description, as on the ALF card; absent when blank |
+| `public` | boolean | yes | config.serving.public.enabled, the ALF card's `public` |
+| `ownerVerified` | boolean | yes | An owner attestation about the current DID is stored, unexpired and its signature verifies (whether or not the card publishes it) |
 | `contextTokens` | integer |  | Last API-reported context size (loaded agents only) |
 | `contextThreshold` | integer |  | Compact threshold (present with contextTokens) |
 | `nextWakeAt` | number |  | Earliest next_wake_at among non-expired timers (ms epoch) |
@@ -13794,7 +13795,6 @@ Raw maturity counts read from the agent's file.
 | `computedAt` | number | yes | When this read was computed (ms epoch) |
 | `live` | boolean | yes | True when read from the workspace of a loaded agent |
 | `upcoming` | [AgentUpcomingWake](#schema-agentupcomingwake)[] | yes | Next non-expired timers, soonest first |
-| `recent` | [AgentActivityEvent](#schema-agentactivityevent)[] | yes | Most recent first |
 | `daily` | [AgentActivityDay](#schema-agentactivityday)[] | yes | 14 local days, oldest first; the last is today |
 | `dailyPartial` | boolean | yes | True when the turn scan hit its row cap or compaction removed rows inside the window (the oldest days may read low) |
 | `contents` | object | yes | What the file holds, in three groups. Tokens are approximate (bytes / 4, rounded) and given for mind and skills only: table data is rarely read into context. |
@@ -13812,25 +13812,17 @@ Raw maturity counts read from the agent's file.
 
 ### AgentUpcomingWake
 
+One timer due soon, as raw pieces. `system` timers carry `lambda` and `input`; `agent` timers carry `loop` and `prompt`. Both texts are the timer payload as stored, cut to 1000 characters (ending in an ellipsis).
+
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | integer | yes |  |
 | `at` | number | yes | next_wake_at (ms epoch) |
 | `scope` | `"system"` \| `"agent"` | yes | `system` runs a lambda; `agent` wakes a loop |
-| `label` | string | yes | Payload, else lambda, else the schedule kind (at most 80 characters) |
-
-<a id="schema-agentactivityevent"></a>
-
-### AgentActivityEvent
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `kind` | `"turn"` \| `"tool"` \| `"message_in"` \| `"message_out"` \| `"file"` \| `"error"` | yes |  |
-| `at` | number | yes | ms epoch (the newest of a folded run) |
-| `label` | string | yes | tool: tool name. message_in, message_out: the other party. file: path. error: short message. turn: loop name |
-| `count` | integer |  | Consecutive calls of one tool folded into this line |
-| `seq` | integer |  | adf_loop seq (loop-derived events) |
-| `loop` | string |  | Loop the event came from (loop-derived events) |
+| `lambda` | string |  | system: lambda reference, e.g. `lib/sync.ts:run` |
+| `input` | string |  | system: payload passed to the lambda |
+| `loop` | string |  | agent: loop the wake dispatches to (`main` when the timer names none) |
+| `prompt` | string |  | agent: payload the loop wakes with |
 
 <a id="schema-agentactivityday"></a>
 

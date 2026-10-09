@@ -6,8 +6,7 @@
  */
 
 import type { AgentState } from '../../../../shared/types/ipc.types'
-import type { ActivityDay, ActivityEvent, AgentContents, ExperienceStat, PowerStat, StatFactor } from '../../../../shared/types/agent-vitals.types'
-import { RECENT_LIMIT, mergeRecent } from '../../../../shared/utils/agent-activity'
+import type { ActivityDay, AgentContents, ExperienceStat, PowerStat, StatFactor, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
 
 // =============================================================================
 // Level bar
@@ -250,6 +249,9 @@ export function powerSections(stat: Pick<PowerStat, 'factors'>): PowerSections {
   }
 }
 
+/** Coming up rows and metrics shown before "+N", so the overview fits without scrolling. */
+export const OVERVIEW_ROW_LIMIT = 3
+
 /** The first `limit` items unless expanded, and how many are hidden. */
 export function visibleItems<T>(items: T[], expanded: boolean, limit = SECTION_LIMIT): { shown: T[]; hidden: number } {
   if (expanded || items.length <= limit) return { shown: items, hidden: 0 }
@@ -308,19 +310,43 @@ export function overviewFacts(v: FactsInput, now: number): Fact[] {
 // Header
 // =============================================================================
 
-export function agentStatusLabel(
-  state: AgentState | null | undefined,
-  opts: { starting?: boolean; waiting?: boolean; toolName?: string | null } = {}
-): string {
+export interface StatusOpts {
+  starting?: boolean
+  toolName?: string | null
+  /** Pending approvals and asks, every loop. */
+  approvals?: number
+  asks?: number
+  /** A suspend request waits for the user. */
+  suspend?: boolean
+  /** Earliest timer wake, shown after Idle / Hibernating. */
+  nextWakeAt?: number
+  now?: number
+}
+
+/**
+ * The card face's state line: "Running fs_write", "Waiting for you ·
+ * 2 approvals", "Idle · wakes in 56 min", "Stopped".
+ */
+export function agentStatusLabel(state: AgentState | null | undefined, opts: StatusOpts = {}): string {
   if (opts.starting) return 'Starting'
+  const approvals = opts.approvals ?? 0
+  const asks = opts.asks ?? 0
+  if (state && state !== 'off' && (approvals > 0 || asks > 0 || opts.suspend)) {
+    const parts: string[] = []
+    if (approvals > 0) parts.push(plural(approvals, 'approval'))
+    if (asks > 0) parts.push(plural(asks, 'question'))
+    return parts.length > 0 ? `Waiting for you · ${parts.join(', ')}` : 'Waiting for you'
+  }
+  const wake = typeof opts.nextWakeAt === 'number' && Number.isFinite(opts.nextWakeAt) && typeof opts.now === 'number'
+    ? ` · ${formatWake(opts.nextWakeAt, opts.now)}`
+    : ''
   switch (state) {
     case 'active':
-      if (opts.waiting) return 'Waiting for approval'
       return opts.toolName ? `Running ${opts.toolName}` : 'Thinking'
     case 'idle':
-      return 'Idle'
+      return `Idle${wake}`
     case 'hibernate':
-      return 'Hibernating'
+      return `Hibernating${wake}`
     case 'suspended':
       return 'Suspended'
     case 'error':
@@ -401,17 +427,6 @@ export function configTargetFor(configPath: string): ConfigTarget {
 // Activity sections
 // =============================================================================
 
-/** "just now", "4 min ago", "3 h ago", "2 days ago". */
-export function formatAgo(at: number, now: number): string {
-  const ms = now - at
-  if (!Number.isFinite(ms) || ms < 60_000) return 'just now'
-  const min = Math.floor(ms / 60_000)
-  if (min < 60) return `${min} min ago`
-  const h = Math.floor(ms / 3_600_000)
-  if (h < 48) return `${h} h ago`
-  return `${Math.floor(ms / 86_400_000)} days ago`
-}
-
 /** "in 4 min", "in 3 h", "in 2 days", "due". */
 export function formatUntil(at: number, now: number): string {
   const ms = at - now
@@ -426,32 +441,7 @@ export function formatUntil(at: number, now: number): string {
 
 const MAIN_LOOP_NAME = 'main'
 
-/** One recent-activity line: plain words plus an optional monospace part (tool name, path). */
-export interface EventText {
-  lead: string
-  mono?: string
-  tail?: string
-}
-
-export function activityEventText(e: ActivityEvent): EventText {
-  switch (e.kind) {
-    case 'turn':
-      return e.loop && e.loop !== MAIN_LOOP_NAME ? { lead: 'Turn finished in ', mono: e.loop } : { lead: 'Turn finished' }
-    case 'tool':
-      return { lead: '', mono: e.label, tail: e.count && e.count > 1 ? ` ×${e.count}` : undefined }
-    case 'message_in':
-      return { lead: `Message from ${e.label}` }
-    case 'message_out':
-      return { lead: `Message to ${e.label}` }
-    case 'file':
-      return { lead: 'Wrote ', mono: e.label }
-    case 'error':
-      return { lead: e.label }
-  }
-}
-
-
-/** The slice of an agent-store log entry the live merge reads. */
+/** The slice of an agent-store log entry `waitingItems` reads. */
 export interface LiveLogEntry {
   type: string
   content: string
@@ -463,37 +453,50 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : ''
 }
 
-/**
- * Store log entries newer than `since` as activity events, newest first:
- * tool calls, failed tool results, errors and inter-agent messages. A turn's
- * end is not in the log; the refetch when the turn ends brings it.
- */
-export function liveLogEvents(log: LiveLogEntry[], since: number): ActivityEvent[] {
-  const out: ActivityEvent[] = []
-  for (let i = log.length - 1; i >= 0; i--) {
-    const e = log[i]
-    if (!(e.timestamp > since)) break
-    const m = e.metadata ?? {}
-    if (e.type === 'tool_call' && str(m.name)) out.push({ kind: 'tool', at: e.timestamp, label: str(m.name) })
-    else if (e.type === 'tool_result' && m.isError === true) out.push({ kind: 'error', at: e.timestamp, label: `${str(m.name) || 'A tool call'} failed` })
-    else if (e.type === 'error') out.push({ kind: 'error', at: e.timestamp, label: shortLine(e.content) || 'Error' })
-    else if (e.type === 'inter_agent') {
-      const incoming = m.direction === 'incoming'
-      const party = str(incoming ? m.fromAgent : m.toAgent) || 'unknown'
-      out.push({ kind: incoming ? 'message_in' : 'message_out', at: e.timestamp, label: party })
-    }
-  }
-  return out
-}
-
 function shortLine(s: string, max = 80): string {
   const line = s.trim().split(/\r?\n/, 1)[0] ?? ''
   return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
 
-/** Server events plus live log entries after the read, grouped, newest first. */
-export function mergeLiveActivity(server: ActivityEvent[], log: LiveLogEntry[], since: number, limit = RECENT_LIMIT): ActivityEvent[] {
-  return mergeRecent([liveLogEvents(log, since), server], limit)
+/** Characters of a timer's input (system) or prompt (agent) shown on its row. */
+export const TIMER_TEXT_MAX = 60
+
+/** One "Coming up" timer row. */
+export interface TimerRowText {
+  /** system: `lambda` in mono. agent: the loop name as a tag. */
+  kind: 'lambda' | 'loop' | 'none'
+  /** Lambda (`lib/sync.ts:run`) or loop name. */
+  head?: string
+  /** Input (single-line JSON) or prompt start, at most TIMER_TEXT_MAX chars. */
+  text?: string
+  /** Full text for the tooltip; set only when `text` was shortened. */
+  full?: string
+  /** True when `text` is code (system input). */
+  mono: boolean
+}
+
+/** Single-line JSON when `s` parses as JSON, else `s` with whitespace runs collapsed. */
+export function compactInput(s: string): string {
+  try {
+    return JSON.stringify(JSON.parse(s)) ?? s
+  } catch {
+    return s.replace(/\s+/g, ' ').trim()
+  }
+}
+
+function clip(s: string, max: number): { text: string; full?: string } {
+  return s.length > max ? { text: `${s.slice(0, max - 1)}…`, full: s } : { text: s }
+}
+
+/** Row text for one upcoming timer: lambda and input, or loop and prompt start. */
+export function timerRowText(t: UpcomingWake, max = TIMER_TEXT_MAX): TimerRowText {
+  if (t.scope === 'agent') {
+    const prompt = t.prompt ? t.prompt.replace(/\s+/g, ' ').trim() : ''
+    return { kind: 'loop', head: t.loop || MAIN_LOOP_NAME, ...(prompt ? clip(prompt, max) : {}), mono: false }
+  }
+  const input = t.input ? compactInput(t.input) : ''
+  if (!t.lambda && !input) return { kind: 'none', text: 'System timer', mono: false }
+  return { kind: t.lambda ? 'lambda' : 'none', head: t.lambda, ...(input ? clip(input, max) : {}), mono: true }
 }
 
 /** Something waiting on the user, from the agent store's pending maps. */
@@ -568,8 +571,10 @@ export interface ContentsGroup {
   key: ContentsKey
   label: string
   tokens: number
-  /** Legend line and segment tooltip: "Mind 12 files · ~20k". */
+  /** Segment and legend tooltip: "Mind 12 files · ~20k". */
   text: string
+  /** Legend item on the single legend line: "Mind ~20k". */
+  short: string
 }
 
 /** 850 → "~850", 12_345 → "~12k". */
@@ -589,8 +594,8 @@ export interface ContentsView {
 /** null when the file holds none of the three. */
 export function contentsView(c: AgentContents): ContentsView | null {
   const groups: ContentsGroup[] = []
-  if (c.mind.files > 0) groups.push({ key: 'mind', label: 'Mind', tokens: c.mind.tokens, text: `Mind ${plural(c.mind.files, 'file')} · ${approxTokens(c.mind.tokens)}` })
-  if (c.skills.count > 0) groups.push({ key: 'skills', label: 'Skills', tokens: c.skills.tokens, text: `Skills ${compactCount(c.skills.count)} · ${approxTokens(c.skills.tokens)}` })
+  if (c.mind.files > 0) groups.push({ key: 'mind', label: 'Mind', tokens: c.mind.tokens, text: `Mind ${plural(c.mind.files, 'file')} · ${approxTokens(c.mind.tokens)}`, short: `Mind ${approxTokens(c.mind.tokens)}` })
+  if (c.skills.count > 0) groups.push({ key: 'skills', label: 'Skills', tokens: c.skills.tokens, text: `Skills ${compactCount(c.skills.count)} · ${approxTokens(c.skills.tokens)}`, short: `Skills ${approxTokens(c.skills.tokens)}` })
   const tables = c.tables.count > 0 ? `Tables ${compactCount(c.tables.count)} · ${rowsLabel(c.tables.rows)}` : null
   if (groups.length === 0 && !tables) return null
   return { groups, total: groups.reduce((n, g) => n + g.tokens, 0), tables }

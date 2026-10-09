@@ -1,31 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import {
-  activityEventText,
   approxTokens,
+  compactInput,
   contentsView,
   dayTooltip,
-  formatAgo,
   formatUntil,
-  liveLogEvents,
-  mergeLiveActivity,
   rowsLabel,
   sparkHeights,
   sparkSummary,
-  waitingItems,
-  type LiveLogEntry
+  timerRowText,
+  waitingItems
 } from '../../../src/renderer/components/agent/overview/agent-overview-model'
-import type { ActivityDay, ActivityEvent } from '../../../src/shared/types/agent-vitals.types'
+import type { ActivityDay, UpcomingWake } from '../../../src/shared/types/agent-vitals.types'
 
 const MIN = 60_000
 
 describe('relative times', () => {
-  it('formatAgo', () => {
-    expect(formatAgo(1000, 30_000)).toBe('just now')
-    expect(formatAgo(0, 4 * MIN)).toBe('4 min ago')
-    expect(formatAgo(0, 3 * 60 * MIN)).toBe('3 h ago')
-    expect(formatAgo(0, 3 * 24 * 60 * MIN)).toBe('3 days ago')
-  })
-
   it('formatUntil', () => {
     expect(formatUntil(0, 10)).toBe('due')
     expect(formatUntil(20_000, 0)).toBe('in under a minute')
@@ -35,47 +25,43 @@ describe('relative times', () => {
   })
 })
 
-describe('event text', () => {
-  it('names each kind plainly; tool names and paths go monospace', () => {
-    expect(activityEventText({ kind: 'turn', at: 0, label: 'main', loop: 'main' })).toEqual({ lead: 'Turn finished' })
-    expect(activityEventText({ kind: 'turn', at: 0, label: 'critic', loop: 'critic' })).toEqual({ lead: 'Turn finished in ', mono: 'critic' })
-    expect(activityEventText({ kind: 'tool', at: 0, label: 'fs_write', count: 4 })).toEqual({ lead: '', mono: 'fs_write', tail: ' ×4' })
-    expect(activityEventText({ kind: 'tool', at: 0, label: 'fs_read' }).tail).toBeUndefined()
-    expect(activityEventText({ kind: 'message_in', at: 0, label: 'agent-2' }).lead).toBe('Message from agent-2')
-    expect(activityEventText({ kind: 'message_out', at: 0, label: 'agent-2' }).lead).toBe('Message to agent-2')
-    expect(activityEventText({ kind: 'file', at: 0, label: 'notes/a.md' })).toEqual({ lead: 'Wrote ', mono: 'notes/a.md' })
-    expect(activityEventText({ kind: 'error', at: 0, label: 'fs_read failed' }).lead).toBe('fs_read failed')
-  })
-})
+describe('timer rows', () => {
+  const wake = (w: Partial<UpcomingWake>): UpcomingWake => ({ id: 1, at: 0, scope: 'system', ...w })
 
-describe('live merge', () => {
-  const log: LiveLogEntry[] = [
-    { type: 'tool_call', content: 'Calling fs_write', timestamp: 100, metadata: { name: 'fs_write' } },
-    { type: 'tool_call', content: 'Calling fs_write', timestamp: 200, metadata: { name: 'fs_write' } },
-    { type: 'tool_result', content: 'ok', timestamp: 210, metadata: { name: 'fs_write', isError: false } },
-    { type: 'tool_call', content: 'Calling fs_read', timestamp: 300, metadata: { name: 'fs_read' } },
-    { type: 'tool_result', content: 'nope', timestamp: 310, metadata: { name: 'fs_read', isError: true } },
-    { type: 'inter_agent', content: 'hi', timestamp: 400, metadata: { direction: 'incoming', fromAgent: 'agent-2', toAgent: 'agent-1' } },
-    { type: 'error', content: 'Provider error\ndetails', timestamp: 500 },
-    { type: 'text', content: 'thinking out loud', timestamp: 600 }
-  ]
-
-  it('converts only entries after the read, newest first', () => {
-    expect(liveLogEvents(log, 150).map((e) => [e.kind, e.label])).toEqual([
-      ['error', 'Provider error'],
-      ['message_in', 'agent-2'],
-      ['error', 'fs_read failed'],
-      ['tool', 'fs_read'],
-      ['tool', 'fs_write']
-    ])
-    expect(liveLogEvents(log, 1000)).toEqual([])
+  it('system: lambda then single-line JSON input, mono', () => {
+    expect(timerRowText(wake({ lambda: 'lib/sync.ts:run', input: '{\n  "full": true,\n  "n": 2\n}' }))).toEqual({
+      kind: 'lambda', head: 'lib/sync.ts:run', text: '{"full":true,"n":2}', mono: true
+    })
+    expect(timerRowText(wake({ lambda: 'lib/sync.ts:run' }))).toEqual({ kind: 'lambda', head: 'lib/sync.ts:run', mono: true })
   })
 
-  it('folds a live tool run into the server run it continues', () => {
-    const server: ActivityEvent[] = [{ kind: 'tool', at: 90, label: 'fs_write', count: 2 }, { kind: 'turn', at: 50, label: 'main' }]
-    const merged = mergeLiveActivity(server, log.slice(0, 2), 50)
-    expect(merged[0]).toEqual({ kind: 'tool', at: 200, label: 'fs_write', count: 4 })
-    expect(merged[1].kind).toBe('turn')
+  it('system: long input is cut with the full text kept for the tooltip', () => {
+    const input = JSON.stringify({ items: 'x'.repeat(100) })
+    const v = timerRowText(wake({ lambda: 'lib/a.ts:go', input }))
+    expect(v.text).toHaveLength(60)
+    expect(v.text?.endsWith('…')).toBe(true)
+    expect(v.full).toBe(input)
+  })
+
+  it('compactInput keeps non-JSON text on one line', () => {
+    expect(compactInput('hello\n  world')).toBe('hello world')
+    expect(compactInput(' [1, 2] ')).toBe('[1,2]')
+  })
+
+  it('agent: loop tag then the prompt start', () => {
+    expect(timerRowText(wake({ scope: 'agent', loop: 'critic', prompt: 'Review\nthe draft' }))).toEqual({
+      kind: 'loop', head: 'critic', text: 'Review the draft', mono: false
+    })
+    expect(timerRowText(wake({ scope: 'agent' }))).toEqual({ kind: 'loop', head: 'main', mono: false })
+    const prompt = 'Check the inbox and answer every message that asks for a status report today'
+    const v = timerRowText(wake({ scope: 'agent', loop: 'main', prompt }))
+    expect(v.text).toBe(`${prompt.slice(0, 59)}…`)
+    expect(v.full).toBe(prompt)
+  })
+
+  it('system without lambda or input falls back to a plain label', () => {
+    expect(timerRowText(wake({}))).toEqual({ kind: 'none', text: 'System timer', mono: false })
+    expect(timerRowText(wake({ input: 'x' }))).toEqual({ kind: 'none', text: 'x', mono: true })
   })
 })
 
@@ -137,8 +123,8 @@ describe('contents', () => {
   it('meter groups are mind and skills; tables are facts beside them', () => {
     expect(contentsView(contents(12, 20_000, 5, 18_000, 3, 2100))).toEqual({
       groups: [
-        { key: 'mind', label: 'Mind', tokens: 20_000, text: 'Mind 12 files · ~20k' },
-        { key: 'skills', label: 'Skills', tokens: 18_000, text: 'Skills 5 · ~18k' }
+        { key: 'mind', label: 'Mind', tokens: 20_000, text: 'Mind 12 files · ~20k', short: 'Mind ~20k' },
+        { key: 'skills', label: 'Skills', tokens: 18_000, text: 'Skills 5 · ~18k', short: 'Skills ~18k' }
       ],
       total: 38_000,
       tables: 'Tables 3 · 2.1k rows'
@@ -147,7 +133,7 @@ describe('contents', () => {
 
   it('hides empty groups, and everything when all are empty', () => {
     expect(contentsView(contents(1, 3, 0, 0, 0, 0))).toEqual({
-      groups: [{ key: 'mind', label: 'Mind', tokens: 3, text: 'Mind 1 file · ~3' }],
+      groups: [{ key: 'mind', label: 'Mind', tokens: 3, text: 'Mind 1 file · ~3', short: 'Mind ~3' }],
       total: 3,
       tables: null
     })

@@ -16,10 +16,9 @@ import { AdfDatabase } from '../adf/adf-database'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import { canonicalizePath, containsPath } from '../utils/tracked-paths'
 import { deriveHandle } from '../utils/handle'
-import type { AgentConfig, TimerSchedule } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, AlfAttestation, TimerSchedule } from '../../shared/types/adf-v02.types'
 import type { AgentState, FleetAgentStatus, FleetStatusResult, MeshAgentStatus } from '../../shared/types/ipc.types'
 import type {
-  ActivityEvent,
   AgentActivity,
   AgentContents,
   AgentExperienceInputs,
@@ -28,10 +27,12 @@ import type {
   AgentVitals,
   UpcomingWake
 } from '../../shared/types/agent-vitals.types'
+import { UPCOMING_TEXT_MAX } from '../../shared/types/agent-vitals.types'
 import { powerInputsFromConfig, scheduleIntervalMs, scoreAgent } from '../../shared/utils/agent-stats'
-import { bucketByLocalDay, mergeRecent, windowStartMs } from '../../shared/utils/agent-activity'
+import { bucketByLocalDay, windowStartMs } from '../../shared/utils/agent-activity'
 import { localDateKey } from '../../shared/utils/date-key'
 import { resolveLoopThreshold } from '../../shared/utils/context-breakdown'
+import { verifyAttestation } from './attestation.service'
 
 /** Display/identity metadata the fleet map needs per agent. */
 export type FleetMeta = NonNullable<ReturnType<typeof AdfDatabase.peekFleetMeta>>
@@ -302,6 +303,20 @@ export interface VitalsSlowPart {
   maturity: Omit<AgentExperienceInputs, 'agentsSpawned' | 'ageDays'>
   metrics: AgentMetric[]
   nextWakeAt?: number
+  /** The ALF card face: description, public flag, verified owner attestation. */
+  card: { description?: string; public: boolean; ownerVerified: boolean }
+}
+
+/** True when adf_attestations holds an owner attestation about `did` that is unexpired and verifies. */
+function readOwnerVerified(q: Sql, did: string | null): boolean {
+  if (!did) return false
+  const rows = safe(q, 'SELECT raw_json FROM adf_attestations', (r) => r as Array<{ raw_json: string }>, [])
+  for (const r of rows) {
+    let att: AlfAttestation | null = null
+    try { att = JSON.parse(r.raw_json) as AlfAttestation } catch { att = null }
+    if (att && att.role === 'owner' && verifyAttestation(att, { expectedSubject: did })) return true
+  }
+  return false
 }
 
 /**
@@ -423,12 +438,17 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
       messages
     },
     metrics,
-    nextWakeAt
+    nextWakeAt,
+    card: {
+      ...(config.description?.trim() ? { description: config.description.trim() } : {}),
+      public: config.serving?.public?.enabled ?? false,
+      ownerVerified: readOwnerVerified(q, meta.did)
+    }
   }
 }
 
 // =============================================================================
-// Activity: upcoming wakes, recent events, per-day turns, contents
+// Activity: upcoming wakes, per-day turns, contents
 // =============================================================================
 
 /** config.id, the per-agent ledger's key. */
@@ -439,15 +459,9 @@ function readAgentId(q: Sql): string | null {
   }, null)
 }
 
-/** Newest adf_loop rows scanned for recent events (rowid range, PK order). */
-const RECENT_LOOP_ROWS = 200
 /** adf_loop rows scanned at most for the per-day turn counts. */
 export const DAILY_SCAN_CAP = 5_000
-const RECENT_MESSAGES = 8
-const RECENT_LOG_ERRORS = 5
-const RECENT_FILES = 5
 const MAX_TABLES = 50
-const LABEL_MAX = 80
 
 /** bytes / 4, rounded: the overview's token estimate. */
 const approxTokens = (bytes: number): number => Math.round(bytes / 4)
@@ -485,89 +499,10 @@ export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>)
 /** The part of AgentActivity read from the file (costs and identity come from the service). */
 export type ActivityRead = Omit<AgentActivity, 'filePath' | 'computedAt' | 'live'>
 
-function shortLabel(s: unknown, max = LABEL_MAX): string {
-  const line = typeof s === 'string' ? s.trim().split(/\r?\n/, 1)[0] : ''
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line
-}
-
-/** A DID is long; keep the method, the start and the tail. */
-function shortParty(alias: unknown, address: unknown): string {
-  if (typeof alias === 'string' && alias.trim()) return shortLabel(alias, 40)
-  const a = typeof address === 'string' ? address : ''
-  if (a.startsWith('did:') && a.length > 28) return `${a.slice(0, 16)}…${a.slice(-4)}`
-  return shortLabel(a, 40) || 'unknown'
-}
-
-function scheduleLabel(raw: string): string {
-  let s: TimerSchedule | null = null
-  try { s = JSON.parse(raw) as TimerSchedule } catch { s = null }
-  if (!s) return 'Timer'
-  if (s.mode === 'cron') return shortLabel(`cron ${s.cron}`)
-  if (s.mode === 'interval') {
-    const min = Math.round(s.every_ms / 60_000)
-    if (min < 1) return `Every ${Math.max(1, Math.round(s.every_ms / 1000))} s`
-    if (min < 120) return `Every ${min} min`
-    return `Every ${Math.round(min / 60)} h`
-  }
-  return 'One-time wake'
-}
-
-interface LoopBlockRow {
-  seq: number
-  role: string
-  at: number
-  loop: string | null
-  type: string | null
-  name: string | null
-  id: string | null
-  tuid: string | null
-  err: number | null
-}
-
-/**
- * Events from the newest loop rows, newest first. One query: the content
- * blocks are unpacked by json_each in SQLite, so only names and flags cross
- * into JS, never tool inputs or results.
- */
-function readLoopEvents(q: Sql): ActivityEvent[] {
-  const sql = (loopCol: string): string => `
-    SELECT l.seq AS seq, l.role AS role, l.created_at AS at, ${loopCol} AS loop,
-      json_extract(j.value, '$.type') AS type, json_extract(j.value, '$.name') AS name,
-      json_extract(j.value, '$.id') AS id, json_extract(j.value, '$.tool_use_id') AS tuid,
-      json_extract(j.value, '$.is_error') AS err
-    FROM (SELECT * FROM adf_loop ORDER BY seq DESC LIMIT ${RECENT_LOOP_ROWS}) l,
-      json_each(CASE WHEN json_valid(l.content_json) AND json_type(l.content_json) = 'array' THEN l.content_json ELSE '[]' END) j
-    WHERE j.type = 'object'
-    ORDER BY l.seq ASC, j.key ASC`
-  const rows = safe(q, sql('l.loop'), (r) => r as LoopBlockRow[], safe(q, sql("'main'"), (r) => r as LoopBlockRow[], []))
-
-  // Oldest first so a result can name the call before it.
-  const toolNames = new Map<string, string>()
-  const bySeq = new Map<number, LoopBlockRow[]>()
-  for (const r of rows) {
-    if (r.type === 'tool_use' && r.id && r.name) toolNames.set(r.id, r.name)
-    const list = bySeq.get(r.seq)
-    if (list) list.push(r)
-    else bySeq.set(r.seq, [r])
-  }
-  const out: ActivityEvent[] = []
-  for (const [seq, blocks] of [...bySeq.entries()].reverse()) {
-    const first = blocks[0]
-    const at = typeof first.at === 'number' ? first.at : 0
-    const loop = first.loop || 'main'
-    if (first.role === 'assistant') {
-      const calls = blocks.filter((b) => b.type === 'tool_use' && b.name)
-      if (calls.length === 0) out.push({ kind: 'turn', at, label: loop, seq, loop })
-      for (const c of calls.reverse()) out.push({ kind: 'tool', at, label: c.name as string, seq, loop })
-    } else {
-      for (const b of blocks.slice().reverse()) {
-        if (b.type !== 'tool_result' || !b.err) continue
-        const name = (b.tuid && toolNames.get(b.tuid)) || 'A tool call'
-        out.push({ kind: 'error', at, label: `${name} failed`, seq, loop })
-      }
-    }
-  }
-  return out
+/** Payload text cut to UPCOMING_TEXT_MAX; undefined when empty. */
+function upcomingText(v: unknown): string | undefined {
+  if (typeof v !== 'string' || !v.trim()) return undefined
+  return v.length > UPCOMING_TEXT_MAX ? `${v.slice(0, UPCOMING_TEXT_MAX - 1)}…` : v
 }
 
 /** State of the per-day turn scan for one file. */
@@ -618,8 +553,7 @@ function readTurnTimes(q: Sql, since: number, prior?: TurnScan): TurnScan {
 
 /**
  * Everything the overview's lower sections read from the file. Every query is
- * bounded: timers and messages by LIMIT on an indexed column, loop events by
- * the newest RECENT_LOOP_ROWS rowids, the per-day count by DAILY_SCAN_CAP
+ * bounded: timers by LIMIT on an indexed column, the per-day count by DAILY_SCAN_CAP
  * rowids, local tables by MAX_TABLES. adf_files is read path, timestamps
  * and size only, never content.
  */
@@ -633,54 +567,28 @@ export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): Activi
   const cutoff = agentWriteCutoff(createdAt)
 
   // Coming up: next three wakes (idx_adf_timers_wake).
-  type TimerRow = { id: number; next_wake_at: number; scope: string | null; payload: string | null; lambda: string | null; schedule_json: string }
-  const timerCols = 'id, next_wake_at, scope, payload, lambda, schedule_json'
-  const timers = safe(
-    q,
-    `SELECT ${timerCols} FROM adf_timers WHERE expired = 0 ORDER BY next_wake_at LIMIT 3`,
-    (r) => r as TimerRow[],
-    safe(q, `SELECT ${timerCols} FROM adf_timers ORDER BY next_wake_at LIMIT 3`, (r) => r as TimerRow[], [])
-  )
+  type TimerRow = { id: number; next_wake_at: number; scope: string | null; payload: string | null; lambda: string | null; loop: string | null }
+  const readTimers = (cols: string, where: string): TimerRow[] | null =>
+    safe(q, `SELECT ${cols} FROM adf_timers ${where} ORDER BY next_wake_at LIMIT 3`, (r) => r as TimerRow[], null as TimerRow[] | null)
+  const timers =
+    readTimers('id, next_wake_at, scope, payload, lambda, loop', 'WHERE expired = 0') ??
+    readTimers('id, next_wake_at, scope, payload, lambda, NULL AS loop', 'WHERE expired = 0') ??
+    readTimers('id, next_wake_at, scope, payload, lambda, NULL AS loop', '') ??
+    []
   const upcoming: UpcomingWake[] = timers.map((t) => {
     let scope: UpcomingWake['scope'] = 'system'
     try {
       const parsed = JSON.parse(t.scope ?? '[]') as unknown
       if (Array.isArray(parsed) && parsed[0] === 'agent') scope = 'agent'
     } catch { /* default */ }
-    return { id: t.id, at: t.next_wake_at, scope, label: shortLabel(t.payload) || shortLabel(t.lambda) || scheduleLabel(t.schedule_json) }
+    const text = upcomingText(t.payload)
+    if (scope === 'agent') return { id: t.id, at: t.next_wake_at, scope, loop: t.loop || 'main', ...(text ? { prompt: text } : {}) }
+    return { id: t.id, at: t.next_wake_at, scope, ...(t.lambda ? { lambda: t.lambda } : {}), ...(text ? { input: text } : {}) }
   })
 
-  // Files: one path/timestamp/size scan, shared by recent events and contents.
+  // Files: one path/timestamp/size scan for contents.
   const files = safe(q, 'SELECT path, updated_at, size FROM adf_files', (rows) => rows as FileRow[], [])
-  const { mine, agentSkills } = classifyFiles(
-    files,
-    cutoff,
-    readRegistrySkills(q)
-  )
-  mine.sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0))
-
-  // Recent events from every source, merged newest first.
-  const fileEvents: ActivityEvent[] = mine.slice(0, RECENT_FILES).map((f) => ({ kind: 'file', at: Date.parse(f.updated_at) || 0, label: f.path }))
-  const inbox = safe(
-    q,
-    `SELECT "from" AS addr, sender_alias AS alias, received_at AS at FROM adf_inbox ORDER BY received_at DESC LIMIT ${RECENT_MESSAGES}`,
-    (r) => (r as Array<{ addr: string; alias: string | null; at: number }>).map((m): ActivityEvent => ({ kind: 'message_in', at: m.at, label: shortParty(m.alias, m.addr) })),
-    []
-  )
-  const outbox = safe(
-    q,
-    `SELECT "to" AS addr, recipient_alias AS alias, created_at AS at FROM adf_outbox ORDER BY created_at DESC LIMIT ${RECENT_MESSAGES}`,
-    (r) => (r as Array<{ addr: string; alias: string | null; at: number }>).map((m): ActivityEvent => ({ kind: 'message_out', at: m.at, label: shortParty(m.alias, m.addr) })),
-    []
-  )
-  // idx_adf_logs_level; rowid order inside the index entry.
-  const logErrors = safe(
-    q,
-    `SELECT message, created_at AS at FROM adf_logs WHERE level = 'error' ORDER BY id DESC LIMIT ${RECENT_LOG_ERRORS}`,
-    (r) => (r as Array<{ message: string; at: number }>).map((m): ActivityEvent => ({ kind: 'error', at: m.at, label: shortLabel(m.message) || 'Error' })),
-    []
-  )
-  const recent = mergeRecent([readLoopEvents(q), fileEvents, inbox, outbox, logErrors])
+  const { agentSkills } = classifyFiles(files, cutoff, readRegistrySkills(q))
 
   const since = windowStartMs(now)
   const turns = readTurnTimes(q, since, prior)
@@ -690,7 +598,6 @@ export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): Activi
 
   return {
     upcoming,
-    recent,
     daily,
     dailyPartial: turns.capped || compacted,
     contents: readContents(q, files, agentSkills),
@@ -988,6 +895,10 @@ export class AgentVitalsService {
       model: slow.meta.model ?? undefined,
       createdAt: slow.meta.createdAt ?? undefined,
       ageDays,
+      ...(slow.meta.status?.trim() ? { status: slow.meta.status.trim() } : {}),
+      ...(slow.card.description ? { description: slow.card.description } : {}),
+      public: slow.card.public,
+      ownerVerified: slow.card.ownerVerified,
       contextTokens: ctx && ctx.tokens > 0 ? ctx.tokens : undefined,
       contextThreshold: ctx && ctx.tokens > 0 ? ctx.threshold : undefined,
       nextWakeAt: slow.nextWakeAt,
@@ -1000,7 +911,7 @@ export class AgentVitalsService {
   }
 
   /**
-   * The overview's lower sections: next wakes, recent events, 14 days of
+   * The overview's lower sections: next wakes, 14 days of
    * finished turns with the ledger's cost per day, and what the file holds
    * (mind and skills with approximate tokens, local tables with rows). Cached like the vitals slow part;
    * the per-day cost is read from the in-memory ledger on every call.

@@ -261,7 +261,12 @@ describe('header helpers', () => {
   it('labels agent state', () => {
     expect(agentStatusLabel('active', { toolName: 'fs_write' })).toBe('Running fs_write')
     expect(agentStatusLabel('active')).toBe('Thinking')
-    expect(agentStatusLabel('active', { waiting: true, toolName: 'fs_write' })).toBe('Waiting for approval')
+    expect(agentStatusLabel('active', { approvals: 2, toolName: 'fs_write' })).toBe('Waiting for you · 2 approvals')
+    expect(agentStatusLabel('active', { approvals: 1, asks: 1 })).toBe('Waiting for you · 1 approval, 1 question')
+    expect(agentStatusLabel('active', { suspend: true })).toBe('Waiting for you')
+    expect(agentStatusLabel('off', { approvals: 1 })).toBe('Stopped')
+    expect(agentStatusLabel('idle', { nextWakeAt: 56 * 60_000, now: 0 })).toBe('Idle · wakes in 56 min')
+    expect(agentStatusLabel('idle')).toBe('Idle')
     expect(agentStatusLabel('idle', { starting: true })).toBe('Starting')
     expect(agentStatusLabel('off')).toBe('Stopped')
     expect(agentStatusLabel(undefined)).toBe('Stopped')

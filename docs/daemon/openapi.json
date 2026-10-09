@@ -794,7 +794,7 @@
           "Agents"
         ],
         "summary": "Agent activity",
-        "description": "The lower sections of Studio's agent overview: the next three timer wakes, the eight most recent events, 14 local days of finished turns with the usage ledger's cost per day, and what the file holds (`mind/` files and skills with approximate tokens, `local_*` tables with rows). `{id}` resolves as in `GET /agents/{id}/vitals`. Recent events come from the newest 200 loop rows (tool calls, finished turns, failed tool results; consecutive calls of one tool fold into one line with `count`), the newest inbox and outbox messages, `error` rows of the agent log and the newest files the agent wrote. A finished turn is an assistant loop row without a tool call. The first read counts turns over at most the newest 5,000 loop rows and later reads add only new rows, so turns compacted away before the first read are not counted; `dailyPartial` is true when the row cap or a compaction cuts into the window. Recent files and skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.",
+        "description": "The lower sections of Studio's agent overview: the next three timer wakes (raw lambda and input, or loop and prompt), 14 local days of finished turns with the usage ledger's cost per day, and what the file holds (`mind/` files and skills with approximate tokens, `local_*` tables with rows). `{id}` resolves as in `GET /agents/{id}/vitals`. A finished turn is an assistant loop row without a tool call. The first read counts turns over at most the newest 5,000 loop rows and later reads add only new rows, so turns compacted away before the first read are not counted; `dailyPartial` is true when the row cap or a compaction cuts into the window. Skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.",
         "operationId": "getAgentActivity",
         "parameters": [
           {
@@ -17972,6 +17972,8 @@
           "live",
           "handle",
           "ageDays",
+          "public",
+          "ownerVerified",
           "stats",
           "maturity",
           "metrics"
@@ -18010,6 +18012,22 @@
           },
           "ageDays": {
             "type": "number"
+          },
+          "status": {
+            "type": "string",
+            "description": "The agent's own status line (adf_meta `status`); absent when unset"
+          },
+          "description": {
+            "type": "string",
+            "description": "config.description, as on the ALF card; absent when blank"
+          },
+          "public": {
+            "type": "boolean",
+            "description": "config.serving.public.enabled, the ALF card's `public`"
+          },
+          "ownerVerified": {
+            "type": "boolean",
+            "description": "An owner attestation about the current DID is stored, unexpired and its signature verifies (whether or not the card publishes it)"
           },
           "contextTokens": {
             "type": "integer",
@@ -18353,7 +18371,6 @@
           "computedAt",
           "live",
           "upcoming",
-          "recent",
           "daily",
           "dailyPartial",
           "contents"
@@ -18376,14 +18393,6 @@
             "description": "Next non-expired timers, soonest first",
             "items": {
               "$ref": "#/components/schemas/AgentUpcomingWake"
-            }
-          },
-          "recent": {
-            "type": "array",
-            "maxItems": 8,
-            "description": "Most recent first",
-            "items": {
-              "$ref": "#/components/schemas/AgentActivityEvent"
             }
           },
           "daily": {
@@ -18466,11 +18475,11 @@
       },
       "AgentUpcomingWake": {
         "type": "object",
+        "description": "One timer due soon, as raw pieces. `system` timers carry `lambda` and `input`; `agent` timers carry `loop` and `prompt`. Both texts are the timer payload as stored, cut to 1000 characters (ending in an ellipsis).",
         "required": [
           "id",
           "at",
-          "scope",
-          "label"
+          "scope"
         ],
         "properties": {
           "id": {
@@ -18488,51 +18497,23 @@
             ],
             "description": "`system` runs a lambda; `agent` wakes a loop"
           },
-          "label": {
+          "lambda": {
             "type": "string",
-            "description": "Payload, else lambda, else the schedule kind (at most 80 characters)"
-          }
-        }
-      },
-      "AgentActivityEvent": {
-        "type": "object",
-        "required": [
-          "kind",
-          "at",
-          "label"
-        ],
-        "properties": {
-          "kind": {
+            "description": "system: lambda reference, e.g. `lib/sync.ts:run`"
+          },
+          "input": {
             "type": "string",
-            "enum": [
-              "turn",
-              "tool",
-              "message_in",
-              "message_out",
-              "file",
-              "error"
-            ]
-          },
-          "at": {
-            "type": "number",
-            "description": "ms epoch (the newest of a folded run)"
-          },
-          "label": {
-            "type": "string",
-            "description": "tool: tool name. message_in, message_out: the other party. file: path. error: short message. turn: loop name"
-          },
-          "count": {
-            "type": "integer",
-            "minimum": 2,
-            "description": "Consecutive calls of one tool folded into this line"
-          },
-          "seq": {
-            "type": "integer",
-            "description": "adf_loop seq (loop-derived events)"
+            "maxLength": 1000,
+            "description": "system: payload passed to the lambda"
           },
           "loop": {
             "type": "string",
-            "description": "Loop the event came from (loop-derived events)"
+            "description": "agent: loop the wake dispatches to (`main` when the timer names none)"
+          },
+          "prompt": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "agent: payload the loop wakes with"
           }
         }
       },

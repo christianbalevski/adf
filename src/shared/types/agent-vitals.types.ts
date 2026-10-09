@@ -162,6 +162,17 @@ export interface AgentVitals {
   /** ISO adf_created_at. */
   createdAt?: string
   ageDays: number
+  /** adf_meta `status`: the agent's own status line. Absent when unset or blank. */
+  status?: string
+  /** config.description, the ALF card's `description`. Absent when blank. */
+  description?: string
+  /** config.serving.public.enabled, the ALF card's `public`. */
+  public: boolean
+  /**
+   * An owner attestation about the agent's current DID is stored, unexpired
+   * and its signature verifies (published on the card or not).
+   */
+  ownerVerified: boolean
   /** Live executors only: last API-reported context size. */
   contextTokens?: number
   contextThreshold?: number
@@ -188,35 +199,28 @@ export interface AgentMetric {
 // Activity (the overview's lower sections)
 // =============================================================================
 
-/** One timer due soon. */
+/** Longest `input` / `prompt` an UpcomingWake carries; longer text is cut and ends in `…`. */
+export const UPCOMING_TEXT_MAX = 1000
+
+/**
+ * One timer due soon, as raw pieces; the renderer formats the row.
+ * system: `lambda` runs with `input` (the timer payload).
+ * agent: `loop` wakes with `prompt` (the timer payload).
+ */
 export interface UpcomingWake {
   id: number
   /** next_wake_at, ms epoch. */
   at: number
   /** 'system' runs a lambda; 'agent' wakes a loop. */
   scope: 'system' | 'agent'
-  /** Payload, else lambda, else the schedule kind. At most 80 chars. */
-  label: string
-}
-
-export type ActivityEventKind = 'turn' | 'tool' | 'message_in' | 'message_out' | 'file' | 'error'
-
-/** One line of "Recent activity". */
-export interface ActivityEvent {
-  kind: ActivityEventKind
-  /** ms epoch (the latest of a group). */
-  at: number
-  /**
-   * tool: the tool name. message_in / message_out: the other party.
-   * file: the path. error: a short message. turn: the loop name.
-   */
-  label: string
-  /** Consecutive same-tool calls folded into this line (tool only, >= 2). */
-  count?: number
-  /** adf_loop seq for loop-derived events. */
-  seq?: number
-  /** Loop the event came from (loop-derived events). */
+  /** system: lambda reference, e.g. `lib/sync.ts:run`. */
+  lambda?: string
+  /** system: payload passed to the lambda, as stored (at most UPCOMING_TEXT_MAX chars). */
+  input?: string
+  /** agent: loop the wake dispatches to (`main` when the row names none). */
   loop?: string
+  /** agent: payload the loop wakes with (at most UPCOMING_TEXT_MAX chars). */
+  prompt?: string
 }
 
 /** One local calendar day of the activity sparkline. */
@@ -257,8 +261,6 @@ export interface AgentActivity {
   live: boolean
   /** Next (at most 3) non-expired timers, soonest first. */
   upcoming: UpcomingWake[]
-  /** Most recent first, at most 8, consecutive same-tool calls grouped. */
-  recent: ActivityEvent[]
   /** 14 local days, oldest first; the last is today. */
   daily: ActivityDay[]
   /**

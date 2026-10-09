@@ -1,25 +1,42 @@
 /**
- * Agent overview: the right dock's first tab. The agent's live orbital, name,
- * what it is doing, model, context use, four levelled stats (Experience,
- * Reach, Access, Autonomy) and a facts line (7-day cost, age, next wake).
+ * Agent overview: the right dock's first tab. A centred card face mirroring
+ * the agent's ALF card (orbital with its own status line as a speech bubble,
+ * name and @handle, description, Public / Verified owner badges) and a state
+ * line with the model; then four levelled stats (Experience, Reach, Access,
+ * Autonomy) and a facts line (7-day cost, age, next wake).
  *
  * Stats come from `adf:agent:vitals` (main/services/agent-vitals.ts), the
  * sections under them from `adf:agent:activity` (OverviewActivity). There is
  * no push event, so both refetch on open, when a turn ends, when the config
  * changes, and every 10 s while the panel shows (useOverviewRead; main caches
  * both reads, so a poll costs little).
+ *
+ * Height budget: the whole panel fits without scrolling in a 1366x768 window
+ * with the dock at its default 320 px. 768 - title bar 40 - status bar 28 -
+ * dock tabs 36 = 664 px for the panel. Worst case (status, 2-line
+ * description, both badges, 3 metrics + "+N", 3 Coming up rows + "+N"),
+ * 18 px text lines:
+ *   padding 16
+ *   card face: orbital 72 + 6 + name 20 + 2 + description 2x16 + 4
+ *     + badges 16 + 2 + state 18 = 172 (status bubble sits beside the orbital)
+ *   gap 8, stats grid 2x44 + borders 3 = 91, facts 6+18, metrics 6+78 -> 199
+ *   gap 8, Coming up: rule+pad 7 + title 18 + 4 + 4 rows x 22 = 117
+ *   gap 8, Activity: 29 + spark 28 = 57
+ *   gap 8, Contents: 29 + meter 8 + 4 + legend 18 = 59
+ *   total ~652 px. Anything taller (banners, a smaller window) scrolls.
+ * Keep new rows inside this budget: cap lists with OVERVIEW_ROW_LIMIT + "+N".
  */
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { OverviewActivity } from './OverviewActivity'
 import { useOverviewRead, type OverviewReader } from './useOverviewRead'
-import { MAIN_LOOP, useAgentStore } from '../../../stores/agent.store'
+import { useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
 import { useDocumentStore } from '../../../stores/document.store'
 import { getLoopActivity } from '../../../utils/loop-activity'
 import { Tooltip } from '../../common/Tooltip'
+import { SpeechBubble } from '../../common/SpeechBubble'
 import { LiveOrbital, orbitalMotionStateFor, useOpenAgentOrbitalSeed } from '../../orbital'
-import { resolveLoopThreshold } from '../../../../shared/utils/context-breakdown'
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import type { AgentMetric, AgentVitals, ExperienceStat, PowerStat } from '../../../../shared/types/agent-vitals.types'
 import {
@@ -39,11 +56,12 @@ import {
   powerSections,
   powerTooltip,
   visibleItems,
+  OVERVIEW_ROW_LIMIT,
   type LevelBarParts,
   type PowerItem
 } from './agent-overview-model'
 
-const ORBITAL_SIZE = 112
+const ORBITAL_SIZE = 72
 const PULSE_MS = 1200
 
 type StatKey = 'experience' | 'reach' | 'access' | 'autonomy'
@@ -61,15 +79,18 @@ const STAT_NAMES: Record<StatKey, string> = {
 
 const readVitals: OverviewReader<AgentVitals> = (filePath, force) => window.adfApi?.getAgentVitals?.(filePath, { force })
 
-/** What the main loop is doing right now, for the status line and orbital motion. */
-function useLiveActivity(): { state: AgentState; label: string; toolRunning: boolean } {
+/** What the agent is doing right now, for the state line and orbital motion. */
+function useLiveActivity(nextWakeAt: number | undefined, now: number): { state: AgentState; label: string; toolRunning: boolean } {
   const state = useAgentStore((s) => s.state)
   const starting = useAgentStore((s) => s.starting)
   const log = useAgentStore((s) => s.log)
   const structuralVersion = useAgentStore((s) => s.structuralVersion)
-  const waiting = useAgentStore((s) => s.pendingApprovals.size > 0 || s.pendingAsks.size > 0 || s.pendingSuspend !== null)
+  const approvals = useAgentStore((s) => s.pendingApprovals.size + Object.values(s.sideLoops).reduce((n, l) => n + l.pendingApprovals.size, 0))
+  const asks = useAgentStore((s) => s.pendingAsks.size + Object.values(s.sideLoops).reduce((n, l) => n + l.pendingAsks.size, 0))
+  const suspend = useAgentStore((s) => s.pendingSuspend !== null)
 
   return useMemo(() => {
+    const waiting = approvals > 0 || asks > 0 || suspend
     const activity = getLoopActivity(log, { active: state === 'active', starting, waiting })
     let toolName: string | null = null
     if (activity.entryId) {
@@ -83,11 +104,12 @@ function useLiveActivity(): { state: AgentState; label: string; toolRunning: boo
     }
     return {
       state,
-      label: agentStatusLabel(state, { starting, waiting, toolName }),
+      label: agentStatusLabel(state, { starting, toolName, approvals, asks, suspend, nextWakeAt, now }),
       toolRunning: toolName !== null
     }
     // structuralVersion: the log array is mutated in place for streamed deltas.
-  }, [log, structuralVersion, state, starting, waiting])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [log, structuralVersion, state, starting, approvals, asks, suspend, nextWakeAt, now])
 }
 
 /** Pulse once when the level rose past the last one Studio saw for this DID. */
@@ -142,13 +164,13 @@ function openConfigFor(configPath: string): void {
 export function AgentOverview() {
   const filePath = useDocumentStore((s) => s.filePath)
   const config = useAgentStore((s) => s.config)
-  const tokenUsage = useAgentStore((s) => s.tokenUsage)
-  const tokenEstimate = useAgentStore((s) => s.tokenEstimate)
+  const statusText = useAgentStore((s) => s.statusText)
   const seed = useOpenAgentOrbitalSeed()
-  const live = useLiveActivity()
-  const vitals = useOverviewRead(filePath, live.state, config, readVitals)
-  const pulsing = useLevelUpPulse(vitals?.did, vitals?.stats.experience.level)
+  const state = useAgentStore((s) => s.state)
+  const vitals = useOverviewRead(filePath, state, config, readVitals)
   const [now, setNow] = useState(() => Date.now())
+  const live = useLiveActivity(vitals?.nextWakeAt, now)
+  const pulsing = useLevelUpPulse(vitals?.did, vitals?.stats.experience.level)
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 30_000)
     return () => clearInterval(t)
@@ -158,44 +180,56 @@ export function AgentOverview() {
   }, [vitals])
 
   const name = config?.name || vitals?.name || vitals?.handle || ''
+  const handle = config?.handle || vitals?.handle || ''
   const model = config?.model?.model_id || vitals?.model
   const motion = orbitalMotionStateFor(live.state, live.toolRunning)
+  // Live store first (updates as the agent writes), the file's values otherwise.
+  const status = statusText.trim() || vitals?.status || ''
+  const description = (config ? config.description?.trim() : vitals?.description) || ''
+  const isPublic = config ? !!config.serving?.public?.enabled : !!vitals?.public
 
-  // Context: the live store first (same numbers as the status bar gauge), the
-  // executor's last report from vitals when the store has none yet.
-  const storeUsed = tokenEstimate ?? tokenUsage.input + tokenUsage.output
-  const context = storeUsed > 0
-    ? { used: storeUsed, threshold: resolveLoopThreshold(config, MAIN_LOOP) }
-    : vitals?.contextTokens && vitals.contextThreshold
-      ? { used: vitals.contextTokens, threshold: vitals.contextThreshold }
-      : null
-
-  const facts = vitals ? overviewFacts(vitals, now) : []
+  // The state line already says when an idle agent wakes.
+  const showsWake = live.label.includes(' · wakes') || live.label.includes(' · wake due')
+  const facts = vitals ? overviewFacts(vitals, now).filter((f) => !(showsWake && f.id === 'wake')) : []
 
   return (
-    <div className="p-3 space-y-3 text-[var(--ink)]">
-      <header className="flex items-start gap-3">
-        <div
-          className={`shrink-0 rounded-full ${pulsing ? 'pulse-ring' : ''}`}
-          style={{ width: ORBITAL_SIZE, height: ORBITAL_SIZE }}
-        >
-          <LiveOrbital seed={seed} size={ORBITAL_SIZE} state={motion} />
+    <div className="px-3 py-2 space-y-2 text-[var(--ink)]">
+      <header className="flex flex-col items-center text-center">
+        <div className="relative w-full flex justify-center">
+          <div
+            className={`shrink-0 rounded-full ${pulsing ? 'pulse-ring' : ''}`}
+            style={{ width: ORBITAL_SIZE, height: ORBITAL_SIZE }}
+          >
+            <LiveOrbital seed={seed} size={ORBITAL_SIZE} state={motion} />
+          </div>
+          {status && <StatusBubble text={status} />}
         </div>
-        <div className="min-w-0 flex-1 pt-2 space-y-1">
-          <h2 className="text-[15px] font-semibold leading-tight truncate" title={name}>{name}</h2>
-          <p className="text-[12px] text-[var(--ink-muted)] truncate">
-            {live.label}
-            {model && <> · <span className="font-mono text-[11.5px]">{model}</span></>}
-          </p>
-          {context && <ContextBar used={context.used} threshold={context.threshold} />}
-        </div>
+        <h2 className="mt-1.5 max-w-full truncate text-[15px] font-semibold leading-5" title={name}>
+          {name}
+          {handle && handle !== name && <span className="ml-1.5 font-normal text-[12px] text-[var(--ink-muted)]">@{handle}</span>}
+        </h2>
+        {description && (
+          <Tooltip tip={description} className="mt-0.5 block max-w-full">
+            <p className="line-clamp-2 text-[11.5px] leading-4 text-[var(--ink-muted)]">{description}</p>
+          </Tooltip>
+        )}
+        {(isPublic || vitals?.ownerVerified) && (
+          <div className="mt-1 flex gap-1.5">
+            {isPublic && <Badge>Public</Badge>}
+            {vitals?.ownerVerified && <Badge>Verified owner</Badge>}
+          </div>
+        )}
+        <p className="mt-0.5 max-w-full truncate text-[12px] leading-[18px]">
+          {live.label}
+          {model && <span className="text-[var(--ink-muted)]"> · <span className="font-mono text-[11.5px]">{model}</span></span>}
+        </p>
       </header>
 
-      <section className="space-y-2">
+      <section className="space-y-1.5">
         {vitals && <StatGrid vitals={vitals} />}
 
         {facts.length > 0 && (
-          <p className="text-[12px] text-[var(--ink-muted)] tabular-nums">
+          <p className="text-[12px] leading-[18px] text-[var(--ink-muted)] tabular-nums">
             {facts.map((f, i) => (
               <span key={f.id}>
                 {i > 0 && ' · '}
@@ -219,33 +253,50 @@ export function AgentOverview() {
   )
 }
 
-/** adf_meta `metric:*` rows, as written. */
-function MetricList({ metrics }: { metrics: AgentMetric[] }) {
+/**
+ * The agent's own status line (adf_meta `status`) beside the orbital, in the
+ * home page's bubble. Static (persistent state, not a quip); two lines at
+ * most, the full text in the tooltip. Fills the space right of the orbital.
+ */
+function StatusBubble({ text }: { text: string }) {
   return (
-    <dl className="text-[12px] space-y-0.5" aria-label="Metrics">
-      {metrics.map((m) => (
-        <div key={m.name} className="flex items-baseline justify-between gap-3">
-          <dt className="min-w-0 truncate text-[var(--ink-muted)]" title={m.name}>{m.name}</dt>
-          <dd className="min-w-0 truncate font-mono text-[11.5px] tabular-nums" title={m.value}>{m.value}</dd>
-        </div>
-      ))}
-    </dl>
+    <Tooltip
+      tip={text}
+      className="absolute top-1 w-fit"
+      style={{ left: `calc(50% + ${ORBITAL_SIZE / 2 + 10}px)`, right: 0 }}
+    >
+      <SpeechBubble className="relative px-2 py-1 text-[11.5px] leading-4">
+        <span className="line-clamp-2 break-words">{text}</span>
+      </SpeechBubble>
+    </Tooltip>
   )
 }
 
-function ContextBar({ used, threshold }: { used: number; threshold: number }) {
-  const pct = threshold > 0 ? Math.min(100, Math.max(0, (used / threshold) * 100)) : 0
-  const label = `Context ${Math.round(pct)}%`
+function Badge({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2 pt-0.5" role="meter" aria-label="Context" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)} aria-valuetext={label}>
-      <span className="text-[11px] text-[var(--ink-faint)]">Context</span>
-      <div className="flex-1 h-1 rounded-full bg-[var(--rule)] overflow-hidden">
-        <div
-          className="h-full rounded-full"
-          style={{ width: `${pct}%`, background: pct >= 90 ? 'var(--status-draft)' : 'var(--ink-muted)' }}
-        />
-      </div>
-      <span className="font-mono text-[11px] tabular-nums text-[var(--ink-muted)]">{Math.round(pct)}%</span>
+    <span className="rounded border border-[var(--rule)] px-1.5 text-[11px] leading-4 text-[var(--ink-muted)]">{children}</span>
+  )
+}
+
+/** adf_meta `metric:*` rows, as written; the first OVERVIEW_ROW_LIMIT, then "+N more". */
+function MetricList({ metrics }: { metrics: AgentMetric[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const { shown, hidden } = visibleItems(metrics, expanded, OVERVIEW_ROW_LIMIT)
+  return (
+    <div className="text-[12px] leading-[18px] space-y-0.5">
+      <dl className="space-y-0.5" aria-label="Metrics">
+        {shown.map((m) => (
+          <div key={m.name} className="flex items-baseline justify-between gap-3">
+            <dt className="min-w-0 truncate text-[var(--ink-muted)]" title={m.name}>{m.name}</dt>
+            <dd className="min-w-0 truncate font-mono text-[11.5px] tabular-nums" title={m.value}>{m.value}</dd>
+          </div>
+        ))}
+      </dl>
+      {hidden > 0 && (
+        <button type="button" onClick={() => setExpanded(true)} className="text-[var(--ink-muted)] hover:text-[var(--ink)]">
+          +{hidden} more
+        </button>
+      )}
     </div>
   )
 }
@@ -301,7 +352,7 @@ function StatGrid({ vitals }: { vitals: AgentVitals }) {
         aria-label={`${STAT_NAMES[key]}: ${tips[key]}`}
         aria-haspopup="dialog"
         aria-expanded={open === key}
-        className={`w-full h-full text-left px-3 py-2.5 transition-colors hover:bg-[var(--paper-sunken)] ${open === key ? 'bg-[var(--paper-sunken)]' : ''}`}
+        className={`w-full h-full text-left px-3 py-2 transition-colors hover:bg-[var(--paper-sunken)] ${open === key ? 'bg-[var(--paper-sunken)]' : ''}`}
       >
         <StatCell name={STAT_NAMES[key]} level={stats[key].level} bar={bars[key]} />
       </button>
@@ -335,8 +386,8 @@ function StatGrid({ vitals }: { vitals: AgentVitals }) {
 
 function StatCell({ name, level, bar }: { name: string; level: number; bar: LevelBarParts }) {
   return (
-    <span className="block space-y-1.5">
-      <span className="flex items-baseline justify-between gap-2">
+    <span className="block space-y-1">
+      <span className="flex items-baseline justify-between gap-2 leading-[18px]">
         <span className="text-[13px] font-semibold">{name}</span>
         <span className="font-mono text-[12px] tabular-nums">Lv {level}</span>
       </span>

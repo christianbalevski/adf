@@ -136,12 +136,11 @@ describe('GET /agents/:id/vitals', () => {
 })
 
 describe('GET /agents/:id/activity', () => {
-  it('reads a loaded agent: 14 local days, wakes, recent events and contents', async () => {
+  it('reads a loaded agent: 14 local days, wakes and contents', async () => {
     const { dir, runtime, server } = setup()
     const { filePath, agentId } = seedAgent(dir, 1)
     await runtime.loadAgent(filePath)
     const live = runtime.listLiveAgents().find(a => a.agentId === agentId)!
-    live.workspace.writeFile('notes/today.md', 'hello')
     live.workspace.addTimer({ mode: 'interval', every_ms: 600_000 }, Date.now() + 600_000, 'Check the inbox', ['agent'])
 
     const res = await server.inject({ method: 'GET', url: '/agents/agent-1/activity' })
@@ -149,9 +148,8 @@ describe('GET /agents/:id/activity', () => {
     const body = res.json() as AgentActivity
     expect(body.live).toBe(true)
     expect(body.daily).toHaveLength(14)
-    expect(body.upcoming).toEqual([expect.objectContaining({ scope: 'agent', label: 'Check the inbox' })])
+    expect(body.upcoming).toEqual([expect.objectContaining({ scope: 'agent', loop: 'main', prompt: 'Check the inbox' })])
     expect(body.contents.tables).toEqual({ count: 0, rows: 0 })
-    expect(body.recent).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'file', label: 'notes/today.md' })]))
 
     // A write lands on the next forced read, by agent id.
     live.workspace.writeFile('mind/later.md', 'x'.repeat(400))

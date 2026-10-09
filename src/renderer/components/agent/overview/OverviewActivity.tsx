@@ -1,44 +1,44 @@
 /**
- * The overview's lower sections, under the stats: Coming up, Recent
- * activity, the 14-day Activity sparkline and Contents. Each hides when
- * it has nothing to show.
+ * The overview's lower sections, under the stats: Coming up, the 14-day
+ * Activity sparkline and Contents. Each hides when it has nothing to show.
+ * Sized to the height budget in AgentOverview.tsx.
  *
- * Timers, recent events, per-day turns and contents come from
- * `adf:agent:activity` (AgentVitalsService.getAgentActivity), refetched with
- * the same triggers as vitals. Approvals, asks and the unread count are read
- * live from the renderer stores, and while a turn runs the store's log is
- * merged into the recent list so it moves before the next read.
+ * Timers, per-day turns and contents come from `adf:agent:activity`
+ * (AgentVitalsService.getAgentActivity), refetched with the same triggers as
+ * vitals. Approvals, asks and the unread count are read live from the
+ * renderer stores.
  */
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { MAIN_LOOP, useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
 import { useInboxStore } from '../../../stores/inbox.store'
 import { Tooltip } from '../../common/Tooltip'
 import type { AgentConfig } from '../../../../shared/types/adf-v02.types'
 import type { AgentState } from '../../../../shared/types/ipc.types'
-import type { ActivityDay, AgentActivity, AgentContents } from '../../../../shared/types/agent-vitals.types'
+import type { ActivityDay, AgentActivity, AgentContents, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
 import { useOverviewRead, type OverviewReader } from './useOverviewRead'
 import {
-  activityEventText,
+  OVERVIEW_ROW_LIMIT,
   approxTokens,
   compactCount,
   contentsView,
   dayTooltip,
-  formatAgo,
   formatUntil,
-  mergeLiveActivity,
   sparkHeights,
   sparkSummary,
+  timerRowText,
+  visibleItems,
   waitingItems,
-  type ContentsKey
+  type ContentsKey,
+  type WaitingItem
 } from './agent-overview-model'
 
 const readActivity: OverviewReader<AgentActivity> = (filePath, force) => window.adfApi?.getAgentActivity?.(filePath, { force })
 
-const SPARK_HEIGHT = 40
+const SPARK_HEIGHT = 32
 
-const ROW = 'w-full flex items-baseline gap-2 -mx-1.5 px-1.5 py-[3px] rounded text-left text-[13px] hover:bg-[var(--paper-sunken)]'
+const ROW = 'w-full flex items-baseline gap-2 -mx-1.5 px-1.5 py-0.5 rounded text-left text-[13px] leading-[18px] hover:bg-[var(--paper-sunken)]'
 const WHEN = 'shrink-0 text-[11.5px] text-[var(--ink-faint)] tabular-nums'
 const MONO = 'font-mono text-[12px]'
 
@@ -57,7 +57,6 @@ export function OverviewActivity({ filePath, state, config, now }: {
   return (
     <>
       <ComingUp activity={activity} now={now} />
-      <RecentActivity activity={activity} now={now} />
       <ActivitySpark daily={activity.daily} partial={activity.dailyPartial} />
       <Contents contents={activity.contents} />
     </>
@@ -66,8 +65,8 @@ export function OverviewActivity({ filePath, state, config, now }: {
 
 function Section({ title, aside, children }: { title: string; aside?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="border-t border-[var(--rule)] pt-3 space-y-1.5">
-      <div className="flex items-baseline justify-between gap-2">
+    <section className="border-t border-[var(--rule)] pt-2 space-y-1">
+      <div className="flex items-baseline justify-between gap-2 leading-[18px]">
         <h3 className="text-[13px] font-semibold">{title}</h3>
         {aside}
       </div>
@@ -103,77 +102,77 @@ function ComingUp({ activity, now }: { activity: AgentActivity; now: number }) {
     [log, structuralVersion, approvals, asks, sideLoops]
   )
 
-  const timers = activity.upcoming
-  if (waiting.length === 0 && unread === 0 && timers.length === 0) return null
+  const [expanded, setExpanded] = useState(false)
+
+  const rows: ComingRow[] = [
+    ...waiting.map((w): ComingRow => ({ kind: 'waiting', key: w.key, w })),
+    ...(unread > 0 ? [{ kind: 'unread', key: 'unread', n: unread } as const] : []),
+    ...activity.upcoming.map((t): ComingRow => ({ kind: 'timer', key: `timer:${t.id}`, t }))
+  ]
+  if (rows.length === 0) return null
+  const { shown, hidden } = visibleItems(rows, expanded, OVERVIEW_ROW_LIMIT)
 
   return (
     <Section title="Coming up">
       <ul>
-        {waiting.map((w) => (
-          <li key={w.key}>
-            <button type="button" onClick={openLoops} className={`${ROW} font-medium`}>
-              <span className="min-w-0 flex-1 truncate">{w.text}</span>
-              <span className={WHEN}>waiting</span>
-            </button>
+        {shown.map((r) => (
+          <li key={r.key}>
+            {r.kind === 'waiting' ? (
+              <button type="button" onClick={openLoops} className={`${ROW} font-medium`}>
+                <span className="min-w-0 flex-1 truncate">{r.w.text}</span>
+                <span className={WHEN}>waiting</span>
+              </button>
+            ) : r.kind === 'unread' ? (
+              <button type="button" onClick={() => useAppStore.getState().expandRightPanelToTab('inbox')} className={ROW}>
+                <span className="min-w-0 flex-1 truncate">
+                  <span className="tabular-nums">{compactCount(r.n)}</span> unread {r.n === 1 ? 'message' : 'messages'}
+                </span>
+              </button>
+            ) : (
+              <TimerRow t={r.t} now={now} />
+            )}
           </li>
         ))}
-        {unread > 0 && (
+        {hidden > 0 && (
           <li>
-            <button type="button" onClick={() => useAppStore.getState().expandRightPanelToTab('inbox')} className={ROW}>
-              <span className="min-w-0 flex-1 truncate">
-                <span className="tabular-nums">{compactCount(unread)}</span> unread {unread === 1 ? 'message' : 'messages'}
-              </span>
+            <button type="button" onClick={() => setExpanded(true)} className={`${ROW} text-[12px] text-[var(--ink-muted)] hover:text-[var(--ink)]`}>
+              +{hidden} more
             </button>
           </li>
         )}
-        {timers.map((t) => (
-          <li key={t.id}>
-            <button type="button" onClick={() => useAppStore.getState().expandRightPanelToTab('agent', 'timers')} className={ROW}>
-              <span className="min-w-0 flex-1 truncate">{t.label}</span>
-              <span className={`shrink-0 ${MONO} text-[11px] text-[var(--ink-faint)]`}>{t.scope}</span>
-              <span className={WHEN}>{formatUntil(t.at, now)}</span>
-            </button>
-          </li>
-        ))}
       </ul>
     </Section>
   )
 }
 
-// =============================================================================
-// Recent activity
-// =============================================================================
+type ComingRow =
+  | { kind: 'waiting'; key: string; w: WaitingItem }
+  | { kind: 'unread'; key: string; n: number }
+  | { kind: 'timer'; key: string; t: UpcomingWake }
 
-function RecentActivity({ activity, now }: { activity: AgentActivity; now: number }) {
-  const log = useAgentStore((s) => s.log)
-  const structuralVersion = useAgentStore((s) => s.structuralVersion)
-  const events = useMemo(
-    () => mergeLiveActivity(activity.recent, log, activity.computedAt),
-    // structuralVersion: the log array is mutated in place.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activity, log, structuralVersion]
-  )
-  if (events.length === 0) return null
+const openTimers = (): void => useAppStore.getState().expandRightPanelToTab('agent', 'timers')
+
+/**
+ * system: `lambda` then its input, both mono. agent: the loop as a tag, then
+ * the start of the prompt. Shortened text shows in full in the tooltip.
+ */
+function TimerRow({ t, now }: { t: UpcomingWake; now: number }) {
+  const v = timerRowText(t)
+  const tip = v.full ? (v.kind === 'lambda' && v.head ? `${v.head} ${v.full}` : v.full) : ''
   return (
-    <Section title="Recent activity">
-      <ul>
-        {events.map((e, i) => {
-          const t = activityEventText(e)
-          return (
-            <li key={`${e.kind}:${e.at}:${e.label}:${i}`}>
-              <button type="button" onClick={openLoops} className={ROW}>
-                <span className="min-w-0 flex-1 truncate">
-                  {t.lead}
-                  {t.mono && <span className={MONO}>{t.mono}</span>}
-                  {t.tail && <span className="font-mono text-[12px] tabular-nums text-[var(--ink-muted)]">{t.tail}</span>}
-                </span>
-                <span className={WHEN}>{formatAgo(e.at, now)}</span>
-              </button>
-            </li>
-          )
-        })}
-      </ul>
-    </Section>
+    <Tooltip tip={tip} disabled={!tip} className="block">
+      <button type="button" onClick={openTimers} className={ROW}>
+        {v.kind === 'loop' && (
+          <span className={`shrink-0 self-center rounded px-1 ${MONO} text-[11px] leading-4 bg-[var(--paper-sunken)] text-[var(--ink-muted)]`}>{v.head}</span>
+        )}
+        <span className="min-w-0 flex-1 truncate">
+          {v.kind === 'lambda' && <span className={MONO}>{v.head}</span>}
+          {v.kind === 'lambda' && v.text && ' '}
+          {v.text && <span className={v.mono ? `${MONO} text-[var(--ink-muted)]` : ''}>{v.text}</span>}
+        </span>
+        <span className={WHEN}>{formatUntil(t.at, now)}</span>
+      </button>
+    </Tooltip>
   )
 }
 
@@ -261,8 +260,9 @@ const openContents: Record<ContentsKey, () => void> = {
 }
 
 /**
- * One stacked bar of approximate tokens (mind, skills) with a legend line
- * per group, then local tables as plain facts: table data is rarely read
+ * One stacked bar of approximate tokens (mind, skills) and one legend line:
+ * each group's tokens (file and skill counts in the tooltip), then local
+ * tables as a plain fact: table data is rarely read
  * into context, so it is not on the token meter. Hidden when the file holds
  * none of them.
  */
@@ -284,23 +284,21 @@ function Contents({ contents }: { contents: AgentContents }) {
           ))}
         </div>
       )}
-      <ul>
+      <div className="flex items-baseline gap-3 min-w-0 text-[12px] leading-[18px] tabular-nums">
         {view.groups.map((g) => (
-          <li key={g.key}>
-            <button type="button" onClick={openContents[g.key]} className={ROW}>
+          <Tooltip key={g.key} tip={g.text} className="shrink-0">
+            <button type="button" onClick={openContents[g.key]} aria-label={g.text} className="inline-flex items-baseline gap-1.5 hover:underline underline-offset-2">
               <span aria-hidden className="self-center h-2 w-2 shrink-0 rounded-[2px]" style={{ background: CONTENTS_COLOR[g.key] }} />
-              <span className="min-w-0 flex-1 truncate tabular-nums">{g.text}</span>
+              {g.short}
             </button>
-          </li>
+          </Tooltip>
         ))}
         {view.tables && (
-          <li>
-            <button type="button" onClick={openFiles} className={ROW}>
-              <span className="min-w-0 flex-1 truncate tabular-nums">{view.tables}</span>
-            </button>
-          </li>
+          <button type="button" onClick={openFiles} className="min-w-0 truncate text-[var(--ink-muted)] hover:text-[var(--ink)] hover:underline underline-offset-2">
+            {view.tables}
+          </button>
         )}
-      </ul>
+      </div>
     </Section>
   )
 }

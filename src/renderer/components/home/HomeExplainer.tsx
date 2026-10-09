@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import { usePrefersReducedMotion } from '../orbital/orbital-env'
 import { NextAgentOrbital } from './NextAgentIdentity'
+import { SpeechBubble } from '../common/SpeechBubble'
 
 /** Quips by reroll count, highest first so one roll shows one line. */
 const SPIN_LINES: ReadonlyArray<readonly [number, string]> = [
@@ -71,19 +72,16 @@ function QuipBubble({ quip }: { quip: Quip | null }) {
     <>
       <span className="sr-only" aria-live="polite">{on ? text : ''}</span>
       {quip && (
-        <div
-          aria-hidden
-          className="pointer-events-none absolute left-full top-3 ml-3 w-max max-w-[220px] rounded-[10px] border border-[var(--rule)] bg-[var(--paper-raised)] px-2.5 py-1.5 text-left text-[12px] leading-[1.35] text-[var(--ink-muted)] shadow-[0_6px_18px_-10px_rgba(0,0,0,0.25)]"
+        <SpeechBubble
+          className="pointer-events-none absolute left-full top-3 ml-3 w-max max-w-[220px]"
           style={{ opacity: on ? 1 : 0, transition: reduce ? 'none' : `opacity ${FADE_MS}ms ease` }}
         >
-          {/* Tail: a rotated square on the side facing the orbital. */}
-          <span className="absolute -left-[5px] top-[11px] h-2 w-2 rotate-[135deg] border-b border-r border-[var(--rule)] bg-[var(--paper-raised)]" />
           {/* The full line holds the size so the bubble does not grow while typing. */}
-          <span className="grid">
+          <span aria-hidden className="grid">
             <span className="invisible col-start-1 row-start-1">{text}</span>
             <span className="col-start-1 row-start-1">{text.slice(0, typed)}</span>
           </span>
-        </div>
+        </SpeechBubble>
       )}
     </>
   )

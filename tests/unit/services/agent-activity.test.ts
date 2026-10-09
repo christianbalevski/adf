@@ -1,7 +1,7 @@
 /**
  * AgentVitalsService.getAgentActivity / readAgentActivity against real .adf
- * files: upcoming wakes, recent events (tool-run grouping, failed results,
- * messages, files, log errors), per-day turns, contents (counts and approximate tokens), the
+ * files: upcoming wakes (raw lambda/input, loop/prompt), per-day turns,
+ * contents (counts and approximate tokens), the
  * ledger's per-day cost, caching, and the closed-file peek path.
  */
 
@@ -67,12 +67,12 @@ beforeAll(() => {
   sql("INSERT INTO local_notes (body) VALUES ('a'), ('b'), ('c')")
 
   // Timers: one expired, four live; the soonest three come back.
-  const timer = (next: number, scope: string, payload: string | null, lambda: string | null, schedule: unknown, expired = 0): void =>
-    sql('INSERT INTO adf_timers (schedule_json, next_wake_at, payload, scope, lambda, created_at, expired) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [JSON.stringify(schedule), next, payload, JSON.stringify([scope]), lambda, now - DAY, expired])
+  const timer = (next: number, scope: string, payload: string | null, lambda: string | null, schedule: unknown, expired = 0, loop: string | null = null): void =>
+    sql('INSERT INTO adf_timers (schedule_json, next_wake_at, payload, scope, lambda, created_at, expired, loop) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [JSON.stringify(schedule), next, payload, JSON.stringify([scope]), lambda, now - DAY, expired, loop])
   timer(now + 5 * 60_000, 'agent', 'Check the inbox', null, { mode: 'interval', every_ms: 300_000 })
-  timer(now + HOUR, 'system', null, 'lib/sync.ts:run', { mode: 'cron', cron: '0 * * * *' })
-  timer(now + 2 * HOUR, 'agent', null, null, { mode: 'interval', every_ms: 7_200_000 })
+  timer(now + HOUR, 'system', '{"full":true}', 'lib/sync.ts:run', { mode: 'cron', cron: '0 * * * *' })
+  timer(now + 2 * HOUR, 'agent', 'x'.repeat(1200), null, { mode: 'interval', every_ms: 7_200_000 }, 0, 'critic')
   timer(now + 3 * HOUR, 'agent', 'Too late to show', null, { mode: 'once', at: now + 3 * HOUR })
   timer(now + 60_000, 'agent', 'Expired', null, { mode: 'once', at: now + 60_000 }, 1)
 
@@ -91,36 +91,18 @@ beforeAll(() => {
   loopRow('assistant', [{ type: 'text', text: 'critic done' }], now - 30 * 60_000, 'critic')
   // Not JSON: skipped, never fails the read.
   sql("INSERT INTO adf_loop (role, content_json, created_at, loop) VALUES ('user', 'not json', ?, 'main')", [now - 29 * 60_000])
-
-  ws.addToInbox({ from: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK', sender_alias: 'agent-2', content: 'ping', received_at: now - 20 * 60_000, status: 'unread' })
-  ws.addToOutbox({ from: 'did:key:self', to: 'did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH', content: 'pong', created_at: now - 10 * 60_000, status: 'sent' })
-  sql("INSERT INTO adf_logs (level, origin, event, message, created_at) VALUES ('error', 'lambda', 'error', ?, ?)", ['Lambda crashed: boom\nstack...', now - 5 * 60_000])
 })
 
 describe('readAgentActivity', () => {
-  it('reads the next three live timers with scope and a label', () => {
+  it('reads the next three live timers as raw pieces', () => {
     const a = readAgentActivity((s, p) => ws.querySQL(s, p), now)
-    expect(a.upcoming.map((t) => [t.scope, t.label])).toEqual([
-      ['agent', 'Check the inbox'],
-      ['system', 'lib/sync.ts:run'],
-      ['agent', 'Every 2 h']
-    ])
-    expect(a.upcoming[0].at).toBe(now + 5 * 60_000)
-  })
-
-  it('merges recent events newest first and folds consecutive same-tool calls', () => {
-    const a = readAgentActivity((s, p) => ws.querySQL(s, p), now)
-    expect(a.recent.map((e) => [e.kind, e.label, e.count])).toEqual([
-      ['error', 'Lambda crashed: boom', undefined],
-      ['message_out', 'did:key:z6MkpTHR…vktH', undefined],
-      ['message_in', 'agent-2', undefined],
-      ['turn', 'critic', undefined],
-      ['turn', 'main', undefined],
-      ['error', 'fs_read failed', undefined],
-      ['tool', 'fs_read', undefined],
-      ['tool', 'fs_write', 3]
-    ])
-    expect(a.recent[3].loop).toBe('critic')
+    expect(a.upcoming[0]).toEqual({ id: expect.any(Number), at: now + 5 * 60_000, scope: 'agent', loop: 'main', prompt: 'Check the inbox' })
+    expect(a.upcoming[1]).toEqual({ id: expect.any(Number), at: now + HOUR, scope: 'system', lambda: 'lib/sync.ts:run', input: '{"full":true}' })
+    expect(a.upcoming[2]).toEqual(expect.objectContaining({ scope: 'agent', loop: 'critic' }))
+    expect(a.upcoming[2].prompt).toHaveLength(1000)
+    expect(a.upcoming[2].prompt?.endsWith('…')).toBe(true)
+    expect(a.upcoming).toHaveLength(3)
+    expect('recent' in a).toBe(false)
   })
 
   it('counts finished turns per local day, today last', () => {
@@ -206,7 +188,6 @@ describe('AgentVitalsService.getAgentActivity', () => {
     const fresh = await svc.getAgentActivity(file)
     expect(fresh.computedAt).toBe(now + 10_000)
     expect(fresh.contents.mind.files).toBe(a.contents.mind.files + 1)
-    expect(fresh.recent.some((e) => e.kind === 'file' && e.label === 'mind/later.md')).toBe(true)
   })
 
   it('reads a closed file through a readonly peek', async () => {

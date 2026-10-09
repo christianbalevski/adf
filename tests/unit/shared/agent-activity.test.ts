@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bucketByLocalDay, groupToolRuns, localDayKeys, mergeRecent, windowStartMs } from '../../../src/shared/utils/agent-activity'
-import type { ActivityEvent } from '../../../src/shared/types/agent-vitals.types'
-
-const tool = (label: string, at: number): ActivityEvent => ({ kind: 'tool', at, label })
+import { bucketByLocalDay, localDayKeys, windowStartMs } from '../../../src/shared/utils/agent-activity'
 
 describe('local day buckets', () => {
   it('splits at local midnight, not UTC', () => {
@@ -27,22 +24,5 @@ describe('local day buckets', () => {
 
   it('crosses month and year ends', () => {
     expect(localDayKeys(new Date(2027, 0, 2, 9).getTime(), 3)).toEqual(['2026-12-31', '2027-01-01', '2027-01-02'])
-  })
-})
-
-describe('tool-run grouping', () => {
-  it('folds consecutive same-tool calls only', () => {
-    const out = groupToolRuns([tool('fs_write', 5), tool('fs_write', 4), tool('fs_read', 3), tool('fs_write', 2), { ...tool('fs_write', 1), count: 2 }])
-    expect(out.map((e) => [e.label, e.count, e.at])).toEqual([['fs_write', 2, 5], ['fs_read', undefined, 3], ['fs_write', 3, 2]])
-  })
-
-  it('never folds across another kind', () => {
-    const turn: ActivityEvent = { kind: 'turn', at: 2, label: 'main' }
-    expect(groupToolRuns([tool('a', 3), turn, tool('a', 1)])).toHaveLength(3)
-  })
-
-  it('mergeRecent sorts newest first, folds runs across lists and limits', () => {
-    const merged = mergeRecent([[tool('fs_write', 10)], [tool('fs_write', 9), tool('fs_write', 8), { kind: 'file', at: 7, label: 'a.md' }]], 2)
-    expect(merged).toEqual([{ kind: 'tool', at: 10, label: 'fs_write', count: 3 }, { kind: 'file', at: 7, label: 'a.md' }])
   })
 })

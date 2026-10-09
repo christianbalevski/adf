@@ -12,6 +12,8 @@ import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { AdfDatabase } from '../../../src/main/adf/adf-database'
 import { AgentVitalsService, readContextsWorked, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
 import type { AgentConfig } from '../../../src/shared/types/adf-v02.types'
+import { appendAdfAttestation, createAttestation } from '../../../src/main/services/attestation.service'
+import { extractRawPublicKey, generateEd25519KeyPair, publicKeyToDid } from '../../../src/main/crypto/identity-crypto'
 import type { AgentState, MeshAgentStatus } from '../../../src/shared/types/ipc.types'
 
 const dir = mkdtempSync(join(tmpdir(), 'adf-agent-vitals-'))
@@ -178,6 +180,32 @@ describe('agent vitals', () => {
     const v = await service(fake).getAgentVitals(fileB)
     expect(v.maturity.ageDays).toBeGreaterThan(2.9)
     expect(v.ageDays).toBe(v.maturity.ageDays)
+  })
+
+  it('card face: status, description, public flag and a verified owner attestation', async () => {
+    const file = join(dir, 'agent-3.adf')
+    const ws = create(file, 'agent-3')
+    const fake: Fake = { mesh: [], states: [], workspaces: [{ filePath: file, workspace: ws }], now: Date.now() }
+    const svc = service(fake)
+    const bare = await svc.getAgentVitals(file)
+    expect(bare).toMatchObject({ public: false, ownerVerified: false })
+    expect(bare.status).toBeUndefined()
+
+    const did = (k: { publicKey: Buffer }): string => publicKeyToDid(extractRawPublicKey(k.publicKey))
+    const agentKey = generateEd25519KeyPair()
+    const ownerKey = generateEd25519KeyPair()
+    const config = ws.getAgentConfig()
+    ws.setAgentConfig({ ...config, description: ' Syncs the ledger. ', serving: { ...config.serving, public: { enabled: true } } } as AgentConfig)
+    ws.setMeta('status', 'Reconciling March')
+    ws.setMeta('adf_did', did(agentKey))
+    appendAdfAttestation(ws, createAttestation({ issuer: did(ownerKey), subject: did(agentKey), role: 'owner', issued_at: new Date().toISOString() }, ownerKey.privateKey))
+
+    const v = await svc.getAgentVitals(file, { force: true })
+    expect(v).toMatchObject({ status: 'Reconciling March', description: 'Syncs the ledger.', public: true, ownerVerified: true })
+
+    // An attestation about another subject does not count.
+    ws.setMeta('adf_did', did(generateEd25519KeyPair()))
+    expect((await svc.getAgentVitals(file, { force: true })).ownerVerified).toBe(false)
   })
 })
 
