@@ -432,10 +432,17 @@ describe('Experience', () => {
     expect(after.score).toBeLessThan(before.score)
   })
 
-  it('memory counts in tokens', () => {
+  it('memory counts in tokens, square-rooted', () => {
     const note = scoreExperience({ ...EMPTY_XP, memoryTokens: 500 })
-    expect(note.score).toBeCloseTo(500 * EXPERIENCE_WEIGHTS.memoryTokens)
+    expect(note.score).toBeCloseTo(Math.sqrt(500) * EXPERIENCE_WEIGHTS.memoryTokensSqrt)
     expect(note.breakdown.find((b) => b.id === 'memoryTokens')?.value).toBe(500)
+  })
+
+  it('memory is sublinear: 10x tokens is about 3.2x XP and a bulk dump stays below Lv 20', () => {
+    const mem = (tokens: number): number => scoreExperience({ ...EMPTY_XP, memoryTokens: tokens }).score
+    expect(mem(200_000) / mem(20_000)).toBeCloseTo(Math.sqrt(10), 5)
+    expect(mem(20_000) / mem(2_000)).toBeCloseTo(3.16, 2)
+    expect(scoreExperience({ ...EMPTY_XP, memoryTokens: 1_000_000 }).level).toBeLessThanOrEqual(20)
   })
 
   it('skills weigh more than plain files', () => {
@@ -457,9 +464,19 @@ describe('Experience', () => {
     const e = scoreExperience({ ...EMPTY_XP, contextsWorked: 0.6 })
     expect(e.nextLevel.xp).toBeCloseTo(e.nextLevelAt - e.score)
     expect(e.nextLevel.contexts).toBe(Math.ceil(e.nextLevel.xp / EXPERIENCE_WEIGHTS.contextsWorked))
-    expect(e.nextLevel.memoryTokens).toBe(Math.ceil(e.nextLevel.xp / EXPERIENCE_WEIGHTS.memoryTokens))
+    expect(e.nextLevel.memoryTokens).toBe(Math.ceil((e.nextLevel.xp / EXPERIENCE_WEIGHTS.memoryTokensSqrt) ** 2))
     expect(e.level).toBe(2)
     expect(e.nextLevel.hint).toBe(`Lv 3 needs ${Math.ceil(e.nextLevel.xp)} more XP: about ${e.nextLevel.contexts} contexts of work, ${e.nextLevel.memoryTokens} memory tokens or 1 skill`)
+  })
+
+  it('next-level memory hint inverts the sqrt from the current memory', () => {
+    const e = scoreExperience({ ...EMPTY_XP, memoryTokens: 10_000 })
+    const k = EXPERIENCE_WEIGHTS.memoryTokensSqrt
+    const need = e.nextLevel.memoryTokens
+    expect(need).toBe(Math.ceil(((Math.sqrt(10_000) * k + e.nextLevel.xp) / k) ** 2 - 10_000))
+    // Adding that many tokens reaches the next level; it costs more than starting from 0 would.
+    expect(scoreExperience({ ...EMPTY_XP, memoryTokens: 10_000 + need }).level).toBe(e.level + 1)
+    expect(need).toBeGreaterThan(Math.ceil((e.nextLevel.xp / k) ** 2))
   })
 
   it('omits agents spawned when unknown', () => {

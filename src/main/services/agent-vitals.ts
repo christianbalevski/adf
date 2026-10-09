@@ -16,7 +16,7 @@ import { AdfDatabase } from '../adf/adf-database'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import { canonicalizePath, containsPath } from '../utils/tracked-paths'
 import { deriveHandle } from '../utils/handle'
-import type { AgentConfig, AlfAttestation, TimerSchedule } from '../../shared/types/adf-v02.types'
+import { DEFAULT_MIND_LOG_CONTENT, type AgentConfig, type AlfAttestation, type TimerSchedule } from '../../shared/types/adf-v02.types'
 import type { AgentState, FleetAgentStatus, FleetStatusResult, MeshAgentStatus } from '../../shared/types/ipc.types'
 import type {
   AgentActivity,
@@ -33,6 +33,8 @@ import { bucketByLocalDay, windowStartMs } from '../../shared/utils/agent-activi
 import { localDateKey } from '../../shared/utils/date-key'
 import { resolveLoopThreshold } from '../../shared/utils/context-breakdown'
 import { verifyAttestation } from './attestation.service'
+
+const MIND_LOG_SEED_BYTES = Buffer.byteLength(DEFAULT_MIND_LOG_CONTENT)
 
 /** Display/identity metadata the fleet map needs per agent. */
 export type FleetMeta = NonNullable<ReturnType<typeof AdfDatabase.peekFleetMeta>>
@@ -408,7 +410,10 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
     readRegistrySkills(q)
   )
   const filesWritten = mine.filter((f) => !f.path.startsWith('mind/')).length
-  const memoryTokens = Math.round(safe(q, "SELECT SUM(size) AS n FROM adf_files WHERE path LIKE 'mind/%'", (r) => firstNumber(r), 0) / 4)
+  // The seeded mind/log.md header is not the agent's memory: with memory XP
+  // square-rooted, even its ~40 tokens would lift a brand-new agent to Lv 2.
+  const mindBytes = safe(q, "SELECT SUM(size) AS n FROM adf_files WHERE path LIKE 'mind/%'", (r) => firstNumber(r), 0)
+  const memoryTokens = Math.round(Math.max(0, mindBytes - MIND_LOG_SEED_BYTES) / 4)
 
   const metrics = safe(
     q,

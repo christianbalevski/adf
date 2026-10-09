@@ -11,7 +11,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { AdfDatabase } from '../../../src/main/adf/adf-database'
 import { AgentVitalsService, readContextsWorked, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
-import type { AgentConfig } from '../../../src/shared/types/adf-v02.types'
+import { DEFAULT_MIND_LOG_CONTENT, type AgentConfig } from '../../../src/shared/types/adf-v02.types'
 import { appendAdfAttestation, createAttestation } from '../../../src/main/services/attestation.service'
 import { extractRawPublicKey, generateEd25519KeyPair, publicKeyToDid } from '../../../src/main/crypto/identity-crypto'
 import type { AgentState, MeshAgentStatus } from '../../../src/shared/types/ipc.types'
@@ -140,7 +140,7 @@ describe('agent vitals', () => {
     const svc = service(fake)
     const live = await svc.getAgentVitals(fileB, { force: true })
     // mind/ counts as memory tokens (bytes / 4), not as a file.
-    expect(live.maturity).toMatchObject({ messages: 4, filesWritten: 2, memoryTokens: Math.round((seededMind + 4_000) / 4), localTables: 1, localRows: 3, skills: 1 })
+    expect(live.maturity).toMatchObject({ messages: 4, filesWritten: 2, memoryTokens: Math.round((seededMind - Buffer.byteLength(DEFAULT_MIND_LOG_CONTENT) + 4_000) / 4), localTables: 1, localRows: 3, skills: 1 })
     expect(live.metrics).toEqual([{ name: 'a_rate', value: '0.93' }, { name: 'tickets_closed', value: '42' }])
     expect(live.nextWakeAt).toBeGreaterThan(Date.now())
     expect(live.stats.autonomy.factors.find((f) => f.id === 'timers:fastest')?.label).toBe('Wakes every 2 min')

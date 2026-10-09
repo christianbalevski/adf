@@ -29,10 +29,11 @@
  *   Experience                                            XP      Lv
  *     brand-new agent                                      0       1
  *     first session (0.3 context, 3 files, 300 memory
- *       tokens)                                           27       3
+ *       tokens)                                           55       3
  *     heavy, months old (150 contexts across loops, 20k
  *       memory tokens, 10 skills, 5 tables / 8k rows,
- *       40 files, 3 children; work 38% of XP)             ~4000    20
+ *       40 files, 3 children; work 37% of XP)             ~4000    20
+ *     1M memory tokens alone (sqrt: 10x tokens = 3.2x XP)  2600    17
  *     4.8k / 7k / 10k XP                                  22 / 26 / 30
  *   Power                                               points    Lv
  *     default fresh agent: Access, Reach, Autonomy     1.75, 2, 2   3, 3, 3
@@ -550,25 +551,30 @@ export function scoreAutonomy(inputs: AgentPowerInputs): PowerStat {
 /**
  * XP per unit. score = sum(signal XP), placed on EXPERIENCE_CURVE. Durable
  * learning (memory, skills, tables, files, children) is the main signal; work
- * counts in contexts; raw message volume and age add a little. Local rows are
- * square-rooted so a bulk import cannot buy levels; the curve does the
- * flattening.
+ * counts in contexts; raw message volume and age add a little. Memory tokens
+ * and local rows are square-rooted so a bulk import cannot buy levels; the
+ * curve does the flattening.
  */
 export const EXPERIENCE_WEIGHTS = {
   /** Per context worked: one compaction, or a loop's current fill as a share of its compaction threshold. */
   contextsWorked: 10,
-  /** Per approximate token in `mind/` files (60 XP per 1k tokens). */
-  memoryTokens: 0.06,
+  /**
+   * Multiplied by sqrt(approximate tokens in `mind/` files), so 10x memory is
+   * about 3.2x the XP and a bulk dump cannot buy levels (1M tokens alone is
+   * Lv 17). 2.6 keeps the first-session anchor (300 tokens) at Lv 3 with
+   * margin; skills, rows and children carry the heavy anchor instead.
+   */
+  memoryTokensSqrt: 2.6,
   /** Per skill installed or changed. */
-  skills: 60,
+  skills: 80,
   /** Per `local_*` table. */
   localTables: 10,
   /** Multiplied by sqrt(total local rows). */
-  localRowsSqrt: 5,
+  localRowsSqrt: 7,
   /** Per file written or changed after creation. */
   filesWritten: 2,
   /** Per child agent. */
-  agentsSpawned: 40,
+  agentsSpawned: 75,
   /** Per loop message ever written (all loops, current and past). Small: volume alone must not level an agent. */
   messages: 0.01,
   /** Per day of age, scaled by activity = min(1, contextsWorked / ageActivityContexts) so an idle file does not level up by waiting. */
@@ -594,7 +600,7 @@ export function experienceSignals(inputs: AgentExperienceInputs): ExperienceSign
   const activity = Math.min(1, n(inputs.contextsWorked) / w.ageActivityContexts)
   const signals: ExperienceSignal[] = [
     { id: 'contextsWorked', label: EXPERIENCE_LABELS.contextsWorked, value: n(inputs.contextsWorked), xp: n(inputs.contextsWorked) * w.contextsWorked },
-    { id: 'memoryTokens', label: EXPERIENCE_LABELS.memoryTokens, value: n(inputs.memoryTokens), xp: n(inputs.memoryTokens) * w.memoryTokens },
+    { id: 'memoryTokens', label: EXPERIENCE_LABELS.memoryTokens, value: n(inputs.memoryTokens), xp: Math.sqrt(n(inputs.memoryTokens)) * w.memoryTokensSqrt },
     { id: 'skills', label: EXPERIENCE_LABELS.skills, value: n(inputs.skills), xp: n(inputs.skills) * w.skills },
     { id: 'localTables', label: EXPERIENCE_LABELS.localTables, value: n(inputs.localTables), xp: n(inputs.localTables) * w.localTables },
     { id: 'localRows', label: EXPERIENCE_LABELS.localRows, value: n(inputs.localRows), xp: Math.sqrt(n(inputs.localRows)) * w.localRowsSqrt },
@@ -624,7 +630,10 @@ export function scoreExperience(inputs: AgentExperienceInputs): ExperienceStat {
   const xp = Math.max(0, pos.nextLevelAt - score)
   const w = EXPERIENCE_WEIGHTS
   const contexts = Math.ceil(xp / w.contextsWorked)
-  const memoryTokens = Math.ceil(xp / w.memoryTokens)
+  // Memory XP is k*sqrt(tokens): invert from the current memory, not from 0.
+  const memoryNow = typeof inputs.memoryTokens === 'number' && Number.isFinite(inputs.memoryTokens) && inputs.memoryTokens > 0 ? inputs.memoryTokens : 0
+  const memoryXpNow = Math.sqrt(memoryNow) * w.memoryTokensSqrt
+  const memoryTokens = Math.max(0, Math.ceil(((memoryXpNow + xp) / w.memoryTokensSqrt) ** 2 - memoryNow))
   const skills = Math.ceil(xp / w.skills)
   return {
     level: pos.level,

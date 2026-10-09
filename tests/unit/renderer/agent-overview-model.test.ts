@@ -174,14 +174,14 @@ describe('experience popover', () => {
     }))
     expect(experienceContributors(exp)).toEqual([
       '~150 contexts of work',
-      'Memory ~20k tokens',
       '10 skills',
+      'Memory ~20k tokens',
       '30k messages',
       '3 agents created',
       '120 days'
     ])
     // Skills, messages and days keep their own lines outside the top two.
-    expect(experienceContributors(exp, 2)).toEqual(['~150 contexts of work', 'Memory ~20k tokens', '10 skills', '30k messages', '120 days'])
+    expect(experienceContributors(exp, 2)).toEqual(['~150 contexts of work', '10 skills', 'Memory ~20k tokens', '30k messages', '120 days'])
   })
 
   it('formats contexts of work compactly', () => {
