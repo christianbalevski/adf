@@ -32,11 +32,11 @@ Press `?` at any time for the built-in keyboard command card.
 |---------|------------|
 | **Territory** | A tracked folder — a contiguous landmass of tinted hexes, one hue per folder |
 | **District** | A subfolder — a distinct plot on the same landmass, in a shifted shade of the folder's hue |
-| **Agent tile** | One hex per agent: icon, name + state dot, a live line (the current tool call while active, the status quote otherwise), token burn, and a context-window gauge. Dashed/grey when offline (a "ghost"). Detail text appears as you zoom in |
+| **Agent tile** | One hex per agent: orbital, name + state dot, a live line (the current tool call while active, the status quote otherwise), token burn, and a context-window gauge. Dashed/grey when offline (a "ghost"). Detail text appears as you zoom in |
 | **Station** | A perimeter platform: one per configured channel adapter (Telegram, email, Discord…), plus the web gateway and one per discovered peer runtime |
 | **Trace** | A message route along the hex lattice — accumulates heat with traffic |
 | **Street** | On a peer platform: the persistent last hop from the platform gate to a recipient tile |
-| **Top bar** | Doubles as the window titlebar: app navigation (Home / map / Settings) and the agent count. While an agent file is open, the title becomes that agent's identity cluster (icon, name, state, status) — click it to fly to the tile, or the ✕ beside it to close the agent (the side panel and status bar return to the fleet). The open tile also wears a blue corner badge, and the bottom status bar leads with the same name |
+| **Top bar** | Doubles as the window titlebar: app navigation (Home / map / Settings) and the agent count. While an agent file is open, the title becomes that agent's identity cluster (orbital, name, state, status) — click it to fly to the tile, or the ✕ beside it to close the agent (the side panel and status bar return to the fleet). The open tile also wears a blue corner badge, and the bottom status bar leads with the same name |
 | **Map controls** (bottom left) | Zoom, fit view, `?` shortcuts, full screen (F — the real thing, not windowed), and the Log drawer |
 | **Alert bar** | Fleet state counts, token burn, tool/message rates, named-group chips, the "Needs you" queue |
 | **Left rail** | Stewards panel (group voices) and the burn leaderboard |
@@ -259,7 +259,7 @@ Clicking the card's dead space (anything that isn't a button or input) opens the
 
 The modal is the map's tool inspector — the decision shouldn't be made off a tile-sized summary:
 
-- Who wants what: agent icon, handle, tool name, file path.
+- Who wants what: agent orbital, handle, tool name, file path.
 - The agent's stated **reason**.
 - The **complete arguments**, formatted for judgment rather than parsing: string values read as prose, scalars get a tint, nested structures fall back to pretty-printed JSON.
 - **Approve**, **Always approve**, or **Reject with feedback**.

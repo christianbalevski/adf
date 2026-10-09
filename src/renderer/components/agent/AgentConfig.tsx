@@ -1438,7 +1438,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             />
           </Field>
           </>)}
-          <Field label="Icon" hint="Shown in the sidebar, the header and on the fleet map.">
+          <Field label="Icon" hint="Published on the agent's card. Studio shows the agent's orbital instead.">
             <IconPicker
               value={local.icon || pickAgentIcon(local.id)}
               onChange={(icon) => save({ ...local, icon })}
