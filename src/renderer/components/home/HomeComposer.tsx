@@ -35,13 +35,15 @@ function saveSuggestionsOn(on: boolean): void {
  * creates the agent; the provider sheet opens on the first start, from the
  * same path every start uses.
  */
-export function HomeComposer({ identity, onReroll, onCreated }: {
+export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
   /** The next agent's identity draft, owned by HomeScreen (its orbital shows there). */
   identity: IdentityDraftHandle
   /** A name reroll: HomeScreen renews the identity with it and counts it. */
   onReroll: () => void
   /** After a successful create, before the next agent's name and identity land. */
   onCreated?: () => void
+  /** A create started (true) or ended (false), for the orbital to react. */
+  onSending?: (on: boolean) => void
 }) {
   const { createQuickAgent } = useAdfFile()
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
@@ -72,6 +74,9 @@ export function HomeComposer({ identity, onReroll, onCreated }: {
   // discard the draft it is adopting. Send renews it afterwards anyway.
   const busyRef = useRef(false)
   busyRef.current = busy
+  const sendingRef = useRef(onSending)
+  sendingRef.current = onSending
+  useEffect(() => { sendingRef.current?.(busy) }, [busy])
   const reroll = useCallback(() => { if (!busyRef.current) onReroll() }, [onReroll])
   const [error, setError] = useState<string | null>(null)
   // A refused name (bad characters, or already a file in the folder) turns
@@ -271,6 +276,7 @@ export function HomeComposer({ identity, onReroll, onCreated }: {
           rows={1}
           placeholder={name ? `Tell ${name} what to do` : 'Tell your new agent what to do'}
           aria-label="Message for a new agent"
+          data-orbital-look="composer"
           className="home-composer-input block w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-[15px] leading-[22px] text-[var(--adf-ui-text)] placeholder:text-[var(--adf-ui-text-subtle)] focus:outline-none disabled:opacity-60"
         />
         {/* Its own row, not an overlay: long text scrolls inside the textarea

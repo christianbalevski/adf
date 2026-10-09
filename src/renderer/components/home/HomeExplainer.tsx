@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import { usePrefersReducedMotion } from '../orbital/orbital-env'
 import { NextAgentOrbital } from './NextAgentIdentity'
+import type { OrbitalCreature } from '../orbital/orbital-creature'
 import { SpeechBubble } from '../common/SpeechBubble'
 
 /** Quips by reroll count, highest first so one roll shows one line. */
@@ -90,14 +91,15 @@ function QuipBubble({ quip }: { quip: Quip | null }) {
 /**
  * One faint beat in the empty middle of home: the next agent's orbital, from
  * the identity it will be created with, and a hello in its name. The orbital
- * turns as the name is typed and says something after a few rerolls.
+ * is alive (NextAgentOrbital), turns as the name is typed and says something
+ * after a few rerolls.
  */
-export function HomeExplainer({ did, quip }: { did: string | null; quip: Quip | null }) {
+export function HomeExplainer({ did, quip, creature }: { did: string | null; quip: Quip | null; creature: OrbitalCreature }) {
   const name = useAppStore((s) => s.homeName)?.trim() ?? ''
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col items-center px-2 text-center text-[var(--adf-ui-text-subtle)]">
       <div className="mb-3">
-        <NextAgentOrbital did={did} spinImpulse={name.length}>
+        <NextAgentOrbital did={did} spinImpulse={name.length} creature={creature}>
           <QuipBubble quip={quip} />
         </NextAgentOrbital>
       </div>

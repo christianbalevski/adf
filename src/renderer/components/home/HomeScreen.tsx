@@ -6,7 +6,7 @@ import { HomeComposer } from './HomeComposer'
 import { HomeStatusLine } from './HomeStatusLine'
 import { ConnectProviderCard, HomeProvidersProvider } from './HomeProviders'
 import { HomeExplainer, useRerollQuips } from './HomeExplainer'
-import { useIdentityDraft } from './NextAgentIdentity'
+import { useHomeCreature, useIdentityDraft } from './NextAgentIdentity'
 
 /**
  * Home, shown when no .adf is open. One face, first run or not: the status
@@ -28,6 +28,17 @@ export function HomeScreen() {
   const { renew } = identity
   const { spin, reset: resetQuips } = quips
   const onReroll = useCallback(() => { renew(); spin() }, [renew, spin])
+  // The orbital as a creature: a send excites it, and its phase runs fast
+  // while the agent is being made.
+  const creature = useHomeCreature()
+  const onSending = useCallback((on: boolean) => {
+    creature.setBusy(on)
+    if (!on) return
+    const now = performance.now()
+    creature.activity(now)
+    creature.spin(8)
+    creature.hop(now, 0.12, 320)
+  }, [creature])
 
   // Auto-enable mesh on launch if the user had it on last session, and
   // load the tracked directories so the sidebar sees the list.
@@ -52,7 +63,7 @@ export function HomeScreen() {
               until a provider exists, the card asking for one. The card goes
               the moment there is one; the chip in the composer takes over. */}
           <div className="flex flex-1 flex-col items-center justify-center gap-10 py-10">
-            <HomeExplainer did={identity.draft?.did ?? null} quip={quips.quip} />
+            <HomeExplainer did={identity.draft?.did ?? null} quip={quips.quip} creature={creature} />
             <ConnectProviderCard />
           </div>
         </div>
@@ -66,7 +77,7 @@ export function HomeScreen() {
           className="pointer-events-none absolute inset-x-0 -top-10 h-10"
           style={{ background: 'linear-gradient(to bottom, transparent, var(--adf-ui-canvas))' }}
         />
-        <HomeComposer identity={identity} onReroll={onReroll} onCreated={resetQuips} />
+        <HomeComposer identity={identity} onReroll={onReroll} onCreated={resetQuips} onSending={onSending} />
       </div>
     </div>
     </HomeProvidersProvider>

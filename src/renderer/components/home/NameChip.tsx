@@ -121,6 +121,7 @@ export function NameChip({ name, onChange, onSpin, onInvalid, refused = 0 }: {
             else if (e.key === 'Escape') { e.preventDefault(); setEditing(null) }
           }}
           aria-label="Agent name"
+          data-orbital-look="name"
           spellCheck={false}
           style={{ width: `${Math.max(6, Math.min(MAX_NAME, editing.length + 1))}ch` }}
           className="bg-transparent font-medium text-[var(--adf-ui-text)] outline-none"

@@ -63,3 +63,28 @@ export function drawOrbital(
   spec: OrbitalSpec,
   opts: DrawOptions
 ): void
+
+export interface CreatureDrawOptions {
+  cx: number
+  cy: number
+  size: number
+  spin?: number
+  time?: number
+  dark: boolean
+  alpha?: number
+  gaze?: [number, number]
+}
+
+/**
+ * Draws one spec; caches its samples and the projected grid for the last
+ * spin. drawOrbital keeps one per spec internally.
+ */
+export class Creature {
+  constructor(spec: OrbitalSpec)
+  readonly spec: OrbitalSpec
+  /** The grid drawn last (opaque here). */
+  grid: unknown
+  /** The projected grid for a spin and resolution; recomputed when either changes. */
+  gridFor(spin: number, FN: number, ZS: number): unknown
+  draw(c: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, o: CreatureDrawOptions): void
+}
