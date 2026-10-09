@@ -6,9 +6,11 @@ import {
   compactCount,
   configTargetFor,
   decideLevelUp,
+  contextsLine,
   experienceContributors,
   experienceHeadline,
   experienceTooltip,
+  experienceValueText,
   factorGroup,
   foldFactors,
   formatWake,
@@ -27,14 +29,14 @@ const factor = (id: string, label: string, points: number, gated = false, config
 })
 
 const experienceInputs = (over: Partial<AgentExperienceInputs> = {}): AgentExperienceInputs => ({
-  loopEntries: 0,
+  contextsWorked: 0,
   filesWritten: 0,
   memoryTokens: 0,
   localTables: 0,
   localRows: 0,
   skills: 0,
-  compactions: 0,
   agentsSpawned: null,
+  messages: 0,
   ageDays: 0,
   ...over
 })
@@ -163,20 +165,33 @@ describe('experience popover', () => {
   it('heads with the XP to the next level', () => {
     const exp = scoreExperience(experienceInputs({ filesWritten: 10 }))
     expect(exp.level).toBe(2)
-    expect(experienceHeadline(exp)).toBe(`${Math.ceil(exp.nextLevelAt - 10)} XP to Lv 3`)
+    expect(experienceHeadline(exp)).toBe(`${Math.ceil(exp.nextLevelAt - 20)} XP to Lv 3`)
   })
 
   it('lists the top contributors as plain lines, largest first', () => {
-    const exp = scoreExperience(experienceInputs({ loopEntries: 30_000, filesWritten: 200, skills: 10, compactions: 150, localRows: 4, agentsSpawned: 3 }))
+    const exp = scoreExperience(experienceInputs({
+      contextsWorked: 150, memoryTokens: 20_000, filesWritten: 40, skills: 10, localRows: 4, agentsSpawned: 3, messages: 30_000, ageDays: 120
+    }))
     expect(experienceContributors(exp)).toEqual([
-      '30k loop messages',
-      '150 compactions',
-      '200 files written',
+      '~150 contexts of work',
+      'Memory ~20k tokens',
       '10 skills',
-      '3 agents created'
+      '30k messages',
+      '3 agents created',
+      '120 days'
     ])
-    // Skills keep their own line outside the top two.
-    expect(experienceContributors(exp, 2)).toEqual(['30k loop messages', '150 compactions', '10 skills'])
+    // Skills, messages and days keep their own lines outside the top two.
+    expect(experienceContributors(exp, 2)).toEqual(['~150 contexts of work', 'Memory ~20k tokens', '10 skills', '30k messages', '120 days'])
+  })
+
+  it('formats contexts of work compactly', () => {
+    expect(contextsLine(0.02)).toBe('<0.1 contexts of work')
+    expect(contextsLine(0.4)).toBe('~0.4 contexts of work')
+    expect(contextsLine(1)).toBe('~1 context of work')
+    expect(contextsLine(150.3)).toBe('~150 contexts of work')
+    expect(contextsLine(1_234)).toBe('~1.2k contexts of work')
+    expect(experienceValueText({ id: 'contextsWorked', value: 0.34 })).toBe('0.3')
+    expect(experienceValueText({ id: 'messages', value: 30_000 })).toBe('30k')
   })
 
   it('lists memory as approximate tokens', () => {
@@ -193,10 +208,10 @@ describe('experience popover', () => {
 })
 
 describe('experienceTooltip', () => {
-  it('lists loop messages, files and skills, then the XP to the next level', () => {
-    const exp = scoreExperience(experienceInputs({ loopEntries: 1234, filesWritten: 18, skills: 3 }))
+  it('lists contexts of work, files and skills, then the XP to the next level', () => {
+    const exp = scoreExperience(experienceInputs({ contextsWorked: 3.4, filesWritten: 18, skills: 3 }))
     expect(experienceTooltip(exp)).toBe(
-      `1.2k loop messages · 18 files · 3 skills · ${compactCount(Math.ceil(exp.nextLevel.xp))} XP to Lv ${exp.level + 1}`
+      `~3.4 contexts of work · 18 files · 3 skills · ${compactCount(Math.ceil(exp.nextLevel.xp))} XP to Lv ${exp.level + 1}`
     )
   })
 

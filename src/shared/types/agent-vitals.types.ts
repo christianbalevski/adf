@@ -50,8 +50,15 @@ export interface PowerStat {
 
 /** Raw maturity counts read from the agent's file. */
 export interface AgentExperienceInputs {
-  /** Lifetime adf_loop rows (AUTOINCREMENT high-water mark; compaction and clears do not lower it). */
-  loopEntries: number
+  /**
+   * Contexts of work, summed over every loop the file knows (main, side loops,
+   * deleted loops whose stream sits in adf_audit): archived loop snapshots
+   * (a snapshot of at least half the loop's compaction threshold is one
+   * context, a smaller one its share) or, with loop audit off, live compaction
+   * summaries; plus each loop's current fill (context baseline, else row
+   * bytes / 4) as a 0..1 share of its compaction threshold. Fractional.
+   */
+  contextsWorked: number
   /** adf_files rows changed after the agent was created (template starter files and `mind/` excluded). */
   filesWritten: number
   /** Approximate tokens in `mind/` files: SUM(size) / 4, rounded. */
@@ -62,10 +69,15 @@ export interface AgentExperienceInputs {
   localRows: number
   /** Distinct skills the agent installed or changed. */
   skills: number
-  /** Loop compactions (archived loop snapshots in adf_audit, or the live summary row when loop audit is off). */
-  compactions: number
   /** Tracked agents whose adf_parent_did names this agent. null when not known yet. */
   agentsSpawned: number | null
+  /**
+   * Loop messages ever written, every loop current and past: adf_loop's
+   * AUTOINCREMENT high-water mark. seq is one sequence shared by all loops,
+   * so the table-wide mark already is the sum; compaction, clears and loop
+   * deletion do not lower it.
+   */
+  messages: number
   /** Days since adf_created_at. */
   ageDays: number
 }
@@ -91,7 +103,7 @@ export interface ExperienceStat {
   nextLevelAt: number
   breakdown: ExperienceSignal[]
   /** What one more level takes, in units of the cheapest signals. `xp` = nextLevelAt - score. */
-  nextLevel: { xp: number; loopEntries: number; files: number; skills: number; hint: string }
+  nextLevel: { xp: number; contexts: number; memoryTokens: number; skills: number; hint: string }
 }
 
 /**

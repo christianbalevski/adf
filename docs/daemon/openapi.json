@@ -18231,14 +18231,14 @@
                 "id": {
                   "type": "string",
                   "enum": [
-                    "loopEntries",
-                    "filesWritten",
+                    "contextsWorked",
                     "memoryTokens",
+                    "skills",
                     "localTables",
                     "localRows",
-                    "skills",
-                    "compactions",
+                    "filesWritten",
                     "agentsSpawned",
+                    "messages",
                     "ageDays"
                   ]
                 },
@@ -18261,8 +18261,8 @@
             "description": "What one more level takes (xp = nextLevelAt - score), in units of the cheapest signals",
             "required": [
               "xp",
-              "loopEntries",
-              "files",
+              "contexts",
+              "memoryTokens",
               "skills",
               "hint"
             ],
@@ -18270,14 +18270,17 @@
               "xp": {
                 "type": "number"
               },
-              "loopEntries": {
-                "type": "number"
+              "contexts": {
+                "type": "integer",
+                "description": "Contexts of work worth the remaining XP"
               },
-              "files": {
-                "type": "number"
+              "memoryTokens": {
+                "type": "integer",
+                "description": "Memory tokens worth the remaining XP"
               },
               "skills": {
-                "type": "number"
+                "type": "integer",
+                "description": "Skills worth the remaining XP"
               },
               "hint": {
                 "type": "string"
@@ -18290,20 +18293,21 @@
         "type": "object",
         "description": "Raw maturity counts read from the agent's file.",
         "required": [
-          "loopEntries",
+          "contextsWorked",
           "filesWritten",
           "memoryTokens",
           "localTables",
           "localRows",
           "skills",
-          "compactions",
           "agentsSpawned",
+          "messages",
           "ageDays"
         ],
         "properties": {
-          "loopEntries": {
-            "type": "integer",
-            "description": "Lifetime adf_loop rows (compaction and clears do not lower it)"
+          "contextsWorked": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Contexts of work over every loop (main, side, deleted): archived loop snapshots in adf_audit (one context at half the loop's compaction threshold or more, else its share) or live compaction summaries when loop audit is off, plus each live loop's current fill as a 0..1 share of its compaction threshold"
           },
           "filesWritten": {
             "type": "integer",
@@ -18325,16 +18329,16 @@
             "type": "integer",
             "description": "Distinct skills the agent installed or changed"
           },
-          "compactions": {
-            "type": "integer",
-            "description": "Loop compactions"
-          },
           "agentsSpawned": {
             "type": [
               "integer",
               "null"
             ],
             "description": "Tracked agents whose adf_parent_did names this agent; null when no fleet scan has run"
+          },
+          "messages": {
+            "type": "integer",
+            "description": "Loop messages ever written, every loop current and past (adf_loop's shared AUTOINCREMENT high-water mark; compaction, clears and loop deletion do not lower it)"
           },
           "ageDays": {
             "type": "number",

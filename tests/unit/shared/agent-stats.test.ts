@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   EXPERIENCE_CURVE,
+  EXPERIENCE_WEIGHTS,
   POWER_CURVE,
   POWER_HIGH_OPEN_LEVEL,
   levelForXp,
@@ -73,28 +74,28 @@ function heavyInputs(): AgentPowerInputs {
 }
 
 const HEAVY_XP: AgentExperienceInputs = {
-  loopEntries: 30_000,
-  filesWritten: 200,
+  contextsWorked: 150,
+  filesWritten: 40,
   memoryTokens: 20_000,
   skills: 10,
-  localTables: 8,
-  localRows: 20_000,
-  compactions: 150,
+  localTables: 5,
+  localRows: 8_000,
   agentsSpawned: 3,
+  messages: 30_000,
   ageDays: 120
 }
 
 const factor = (id: string, points: number, gated = false): StatFactor => ({ id, label: id, points, gated, configPath: id })
 
 const EMPTY_XP: AgentExperienceInputs = {
-  loopEntries: 0,
+  contextsWorked: 0,
   filesWritten: 0,
   memoryTokens: 0,
   localTables: 0,
   localRows: 0,
   skills: 0,
-  compactions: 0,
   agentsSpawned: 0,
+  messages: 0,
   ageDays: 0
 }
 
@@ -375,22 +376,48 @@ describe('Experience', () => {
     expect(e.nextLevel.xp).toBeGreaterThan(0)
   })
 
-  it('a first session reaches level 2-4', () => {
-    const typical = scoreExperience({ ...EMPTY_XP, loopEntries: 60, filesWritten: 3 })
-    const long = scoreExperience({ ...EMPTY_XP, loopEntries: 200, filesWritten: 10, skills: 1 })
+  it('a first session reaches level 2-3', () => {
+    const typical = scoreExperience({ ...EMPTY_XP, contextsWorked: 0.3, filesWritten: 3, memoryTokens: 300, messages: 60, ageDays: 0.1 })
     expect(typical.level).toBeGreaterThanOrEqual(2)
-    expect(long.level).toBeLessThanOrEqual(4)
+    expect(typical.level).toBeLessThanOrEqual(3)
+    expect(scoreExperience({ ...EMPTY_XP, contextsWorked: 0.2, filesWritten: 3, messages: 40 }).level).toBe(2)
+    // A long first session that also writes a skill stays single digit.
+    expect(scoreExperience({ ...EMPTY_XP, contextsWorked: 0.8, filesWritten: 10, memoryTokens: 800, skills: 1 }).level).toBeLessThanOrEqual(5)
   })
 
-  it('a heavily used months-old agent reaches level 20-30', () => {
+  it('a heavily used months-old agent reaches level 20-25, with work at most half the XP', () => {
     const heavy = scoreExperience(HEAVY_XP)
-    expect(heavy.score).toBeGreaterThan(4000)
     expect(heavy.level).toBeGreaterThanOrEqual(20)
-    expect(heavy.level).toBeLessThanOrEqual(30)
+    expect(heavy.level).toBeLessThanOrEqual(25)
+    const work = heavy.breakdown.find((b) => b.id === 'contextsWorked')?.xp ?? 0
+    expect(work / heavy.score).toBeLessThanOrEqual(0.5)
+    expect(work / heavy.score).toBeGreaterThan(0.25)
+    const messages = heavy.breakdown.find((b) => b.id === 'messages')?.xp ?? 0
+    expect(messages).toBeGreaterThan(0)
+    expect(messages / heavy.score).toBeLessThan(0.1)
+  })
+
+  it('raw message volume barely counts: one context outweighs 500 messages', () => {
+    expect(scoreExperience({ ...EMPTY_XP, contextsWorked: 1 }).score).toBeGreaterThan(scoreExperience({ ...EMPTY_XP, messages: 500 }).score)
+  })
+
+  it('age alone does not level an idle agent; an active one earns about 0.5 XP a day', () => {
+    expect(scoreExperience({ ...EMPTY_XP, ageDays: 365 }).level).toBe(1)
+    const active = scoreExperience({ ...EMPTY_XP, contextsWorked: 10, ageDays: 100 })
+    expect(active.breakdown.find((b) => b.id === 'ageDays')?.xp).toBeCloseTo(50)
+    const half = scoreExperience({ ...EMPTY_XP, contextsWorked: 5, ageDays: 100 })
+    expect(half.breakdown.find((b) => b.id === 'ageDays')?.xp).toBeCloseTo(25)
+  })
+
+  it('work counts in contexts: about 10 XP each, fractions included', () => {
+    expect(scoreExperience({ ...EMPTY_XP, contextsWorked: 1 }).score).toBe(EXPERIENCE_WEIGHTS.contextsWorked)
+    expect(EXPERIENCE_WEIGHTS.contextsWorked).toBeGreaterThanOrEqual(8)
+    expect(EXPERIENCE_WEIGHTS.contextsWorked).toBeLessThanOrEqual(12)
+    expect(scoreExperience({ ...EMPTY_XP, contextsWorked: 0.5 }).score).toBeCloseTo(EXPERIENCE_WEIGHTS.contextsWorked / 2)
   })
 
   it('is monotonic in every input', () => {
-    const base: AgentExperienceInputs = { loopEntries: 500, filesWritten: 10, memoryTokens: 2_000, skills: 2, localTables: 1, localRows: 100, compactions: 3, agentsSpawned: 1, ageDays: 30 }
+    const base: AgentExperienceInputs = { contextsWorked: 5, filesWritten: 10, memoryTokens: 2_000, skills: 2, localTables: 1, localRows: 100, agentsSpawned: 1, messages: 500, ageDays: 30 }
     const baseScore = scoreExperience(base).score
     for (const key of Object.keys(base) as Array<keyof AgentExperienceInputs>) {
       const more = scoreExperience({ ...base, [key]: (base[key] as number) * 2 + 1 })
@@ -400,14 +427,14 @@ describe('Experience', () => {
   })
 
   it('goes down when the agent deletes its work', () => {
-    const before = scoreExperience({ ...EMPTY_XP, loopEntries: 200, filesWritten: 40, skills: 3 })
-    const after = scoreExperience({ ...EMPTY_XP, loopEntries: 200, filesWritten: 5, skills: 0 })
+    const before = scoreExperience({ ...EMPTY_XP, contextsWorked: 2, filesWritten: 40, skills: 3 })
+    const after = scoreExperience({ ...EMPTY_XP, contextsWorked: 2, filesWritten: 5, skills: 0 })
     expect(after.score).toBeLessThan(before.score)
   })
 
-  it('memory counts in tokens: a 2 KB note is worth about one file', () => {
+  it('memory counts in tokens', () => {
     const note = scoreExperience({ ...EMPTY_XP, memoryTokens: 500 })
-    expect(note.score).toBeCloseTo(scoreExperience({ ...EMPTY_XP, filesWritten: 1 }).score)
+    expect(note.score).toBeCloseTo(500 * EXPERIENCE_WEIGHTS.memoryTokens)
     expect(note.breakdown.find((b) => b.id === 'memoryTokens')?.value).toBe(500)
   })
 
@@ -415,14 +442,10 @@ describe('Experience', () => {
     expect(scoreExperience({ ...EMPTY_XP, skills: 1 }).score).toBeGreaterThan(scoreExperience({ ...EMPTY_XP, filesWritten: 1 }).score)
   })
 
-  it('age alone does not level an idle agent', () => {
-    expect(scoreExperience({ ...EMPTY_XP, ageDays: 365 }).level).toBe(1)
-  })
-
   it('uses the experience curve: score is the plain XP sum', () => {
     for (const n of [5, 24, 59, 700, 4229]) {
-      // Files only: score = n exactly.
-      const e = scoreExperience({ ...EMPTY_XP, filesWritten: n })
+      // Contexts only: score = n exactly.
+      const e = scoreExperience({ ...EMPTY_XP, contextsWorked: n / EXPERIENCE_WEIGHTS.contextsWorked })
       expect(e.score).toBe(n)
       expect(e.level).toBe(levelForXp(n, EXPERIENCE_CURVE))
       expect(e.levelStart).toBeLessThanOrEqual(n)
@@ -431,11 +454,12 @@ describe('Experience', () => {
   })
 
   it('next-level hint matches the remaining XP', () => {
-    const e = scoreExperience({ ...EMPTY_XP, loopEntries: 60 })
+    const e = scoreExperience({ ...EMPTY_XP, contextsWorked: 0.6 })
     expect(e.nextLevel.xp).toBeCloseTo(e.nextLevelAt - e.score)
-    expect(e.nextLevel.loopEntries).toBe(Math.ceil(e.nextLevel.xp / 0.1))
+    expect(e.nextLevel.contexts).toBe(Math.ceil(e.nextLevel.xp / EXPERIENCE_WEIGHTS.contextsWorked))
+    expect(e.nextLevel.memoryTokens).toBe(Math.ceil(e.nextLevel.xp / EXPERIENCE_WEIGHTS.memoryTokens))
     expect(e.level).toBe(2)
-    expect(e.nextLevel.hint).toBe(`Lv 3 needs ${Math.ceil(e.nextLevel.xp)} more XP: about ${e.nextLevel.loopEntries} loop messages, ${e.nextLevel.files} files or ${e.nextLevel.skills} skills`)
+    expect(e.nextLevel.hint).toBe(`Lv 3 needs ${Math.ceil(e.nextLevel.xp)} more XP: about ${e.nextLevel.contexts} contexts of work, ${e.nextLevel.memoryTokens} memory tokens or 1 skill`)
   })
 
   it('omits agents spawned when unknown', () => {

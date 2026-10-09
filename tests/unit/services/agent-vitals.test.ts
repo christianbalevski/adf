@@ -10,7 +10,8 @@ import { join } from 'path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { AdfDatabase } from '../../../src/main/adf/adf-database'
-import { AgentVitalsService, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
+import { AgentVitalsService, readContextsWorked, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
+import type { AgentConfig } from '../../../src/shared/types/adf-v02.types'
 import type { AgentState, MeshAgentStatus } from '../../../src/shared/types/ipc.types'
 
 const dir = mkdtempSync(join(tmpdir(), 'adf-agent-vitals-'))
@@ -109,7 +110,7 @@ describe('agent vitals', () => {
     const v = await service(fake).getAgentVitals(fileB)
     expect(v.live).toBe(true)
     expect(v.handle).toBe('agent-2')
-    expect(v.maturity).toMatchObject({ loopEntries: 0, filesWritten: 0, localTables: 0, localRows: 0, skills: 0, compactions: 0 })
+    expect(v.maturity).toMatchObject({ contextsWorked: 0, messages: 0, filesWritten: 0, localTables: 0, localRows: 0, skills: 0 })
     expect(v.stats.experience.level).toBe(1)
     expect(v.metrics).toEqual([])
     expect(v.cost7dUsd).toBe(1.25)
@@ -137,7 +138,7 @@ describe('agent vitals', () => {
     const svc = service(fake)
     const live = await svc.getAgentVitals(fileB, { force: true })
     // mind/ counts as memory tokens (bytes / 4), not as a file.
-    expect(live.maturity).toMatchObject({ loopEntries: 4, filesWritten: 2, memoryTokens: Math.round((seededMind + 4_000) / 4), localTables: 1, localRows: 3, skills: 1 })
+    expect(live.maturity).toMatchObject({ messages: 4, filesWritten: 2, memoryTokens: Math.round((seededMind + 4_000) / 4), localTables: 1, localRows: 3, skills: 1 })
     expect(live.metrics).toEqual([{ name: 'a_rate', value: '0.93' }, { name: 'tickets_closed', value: '42' }])
     expect(live.nextWakeAt).toBeGreaterThan(Date.now())
     expect(live.stats.autonomy.factors.find((f) => f.id === 'timers:fastest')?.label).toBe('Wakes every 2 min')
@@ -170,5 +171,59 @@ describe('agent vitals', () => {
     expect((await svc.getAgentVitals(fileB)).maturity.agentsSpawned).toBeNull()
     await svc.getFleetStatus()
     expect((await svc.getAgentVitals(fileB)).maturity.agentsSpawned).toBe(1)
+  })
+
+  it('counts the agent age', async () => {
+    const fake: Fake = { mesh: [], states: [], workspaces: [], now: Date.now() + 3 * 86_400_000 }
+    const v = await service(fake).getAgentVitals(fileB)
+    expect(v.maturity.ageDays).toBeGreaterThan(2.9)
+    expect(v.ageDays).toBe(v.maturity.ageDays)
+  })
+})
+
+describe('contexts worked', () => {
+  let n = 0
+  const fresh = (): AdfWorkspace => create(join(dir, `ctx-${++n}.adf`), `agent-${n + 2}`)
+  const q = (ws: AdfWorkspace) => (sql: string, params?: unknown[]): unknown[] => ws.querySQL(sql, params)
+  const baseline = (ws: AdfWorkspace, tokens: number, loop?: string): void => {
+    ws.getDatabase().setMeta(loop ? `context_baseline_tokens:${loop}` : 'context_baseline_tokens', JSON.stringify({ tokens, estimated: false, updated_at: 1 }), 'readonly')
+  }
+  const audit = (ws: AdfWorkspace, source: string, tokens: number): void => {
+    ws.getDatabase().insertAudit(source, { entryCount: 10, sizeBytes: tokens * 4, data: Buffer.from('x') })
+  }
+  const text = (s: string) => [{ type: 'text' as const, text: s }]
+
+  it('one compaction is about one full current loop', () => {
+    const compacted = fresh()
+    audit(compacted, 'loop:main', 90_000)
+    const full = fresh()
+    full.appendToLoop('user', text('hi'))
+    baseline(full, 100_000)
+    expect(readContextsWorked(q(compacted), {})).toBe(1)
+    expect(readContextsWorked(q(full), {})).toBe(1)
+  })
+
+  it('sums every loop, current and past, against the threshold of each loop', () => {
+    const ws = fresh()
+    const db = ws.getDatabase()
+    audit(ws, 'loop', 80_000) // legacy main snapshot: 1
+    audit(ws, 'loop:scout', 60_000) // deleted side loop: 1
+    audit(ws, 'loop:main', 5_000) // slice clear: 5k / (100k / 2) = 0.1
+    db.appendLoopEntry('main', 'user', text('hi'))
+    baseline(ws, 25_000) // main fill 0.25
+    // Side loop without a baseline: row bytes / 4 against its own 20k threshold, about 0.5.
+    db.appendLoopEntry('helper', 'assistant', text('x'.repeat(39_970)))
+    const config = { loops: [{ name: 'helper', compact_threshold: 20_000 }] } as unknown as Partial<AgentConfig>
+    expect(readContextsWorked(q(ws), config)).toBeCloseTo(2.85, 1)
+    // Fill is capped at one context per loop.
+    baseline(ws, 500_000)
+    expect(readContextsWorked(q(ws), config)).toBeCloseTo(3.6, 1)
+  })
+
+  it('falls back to live compaction summaries when loop audit is off', () => {
+    const ws = fresh()
+    ws.appendToLoop('user', text('[Loop Compacted] summary'))
+    baseline(ws, 0)
+    expect(readContextsWorked(q(ws), {})).toBe(1)
   })
 })

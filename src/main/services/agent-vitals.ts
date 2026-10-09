@@ -31,6 +31,7 @@ import type {
 import { powerInputsFromConfig, scheduleIntervalMs, scoreAgent } from '../../shared/utils/agent-stats'
 import { bucketByLocalDay, mergeRecent, windowStartMs } from '../../shared/utils/agent-activity'
 import { localDateKey } from '../../shared/utils/date-key'
+import { resolveLoopThreshold } from '../../shared/utils/context-breakdown'
 
 /** Display/identity metadata the fleet map needs per agent. */
 export type FleetMeta = NonNullable<ReturnType<typeof AdfDatabase.peekFleetMeta>>
@@ -215,6 +216,86 @@ function listLocalTables(q: Sql): string[] {
   )
 }
 
+/** adf_audit sources of archived loop streams: legacy `loop` (main, before schema 29) and `loop:<name>`. */
+const LOOP_AUDIT_WHERE = "(source = 'loop' OR source LIKE 'loop:%')"
+/** An archived loop snapshot of at least this share of the loop's threshold is one full context. */
+const FULL_SNAPSHOT_SHARE = 0.5
+const BASELINE_KEY = 'context_baseline_tokens'
+
+const loopOfSource = (source: string): string => (source === 'loop' ? 'main' : source.slice('loop:'.length) || 'main')
+const clamp01 = (x: number): number => (Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : 0)
+
+/**
+ * Contexts of work over every loop the file knows: config.loops, live
+ * adf_loop streams, and deleted loops whose stream was archived to adf_audit.
+ * Per loop: past contexts plus the current context's fill.
+ *
+ * Past: each archived snapshot (compaction, clear, slice clear, loop delete)
+ * counts by size: bytes / 4 tokens against half the loop's compaction
+ * threshold, capped at 1, so a compaction is one context and a small slice
+ * clear a fraction. With loop audit off nothing is archived and the live
+ * `[Loop Compacted` summary rows are the only trace; the larger of the two
+ * counts wins.
+ *
+ * Current: the loop's context baseline (the size of its next request, kept
+ * per loop in adf_meta) or, without one, its live rows' content bytes / 4,
+ * as a 0..1 share of the loop's compaction threshold. Thresholds resolve as
+ * the executor does (resolveLoopThreshold); a deleted loop uses the host's.
+ */
+export function readContextsWorked(q: Sql, config: Partial<AgentConfig>): number {
+  const threshold = (loop: string): number => resolveLoopThreshold(config as AgentConfig, loop)
+  const loops = new Set<string>(['main', ...(config.loops ?? []).map((l) => l?.name).filter((n): n is string => typeof n === 'string' && !!n)])
+
+  type LoopCount = { loop: string | null; n: number }
+  const live = safe(q, 'SELECT loop, COUNT(*) AS n FROM adf_loop GROUP BY loop', (r) => r as LoopCount[],
+    safe(q, "SELECT 'main' AS loop, COUNT(*) AS n FROM adf_loop", (r) => r as LoopCount[], []))
+  const liveRows = new Map<string, number>()
+  for (const r of live) {
+    const name = r.loop || 'main'
+    liveRows.set(name, (liveRows.get(name) ?? 0) + r.n)
+    loops.add(name)
+  }
+
+  const archived = new Map<string, number>()
+  for (const r of safe(q, `SELECT source, size_bytes AS bytes FROM adf_audit WHERE ${LOOP_AUDIT_WHERE}`, (rows) => rows as Array<{ source: string; bytes: number }>, [])) {
+    const name = loopOfSource(r.source)
+    loops.add(name)
+    const bytes = typeof r.bytes === 'number' ? r.bytes : 0
+    archived.set(name, (archived.get(name) ?? 0) + clamp01(bytes / 4 / (threshold(name) * FULL_SNAPSHOT_SHARE)))
+  }
+
+  const summaries = new Map<string, number>()
+  const summarySql = (loopCol: string): string =>
+    `SELECT ${loopCol} AS loop, COUNT(*) AS n FROM adf_loop WHERE role = 'user' AND content_json LIKE '%[Loop Compacted%' GROUP BY 1`
+  for (const r of safe(q, summarySql('loop'), (rows) => rows as LoopCount[], safe(q, summarySql("'main'"), (rows) => rows as LoopCount[], []))) {
+    summaries.set(r.loop || 'main', r.n)
+  }
+
+  const baselines = new Map<string, number>()
+  for (const r of safe(q, `SELECT key, value FROM adf_meta WHERE key = '${BASELINE_KEY}' OR key LIKE '${BASELINE_KEY}:%'`, (rows) => rows as Array<{ key: string; value: string }>, [])) {
+    try {
+      const tokens = (JSON.parse(r.value) as { tokens?: unknown }).tokens
+      if (typeof tokens === 'number' && Number.isFinite(tokens)) baselines.set(r.key === BASELINE_KEY ? 'main' : r.key.slice(BASELINE_KEY.length + 1), tokens)
+    } catch { /* unreadable baseline: fall back to row bytes */ }
+  }
+
+  let total = 0
+  for (const loop of loops) {
+    total += Math.max(archived.get(loop) ?? 0, summaries.get(loop) ?? 0)
+    if (!liveRows.get(loop)) continue
+    let tokens = baselines.get(loop)
+    if (tokens === undefined) {
+      const bytesSql = (where: string): string => `SELECT SUM(length(content_json)) AS n FROM adf_loop ${where}`
+      const bytes = loop === 'main'
+        ? safe(q, bytesSql("WHERE loop = 'main'"), (r) => firstNumber(r), safe(q, bytesSql(''), (r) => firstNumber(r), 0))
+        : safe(q, bytesSql('WHERE loop = ?'), (r) => firstNumber(r), 0, [loop])
+      tokens = bytes / 4
+    }
+    total += clamp01(tokens / threshold(loop))
+  }
+  return Math.round(total * 100) / 100
+}
+
 export interface VitalsSlowPart {
   meta: FleetMeta
   power: AgentPowerInputs
@@ -295,9 +376,10 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
     if (every !== undefined && (fastestIntervalMs === undefined || every < fastestIntervalMs)) fastestIntervalMs = every
   }
 
-  // Loop history: the AUTOINCREMENT high-water mark survives compaction and
-  // clears; MAX(seq) covers files whose sqlite_sequence row is missing.
-  const loopEntries = Math.max(
+  // Messages, every loop current and past: seq is one AUTOINCREMENT shared by
+  // all loops, so its high-water mark is the sum and survives compaction,
+  // clears and loop deletion. MAX(seq) covers files without a sqlite_sequence row.
+  const messages = Math.max(
     safe(q, "SELECT seq AS n FROM sqlite_sequence WHERE name = 'adf_loop'", (r) => firstNumber(r), 0),
     safe(q, 'SELECT MAX(seq) AS n FROM adf_loop', (r) => firstNumber(r), 0)
   )
@@ -324,17 +406,6 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
   let localRows = 0
   for (const t of tables) localRows += safe(q, `SELECT COUNT(*) AS n FROM "${t}"`, (r) => firstNumber(r), 0)
 
-  // Compactions: each one archives the rows it replaced into adf_audit
-  // (source 'loop', on by default; clears land there too). With loop audit
-  // off nothing is kept, so the live summary row is the only trace.
-  const audited = safe(q, "SELECT COUNT(*) AS n FROM adf_audit WHERE source = 'loop'", (r) => firstNumber(r), 0)
-  const liveSummaries = safe(
-    q,
-    "SELECT COUNT(*) AS n FROM adf_loop WHERE role = 'user' AND content_json LIKE '%[Loop Compacted%'",
-    (r) => firstNumber(r),
-    0
-  )
-
   return {
     meta,
     power: powerInputsFromConfig(config, {
@@ -343,13 +414,13 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
       timers: { active: timerRows.length, fastestIntervalMs }
     }),
     maturity: {
-      loopEntries,
+      contextsWorked: readContextsWorked(q, config),
       filesWritten,
       memoryTokens,
       localTables: tables.length,
       localRows,
       skills: agentSkills.size,
-      compactions: Math.max(audited, liveSummaries)
+      messages
     },
     metrics,
     nextWakeAt
@@ -614,7 +685,7 @@ export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): Activi
   const since = windowStartMs(now)
   const turns = readTurnTimes(q, since, prior)
   // Compacted: a loop snapshot was archived inside the window, so older rows of it are gone.
-  const compacted = safe(q, "SELECT 1 AS n FROM adf_audit WHERE source = 'loop' AND created_at >= ? LIMIT 1", (r) => r.length > 0, false, [since])
+  const compacted = safe(q, `SELECT 1 AS n FROM adf_audit WHERE ${LOOP_AUDIT_WHERE} AND created_at >= ? LIMIT 1`, (r) => r.length > 0, false, [since])
   const daily = bucketByLocalDay(turns.times, now).map(({ date, count }) => ({ date, turns: count }))
 
   return {

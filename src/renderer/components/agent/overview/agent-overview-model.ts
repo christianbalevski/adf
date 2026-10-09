@@ -97,15 +97,29 @@ export function memoryLine(tokens: number): string {
   return `Memory ~${compactCount(tokens)} tokens`
 }
 
-/** "1.2k loop messages · 18 files · 3 skills · memory ~12k tokens · 340 XP to Lv 22" */
+/** 0.02 -> "<0.1 contexts of work", 0.4 -> "~0.4 contexts of work", 1 -> "~1 context of work", 150.3 -> "~150 contexts of work". */
+export function contextsLine(contexts: number): string {
+  const n = Number.isFinite(contexts) && contexts > 0 ? contexts : 0
+  if (n > 0 && n < 0.05) return '<0.1 contexts of work'
+  const text = n < 10 ? trimZero(n.toFixed(1)) : compactCount(n)
+  return `~${text} ${text === '1' ? 'context' : 'contexts'} of work`
+}
+
+/** A signal's raw value as the "How XP adds up" table shows it. */
+export function experienceValueText(signal: { id: string; value: number }): string {
+  if (signal.id === 'contextsWorked' && signal.value < 10) return trimZero(signal.value.toFixed(1))
+  return compactCount(signal.value)
+}
+
+/** "~150 contexts of work · 18 files · 3 skills · memory ~12k tokens · 340 XP to Lv 22" */
 export function experienceTooltip(exp: ExperienceStat): string {
   const value = (id: string): number => exp.breakdown.find((b) => b.id === id)?.value ?? 0
   const parts: string[] = []
-  const loops = value('loopEntries')
+  const contexts = value('contextsWorked')
   const files = value('filesWritten')
   const skills = value('skills')
   const memory = value('memoryTokens')
-  if (loops > 0) parts.push(plural(loops, 'loop message'))
+  if (contexts > 0) parts.push(contextsLine(contexts))
   if (files > 0) parts.push(plural(files, 'file'))
   if (skills > 0) parts.push(plural(skills, 'skill'))
   if (memory > 0) parts.push(lowerFirst(memoryLine(memory)))
@@ -114,30 +128,31 @@ export function experienceTooltip(exp: ExperienceStat): string {
 }
 
 const CONTRIBUTOR_NOUN: Record<string, [string, string]> = {
-  loopEntries: ['loop message', 'loop messages'],
   filesWritten: ['file written', 'files written'],
   skills: ['skill', 'skills'],
   localTables: ['database table', 'database tables'],
   localRows: ['database row', 'database rows'],
-  compactions: ['compaction', 'compactions'],
   agentsSpawned: ['agent created', 'agents created'],
-  ageDays: ['day active', 'days active']
+  messages: ['message', 'messages'],
+  ageDays: ['day', 'days']
 }
 
 /** Contributors that always get their own line when non-zero, even outside the top `max`. */
-const ALWAYS_LISTED = new Set(['skills', 'memoryTokens'])
+const ALWAYS_LISTED = new Set(['skills', 'memoryTokens', 'messages', 'ageDays'])
 
 /**
- * Plain lines for what earned the most XP, largest first: "1.2k loop
- * messages". Skills and memory are listed whenever present.
+ * Plain lines for what earned the most XP, largest first: "~150 contexts of
+ * work", "Memory ~20k tokens", "10 skills", "30k messages", "120 days".
+ * Skills, memory, messages and days are listed whenever they add XP.
  */
 export function experienceContributors(exp: ExperienceStat, max = 5): string[] {
   const ranked = exp.breakdown.filter((b) => b.value > 0).slice().sort((a, b) => b.xp - a.xp)
   const top = new Set(ranked.filter((b) => b.xp >= 0.5).slice(0, max))
   return ranked
-    .filter((b) => top.has(b) || ALWAYS_LISTED.has(b.id))
+    .filter((b) => top.has(b) || (ALWAYS_LISTED.has(b.id) && b.xp > 0))
     .map((b) => {
       if (b.id === 'memoryTokens') return memoryLine(b.value)
+      if (b.id === 'contextsWorked') return contextsLine(b.value)
       const noun = CONTRIBUTOR_NOUN[b.id] ?? [b.label.toLowerCase(), b.label.toLowerCase()]
       return plural(b.value, noun[0], noun[1])
     })

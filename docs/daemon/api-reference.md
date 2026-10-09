@@ -963,7 +963,7 @@ Example 200 (`application/json`):
       "nextLevelAt": 0,
       "breakdown": [
         {
-          "id": "loopEntries",
+          "id": "contextsWorked",
           "label": "string",
           "value": 0,
           "xp": 0
@@ -971,22 +971,22 @@ Example 200 (`application/json`):
       ],
       "nextLevel": {
         "xp": 0,
-        "loopEntries": 0,
-        "files": 0,
+        "contexts": 0,
+        "memoryTokens": 0,
         "skills": 0,
         "hint": "string"
       }
     }
   },
   "maturity": {
-    "loopEntries": 0,
+    "contextsWorked": 0,
     "filesWritten": 0,
     "memoryTokens": 0,
     "localTables": 0,
     "localRows": 0,
     "skills": 0,
-    "compactions": 0,
     "agentsSpawned": 0,
+    "messages": 0,
     "ageDays": 0
   }
 }
@@ -13755,15 +13755,15 @@ Experience. xpForLevel(L) = 5 * (L - 1)^2.25; level = largest L with xpForLevel(
 | `levelStart` | number | yes | XP at which the current level starts |
 | `nextLevelAt` | number | yes | XP at which the next level starts |
 | `breakdown` | object[] | yes |  |
-| `breakdown[].id` | `"loopEntries"` \| `"filesWritten"` \| `"memoryTokens"` \| `"localTables"` \| `"localRows"` \| `"skills"` \| `"compactions"` \| `"agentsSpawned"` \| `"ageDays"` | yes |  |
+| `breakdown[].id` | `"contextsWorked"` \| `"memoryTokens"` \| `"skills"` \| `"localTables"` \| `"localRows"` \| `"filesWritten"` \| `"agentsSpawned"` \| `"messages"` \| `"ageDays"` | yes |  |
 | `breakdown[].label` | string | yes |  |
 | `breakdown[].value` | number | yes | Raw count |
 | `breakdown[].xp` | number | yes | XP this signal adds |
 | `nextLevel` | object | yes | What one more level takes (xp = nextLevelAt - score), in units of the cheapest signals |
 | `nextLevel.xp` | number | yes |  |
-| `nextLevel.loopEntries` | number | yes |  |
-| `nextLevel.files` | number | yes |  |
-| `nextLevel.skills` | number | yes |  |
+| `nextLevel.contexts` | integer | yes | Contexts of work worth the remaining XP |
+| `nextLevel.memoryTokens` | integer | yes | Memory tokens worth the remaining XP |
+| `nextLevel.skills` | integer | yes | Skills worth the remaining XP |
 | `nextLevel.hint` | string | yes |  |
 
 <a id="schema-agentmaturity"></a>
@@ -13774,14 +13774,14 @@ Raw maturity counts read from the agent's file.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `loopEntries` | integer | yes | Lifetime adf_loop rows (compaction and clears do not lower it) |
+| `contextsWorked` | number | yes | Contexts of work over every loop (main, side, deleted): archived loop snapshots in adf_audit (one context at half the loop's compaction threshold or more, else its share) or live compaction summaries when loop audit is off, plus each live loop's current fill as a 0..1 share of its compaction threshold |
 | `filesWritten` | integer | yes | adf_files rows changed after the agent was created, `mind/` excluded |
 | `memoryTokens` | integer | yes | Approximate tokens in `mind/` files (total bytes / 4) |
 | `localTables` | integer | yes | `local_*` tables |
 | `localRows` | integer | yes | Rows across `local_*` tables |
 | `skills` | integer | yes | Distinct skills the agent installed or changed |
-| `compactions` | integer | yes | Loop compactions |
 | `agentsSpawned` | integer \| null | yes | Tracked agents whose adf_parent_did names this agent; null when no fleet scan has run |
+| `messages` | integer | yes | Loop messages ever written, every loop current and past (adf_loop's shared AUTOINCREMENT high-water mark; compaction, clears and loop deletion do not lower it) |
 | `ageDays` | number | yes | Days since adf_created_at |
 
 <a id="schema-agentactivity"></a>

@@ -28,10 +28,11 @@
  * Calibration (asserted in tests/unit/shared/agent-stats.test.ts):
  *   Experience                                            XP      Lv
  *     brand-new agent                                      0       1
- *     first session (~60 loop rows, 3 files)               9       2
- *     heavy, months old (30k rows, 200 files, 20k memory
- *       tokens, 10 skills, 8 tables / 20k rows,
- *       150 compactions, 3 children)                      ~4190   20
+ *     first session (0.3 context, 3 files, 300 memory
+ *       tokens)                                           27       3
+ *     heavy, months old (150 contexts across loops, 20k
+ *       memory tokens, 10 skills, 5 tables / 8k rows,
+ *       40 files, 3 children; work 38% of XP)             ~4000    20
  *     4.8k / 7k / 10k XP                                  22 / 26 / 30
  *   Power                                               points    Lv
  *     default fresh agent: Access, Reach, Autonomy     1.75, 2, 2   3, 3, 3
@@ -547,62 +548,73 @@ export function scoreAutonomy(inputs: AgentPowerInputs): PowerStat {
 // =============================================================================
 
 /**
- * XP per unit. score = sum(signal XP), placed on EXPERIENCE_CURVE. Signals
- * stay linear (local rows are square-rooted so a bulk import cannot buy
- * levels); the curve does the flattening.
+ * XP per unit. score = sum(signal XP), placed on EXPERIENCE_CURVE. Durable
+ * learning (memory, skills, tables, files, children) is the main signal; work
+ * counts in contexts; raw message volume and age add a little. Local rows are
+ * square-rooted so a bulk import cannot buy levels; the curve does the
+ * flattening.
  */
 export const EXPERIENCE_WEIGHTS = {
-  /** Per lifetime loop row (a turn is usually several rows). */
-  loopEntries: 0.1,
-  /** Per file written or changed after creation. */
-  filesWritten: 1,
-  /** Per approximate token in `mind/` files (about 1 XP per 2 KB note, the old per-file rate). */
-  memoryTokens: 0.002,
-  /** Per skill installed or changed. Worth more than plain files. */
-  skills: 8,
+  /** Per context worked: one compaction, or a loop's current fill as a share of its compaction threshold. */
+  contextsWorked: 10,
+  /** Per approximate token in `mind/` files (60 XP per 1k tokens). */
+  memoryTokens: 0.06,
+  /** Per skill installed or changed. */
+  skills: 60,
   /** Per `local_*` table. */
-  localTables: 4,
+  localTables: 10,
   /** Multiplied by sqrt(total local rows). */
-  localRowsSqrt: 2,
-  /** Per loop compaction. */
-  compactions: 3,
+  localRowsSqrt: 5,
+  /** Per file written or changed after creation. */
+  filesWritten: 2,
   /** Per child agent. */
-  agentsSpawned: 15,
-  /** Per day of age, scaled by activity = min(1, loopEntries / 1000) so an idle file does not level up by waiting. */
+  agentsSpawned: 40,
+  /** Per loop message ever written (all loops, current and past). Small: volume alone must not level an agent. */
+  messages: 0.01,
+  /** Per day of age, scaled by activity = min(1, contextsWorked / ageActivityContexts) so an idle file does not level up by waiting. */
   ageDays: 0.5,
-  ageActivityRows: 1000
+  ageActivityContexts: 10
 } as const
 
 const EXPERIENCE_LABELS: Record<keyof AgentExperienceInputs, string> = {
-  loopEntries: 'Loop messages',
+  contextsWorked: 'Contexts of work',
   filesWritten: 'Files written',
   memoryTokens: 'Memory tokens',
   skills: 'Skills',
   localTables: 'Database tables',
   localRows: 'Database rows',
-  compactions: 'Compactions',
   agentsSpawned: 'Agents created',
+  messages: 'Messages',
   ageDays: 'Days active'
 }
 
 export function experienceSignals(inputs: AgentExperienceInputs): ExperienceSignal[] {
   const w = EXPERIENCE_WEIGHTS
   const n = (v: number | null | undefined): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0)
-  const activity = Math.min(1, n(inputs.loopEntries) / w.ageActivityRows)
+  const activity = Math.min(1, n(inputs.contextsWorked) / w.ageActivityContexts)
   const signals: ExperienceSignal[] = [
-    { id: 'loopEntries', label: EXPERIENCE_LABELS.loopEntries, value: n(inputs.loopEntries), xp: n(inputs.loopEntries) * w.loopEntries },
-    { id: 'filesWritten', label: EXPERIENCE_LABELS.filesWritten, value: n(inputs.filesWritten), xp: n(inputs.filesWritten) * w.filesWritten },
+    { id: 'contextsWorked', label: EXPERIENCE_LABELS.contextsWorked, value: n(inputs.contextsWorked), xp: n(inputs.contextsWorked) * w.contextsWorked },
     { id: 'memoryTokens', label: EXPERIENCE_LABELS.memoryTokens, value: n(inputs.memoryTokens), xp: n(inputs.memoryTokens) * w.memoryTokens },
     { id: 'skills', label: EXPERIENCE_LABELS.skills, value: n(inputs.skills), xp: n(inputs.skills) * w.skills },
     { id: 'localTables', label: EXPERIENCE_LABELS.localTables, value: n(inputs.localTables), xp: n(inputs.localTables) * w.localTables },
     { id: 'localRows', label: EXPERIENCE_LABELS.localRows, value: n(inputs.localRows), xp: Math.sqrt(n(inputs.localRows)) * w.localRowsSqrt },
-    { id: 'compactions', label: EXPERIENCE_LABELS.compactions, value: n(inputs.compactions), xp: n(inputs.compactions) * w.compactions }
+    { id: 'filesWritten', label: EXPERIENCE_LABELS.filesWritten, value: n(inputs.filesWritten), xp: n(inputs.filesWritten) * w.filesWritten }
   ]
   if (inputs.agentsSpawned !== null) {
     signals.push({ id: 'agentsSpawned', label: EXPERIENCE_LABELS.agentsSpawned, value: n(inputs.agentsSpawned), xp: n(inputs.agentsSpawned) * w.agentsSpawned })
   }
-  signals.push({ id: 'ageDays', label: EXPERIENCE_LABELS.ageDays, value: Math.floor(n(inputs.ageDays)), xp: n(inputs.ageDays) * w.ageDays * activity })
+  signals.push(
+    { id: 'messages', label: EXPERIENCE_LABELS.messages, value: n(inputs.messages), xp: n(inputs.messages) * w.messages },
+    { id: 'ageDays', label: EXPERIENCE_LABELS.ageDays, value: Math.floor(n(inputs.ageDays)), xp: n(inputs.ageDays) * w.ageDays * activity }
+  )
   return signals
+}
+
+/** 950 -> "950", 1234 -> "1.3k" (rounded up: a hint never undersells what is needed). */
+function ceilCount(n: number): string {
+  if (n < 1000) return String(n)
+  const k = Math.ceil(n / 100) / 10
+  return `${k % 1 === 0 ? k.toFixed(0) : k.toFixed(1)}k`
 }
 
 export function scoreExperience(inputs: AgentExperienceInputs): ExperienceStat {
@@ -611,8 +623,8 @@ export function scoreExperience(inputs: AgentExperienceInputs): ExperienceStat {
   const pos = levelPosition(score, EXPERIENCE_CURVE)
   const xp = Math.max(0, pos.nextLevelAt - score)
   const w = EXPERIENCE_WEIGHTS
-  const loopEntries = Math.ceil(xp / w.loopEntries)
-  const files = Math.ceil(xp / w.filesWritten)
+  const contexts = Math.ceil(xp / w.contextsWorked)
+  const memoryTokens = Math.ceil(xp / w.memoryTokens)
   const skills = Math.ceil(xp / w.skills)
   return {
     level: pos.level,
@@ -623,10 +635,10 @@ export function scoreExperience(inputs: AgentExperienceInputs): ExperienceStat {
     breakdown,
     nextLevel: {
       xp,
-      loopEntries,
-      files,
+      contexts,
+      memoryTokens,
       skills,
-      hint: `Lv ${pos.level + 1} needs ${Math.ceil(xp)} more XP: about ${plural(loopEntries, 'loop message')}, ${plural(files, 'file')} or ${plural(skills, 'skill')}`
+      hint: `Lv ${pos.level + 1} needs ${Math.ceil(xp)} more XP: about ${plural(contexts, 'context')} of work, ${ceilCount(memoryTokens)} memory tokens or ${plural(skills, 'skill')}`
     }
   }
 }

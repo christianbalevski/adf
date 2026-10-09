@@ -32,6 +32,7 @@ import {
   experienceContributors,
   experienceHeadline,
   experienceTooltip,
+  experienceValueText,
   levelBarParts,
   overviewFacts,
   parseStoredLevels,
@@ -515,7 +516,7 @@ function ExperienceDetail({ stat }: { stat: ExperienceStat }) {
                 {rows.map((b) => (
                   <tr key={b.id}>
                     <td className="py-0.5">{b.label}</td>
-                    <td className="py-0.5 pl-2 text-right font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">{compactCount(b.value)}</td>
+                    <td className="py-0.5 pl-2 text-right font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">{experienceValueText(b)}</td>
                     <td className="py-0.5 pl-2 text-right font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">+{compactCount(Math.round(b.xp))} XP</td>
                   </tr>
                 ))}
