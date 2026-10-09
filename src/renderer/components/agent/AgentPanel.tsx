@@ -83,7 +83,7 @@ export function AgentPanel() {
       <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-2 space-y-1.5">
         {/* Header: icon + name + model */}
         <div className="flex items-center gap-2">
-          <OrbitalAvatar seed={orbitalSeed} size={20} animated={state === 'active'} />
+          <OrbitalAvatar seed={orbitalSeed} icon={config?.icon} iconSeed={config?.id} size={20} emojiSize={18} animated={state === 'active'} />
           <div className="min-w-0 flex-1">
             <h3
               className="text-sm font-semibold text-neutral-800 dark:text-neutral-100 truncate cursor-default"

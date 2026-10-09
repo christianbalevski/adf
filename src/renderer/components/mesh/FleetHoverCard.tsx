@@ -107,7 +107,7 @@ export const FleetHoverCard = memo(function FleetHoverCard({
       {/* Identity */}
       <div className="flex items-center gap-2.5 px-3.5 py-2.5">
         <span className={`shrink-0 ${isGhost ? 'grayscale opacity-60' : ''}`}>
-          <OrbitalAvatar seed={orbitalSeedFor({ did: agent.did, filePath: agent.filePath })} size={28} />
+          <OrbitalAvatar seed={orbitalSeedFor({ did: agent.did, filePath: agent.filePath })} icon={agent.icon} iconSeed={agent.agentId || agent.filePath} size={28} emojiSize={24} />
         </span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">

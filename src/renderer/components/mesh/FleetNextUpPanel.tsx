@@ -99,7 +99,7 @@ export const FleetNextUpPanel = memo(function FleetNextUpPanel({
                 title={`${a.handle} — ${new Date(a.nextWakeAt!).toLocaleString()}\n${scope}${sched ? ` · ${sched}` : ''}${a.nextWakeLabel ? `\n${a.nextWakeLabel}` : ''}`}
               >
                 <span className="shrink-0 text-base leading-none">
-                  <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} size={18} />
+                  <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} icon={a.icon} iconSeed={a.agentId || a.filePath} size={18} emojiSize={16} />
                 </span>
                 <span className="flex-1 min-w-0">
                   <span className="flex items-center gap-1.5">

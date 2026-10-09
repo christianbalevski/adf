@@ -19,7 +19,7 @@ import { Button } from '../ui'
 import { REVEAL_IN_FOLDER_LABEL } from '../../utils/platform'
 import { collectRunningAgents, type RunningAgentRow } from '../../utils/running-agents'
 import { SIDEBAR_RUNNING_CAP_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
-import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../../shared/types/ipc.types'
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
@@ -1264,8 +1264,11 @@ const AgentFileRow = memo(function AgentFileRow({
     ? (agentConfig?.autonomous ?? false)
     : (file.autonomous ?? false)
 
-  // The agent's orbital, seeded the same way the fleet map seeds it.
+  // The agent's orbital, seeded the same way the fleet map seeds it. Emoji
+  // mode draws the open agent's live config icon, else the listing's.
   const seed = orbitalSeedFor({ did: file.did, filePath: file.filePath })
+  const icon = isActive ? agentConfig?.icon : file.icon
+  const iconSeed = isActive ? (agentConfig?.id || file.filePath) : (file.agentId || file.filePath)
 
   const canReceive = isActive
     ? (agentConfig?.messaging?.receive ?? false)
@@ -1330,6 +1333,8 @@ const AgentFileRow = memo(function AgentFileRow({
     >
       <AgentAvatar
         seed={seed}
+        icon={icon}
+        iconSeed={iconSeed}
         running={isRunning}
         state={dotState}
         starting={(toggling && !isRunning) || isStarting}
@@ -1431,15 +1436,20 @@ const AgentFileRow = memo(function AgentFileRow({
  * 16 px slot the emoji used. A stopped agent is drawn faded with no badge, so
  * a quiet tree stays muted and the running agents stand out; the badge then
  * adds the finer state. The orbital turns only while the agent is active.
+ * In emoji mode the 12 px emoji sits in the same slot, desaturated when stopped.
  */
 const AgentAvatar = memo(function AgentAvatar({
   seed,
+  icon,
+  iconSeed,
   running,
   state,
   starting,
   stopping
 }: {
   seed: string | null
+  icon?: string
+  iconSeed: string
   running: boolean
   state: AgentState
   starting?: boolean
@@ -1447,10 +1457,14 @@ const AgentAvatar = memo(function AgentAvatar({
 }) {
   const busy = starting || stopping
   const showBadge = busy || state !== 'not_participating'
+  const emoji = useAgentAvatarMode() === 'emoji'
+  const quiet = emoji
+    ? `transition-[filter,opacity] ${running || busy ? '' : 'grayscale opacity-70'}`
+    : `transition-opacity ${running || busy ? '' : 'opacity-70'}`
   return (
     <span className="relative shrink-0 w-4 h-4 flex items-center justify-center">
-      <span className={`flex transition-opacity ${running || busy ? '' : 'opacity-70'}`}>
-        <OrbitalAvatar seed={seed} size={16} animated={state === 'active'} />
+      <span className={`flex ${quiet}`}>
+        <OrbitalAvatar seed={seed} icon={icon} iconSeed={iconSeed} size={16} emojiSize={12} animated={state === 'active'} />
       </span>
       {showBadge && (
         // A ring in the row's own colour lifts the badge off the orbital beneath

@@ -171,7 +171,7 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
       >
         {/* Identity header — stays put in both card and file view */}
         <div className="flex items-center gap-3 px-5 pt-4 pb-3">
-          <PeerAvatar did={agent.did} icon={agent.icon} size={36} />
+          <PeerAvatar did={agent.did} icon={agent.icon} size={36} emojiSize={30} />
           <div className="flex-1 min-w-0">
             <div className="text-[15px] font-semibold text-neutral-800 dark:text-neutral-100 truncate">
               {agent.handle}

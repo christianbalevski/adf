@@ -235,6 +235,8 @@ export interface AppSettings {
   uiFontCustom?: string
   /** Electron zoom factor for the whole window (1 = 100%). */
   uiScale?: number
+  /** Small agent avatars (sidebar, title bar, fleet map...): 'orbital' or the agent's emoji. Absent = 'orbital'. */
+  agentAvatars?: 'orbital' | 'emoji'
   globalSystemPrompt?: string
   /** Override for the loop-compaction prompt. Absent = DEFAULT_COMPACTION_PROMPT. */
   compactionPrompt?: string
@@ -299,7 +301,7 @@ export interface TrackedDirEntry {
   autonomous?: boolean
   /** config.id */
   agentId?: string
-  /** Emoji icon from config. Studio draws the orbital instead; kept for other clients. */
+  /** Emoji icon from config. Studio draws it when Settings > Agent avatars is Emoji. */
   icon?: string
   /** adf_meta 'adf_did': seeds the orbital avatar. */
   did?: string

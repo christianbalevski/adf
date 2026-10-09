@@ -194,7 +194,7 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
               title={a.status ?? a.handle}
             >
               <span className={`text-base leading-none shrink-0 ${a.online === false ? 'grayscale opacity-60' : ''}`}>
-                <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} size={18} />
+                <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} icon={a.icon} iconSeed={a.agentId || a.filePath} size={18} emojiSize={16} />
               </span>
               <span className="w-28 shrink-0 truncate text-[12px] font-medium text-neutral-700 dark:text-neutral-200">
                 {a.handle}

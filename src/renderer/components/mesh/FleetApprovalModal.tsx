@@ -95,7 +95,7 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
       headerLead={
         <span className="flex items-center gap-2 min-w-0 shrink-0">
           <span className="text-2xl leading-none shrink-0">
-            <OrbitalAvatar seed={orbitalSeedFor({ did: agent?.did, filePath })} size={28} />
+            <OrbitalAvatar seed={orbitalSeedFor({ did: agent?.did, filePath })} icon={agent?.icon} iconSeed={agent?.agentId || filePath} size={28} emojiSize={24} />
           </span>
           <span className="text-[14px] font-semibold text-neutral-800 dark:text-neutral-100 truncate max-w-40">
             {agent?.handle ?? filePath.split('/').pop()?.replace(/\.adf$/, '')}

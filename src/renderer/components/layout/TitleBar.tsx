@@ -146,7 +146,7 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
       onClick={onActivate}
       title={onActivate ? 'The open agent — click to fly to its tile' : undefined}
     >
-      <OrbitalAvatar seed={orbitalSeed} size={16} animated={agentState === 'active'} title={config.description || undefined} />
+      <OrbitalAvatar seed={orbitalSeed} icon={config.icon} iconSeed={config.id} size={16} emojiSize={14} animated={agentState === 'active'} title={config.description || undefined} />
       <span
         className="shrink-0 max-w-56 font-medium text-neutral-700 dark:text-neutral-200 truncate"
         title={config.description || config.name}

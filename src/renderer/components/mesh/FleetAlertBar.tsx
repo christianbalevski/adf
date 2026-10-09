@@ -6,6 +6,7 @@ import { useFleetStore } from '../../stores/fleet.store'
 import { pathBasename } from './fleet-layout'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
+import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import { formatTokenCount as formatBurn } from '../../utils/token-estimate'
 
 /**
@@ -57,6 +58,10 @@ export const FleetAlertBar = memo(function FleetAlertBar({
   const seedByPath = useMeshStore(
     useShallow((s) => new Map(s.agents.map((a) => [a.filePath, orbitalSeedFor({ did: a.did, filePath: a.filePath })])))
   )
+  // Emoji-mode avatar (Settings > Agent avatars): config icon, else the pool pick.
+  const iconByPath = useMeshStore(
+    useShallow((s) => new Map(s.agents.map((a) => [a.filePath, agentAvatarEmoji(a.icon, a.agentId || a.filePath)])))
+  )
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
   const fleetBurn = useFleetStore((s) => s.burn?.fleet)
   const perAgentBurn = useFleetStore((s) => s.burn?.perAgent)
@@ -98,8 +103,8 @@ export const FleetAlertBar = memo(function FleetAlertBar({
       best = { filePath: latestActivityPath, label: 'active' }
     }
     if (!best || !handleByPath.has(best.filePath)) return null
-    return { ...best, handle: handleByPath.get(best.filePath)!, seed: seedByPath.get(best.filePath) ?? null }
-  }, [perAgentBurn, latestActivityPath, handleByPath, seedByPath])
+    return { ...best, handle: handleByPath.get(best.filePath)!, seed: seedByPath.get(best.filePath) ?? null, icon: iconByPath.get(best.filePath) ?? null }
+  }, [perAgentBurn, latestActivityPath, handleByPath, seedByPath, iconByPath])
 
   const counts = useMeshStore(
     useShallow((s) => {
@@ -318,7 +323,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
           title="Highest token burn right now — click to fly there"
         >
           <span className="text-[11px]">🔥</span>
-          <OrbitalAvatar seed={mvp.seed} size={14} />
+          <OrbitalAvatar seed={mvp.seed} icon={mvp.icon} size={14} emojiSize={12} />
           <span className="text-[11px] font-medium text-neutral-700 dark:text-neutral-200">{mvp.handle}</span>
           <span className="text-[10px] text-orange-500 dark:text-orange-400 tabular-nums">{mvp.label}</span>
         </button>

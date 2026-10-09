@@ -26,6 +26,9 @@ export function createSettingsDefaults(): Record<string, unknown> {
     uiFontCustom: '',
     // Electron zoom factor for the whole window (1 = 100%).
     uiScale: 1,
+    // Small agent avatars: 'orbital' (generated from the DID) or 'emoji'
+    // (config.icon). The home and Overview orbitals ignore it.
+    agentAvatars: 'orbital',
     globalSystemPrompt: DEFAULT_BASE_PROMPT,
     // Dynamic instruction templates share the toolPrompts record (dyn_ keys)
     // so they ride the existing settings→executor plumbing.

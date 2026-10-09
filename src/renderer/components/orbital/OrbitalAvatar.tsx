@@ -2,6 +2,8 @@
  * An agent's orbital as a small avatar (24 to 40 px). Static from the cached
  * 96 px bitmap; while the agent is active and reduced motion is off, the
  * cached sprite strip plays instead (CSS steps(), no per-frame JS).
+ * With Settings > Agent avatars on Emoji it draws the agent's emoji instead
+ * and renders no orbital.
  */
 
 import { memo, useEffect, useState } from 'react'
@@ -11,6 +13,8 @@ import { loadOrbitalImage, peekOrbitalImage } from './orbital-images'
 import { orbitalMotion, orbitalMotionStateFor } from './orbital-motion'
 import { useOrbitalTheme, usePrefersReducedMotion } from './orbital-env'
 import { ORBITAL_STRIP_FRAMES, ORBITAL_STRIP_SECONDS } from './orbital-geometry'
+import { selectAgentAvatar, type AgentAvatarMode } from './agent-avatar'
+import { useAppStore } from '../../stores/app.store'
 
 export interface OrbitalAvatarProps {
   /** From orbitalSeedFor(). Null draws an empty box of the same size. */
@@ -23,6 +27,17 @@ export interface OrbitalAvatarProps {
   state?: AgentState
   className?: string
   title?: string
+  /** Emoji mode: the agent's configured icon. */
+  icon?: string | null
+  /** Emoji mode: seed for pickAgentIcon when there is no icon. Default: `seed`. */
+  iconSeed?: string | null
+  /** Emoji mode: font size in px. Default: 80% of `size`. */
+  emojiSize?: number
+}
+
+/** The Settings > Agent avatars choice. */
+export function useAgentAvatarMode(): AgentAvatarMode {
+  return useAppStore((s) => s.agentAvatars)
 }
 
 /** Object URL of a cached orbital image; null while it loads or when `req` is null. */
@@ -52,13 +67,19 @@ export function useOrbitalImage(req: OrbitalCacheRequest | null): string | null 
 }
 
 export const OrbitalAvatar = memo(function OrbitalAvatar({
-  seed,
+  seed: orbitalSeed,
   size,
   animated,
   state,
   className,
-  title
+  title,
+  icon,
+  iconSeed,
+  emojiSize
 }: OrbitalAvatarProps) {
+  const choice = selectAgentAvatar(useAgentAvatarMode(), { seed: orbitalSeed, icon, iconSeed })
+  // Emoji mode passes a null seed below, so no orbital is loaded or rendered.
+  const seed = choice.kind === 'orbital' ? choice.seed : null
   const theme = useOrbitalTheme()
   const reduce = usePrefersReducedMotion()
   const play = (animated ?? state === 'active') && !reduce && !!seed
@@ -70,6 +91,21 @@ export const OrbitalAvatar = memo(function OrbitalAvatar({
     width: size,
     height: size,
     opacity: alpha
+  }
+
+  if (choice.kind === 'emoji') {
+    if (!choice.emoji) return <span aria-hidden="true" className={`inline-block shrink-0 ${className ?? ''}`} style={box} />
+    return (
+      <span
+        role="img"
+        aria-label={title}
+        title={title}
+        className={`inline-flex shrink-0 items-center justify-center leading-none select-none ${className ?? ''}`}
+        style={{ ...box, fontSize: emojiSize ?? Math.round(size * 0.8) }}
+      >
+        {choice.emoji}
+      </span>
+    )
   }
 
   if (play && stripUrl) {

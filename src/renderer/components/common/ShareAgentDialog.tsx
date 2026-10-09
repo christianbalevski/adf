@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import { Dialog } from './Dialog'
 import { useAppStore } from '../../stores/app.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
-import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
+import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { useShareDrag } from '../../hooks/useShareDrag'
 import { Button } from '../ui'
@@ -55,6 +56,7 @@ export function ShareAgentDialog() {
 
   const name = featured ? stem(featured) : 'agent'
   const seed = featured ? orbitalSeedFor({ did: featured.did, filePath: featured.filePath }) : null
+  const icon = featured ? agentAvatarEmoji(featured.icon, featured.agentId || featured.filePath) : null
 
   return (
     <Dialog open={target !== null} onClose={closeShareDialog} title="Share" wide>
@@ -64,11 +66,11 @@ export function ShareAgentDialog() {
           like a PDF you sent. Yours stays here and does not change.
         </p>
 
-        <ShareIllustration name={name} seed={seed} />
+        <ShareIllustration name={name} seed={seed} icon={icon} />
 
         {featured ? (
           <div className="flex items-center gap-3">
-            <FileTile file={featured} seed={seed} />
+            <FileTile file={featured} seed={seed} icon={icon} />
             <div className="min-w-0 flex-1 text-[12px] text-[var(--adf-ui-text-subtle)]">
               Grab this and drop it anywhere.
             </div>
@@ -132,14 +134,14 @@ export function ShareAgentDialog() {
 }
 
 /** The draggable file, drawn like a document so it reads as "a file", not a button. */
-function FileTile({ file, seed }: { file: TrackedDirEntry; seed: string | null }) {
+function FileTile({ file, seed, icon }: { file: TrackedDirEntry; seed: string | null; icon: string | null }) {
   const drag = useShareDrag(file.filePath)
   return (
     <div
       {...drag}
       className="flex cursor-grab select-none items-center gap-3 rounded-xl border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] py-2 pl-2 pr-4 hover:border-[var(--adf-ui-accent)] active:cursor-grabbing"
     >
-      <DocGlyph seed={seed} size={40} />
+      <DocGlyph seed={seed} icon={icon} size={40} />
       <div className="min-w-0">
         <div className="text-[13px] font-semibold text-[var(--adf-ui-text)]">{stem(file)}</div>
         <div className="font-mono text-[10.5px] text-[var(--adf-ui-text-subtle)]">{file.fileName}</div>
@@ -171,14 +173,18 @@ function SmallChip({ file, onSave }: { file: TrackedDirEntry; onSave: () => void
 }
 
 /** A document icon with the agent's orbital on it, in the app's accent. */
-function DocGlyph({ seed, size }: { seed?: string | null; size: number }) {
+function DocGlyph({ seed, icon, size }: { seed?: string | null; icon?: string | null; size: number }) {
+  const emoji = useAgentAvatarMode() === 'emoji'
   return (
     <span className="relative inline-flex shrink-0 items-center justify-center" style={{ width: size, height: size }} aria-hidden>
       <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" className="text-[var(--adf-ui-accent)]">
         <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" fill="color-mix(in srgb, var(--adf-ui-accent) 12%, transparent)" />
         <path d="M14 3v5h5" />
       </svg>
-      {seed && (
+      {emoji && icon && (
+        <span className="absolute" style={{ fontSize: size * 0.42, bottom: size * 0.14 }}>{icon}</span>
+      )}
+      {!emoji && seed && (
         <span className="absolute flex" style={{ bottom: size * 0.1 }}>
           <OrbitalAvatar seed={seed} size={Math.round(size * 0.5)} />
         </span>
@@ -191,14 +197,14 @@ function DocGlyph({ seed, size }: { seed?: string | null; size: number }) {
  * The gesture, drawn: the file on the left, a dashed path, a chat window on
  * the right with the file arriving as an attachment. Generic chat, no brand.
  */
-function ShareIllustration({ name, seed }: { name: string; seed: string | null }) {
+function ShareIllustration({ name, seed, icon }: { name: string; seed: string | null; icon: string | null }) {
   const label = `${name}.adf`
   return (
     <div className="relative overflow-hidden rounded-xl border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-6 py-5" aria-hidden>
       <div className="flex items-center gap-4">
         {/* the file */}
         <div className="flex w-24 shrink-0 flex-col items-center gap-1.5">
-          <DocGlyph seed={seed} size={52} />
+          <DocGlyph seed={seed} icon={icon} size={52} />
           <span className="max-w-full truncate font-mono text-[10.5px] text-[var(--adf-ui-text-muted)]">{label}</span>
         </div>
 

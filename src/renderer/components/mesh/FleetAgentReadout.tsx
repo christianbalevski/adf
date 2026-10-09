@@ -142,7 +142,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
       title={`${role} — fly to ${a.handle}`}
     >
       <span className={a.online === false ? 'grayscale opacity-60' : ''}>
-        <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} size={16} />
+        <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} icon={a.icon} iconSeed={a.agentId || a.filePath} size={16} emojiSize={10} />
       </span>
       {a.handle}
     </button>
@@ -161,7 +161,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
         {/* Header */}
         <div className="flex items-center gap-3 px-5 pt-4 pb-3">
           <span className={`text-3xl leading-none shrink-0 ${isGhost ? 'grayscale opacity-60' : ''}`}>
-            <OrbitalAvatar seed={orbitalSeedFor({ did: agent.did, filePath: agent.filePath })} size={32} />
+            <OrbitalAvatar seed={orbitalSeedFor({ did: agent.did, filePath: agent.filePath })} icon={agent.icon} iconSeed={agent.agentId || agent.filePath} size={32} emojiSize={30} />
           </span>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">

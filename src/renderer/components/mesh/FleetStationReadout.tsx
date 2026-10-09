@@ -114,6 +114,8 @@ export const FleetStationReadout = memo(function FleetStationReadout({
           handle: local?.handle
             ?? (p.startsWith('station:') ? p.slice('station:'.length) : pathBasename(p).replace(/\.adf$/, '')),
           seed: local ? orbitalSeedFor({ did: local.did, filePath: local.filePath }) : null,
+          icon: local?.icon,
+          iconSeed: local ? local.agentId || local.filePath : null,
           localFilePath: local?.filePath
         }
       })
@@ -227,7 +229,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
                     className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/60 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-left min-w-0"
                     title={`${a.handle} — open card`}
                   >
-                    <PeerAvatar did={a.did} icon={a.icon} size={20} />
+                    <PeerAvatar did={a.did} icon={a.icon} size={20} emojiSize={18} />
                     <span className="flex-1 min-w-0">
                       <span className="block text-[12px] font-medium text-neutral-700 dark:text-neutral-200 truncate">{a.handle}</span>
                       {a.status && <span className="block text-[10px] italic text-neutral-400 dark:text-neutral-500 truncate">{a.status}</span>}
@@ -269,7 +271,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
                       className="w-full flex items-center gap-2 px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/60 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-left"
                       title={`${t.handle} — open its readout`}
                     >
-                      <OrbitalAvatar seed={t.seed} size={16} />
+                      <OrbitalAvatar seed={t.seed} icon={t.icon} iconSeed={t.iconSeed} size={16} emojiSize={14} />
                       <span className="text-[11px] font-medium text-neutral-700 dark:text-neutral-200 truncate">{t.handle}</span>
                       <span className="text-[9px] px-1.5 py-px rounded-full bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 shrink-0">
                         your agent

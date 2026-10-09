@@ -811,6 +811,7 @@ export interface AgentConfigTemplateProps {
 const TemplateModeContext = createContext(false)
 
 export function AgentConfig({ template }: { template?: AgentConfigTemplateProps } = {}) {
+  const agentAvatars = useAppStore((s) => s.agentAvatars)
   const storeConfig = useAgentStore((s) => s.config)
   const config = template ? template.value : storeConfig
   const setConfig = useAgentStore((s) => s.setConfig)
@@ -1438,7 +1439,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             />
           </Field>
           </>)}
-          <Field label="Icon" hint="Published on the agent's card. Studio shows the agent's orbital instead.">
+          <Field
+            label="Icon"
+            hint={agentAvatars === 'emoji'
+              ? "Shown in the sidebar, the header and on the fleet map. Also published on the agent's card."
+              : "Published on the agent's card. Studio shows the agent's orbital unless Settings > Agent avatars is set to Emoji."}
+          >
             <IconPicker
               value={local.icon || pickAgentIcon(local.id)}
               onChange={(icon) => save({ ...local, icon })}

@@ -114,7 +114,7 @@ export const FleetStewardsPanel = memo(function FleetStewardsPanel({
                 title={`${r.agent.handle} — steward of ${r.label}${r.agent.status ? `\n${r.agent.status}` : ''}`}
               >
                 <span className={`shrink-0 text-base leading-none mt-px ${isGhost ? 'grayscale opacity-60' : ''}`}>
-                  <OrbitalAvatar seed={orbitalSeedFor({ did: r.agent.did, filePath: r.agent.filePath })} size={18} />
+                  <OrbitalAvatar seed={orbitalSeedFor({ did: r.agent.did, filePath: r.agent.filePath })} icon={r.agent.icon} iconSeed={r.agent.agentId || r.agent.filePath} size={18} emojiSize={16} />
                 </span>
                 <span className="flex-1 min-w-0">
                   <span className="flex items-center gap-1.5">

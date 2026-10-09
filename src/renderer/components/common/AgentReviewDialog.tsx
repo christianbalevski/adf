@@ -6,7 +6,8 @@ import { useAgentStore } from '../../stores/agent.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { migrateOpenTabs } from '../../utils/editor-tab-persistence'
-import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
+import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import type { AgentConfigSummary, ReviewIdentitySummary } from '../../../shared/types/ipc.types'
 import { Button, Select, TextInput } from '../ui'
 
@@ -53,13 +54,16 @@ const SCENARIO_STYLES: Record<ReviewIdentitySummary['scenario'], { badge: string
 
 type ModelChoice = { provider: string; model_id: string }
 
-function Monogram({ name, seed, scenario, size }: { name: string; seed?: string | null; scenario: ReviewIdentitySummary['scenario']; size: 'sm' | 'lg' }) {
+function Monogram({ name, icon, seed, scenario, size }: { name: string; icon?: string; seed?: string | null; scenario: ReviewIdentitySummary['scenario']; size: 'sm' | 'lg' }) {
+  const emoji = useAgentAvatarMode() === 'emoji'
   // The agent's orbital from its DID; the letter initial only when it has none.
-  if (seed) return <OrbitalAvatar seed={seed} size={size === 'lg' ? 56 : 32} />
+  if (seed && !emoji) return <OrbitalAvatar seed={seed} size={size === 'lg' ? 56 : 32} />
+  // Emoji mode: configured emoji, else the pool pick from the DID, else the initial.
+  const glyph = (emoji ? agentAvatarEmoji(icon, seed) : null) || (name || '?').charAt(0).toUpperCase()
   const dims = size === 'lg' ? 'w-14 h-14 text-2xl' : 'w-8 h-8 text-sm'
   return (
     <div className={`${dims} shrink-0 rounded-full bg-gradient-to-br ${SCENARIO_STYLES[scenario].monogram} flex items-center justify-center text-white font-semibold select-none`}>
-      {(name || '?').charAt(0).toUpperCase()}
+      {glyph}
     </div>
   )
 }
@@ -182,7 +186,7 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
     <div className="space-y-4">
       {/* Agent identity */}
       <div className="flex items-start gap-3">
-        <Monogram name={summary.name} seed={identity.agentDid} scenario={identity.scenario} size="sm" />
+        <Monogram name={summary.name} icon={summary.icon} seed={identity.agentDid} scenario={identity.scenario} size="sm" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-0.5">
             <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">
@@ -440,7 +444,7 @@ function ClaimContent({
   return (
     <div className="space-y-4">
       <div className="flex flex-col items-center text-center pt-2 pb-1">
-        <Monogram name={summary.name} seed={identity.agentDid} scenario={identity.scenario} size="lg" />
+        <Monogram name={summary.name} icon={summary.icon} seed={identity.agentDid} scenario={identity.scenario} size="lg" />
         <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200 mt-3">
           Make {summary.name} yours
         </h3>

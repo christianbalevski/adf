@@ -2,6 +2,7 @@ import type { Node, Edge } from '@xyflow/react'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 import { resolveLineage, type ResolvedLineage } from '../../../shared/utils/lineage'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
+import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import type { MeshNodeData } from './MeshGraphNode'
 
 /**
@@ -161,6 +162,8 @@ export interface TerrainMember {
   handle: string
   /** Orbital avatar seed (orbitalSeedFor). */
   seed: string | null
+  /** Emoji avatar (Settings > Agent avatars): config icon, else the pool pick. */
+  icon: string | null
 }
 
 export interface TerrainNodeData {
@@ -733,7 +736,7 @@ export function computeFleetLayout(agents: FleetAgentStatus[], placement?: Fleet
       height: plan.height,
       // Cell coords relative to the terrain node's top-left
       cells: plan.cells.map((c) => ({ ...c, x: c.x - plan.minX, y: c.y - plan.minY })),
-      members: plan.members.map((m) => ({ filePath: m.filePath, handle: m.handle, seed: seedFor(m) })),
+      members: plan.members.map((m) => ({ filePath: m.filePath, handle: m.handle, seed: seedFor(m), icon: agentAvatarEmoji(m.icon, m.agentId || m.filePath) })),
       districts: plan.districts
     } satisfies TerrainNodeData
 

@@ -376,7 +376,7 @@ function FleetStationNodeFull({ id, data }: NodeProps) {
               strokeWidth={2}
             />
             {p.agent.did ? (
-              <OrbitalSvgImage seed={p.agent.did} cx={p.x} cy={p.y - 16} size={72} />
+              <OrbitalSvgImage seed={p.agent.did} icon={p.agent.icon} cx={p.x} cy={p.y - 16} size={72} />
             ) : (
               <text x={p.x} y={p.y + 6} textAnchor="middle" fontSize={64} style={{ userSelect: 'none' }}>
                 {p.agent.icon || '🤖'}

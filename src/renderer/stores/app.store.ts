@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { AGENT_AVATAR_MODE_DEFAULT, type AgentAvatarMode } from '../components/orbital/agent-avatar'
 import type { AgentConfigSummary } from '../../shared/types/ipc.types'
 import { LOGS_PANEL_HEIGHT_KEY, SIDEBAR_WIDTH_KEY, loadStoredSize } from '../utils/stored-size'
 
@@ -165,6 +166,8 @@ export interface AppState {
   uiFont: UiFont
   uiFontCustom: string
   uiScale: UiScale
+  /** Small agent avatars: the orbital, or the agent's emoji. Persisted as settings.agentAvatars. */
+  agentAvatars: AgentAvatarMode
   passwordDialogOpen: boolean
   passwordDialogFilePath: string | null
   ownerMismatchDialogOpen: boolean
@@ -259,6 +262,7 @@ export interface AppState {
   setUiFont: (font: UiFont) => void
   setUiFontCustom: (family: string) => void
   setUiScale: (scale: UiScale) => void
+  setAgentAvatars: (mode: AgentAvatarMode) => void
   setPasswordDialogOpen: (open: boolean, filePath?: string | null) => void
   setOwnerMismatchDialogOpen: (open: boolean, fileOwnerDid?: string | null) => void
   addStartingFilePath: (filePath: string) => void
@@ -358,6 +362,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   uiFont: UI_FONT_DEFAULT,
   uiFontCustom: '',
   uiScale: 1,
+  agentAvatars: AGENT_AVATAR_MODE_DEFAULT,
   passwordDialogOpen: false,
   passwordDialogFilePath: null,
   ownerMismatchDialogOpen: false,
@@ -439,6 +444,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setUiFont: (uiFont) => set({ uiFont }),
   setUiFontCustom: (uiFontCustom) => set({ uiFontCustom }),
   setUiScale: (uiScale) => set({ uiScale }),
+  setAgentAvatars: (agentAvatars) => set({ agentAvatars }),
   setPasswordDialogOpen: (open, filePath) =>
     set({ passwordDialogOpen: open, passwordDialogFilePath: filePath ?? null }),
   setOwnerMismatchDialogOpen: (open, fileOwnerDid) =>
