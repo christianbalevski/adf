@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 192 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 194 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -25,7 +25,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Health](#tag-health) (1)
 - [Daemon](#tag-daemon) (2)
 - [Events](#tag-events) (2)
-- [Agents](#tag-agents) (28)
+- [Agents](#tag-agents) (30)
 - [Loops](#tag-loops) (8)
 - [Chat](#tag-chat) (7)
 - [Files](#tag-files) (12)
@@ -274,6 +274,8 @@ Load, start, stop and inspect agents: status, config, tools, metadata, local tab
 | POST | [`/agents/review/accept`](#op-acceptagentreview) | Mark an .adf file's agent as reviewed |
 | GET | [`/agents/{id}`](#op-getagent) | A loaded agent's reference (id, file, config) |
 | GET | [`/agents/{id}/status`](#op-getagentstatus) | Agent runtime status |
+| GET | [`/agents/{id}/vitals`](#op-getagentvitals) | Agent vitals |
+| GET | [`/agents/{id}/activity`](#op-getagentactivity) | Agent activity |
 | POST | [`/agents/{id}/start`](#op-startagent) | Start an agent, loading it from a tracked folder when needed |
 | POST | [`/agents/{id}/stop`](#op-stopagent) | Stop and unload an agent |
 | POST | [`/agents/{id}/unload`](#op-unloadagent) | Unload an agent (alias of stop) |
@@ -832,6 +834,245 @@ Example 200 (`application/json`):
   "runtimeState": "idle",
   "targetState": null,
   "loopCount": 1
+}
+```
+
+<a id="op-getagentvitals"></a>
+
+### GET `/agents/{id}/vitals`
+
+**Agent vitals**
+
+Studio's overview card for one agent: header facts (context size, next wake, 7-day cost, model, age) and four levelled stats: Reach, Access and Autonomy (levels from config points, with the factors behind them) and Experience (a level from maturity counts). `{id}` names a loaded agent (id, handle or name, as every /agents/{id} route) or, when no loaded agent matches, a tracked agent that is not loaded (agent id or handle from its file). A loaded agent is read from its open workspace (`live: true`); any other file is read with a readonly open. Results are cached: a live agent's for at most 2 s and until its database changes, any other file's until its mtime or size changes. `force=1` skips the cache. `agentsSpawned` counts tracked agents whose parent DID names this agent, from a fleet scan at most 30 s old (`force=1` rescans). `contextTokens` and `contextThreshold` are present only for a loaded agent whose executor has reported usage; `cost7dUsd` only when some adf_loop row of the last 7 local days has a price (the row's recorded `cost_usd`; rows from before 2026-08-27 without one are priced from Studio's pricing table).
+
+Operation `getAgentVitals` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Loaded agent: its id, handle or name. |
+| `force` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [AgentVitals](#schema-agentvitals) | Vitals |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The agent is loaded without an .adf file; vitals are read from the file |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "filePath": "string",
+  "computedAt": 0,
+  "live": true,
+  "handle": "agent-1",
+  "name": "string",
+  "did": "string",
+  "agentId": "string",
+  "model": "string",
+  "createdAt": "string",
+  "ageDays": 0,
+  "status": "string",
+  "description": "string",
+  "public": true,
+  "ownerVerified": true,
+  "contextTokens": 0,
+  "contextThreshold": 0,
+  "nextWakeAt": 0,
+  "cost7dUsd": 0,
+  "cost7dPartial": true,
+  "metrics": [
+    {
+      "name": "weight",
+      "label": "Weight",
+      "value": 82.4,
+      "unit": "kg",
+      "min": 0,
+      "max": 100,
+      "target": 78,
+      "raw": "{\"value\":82.4,\"label\":\"Weight\",\"unit\":\"kg\",\"target\":78}"
+    }
+  ],
+  "stats": {
+    "reach": {
+      "level": 1,
+      "points": 0,
+      "max": 0,
+      "fill": 0,
+      "open": 0,
+      "gated": 0,
+      "high": true,
+      "rawPoints": 0,
+      "factors": [
+        {
+          "id": "tool:compute_exec",
+          "label": "string",
+          "points": 0,
+          "gated": true,
+          "configPath": "string"
+        }
+      ]
+    },
+    "access": {
+      "level": 1,
+      "points": 0,
+      "max": 0,
+      "fill": 0,
+      "open": 0,
+      "gated": 0,
+      "high": true,
+      "rawPoints": 0,
+      "factors": [
+        {
+          "id": "tool:compute_exec",
+          "label": "string",
+          "points": 0,
+          "gated": true,
+          "configPath": "string"
+        }
+      ]
+    },
+    "autonomy": {
+      "level": 1,
+      "points": 0,
+      "max": 0,
+      "fill": 0,
+      "open": 0,
+      "gated": 0,
+      "high": true,
+      "rawPoints": 0,
+      "factors": [
+        {
+          "id": "tool:compute_exec",
+          "label": "string",
+          "points": 0,
+          "gated": true,
+          "configPath": "string"
+        }
+      ]
+    },
+    "experience": {
+      "level": 1,
+      "progress": 0,
+      "score": 0,
+      "levelStart": 0,
+      "nextLevelAt": 0,
+      "breakdown": [
+        {
+          "id": "contextsWorked",
+          "label": "string",
+          "value": 0,
+          "xp": 0
+        }
+      ],
+      "nextLevel": {
+        "xp": 0,
+        "contexts": 0,
+        "memoryTokens": 0,
+        "skills": 0,
+        "hint": "string"
+      }
+    }
+  },
+  "maturity": {
+    "contextsWorked": 0,
+    "filesWritten": 0,
+    "memoryTokens": 0,
+    "localTables": 0,
+    "localRows": 0,
+    "skills": 0,
+    "agentsSpawned": 0,
+    "messages": 0,
+    "ageDays": 0
+  }
+}
+```
+
+<a id="op-getagentactivity"></a>
+
+### GET `/agents/{id}/activity`
+
+**Agent activity**
+
+The lower sections of Studio's agent overview: the next three timer wakes (raw lambda and input, or loop and prompt), 14 local days of messages and cost per day, and what the file holds (`mind/` files and skills with approximate tokens, `local_*` tables with rows). `{id}` resolves as in `GET /agents/{id}/vitals`. Everything is read from the .adf file. Messages per day: `adf_loop` rows of every role by `created_at`, plus compacted rows archived in `adf_audit` (metadata only, never the archived data): each archive's `entry_count` is spread evenly over an estimated span ending at its `created_at` and at most 24 h long, and days that include such counts have `estimated: true`. Cost per day: the sum of the day's priced loop rows; `costPartial` when some call had no recorded price or was compacted. The first read scans the window's loop rows once; later reads add only new rows. Skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.
+
+Operation `getAgentActivity` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Loaded agent: its id, handle or name. |
+| `force` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [AgentActivity](#schema-agentactivity) | Activity |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The agent is loaded without an .adf file; activity is read from the file |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "filePath": "string",
+  "computedAt": 0,
+  "live": true,
+  "upcoming": [
+    {
+      "id": 0,
+      "at": 0,
+      "scope": "system",
+      "lambda": "string",
+      "input": "string",
+      "loop": "string",
+      "prompt": "string"
+    }
+  ],
+  "daily": [
+    {
+      "date": "string",
+      "messages": 0,
+      "estimated": true,
+      "costUsd": 0,
+      "costPartial": true
+    }
+  ],
+  "contents": {
+    "mind": {
+      "files": 0,
+      "tokens": 0,
+      "updatedThisWeek": 0,
+      "strata": {
+        "older": 0,
+        "quarter": 0,
+        "month": 0,
+        "week": 0
+      }
+    },
+    "skills": {
+      "count": 0,
+      "tokens": 0
+    },
+    "tables": {
+      "count": 0,
+      "rows": 0
+    }
+  }
 }
 ```
 
@@ -13438,3 +13679,175 @@ Data of the `stream.gap` control frame: the resume could not be exact; reload st
 | `candidates[].name` | string | yes |  |
 | `candidates[].handle` | string \| null | yes |  |
 | `candidates[].filePath` | string | yes |  |
+
+<a id="schema-agentvitals"></a>
+
+### AgentVitals
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `filePath` | string | yes |  |
+| `computedAt` | number | yes | When the stats and counts were computed (ms epoch) |
+| `live` | boolean | yes | True when read from the workspace of a loaded agent |
+| `handle` | string | yes |  |
+| `name` | string |  |  |
+| `did` | string |  |  |
+| `agentId` | string |  |  |
+| `model` | string |  |  |
+| `createdAt` | string |  | adf_created_at (ISO 8601) |
+| `ageDays` | number | yes |  |
+| `status` | string |  | The agent's own status line (adf_meta `status`); absent when unset |
+| `description` | string |  | config.description, as on the ALF card; absent when blank |
+| `public` | boolean | yes | config.serving.public.enabled, the ALF card's `public` |
+| `ownerVerified` | boolean | yes | An owner attestation about the current DID is stored, unexpired and its signature verifies (whether or not the card publishes it) |
+| `contextTokens` | integer |  | Last API-reported context size (loaded agents only) |
+| `contextThreshold` | integer |  | Compact threshold (present with contextTokens) |
+| `nextWakeAt` | number |  | Earliest next_wake_at among non-expired timers (ms epoch) |
+| `cost7dUsd` | number |  | USD over the last 7 local days, summed from the agent's priced adf_loop rows (the activity read's daily cost) |
+| `cost7dPartial` | boolean |  | True when some calls in the window had no recorded price or were compacted (cost7dUsd is a lower bound) |
+| `metrics` | object[] | yes | adf_meta rows whose key starts with `metric:`, by key, at most 20. A value is a plain string, or a JSON object `{"value": number\|string, "label"?, "unit"?, "min"?, "max"?, "target"?}`; parsed fields are returned beside `raw`. A value that is not such an object is returned as `value` = `raw`. Not part of any stat. |
+| `metrics[].name` | string | yes | Key without the `metric:` prefix |
+| `metrics[].label` | string | yes | The object's `label` when given, else `name` |
+| `metrics[].value` | number \| string | yes | The object's `value`, or the raw string when the stored value is not a metric object |
+| `metrics[].unit` | string |  |  |
+| `metrics[].min` | number |  | Bar start when `max` is set (default 0) |
+| `metrics[].max` | number |  |  |
+| `metrics[].target` | number |  |  |
+| `metrics[].raw` | string | yes | The stored adf_meta value as is |
+| `stats` | object | yes |  |
+| `stats.reach` | [AgentPowerStat](#schema-agentpowerstat) | yes |  |
+| `stats.access` | [AgentPowerStat](#schema-agentpowerstat) | yes |  |
+| `stats.autonomy` | [AgentPowerStat](#schema-agentpowerstat) | yes |  |
+| `stats.experience` | [AgentExperienceStat](#schema-agentexperiencestat) | yes |  |
+| `maturity` | [AgentMaturity](#schema-agentmaturity) | yes |  |
+
+<a id="schema-agentpowerstat"></a>
+
+### AgentPowerStat
+
+Reach, Access or Autonomy: a capped level on a 1-20 scale. fill = clamp(points / max, 0, 1); level = 1 + round(19 * fill), so an empty config is Lv 1 and a maxed-out one Lv 20. `max` is the sum of every capped positive factor of the stat (counts such as MCP servers and chat adapters only count their heaviest few). Gated points count toward the level. `points` is `open` + `gated`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `level` | integer | yes |  |
+| `points` | number | yes | Points behind the level, after mitigations |
+| `max` | number | yes | Points of a maxed-out config for this stat |
+| `fill` | number | yes | points / max, clamped: how much of the possible power the agent has |
+| `open` | number | yes | Points whose capability runs without approval (mitigations come off these first) |
+| `gated` | number | yes | Points whose capability needs approval |
+| `high` | boolean | yes | True when open / max >= 0.6 (open level 12 or more): much of this runs without anyone asking |
+| `rawPoints` | number | yes | Sum of factor points, mitigations included |
+| `factors` | [AgentStatFactor](#schema-agentstatfactor)[] | yes |  |
+
+<a id="schema-agentstatfactor"></a>
+
+### AgentStatFactor
+
+One line of a stat breakdown.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Stable id, e.g. `tool:compute_exec`, `mcp:github`, `visibility` |
+| `label` | string | yes |  |
+| `points` | number | yes | Points this factor adds; negative for mitigations; 0 for an item past its kind's cap (7th MCP server, 4th chat adapter), listed but not counted |
+| `gated` | boolean | yes | True when the capability needs human approval |
+| `configPath` | string | yes | Config path (or table) that controls this factor |
+
+<a id="schema-agentexperiencestat"></a>
+
+### AgentExperienceStat
+
+Experience. xpForLevel(L) = 5 * (L - 1)^2.25; level = largest L with xpForLevel(L) <= score.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `level` | integer | yes |  |
+| `progress` | number | yes | Progress within the current level |
+| `score` | number | yes | Total XP (sum of signal XP) |
+| `levelStart` | number | yes | XP at which the current level starts |
+| `nextLevelAt` | number | yes | XP at which the next level starts |
+| `breakdown` | object[] | yes |  |
+| `breakdown[].id` | `"contextsWorked"` \| `"memoryTokens"` \| `"skills"` \| `"localTables"` \| `"localRows"` \| `"filesWritten"` \| `"agentsSpawned"` \| `"messages"` \| `"ageDays"` | yes |  |
+| `breakdown[].label` | string | yes |  |
+| `breakdown[].value` | number | yes | Raw count |
+| `breakdown[].xp` | number | yes | XP this signal adds |
+| `nextLevel` | object | yes | What one more level takes (xp = nextLevelAt - score), in units of the cheapest signals |
+| `nextLevel.xp` | number | yes |  |
+| `nextLevel.contexts` | integer | yes | Contexts of work worth the remaining XP |
+| `nextLevel.memoryTokens` | integer | yes | Memory tokens worth the remaining XP |
+| `nextLevel.skills` | integer | yes | Skills worth the remaining XP |
+| `nextLevel.hint` | string | yes |  |
+
+<a id="schema-agentmaturity"></a>
+
+### AgentMaturity
+
+Raw maturity counts read from the agent's file.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `contextsWorked` | number | yes | Contexts of work over every loop (main, side, deleted): archived loop snapshots in adf_audit (one context at half the loop's compaction threshold or more, else its share) or live compaction summaries when loop audit is off, plus each live loop's current fill as a 0..1 share of its compaction threshold |
+| `filesWritten` | integer | yes | adf_files rows changed after the agent was created, `mind/` excluded |
+| `memoryTokens` | integer | yes | Approximate tokens in `mind/` files: total bytes, less the seeded `mind/log.md` header, / 4 |
+| `localTables` | integer | yes | `local_*` tables |
+| `localRows` | integer | yes | Rows across `local_*` tables (the first 50 by name) |
+| `skills` | integer | yes | Distinct skills the agent installed or changed |
+| `agentsSpawned` | integer \| null | yes | Tracked agents whose adf_parent_did names this agent; null when no fleet scan has run |
+| `messages` | integer | yes | Loop messages ever written, every loop current and past (adf_loop's shared AUTOINCREMENT high-water mark; compaction, clears and loop deletion do not lower it) |
+| `ageDays` | number | yes | Days since adf_created_at |
+
+<a id="schema-agentactivity"></a>
+
+### AgentActivity
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `filePath` | string | yes |  |
+| `computedAt` | number | yes | When this read was computed (ms epoch) |
+| `live` | boolean | yes | True when read from the workspace of a loaded agent |
+| `upcoming` | [AgentUpcomingWake](#schema-agentupcomingwake)[] | yes | Next non-expired timers, soonest first |
+| `daily` | [AgentActivityDay](#schema-agentactivityday)[] | yes | 14 local days, oldest first; the last is today |
+| `contents` | object | yes | What the file holds, in three groups. Tokens are approximate (bytes / 4, rounded) and given for mind and skills only: table data is rarely read into context. |
+| `contents.mind` | object | yes | Files under mind/ |
+| `contents.mind.files` | integer | yes |  |
+| `contents.mind.tokens` | integer | yes | SUM(size) / 4, rounded, the seeded mind/log.md header taken off that file |
+| `contents.mind.updatedThisWeek` | integer | yes | mind/ files whose updated_at is within the last 7 days |
+| `contents.mind.strata` | object | yes | Current mind/ tokens (size / 4, rounded, the seeded mind/log.md header taken off that file) split by each file's updated_at. A boundary belongs to the younger band. |
+| `contents.mind.strata.older` | integer | yes | Last updated more than 90 days ago |
+| `contents.mind.strata.quarter` | integer | yes | Last updated more than 30 and at most 90 days ago |
+| `contents.mind.strata.month` | integer | yes | Last updated more than 7 and at most 30 days ago |
+| `contents.mind.strata.week` | integer | yes | Last updated at most 7 days ago |
+| `contents.skills` | object | yes | Skills the agent installed or changed (the Experience stat rule) |
+| `contents.skills.count` | integer | yes |  |
+| `contents.skills.tokens` | integer | yes | Size of every file under those skills' directories / 4; registry entries without files add 0 |
+| `contents.tables` | object | yes | local_* tables (at most 50 read) |
+| `contents.tables.count` | integer | yes |  |
+| `contents.tables.rows` | integer | yes | Total rows |
+
+<a id="schema-agentupcomingwake"></a>
+
+### AgentUpcomingWake
+
+One timer due soon, as raw pieces. `system` timers carry `lambda` and `input`; `agent` timers carry `loop` and `prompt`. Both texts are the timer payload as stored, cut to 1000 characters (ending in an ellipsis).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | integer | yes |  |
+| `at` | number | yes | next_wake_at (ms epoch) |
+| `scope` | `"system"` \| `"agent"` | yes | `system` runs a lambda; `agent` wakes a loop |
+| `lambda` | string |  | system: lambda reference, e.g. `lib/sync.ts:run` |
+| `input` | string |  | system: payload passed to the lambda |
+| `loop` | string |  | agent: loop the wake dispatches to (`main` when the timer names none) |
+| `prompt` | string |  | agent: payload the loop wakes with |
+
+<a id="schema-agentactivityday"></a>
+
+### AgentActivityDay
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `date` | string | yes | Local YYYY-MM-DD |
+| `messages` | integer | yes | adf_loop rows of every role created that day, plus the day's estimated share of compacted rows archived in adf_audit |
+| `estimated` | boolean |  | Some of the day's messages are compacted history whose timing is estimated (spread evenly over a span ending at the archive's creation) |
+| `costUsd` | number |  | USD of the day's priced adf_loop rows (cost_usd in the row's usage record); absent when none had a price |
+| `costPartial` | boolean |  | Some calls that day had no recorded price, or were compacted (their cost is not recorded); costUsd is a lower bound |

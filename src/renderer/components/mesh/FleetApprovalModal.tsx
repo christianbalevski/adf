@@ -4,7 +4,8 @@ import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { ApprovalControls } from '../agent/ApprovalControls'
 import { ToolCallModal } from '../agent/ToolCallModal'
-import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { orbitalSeedFor } from '../orbital/orbital-seed'
 
 /**
  * Full-context HIL approval modal — thin wrapper around the unified
@@ -94,7 +95,7 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
       headerLead={
         <span className="flex items-center gap-2 min-w-0 shrink-0">
           <span className="text-2xl leading-none shrink-0">
-            {agent?.icon || pickAgentIcon(agent?.agentId || filePath)}
+            <OrbitalAvatar seed={orbitalSeedFor({ did: agent?.did, filePath })} icon={agent?.icon} iconSeed={agent?.agentId || filePath} size={28} emojiSize={24} />
           </span>
           <span className="text-[14px] font-semibold text-neutral-800 dark:text-neutral-100 truncate max-w-40">
             {agent?.handle ?? filePath.split('/').pop()?.replace(/\.adf$/, '')}

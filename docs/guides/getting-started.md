@@ -93,7 +93,7 @@ You'll see the full conversation in the Loop panel, including any tool calls the
 Click the **Agent** tab to access configuration. Key settings include:
 
 - **Name and Description** — How your agent identifies itself
-- **Icon** — An emoji shown in the sidebar
+- **Icon** — An emoji published on the agent's card (Studio shows the agent's orbital instead)
 - **Instructions** — The system prompt that defines your agent's behavior
 - **Model** — Which LLM provider and model to use
 - **Tools** — Which built-in tools the agent can access

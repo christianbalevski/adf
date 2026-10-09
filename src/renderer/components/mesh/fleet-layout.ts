@@ -1,7 +1,8 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 import { resolveLineage, type ResolvedLineage } from '../../../shared/utils/lineage'
-import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { orbitalSeedFor } from '../orbital/orbital-seed'
+import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import type { MeshNodeData } from './MeshGraphNode'
 
 /**
@@ -159,7 +160,10 @@ export interface TerrainCell {
 export interface TerrainMember {
   filePath: string
   handle: string
-  icon?: string
+  /** Orbital avatar seed (orbitalSeedFor). */
+  seed: string | null
+  /** Emoji avatar (Settings > Agent avatars): config icon, else the pool pick. */
+  icon: string | null
 }
 
 export interface TerrainNodeData {
@@ -291,13 +295,9 @@ function relativeDir(agent: FleetAgentStatus, root: string): string {
   return districtKeyOf(agent.filePath, root)
 }
 
-/**
- * Every unit gets an icon: agents created before icon assignment (or with
- * none configured) borrow a deterministic one from the curated pool, seeded
- * by file path so it's stable across sessions without touching the file.
- */
-function iconFor(agent: FleetAgentStatus): string {
-  return agent.icon || pickAgentIcon(agent.agentId || agent.filePath)
+/** Every unit's avatar is its orbital, seeded like the sidebar's. */
+function seedFor(agent: FleetAgentStatus): string | null {
+  return orbitalSeedFor({ did: agent.did, filePath: agent.filePath })
 }
 
 function toNodeData(agent: FleetAgentStatus): MeshNodeData {
@@ -306,7 +306,7 @@ function toNodeData(agent: FleetAgentStatus): MeshNodeData {
     handle: agent.handle,
     state: agent.state,
     status: agent.status,
-    icon: iconFor(agent),
+    orbitalSeed: seedFor(agent),
     model: agent.model,
     online: agent.online,
     servedUrl: agent.servedUrl
@@ -736,7 +736,7 @@ export function computeFleetLayout(agents: FleetAgentStatus[], placement?: Fleet
       height: plan.height,
       // Cell coords relative to the terrain node's top-left
       cells: plan.cells.map((c) => ({ ...c, x: c.x - plan.minX, y: c.y - plan.minY })),
-      members: plan.members.map((m) => ({ filePath: m.filePath, handle: m.handle, icon: iconFor(m) })),
+      members: plan.members.map((m) => ({ filePath: m.filePath, handle: m.handle, seed: seedFor(m), icon: agentAvatarEmoji(m.icon, m.agentId || m.filePath) })),
       districts: plan.districts
     } satisfies TerrainNodeData
 

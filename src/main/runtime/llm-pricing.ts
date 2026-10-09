@@ -32,11 +32,33 @@ export const LLM_PRICING: Record<string, LlmModelPricing> = {
 }
 
 export function estimateLlmCallCostUsd(metadata: LlmCallMetadata): number | undefined {
-  const pricing = LLM_PRICING[metadata.model]
+  return estimateTokenCostUsd(metadata.model, {
+    input: metadata.input_tokens,
+    output: metadata.output_tokens,
+    cache_read: metadata.cache_read_tokens,
+    cache_write: metadata.cache_write_tokens,
+  })
+}
+
+/** Token counts as an `adf_loop.tokens` usage record stores them. */
+export interface TokenCounts {
+  input?: number
+  output?: number
+  cache_read?: number
+  cache_write?: number
+}
+
+/**
+ * USD for one call of `model` from its token counts; undefined when the table
+ * has no price for the model. The formula behind estimateLlmCallCostUsd, with
+ * none of its callers' gating (subscription providers, estimated usage).
+ */
+export function estimateTokenCostUsd(model: string, tokens: TokenCounts): number | undefined {
+  const pricing = LLM_PRICING[model]
   if (!pricing) return undefined
 
-  const cacheRead = metadata.cache_read_tokens ?? 0
-  const cacheWrite = metadata.cache_write_tokens ?? 0
+  const cacheRead = tokens.cache_read ?? 0
+  const cacheWrite = tokens.cache_write ?? 0
 
   // One convention for every provider. AI SDK v6 reports `usage.inputTokens`
   // as `inputTokens.total`, which already INCLUDES cache tokens everywhere:
@@ -46,11 +68,11 @@ export function estimateLlmCallCostUsd(metadata: LlmCallMetadata): number | unde
   // So base (full-rate) input is always input_tokens minus both cache buckets.
   // Cache buckets bill at their own rate, falling back to the input rate when
   // the table has no cache pricing for the model.
-  const baseInputTokens = Math.max(0, metadata.input_tokens - cacheRead - cacheWrite)
+  const baseInputTokens = Math.max(0, (tokens.input ?? 0) - cacheRead - cacheWrite)
   const inputCost = baseInputTokens * pricing.input_per_million / 1_000_000
   const cacheCost =
     cacheRead * (pricing.cache_read_per_million ?? pricing.input_per_million) / 1_000_000 +
     cacheWrite * (pricing.cache_write_per_million ?? pricing.input_per_million) / 1_000_000
-  const outputCost = metadata.output_tokens * pricing.output_per_million / 1_000_000
+  const outputCost = (tokens.output ?? 0) * pricing.output_per_million / 1_000_000
   return Number((inputCost + cacheCost + outputCost).toFixed(8))
 }

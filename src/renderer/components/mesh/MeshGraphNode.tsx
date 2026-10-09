@@ -12,7 +12,8 @@ export interface MeshNodeData {
   handle: string
   state: AgentState
   status?: string
-  icon?: string
+  /** Orbital avatar seed (orbitalSeedFor). */
+  orbitalSeed?: string | null
   model?: string
   /** False for on-disk agents with no running executor (ghost/building nodes) */
   online?: boolean

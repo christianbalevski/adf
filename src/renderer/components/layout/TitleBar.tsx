@@ -10,13 +10,10 @@ import { startForegroundAgent } from '../../utils/start-agent'
 import { ApprovalsMenu } from './ApprovalsMenu'
 import { Button } from '../ui'
 import { Wordmark } from '../common/Wordmark'
-import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { useOpenAgentOrbitalSeed } from '../orbital/useOrbitalSeed'
 
-const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
-function firstGrapheme(value: string): string {
-  return [...segmenter.segment(value)][0]?.segment ?? value[0] ?? ''
-}
 
 function NavButton({
   title,
@@ -58,6 +55,7 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
   const config = useAgentStore((s) => s.config)
   const agentState = useAgentStore((s) => s.state)
   const statusText = useAgentStore((s) => s.statusText)
+  const orbitalSeed = useOpenAgentOrbitalSeed()
   // In-flight start for this file — the store still says 'off' until it returns.
   const starting = useAppStore((s) => (filePath ? s.startingFilePaths.has(filePath) : false))
 
@@ -148,9 +146,7 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
       onClick={onActivate}
       title={onActivate ? 'The open agent — click to fly to its tile' : undefined}
     >
-      <span className="text-sm shrink-0" title={config.description || undefined}>
-        {firstGrapheme(config.icon || pickAgentIcon(config.id))}
-      </span>
+      <OrbitalAvatar seed={orbitalSeed} icon={config.icon} iconSeed={config.id} size={16} emojiSize={14} animated={agentState === 'active'} title={config.description || undefined} />
       <span
         className="shrink-0 max-w-56 font-medium text-neutral-700 dark:text-neutral-200 truncate"
         title={config.description || config.name}

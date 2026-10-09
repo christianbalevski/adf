@@ -1,0 +1,830 @@
+/**
+ * Agent stat scoring for the overview card. Pure: no IO, no clock reads
+ * (callers pass ages in), so every number here is reproducible in a test.
+ *
+ * Experience is a level on an unbounded curve:
+ *
+ *   xpForLevel(L) = scale * (L - 1) ^ exponent
+ *   level(x)      = largest L >= 1 with xpForLevel(L) <= x
+ *
+ * EXPERIENCE_CURVE (scale 5, exponent 2.25) is fed XP from what is in the
+ * file right now, so it can go down when the agent deletes its own work.
+ * With exponent > 1 a level costs more XP the higher it is, but each band is
+ * a smaller share of the total (Lv 2 spans 5..24, Lv 20 spans 3.8k..4.2k,
+ * about 11%), so 4.8k and 7k XP sit four levels apart.
+ *
+ * Reach, Access and Autonomy are capped levels on a common 1-20 scale. Every
+ * factor is capped (counts like MCP servers and chat adapters only count
+ * their heaviest few), so each stat has a fixed maximum, POWER_MAX: the sum
+ * of all its capped positive factors, computed from the tables below.
+ * Mitigations add negative points before scaling:
+ *
+ *   level = 1 + round(19 * clamp(points / max, 0, 1))
+ *
+ * An empty config is Lv 1 and a maxed-out one Lv 20 on every stat. The card's
+ * bar shows `fill` = points / max.
+ *
+ * A factor is `gated` when using it needs human approval (a `restricted`
+ * tool, a sealed secret). Gated points count toward the level; the card
+ * draws them hatched. `high` flags a stat whose open points alone are at
+ * least POWER_HIGH_OPEN_SHARE of its max (open Lv 12 or more).
+ *
+ * Calibration (asserted in tests/unit/shared/agent-stats.test.ts):
+ *   Experience                                            XP      Lv
+ *     brand-new agent                                      0       1
+ *     first session (0.3 context, 3 files, 300 memory
+ *       tokens)                                           55       3
+ *     heavy, months old (150 contexts across loops, 20k
+ *       memory tokens, 10 skills, 5 tables / 8k rows,
+ *       40 files, 3 children; work 37% of XP)             ~4000    20
+ *     1M memory tokens alone (sqrt: 10x tokens = 3.2x XP)  2600    17
+ *     4.8k / 7k / 10k XP                                  22 / 26 / 30
+ *   Power: Access, Reach, Autonomy                  points / max       Lv
+ *     empty config                                0, 0, 0              1, 1, 1
+ *     default fresh agent                   1.75, 2, 2 / 19.25, 21.5, 15.5  3, 3, 3
+ *     heavily equipped public, autonomous agent with
+ *       host access, 3 adapters, 6 MCP servers
+ *       (HEAVY fixture in the tests)              18.75, 19.5, 14.25   20, 18, 18
+ *     every factor at its cap                     19.25, 21.5, 15.5    20, 20, 20
+ */
+
+import type { AgentConfig, TimerSchedule } from '../types/adf-v02.types'
+import type {
+  AgentExperienceInputs,
+  AgentPowerInputs,
+  AgentStats,
+  ExperienceSignal,
+  ExperienceStat,
+  PowerStat,
+  StatFactor
+} from '../types/agent-vitals.types'
+
+// =============================================================================
+// Level curve
+// =============================================================================
+
+export interface LevelCurve {
+  /** XP (or points) at which Lv 2 starts. */
+  scale: number
+  /** Growth of the cost per level. 1 = every level costs `scale`. */
+  exponent: number
+}
+
+export const EXPERIENCE_CURVE: LevelCurve = { scale: 5, exponent: 2.25 }
+
+/** Top of the Reach / Access / Autonomy scale. */
+export const POWER_LEVEL_MAX = 20
+
+/** Open share of max at which a power stat is drawn in the warn colour (open Lv >= 12). */
+export const POWER_HIGH_OPEN_SHARE = 0.6
+
+/** 1 + round(19 * clamp(points / max)): Lv 1 at nothing, Lv 20 at max. */
+export function powerLevel(points: number, max: number): number {
+  return 1 + Math.round((POWER_LEVEL_MAX - 1) * powerFill(points, max))
+}
+
+/** points / max clamped to 0..1; 0 for a bad max. */
+export function powerFill(points: number, max: number): number {
+  if (!(max > 0) || !Number.isFinite(points)) return 0
+  return Math.min(1, Math.max(0, points / max))
+}
+
+/** XP at which `level` starts. Lv 1 starts at 0. */
+export function xpForLevel(level: number, curve: LevelCurve): number {
+  if (!(level > 1)) return 0
+  return curve.scale * (level - 1) ** curve.exponent
+}
+
+/** Largest level whose start is <= xp; 1 for xp <= 0. */
+export function levelForXp(xp: number, curve: LevelCurve): number {
+  if (!(xp > 0) || !Number.isFinite(xp)) return 1
+  let level = 1 + Math.floor((xp / curve.scale) ** (1 / curve.exponent))
+  // Float error in the root can land one off at an exact boundary.
+  while (xpForLevel(level + 1, curve) <= xp) level++
+  while (level > 1 && xpForLevel(level, curve) > xp) level--
+  return level
+}
+
+export interface LevelPosition {
+  level: number
+  /** 0..1 within the level. */
+  progress: number
+  levelStart: number
+  nextLevelAt: number
+}
+
+export function levelPosition(xp: number, curve: LevelCurve): LevelPosition {
+  const x = Number.isFinite(xp) && xp > 0 ? xp : 0
+  const level = levelForXp(x, curve)
+  const levelStart = xpForLevel(level, curve)
+  const nextLevelAt = xpForLevel(level + 1, curve)
+  const progress = Math.min(1, Math.max(0, (x - levelStart) / (nextLevelAt - levelStart)))
+  return { level, progress, levelStart, nextLevelAt }
+}
+
+// =============================================================================
+// Points tables
+// =============================================================================
+
+/**
+ * Access: what the agent can do. A default agent (files, sandbox code,
+ * sys_fetch) has 1.75 of 19.25 points, Lv 3.
+ */
+export const ACCESS_TOOL_POINTS: Record<string, { points: number; label: string }> = {
+  fs_read: { points: 0.25, label: 'Reads its own files' },
+  fs_write: { points: 0.25, label: 'Writes its own files' },
+  fs_delete: { points: 0.25, label: 'Deletes its own files' },
+  sys_code: { points: 0.5, label: 'Runs code in the sandbox' },
+  sys_lambda: { points: 0.25, label: 'Runs stored lambdas' },
+  sys_fetch: { points: 0.5, label: 'Fetches URLs over HTTP' },
+  db_execute: { points: 0.25, label: 'Writes to its database tables' },
+  adf_shell: { points: 0.5, label: 'Runs shell commands in its workspace' },
+  ws_connect: { points: 0.5, label: 'Opens WebSocket connections' },
+  stream_bind: { points: 0.5, label: 'Binds network streams' },
+  fs_transfer: { points: 0.5, label: 'Transfers files to other agents' },
+  mcp_install: { points: 1, label: 'Installs MCP servers' },
+  compute_exec: { points: 1, label: 'Runs commands on compute targets' }
+}
+
+export const ACCESS_POINTS = {
+  mcpServer: 0.5,
+  mcpCredentials: 0.25,
+  /** Servers that count: the heaviest (server + credentials) six; open first on a tie. */
+  mcpServerCap: 6,
+  npmPackage: 0.25,
+  npmPackageCap: 1,
+  codeNetwork: 1,
+  computeEnabled: 0.5,
+  hostAccess: 2,
+  computeHostTarget: 1.5,
+  credential: 0.25,
+  credentialCap: 1.5,
+  privateKeyPlain: 1,
+  privateKeySealed: 0.5
+} as const
+
+/**
+ * Reach: who can reach the agent and whom it reaches. Inbound points scale
+ * with messaging.visibility; a default agent (localhost, proactive) has 2 of
+ * 21.5 points, Lv 3.
+ */
+export const VISIBILITY_POINTS: Record<string, number> = {
+  off: 0,
+  directory: 0.5,
+  localhost: 1,
+  lan: 2,
+  public: 4
+}
+
+export const REACH_POINTS = {
+  sendProactive: 1,
+  sendRespondOnly: 0.5,
+  publicPage: 3,
+  apiRoute: 0.5,
+  apiRouteCap: 3,
+  sharedFiles: 1,
+  adapter: 2.5,
+  adapterRestrictedDm: 1,
+  /** Adapters that count: the heaviest three. */
+  adapterCap: 3,
+  wsConnection: 0.5,
+  wsConnectionCap: 2,
+  /** Mitigation: messages must be signed. */
+  signedOnly: -0.5
+} as const
+
+/** Autonomy: how much it does with nobody in the chat. A default agent has 2 of 15.5 points, Lv 3. */
+export const AUTONOMY_POINTS = {
+  autonomous: 3,
+  autostart: 2,
+  timers: 1,
+  timerFast: 2, // fastest interval <= 5 min
+  timerHourly: 1, // fastest interval <= 1 h
+  trigger: 0.25,
+  triggerCap: 1.5,
+  proactive: 0.5,
+  createAgents: 3,
+  updateConfig: 1,
+  sideLoop: 0.5,
+  sideLoopCap: 1.5,
+  /** Mitigation per enabled restricted tool. */
+  restrictedTool: -0.25,
+  restrictedToolCap: -1
+} as const
+
+const sum = (ns: number[]): number => ns.reduce((s, n) => s + n, 0)
+
+/**
+ * Points of a maxed-out config per stat: every capped positive factor at its
+ * cap. Derived from the tables so it follows any weight change.
+ */
+export const POWER_MAX: { access: number; reach: number; autonomy: number } = {
+  access:
+    sum(Object.values(ACCESS_TOOL_POINTS).map((t) => t.points)) +
+    ACCESS_POINTS.computeHostTarget +
+    ACCESS_POINTS.computeEnabled +
+    ACCESS_POINTS.hostAccess +
+    ACCESS_POINTS.codeNetwork +
+    ACCESS_POINTS.npmPackageCap +
+    ACCESS_POINTS.mcpServerCap * (ACCESS_POINTS.mcpServer + ACCESS_POINTS.mcpCredentials) +
+    ACCESS_POINTS.credentialCap +
+    Math.max(ACCESS_POINTS.privateKeyPlain, ACCESS_POINTS.privateKeySealed),
+  reach:
+    Math.max(...Object.values(VISIBILITY_POINTS)) +
+    Math.max(REACH_POINTS.sendProactive, REACH_POINTS.sendRespondOnly) +
+    REACH_POINTS.publicPage +
+    REACH_POINTS.apiRouteCap +
+    REACH_POINTS.sharedFiles +
+    REACH_POINTS.adapterCap * Math.max(REACH_POINTS.adapter, REACH_POINTS.adapterRestrictedDm) +
+    REACH_POINTS.wsConnectionCap,
+  autonomy:
+    AUTONOMY_POINTS.autonomous +
+    AUTONOMY_POINTS.autostart +
+    AUTONOMY_POINTS.timers +
+    Math.max(AUTONOMY_POINTS.timerFast, AUTONOMY_POINTS.timerHourly) +
+    AUTONOMY_POINTS.triggerCap +
+    AUTONOMY_POINTS.proactive +
+    AUTONOMY_POINTS.createAgents +
+    AUTONOMY_POINTS.updateConfig +
+    AUTONOMY_POINTS.sideLoopCap
+}
+
+// =============================================================================
+// Power arithmetic
+// =============================================================================
+
+/**
+ * Sum factors into open / gated points (mitigations eat open points first)
+ * and place them on the 1..POWER_LEVEL_MAX scale against `max`.
+ */
+export function toPowerStat(factors: StatFactor[], max: number): PowerStat {
+  let open = 0
+  let gated = 0
+  let mitigation = 0
+  for (const f of factors) {
+    if (f.points < 0) mitigation += f.points
+    else if (f.gated) gated += f.points
+    else open += f.points
+  }
+  open += mitigation
+  if (open < 0) {
+    gated = Math.max(0, gated + open)
+    open = 0
+  }
+  const points = open + gated
+  const rawPoints = factors.reduce((s, f) => s + f.points, 0)
+  return {
+    level: powerLevel(points, max),
+    points,
+    max,
+    fill: powerFill(points, max),
+    open,
+    gated,
+    high: powerFill(open, max) >= POWER_HIGH_OPEN_SHARE,
+    rawPoints,
+    factors
+  }
+}
+
+/**
+ * Indices of the `cap` heaviest items (by `weight`, open before gated on a
+ * tie, then input order). Items outside it still get a factor, at 0 points,
+ * so the card lists the real count.
+ */
+function countedIndices<T>(items: T[], cap: number, weight: (t: T) => number, gated: (t: T) => boolean): Set<number> {
+  const order = items
+    .map((t, i) => ({ i, w: weight(t), g: gated(t) }))
+    .sort((a, b) => b.w - a.w || Number(a.g) - Number(b.g) || a.i - b.i)
+  return new Set(order.slice(0, cap).map((o) => o.i))
+}
+
+function toolMap(inputs: AgentPowerInputs): Map<string, { restricted: boolean }> {
+  const map = new Map<string, { restricted: boolean }>()
+  for (const t of inputs.tools) if (t.enabled) map.set(t.name, { restricted: !!t.restricted })
+  return map
+}
+
+function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`
+}
+
+function formatInterval(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min`
+  return `${Math.round(ms / 3_600_000)} h`
+}
+
+// =============================================================================
+// Access
+// =============================================================================
+
+export function scoreAccess(inputs: AgentPowerInputs): PowerStat {
+  const tools = toolMap(inputs)
+  const factors: StatFactor[] = []
+
+  for (const [name, def] of Object.entries(ACCESS_TOOL_POINTS)) {
+    const t = tools.get(name)
+    if (!t) continue
+    factors.push({
+      id: `tool:${name}`,
+      label: t.restricted ? `${def.label} (needs approval)` : def.label,
+      points: def.points,
+      gated: t.restricted,
+      configPath: `tools.${name}`
+    })
+  }
+
+  const exec = tools.get('compute_exec')
+  if (exec && inputs.compute.allowedTargets.includes('host')) {
+    factors.push({
+      id: 'compute:host_target',
+      label: 'Runs commands on the host machine',
+      points: ACCESS_POINTS.computeHostTarget,
+      gated: exec.restricted,
+      configPath: 'compute.allowed_targets'
+    })
+  }
+  if (inputs.compute.enabled) {
+    factors.push({
+      id: 'compute:enabled',
+      label: 'Has its own compute container',
+      points: ACCESS_POINTS.computeEnabled,
+      gated: false,
+      configPath: 'compute.enabled'
+    })
+  }
+  if (inputs.compute.hostAccess) {
+    factors.push({
+      id: 'compute:host_access',
+      label: 'May run MCP servers on the host machine',
+      points: ACCESS_POINTS.hostAccess,
+      gated: false,
+      configPath: 'compute.host_access'
+    })
+  }
+  if (inputs.codeNetwork) {
+    factors.push({
+      id: 'code:network',
+      label: 'Sandbox code has direct network access',
+      points: ACCESS_POINTS.codeNetwork,
+      gated: false,
+      configPath: 'code_execution.network'
+    })
+  }
+  if (inputs.npmPackageCount > 0) {
+    factors.push({
+      id: 'code:packages',
+      label: `${plural(inputs.npmPackageCount, 'npm package')} installed`,
+      points: Math.min(ACCESS_POINTS.npmPackageCap, inputs.npmPackageCount * ACCESS_POINTS.npmPackage),
+      gated: false,
+      configPath: 'code_execution.packages'
+    })
+  }
+  const countedMcp = countedIndices(
+    inputs.mcpServers,
+    ACCESS_POINTS.mcpServerCap,
+    (s) => ACCESS_POINTS.mcpServer + (s.hasCredentials ? ACCESS_POINTS.mcpCredentials : 0),
+    (s) => s.restricted
+  )
+  inputs.mcpServers.forEach((s, i) => {
+    const counts = countedMcp.has(i)
+    factors.push({
+      id: `mcp:${s.name}`,
+      label: s.restricted ? `MCP server ${s.name} (tools need approval)` : `MCP server ${s.name}`,
+      points: counts ? ACCESS_POINTS.mcpServer : 0,
+      gated: s.restricted,
+      configPath: 'mcp.servers'
+    })
+    if (s.hasCredentials) {
+      factors.push({
+        id: `mcp:${s.name}:credentials`,
+        label: `MCP server ${s.name} holds credentials`,
+        points: counts ? ACCESS_POINTS.mcpCredentials : 0,
+        gated: s.restricted,
+        configPath: 'mcp.servers'
+      })
+    }
+  })
+
+  // Credentials share one cap; plain rows claim it first.
+  let credBudget: number = ACCESS_POINTS.credentialCap
+  const credPoints = (n: number): number => {
+    const p = Math.min(credBudget, n * ACCESS_POINTS.credential)
+    credBudget -= p
+    return p
+  }
+  if (inputs.credentials.plain > 0) {
+    factors.push({
+      id: 'identity:credentials_plain',
+      label: `${plural(inputs.credentials.plain, 'stored credential')}, unsealed`,
+      points: credPoints(inputs.credentials.plain),
+      gated: false,
+      configPath: 'adf_identity'
+    })
+  }
+  if (inputs.credentials.sealed > 0) {
+    factors.push({
+      id: 'identity:credentials_sealed',
+      label: `${plural(inputs.credentials.sealed, 'stored credential')}, sealed`,
+      points: credPoints(inputs.credentials.sealed),
+      gated: true,
+      configPath: 'adf_identity'
+    })
+  }
+  if (inputs.privateKey === 'plain') {
+    factors.push({
+      id: 'identity:private_key',
+      label: 'Signing key stored unsealed',
+      points: ACCESS_POINTS.privateKeyPlain,
+      gated: false,
+      configPath: 'adf_identity.crypto:signing:private_key'
+    })
+  } else if (inputs.privateKey === 'sealed') {
+    factors.push({
+      id: 'identity:private_key',
+      label: 'Signing key (sealed)',
+      points: ACCESS_POINTS.privateKeySealed,
+      gated: true,
+      configPath: 'adf_identity.crypto:signing:private_key'
+    })
+  }
+
+  return toPowerStat(factors, POWER_MAX.access)
+}
+
+// =============================================================================
+// Reach
+// =============================================================================
+
+export function scoreReach(inputs: AgentPowerInputs): PowerStat {
+  const tools = toolMap(inputs)
+  const factors: StatFactor[] = []
+  const m = inputs.messaging
+
+  const inbound = m.receive ? VISIBILITY_POINTS[m.visibility] ?? 0 : 0
+  if (inbound > 0) {
+    factors.push({
+      id: 'messaging:visibility',
+      label: `Receives messages from ${m.visibility === 'directory' ? 'agents in its directory' : `the ${m.visibility} tier`}`,
+      points: inbound,
+      gated: false,
+      configPath: 'messaging.visibility'
+    })
+    if (m.allowListCount > 0) {
+      factors.push({
+        id: 'messaging:allow_list',
+        label: `Inbox limited to ${plural(m.allowListCount, 'allowed sender')}`,
+        points: -inbound / 2,
+        gated: false,
+        configPath: 'messaging.allow_list'
+      })
+    }
+    if (!inputs.security.allowUnsigned || inputs.security.requireSignature) {
+      factors.push({
+        id: 'security:signed_only',
+        label: 'Only accepts signed messages',
+        points: REACH_POINTS.signedOnly,
+        gated: false,
+        configPath: inputs.security.requireSignature ? 'security.require_signature' : 'security.allow_unsigned'
+      })
+    }
+  }
+
+  const send = tools.get('msg_send')
+  if (send && m.mode !== 'listen_only') {
+    const proactive = m.mode === 'proactive'
+    factors.push({
+      id: 'messaging:send',
+      label: proactive ? 'Sends messages on its own' : 'Replies to messages it receives',
+      points: proactive ? REACH_POINTS.sendProactive : REACH_POINTS.sendRespondOnly,
+      gated: send.restricted,
+      configPath: 'messaging.mode'
+    })
+  }
+
+  if (inputs.serving.publicEnabled) {
+    factors.push({
+      id: 'serving:public',
+      label: 'Serves a public web page',
+      points: REACH_POINTS.publicPage,
+      gated: false,
+      configPath: 'serving.public.enabled'
+    })
+  }
+  if (inputs.serving.apiRouteCount > 0) {
+    factors.push({
+      id: 'serving:api',
+      label: `${plural(inputs.serving.apiRouteCount, 'HTTP API route')}`,
+      points: Math.min(REACH_POINTS.apiRouteCap, inputs.serving.apiRouteCount * REACH_POINTS.apiRoute),
+      gated: false,
+      configPath: 'serving.api'
+    })
+  }
+  if (inputs.serving.sharedEnabled) {
+    factors.push({
+      id: 'serving:shared',
+      label: 'Shares files with peers',
+      points: REACH_POINTS.sharedFiles,
+      gated: false,
+      configPath: 'serving.shared.enabled'
+    })
+  }
+  const adapterPoints = (a: { restrictedDm: boolean }): number => (a.restrictedDm ? REACH_POINTS.adapterRestrictedDm : REACH_POINTS.adapter)
+  const countedAdapters = countedIndices(inputs.adapters, REACH_POINTS.adapterCap, adapterPoints, () => false)
+  inputs.adapters.forEach((a, i) => {
+    factors.push({
+      id: `adapter:${a.type}`,
+      label: a.restrictedDm ? `${a.type} adapter (DMs restricted)` : `${a.type} adapter`,
+      points: countedAdapters.has(i) ? adapterPoints(a) : 0,
+      gated: false,
+      configPath: `adapters.${a.type}`
+    })
+  })
+  if (inputs.wsConnectionCount > 0) {
+    factors.push({
+      id: 'ws_connections',
+      label: `${plural(inputs.wsConnectionCount, 'standing WebSocket connection')}`,
+      points: Math.min(REACH_POINTS.wsConnectionCap, inputs.wsConnectionCount * REACH_POINTS.wsConnection),
+      gated: false,
+      configPath: 'ws_connections'
+    })
+  }
+
+  return toPowerStat(factors, POWER_MAX.reach)
+}
+
+// =============================================================================
+// Autonomy
+// =============================================================================
+
+export function scoreAutonomy(inputs: AgentPowerInputs): PowerStat {
+  const tools = toolMap(inputs)
+  const factors: StatFactor[] = []
+
+  if (inputs.autonomous) {
+    factors.push({ id: 'autonomous', label: 'Acts without waiting for a human', points: AUTONOMY_POINTS.autonomous, gated: false, configPath: 'autonomous' })
+  }
+  if (inputs.autostart) {
+    factors.push({ id: 'autostart', label: 'Starts when the runtime starts', points: AUTONOMY_POINTS.autostart, gated: false, configPath: 'autostart' })
+  }
+  if (inputs.timers.active > 0) {
+    factors.push({ id: 'timers', label: `${plural(inputs.timers.active, 'active timer')}`, points: AUTONOMY_POINTS.timers, gated: false, configPath: 'adf_timers' })
+    const fastest = inputs.timers.fastestIntervalMs
+    if (fastest !== undefined && fastest <= 3_600_000) {
+      factors.push({
+        id: 'timers:fastest',
+        label: `Wakes every ${formatInterval(fastest)}`,
+        points: fastest <= 300_000 ? AUTONOMY_POINTS.timerFast : AUTONOMY_POINTS.timerHourly,
+        gated: false,
+        configPath: 'adf_timers'
+      })
+    }
+  }
+  const triggerTargets = inputs.triggers.reduce((s, t) => s + t.targets, 0)
+  if (triggerTargets > 0) {
+    factors.push({
+      id: 'triggers',
+      label: `Wakes on ${plural(inputs.triggers.length, 'event type')} (${inputs.triggers.map((t) => t.type).join(', ')})`,
+      points: Math.min(AUTONOMY_POINTS.triggerCap, triggerTargets * AUTONOMY_POINTS.trigger),
+      gated: false,
+      configPath: 'triggers'
+    })
+  }
+  const send = tools.get('msg_send')
+  if (send && inputs.messaging.mode === 'proactive') {
+    factors.push({ id: 'messaging:proactive', label: 'Starts conversations', points: AUTONOMY_POINTS.proactive, gated: send.restricted, configPath: 'messaging.mode' })
+  }
+  const spawn = tools.get('sys_create_adf')
+  if (spawn) {
+    factors.push({ id: 'tool:sys_create_adf', label: spawn.restricted ? 'Creates new agents (needs approval)' : 'Creates new agents', points: AUTONOMY_POINTS.createAgents, gated: spawn.restricted, configPath: 'tools.sys_create_adf' })
+  }
+  const update = tools.get('sys_update_config')
+  if (update) {
+    factors.push({ id: 'tool:sys_update_config', label: update.restricted ? 'Changes its own config (needs approval)' : 'Changes its own config', points: AUTONOMY_POINTS.updateConfig, gated: update.restricted, configPath: 'tools.sys_update_config' })
+  }
+  if (inputs.sideLoopCount > 0) {
+    factors.push({
+      id: 'loops',
+      label: `${plural(inputs.sideLoopCount, 'inner loop')}`,
+      points: Math.min(AUTONOMY_POINTS.sideLoopCap, inputs.sideLoopCount * AUTONOMY_POINTS.sideLoop),
+      gated: false,
+      configPath: 'loops'
+    })
+  }
+  const restricted = [...tools.values()].filter((t) => t.restricted).length
+  if (restricted > 0) {
+    factors.push({
+      id: 'tools:restricted',
+      label: `${plural(restricted, 'tool')} need${restricted === 1 ? 's' : ''} approval`,
+      points: Math.max(AUTONOMY_POINTS.restrictedToolCap, restricted * AUTONOMY_POINTS.restrictedTool),
+      gated: false,
+      configPath: 'tools[].restricted'
+    })
+  }
+
+  return toPowerStat(factors, POWER_MAX.autonomy)
+}
+
+// =============================================================================
+// Experience
+// =============================================================================
+
+/**
+ * XP per unit. score = sum(signal XP), placed on EXPERIENCE_CURVE. Durable
+ * learning (memory, skills, tables, files, children) is the main signal; work
+ * counts in contexts; raw message volume and age add a little. Memory tokens
+ * and local rows are square-rooted so a bulk import cannot buy levels; the
+ * curve does the flattening.
+ */
+export const EXPERIENCE_WEIGHTS = {
+  /** Per context worked: one compaction, or a loop's current fill as a share of its compaction threshold. */
+  contextsWorked: 10,
+  /**
+   * Multiplied by sqrt(approximate tokens in `mind/` files), so 10x memory is
+   * about 3.2x the XP and a bulk dump cannot buy levels (1M tokens alone is
+   * Lv 17). 2.6 keeps the first-session anchor (300 tokens) at Lv 3 with
+   * margin; skills, rows and children carry the heavy anchor instead.
+   */
+  memoryTokensSqrt: 2.6,
+  /** Per skill installed or changed. */
+  skills: 80,
+  /** Per `local_*` table. */
+  localTables: 10,
+  /** Multiplied by sqrt(total local rows). */
+  localRowsSqrt: 7,
+  /** Per file written or changed after creation. */
+  filesWritten: 2,
+  /** Per child agent. */
+  agentsSpawned: 75,
+  /** Per loop message ever written (all loops, current and past). Small: volume alone must not level an agent. */
+  messages: 0.01,
+  /** Per day of age, scaled by activity = min(1, contextsWorked / ageActivityContexts) so an idle file does not level up by waiting. */
+  ageDays: 0.5,
+  ageActivityContexts: 10
+} as const
+
+const EXPERIENCE_LABELS: Record<keyof AgentExperienceInputs, string> = {
+  contextsWorked: 'Contexts of work',
+  filesWritten: 'Files written',
+  memoryTokens: 'Memory tokens',
+  skills: 'Skills',
+  localTables: 'Database tables',
+  localRows: 'Database rows',
+  agentsSpawned: 'Agents created',
+  messages: 'Messages',
+  ageDays: 'Days active'
+}
+
+export function experienceSignals(inputs: AgentExperienceInputs): ExperienceSignal[] {
+  const w = EXPERIENCE_WEIGHTS
+  const n = (v: number | null | undefined): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0)
+  const activity = Math.min(1, n(inputs.contextsWorked) / w.ageActivityContexts)
+  const signals: ExperienceSignal[] = [
+    { id: 'contextsWorked', label: EXPERIENCE_LABELS.contextsWorked, value: n(inputs.contextsWorked), xp: n(inputs.contextsWorked) * w.contextsWorked },
+    { id: 'memoryTokens', label: EXPERIENCE_LABELS.memoryTokens, value: n(inputs.memoryTokens), xp: Math.sqrt(n(inputs.memoryTokens)) * w.memoryTokensSqrt },
+    { id: 'skills', label: EXPERIENCE_LABELS.skills, value: n(inputs.skills), xp: n(inputs.skills) * w.skills },
+    { id: 'localTables', label: EXPERIENCE_LABELS.localTables, value: n(inputs.localTables), xp: n(inputs.localTables) * w.localTables },
+    { id: 'localRows', label: EXPERIENCE_LABELS.localRows, value: n(inputs.localRows), xp: Math.sqrt(n(inputs.localRows)) * w.localRowsSqrt },
+    { id: 'filesWritten', label: EXPERIENCE_LABELS.filesWritten, value: n(inputs.filesWritten), xp: n(inputs.filesWritten) * w.filesWritten }
+  ]
+  if (inputs.agentsSpawned !== null) {
+    signals.push({ id: 'agentsSpawned', label: EXPERIENCE_LABELS.agentsSpawned, value: n(inputs.agentsSpawned), xp: n(inputs.agentsSpawned) * w.agentsSpawned })
+  }
+  signals.push(
+    { id: 'messages', label: EXPERIENCE_LABELS.messages, value: n(inputs.messages), xp: n(inputs.messages) * w.messages },
+    { id: 'ageDays', label: EXPERIENCE_LABELS.ageDays, value: Math.floor(n(inputs.ageDays)), xp: n(inputs.ageDays) * w.ageDays * activity }
+  )
+  return signals
+}
+
+/** 950 -> "950", 1234 -> "1.3k" (rounded up: a hint never undersells what is needed). */
+function ceilCount(n: number): string {
+  if (n < 1000) return String(n)
+  const k = Math.ceil(n / 100) / 10
+  return `${k % 1 === 0 ? k.toFixed(0) : k.toFixed(1)}k`
+}
+
+export function scoreExperience(inputs: AgentExperienceInputs): ExperienceStat {
+  const breakdown = experienceSignals(inputs)
+  const score = breakdown.reduce((s, b) => s + b.xp, 0)
+  const pos = levelPosition(score, EXPERIENCE_CURVE)
+  const xp = Math.max(0, pos.nextLevelAt - score)
+  const w = EXPERIENCE_WEIGHTS
+  const contexts = Math.ceil(xp / w.contextsWorked)
+  // Memory XP is k*sqrt(tokens): invert from the current memory, not from 0.
+  const memoryNow = typeof inputs.memoryTokens === 'number' && Number.isFinite(inputs.memoryTokens) && inputs.memoryTokens > 0 ? inputs.memoryTokens : 0
+  const memoryXpNow = Math.sqrt(memoryNow) * w.memoryTokensSqrt
+  const memoryTokens = Math.max(0, Math.ceil(((memoryXpNow + xp) / w.memoryTokensSqrt) ** 2 - memoryNow))
+  const skills = Math.ceil(xp / w.skills)
+  return {
+    level: pos.level,
+    progress: pos.progress,
+    score,
+    levelStart: pos.levelStart,
+    nextLevelAt: pos.nextLevelAt,
+    breakdown,
+    nextLevel: {
+      xp,
+      contexts,
+      memoryTokens,
+      skills,
+      hint: `Lv ${pos.level + 1} needs ${Math.ceil(xp)} more XP: about ${plural(contexts, 'context')} of work, ${ceilCount(memoryTokens)} memory tokens or ${plural(skills, 'skill')}`
+    }
+  }
+}
+
+// =============================================================================
+// Config → inputs
+// =============================================================================
+
+/** Shortest repeat interval of a schedule, when it has one. Cron is read only in its `*\/N` minute form. */
+export function scheduleIntervalMs(schedule: TimerSchedule | null | undefined): number | undefined {
+  if (!schedule) return undefined
+  if (schedule.mode === 'interval') return schedule.every_ms > 0 ? schedule.every_ms : undefined
+  if (schedule.mode === 'cron') {
+    const minute = schedule.cron.trim().split(/\s+/)[0] ?? ''
+    if (minute === '*') return 60_000
+    const step = /^\*\/(\d+)$/.exec(minute)
+    if (step) return Number(step[1]) * 60_000
+    return undefined
+  }
+  return undefined
+}
+
+export interface PowerTableInputs {
+  credentials: { plain: number; sealed: number }
+  privateKey: 'none' | 'sealed' | 'plain'
+  timers: { active: number; fastestIntervalMs?: number }
+}
+
+/** Plain inputs from a parsed config plus the table-derived parts. Tolerates partial configs. */
+export function powerInputsFromConfig(config: Partial<AgentConfig>, tables: PowerTableInputs): AgentPowerInputs {
+  const triggers: AgentPowerInputs['triggers'] = []
+  for (const [type, t] of Object.entries(config.triggers ?? {})) {
+    if (type === 'on_chat' || !t?.enabled) continue
+    const targets = Array.isArray(t.targets) ? t.targets.length : 0
+    if (targets > 0) triggers.push({ type, targets })
+  }
+  const mcpServers = (config.mcp?.servers ?? []).map((s) => ({
+    name: s.name,
+    restricted: !!s.restricted,
+    hasCredentials: !!(
+      s.oauth ||
+      s.bearer_token_env_var ||
+      (s.env_keys && s.env_keys.length > 0) ||
+      (s.env_schema && s.env_schema.length > 0) ||
+      (s.header_env && s.header_env.length > 0) ||
+      (s.credential_files && s.credential_files.length > 0)
+    )
+  }))
+  const adapters = Object.entries(config.adapters ?? {})
+    .filter(([, a]) => a?.enabled)
+    .map(([type, a]) => ({ type, restrictedDm: a.policy?.dm === 'allowlist' || a.policy?.dm === 'none' }))
+  const allowedTargets = [...(config.compute?.allowed_targets ?? [])]
+  if (config.compute?.target && !allowedTargets.includes(config.compute.target)) allowedTargets.push(config.compute.target)
+
+  return {
+    tools: (config.tools ?? []).map((t) => ({ name: t.name, enabled: !!t.enabled, restricted: !!t.restricted })),
+    autonomous: !!config.autonomous,
+    autostart: !!config.autostart,
+    messaging: {
+      receive: config.messaging?.receive ?? false,
+      mode: config.messaging?.mode ?? 'proactive',
+      visibility: config.messaging?.visibility ?? 'localhost',
+      allowListCount: config.messaging?.allow_list?.length ?? 0
+    },
+    security: {
+      allowUnsigned: config.security?.allow_unsigned ?? true,
+      requireSignature: !!config.security?.require_signature
+    },
+    serving: {
+      publicEnabled: !!config.serving?.public?.enabled,
+      apiRouteCount: config.serving?.api?.length ?? 0,
+      sharedEnabled: !!config.serving?.shared?.enabled
+    },
+    adapters,
+    wsConnectionCount: (config.ws_connections ?? []).filter((c) => c?.enabled).length,
+    mcpServers,
+    npmPackageCount: config.code_execution?.packages?.length ?? 0,
+    codeNetwork: !!config.code_execution?.network,
+    compute: {
+      enabled: !!config.compute?.enabled,
+      hostAccess: !!config.compute?.host_access,
+      allowedTargets
+    },
+    triggers,
+    sideLoopCount: config.loops?.length ?? 0,
+    credentials: tables.credentials,
+    privateKey: tables.privateKey,
+    timers: tables.timers
+  }
+}
+
+export function scoreAgent(power: AgentPowerInputs, experience: AgentExperienceInputs): AgentStats {
+  return {
+    reach: scoreReach(power),
+    access: scoreAccess(power),
+    autonomy: scoreAutonomy(power),
+    experience: scoreExperience(experience)
+  }
+}

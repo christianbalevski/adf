@@ -31,7 +31,7 @@ A short description of what this agent does. Shown in `agent_discover` output an
 
 ### Icon
 
-A single emoji used for visual identification in the sidebar and other UI elements.
+A single emoji published on the agent's card, for clients that show one. Studio draws the agent's orbital instead: a shape generated from its DID, the same on every surface.
 
 ### Agent ID
 

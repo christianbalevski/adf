@@ -7,6 +7,7 @@
 
 import { brotliCompress, brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'zlib'
 import { promisify } from 'util'
+import { createPrivateKey, createPublicKey } from 'crypto'
 import type { ContentBlock } from '@shared/types/provider.types'
 import type {
   AgentConfig,
@@ -233,6 +234,14 @@ export function isReservedMcpRuntimePurpose(purpose: string): boolean {
 export function mcpRuntimeIdentityAccess(purpose: string): { readUnlocked: boolean; writeUnlocked: boolean } {
   if (!isReservedMcpRuntimePurpose(purpose)) return { readUnlocked: true, writeUnlocked: true }
   return { readUnlocked: false, writeUnlocked: false }
+}
+
+/** Throws unless `privateKey` (PKCS8 DER) is Ed25519 and `publicKey` (SPKI DER) is its public half. */
+function assertEd25519Pair(privateKey: Buffer, publicKey: Buffer): void {
+  const priv = createPrivateKey({ key: privateKey, format: 'der', type: 'pkcs8' })
+  if (priv.asymmetricKeyType !== 'ed25519') throw new Error('Adopted identity key is not Ed25519')
+  const derived = createPublicKey(priv).export({ type: 'spki', format: 'der' })
+  if (!Buffer.from(derived).equals(publicKey)) throw new Error('Adopted identity public key does not match its private key')
 }
 
 export class AdfWorkspace {
@@ -934,9 +943,18 @@ export class AdfWorkspace {
   /**
    * Generate Ed25519 key pair + DID for an ADF that doesn't have one.
    * If a password is active, the new keys are encrypted with the given derivedKey.
+   *
+   * `adopt` stores a keypair minted earlier (an identity draft from the create
+   * screen) instead of a fresh one. The rows, sealing, and adf_did are exactly
+   * what a fresh mint writes. The pair is checked first: the public key must
+   * be the Ed25519 public half of the private key.
    */
-  generateIdentityKeys(derivedKey: Buffer | null): { did: string } {
-    const keyPair = generateEd25519KeyPair()
+  generateIdentityKeys(
+    derivedKey: Buffer | null,
+    adopt?: { privateKey: Buffer; publicKey: Buffer }
+  ): { did: string } {
+    if (adopt) assertEd25519Pair(adopt.privateKey, adopt.publicKey)
+    const keyPair = adopt ?? generateEd25519KeyPair()
     const rawPubKey = extractRawPublicKey(keyPair.publicKey)
     const did = publicKeyToDid(rawPubKey)
 

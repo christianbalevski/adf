@@ -96,12 +96,14 @@ export class TrackedDirError extends Error {
   }
 }
 
-function storedDirs(settings: TrackedDirsSettings): string[] {
+/** settings.trackedDirectories, non-empty strings only. */
+export function storedDirs(settings: TrackedDirsSettings): string[] {
   const raw = settings.get('trackedDirectories')
   return Array.isArray(raw) ? raw.filter((d): d is string => typeof d === 'string' && d.length > 0) : []
 }
 
-function maxDepthOf(settings: TrackedDirsSettings): number {
+/** settings.maxDirectoryScanDepth (default 5). */
+export function maxDepthOf(settings: TrackedDirsSettings): number {
   const raw = settings.get('maxDirectoryScanDepth')
   return typeof raw === 'number' && Number.isFinite(raw) ? raw : 5
 }

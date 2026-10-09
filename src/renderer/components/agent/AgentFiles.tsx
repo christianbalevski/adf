@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
+import { useAppStore } from '../../stores/app.store'
 import { Dialog } from '../common/Dialog'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'

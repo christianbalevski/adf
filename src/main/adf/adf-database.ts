@@ -2520,7 +2520,7 @@ export class AdfDatabase {
    */
   static peekMessagingConfig(
     filePath: string
-  ): { id: string; name: string; receive: boolean; mode: string; autonomous: boolean; icon?: string } | null {
+  ): { id: string; name: string; receive: boolean; mode: string; autonomous: boolean; icon?: string; did?: string } | null {
     try {
       return AdfDatabase.peekReadonly(filePath, (db) => {
         const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
@@ -2529,7 +2529,17 @@ export class AdfDatabase {
         if (!row) return null
 
         const config = JSON.parse(row.config_json) as AgentConfig
+        // The DID seeds the agent's orbital avatar in the sidebar.
+        let did: string | undefined
+        try {
+          const meta = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_did'").get() as { value: unknown } | undefined
+          const v = meta ? (Buffer.isBuffer(meta.value) ? meta.value.toString('utf-8') : String(meta.value)) : ''
+          did = v || undefined
+        } catch {
+          did = undefined
+        }
         return {
+          did,
           id: config.id,
           name: config.name,
           receive: config.messaging?.receive ?? false,

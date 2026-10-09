@@ -57,6 +57,7 @@ import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
+import { toDisplayState } from './display-state'
 
 /** Max agents starting concurrently during the boot autostart scan. */
 const AUTOSTART_CONCURRENCY = 5
@@ -68,31 +69,8 @@ const AUTOSTART_CONCURRENCY = 5
  */
 const MCP_CONNECT_BUDGET_MS = 25_000
 
-/** Map executor internal states to display states for the UI. */
-export function toDisplayState(executorState: string): AgentState {
-  switch (executorState) {
-    case 'thinking':
-    case 'tool_use':
-      return 'active'
-    case 'idle':
-      return 'idle'
-    case 'awaiting_approval':
-    case 'awaiting_ask':
-    case 'suspended':
-      return 'suspended'
-    case 'error':
-      return 'error'
-    case 'stopped':
-      return 'off'
-    // ADF display states (pass-through from sys_set_state target)
-    case 'active':
-    case 'hibernate':
-    case 'off':
-      return executorState as AgentState
-    default:
-      return 'off'
-  }
-}
+// Shared with the daemon (agent vitals); re-exported for existing importers.
+export { toDisplayState }
 
 /** How many inner loops are mid-turn. The sidebar's count badge reads this. */
 export function countActiveLoops(loopStates: Map<string, AgentState>): number {

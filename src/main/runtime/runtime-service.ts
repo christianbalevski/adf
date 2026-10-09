@@ -174,6 +174,16 @@ export interface RuntimeAgentSummary {
   autostart: boolean
 }
 
+/** A loaded file-backed agent as `listLiveAgents()` returns it. */
+export interface RuntimeLiveAgent {
+  agentId: string
+  filePath: string
+  /** The executor's raw state (`thinking`, `idle`, ...). */
+  executorState: string
+  workspace: AdfWorkspace
+  getContextGauge(): { tokens: number; threshold: number } | undefined
+}
+
 export interface RuntimeAgentStatus extends RuntimeAgentSummary {
   runtimeState: AgentState
   targetState: string | null
@@ -2167,6 +2177,27 @@ export class RuntimeService extends EventEmitter {
 
   listAgents(): RuntimeAgentSummary[] {
     return Array.from(this.agents.values()).map(managed => this.toSummary(managed))
+  }
+
+  /**
+   * Loaded file-backed agents with their live executor state, context gauge
+   * and open workspace. Agent vitals reads a running agent out of this
+   * workspace instead of reopening its file.
+   */
+  listLiveAgents(): RuntimeLiveAgent[] {
+    const out: RuntimeLiveAgent[] = []
+    for (const managed of this.agents.values()) {
+      if (!managed.filePath) continue
+      const executor = managed.agent.executor
+      out.push({
+        agentId: managed.id,
+        filePath: managed.filePath,
+        executorState: executor.getState(),
+        workspace: managed.agent.workspace,
+        getContextGauge: () => executor.getContextGauge(),
+      })
+    }
+    return out
   }
 
   override on(event: 'agent-event', listener: (event: RuntimeAgentEvent) => void): this

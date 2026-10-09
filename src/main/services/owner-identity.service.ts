@@ -620,10 +620,15 @@ export class OwnerIdentityService {
    * a stripped-identity file is untrusted (anyone can strip and reshare), and
    * stamping our owner DID into it before the user accepts review would make
    * rejection meaningless. Minting happens on review-accept instead.
+   *
+   * adoptKeys: when keys are minted, store this pair instead of a fresh one
+   * (an identity draft from the create screen). Everything else is the same
+   * as a fresh mint: envelopes, sealing, stamps, attestations. Ignored when
+   * the file already has signing keys, so it can never replace an identity.
    */
   ensureWorkspaceIdentity(
     workspace: AdfWorkspace,
-    opts: { mintKeys?: boolean } = {}
+    opts: { mintKeys?: boolean; adoptKeys?: { privateKey: Buffer; publicKey: Buffer } } = {}
   ): { keysGenerated: boolean; sealed: number } {
     if (workspace.isPasswordProtected()) {
       // Still run the unlock-only step: envelope unwrap is X25519 against
@@ -670,7 +675,7 @@ export class OwnerIdentityService {
     }
     const signingRow = workspace.getIdentityRow('crypto:signing:private_key')
     if (signingRow === null) {
-      workspace.generateIdentityKeys(null)
+      workspace.generateIdentityKeys(null, opts.adoptKeys)
       keysGenerated = true
       stampAndAttest()
     } else if (

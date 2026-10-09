@@ -36,6 +36,8 @@ import { DaemonRequestGuard, type DaemonRequestGuardOptions } from './request-gu
 import { registerTemplateRoutes } from './template-routes'
 import { registerProviderRoutes } from './provider-routes'
 import { registerContextRoutes } from './context-routes'
+import { createDaemonVitalsDeps, registerVitalsRoutes, type DaemonVitalsMesh } from './vitals-routes'
+import { AgentVitalsService } from '../services/agent-vitals'
 import type { ProviderKeyVault } from './provider-key-vault'
 import { listFolderAgents, listTrackedAgents, listTrackedDirs, noteAutostartReport, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
 
@@ -48,6 +50,8 @@ export interface DaemonHttpApiOptions {
   eventBus?: DaemonEventBus
   wsService?: DaemonWsService
   networkService?: DaemonNetworkService
+  /** The daemon's mesh, for GET /agents/:id/vitals (absent: mesh reads as not running). */
+  mesh?: DaemonVitalsMesh
   mcpPackageService?: DaemonPackageService
   mcpPythonPackageService?: DaemonPythonPackageService
   adapterPackageService?: DaemonPackageService
@@ -673,6 +677,16 @@ export function createDaemonHttpApi(
   registerTemplateRoutes(server, { agentFactory: opts.agentFactory })
   registerProviderRoutes(server, { settingsStore: opts.settingsStore, providerKeys: opts.providerKeys })
   registerContextRoutes(server, runtime)
+  registerVitalsRoutes(server, {
+    runtime,
+    settings: opts.settingsStore,
+    vitals: new AgentVitalsService(createDaemonVitalsDeps({
+      runtime,
+      settings: opts.settingsStore,
+      mesh: opts.mesh,
+      ws: opts.wsService,
+    })),
+  })
 
   server.get<{ Querystring: EventsQuery }>('/events', async (request, reply) => {
     if (!opts.eventBus) return unavailable(reply, 'Event bus is not configured.')

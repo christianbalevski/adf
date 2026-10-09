@@ -3,7 +3,8 @@ import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.st
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { ACTIVITY_TYPE_MARKS } from './MeshGraphNode'
-import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 import { formatTokenCount as formatBurn } from '../../utils/token-estimate'
 
@@ -196,7 +197,7 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
                     {showDelta < 0 && <span className="text-red-400">▼</span>}
                   </span>
                   <span className="shrink-0 text-base leading-none">
-                    {r.agent.icon || pickAgentIcon(r.agent.agentId || r.agent.filePath)}
+                    <OrbitalAvatar seed={orbitalSeedFor({ did: r.agent.did, filePath: r.agent.filePath })} icon={r.agent.icon} iconSeed={r.agent.agentId || r.agent.filePath} size={18} emojiSize={16} />
                   </span>
                   <span className="flex-1 min-w-0">
                     <span className="flex items-center gap-1.5">

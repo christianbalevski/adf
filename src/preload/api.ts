@@ -1,5 +1,5 @@
 import type { AppUpdateState, AppUpdateCheckResult, SpellcheckDownloadResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
-  QuickCreateResult, FileSharePrepareResult,
+  QuickCreateResult, IdentityDraft, FileSharePrepareResult,
   AgentTemplateListResult,
   AgentTemplateContents,
   ShippedTemplateId
@@ -10,6 +10,8 @@ import type { ChatHistory, ChatHistoryEntry, Inbox, RendererOutboxMessage } from
 import type { ContentBlock } from '../shared/types/provider.types'
 import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
+import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
+import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 
 export interface AdfApi {
   // App
@@ -22,7 +24,11 @@ export interface AdfApi {
   saveFile: () => Promise<FileOperationResult>
   createFile: (name: string) => Promise<FileOperationResult>
   /** New agent in the agents folder under a generated name; no dialog. Opens it like createFile. `providerId` picks its provider (else the app default). */
-  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string }) => Promise<QuickCreateResult>
+  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string; identityDraftId?: string }) => Promise<QuickCreateResult>
+  /** Mint an identity ahead of an agent; pass draftId to createQuickAgent to adopt it. */
+  mintIdentityDraft: () => Promise<IdentityDraft>
+  /** Forget a draft minted with mintIdentityDraft. */
+  discardIdentityDraft: (draftId: string) => Promise<boolean>
   /** The default folder for new agents (agentsFolder setting, else Documents/adf-agents). */
   getDefaultAgentsFolder: () => Promise<{ path: string }>
   closeFile: () => Promise<FileOperationResult>
@@ -182,6 +188,10 @@ export interface AdfApi {
   disableMesh: () => Promise<{ success: boolean; error?: string }>
   getMeshStatus: () => Promise<MeshStatusResult>
   getMeshFleetStatus: () => Promise<FleetStatusResult>
+  /** Overview card vitals for one agent. `force` skips the main-process cache (use after turn_complete). */
+  getAgentVitals: (filePath: string, opts?: { force?: boolean }) => Promise<AgentVitals>
+  /** Overview's lower sections: next wakes, 14-day activity, contents. */
+  getAgentActivity: (filePath: string, opts?: { force?: boolean }) => Promise<AgentActivity>
   getMeshTokenBurn: () => Promise<FleetBurnResult>
   onMeshEvent: (callback: (event: MeshEvent) => void) => () => void
   getMeshDebug: () => Promise<MeshDebugInfo>
@@ -647,6 +657,12 @@ export interface AdfApi {
   getFullscreenState: () => Promise<boolean>
   setFullscreen: (fullscreen: boolean) => Promise<void>
   onFullscreenChanged: (callback: (isFullscreen: boolean) => void) => () => void
+
+  // Rendered agent orbitals (disk cache under userData/orbitals)
+  /** Cached PNG bytes, or null when this seed/theme/kind was never stored. */
+  orbitalCacheGet: (req: OrbitalCacheRequest) => Promise<Uint8Array | null>
+  /** Store a rendered PNG. False when refused (not a PNG, too large) or the write failed. */
+  orbitalCachePut: (req: OrbitalCacheRequest, bytes: Uint8Array) => Promise<boolean>
 
   // Emergency stop
   emergencyStop: () => Promise<{ success: boolean; error?: string }>

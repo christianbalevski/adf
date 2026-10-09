@@ -222,9 +222,9 @@ describe('selectActiveDockPanel', () => {
     expect(selectActiveDockPanel(useAppStore.getState())).toBe('files')
   })
 
-  it('center placement (no map) falls a dock still on Loops through to Inbox', () => {
+  it('center placement (no map) falls a dock still on Loops through to Overview', () => {
     useAppStore.setState({ chatPlacement: 'center', rightPanel: 'loop', showMeshGraph: false })
-    expect(selectActiveDockPanel(useAppStore.getState())).toBe('inbox')
+    expect(selectActiveDockPanel(useAppStore.getState())).toBe('overview')
   })
 
   it('center placement yielded to the map shows Loops, whatever was parked under it', () => {

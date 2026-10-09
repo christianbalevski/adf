@@ -3,6 +3,7 @@ import { IPC } from '../shared/constants/ipc-channels'
 import type { AppUpdateState, FleetSettableState, NotificationsSnapshot } from '../shared/types/ipc.types'
 import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { AdfApi } from './api'
+import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 
 const api: AdfApi = {
   // App
@@ -15,8 +16,10 @@ const api: AdfApi = {
   saveFile: () => ipcRenderer.invoke(IPC.FILE_SAVE),
   createFile: (name: string) =>
     ipcRenderer.invoke(IPC.FILE_CREATE, { name }),
-  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string }) =>
+  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string; identityDraftId?: string }) =>
     ipcRenderer.invoke(IPC.FILE_CREATE_QUICK, options ?? {}),
+  mintIdentityDraft: () => ipcRenderer.invoke(IPC.IDENTITY_DRAFT_MINT),
+  discardIdentityDraft: (draftId: string) => ipcRenderer.invoke(IPC.IDENTITY_DRAFT_DISCARD, draftId),
   getDefaultAgentsFolder: () => ipcRenderer.invoke(IPC.AGENTS_FOLDER_DEFAULT_GET),
   closeFile: () => ipcRenderer.invoke(IPC.FILE_CLOSE),
   deleteFile: (filePath: string) =>
@@ -169,6 +172,10 @@ const api: AdfApi = {
   disableMesh: () => ipcRenderer.invoke(IPC.MESH_DISABLE),
   getMeshStatus: () => ipcRenderer.invoke(IPC.MESH_STATUS),
   getMeshFleetStatus: () => ipcRenderer.invoke(IPC.MESH_FLEET_STATUS),
+  getAgentVitals: (filePath: string, opts?: { force?: boolean }) =>
+    ipcRenderer.invoke(IPC.AGENT_VITALS, { filePath, force: opts?.force }),
+  getAgentActivity: (filePath: string, opts?: { force?: boolean }) =>
+    ipcRenderer.invoke(IPC.AGENT_ACTIVITY, { filePath, force: opts?.force }),
   getMeshTokenBurn: () => ipcRenderer.invoke(IPC.MESH_TOKEN_BURN),
   onMeshEvent: (callback: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
@@ -678,6 +685,10 @@ const api: AdfApi = {
     ipcRenderer.on(IPC.APP_FULLSCREEN_CHANGED, handler)
     return () => ipcRenderer.removeListener(IPC.APP_FULLSCREEN_CHANGED, handler)
   },
+
+  // Rendered agent orbitals
+  orbitalCacheGet: (req: OrbitalCacheRequest) => ipcRenderer.invoke(IPC.ORBITAL_CACHE_GET, req),
+  orbitalCachePut: (req: OrbitalCacheRequest, bytes: Uint8Array) => ipcRenderer.invoke(IPC.ORBITAL_CACHE_PUT, req, bytes),
 
   // Emergency stop
   emergencyStop: () => ipcRenderer.invoke(IPC.EMERGENCY_STOP),

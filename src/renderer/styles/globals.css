@@ -1030,3 +1030,39 @@ body.panel-resizing webview {
 @media (prefers-reduced-motion: reduce) {
   .name-shake { animation: none; }
 }
+
+/* Agent orbital avatar playing its sprite strip (OrbitalAvatar). The strip
+   width comes in as --orbital-strip-w; duration and steps() are set inline. */
+@keyframes adf-orbital-strip {
+  from { background-position: 0 0; }
+  to { background-position: calc(-1 * var(--orbital-strip-w)) 0; }
+}
+.adf-orbital-strip {
+  background-repeat: no-repeat;
+  animation-name: adf-orbital-strip;
+  animation-iteration-count: infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .adf-orbital-strip { animation: none; }
+}
+
+/* Brand .pulse-ring (BRAND.md section 8): one 1.1 s ring to draw the eye once.
+   Used on the overview orbital when an agent levels up. Reduced motion shows
+   a static 3 px ring for as long as the class is applied. */
+.pulse-ring {
+  animation: pulse-ring 1.1s ease-out 1;
+}
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgb(var(--particle) / 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 16px rgb(var(--particle) / 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse-ring {
+    animation: none;
+    box-shadow: 0 0 0 3px rgb(var(--particle) / 0.45);
+  }
+}

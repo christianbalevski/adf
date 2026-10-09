@@ -6,12 +6,9 @@ import { toDisplayState } from '../../hooks/useAgent'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { AgentStatus } from './AgentStatus'
 import { Button } from '../ui'
-import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { useOpenAgentOrbitalSeed } from '../orbital/useOrbitalSeed'
 
-const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
-function firstGrapheme(str: string): string {
-  return [...segmenter.segment(str)][0]?.segment ?? str[0] ?? ''
-}
 
 export function AgentPanel() {
   const state = useAgentStore((s) => s.state)
@@ -20,6 +17,7 @@ export function AgentPanel() {
   const setState = useAgentStore((s) => s.setState)
   const addLogEntry = useAgentStore((s) => s.addLogEntry)
   const filePath = useDocumentStore((s) => s.filePath)
+  const orbitalSeed = useOpenAgentOrbitalSeed()
   const [localStarting, setStarting] = useState(false)
   // Starts driven from elsewhere (openFile's foreground re-attach, sidebar
   // toggle) must show here too — the store reads 'off' for the whole rebuild.
@@ -85,7 +83,7 @@ export function AgentPanel() {
       <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-2 space-y-1.5">
         {/* Header: icon + name + model */}
         <div className="flex items-center gap-2">
-          <span className="text-lg shrink-0">{firstGrapheme(config?.icon || pickAgentIcon(config?.id ?? ''))}</span>
+          <OrbitalAvatar seed={orbitalSeed} icon={config?.icon} iconSeed={config?.id} size={20} emojiSize={18} animated={state === 'active'} />
           <div className="min-w-0 flex-1">
             <h3
               className="text-sm font-semibold text-neutral-800 dark:text-neutral-100 truncate cursor-default"

@@ -6,7 +6,8 @@ import { useAgentStore } from '../../stores/agent.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { migrateOpenTabs } from '../../utils/editor-tab-persistence'
-import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
+import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import type { AgentConfigSummary, ReviewIdentitySummary } from '../../../shared/types/ipc.types'
 import { Button, Select, TextInput } from '../ui'
 
@@ -54,9 +55,11 @@ const SCENARIO_STYLES: Record<ReviewIdentitySummary['scenario'], { badge: string
 type ModelChoice = { provider: string; model_id: string }
 
 function Monogram({ name, icon, seed, scenario, size }: { name: string; icon?: string; seed?: string | null; scenario: ReviewIdentitySummary['scenario']; size: 'sm' | 'lg' }) {
-  // Configured emoji first, then the fleet UI's deterministic pick from the
-  // agent DID; the letter initial only when neither is available.
-  const glyph = icon || (seed ? pickAgentIcon(seed) : '') || (name || '?').charAt(0).toUpperCase()
+  const emoji = useAgentAvatarMode() === 'emoji'
+  // The agent's orbital from its DID; the letter initial only when it has none.
+  if (seed && !emoji) return <OrbitalAvatar seed={seed} size={size === 'lg' ? 56 : 32} />
+  // Emoji mode: configured emoji, else the pool pick from the DID, else the initial.
+  const glyph = (emoji ? agentAvatarEmoji(icon, seed) : null) || (name || '?').charAt(0).toUpperCase()
   const dims = size === 'lg' ? 'w-14 h-14 text-2xl' : 'w-8 h-8 text-sm'
   return (
     <div className={`${dims} shrink-0 rounded-full bg-gradient-to-br ${SCENARIO_STYLES[scenario].monogram} flex items-center justify-center text-white font-semibold select-none`}>

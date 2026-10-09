@@ -895,6 +895,18 @@ export class DaemonClient {
   agentContext(agentId: string, loop?: string, items?: number): Promise<import('./types').AgentContextResult> {
     return this.get(`/agents/${enc(agentId)}/context`, { loop: loop && loop !== MAIN_LOOP ? loop : undefined, items })
   }
+
+  // --- agent vitals (/vitals) ------------------------------------------------
+
+  /** Header facts plus Reach/Access/Autonomy/Experience. `force` skips the daemon's cache. */
+  agentVitals(agentId: string, force = false): Promise<import('./types').AgentVitals> {
+    return this.get(`/agents/${enc(agentId)}/vitals`, { force: force ? 1 : undefined })
+  }
+
+  /** Next wakes, 14 days of turns and cost, and what the file holds (mind, skills, tables). `force` skips the daemon's cache. */
+  agentActivity(agentId: string, force = false): Promise<import('./types').AgentActivity> {
+    return this.get(`/agents/${enc(agentId)}/activity`, { force: force ? 1 : undefined })
+  }
 }
 
 function buildQuery(query: Query): string {

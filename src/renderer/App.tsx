@@ -10,6 +10,7 @@ import { useBackgroundAgentEvents } from './hooks/useBackgroundAgents'
 import { useApprovalEvents, useApprovalDeepLink } from './hooks/useApprovals'
 import { useAdfFile } from './hooks/useAdfFile'
 import { useTrackedDirs } from './hooks/useTrackedDirs'
+import { isAgentAvatarMode } from './components/orbital/agent-avatar'
 
 // Once-per-page-load guard for the session resync below — StrictMode's double
 // mount must not race two concurrent FILE_OPENs for the same path.
@@ -172,6 +173,7 @@ export default function App() {
   const setUiFont = useAppStore((s) => s.setUiFont)
   const setUiFontCustom = useAppStore((s) => s.setUiFontCustom)
   const setUiScale = useAppStore((s) => s.setUiScale)
+  const setAgentAvatars = useAppStore((s) => s.setAgentAvatars)
   // Zoom is only applied once the persisted value is known, so a saved 110%
   // never gets reset to 100% by the initial store default.
   const [appearanceLoaded, setAppearanceLoaded] = useState(false)
@@ -186,9 +188,10 @@ export default function App() {
       if (isUiFont(settings.uiFont)) setUiFont(settings.uiFont)
       if (typeof settings.uiFontCustom === 'string') setUiFontCustom(settings.uiFontCustom)
       if (isUiScale(settings.uiScale)) setUiScale(settings.uiScale)
+      if (isAgentAvatarMode(settings.agentAvatars)) setAgentAvatars(settings.agentAvatars)
       setAppearanceLoaded(true)
     })
-  }, [setTheme, setUiFont, setUiFontCustom, setUiScale])
+  }, [setTheme, setUiFont, setUiFontCustom, setUiScale, setAgentAvatars])
 
   // Interface typeface: rewrite the CSS token the html/body rule reads.
   useEffect(() => {

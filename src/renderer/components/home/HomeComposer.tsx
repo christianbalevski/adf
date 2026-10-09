@@ -8,16 +8,10 @@ import { FolderPickerChip, ProviderPickerChip, TemplatePickerChip } from './Home
 import { useHomeProviders } from './HomeProviders'
 import { useTemplatesStore } from '../../hooks/useTemplates'
 import { NameChip } from './NameChip'
+import type { IdentityDraftHandle } from './NextAgentIdentity'
 import { generateAgentName } from '../../../shared/utils/agent-names'
 
 const MAX_ROWS = 8
-/** Caption lines by roll count, highest first so one click shows one line. */
-const SPIN_LINES: ReadonlyArray<readonly [number, string]> = [
-  [15, "Ok chill! This thing was vibe coded, don't break it!"],
-  [12, 'I guess not lol'],
-  [8, "Can't find what you're looking for? Maybe the next spin will be it"],
-  [4, 'You can rename it later.'],
-]
 /** Suggestion rows above the bar, each a slow marquee; drawn from the pool per visit. */
 const MARQUEE_ROWS = 3
 const CHIPS_PER_ROW = 7
@@ -41,7 +35,16 @@ function saveSuggestionsOn(on: boolean): void {
  * creates the agent; the provider sheet opens on the first start, from the
  * same path every start uses.
  */
-export function HomeComposer() {
+export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
+  /** The next agent's identity draft, owned by HomeScreen (its orbital shows there). */
+  identity: IdentityDraftHandle
+  /** A name reroll: HomeScreen renews the identity with it and counts it. */
+  onReroll: () => void
+  /** After a successful create, before the next agent's name and identity land. */
+  onCreated?: () => void
+  /** A create started (true) or ended (false), for the orbital to react. */
+  onSending?: (on: boolean) => void
+}) {
   const { createQuickAgent } = useAdfFile()
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
   const setChatPlacement = useAppStore((s) => s.setChatPlacement)
@@ -64,25 +67,17 @@ export function HomeComposer() {
   // A name is drawn the first time the composer shows and kept until a send.
   useEffect(() => { if (!homeName) setHomeName(generateAgentName()) }, [homeName, setHomeName])
   const name = homeName ?? ''
-  // The caption reacts to how many times the name has been rolled for this
-  // agent: the obvious at four, then a nudge, a shrug, and a plea. Each line
-  // once per agent, and the count resets with every send.
-  const spins = useRef(0)
-  const [hint, setHint] = useState<string | null>(null)
-  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const shown = useRef<Set<number>>(new Set())
-  const onSpin = useCallback(() => {
-    spins.current += 1
-    const say = (at: number, line: string) => {
-      if (spins.current < at || shown.current.has(at)) return
-      shown.current.add(at)
-      setHint(line)
-      if (hintTimer.current) clearTimeout(hintTimer.current)
-      hintTimer.current = setTimeout(() => setHint(null), 5000)
-    }
-    for (const [at, line] of SPIN_LINES) say(at, line)
-  }, [])
+  // The create adopts exactly the identity whose orbital is on screen.
+  const { renew: renewIdentity, current: currentIdentity } = identity
   const [busy, setBusy] = useState(false)
+  // While a create is out it holds the current draft; a reroll then would
+  // discard the draft it is adopting. Send renews it afterwards anyway.
+  const busyRef = useRef(false)
+  busyRef.current = busy
+  const sendingRef = useRef(onSending)
+  sendingRef.current = onSending
+  useEffect(() => { sendingRef.current?.(busy) }, [busy])
+  const reroll = useCallback(() => { if (!busyRef.current) onReroll() }, [onReroll])
   const [error, setError] = useState<string | null>(null)
   // A refused name (bad characters, or already a file in the folder) turns
   // the chip red, shakes it, and puts the reason in red under the box. The
@@ -172,6 +167,7 @@ export function HomeComposer() {
         modelId: homeModelId ?? undefined,
         folder: homeFolder ?? undefined,
         name: homeName ?? undefined,
+        identityDraftId: currentIdentity()?.draftId,
         files: files.length > 0 ? files : undefined
       })
       if (!result.success) {
@@ -195,15 +191,20 @@ export function HomeComposer() {
         } else if (result.code === 'template_missing') {
           setError(result.error ?? 'That template is not in the templates folder any more.')
           setHomeTemplateId(null)
-        } else setError(result.error ?? 'Could not create the agent')
+        } else {
+          setError(result.error ?? 'Could not create the agent')
+          // The create may have used the draft before failing; mint another so
+          // the DID on screen is the one the next agent gets.
+          renewIdentity()
+        }
         return
       }
       setText('')
       setFiles([])
-      // The next agent gets its own name.
+      // The next agent gets its own name and identity (the create used this one).
       setHomeName(generateAgentName())
-      spins.current = 0
-      shown.current.clear()
+      renewIdentity()
+      onCreated?.()
       setShowMeshGraph(false)
       // The loop takes the stage: the agent's first turn is the whole point
       // of the screen the user is about to see.
@@ -211,10 +212,11 @@ export function HomeComposer() {
       setCenterChatTabActive(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      renewIdentity()
     } finally {
       setBusy(false)
     }
-  }, [busy, createQuickAgent, defaultTemplateId, files, homeFolder, homeModelId, homeName, homeTemplateId, openTemplateReview, providerId, refuseName, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setHomeTemplateId, setShowMeshGraph, setText, text])
+  }, [busy, createQuickAgent, defaultTemplateId, files, homeFolder, homeModelId, homeName, homeTemplateId, currentIdentity, onCreated, openTemplateReview, providerId, refuseName, renewIdentity, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setHomeTemplateId, setShowMeshGraph, setText, text])
   sendRef.current = send
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -274,6 +276,7 @@ export function HomeComposer() {
           rows={1}
           placeholder={name ? `Tell ${name} what to do` : 'Tell your new agent what to do'}
           aria-label="Message for a new agent"
+          data-orbital-look="composer"
           className="home-composer-input block w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-[15px] leading-[22px] text-[var(--adf-ui-text)] placeholder:text-[var(--adf-ui-text-subtle)] focus:outline-none disabled:opacity-60"
         />
         {/* Its own row, not an overlay: long text scrolls inside the textarea
@@ -300,7 +303,7 @@ export function HomeComposer() {
             </button>
             {/* Bad characters: the chip shakes on its own and keeps the old
                 name; only the reason goes red below. Taken names go red too. */}
-            {name && <NameChip name={name} onChange={onNameChange} onSpin={onSpin} onInvalid={setError} refused={refused} />}
+            {name && <NameChip name={name} onChange={onNameChange} onSpin={reroll} onInvalid={setError} refused={refused} />}
             <TemplatePickerChip />
             <ProviderPickerChip />
             <FolderPickerChip />
@@ -337,9 +340,7 @@ export function HomeComposer() {
           {suggestionsOn ? 'Hide suggestions' : 'Show suggestions'}
         </button>
         <span className="text-[10.5px] text-[var(--adf-ui-text-subtle)]">
-          {busy
-            ? `Creating ${name || 'the agent'}…`
-            : hint ?? 'Create a new agent'}
+          {busy ? `Creating ${name || 'the agent'}…` : 'Create a new agent'}
         </span>
       </div>
       </div>

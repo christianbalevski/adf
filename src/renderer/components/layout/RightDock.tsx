@@ -5,17 +5,18 @@ import { AgentTimers } from '../agent/AgentTimers'
 import { AgentFiles } from '../agent/AgentFiles'
 import { IdentityPanel } from '../agent/IdentityPanel'
 import { SkillsPanel } from '../agent/SkillsPanel'
+import { AgentOverview } from '../agent/overview/AgentOverview'
 import { useAppStore, selectChatInCenter, selectActiveDockPanel } from '../../stores/app.store'
 import type { RightPanel } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
 
-const DOCK_TABS: readonly RightPanel[] = ['loop', 'inbox', 'files', 'agent']
+const DOCK_TABS: readonly RightPanel[] = ['overview', 'loop', 'inbox', 'files', 'agent']
 /** Center placement takes Loops off the dock; every other tab stays put. */
-const DOCK_TABS_CHAT_IN_CENTER: readonly RightPanel[] = ['inbox', 'files', 'agent']
+const DOCK_TABS_CHAT_IN_CENTER: readonly RightPanel[] = ['overview', 'inbox', 'files', 'agent']
 
 /**
- * The right-hand agent dock — tab switcher (Loops / Inbox / Files / Agent),
+ * The right-hand agent dock — tab switcher (Overview / Loops / Inbox / Files / Agent),
  * agent sub-tabs, and the active panel. All state lives in the app store so
  * the SAME dock instance semantics apply wherever it's mounted: AppShell's
  * sidebar slot in normal layout, or docked inside the fleet map's immersive
@@ -72,7 +73,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
             <button
               key={tab}
               onClick={() => setRightPanel(tab)}
-              className={`px-4 text-xs font-medium ${
+              className={`px-2.5 text-xs font-medium whitespace-nowrap ${
                 rightPanel === tab
                   ? 'text-[var(--adf-ui-text)] border-b-2 border-[var(--adf-ui-text)]'
                   : 'text-[var(--adf-ui-text-muted)] border-b-2 border-transparent hover:text-[var(--adf-ui-text)]'
@@ -80,7 +81,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
             >
               {/* Always plural: main is itself a loop, and the panel shows the
                   whole set (main + any inner loops), not one stream. */}
-              {tab === 'loop' ? 'Loops' : tab === 'inbox' ? (
+              {tab === 'overview' ? 'Overview' : tab === 'loop' ? 'Loops' : tab === 'inbox' ? (
                 <span className="flex items-center gap-1.5">
                   Inbox
                   {unreadInboxCount > 0 && (
@@ -116,6 +117,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       <div className="flex-1 overflow-auto min-w-0 relative">
         {/* Keyed by placement as well as agent: moving the chat remounts it so
             the virtualised stream re-measures at the new panel width. */}
+        {rightPanel === 'overview' && <AgentOverview />}
         {rightPanel === 'loop' && <AgentLoop key={`side:${filePath ?? ''}`} />}
         {rightPanel === 'inbox' && <InboxPanel />}
         {rightPanel === 'files' && <AgentFiles />}
@@ -178,6 +180,14 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
       // top-right strip stays grabbable. Collapses to the normal py-2 elsewhere.
       style={reserveWindowControls ? { paddingTop: 'calc(0.5rem + env(titlebar-area-height, 0px))', WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}
     >
+      {/* Overview */}
+      <RightDockIconButton title="Overview" active={isActive('overview')} onClick={() => expandRightPanelToTab('overview')}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1" />
+        </svg>
+      </RightDockIconButton>
+
       {/* Loops — absent while the chat lives on the center stage. */}
       {!chatInCenter && (
         <RightDockIconButton title="Loops" active={isActive('loop')} onClick={() => expandRightPanelToTab('loop')}>

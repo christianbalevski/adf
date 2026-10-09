@@ -717,6 +717,148 @@
         }
       }
     },
+    "/agents/{id}/vitals": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Agent vitals",
+        "description": "Studio's overview card for one agent: header facts (context size, next wake, 7-day cost, model, age) and four levelled stats: Reach, Access and Autonomy (levels from config points, with the factors behind them) and Experience (a level from maturity counts). `{id}` names a loaded agent (id, handle or name, as every /agents/{id} route) or, when no loaded agent matches, a tracked agent that is not loaded (agent id or handle from its file). A loaded agent is read from its open workspace (`live: true`); any other file is read with a readonly open. Results are cached: a live agent's for at most 2 s and until its database changes, any other file's until its mtime or size changes. `force=1` skips the cache. `agentsSpawned` counts tracked agents whose parent DID names this agent, from a fleet scan at most 30 s old (`force=1` rescans). `contextTokens` and `contextThreshold` are present only for a loaded agent whose executor has reported usage; `cost7dUsd` only when some adf_loop row of the last 7 local days has a price (the row's recorded `cost_usd`; rows from before 2026-08-27 without one are priced from Studio's pricing table).",
+        "operationId": "getAgentVitals",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "description": "Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Vitals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentVitals"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "The agent is loaded without an .adf file; vitals are read from the file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Agent has no .adf file; vitals are read from the file.",
+                  "code": "conflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/agents/{id}/activity": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Agent activity",
+        "description": "The lower sections of Studio's agent overview: the next three timer wakes (raw lambda and input, or loop and prompt), 14 local days of messages and cost per day, and what the file holds (`mind/` files and skills with approximate tokens, `local_*` tables with rows). `{id}` resolves as in `GET /agents/{id}/vitals`. Everything is read from the .adf file. Messages per day: `adf_loop` rows of every role by `created_at`, plus compacted rows archived in `adf_audit` (metadata only, never the archived data): each archive's `entry_count` is spread evenly over an estimated span ending at its `created_at` and at most 24 h long, and days that include such counts have `estimated: true`. Cost per day: the sum of the day's priced loop rows; `costPartial` when some call had no recorded price or was compacted. The first read scans the window's loop rows once; later reads add only new rows. Skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.",
+        "operationId": "getAgentActivity",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "description": "Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Activity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentActivity"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "The agent is loaded without an .adf file; activity is read from the file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Agent has no .adf file; activity is read from the file.",
+                  "code": "conflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/agents/{id}/start": {
       "post": {
         "tags": [
@@ -17820,6 +17962,645 @@
               "filePath": "/work/b/twin.adf"
             }
           ]
+        }
+      },
+      "AgentVitals": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "computedAt",
+          "live",
+          "handle",
+          "ageDays",
+          "public",
+          "ownerVerified",
+          "stats",
+          "maturity",
+          "metrics"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "computedAt": {
+            "type": "number",
+            "description": "When the stats and counts were computed (ms epoch)"
+          },
+          "live": {
+            "type": "boolean",
+            "description": "True when read from the workspace of a loaded agent"
+          },
+          "handle": {
+            "type": "string",
+            "example": "agent-1"
+          },
+          "name": {
+            "type": "string"
+          },
+          "did": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "adf_created_at (ISO 8601)"
+          },
+          "ageDays": {
+            "type": "number"
+          },
+          "status": {
+            "type": "string",
+            "description": "The agent's own status line (adf_meta `status`); absent when unset"
+          },
+          "description": {
+            "type": "string",
+            "description": "config.description, as on the ALF card; absent when blank"
+          },
+          "public": {
+            "type": "boolean",
+            "description": "config.serving.public.enabled, the ALF card's `public`"
+          },
+          "ownerVerified": {
+            "type": "boolean",
+            "description": "An owner attestation about the current DID is stored, unexpired and its signature verifies (whether or not the card publishes it)"
+          },
+          "contextTokens": {
+            "type": "integer",
+            "description": "Last API-reported context size (loaded agents only)"
+          },
+          "contextThreshold": {
+            "type": "integer",
+            "description": "Compact threshold (present with contextTokens)"
+          },
+          "nextWakeAt": {
+            "type": "number",
+            "description": "Earliest next_wake_at among non-expired timers (ms epoch)"
+          },
+          "cost7dUsd": {
+            "type": "number",
+            "description": "USD over the last 7 local days, summed from the agent's priced adf_loop rows (the activity read's daily cost)"
+          },
+          "cost7dPartial": {
+            "type": "boolean",
+            "description": "True when some calls in the window had no recorded price or were compacted (cost7dUsd is a lower bound)"
+          },
+          "metrics": {
+            "type": "array",
+            "description": "adf_meta rows whose key starts with `metric:`, by key, at most 20. A value is a plain string, or a JSON object `{\"value\": number|string, \"label\"?, \"unit\"?, \"min\"?, \"max\"?, \"target\"?}`; parsed fields are returned beside `raw`. A value that is not such an object is returned as `value` = `raw`. Not part of any stat.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "label",
+                "value",
+                "raw"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Key without the `metric:` prefix",
+                  "example": "weight"
+                },
+                "label": {
+                  "type": "string",
+                  "description": "The object's `label` when given, else `name`",
+                  "example": "Weight"
+                },
+                "value": {
+                  "oneOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "description": "The object's `value`, or the raw string when the stored value is not a metric object",
+                  "example": 82.4
+                },
+                "unit": {
+                  "type": "string",
+                  "example": "kg"
+                },
+                "min": {
+                  "type": "number",
+                  "description": "Bar start when `max` is set (default 0)"
+                },
+                "max": {
+                  "type": "number",
+                  "example": 100
+                },
+                "target": {
+                  "type": "number",
+                  "example": 78
+                },
+                "raw": {
+                  "type": "string",
+                  "description": "The stored adf_meta value as is",
+                  "example": "{\"value\":82.4,\"label\":\"Weight\",\"unit\":\"kg\",\"target\":78}"
+                }
+              }
+            }
+          },
+          "stats": {
+            "type": "object",
+            "required": [
+              "reach",
+              "access",
+              "autonomy",
+              "experience"
+            ],
+            "properties": {
+              "reach": {
+                "$ref": "#/components/schemas/AgentPowerStat"
+              },
+              "access": {
+                "$ref": "#/components/schemas/AgentPowerStat"
+              },
+              "autonomy": {
+                "$ref": "#/components/schemas/AgentPowerStat"
+              },
+              "experience": {
+                "$ref": "#/components/schemas/AgentExperienceStat"
+              }
+            }
+          },
+          "maturity": {
+            "$ref": "#/components/schemas/AgentMaturity"
+          }
+        }
+      },
+      "AgentPowerStat": {
+        "type": "object",
+        "description": "Reach, Access or Autonomy: a capped level on a 1-20 scale. fill = clamp(points / max, 0, 1); level = 1 + round(19 * fill), so an empty config is Lv 1 and a maxed-out one Lv 20. `max` is the sum of every capped positive factor of the stat (counts such as MCP servers and chat adapters only count their heaviest few). Gated points count toward the level. `points` is `open` + `gated`.",
+        "required": [
+          "level",
+          "points",
+          "max",
+          "fill",
+          "open",
+          "gated",
+          "high",
+          "rawPoints",
+          "factors"
+        ],
+        "properties": {
+          "level": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "points": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Points behind the level, after mitigations"
+          },
+          "max": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Points of a maxed-out config for this stat"
+          },
+          "fill": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "points / max, clamped: how much of the possible power the agent has"
+          },
+          "open": {
+            "type": "number",
+            "description": "Points whose capability runs without approval (mitigations come off these first)"
+          },
+          "gated": {
+            "type": "number",
+            "description": "Points whose capability needs approval"
+          },
+          "high": {
+            "type": "boolean",
+            "description": "True when open / max >= 0.6 (open level 12 or more): much of this runs without anyone asking"
+          },
+          "rawPoints": {
+            "type": "number",
+            "description": "Sum of factor points, mitigations included"
+          },
+          "factors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentStatFactor"
+            }
+          }
+        }
+      },
+      "AgentStatFactor": {
+        "type": "object",
+        "description": "One line of a stat breakdown.",
+        "required": [
+          "id",
+          "label",
+          "points",
+          "gated",
+          "configPath"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable id, e.g. `tool:compute_exec`, `mcp:github`, `visibility`",
+            "example": "tool:compute_exec"
+          },
+          "label": {
+            "type": "string"
+          },
+          "points": {
+            "type": "number",
+            "description": "Points this factor adds; negative for mitigations; 0 for an item past its kind's cap (7th MCP server, 4th chat adapter), listed but not counted"
+          },
+          "gated": {
+            "type": "boolean",
+            "description": "True when the capability needs human approval"
+          },
+          "configPath": {
+            "type": "string",
+            "description": "Config path (or table) that controls this factor"
+          }
+        }
+      },
+      "AgentExperienceStat": {
+        "type": "object",
+        "description": "Experience. xpForLevel(L) = 5 * (L - 1)^2.25; level = largest L with xpForLevel(L) <= score.",
+        "required": [
+          "level",
+          "progress",
+          "score",
+          "levelStart",
+          "nextLevelAt",
+          "breakdown",
+          "nextLevel"
+        ],
+        "properties": {
+          "level": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "progress": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Progress within the current level"
+          },
+          "score": {
+            "type": "number",
+            "description": "Total XP (sum of signal XP)"
+          },
+          "levelStart": {
+            "type": "number",
+            "description": "XP at which the current level starts"
+          },
+          "nextLevelAt": {
+            "type": "number",
+            "description": "XP at which the next level starts"
+          },
+          "breakdown": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "label",
+                "value",
+                "xp"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "enum": [
+                    "contextsWorked",
+                    "memoryTokens",
+                    "skills",
+                    "localTables",
+                    "localRows",
+                    "filesWritten",
+                    "agentsSpawned",
+                    "messages",
+                    "ageDays"
+                  ]
+                },
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number",
+                  "description": "Raw count"
+                },
+                "xp": {
+                  "type": "number",
+                  "description": "XP this signal adds"
+                }
+              }
+            }
+          },
+          "nextLevel": {
+            "type": "object",
+            "description": "What one more level takes (xp = nextLevelAt - score), in units of the cheapest signals",
+            "required": [
+              "xp",
+              "contexts",
+              "memoryTokens",
+              "skills",
+              "hint"
+            ],
+            "properties": {
+              "xp": {
+                "type": "number"
+              },
+              "contexts": {
+                "type": "integer",
+                "description": "Contexts of work worth the remaining XP"
+              },
+              "memoryTokens": {
+                "type": "integer",
+                "description": "Memory tokens worth the remaining XP"
+              },
+              "skills": {
+                "type": "integer",
+                "description": "Skills worth the remaining XP"
+              },
+              "hint": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "AgentMaturity": {
+        "type": "object",
+        "description": "Raw maturity counts read from the agent's file.",
+        "required": [
+          "contextsWorked",
+          "filesWritten",
+          "memoryTokens",
+          "localTables",
+          "localRows",
+          "skills",
+          "agentsSpawned",
+          "messages",
+          "ageDays"
+        ],
+        "properties": {
+          "contextsWorked": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Contexts of work over every loop (main, side, deleted): archived loop snapshots in adf_audit (one context at half the loop's compaction threshold or more, else its share) or live compaction summaries when loop audit is off, plus each live loop's current fill as a 0..1 share of its compaction threshold"
+          },
+          "filesWritten": {
+            "type": "integer",
+            "description": "adf_files rows changed after the agent was created, `mind/` excluded"
+          },
+          "memoryTokens": {
+            "type": "integer",
+            "description": "Approximate tokens in `mind/` files: total bytes, less the seeded `mind/log.md` header, / 4"
+          },
+          "localTables": {
+            "type": "integer",
+            "description": "`local_*` tables"
+          },
+          "localRows": {
+            "type": "integer",
+            "description": "Rows across `local_*` tables (the first 50 by name)"
+          },
+          "skills": {
+            "type": "integer",
+            "description": "Distinct skills the agent installed or changed"
+          },
+          "agentsSpawned": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Tracked agents whose adf_parent_did names this agent; null when no fleet scan has run"
+          },
+          "messages": {
+            "type": "integer",
+            "description": "Loop messages ever written, every loop current and past (adf_loop's shared AUTOINCREMENT high-water mark; compaction, clears and loop deletion do not lower it)"
+          },
+          "ageDays": {
+            "type": "number",
+            "description": "Days since adf_created_at"
+          }
+        }
+      },
+      "AgentActivity": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "computedAt",
+          "live",
+          "upcoming",
+          "daily",
+          "contents"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "computedAt": {
+            "type": "number",
+            "description": "When this read was computed (ms epoch)"
+          },
+          "live": {
+            "type": "boolean",
+            "description": "True when read from the workspace of a loaded agent"
+          },
+          "upcoming": {
+            "type": "array",
+            "maxItems": 3,
+            "description": "Next non-expired timers, soonest first",
+            "items": {
+              "$ref": "#/components/schemas/AgentUpcomingWake"
+            }
+          },
+          "daily": {
+            "type": "array",
+            "minItems": 14,
+            "maxItems": 14,
+            "description": "14 local days, oldest first; the last is today",
+            "items": {
+              "$ref": "#/components/schemas/AgentActivityDay"
+            }
+          },
+          "contents": {
+            "type": "object",
+            "description": "What the file holds, in three groups. Tokens are approximate (bytes / 4, rounded) and given for mind and skills only: table data is rarely read into context.",
+            "required": [
+              "mind",
+              "skills",
+              "tables"
+            ],
+            "properties": {
+              "mind": {
+                "type": "object",
+                "description": "Files under mind/",
+                "required": [
+                  "files",
+                  "tokens",
+                  "updatedThisWeek",
+                  "strata"
+                ],
+                "properties": {
+                  "files": {
+                    "type": "integer"
+                  },
+                  "tokens": {
+                    "type": "integer",
+                    "description": "SUM(size) / 4, rounded, the seeded mind/log.md header taken off that file"
+                  },
+                  "updatedThisWeek": {
+                    "type": "integer",
+                    "description": "mind/ files whose updated_at is within the last 7 days"
+                  },
+                  "strata": {
+                    "type": "object",
+                    "description": "Current mind/ tokens (size / 4, rounded, the seeded mind/log.md header taken off that file) split by each file's updated_at. A boundary belongs to the younger band.",
+                    "required": [
+                      "older",
+                      "quarter",
+                      "month",
+                      "week"
+                    ],
+                    "properties": {
+                      "older": {
+                        "type": "integer",
+                        "description": "Last updated more than 90 days ago"
+                      },
+                      "quarter": {
+                        "type": "integer",
+                        "description": "Last updated more than 30 and at most 90 days ago"
+                      },
+                      "month": {
+                        "type": "integer",
+                        "description": "Last updated more than 7 and at most 30 days ago"
+                      },
+                      "week": {
+                        "type": "integer",
+                        "description": "Last updated at most 7 days ago"
+                      }
+                    }
+                  }
+                }
+              },
+              "skills": {
+                "type": "object",
+                "description": "Skills the agent installed or changed (the Experience stat rule)",
+                "required": [
+                  "count",
+                  "tokens"
+                ],
+                "properties": {
+                  "count": {
+                    "type": "integer"
+                  },
+                  "tokens": {
+                    "type": "integer",
+                    "description": "Size of every file under those skills' directories / 4; registry entries without files add 0"
+                  }
+                }
+              },
+              "tables": {
+                "type": "object",
+                "description": "local_* tables (at most 50 read)",
+                "required": [
+                  "count",
+                  "rows"
+                ],
+                "properties": {
+                  "count": {
+                    "type": "integer",
+                    "maximum": 50
+                  },
+                  "rows": {
+                    "type": "integer",
+                    "description": "Total rows"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "AgentUpcomingWake": {
+        "type": "object",
+        "description": "One timer due soon, as raw pieces. `system` timers carry `lambda` and `input`; `agent` timers carry `loop` and `prompt`. Both texts are the timer payload as stored, cut to 1000 characters (ending in an ellipsis).",
+        "required": [
+          "id",
+          "at",
+          "scope"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "at": {
+            "type": "number",
+            "description": "next_wake_at (ms epoch)"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "system",
+              "agent"
+            ],
+            "description": "`system` runs a lambda; `agent` wakes a loop"
+          },
+          "lambda": {
+            "type": "string",
+            "description": "system: lambda reference, e.g. `lib/sync.ts:run`"
+          },
+          "input": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "system: payload passed to the lambda"
+          },
+          "loop": {
+            "type": "string",
+            "description": "agent: loop the wake dispatches to (`main` when the timer names none)"
+          },
+          "prompt": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "agent: payload the loop wakes with"
+          }
+        }
+      },
+      "AgentActivityDay": {
+        "type": "object",
+        "required": [
+          "date",
+          "messages"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "Local YYYY-MM-DD"
+          },
+          "messages": {
+            "type": "integer",
+            "description": "adf_loop rows of every role created that day, plus the day's estimated share of compacted rows archived in adf_audit"
+          },
+          "estimated": {
+            "type": "boolean",
+            "description": "Some of the day's messages are compacted history whose timing is estimated (spread evenly over a span ending at the archive's creation)"
+          },
+          "costUsd": {
+            "type": "number",
+            "description": "USD of the day's priced adf_loop rows (cost_usd in the row's usage record); absent when none had a price"
+          },
+          "costPartial": {
+            "type": "boolean",
+            "description": "Some calls that day had no recorded price, or were compacted (their cost is not recorded); costUsd is a lower bound"
+          }
         }
       }
     }

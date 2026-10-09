@@ -19,7 +19,8 @@ import { Button } from '../ui'
 import { REVEAL_IN_FOLDER_LABEL } from '../../utils/platform'
 import { collectRunningAgents, type RunningAgentRow } from '../../utils/running-agents'
 import { SIDEBAR_RUNNING_CAP_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
-import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
+import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../../shared/types/ipc.types'
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
 
@@ -1263,11 +1264,11 @@ const AgentFileRow = memo(function AgentFileRow({
     ? (agentConfig?.autonomous ?? false)
     : (file.autonomous ?? false)
 
-  // Same avatar the fleet map draws: the file's icon, else a stable pick
-  // seeded by the agent id so the two surfaces never disagree.
-  const icon = isActive
-    ? (agentConfig?.icon || pickAgentIcon(agentConfig?.id || file.filePath))
-    : (file.icon || pickAgentIcon(file.agentId || file.filePath))
+  // The agent's orbital, seeded the same way the fleet map seeds it. Emoji
+  // mode draws the open agent's live config icon, else the listing's.
+  const seed = orbitalSeedFor({ did: file.did, filePath: file.filePath })
+  const icon = isActive ? agentConfig?.icon : file.icon
+  const iconSeed = isActive ? (agentConfig?.id || file.filePath) : (file.agentId || file.filePath)
 
   const canReceive = isActive
     ? (agentConfig?.messaging?.receive ?? false)
@@ -1331,7 +1332,9 @@ const AgentFileRow = memo(function AgentFileRow({
       style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: '6px' }}
     >
       <AgentAvatar
+        seed={seed}
         icon={icon}
+        iconSeed={iconSeed}
         running={isRunning}
         state={dotState}
         starting={(toggling && !isRunning) || isStarting}
@@ -1429,18 +1432,24 @@ const AgentFileRow = memo(function AgentFileRow({
 })
 
 /**
- * Emoji avatar with the status dot as a corner badge. A stopped agent is
- * drawn desaturated with no badge, so a quiet tree stays grey and only the
- * running agents carry colour; the badge then adds the finer state.
+ * The agent's orbital with the status dot as a corner badge, in the same
+ * 16 px slot the emoji used. A stopped agent is drawn faded with no badge, so
+ * a quiet tree stays muted and the running agents stand out; the badge then
+ * adds the finer state. The orbital turns only while the agent is active.
+ * In emoji mode the 12 px emoji sits in the same slot, desaturated when stopped.
  */
 const AgentAvatar = memo(function AgentAvatar({
+  seed,
   icon,
+  iconSeed,
   running,
   state,
   starting,
   stopping
 }: {
-  icon: string
+  seed: string | null
+  icon?: string
+  iconSeed: string
   running: boolean
   state: AgentState
   starting?: boolean
@@ -1448,18 +1457,17 @@ const AgentAvatar = memo(function AgentAvatar({
 }) {
   const busy = starting || stopping
   const showBadge = busy || state !== 'not_participating'
+  const emoji = useAgentAvatarMode() === 'emoji'
+  const quiet = emoji
+    ? `transition-[filter,opacity] ${running || busy ? '' : 'grayscale opacity-70'}`
+    : `transition-opacity ${running || busy ? '' : 'opacity-70'}`
   return (
     <span className="relative shrink-0 w-4 h-4 flex items-center justify-center">
-      <span
-        aria-hidden="true"
-        className={`text-[12px] leading-none select-none transition-[filter,opacity] ${
-          running || busy ? '' : 'grayscale opacity-70'
-        }`}
-      >
-        {icon}
+      <span className={`flex ${quiet}`}>
+        <OrbitalAvatar seed={seed} icon={icon} iconSeed={iconSeed} size={16} emojiSize={12} animated={state === 'active'} />
       </span>
       {showBadge && (
-        // A ring in the row's own colour lifts the badge off the glyph beneath
+        // A ring in the row's own colour lifts the badge off the orbital beneath
         // it; the row sets --row-bg for rest, hover and selected.
         <span className="absolute -bottom-0.5 -right-0.5 flex rounded-full shadow-[0_0_0_1.5px_var(--row-bg,var(--adf-surface-2))]">
           <StatusDot state={state} starting={starting} stopping={stopping} />

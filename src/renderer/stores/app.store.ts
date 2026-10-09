@@ -1,9 +1,10 @@
 import { create } from 'zustand'
+import { AGENT_AVATAR_MODE_DEFAULT, type AgentAvatarMode } from '../components/orbital/agent-avatar'
 import type { AgentConfigSummary } from '../../shared/types/ipc.types'
 import { LOGS_PANEL_HEIGHT_KEY, SIDEBAR_WIDTH_KEY, loadStoredSize } from '../utils/stored-size'
 
-export type RightPanel = 'loop' | 'inbox' | 'files' | 'agent'
-type AgentSubTab = 'config' | 'timers' | 'identity' | 'skills'
+export type RightPanel = 'overview' | 'loop' | 'inbox' | 'files' | 'agent'
+export type AgentSubTab = 'config' | 'timers' | 'identity' | 'skills'
 /**
  * Where the Loops chat panel is mounted. `side` = the right dock's Loops tab
  * (the original, and still the default); `center` = a pinned first tab on the
@@ -142,6 +143,11 @@ export interface AppState {
   pendingSettingsAnchor: string | null
   rightPanel: RightPanel
   agentSubTab: AgentSubTab
+  /**
+   * AgentConfig section title to open and scroll to once it renders (set by
+   * the overview's stat popovers). The matching Section consumes it.
+   */
+  pendingConfigSection: string | null
   /** Global, persisted: which slot the Loops chat panel is mounted in. */
   chatPlacement: ChatPlacement
   /** Global, persisted: reading-column width of the chat. Center placement only. */
@@ -160,6 +166,8 @@ export interface AppState {
   uiFont: UiFont
   uiFontCustom: string
   uiScale: UiScale
+  /** Small agent avatars: the orbital, or the agent's emoji. Persisted as settings.agentAvatars. */
+  agentAvatars: AgentAvatarMode
   passwordDialogOpen: boolean
   passwordDialogFilePath: string | null
   ownerMismatchDialogOpen: boolean
@@ -227,6 +235,7 @@ export interface AppState {
   consumePendingSettingsAnchor: () => string | null
   setRightPanel: (panel: RightPanel) => void
   setAgentSubTab: (tab: AgentSubTab) => void
+  setPendingConfigSection: (section: string | null) => void
   /**
    * Move the chat between the dock and the center stage. Persists the choice
    * and lands the user on the chat in its new slot: to `center` it selects the
@@ -253,6 +262,7 @@ export interface AppState {
   setUiFont: (font: UiFont) => void
   setUiFontCustom: (family: string) => void
   setUiScale: (scale: UiScale) => void
+  setAgentAvatars: (mode: AgentAvatarMode) => void
   setPasswordDialogOpen: (open: boolean, filePath?: string | null) => void
   setOwnerMismatchDialogOpen: (open: boolean, fileOwnerDid?: string | null) => void
   addStartingFilePath: (filePath: string) => void
@@ -312,14 +322,14 @@ export const selectChatColumnCapped = (s: AppState): boolean =>
  * Which tab the right dock should actually SHOW right now. Two corrections over
  * the raw `rightPanel`:
  *  - center placement removes the Loops tab, so a dock still parked on 'loop'
- *    falls through to 'inbox';
+ *    falls through to 'overview';
  *  - center placement that has YIELDED to the fleet map (B6) temporarily regains
  *    its Loops tab, so it shows the chat that yielded rather than the non-loop
  *    tab parked under it — making boot-on-map and toggle-to-map agree.
  */
 export const selectActiveDockPanel = (s: AppState): RightPanel => {
   const inCenter = selectChatInCenter(s)
-  if (inCenter && s.rightPanel === 'loop') return 'inbox'
+  if (inCenter && s.rightPanel === 'loop') return 'overview'
   if (!inCenter && s.chatPlacement === 'center') return 'loop'
   return s.rightPanel
 }
@@ -337,8 +347,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   showSettings: false,
   pendingSettingsSection: null,
   pendingSettingsAnchor: null,
-  rightPanel: 'loop',
+  // Overview first on a fresh session. Not persisted: opening another agent
+  // keeps whatever tab the user picked (revealRightPanel).
+  rightPanel: 'overview',
   agentSubTab: 'timers',
+  pendingConfigSection: null,
   chatPlacement: loadChatPlacement(),
   chatWidth: loadChatWidth(),
   centerChatTabActive: loadChatPlacement() === 'center',
@@ -349,6 +362,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   uiFont: UI_FONT_DEFAULT,
   uiFontCustom: '',
   uiScale: 1,
+  agentAvatars: AGENT_AVATAR_MODE_DEFAULT,
   passwordDialogOpen: false,
   passwordDialogFilePath: null,
   ownerMismatchDialogOpen: false,
@@ -395,6 +409,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setRightPanel: (panel) => set({ rightPanel: panel }),
   setAgentSubTab: (tab) => set({ agentSubTab: tab }),
+  setPendingConfigSection: (section) => set({ pendingConfigSection: section }),
   setChatPlacement: (placement) => {
     saveChatPlacement(placement)
     set((s) => {
@@ -404,7 +419,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           centerChatTabActive: true,
           // The dock keeps every other tab; only Loops leaves. If Loops was the
           // one showing, fall through to the next tab rather than a blank dock.
-          rightPanel: s.rightPanel === 'loop' ? ('inbox' as RightPanel) : s.rightPanel
+          rightPanel: s.rightPanel === 'loop' ? ('overview' as RightPanel) : s.rightPanel
         }
       }
       return {
@@ -429,6 +444,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setUiFont: (uiFont) => set({ uiFont }),
   setUiFontCustom: (uiFontCustom) => set({ uiFontCustom }),
   setUiScale: (uiScale) => set({ uiScale }),
+  setAgentAvatars: (agentAvatars) => set({ agentAvatars }),
   setPasswordDialogOpen: (open, filePath) =>
     set({ passwordDialogOpen: open, passwordDialogFilePath: filePath ?? null }),
   setOwnerMismatchDialogOpen: (open, fileOwnerDid) =>
