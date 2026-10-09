@@ -18100,16 +18100,14 @@
       },
       "AgentPowerStat": {
         "type": "object",
-        "description": "Reach, Access or Autonomy: a level from uncapped points. xpForLevel(L) = 0.75 * (L - 1); level = largest L with xpForLevel(L) <= points. Gated points count toward the level. `points` is `open` + `gated`.",
+        "description": "Reach, Access or Autonomy: a capped level on a 1-20 scale. fill = clamp(points / max, 0, 1); level = 1 + round(19 * fill), so an empty config is Lv 1 and a maxed-out one Lv 20. `max` is the sum of every capped positive factor of the stat (counts such as MCP servers and chat adapters only count their heaviest few). Gated points count toward the level. `points` is `open` + `gated`.",
         "required": [
           "level",
-          "progress",
           "points",
+          "max",
+          "fill",
           "open",
           "gated",
-          "levelStart",
-          "nextLevelAt",
-          "openLevel",
           "high",
           "rawPoints",
           "factors"
@@ -18117,18 +18115,24 @@
         "properties": {
           "level": {
             "type": "integer",
-            "minimum": 1
-          },
-          "progress": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "description": "Progress within the current level"
+            "minimum": 1,
+            "maximum": 20
           },
           "points": {
             "type": "number",
             "minimum": 0,
             "description": "Points behind the level, after mitigations"
+          },
+          "max": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Points of a maxed-out config for this stat"
+          },
+          "fill": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "points / max, clamped: how much of the possible power the agent has"
           },
           "open": {
             "type": "number",
@@ -18138,22 +18142,9 @@
             "type": "number",
             "description": "Points whose capability needs approval"
           },
-          "levelStart": {
-            "type": "number",
-            "description": "Points at which the current level starts"
-          },
-          "nextLevelAt": {
-            "type": "number",
-            "description": "Points at which the next level starts"
-          },
-          "openLevel": {
-            "type": "integer",
-            "minimum": 1,
-            "description": "Level the open points alone reach"
-          },
           "high": {
             "type": "boolean",
-            "description": "True when openLevel >= 15: much of this runs without anyone asking"
+            "description": "True when open / max >= 0.6 (open level 12 or more): much of this runs without anyone asking"
           },
           "rawPoints": {
             "type": "number",
@@ -18188,7 +18179,7 @@
           },
           "points": {
             "type": "number",
-            "description": "Points this factor adds (uncapped); negative for mitigations"
+            "description": "Points this factor adds; negative for mitigations; 0 for an item past its kind's cap (7th MCP server, 4th chat adapter), listed but not counted"
           },
           "gated": {
             "type": "boolean",

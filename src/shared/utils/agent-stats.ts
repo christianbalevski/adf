@@ -2,28 +2,32 @@
  * Agent stat scoring for the overview card. Pure: no IO, no clock reads
  * (callers pass ages in), so every number here is reproducible in a test.
  *
- * All four stats are levels on one curve family:
+ * Experience is a level on an unbounded curve:
  *
  *   xpForLevel(L) = scale * (L - 1) ^ exponent
  *   level(x)      = largest L >= 1 with xpForLevel(L) <= x
  *
- * Experience (EXPERIENCE_CURVE, scale 5, exponent 2.25) is fed XP from what is
- * in the file right now, so it can go down when the agent deletes its own
- * work. With exponent > 1 a level costs more XP the higher it is, but each
- * band is a smaller share of the total (Lv 2 spans 5..24, Lv 20 spans
- * 3.8k..4.2k, about 11%), so 4.8k and 7k XP sit four levels apart.
+ * EXPERIENCE_CURVE (scale 5, exponent 2.25) is fed XP from what is in the
+ * file right now, so it can go down when the agent deletes its own work.
+ * With exponent > 1 a level costs more XP the higher it is, but each band is
+ * a smaller share of the total (Lv 2 spans 5..24, Lv 20 spans 3.8k..4.2k,
+ * about 11%), so 4.8k and 7k XP sit four levels apart.
  *
- * Reach, Access and Autonomy (POWER_CURVE, scale 0.75, exponent 1) are fed
- * uncapped points from the tables below; mitigations add negative points.
- * The exponent is 1 because config points are additive and a maxed-out agent
- * has only about 8-10 times the points of a fresh one; exponent 2 would need
- * a 100x spread to cover the same Lv 3 to Lv 22 range. Every 0.75 points is
- * one level.
+ * Reach, Access and Autonomy are capped levels on a common 1-20 scale. Every
+ * factor is capped (counts like MCP servers and chat adapters only count
+ * their heaviest few), so each stat has a fixed maximum, POWER_MAX: the sum
+ * of all its capped positive factors, computed from the tables below.
+ * Mitigations add negative points before scaling:
+ *
+ *   level = 1 + round(19 * clamp(points / max, 0, 1))
+ *
+ * An empty config is Lv 1 and a maxed-out one Lv 20 on every stat. The card's
+ * bar shows `fill` = points / max.
  *
  * A factor is `gated` when using it needs human approval (a `restricted`
  * tool, a sealed secret). Gated points count toward the level; the card
- * draws them lighter. `high` flags a stat whose open points alone reach
- * POWER_HIGH_OPEN_LEVEL.
+ * draws them hatched. `high` flags a stat whose open points alone are at
+ * least POWER_HIGH_OPEN_SHARE of its max (open Lv 12 or more).
  *
  * Calibration (asserted in tests/unit/shared/agent-stats.test.ts):
  *   Experience                                            XP      Lv
@@ -35,10 +39,13 @@
  *       40 files, 3 children; work 37% of XP)             ~4000    20
  *     1M memory tokens alone (sqrt: 10x tokens = 3.2x XP)  2600    17
  *     4.8k / 7k / 10k XP                                  22 / 26 / 30
- *   Power                                               points    Lv
- *     default fresh agent: Access, Reach, Autonomy     1.75, 2, 2   3, 3, 3
+ *   Power: Access, Reach, Autonomy                  points / max       Lv
+ *     empty config                                0, 0, 0              1, 1, 1
+ *     default fresh agent                   1.75, 2, 2 / 19.25, 21.5, 15.5  3, 3, 3
  *     heavily equipped public, autonomous agent with
- *       host access (HEAVY fixture in the tests)  16.5, 17, 14.25  23, 23, 20
+ *       host access, 3 adapters, 6 MCP servers
+ *       (HEAVY fixture in the tests)              18.75, 19.5, 14.25   20, 18, 18
+ *     every factor at its cap                     19.25, 21.5, 15.5    20, 20, 20
  */
 
 import type { AgentConfig, TimerSchedule } from '../types/adf-v02.types'
@@ -64,10 +71,23 @@ export interface LevelCurve {
 }
 
 export const EXPERIENCE_CURVE: LevelCurve = { scale: 5, exponent: 2.25 }
-export const POWER_CURVE: LevelCurve = { scale: 0.75, exponent: 1 }
 
-/** Open level at which a power stat is drawn in the warn colour. */
-export const POWER_HIGH_OPEN_LEVEL = 15
+/** Top of the Reach / Access / Autonomy scale. */
+export const POWER_LEVEL_MAX = 20
+
+/** Open share of max at which a power stat is drawn in the warn colour (open Lv >= 12). */
+export const POWER_HIGH_OPEN_SHARE = 0.6
+
+/** 1 + round(19 * clamp(points / max)): Lv 1 at nothing, Lv 20 at max. */
+export function powerLevel(points: number, max: number): number {
+  return 1 + Math.round((POWER_LEVEL_MAX - 1) * powerFill(points, max))
+}
+
+/** points / max clamped to 0..1; 0 for a bad max. */
+export function powerFill(points: number, max: number): number {
+  if (!(max > 0) || !Number.isFinite(points)) return 0
+  return Math.min(1, Math.max(0, points / max))
+}
 
 /** XP at which `level` starts. Lv 1 starts at 0. */
 export function xpForLevel(level: number, curve: LevelCurve): number {
@@ -108,7 +128,7 @@ export function levelPosition(xp: number, curve: LevelCurve): LevelPosition {
 
 /**
  * Access: what the agent can do. A default agent (files, sandbox code,
- * sys_fetch) has 1.75 points, Lv 3.
+ * sys_fetch) has 1.75 of 19.25 points, Lv 3.
  */
 export const ACCESS_TOOL_POINTS: Record<string, { points: number; label: string }> = {
   fs_read: { points: 0.25, label: 'Reads its own files' },
@@ -129,6 +149,8 @@ export const ACCESS_TOOL_POINTS: Record<string, { points: number; label: string 
 export const ACCESS_POINTS = {
   mcpServer: 0.5,
   mcpCredentials: 0.25,
+  /** Servers that count: the heaviest (server + credentials) six; open first on a tie. */
+  mcpServerCap: 6,
   npmPackage: 0.25,
   npmPackageCap: 1,
   codeNetwork: 1,
@@ -143,8 +165,8 @@ export const ACCESS_POINTS = {
 
 /**
  * Reach: who can reach the agent and whom it reaches. Inbound points scale
- * with messaging.visibility; a default agent (localhost, proactive) has 2
- * points, Lv 3.
+ * with messaging.visibility; a default agent (localhost, proactive) has 2 of
+ * 21.5 points, Lv 3.
  */
 export const VISIBILITY_POINTS: Record<string, number> = {
   off: 0,
@@ -163,13 +185,15 @@ export const REACH_POINTS = {
   sharedFiles: 1,
   adapter: 2.5,
   adapterRestrictedDm: 1,
+  /** Adapters that count: the heaviest three. */
+  adapterCap: 3,
   wsConnection: 0.5,
   wsConnectionCap: 2,
   /** Mitigation: messages must be signed. */
   signedOnly: -0.5
 } as const
 
-/** Autonomy: how much it does with nobody in the chat. A default agent has 2 points, Lv 3. */
+/** Autonomy: how much it does with nobody in the chat. A default agent has 2 of 15.5 points, Lv 3. */
 export const AUTONOMY_POINTS = {
   autonomous: 3,
   autostart: 2,
@@ -188,12 +212,52 @@ export const AUTONOMY_POINTS = {
   restrictedToolCap: -1
 } as const
 
+const sum = (ns: number[]): number => ns.reduce((s, n) => s + n, 0)
+
+/**
+ * Points of a maxed-out config per stat: every capped positive factor at its
+ * cap. Derived from the tables so it follows any weight change.
+ */
+export const POWER_MAX: { access: number; reach: number; autonomy: number } = {
+  access:
+    sum(Object.values(ACCESS_TOOL_POINTS).map((t) => t.points)) +
+    ACCESS_POINTS.computeHostTarget +
+    ACCESS_POINTS.computeEnabled +
+    ACCESS_POINTS.hostAccess +
+    ACCESS_POINTS.codeNetwork +
+    ACCESS_POINTS.npmPackageCap +
+    ACCESS_POINTS.mcpServerCap * (ACCESS_POINTS.mcpServer + ACCESS_POINTS.mcpCredentials) +
+    ACCESS_POINTS.credentialCap +
+    Math.max(ACCESS_POINTS.privateKeyPlain, ACCESS_POINTS.privateKeySealed),
+  reach:
+    Math.max(...Object.values(VISIBILITY_POINTS)) +
+    Math.max(REACH_POINTS.sendProactive, REACH_POINTS.sendRespondOnly) +
+    REACH_POINTS.publicPage +
+    REACH_POINTS.apiRouteCap +
+    REACH_POINTS.sharedFiles +
+    REACH_POINTS.adapterCap * Math.max(REACH_POINTS.adapter, REACH_POINTS.adapterRestrictedDm) +
+    REACH_POINTS.wsConnectionCap,
+  autonomy:
+    AUTONOMY_POINTS.autonomous +
+    AUTONOMY_POINTS.autostart +
+    AUTONOMY_POINTS.timers +
+    Math.max(AUTONOMY_POINTS.timerFast, AUTONOMY_POINTS.timerHourly) +
+    AUTONOMY_POINTS.triggerCap +
+    AUTONOMY_POINTS.proactive +
+    AUTONOMY_POINTS.createAgents +
+    AUTONOMY_POINTS.updateConfig +
+    AUTONOMY_POINTS.sideLoopCap
+}
+
 // =============================================================================
 // Power arithmetic
 // =============================================================================
 
-/** Sum factors into open / gated points (mitigations eat open points first) and place them on POWER_CURVE. */
-export function toPowerStat(factors: StatFactor[]): PowerStat {
+/**
+ * Sum factors into open / gated points (mitigations eat open points first)
+ * and place them on the 1..POWER_LEVEL_MAX scale against `max`.
+ */
+export function toPowerStat(factors: StatFactor[], max: number): PowerStat {
   let open = 0
   let gated = 0
   let mitigation = 0
@@ -208,22 +272,30 @@ export function toPowerStat(factors: StatFactor[]): PowerStat {
     open = 0
   }
   const points = open + gated
-  const pos = levelPosition(points, POWER_CURVE)
-  const openLevel = levelForXp(open, POWER_CURVE)
   const rawPoints = factors.reduce((s, f) => s + f.points, 0)
   return {
-    level: pos.level,
-    progress: pos.progress,
+    level: powerLevel(points, max),
     points,
+    max,
+    fill: powerFill(points, max),
     open,
     gated,
-    levelStart: pos.levelStart,
-    nextLevelAt: pos.nextLevelAt,
-    openLevel,
-    high: openLevel >= POWER_HIGH_OPEN_LEVEL,
+    high: powerFill(open, max) >= POWER_HIGH_OPEN_SHARE,
     rawPoints,
     factors
   }
+}
+
+/**
+ * Indices of the `cap` heaviest items (by `weight`, open before gated on a
+ * tie, then input order). Items outside it still get a factor, at 0 points,
+ * so the card lists the real count.
+ */
+function countedIndices<T>(items: T[], cap: number, weight: (t: T) => number, gated: (t: T) => boolean): Set<number> {
+  const order = items
+    .map((t, i) => ({ i, w: weight(t), g: gated(t) }))
+    .sort((a, b) => b.w - a.w || Number(a.g) - Number(b.g) || a.i - b.i)
+  return new Set(order.slice(0, cap).map((o) => o.i))
 }
 
 function toolMap(inputs: AgentPowerInputs): Map<string, { restricted: boolean }> {
@@ -308,11 +380,18 @@ export function scoreAccess(inputs: AgentPowerInputs): PowerStat {
       configPath: 'code_execution.packages'
     })
   }
-  for (const s of inputs.mcpServers) {
+  const countedMcp = countedIndices(
+    inputs.mcpServers,
+    ACCESS_POINTS.mcpServerCap,
+    (s) => ACCESS_POINTS.mcpServer + (s.hasCredentials ? ACCESS_POINTS.mcpCredentials : 0),
+    (s) => s.restricted
+  )
+  inputs.mcpServers.forEach((s, i) => {
+    const counts = countedMcp.has(i)
     factors.push({
       id: `mcp:${s.name}`,
       label: s.restricted ? `MCP server ${s.name} (tools need approval)` : `MCP server ${s.name}`,
-      points: ACCESS_POINTS.mcpServer,
+      points: counts ? ACCESS_POINTS.mcpServer : 0,
       gated: s.restricted,
       configPath: 'mcp.servers'
     })
@@ -320,12 +399,12 @@ export function scoreAccess(inputs: AgentPowerInputs): PowerStat {
       factors.push({
         id: `mcp:${s.name}:credentials`,
         label: `MCP server ${s.name} holds credentials`,
-        points: ACCESS_POINTS.mcpCredentials,
+        points: counts ? ACCESS_POINTS.mcpCredentials : 0,
         gated: s.restricted,
         configPath: 'mcp.servers'
       })
     }
-  }
+  })
 
   // Credentials share one cap; plain rows claim it first.
   let credBudget: number = ACCESS_POINTS.credentialCap
@@ -370,7 +449,7 @@ export function scoreAccess(inputs: AgentPowerInputs): PowerStat {
     })
   }
 
-  return toPowerStat(factors)
+  return toPowerStat(factors, POWER_MAX.access)
 }
 
 // =============================================================================
@@ -450,15 +529,17 @@ export function scoreReach(inputs: AgentPowerInputs): PowerStat {
       configPath: 'serving.shared.enabled'
     })
   }
-  for (const a of inputs.adapters) {
+  const adapterPoints = (a: { restrictedDm: boolean }): number => (a.restrictedDm ? REACH_POINTS.adapterRestrictedDm : REACH_POINTS.adapter)
+  const countedAdapters = countedIndices(inputs.adapters, REACH_POINTS.adapterCap, adapterPoints, () => false)
+  inputs.adapters.forEach((a, i) => {
     factors.push({
       id: `adapter:${a.type}`,
       label: a.restrictedDm ? `${a.type} adapter (DMs restricted)` : `${a.type} adapter`,
-      points: a.restrictedDm ? REACH_POINTS.adapterRestrictedDm : REACH_POINTS.adapter,
+      points: countedAdapters.has(i) ? adapterPoints(a) : 0,
       gated: false,
       configPath: `adapters.${a.type}`
     })
-  }
+  })
   if (inputs.wsConnectionCount > 0) {
     factors.push({
       id: 'ws_connections',
@@ -469,7 +550,7 @@ export function scoreReach(inputs: AgentPowerInputs): PowerStat {
     })
   }
 
-  return toPowerStat(factors)
+  return toPowerStat(factors, POWER_MAX.reach)
 }
 
 // =============================================================================
@@ -541,7 +622,7 @@ export function scoreAutonomy(inputs: AgentPowerInputs): PowerStat {
     })
   }
 
-  return toPowerStat(factors)
+  return toPowerStat(factors, POWER_MAX.autonomy)
 }
 
 // =============================================================================

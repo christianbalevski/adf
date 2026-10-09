@@ -6,6 +6,7 @@
  */
 
 import type { AgentState } from '../../../../shared/types/ipc.types'
+import { POWER_LEVEL_MAX } from '../../../../shared/utils/agent-stats'
 import type { ActivityDay, AgentContents, ExperienceStat, PowerStat, StatFactor, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
 
 // =============================================================================
@@ -18,7 +19,7 @@ export const HIGH_POWER_LABEL = 'Much of this runs without asking'
 export interface LevelBarParts {
   /** Width of the solid (open) fill, 0..100. */
   openPct: number
-  /** Width of the light (gated) fill after it, 0..100. openPct + gatedPct = progress. */
+  /** Width of the light (gated) fill after it, 0..100. openPct + gatedPct = fill. */
   gatedPct: number
   /** Draw the open fill in the warn colour. */
   high: boolean
@@ -29,12 +30,13 @@ function toPct(n: number): number {
 }
 
 /**
- * The bar shows progress to the next level. For a power stat the fill splits
- * by the stat's open share: solid for what runs without asking, light for
- * what asks first. Experience (no open/gated) is all solid.
+ * `fill` is 0..1: a power stat's points / max (how much of the possible
+ * power it has), Experience's progress to the next level. A power stat's
+ * fill splits by its open share: solid for what runs without asking, light
+ * for what asks first. Experience (no open/gated) is all solid.
  */
-export function levelBarParts(stat: { progress: number; open?: number; gated?: number; high?: boolean }): LevelBarParts {
-  const total = toPct(stat.progress)
+export function levelBarParts(stat: { fill: number; open?: number; gated?: number; high?: boolean }): LevelBarParts {
+  const total = toPct(stat.fill)
   const open = Math.max(0, stat.open ?? 0)
   const gated = Math.max(0, stat.gated ?? 0)
   const share = open + gated > 0 ? open / (open + gated) : stat.gated === undefined ? 1 : 0
@@ -68,9 +70,9 @@ function stripParenthetical(label: string): string {
   return label.replace(/\s*\([^)]*\)\s*$/, '')
 }
 
-/** "Lv 7, mostly asks you first · serves a public web page, 3 HTTP API routes" */
+/** "Lv 7 of 20, mostly asks you first · serves a public web page, 3 HTTP API routes" */
 export function powerTooltip(stat: PowerStat, maxFactors = 2): string {
-  let head = `Lv ${stat.level}`
+  let head = `Lv ${stat.level} of ${POWER_LEVEL_MAX}`
   if (stat.points > 0 && stat.gated > 0) {
     const share = stat.gated / stat.points
     head += share >= 0.99 ? ', all asks you first' : share >= 0.5 ? ', mostly asks you first' : ', some asks you first'
@@ -240,7 +242,8 @@ export function foldFactors(factors: StatFactor[]): PowerItem[] {
 
 /** Split factors into the popover's three sections, folded, heaviest first. */
 export function powerSections(stat: Pick<PowerStat, 'factors'>): PowerSections {
-  const positive = stat.factors.filter((f) => f.points > 0)
+  // Items past their kind's cap carry 0 points but still count in the folded line ("10 MCP servers").
+  const positive = stat.factors.filter((f) => f.points >= 0)
   const byWeight = (a: PowerItem, b: PowerItem): number => b.points - a.points
   return {
     open: foldFactors(positive.filter((f) => !f.gated)).sort(byWeight),

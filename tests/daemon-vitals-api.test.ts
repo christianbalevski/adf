@@ -85,8 +85,8 @@ describe('GET /agents/:id/vitals', () => {
     for (const stat of [body.stats.reach, body.stats.access, body.stats.autonomy]) {
       expect(stat.points).toBeCloseTo(stat.gated + stat.open)
       expect(stat.level).toBeGreaterThanOrEqual(1)
-      expect(stat.progress).toBeGreaterThanOrEqual(0)
-      expect(stat.progress).toBeLessThan(1)
+      expect(stat.level).toBeLessThanOrEqual(20)
+      expect(stat.fill).toBeCloseTo(stat.points / stat.max)
     }
     expect(body.stats.experience.level).toBeGreaterThanOrEqual(1)
     expect(body.metrics).toEqual([])

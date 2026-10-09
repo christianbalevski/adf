@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest'
 import {
   EXPERIENCE_CURVE,
   EXPERIENCE_WEIGHTS,
-  POWER_CURVE,
-  POWER_HIGH_OPEN_LEVEL,
+  ACCESS_POINTS,
+  POWER_HIGH_OPEN_SHARE,
+  POWER_MAX,
   levelForXp,
   levelPosition,
+  powerFill,
   powerInputsFromConfig,
+  powerLevel,
   scheduleIntervalMs,
   scoreAccess,
   scoreAutonomy,
@@ -49,7 +52,7 @@ function withTool(name: string, patch: { enabled?: boolean; restricted?: boolean
   return { tools }
 }
 
-/** A heavily equipped agent: public, autonomous, host access, every tool open. */
+/** A heavily equipped agent: public, autonomous, host access, 3 adapters, 6 MCP servers, every tool open. */
 function heavyInputs(): AgentPowerInputs {
   return inputs({
     autonomous: true,
@@ -61,16 +64,40 @@ function heavyInputs(): AgentPowerInputs {
       shared: { enabled: true },
       api: Array.from({ length: 4 }, (_, i) => ({ method: 'GET' as const, path: `/r${i}`, lambda: 'api.ts:handler' }))
     },
-    adapters: { telegram: { enabled: true }, slack: { enabled: true } } as AgentConfig['adapters'],
+    adapters: { telegram: { enabled: true }, slack: { enabled: true }, discord: { enabled: true } } as AgentConfig['adapters'],
     ws_connections: [
       { id: 'a', url: 'wss://example.test/a', enabled: true },
       { id: 'b', url: 'wss://example.test/b', enabled: true }
     ],
     compute: { enabled: true, host_access: true, allowed_targets: ['host'] },
     code_execution: { network: true, packages: Array.from({ length: 5 }, (_, i) => ({ name: `pkg-${i}`, version: '1.0.0' })) } as AgentConfig['code_execution'],
-    mcp: { servers: ['github', 'files', 'search'].map((name) => ({ name, transport: 'stdio' as const, env_keys: ['TOKEN'] })) },
+    mcp: { servers: ['github', 'files', 'search', 'mail', 'calendar', 'db'].map((name) => ({ name, transport: 'stdio' as const, env_keys: ['TOKEN'] })) },
     loops: [{}, {}] as AgentConfig['loops']
   }, { credentials: { plain: 4, sealed: 0 }, privateKey: 'plain', timers: { active: 3, fastestIntervalMs: 60_000 } })
+}
+
+/** Every factor at its cap, no mitigations. */
+function maxedInputs(): AgentPowerInputs {
+  return inputs({
+    autonomous: true,
+    autostart: true,
+    tools: DEFAULT_TOOLS.map((t) => ({ ...t, enabled: true, restricted: false })),
+    messaging: { receive: true, mode: 'proactive', visibility: 'public' },
+    serving: {
+      public: { enabled: true },
+      shared: { enabled: true },
+      api: Array.from({ length: 10 }, (_, i) => ({ method: 'GET' as const, path: `/r${i}`, lambda: 'api.ts:handler' }))
+    },
+    adapters: { telegram: { enabled: true }, slack: { enabled: true }, discord: { enabled: true }, email: { enabled: true } } as AgentConfig['adapters'],
+    ws_connections: Array.from({ length: 6 }, (_, i) => ({ id: `w${i}`, url: `wss://example.test/${i}`, enabled: true })),
+    compute: { enabled: true, host_access: true, allowed_targets: ['host'] },
+    code_execution: { network: true, packages: Array.from({ length: 8 }, (_, i) => ({ name: `pkg-${i}`, version: '1.0.0' })) } as AgentConfig['code_execution'],
+    mcp: { servers: Array.from({ length: 10 }, (_, i) => ({ name: `s${i}`, transport: 'stdio' as const, env_keys: ['TOKEN'] })) },
+    triggers: {
+      on_inbox: { enabled: true, targets: Array.from({ length: 8 }, () => ({ scope: 'agent' as const })) }
+    } as AgentConfig['triggers'],
+    loops: [{}, {}, {}, {}] as AgentConfig['loops']
+  }, { credentials: { plain: 10, sealed: 0 }, privateKey: 'plain', timers: { active: 3, fastestIntervalMs: 60_000 } })
 }
 
 const HEAVY_XP: AgentExperienceInputs = {
@@ -100,9 +127,7 @@ const EMPTY_XP: AgentExperienceInputs = {
 }
 
 describe('level curve', () => {
-  const curves = { experience: EXPERIENCE_CURVE, power: POWER_CURVE }
-
-  for (const [name, curve] of Object.entries(curves)) {
+  for (const [name, curve] of Object.entries({ experience: EXPERIENCE_CURVE })) {
     it(`${name}: Lv 1 at zero, monotonic, exact at every boundary`, () => {
       expect(levelForXp(0, curve)).toBe(1)
       expect(levelForXp(-5, curve)).toBe(1)
@@ -152,55 +177,81 @@ describe('level curve', () => {
   })
 })
 
+describe('power scale', () => {
+  it('maps points / max onto 1..20', () => {
+    expect(powerLevel(0, 10)).toBe(1)
+    expect(powerLevel(10, 10)).toBe(20)
+    expect(powerLevel(25, 10)).toBe(20)
+    expect(powerLevel(-3, 10)).toBe(1)
+    expect(powerLevel(5, 10)).toBe(11) // 1 + round(9.5)
+    expect(powerLevel(Number.NaN, 10)).toBe(1)
+    expect(powerFill(3, 0)).toBe(0)
+  })
+
+  it('POWER_MAX is the sum of every capped positive factor', () => {
+    expect(POWER_MAX).toEqual({ access: 19.25, reach: 21.5, autonomy: 15.5 })
+  })
+})
+
 describe('toPowerStat', () => {
-  it('places uncapped points on the power curve, gated points included', () => {
-    const s = toPowerStat([factor('a', 9), factor('b', 9, true)])
-    expect(s).toMatchObject({ points: 18, open: 9, gated: 9, rawPoints: 18 })
-    expect(s.level).toBe(levelForXp(18, POWER_CURVE))
-    expect(s.openLevel).toBe(levelForXp(9, POWER_CURVE))
-    expect(s.level).toBeGreaterThan(20)
+  it('scales points against max, gated points included', () => {
+    const s = toPowerStat([factor('a', 4), factor('b', 4, true)], 10)
+    expect(s).toMatchObject({ points: 8, max: 10, fill: 0.8, open: 4, gated: 4, rawPoints: 8 })
+    expect(s.level).toBe(powerLevel(8, 10))
   })
 
   it('applies mitigations to open points first, then gated', () => {
-    expect(toPowerStat([factor('a', 2), factor('b', 2, true), factor('m', -1)])).toMatchObject({ points: 3, open: 1, gated: 2, rawPoints: 3 })
-    expect(toPowerStat([factor('a', 1), factor('b', 2, true), factor('m', -2)])).toMatchObject({ points: 1, open: 0, gated: 1 })
-    expect(toPowerStat([factor('a', 1), factor('m', -3)])).toMatchObject({ points: 0, level: 1, rawPoints: -2 })
+    expect(toPowerStat([factor('a', 2), factor('b', 2, true), factor('m', -1)], 10)).toMatchObject({ points: 3, open: 1, gated: 2, rawPoints: 3 })
+    expect(toPowerStat([factor('a', 1), factor('b', 2, true), factor('m', -2)], 10)).toMatchObject({ points: 1, open: 0, gated: 1 })
+    expect(toPowerStat([factor('a', 1), factor('m', -3)], 10)).toMatchObject({ points: 0, fill: 0, level: 1, rawPoints: -2 })
   })
 
   it('is Lv 1 with nothing', () => {
-    expect(toPowerStat([])).toMatchObject({ level: 1, progress: 0, points: 0, open: 0, gated: 0, high: false })
+    expect(toPowerStat([], 10)).toMatchObject({ level: 1, fill: 0, points: 0, open: 0, gated: 0, high: false })
   })
 
-  it('flags high only when the open points alone reach the threshold', () => {
-    const needed = xpForLevel(POWER_HIGH_OPEN_LEVEL, POWER_CURVE)
-    expect(toPowerStat([factor('a', needed)]).high).toBe(true)
-    expect(toPowerStat([factor('a', needed - 0.25)]).high).toBe(false)
+  it('flags high only when the open share of max reaches the threshold', () => {
+    const needed = POWER_HIGH_OPEN_SHARE * 10
+    expect(toPowerStat([factor('a', needed)], 10)).toMatchObject({ high: true, level: 12 })
+    expect(toPowerStat([factor('a', needed - 0.25)], 10).high).toBe(false)
     // Same level, but gated: not high.
-    expect(toPowerStat([factor('a', needed, true)])).toMatchObject({ high: false, level: POWER_HIGH_OPEN_LEVEL })
+    expect(toPowerStat([factor('a', needed, true)], 10)).toMatchObject({ high: false, level: 12 })
   })
 })
 
 describe('power calibration', () => {
-  it('a default fresh agent is low single digits on all three', () => {
-    const d = inputs()
-    for (const s of [scoreAccess(d), scoreReach(d), scoreAutonomy(d)]) {
-      expect(s.level).toBeGreaterThanOrEqual(2)
-      expect(s.level).toBeLessThanOrEqual(4)
-      expect(s.high).toBe(false)
-    }
+  const all = (p: AgentPowerInputs) => ({ access: scoreAccess(p), reach: scoreReach(p), autonomy: scoreAutonomy(p) })
+
+  it('an empty config is Lv 1 on all three', () => {
+    const empty = inputs({ tools: [], messaging: { receive: false, mode: 'listen_only', visibility: 'off' }, triggers: {} })
+    for (const s of Object.values(all(empty))) expect(s).toMatchObject({ level: 1, points: 0, fill: 0 })
   })
 
-  it('a heavily equipped agent lands in the same range as a heavily used agent\'s Experience', () => {
-    const h = heavyInputs()
+  it('a default fresh agent is Lv 3 on all three', () => {
+    const s = all(inputs())
+    expect([s.access.points, s.reach.points, s.autonomy.points]).toEqual([1.75, 2, 2])
+    for (const stat of Object.values(s)) expect(stat).toMatchObject({ level: 3, high: false })
+  })
+
+  it('a heavily equipped agent is at or near Lv 20', () => {
+    const s = all(heavyInputs())
+    expect([s.access.points, s.reach.points, s.autonomy.points]).toEqual([18.75, 19.5, 14.25])
+    expect([s.access.level, s.reach.level, s.autonomy.level]).toEqual([20, 18, 18])
+    for (const stat of Object.values(s)) expect(stat.high).toBe(true)
+  })
+
+  it('every factor at its cap is exactly Lv 20 with a full bar', () => {
+    const s = all(maxedInputs())
+    expect(s.access).toMatchObject({ level: 20, points: POWER_MAX.access, fill: 1 })
+    expect(s.reach).toMatchObject({ level: 20, points: POWER_MAX.reach, fill: 1 })
+    expect(s.autonomy).toMatchObject({ level: 20, points: POWER_MAX.autonomy, fill: 1 })
+  })
+
+  it('a heavily equipped agent lands near a heavily used agent\'s Experience', () => {
     const exp = scoreExperience(HEAVY_XP).level
     expect(exp).toBeGreaterThanOrEqual(18)
     expect(exp).toBeLessThanOrEqual(30)
-    for (const s of [scoreAccess(h), scoreReach(h), scoreAutonomy(h)]) {
-      expect(s.level).toBeGreaterThanOrEqual(18)
-      expect(s.level).toBeLessThanOrEqual(30)
-      expect(Math.abs(s.level - exp)).toBeLessThanOrEqual(6)
-      expect(s.high).toBe(true)
-    }
+    for (const s of Object.values(all(heavyInputs()))) expect(Math.abs(s.level - exp)).toBeLessThanOrEqual(6)
   })
 })
 
@@ -269,9 +320,33 @@ describe('Access', () => {
     expect(plain.points).toBeGreaterThan(sealed.points)
   })
 
-  it('is uncapped: more MCP servers keep raising it', () => {
-    const servers = (n: number) => ({ mcp: { servers: Array.from({ length: n }, (_, i) => ({ name: `s${i}`, transport: 'stdio' as const })) } })
-    expect(scoreAccess(inputs(servers(30))).level).toBeGreaterThan(scoreAccess(inputs(servers(20))).level)
+  it('MCP servers cap at six; the rest are listed at 0 points', () => {
+    const servers = (n: number) => ({ mcp: { servers: Array.from({ length: n }, (_, i) => ({ name: `s${i}`, transport: 'stdio' as const, env_keys: ['T'] })) } })
+    const ten = scoreAccess(inputs(servers(10)))
+    const six = scoreAccess(inputs(servers(6)))
+    expect(ten.points).toBe(six.points)
+    expect(ten.level).toBe(six.level)
+    expect(ten.factors.filter((f) => /^mcp:[^:]+$/.test(f.id))).toHaveLength(10)
+    expect(ten.factors.filter((f) => f.id.startsWith('mcp:') && f.points > 0)).toHaveLength(12)
+    expect(six.points - scoreAccess(inputs()).points).toBe(ACCESS_POINTS.mcpServerCap * (ACCESS_POINTS.mcpServer + ACCESS_POINTS.mcpCredentials))
+  })
+
+  it('MCP cap counts the heaviest servers, open before gated', () => {
+    const s = scoreAccess(inputs({
+      mcp: {
+        servers: [
+          ...Array.from({ length: 6 }, (_, i) => ({ name: `bare${i}`, transport: 'stdio' as const })),
+          { name: 'gated', transport: 'stdio' as const, restricted: true, env_keys: ['T'] },
+          { name: 'open', transport: 'stdio' as const, env_keys: ['T'] }
+        ]
+      }
+    }))
+    const pts = (id: string) => s.factors.find((f) => f.id === id)?.points
+    expect(pts('mcp:open')).toBe(ACCESS_POINTS.mcpServer)
+    expect(pts('mcp:gated')).toBe(ACCESS_POINTS.mcpServer)
+    expect(pts('mcp:bare0')).toBe(ACCESS_POINTS.mcpServer)
+    expect(pts('mcp:bare4')).toBe(0)
+    expect(pts('mcp:bare5')).toBe(0)
   })
 })
 
@@ -320,10 +395,21 @@ describe('Reach', () => {
       adapters: { telegram: { enabled: true }, email: { enabled: false } },
       ws_connections: [{ id: 'a', url: 'wss://example.test', enabled: true }]
     }))
-    expect(s.level).toBeGreaterThanOrEqual(18)
+    expect(s).toMatchObject({ points: 15, level: 14 })
     expect(s.factors.find((f) => f.id === 'serving:api')?.points).toBe(3)
     expect(s.factors.find((f) => f.id === 'adapter:telegram')).toBeDefined()
     expect(s.factors.find((f) => f.id === 'adapter:email')).toBeUndefined()
+  })
+})
+
+describe('Reach adapters', () => {
+  it('chat adapters cap at three; the rest are listed at 0 points', () => {
+    const adapters = (types: string[]) => ({ adapters: Object.fromEntries(types.map((t) => [t, { enabled: true }])) as AgentConfig['adapters'] })
+    const five = scoreReach(inputs(adapters(['telegram', 'slack', 'discord', 'email', 'matrix'])))
+    const three = scoreReach(inputs(adapters(['telegram', 'slack', 'discord'])))
+    expect(five.points).toBe(three.points)
+    expect(five.factors.filter((f) => f.id.startsWith('adapter:'))).toHaveLength(5)
+    expect(five.factors.filter((f) => f.id.startsWith('adapter:') && f.points === 0)).toHaveLength(2)
   })
 })
 

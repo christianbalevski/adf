@@ -21,8 +21,11 @@ import {
   powerTooltip,
   visibleItems
 } from '../../../src/renderer/components/agent/overview/agent-overview-model'
-import { POWER_CURVE, POWER_HIGH_OPEN_LEVEL, scoreExperience, toPowerStat, xpForLevel } from '../../../src/shared/utils/agent-stats'
+import { POWER_HIGH_OPEN_SHARE, POWER_MAX, scoreAccess, scoreExperience, toPowerStat as toPowerStatMax } from '../../../src/shared/utils/agent-stats'
 import type { AgentExperienceInputs, StatFactor } from '../../../src/shared/types/agent-vitals.types'
+
+/** Scored against Access's max, as the card does. */
+const toPowerStat = (factors: StatFactor[]) => toPowerStatMax(factors, POWER_MAX.access)
 
 const factor = (id: string, label: string, points: number, gated = false, configPath = 'tools.x'): StatFactor => ({
   id, label, points, gated, configPath
@@ -42,28 +45,34 @@ const experienceInputs = (over: Partial<AgentExperienceInputs> = {}): AgentExper
 })
 
 describe('levelBarParts', () => {
-  it('splits the progress fill by the open share', () => {
-    expect(levelBarParts({ progress: 0.5, open: 3, gated: 1, high: false })).toEqual({ openPct: 37.5, gatedPct: 12.5, high: false })
+  it('splits the fill by the open share', () => {
+    expect(levelBarParts({ fill: 0.5, open: 3, gated: 1, high: false })).toEqual({ openPct: 37.5, gatedPct: 12.5, high: false })
   })
 
   it('is all hatched when everything asks first, all solid when nothing does', () => {
-    expect(levelBarParts({ progress: 0.4, open: 0, gated: 2 })).toEqual({ openPct: 0, gatedPct: 40, high: false })
-    expect(levelBarParts({ progress: 0.4, open: 2, gated: 0 })).toEqual({ openPct: 40, gatedPct: 0, high: false })
+    expect(levelBarParts({ fill: 0.4, open: 0, gated: 2 })).toEqual({ openPct: 0, gatedPct: 40, high: false })
+    expect(levelBarParts({ fill: 0.4, open: 2, gated: 0 })).toEqual({ openPct: 40, gatedPct: 0, high: false })
   })
 
   it('treats experience (no open/gated) as solid', () => {
-    expect(levelBarParts({ progress: 0.25 })).toEqual({ openPct: 25, gatedPct: 0, high: false })
+    expect(levelBarParts({ fill: 0.25 })).toEqual({ openPct: 25, gatedPct: 0, high: false })
   })
 
-  it('clamps bad progress and carries the high flag', () => {
-    expect(levelBarParts({ progress: Number.NaN, open: 1, gated: 0 })).toMatchObject({ openPct: 0, gatedPct: 0 })
-    expect(levelBarParts({ progress: 3, open: 1, gated: 1, high: true })).toEqual({ openPct: 50, gatedPct: 50, high: true })
+  it('clamps a bad fill and carries the high flag', () => {
+    expect(levelBarParts({ fill: Number.NaN, open: 1, gated: 0 })).toMatchObject({ openPct: 0, gatedPct: 0 })
+    expect(levelBarParts({ fill: 3, open: 1, gated: 1, high: true })).toEqual({ openPct: 50, gatedPct: 50, high: true })
+  })
+
+  it('a power stat fills by its share of max, not progress to the next level', () => {
+    const stat = toPowerStat([factor('a', 'A', POWER_MAX.access / 2), factor('b', 'B', POWER_MAX.access / 4, true)])
+    expect(stat.fill).toBeCloseTo(0.75)
+    expect(levelBarParts(stat)).toEqual({ openPct: 50, gatedPct: 25, high: false })
   })
 
   it('matches the scorer', () => {
     const stat = toPowerStat([factor('a', 'A', 1.5), factor('b', 'B', 2, true), factor('c', 'C', 0.2)])
     const parts = levelBarParts(stat)
-    expect(parts.openPct + parts.gatedPct).toBeCloseTo(stat.progress * 100, 0)
+    expect(parts.openPct + parts.gatedPct).toBeCloseTo(stat.fill * 100, 0)
   })
 })
 
@@ -75,12 +84,12 @@ describe('powerTooltip', () => {
       factor('messaging:send', 'Sends messages on its own', 1, true),
       factor('security:signed_only', 'Only accepts signed messages', -0.5)
     ])
-    expect(powerTooltip(stat)).toBe(`Lv ${stat.level}, some asks you first · serves a public web page, 3 HTTP API routes`)
+    expect(powerTooltip(stat)).toBe(`Lv ${stat.level} of 20, some asks you first · serves a public web page, 3 HTTP API routes`)
   })
 
   it('leaves out the gated part when nothing is gated', () => {
     const stat = toPowerStat([factor('a', 'Reads its own files', 0.25)])
-    expect(powerTooltip(stat)).toBe('Lv 1 · reads its own files')
+    expect(powerTooltip(stat)).toBe('Lv 1 of 20 · reads its own files')
   })
 
   it('drops trailing parentheticals and says when most asks first', () => {
@@ -88,17 +97,17 @@ describe('powerTooltip', () => {
       factor('triggers', 'Wakes on 2 event types (on_inbox, on_timer)', 1),
       factor('tool:sys_update_config', 'Changes its own config (needs approval)', 1.5, true)
     ])
-    expect(powerTooltip(stat)).toBe(`Lv ${stat.level}, mostly asks you first · changes its own config, wakes on 2 event types`)
+    expect(powerTooltip(stat)).toBe(`Lv ${stat.level} of 20, mostly asks you first · changes its own config, wakes on 2 event types`)
   })
 
   it('labels the warn state in words', () => {
-    const stat = toPowerStat([factor('a', 'Runs commands on the host machine', xpForLevel(POWER_HIGH_OPEN_LEVEL, POWER_CURVE))])
+    const stat = toPowerStat([factor('a', 'Runs commands on the host machine', POWER_HIGH_OPEN_SHARE * POWER_MAX.access)])
     expect(stat.high).toBe(true)
     expect(powerTooltip(stat)).toContain(HIGH_POWER_LABEL)
   })
 
   it('is just the level with no factors', () => {
-    expect(powerTooltip(toPowerStat([]))).toBe('Lv 1')
+    expect(powerTooltip(toPowerStat([]))).toBe('Lv 1 of 20')
   })
 })
 
@@ -151,6 +160,21 @@ describe('power sections', () => {
     expect(s.gated.map((i) => i.text)).toEqual(['Runs commands on compute targets', '2 MCP servers'])
     expect(s.limits.map((i) => i.text)).toEqual(['3 tools need approval'])
     for (const i of [...s.open, ...s.gated, ...s.limits]) expect(i.text).not.toMatch(/[+-]\d/)
+  })
+
+  it('lists the real count past a cap ("10 MCP servers") while only six count', () => {
+    const servers = Array.from({ length: 10 }, (_, i) => ({ name: `s${i}`, restricted: false, hasCredentials: false }))
+    const base = scoreAccess({
+      tools: [], autonomous: false, autostart: false,
+      messaging: { receive: false, mode: 'listen_only', visibility: 'off', allowListCount: 0 },
+      security: { allowUnsigned: true, requireSignature: false },
+      serving: { publicEnabled: false, apiRouteCount: 0, sharedEnabled: false },
+      adapters: [], wsConnectionCount: 0, mcpServers: servers, npmPackageCount: 0, codeNetwork: false,
+      compute: { enabled: false, hostAccess: false, allowedTargets: [] }, triggers: [], sideLoopCount: 0,
+      credentials: { plain: 0, sealed: 0 }, privateKey: 'none', timers: { active: 0 }
+    })
+    expect(base.points).toBe(3)
+    expect(powerSections(base).open).toEqual([expect.objectContaining({ text: '10 MCP servers', count: 10, points: 3 })])
   })
 
   it('shows at most SECTION_LIMIT items until expanded', () => {

@@ -898,13 +898,11 @@ Example 200 (`application/json`):
   "stats": {
     "reach": {
       "level": 1,
-      "progress": 0,
       "points": 0,
+      "max": 0,
+      "fill": 0,
       "open": 0,
       "gated": 0,
-      "levelStart": 0,
-      "nextLevelAt": 0,
-      "openLevel": 1,
       "high": true,
       "rawPoints": 0,
       "factors": [
@@ -919,13 +917,11 @@ Example 200 (`application/json`):
     },
     "access": {
       "level": 1,
-      "progress": 0,
       "points": 0,
+      "max": 0,
+      "fill": 0,
       "open": 0,
       "gated": 0,
-      "levelStart": 0,
-      "nextLevelAt": 0,
-      "openLevel": 1,
       "high": true,
       "rawPoints": 0,
       "factors": [
@@ -940,13 +936,11 @@ Example 200 (`application/json`):
     },
     "autonomy": {
       "level": 1,
-      "progress": 0,
       "points": 0,
+      "max": 0,
+      "fill": 0,
       "open": 0,
       "gated": 0,
-      "levelStart": 0,
-      "nextLevelAt": 0,
-      "openLevel": 1,
       "high": true,
       "rawPoints": 0,
       "factors": [
@@ -13712,19 +13706,17 @@ Data of the `stream.gap` control frame: the resume could not be exact; reload st
 
 ### AgentPowerStat
 
-Reach, Access or Autonomy: a level from uncapped points. xpForLevel(L) = 0.75 * (L - 1); level = largest L with xpForLevel(L) <= points. Gated points count toward the level. `points` is `open` + `gated`.
+Reach, Access or Autonomy: a capped level on a 1-20 scale. fill = clamp(points / max, 0, 1); level = 1 + round(19 * fill), so an empty config is Lv 1 and a maxed-out one Lv 20. `max` is the sum of every capped positive factor of the stat (counts such as MCP servers and chat adapters only count their heaviest few). Gated points count toward the level. `points` is `open` + `gated`.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `level` | integer | yes |  |
-| `progress` | number | yes | Progress within the current level |
 | `points` | number | yes | Points behind the level, after mitigations |
+| `max` | number | yes | Points of a maxed-out config for this stat |
+| `fill` | number | yes | points / max, clamped: how much of the possible power the agent has |
 | `open` | number | yes | Points whose capability runs without approval (mitigations come off these first) |
 | `gated` | number | yes | Points whose capability needs approval |
-| `levelStart` | number | yes | Points at which the current level starts |
-| `nextLevelAt` | number | yes | Points at which the next level starts |
-| `openLevel` | integer | yes | Level the open points alone reach |
-| `high` | boolean | yes | True when openLevel >= 15: much of this runs without anyone asking |
+| `high` | boolean | yes | True when open / max >= 0.6 (open level 12 or more): much of this runs without anyone asking |
 | `rawPoints` | number | yes | Sum of factor points, mitigations included |
 | `factors` | [AgentStatFactor](#schema-agentstatfactor)[] | yes |  |
 
@@ -13738,7 +13730,7 @@ One line of a stat breakdown.
 |---|---|---|---|
 | `id` | string | yes | Stable id, e.g. `tool:compute_exec`, `mcp:github`, `visibility` |
 | `label` | string | yes |  |
-| `points` | number | yes | Points this factor adds (uncapped); negative for mitigations |
+| `points` | number | yes | Points this factor adds; negative for mitigations; 0 for an item past its kind's cap (7th MCP server, 4th chat adapter), listed but not counted |
 | `gated` | boolean | yes | True when the capability needs human approval |
 | `configPath` | string | yes | Config path (or table) that controls this factor |
 

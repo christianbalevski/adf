@@ -12,7 +12,10 @@ export interface StatFactor {
   id: string
   /** Plain technical English, shown as is. */
   label: string
-  /** Power points this factor adds (uncapped). Negative for mitigations. */
+  /**
+   * Power points this factor adds. Negative for mitigations. 0 for an item
+   * past its kind's cap (7th MCP server, 4th adapter): listed, not counted.
+   */
   points: number
   /** True when the capability needs human approval (restricted tool, sealed secret). */
   gated: boolean
@@ -21,27 +24,25 @@ export interface StatFactor {
 }
 
 /**
- * Reach / Access / Autonomy. A level on the shared curve in
- * `src/shared/utils/agent-stats.ts` (POWER_CURVE), from uncapped points.
- * Gated points count toward the level; `open` and `gated` say how it splits.
+ * Reach / Access / Autonomy. A capped level on the 1-20 scale in
+ * `src/shared/utils/agent-stats.ts`: level = 1 + round(19 * fill), fill =
+ * points / max. Gated points count toward the level; `open` and `gated` say
+ * how it splits.
  */
 export interface PowerStat {
-  /** >= 1. */
+  /** 1..20. */
   level: number
-  /** 0..1 within the current level. */
-  progress: number
   /** Points behind the level: `open + gated`, after mitigations, >= 0. */
   points: number
+  /** Points of a maxed-out config for this stat (POWER_MAX). */
+  max: number
+  /** points / max, clamped to 0..1: how much of the possible power the agent has. */
+  fill: number
   /** Points whose capability runs without approval (mitigations taken off these first). */
   open: number
   /** Points whose capability needs approval. */
   gated: number
-  /** Points at which the current level starts and the next one starts. */
-  levelStart: number
-  nextLevelAt: number
-  /** Level the open points alone would reach. */
-  openLevel: number
-  /** True when `openLevel >= POWER_HIGH_OPEN_LEVEL`: much of this runs without anyone asking. */
+  /** True when open / max >= POWER_HIGH_OPEN_SHARE (0.6): much of this runs without anyone asking. */
   high: boolean
   /** Sum of factor points, mitigations included (can be negative). */
   rawPoints: number

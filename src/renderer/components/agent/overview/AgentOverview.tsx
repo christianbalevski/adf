@@ -43,6 +43,7 @@ import { SpeechBubble } from '../../common/SpeechBubble'
 import { LiveOrbital, orbitalMotionStateFor, useOpenAgentOrbitalSeed } from '../../orbital'
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import type { AgentMetric, AgentVitals, ExperienceStat, PowerStat } from '../../../../shared/types/agent-vitals.types'
+import { POWER_LEVEL_MAX } from '../../../../shared/utils/agent-stats'
 import {
   HIGH_POWER_LABEL,
   LEVELS_STORAGE_KEY,
@@ -394,7 +395,7 @@ function StatGrid({ vitals }: { vitals: AgentVitals }) {
   }
 
   const bars: Record<StatKey, LevelBarParts> = {
-    experience: levelBarParts(stats.experience),
+    experience: levelBarParts({ fill: stats.experience.progress }),
     reach: levelBarParts(stats.reach),
     access: levelBarParts(stats.access),
     autonomy: levelBarParts(stats.autonomy)
@@ -429,7 +430,7 @@ function StatGrid({ vitals }: { vitals: AgentVitals }) {
           key={open}
           top={popTop}
           anchor={cellRefs.current[open] ?? null}
-          title={`${STAT_NAMES[open]} · Lv ${stats[open].level}`}
+          title={open === 'experience' ? `${STAT_NAMES[open]} · Lv ${stats[open].level}` : `${STAT_NAMES[open]} · Lv ${stats[open].level} of ${POWER_LEVEL_MAX}`}
           onClose={close}
         >
           {open === 'experience'
@@ -456,7 +457,7 @@ function StatCell({ name, level, bar }: { name: string; level: number; bar: Leve
 /** Diagonal hatch for the gated share: present but held back. */
 const GATED_FILL = 'repeating-linear-gradient(135deg, var(--ink-muted) 0 1.5px, transparent 1.5px 3.5px)'
 
-/** Progress to the next level; solid = runs without asking, hatched = asks first. */
+/** Experience: progress to the next level. Power: share of max; solid = runs without asking, hatched = asks first. */
 function LevelBar({ parts }: { parts: LevelBarParts }) {
   return (
     <span className="flex h-1.5 rounded-full bg-[var(--rule)] overflow-hidden" aria-hidden="true">
