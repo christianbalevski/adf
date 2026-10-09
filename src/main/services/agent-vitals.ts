@@ -22,6 +22,7 @@ import type {
   ActivityEvent,
   AgentActivity,
   AgentExperienceInputs,
+  AgentMetric,
   AgentPowerInputs,
   AgentVitals,
   UpcomingWake
@@ -217,6 +218,7 @@ export interface VitalsSlowPart {
   meta: FleetMeta
   power: AgentPowerInputs
   maturity: Omit<AgentExperienceInputs, 'agentsSpawned' | 'ageDays'>
+  metrics: AgentMetric[]
   nextWakeAt?: number
 }
 
@@ -300,13 +302,22 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
   )
 
   // Files changed after creation. Template instances carry their template's
-  // older timestamps, so starter files never count.
+  // older timestamps, so starter files never count. mind/ counts as memory
+  // tokens instead.
   const { mine, agentSkills } = classifyFiles(
     safe(q, 'SELECT path, updated_at FROM adf_files', (rows) => rows as FileRow[], []),
     cutoff,
     readRegistrySkills(q)
   )
-  const filesWritten = mine.length
+  const filesWritten = mine.filter((f) => !f.path.startsWith('mind/')).length
+  const memoryTokens = Math.round(safe(q, "SELECT SUM(size) AS n FROM adf_files WHERE path LIKE 'mind/%'", (r) => firstNumber(r), 0) / 4)
+
+  const metrics = safe(
+    q,
+    "SELECT key, value FROM adf_meta WHERE key LIKE 'metric:%' ORDER BY key LIMIT 20",
+    (rows) => (rows as Array<{ key: string; value: unknown }>).map((r) => ({ name: r.key.slice('metric:'.length), value: r.value == null ? '' : String(r.value) })),
+    [] as AgentMetric[]
+  )
 
   const tables = listLocalTables(q)
   let localRows = 0
@@ -333,11 +344,13 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
     maturity: {
       loopEntries,
       filesWritten,
+      memoryTokens,
       localTables: tables.length,
       localRows,
       skills: agentSkills.size,
       compactions: Math.max(audited, liveSummaries)
     },
+    metrics,
     nextWakeAt
   }
 }
@@ -885,6 +898,7 @@ export class AgentVitalsService {
       nextWakeAt: slow.nextWakeAt,
       cost7dUsd: cost ? cost.usd : undefined,
       cost7dPartial: cost ? cost.partial : undefined,
+      metrics: slow.metrics,
       stats: scoreAgent(slow.power, maturity),
       maturity
     }

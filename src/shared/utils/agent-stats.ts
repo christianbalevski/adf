@@ -29,8 +29,9 @@
  *   Experience                                            XP      Lv
  *     brand-new agent                                      0       1
  *     first session (~60 loop rows, 3 files)               9       2
- *     heavy, months old (30k rows, 200 files, 10 skills,
- *       8 tables / 20k rows, 150 compactions, 3 children) ~4150   20
+ *     heavy, months old (30k rows, 200 files, 20k memory
+ *       tokens, 10 skills, 8 tables / 20k rows,
+ *       150 compactions, 3 children)                      ~4190   20
  *     4.8k / 7k / 10k XP                                  22 / 26 / 30
  *   Power                                               points    Lv
  *     default fresh agent: Access, Reach, Autonomy     1.75, 2, 2   3, 3, 3
@@ -555,6 +556,8 @@ export const EXPERIENCE_WEIGHTS = {
   loopEntries: 0.1,
   /** Per file written or changed after creation. */
   filesWritten: 1,
+  /** Per approximate token in `mind/` files (about 1 XP per 2 KB note, the old per-file rate). */
+  memoryTokens: 0.002,
   /** Per skill installed or changed. Worth more than plain files. */
   skills: 8,
   /** Per `local_*` table. */
@@ -573,6 +576,7 @@ export const EXPERIENCE_WEIGHTS = {
 const EXPERIENCE_LABELS: Record<keyof AgentExperienceInputs, string> = {
   loopEntries: 'Loop messages',
   filesWritten: 'Files written',
+  memoryTokens: 'Memory tokens',
   skills: 'Skills',
   localTables: 'Database tables',
   localRows: 'Database rows',
@@ -588,6 +592,7 @@ export function experienceSignals(inputs: AgentExperienceInputs): ExperienceSign
   const signals: ExperienceSignal[] = [
     { id: 'loopEntries', label: EXPERIENCE_LABELS.loopEntries, value: n(inputs.loopEntries), xp: n(inputs.loopEntries) * w.loopEntries },
     { id: 'filesWritten', label: EXPERIENCE_LABELS.filesWritten, value: n(inputs.filesWritten), xp: n(inputs.filesWritten) * w.filesWritten },
+    { id: 'memoryTokens', label: EXPERIENCE_LABELS.memoryTokens, value: n(inputs.memoryTokens), xp: n(inputs.memoryTokens) * w.memoryTokens },
     { id: 'skills', label: EXPERIENCE_LABELS.skills, value: n(inputs.skills), xp: n(inputs.skills) * w.skills },
     { id: 'localTables', label: EXPERIENCE_LABELS.localTables, value: n(inputs.localTables), xp: n(inputs.localTables) * w.localTables },
     { id: 'localRows', label: EXPERIENCE_LABELS.localRows, value: n(inputs.localRows), xp: Math.sqrt(n(inputs.localRows)) * w.localRowsSqrt },

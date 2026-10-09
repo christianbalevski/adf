@@ -17973,7 +17973,8 @@
           "handle",
           "ageDays",
           "stats",
-          "maturity"
+          "maturity",
+          "metrics"
         ],
         "properties": {
           "filePath": {
@@ -18029,6 +18030,27 @@
           "cost7dPartial": {
             "type": "boolean",
             "description": "True when some calls had no price (cost7dUsd is a lower bound)"
+          },
+          "metrics": {
+            "type": "array",
+            "description": "adf_meta rows whose key starts with `metric:`, by key, at most 20. `name` is the key without the prefix; `value` is the stored string as is. Not part of any stat.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "value"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "example": "tickets_closed"
+                },
+                "value": {
+                  "type": "string",
+                  "example": "42"
+                }
+              }
+            }
           },
           "stats": {
             "type": "object",
@@ -18211,6 +18233,7 @@
                   "enum": [
                     "loopEntries",
                     "filesWritten",
+                    "memoryTokens",
                     "localTables",
                     "localRows",
                     "skills",
@@ -18269,6 +18292,7 @@
         "required": [
           "loopEntries",
           "filesWritten",
+          "memoryTokens",
           "localTables",
           "localRows",
           "skills",
@@ -18283,7 +18307,11 @@
           },
           "filesWritten": {
             "type": "integer",
-            "description": "adf_files rows changed after the agent was created"
+            "description": "adf_files rows changed after the agent was created, `mind/` excluded"
+          },
+          "memoryTokens": {
+            "type": "integer",
+            "description": "Approximate tokens in `mind/` files (total bytes / 4)"
           },
           "localTables": {
             "type": "integer",

@@ -111,6 +111,7 @@ describe('agent vitals', () => {
     expect(v.handle).toBe('agent-2')
     expect(v.maturity).toMatchObject({ loopEntries: 0, filesWritten: 0, localTables: 0, localRows: 0, skills: 0, compactions: 0 })
     expect(v.stats.experience.level).toBe(1)
+    expect(v.metrics).toEqual([])
     expect(v.cost7dUsd).toBe(1.25)
     expect(v.stats.access.points).toBeGreaterThan(0)
     expect(v.stats.reach.points).toBeGreaterThan(0)
@@ -119,10 +120,14 @@ describe('agent vitals', () => {
   it('counts the agent\'s own work and agrees between live and peeked reads', async () => {
     const ws = opened.find((w) => w.getFilePath() === fileB)!
     ws.writeFile('notes/plan.md', '# plan')
+    const seededMind = (ws.querySQL("SELECT COALESCE(SUM(size), 0) AS n FROM adf_files WHERE path LIKE 'mind/%'")[0] as { n: number }).n
+    ws.writeFile('mind/memory.md', 'x'.repeat(4_000))
+    ws.setMeta('metric:tickets_closed', '42')
+    ws.setMeta('metric:a_rate', '0.93')
     ws.writeFile('skills/agent-skill/SKILL.md', '---\nname: agent-skill\ndescription: test skill\n---\nbody')
     // A real agent writes these long after creation; seed files stay inside the grace window.
     const later = new Date(Date.now() + 3_600_000).toISOString()
-    ws.executeSQL("UPDATE adf_files SET updated_at = ? WHERE path IN ('notes/plan.md', 'skills/agent-skill/SKILL.md')", [later])
+    ws.executeSQL("UPDATE adf_files SET updated_at = ? WHERE path IN ('notes/plan.md', 'skills/agent-skill/SKILL.md', 'mind/memory.md')", [later])
     ws.executeSQL('CREATE TABLE local_items (id INTEGER PRIMARY KEY, v TEXT)')
     ws.executeSQL("INSERT INTO local_items (v) VALUES ('a'), ('b'), ('c')")
     for (let i = 0; i < 4; i++) ws.appendToLoop(i % 2 ? 'assistant' : 'user', [{ type: 'text', text: `m${i}` }])
@@ -131,7 +136,9 @@ describe('agent vitals', () => {
     const fake: Fake = { mesh: [], states: [], workspaces: [{ filePath: fileB, workspace: ws }], now: Date.now() }
     const svc = service(fake)
     const live = await svc.getAgentVitals(fileB, { force: true })
-    expect(live.maturity).toMatchObject({ loopEntries: 4, filesWritten: 2, localTables: 1, localRows: 3, skills: 1 })
+    // mind/ counts as memory tokens (bytes / 4), not as a file.
+    expect(live.maturity).toMatchObject({ loopEntries: 4, filesWritten: 2, memoryTokens: Math.round((seededMind + 4_000) / 4), localTables: 1, localRows: 3, skills: 1 })
+    expect(live.metrics).toEqual([{ name: 'a_rate', value: '0.93' }, { name: 'tickets_closed', value: '42' }])
     expect(live.nextWakeAt).toBeGreaterThan(Date.now())
     expect(live.stats.autonomy.factors.find((f) => f.id === 'timers:fastest')?.label).toBe('Wakes every 2 min')
 
@@ -145,6 +152,7 @@ describe('agent vitals', () => {
     const peeked = await svc.getAgentVitals(fileB)
     expect(peeked.live).toBe(false)
     expect(peeked.maturity).toEqual(live.maturity)
+    expect(peeked.metrics).toEqual(live.metrics)
     expect(peeked.stats.access).toEqual(live.stats.access)
     expect(peeked.contextTokens).toBeUndefined()
   })

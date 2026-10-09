@@ -88,6 +88,7 @@ describe('GET /agents/:id/vitals', () => {
       expect(stat.progress).toBeLessThan(1)
     }
     expect(body.stats.experience.level).toBeGreaterThanOrEqual(1)
+    expect(body.metrics).toEqual([])
 
     // Same agent by id. A write lands on the next forced read.
     const live = runtime.listLiveAgents().find(a => a.agentId === agentId)!

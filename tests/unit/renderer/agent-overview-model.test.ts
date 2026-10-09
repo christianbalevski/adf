@@ -29,6 +29,7 @@ const factor = (id: string, label: string, points: number, gated = false, config
 const experienceInputs = (over: Partial<AgentExperienceInputs> = {}): AgentExperienceInputs => ({
   loopEntries: 0,
   filesWritten: 0,
+  memoryTokens: 0,
   localTables: 0,
   localRows: 0,
   skills: 0,
@@ -174,7 +175,15 @@ describe('experience popover', () => {
       '10 skills',
       '3 agents created'
     ])
-    expect(experienceContributors(exp, 2)).toHaveLength(2)
+    // Skills keep their own line outside the top two.
+    expect(experienceContributors(exp, 2)).toEqual(['30k loop messages', '150 compactions', '10 skills'])
+  })
+
+  it('lists memory as approximate tokens', () => {
+    expect(experienceContributors(scoreExperience(experienceInputs({ memoryTokens: 850 })))).toEqual(['Memory ~850 tokens'])
+    expect(experienceContributors(scoreExperience(experienceInputs({ memoryTokens: 12_345 })))).toEqual(['Memory ~12k tokens'])
+    expect(experienceContributors(scoreExperience(experienceInputs({ memoryTokens: 1_200_000 })))).toEqual(['Memory ~1.2M tokens'])
+    expect(experienceTooltip(scoreExperience(experienceInputs({ skills: 2, memoryTokens: 12_000 })))).toMatch(/^2 skills · memory ~12k tokens · /)
   })
 
   it('skips zero and negligible signals and uses the singular for one', () => {

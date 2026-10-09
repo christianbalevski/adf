@@ -92,16 +92,23 @@ export function experienceHeadline(exp: ExperienceStat): string {
   return `${compactCount(Math.ceil(exp.nextLevel.xp))} XP to Lv ${exp.level + 1}`
 }
 
-/** "1.2k loop messages · 18 files · 3 skills · 340 XP to Lv 22" */
+/** "Memory ~12k tokens" */
+export function memoryLine(tokens: number): string {
+  return `Memory ~${compactCount(tokens)} tokens`
+}
+
+/** "1.2k loop messages · 18 files · 3 skills · memory ~12k tokens · 340 XP to Lv 22" */
 export function experienceTooltip(exp: ExperienceStat): string {
   const value = (id: string): number => exp.breakdown.find((b) => b.id === id)?.value ?? 0
   const parts: string[] = []
   const loops = value('loopEntries')
   const files = value('filesWritten')
   const skills = value('skills')
+  const memory = value('memoryTokens')
   if (loops > 0) parts.push(plural(loops, 'loop message'))
   if (files > 0) parts.push(plural(files, 'file'))
   if (skills > 0) parts.push(plural(skills, 'skill'))
+  if (memory > 0) parts.push(lowerFirst(memoryLine(memory)))
   parts.push(experienceHeadline(exp))
   return parts.join(' · ')
 }
@@ -117,14 +124,20 @@ const CONTRIBUTOR_NOUN: Record<string, [string, string]> = {
   ageDays: ['day active', 'days active']
 }
 
-/** Plain lines for what earned the most XP, largest first: "1.2k loop messages". */
+/** Contributors that always get their own line when non-zero, even outside the top `max`. */
+const ALWAYS_LISTED = new Set(['skills', 'memoryTokens'])
+
+/**
+ * Plain lines for what earned the most XP, largest first: "1.2k loop
+ * messages". Skills and memory are listed whenever present.
+ */
 export function experienceContributors(exp: ExperienceStat, max = 5): string[] {
-  return exp.breakdown
-    .filter((b) => b.value > 0 && b.xp >= 0.5)
-    .slice()
-    .sort((a, b) => b.xp - a.xp)
-    .slice(0, max)
+  const ranked = exp.breakdown.filter((b) => b.value > 0).slice().sort((a, b) => b.xp - a.xp)
+  const top = new Set(ranked.filter((b) => b.xp >= 0.5).slice(0, max))
+  return ranked
+    .filter((b) => top.has(b) || ALWAYS_LISTED.has(b.id))
     .map((b) => {
+      if (b.id === 'memoryTokens') return memoryLine(b.value)
       const noun = CONTRIBUTOR_NOUN[b.id] ?? [b.label.toLowerCase(), b.label.toLowerCase()]
       return plural(b.value, noun[0], noun[1])
     })

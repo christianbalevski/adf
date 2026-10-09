@@ -885,6 +885,12 @@ Example 200 (`application/json`):
   "nextWakeAt": 0,
   "cost7dUsd": 0,
   "cost7dPartial": true,
+  "metrics": [
+    {
+      "name": "tickets_closed",
+      "value": "42"
+    }
+  ],
   "stats": {
     "reach": {
       "level": 1,
@@ -975,6 +981,7 @@ Example 200 (`application/json`):
   "maturity": {
     "loopEntries": 0,
     "filesWritten": 0,
+    "memoryTokens": 0,
     "localTables": 0,
     "localRows": 0,
     "skills": 0,
@@ -13695,6 +13702,9 @@ Data of the `stream.gap` control frame: the resume could not be exact; reload st
 | `nextWakeAt` | number |  | Earliest next_wake_at among non-expired timers (ms epoch) |
 | `cost7dUsd` | number |  | USD over the last 7 local days, from the usage ledger |
 | `cost7dPartial` | boolean |  | True when some calls had no price (cost7dUsd is a lower bound) |
+| `metrics` | object[] | yes | adf_meta rows whose key starts with `metric:`, by key, at most 20. `name` is the key without the prefix; `value` is the stored string as is. Not part of any stat. |
+| `metrics[].name` | string | yes |  |
+| `metrics[].value` | string | yes |  |
 | `stats` | object | yes |  |
 | `stats.reach` | [AgentPowerStat](#schema-agentpowerstat) | yes |  |
 | `stats.access` | [AgentPowerStat](#schema-agentpowerstat) | yes |  |
@@ -13750,7 +13760,7 @@ Experience. xpForLevel(L) = 5 * (L - 1)^2.25; level = largest L with xpForLevel(
 | `levelStart` | number | yes | XP at which the current level starts |
 | `nextLevelAt` | number | yes | XP at which the next level starts |
 | `breakdown` | object[] | yes |  |
-| `breakdown[].id` | `"loopEntries"` \| `"filesWritten"` \| `"localTables"` \| `"localRows"` \| `"skills"` \| `"compactions"` \| `"agentsSpawned"` \| `"ageDays"` | yes |  |
+| `breakdown[].id` | `"loopEntries"` \| `"filesWritten"` \| `"memoryTokens"` \| `"localTables"` \| `"localRows"` \| `"skills"` \| `"compactions"` \| `"agentsSpawned"` \| `"ageDays"` | yes |  |
 | `breakdown[].label` | string | yes |  |
 | `breakdown[].value` | number | yes | Raw count |
 | `breakdown[].xp` | number | yes | XP this signal adds |
@@ -13770,7 +13780,8 @@ Raw maturity counts read from the agent's file.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `loopEntries` | integer | yes | Lifetime adf_loop rows (compaction and clears do not lower it) |
-| `filesWritten` | integer | yes | adf_files rows changed after the agent was created |
+| `filesWritten` | integer | yes | adf_files rows changed after the agent was created, `mind/` excluded |
+| `memoryTokens` | integer | yes | Approximate tokens in `mind/` files (total bytes / 4) |
 | `localTables` | integer | yes | `local_*` tables |
 | `localRows` | integer | yes | Rows across `local_*` tables |
 | `skills` | integer | yes | Distinct skills the agent installed or changed |

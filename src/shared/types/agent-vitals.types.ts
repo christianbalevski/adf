@@ -52,8 +52,10 @@ export interface PowerStat {
 export interface AgentExperienceInputs {
   /** Lifetime adf_loop rows (AUTOINCREMENT high-water mark; compaction and clears do not lower it). */
   loopEntries: number
-  /** adf_files rows changed after the agent was created (template starter files excluded). */
+  /** adf_files rows changed after the agent was created (template starter files and `mind/` excluded). */
   filesWritten: number
+  /** Approximate tokens in `mind/` files: SUM(size) / 4, rounded. */
+  memoryTokens: number
   /** `local_*` tables. */
   localTables: number
   /** Total rows across `local_*` tables. */
@@ -157,8 +159,17 @@ export interface AgentVitals {
   cost7dUsd?: number
   /** True when some calls in the window had no price (cost7dUsd is then a lower bound). */
   cost7dPartial?: boolean
+  /** adf_meta rows keyed `metric:<name>`, by key, at most 20. Shown as is; not part of any stat. */
+  metrics: AgentMetric[]
   stats: AgentStats
   maturity: AgentExperienceInputs
+}
+
+/** One `metric:<name>` adf_meta row. */
+export interface AgentMetric {
+  /** Key without the `metric:` prefix. */
+  name: string
+  value: string
 }
 
 // =============================================================================

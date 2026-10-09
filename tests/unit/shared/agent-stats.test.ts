@@ -75,6 +75,7 @@ function heavyInputs(): AgentPowerInputs {
 const HEAVY_XP: AgentExperienceInputs = {
   loopEntries: 30_000,
   filesWritten: 200,
+  memoryTokens: 20_000,
   skills: 10,
   localTables: 8,
   localRows: 20_000,
@@ -88,6 +89,7 @@ const factor = (id: string, points: number, gated = false): StatFactor => ({ id,
 const EMPTY_XP: AgentExperienceInputs = {
   loopEntries: 0,
   filesWritten: 0,
+  memoryTokens: 0,
   localTables: 0,
   localRows: 0,
   skills: 0,
@@ -388,7 +390,7 @@ describe('Experience', () => {
   })
 
   it('is monotonic in every input', () => {
-    const base: AgentExperienceInputs = { loopEntries: 500, filesWritten: 10, skills: 2, localTables: 1, localRows: 100, compactions: 3, agentsSpawned: 1, ageDays: 30 }
+    const base: AgentExperienceInputs = { loopEntries: 500, filesWritten: 10, memoryTokens: 2_000, skills: 2, localTables: 1, localRows: 100, compactions: 3, agentsSpawned: 1, ageDays: 30 }
     const baseScore = scoreExperience(base).score
     for (const key of Object.keys(base) as Array<keyof AgentExperienceInputs>) {
       const more = scoreExperience({ ...base, [key]: (base[key] as number) * 2 + 1 })
@@ -401,6 +403,12 @@ describe('Experience', () => {
     const before = scoreExperience({ ...EMPTY_XP, loopEntries: 200, filesWritten: 40, skills: 3 })
     const after = scoreExperience({ ...EMPTY_XP, loopEntries: 200, filesWritten: 5, skills: 0 })
     expect(after.score).toBeLessThan(before.score)
+  })
+
+  it('memory counts in tokens: a 2 KB note is worth about one file', () => {
+    const note = scoreExperience({ ...EMPTY_XP, memoryTokens: 500 })
+    expect(note.score).toBeCloseTo(scoreExperience({ ...EMPTY_XP, filesWritten: 1 }).score)
+    expect(note.breakdown.find((b) => b.id === 'memoryTokens')?.value).toBe(500)
   })
 
   it('skills weigh more than plain files', () => {

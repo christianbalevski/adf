@@ -21,7 +21,7 @@ import { Tooltip } from '../../common/Tooltip'
 import { LiveOrbital, orbitalMotionStateFor, useOpenAgentOrbitalSeed } from '../../orbital'
 import { resolveLoopThreshold } from '../../../../shared/utils/context-breakdown'
 import type { AgentState } from '../../../../shared/types/ipc.types'
-import type { AgentVitals, ExperienceStat, PowerStat } from '../../../../shared/types/agent-vitals.types'
+import type { AgentMetric, AgentVitals, ExperienceStat, PowerStat } from '../../../../shared/types/agent-vitals.types'
 import {
   HIGH_POWER_LABEL,
   LEVELS_STORAGE_KEY,
@@ -209,10 +209,26 @@ export function AgentOverview() {
             ))}
           </p>
         )}
+
+        {vitals && vitals.metrics?.length > 0 && <MetricList metrics={vitals.metrics} />}
       </section>
 
       <OverviewActivity filePath={filePath} state={live.state} config={config} now={now} />
     </div>
+  )
+}
+
+/** adf_meta `metric:*` rows, as written. */
+function MetricList({ metrics }: { metrics: AgentMetric[] }) {
+  return (
+    <dl className="text-[12px] space-y-0.5" aria-label="Metrics">
+      {metrics.map((m) => (
+        <div key={m.name} className="flex items-baseline justify-between gap-3">
+          <dt className="min-w-0 truncate text-[var(--ink-muted)]" title={m.name}>{m.name}</dt>
+          <dd className="min-w-0 truncate font-mono text-[11.5px] tabular-nums" title={m.value}>{m.value}</dd>
+        </div>
+      ))}
+    </dl>
   )
 }
 
