@@ -19,9 +19,8 @@ import type { ActivityDay, AgentActivity, AgentContents, UpcomingWake } from '..
 import type { OverviewReader } from './useOverviewRead'
 import {
   COMING_UP_ROW_LIMIT,
-  approxTokens,
   compactCount,
-  contentsView,
+  contentsRows,
   dayTooltip,
   formatUntil,
   hasActivity,
@@ -244,72 +243,40 @@ function ActivitySpark({ daily, partial }: { daily: ActivityDay[]; partial: bool
 // Contents
 // =============================================================================
 
-/**
- * Segment colours, fixed per group (never by rank): ink and blue from the
- * brand tokens, so each mode gets its own selected steps. The pair stays
- * apart under protan/deutan simulation (dataviz validator), and every
- * segment's numbers are also printed in the legend.
- */
-const CONTENTS_COLOR: Record<ContentsKey, string> = {
-  mind: 'var(--ink)',
-  skills: 'var(--blue)'
-}
-
 const openFiles = (): void => useAppStore.getState().expandRightPanelToTab('files')
 const openContents: Record<ContentsKey, () => void> = {
   mind: openFiles,
-  skills: () => useAppStore.getState().expandRightPanelToTab('agent', 'skills')
+  skills: () => useAppStore.getState().expandRightPanelToTab('agent', 'skills'),
+  tables: openFiles
 }
 
+/** Coming up's row without its vertical padding: one 18 px line, as the old meter line was. */
+const CONTENTS_ROW = ROW.replace('py-0.5', 'py-0')
+
 /**
- * One line: a stacked bar of approximate tokens (mind, skills), then the
- * legend, each group's tokens (file and skill counts in the tooltip). Local
- * tables are a plain fact after the total in the title row: table data is
- * rarely read into context, so it is not on the token meter. Hidden when the
- * file holds none of them.
+ * Memory (`mind/`, what the agent recorded since creation), Skills (loaded
+ * capability) and Tables, one row each, no shared meter or total: memory and
+ * skills are different things. Rows with nothing in them are left out; the
+ * section hides when all are.
  */
 function Contents({ contents }: { contents: AgentContents }) {
-  const view = useMemo(() => contentsView(contents), [contents])
-  if (!view) return null
-  const sized = view.groups.filter((g) => g.tokens > 0)
+  const rows = useMemo(() => contentsRows(contents), [contents])
+  if (rows.length === 0) return null
   return (
-    <Section
-      title="Contents"
-      aside={
-        <span className="flex min-w-0 items-baseline gap-1 text-[11.5px] text-[var(--ink-muted)] tabular-nums">
-          {view.groups.length > 0 && <span className="shrink-0">{approxTokens(view.total)} tokens</span>}
-          {view.groups.length > 0 && view.tables && <span aria-hidden className="shrink-0">·</span>}
-          {view.tables && (
-            <Tooltip tip={view.tables} className="flex min-w-0">
-              <button type="button" onClick={openFiles} className="min-w-0 truncate hover:text-[var(--ink)] hover:underline underline-offset-2">
-                {view.tables}
-              </button>
-            </Tooltip>
-          )}
-        </span>
-      }
-    >
-      {view.groups.length > 0 && (
-        <div className="flex items-center gap-3 min-w-0 text-[12px] leading-[18px] tabular-nums">
-          {sized.length > 0 && (
-            <div role="img" aria-label={view.groups.map((g) => g.text).join('; ')} className="flex h-2 min-w-[48px] flex-1 gap-[2px]">
-              {sized.map((g) => (
-                <Tooltip key={g.key} tip={g.text} delay={0} className="flex min-w-[3px]" style={{ flexGrow: g.tokens, flexBasis: 0 }}>
-                  <span className="block h-full w-full rounded-[2px]" style={{ background: CONTENTS_COLOR[g.key] }} />
-                </Tooltip>
-              ))}
-            </div>
-          )}
-          {view.groups.map((g) => (
-            <Tooltip key={g.key} tip={g.text} className="shrink-0">
-              <button type="button" onClick={openContents[g.key]} aria-label={g.text} className="inline-flex items-baseline gap-1.5 hover:underline underline-offset-2">
-                <span aria-hidden className="self-center h-2 w-2 shrink-0 rounded-[2px]" style={{ background: CONTENTS_COLOR[g.key] }} />
-                {g.short}
-              </button>
-            </Tooltip>
-          ))}
-        </div>
-      )}
+    <Section title="Contents">
+      <ul>
+        {rows.map((r) => (
+          <li key={r.key}>
+            <button type="button" onClick={openContents[r.key]} className={CONTENTS_ROW}>
+              <span className="min-w-0 flex-1 truncate">
+                <span className="font-medium">{r.label}</span>{' '}
+                <span className="text-[var(--ink-muted)] tabular-nums">{r.text}</span>
+              </span>
+              {r.aside && <span className={WHEN}>{r.aside}</span>}
+            </button>
+          </li>
+        ))}
+      </ul>
     </Section>
   )
 }

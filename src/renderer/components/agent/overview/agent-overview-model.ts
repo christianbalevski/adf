@@ -581,17 +581,17 @@ export function rowsLabel(n: number): string {
 // Contents
 // =============================================================================
 
-/** Groups on the token meter, in fixed order. */
-export type ContentsKey = 'mind' | 'skills'
+/** Rows of the Contents section, in fixed order. */
+export type ContentsKey = 'mind' | 'skills' | 'tables'
 
-export interface ContentsGroup {
+export interface ContentsRow {
   key: ContentsKey
+  /** "Memory", "Skills", "Tables". */
   label: string
-  tokens: number
-  /** Segment and legend tooltip: "Mind 12 files · ~20k". */
+  /** "~20k tokens · 12 files", "5 skills · ~18k tokens", "3 tables · 2.1k rows". */
   text: string
-  /** Legend item on the single legend line: "Mind ~20k". */
-  short: string
+  /** Right-aligned note: "3 updated this week" (Memory only, absent when 0). */
+  aside?: string
 }
 
 /** 850 → "~850", 12_345 → "~12k". */
@@ -599,21 +599,23 @@ export function approxTokens(n: number): string {
   return `~${compactCount(n)}`
 }
 
-export interface ContentsView {
-  /** Non-empty meter groups (mind, skills), fixed order. */
-  groups: ContentsGroup[]
-  /** Mind + skills tokens. */
-  total: number
-  /** "Tables 3 · 2.1k rows", null without tables. Not on the meter. */
-  tables: string | null
-}
-
-/** null when the file holds none of the three. */
-export function contentsView(c: AgentContents): ContentsView | null {
-  const groups: ContentsGroup[] = []
-  if (c.mind.files > 0) groups.push({ key: 'mind', label: 'Mind', tokens: c.mind.tokens, text: `Mind ${plural(c.mind.files, 'file')} · ${approxTokens(c.mind.tokens)}`, short: `Mind ${approxTokens(c.mind.tokens)}` })
-  if (c.skills.count > 0) groups.push({ key: 'skills', label: 'Skills', tokens: c.skills.tokens, text: `Skills ${compactCount(c.skills.count)} · ${approxTokens(c.skills.tokens)}`, short: `Skills ${approxTokens(c.skills.tokens)}` })
-  const tables = c.tables.count > 0 ? `Tables ${compactCount(c.tables.count)} · ${rowsLabel(c.tables.rows)}` : null
-  if (groups.length === 0 && !tables) return null
-  return { groups, total: groups.reduce((n, g) => n + g.tokens, 0), tables }
+/**
+ * Memory (mind/, what the agent recorded), Skills (loaded capability) and
+ * Tables as separate rows; a row with nothing in it is left out. Empty when
+ * the file holds none of the three.
+ */
+export function contentsRows(c: AgentContents): ContentsRow[] {
+  const rows: ContentsRow[] = []
+  if (c.mind.files > 0) {
+    const recent = c.mind.updatedThisWeek ?? 0
+    rows.push({
+      key: 'mind',
+      label: 'Memory',
+      text: `${approxTokens(c.mind.tokens)} tokens · ${plural(c.mind.files, 'file')}`,
+      ...(recent > 0 ? { aside: `${compactCount(recent)} updated this week` } : {})
+    })
+  }
+  if (c.skills.count > 0) rows.push({ key: 'skills', label: 'Skills', text: `${plural(c.skills.count, 'skill')} · ${approxTokens(c.skills.tokens)} tokens` })
+  if (c.tables.count > 0) rows.push({ key: 'tables', label: 'Tables', text: `${plural(c.tables.count, 'table')} · ${rowsLabel(c.tables.rows)}` })
+  return rows
 }

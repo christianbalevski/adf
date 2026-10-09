@@ -891,8 +891,14 @@ Example 200 (`application/json`):
   "cost7dPartial": true,
   "metrics": [
     {
-      "name": "tickets_closed",
-      "value": "42"
+      "name": "weight",
+      "label": "Weight",
+      "value": 82.4,
+      "unit": "kg",
+      "min": 0,
+      "max": 100,
+      "target": 78,
+      "raw": "{\"value\":82.4,\"label\":\"Weight\",\"unit\":\"kg\",\"target\":78}"
     }
   ],
   "stats": {
@@ -1049,7 +1055,8 @@ Example 200 (`application/json`):
   "contents": {
     "mind": {
       "files": 0,
-      "tokens": 0
+      "tokens": 0,
+      "updatedThisWeek": 0
     },
     "skills": {
       "count": 0,
@@ -13692,9 +13699,15 @@ Data of the `stream.gap` control frame: the resume could not be exact; reload st
 | `nextWakeAt` | number |  | Earliest next_wake_at among non-expired timers (ms epoch) |
 | `cost7dUsd` | number |  | USD over the last 7 local days, from the usage ledger |
 | `cost7dPartial` | boolean |  | True when some calls had no price (cost7dUsd is a lower bound) |
-| `metrics` | object[] | yes | adf_meta rows whose key starts with `metric:`, by key, at most 20. `name` is the key without the prefix; `value` is the stored string as is. Not part of any stat. |
-| `metrics[].name` | string | yes |  |
-| `metrics[].value` | string | yes |  |
+| `metrics` | object[] | yes | adf_meta rows whose key starts with `metric:`, by key, at most 20. A value is a plain string, or a JSON object `{"value": number\|string, "label"?, "unit"?, "min"?, "max"?, "target"?}`; parsed fields are returned beside `raw`. A value that is not such an object is returned as `value` = `raw`. Not part of any stat. |
+| `metrics[].name` | string | yes | Key without the `metric:` prefix |
+| `metrics[].label` | string | yes | The object's `label` when given, else `name` |
+| `metrics[].value` | number \| string | yes | The object's `value`, or the raw string when the stored value is not a metric object |
+| `metrics[].unit` | string |  |  |
+| `metrics[].min` | number |  | Bar start when `max` is set (default 0) |
+| `metrics[].max` | number |  |  |
+| `metrics[].target` | number |  |  |
+| `metrics[].raw` | string | yes | The stored adf_meta value as is |
 | `stats` | object | yes |  |
 | `stats.reach` | [AgentPowerStat](#schema-agentpowerstat) | yes |  |
 | `stats.access` | [AgentPowerStat](#schema-agentpowerstat) | yes |  |
@@ -13793,6 +13806,7 @@ Raw maturity counts read from the agent's file.
 | `contents.mind` | object | yes | Files under mind/ |
 | `contents.mind.files` | integer | yes |  |
 | `contents.mind.tokens` | integer | yes | SUM(size) / 4 |
+| `contents.mind.updatedThisWeek` | integer | yes | mind/ files whose updated_at is within the last 7 days |
 | `contents.skills` | object | yes | Skills the agent installed or changed (the Experience stat rule) |
 | `contents.skills.count` | integer | yes |  |
 | `contents.skills.tokens` | integer | yes | Size of every file under those skills' directories / 4; registry entries without files add 0 |

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   approxTokens,
   compactInput,
-  contentsView,
+  contentsRows,
   dayTooltip,
   formatUntil,
   hasActivity,
@@ -117,8 +117,8 @@ describe('sparkline', () => {
 })
 
 describe('contents', () => {
-  const contents = (mind: number, mindTokens: number, skills: number, skillTokens: number, tables: number, rows: number) => ({
-    mind: { files: mind, tokens: mindTokens },
+  const contents = (mind: number, mindTokens: number, skills: number, skillTokens: number, tables: number, rows: number, recent = 0) => ({
+    mind: { files: mind, tokens: mindTokens, updatedThisWeek: recent },
     skills: { count: skills, tokens: skillTokens },
     tables: { count: tables, rows }
   })
@@ -129,24 +129,20 @@ describe('contents', () => {
     expect(approxTokens(1_234_567)).toBe('~1.2M')
   })
 
-  it('meter groups are mind and skills; tables are facts beside them', () => {
-    expect(contentsView(contents(12, 20_000, 5, 18_000, 3, 2100))).toEqual({
-      groups: [
-        { key: 'mind', label: 'Mind', tokens: 20_000, text: 'Mind 12 files · ~20k', short: 'Mind ~20k' },
-        { key: 'skills', label: 'Skills', tokens: 18_000, text: 'Skills 5 · ~18k', short: 'Skills ~18k' }
-      ],
-      total: 38_000,
-      tables: 'Tables 3 · 2.1k rows'
-    })
+  it('memory, skills and tables are separate rows', () => {
+    expect(contentsRows(contents(12, 20_000, 5, 18_000, 3, 2100, 3))).toEqual([
+      { key: 'mind', label: 'Memory', text: '~20k tokens · 12 files', aside: '3 updated this week' },
+      { key: 'skills', label: 'Skills', text: '5 skills · ~18k tokens' },
+      { key: 'tables', label: 'Tables', text: '3 tables · 2.1k rows' }
+    ])
   })
 
-  it('hides empty groups, and everything when all are empty', () => {
-    expect(contentsView(contents(1, 3, 0, 0, 0, 0))).toEqual({
-      groups: [{ key: 'mind', label: 'Mind', tokens: 3, text: 'Mind 1 file · ~3', short: 'Mind ~3' }],
-      total: 3,
-      tables: null
-    })
-    expect(contentsView(contents(0, 0, 0, 0, 1, 1))).toEqual({ groups: [], total: 0, tables: 'Tables 1 · 1 row' })
-    expect(contentsView(contents(0, 0, 0, 0, 0, 0))).toBeNull()
+  it('hides empty rows, the weekly note at 0, and everything when all are empty', () => {
+    expect(contentsRows(contents(1, 3, 0, 0, 0, 0))).toEqual([{ key: 'mind', label: 'Memory', text: '~3 tokens · 1 file' }])
+    expect(contentsRows(contents(0, 0, 1, 10, 1, 1))).toEqual([
+      { key: 'skills', label: 'Skills', text: '1 skill · ~10 tokens' },
+      { key: 'tables', label: 'Tables', text: '1 table · 1 row' }
+    ])
+    expect(contentsRows(contents(0, 0, 0, 0, 0, 0))).toEqual([])
   })
 })

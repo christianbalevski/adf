@@ -1,6 +1,6 @@
 ---
 type: reference
-description: How the agent Overview scores Experience, Reach, Access and Autonomy, what each input measures, agent metrics, and the Contents meter
+description: How the agent Overview scores Experience, Reach, Access and Autonomy, what each input measures, agent metrics, and the Contents rows
 see_also:
   - memory-management.md — compaction, the compaction threshold and loop audit, which the contexts-worked count reads
   - tools.md — tool access controls (enabled, restricted) that the Access and Autonomy factors read
@@ -253,19 +253,41 @@ No stat is `high`.
 
 ## Agent metrics
 
-An agent publishes metrics by writing `adf_meta` keys of the form `metric:<name>`, for example with [`sys_set_meta`](tools.md#sys_set_meta). The Overview lists the first 20 by key, with the prefix removed and the value shown as stored text. Metrics do not affect any level.
+An agent publishes metrics by writing `adf_meta` keys of the form `metric:<name>`, for example with [`sys_set_meta`](tools.md#sys_set_meta). The Overview lists the first 20 by key, with the prefix removed. Metrics do not affect any level. Parsing is in `src/shared/utils/agent-metrics.ts`; the daemon returns the parsed fields too.
+
+A value is either a plain string, shown as stored, or a JSON object:
+
+```json
+{"value": 64, "label": "Disk used", "unit": "%", "min": 0, "max": 100, "target": 80}
+```
+
+| Field | Type | Effect |
+|-------|------|--------|
+| `value` | number or string | REQUIRED. The value shown. |
+| `label` | string | Replaces `<name>` as the row's name. |
+| `unit` | string | Shown after the value (`%` without a space). |
+| `min` | number | Start of the bar's range. Defaults to 0. |
+| `max` | number | When set, above `min`, and `value` is a number: a thin bar of (value − min) / (max − min), clamped to 0..1. |
+| `target` | number | With a bar: a tick at the target's position. Without `max`: the value reads `value / target unit`. |
+
+A value that is not such an object (invalid JSON, an array, no `value`, or a `value` that is neither a number nor a string) is shown as the raw string. Fields of the wrong type are ignored.
+
+Examples:
+
+- `metric:disk` = `{"value": 64, "label": "Disk used", "unit": "%", "max": 100, "target": 80}` shows **Disk used**, a bar at 64 % with a tick at 80 %, and `64%`.
+- `metric:focus` = `{"value": 42, "unit": "h", "target": 50}` shows **focus** and `42 / 50 h`.
 
 ## Contents
 
-The Contents section reads paths, timestamps and sizes from `adf_files` (never content) and counts `local_*` tables.
+The Contents section reads paths, timestamps and sizes from `adf_files` (never content) and counts `local_*` tables. It has one row per group. Memory is what the agent recorded in `mind/` since it was created; skills are loaded artifacts that hint at what it can do. The two are kept apart: there is no shared bar or token total.
 
-| Item | Count | Size |
-|------|-------|------|
-| Mind | Files under `mind/` | Total bytes / 4, rounded. The seeded log header is included here. |
-| Skills | Skills, by the rule under [Measurement](#measurement) | Bytes of the files under `skills/<name>/` for those skills / 4, rounded |
-| Tables | `local_*` tables, first 50 by name | Rows summed over those tables |
+| Row | Shows | Computed as | Opens |
+|-----|-------|-------------|-------|
+| Memory | `~20k tokens · 12 files`, and `N updated this week` | Files under `mind/`; total bytes / 4, rounded (the seeded log header is included). Updated this week: `mind/` files whose `updated_at` is within the last 7 days; not shown when 0. | Files |
+| Skills | `5 skills · ~18k tokens` | Skills, by the rule under [Measurement](#measurement); bytes of the files under `skills/<name>/` for those skills / 4, rounded | Agent > Skills |
+| Tables | `3 tables · 2.1k rows` | `local_*` tables, first 50 by name; rows summed over those tables | Files |
 
-The meter has one segment per non-empty group of Mind and Skills, sized by tokens. Tables are shown as text beside it and are not on the meter. The section is hidden when all three are empty.
+A row with a count of 0 is not shown. The section is hidden when all three are 0.
 
 ## Header cost
 

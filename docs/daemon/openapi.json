@@ -18051,21 +18051,58 @@
           },
           "metrics": {
             "type": "array",
-            "description": "adf_meta rows whose key starts with `metric:`, by key, at most 20. `name` is the key without the prefix; `value` is the stored string as is. Not part of any stat.",
+            "description": "adf_meta rows whose key starts with `metric:`, by key, at most 20. A value is a plain string, or a JSON object `{\"value\": number|string, \"label\"?, \"unit\"?, \"min\"?, \"max\"?, \"target\"?}`; parsed fields are returned beside `raw`. A value that is not such an object is returned as `value` = `raw`. Not part of any stat.",
             "items": {
               "type": "object",
               "required": [
                 "name",
-                "value"
+                "label",
+                "value",
+                "raw"
               ],
               "properties": {
                 "name": {
                   "type": "string",
-                  "example": "tickets_closed"
+                  "description": "Key without the `metric:` prefix",
+                  "example": "weight"
+                },
+                "label": {
+                  "type": "string",
+                  "description": "The object's `label` when given, else `name`",
+                  "example": "Weight"
                 },
                 "value": {
+                  "oneOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "description": "The object's `value`, or the raw string when the stored value is not a metric object",
+                  "example": 82.4
+                },
+                "unit": {
                   "type": "string",
-                  "example": "42"
+                  "example": "kg"
+                },
+                "min": {
+                  "type": "number",
+                  "description": "Bar start when `max` is set (default 0)"
+                },
+                "max": {
+                  "type": "number",
+                  "example": 100
+                },
+                "target": {
+                  "type": "number",
+                  "example": 78
+                },
+                "raw": {
+                  "type": "string",
+                  "description": "The stored adf_meta value as is",
+                  "example": "{\"value\":82.4,\"label\":\"Weight\",\"unit\":\"kg\",\"target\":78}"
                 }
               }
             }
@@ -18413,7 +18450,8 @@
                 "description": "Files under mind/",
                 "required": [
                   "files",
-                  "tokens"
+                  "tokens",
+                  "updatedThisWeek"
                 ],
                 "properties": {
                   "files": {
@@ -18422,6 +18460,10 @@
                   "tokens": {
                     "type": "integer",
                     "description": "SUM(size) / 4"
+                  },
+                  "updatedThisWeek": {
+                    "type": "integer",
+                    "description": "mind/ files whose updated_at is within the last 7 days"
                   }
                 }
               },

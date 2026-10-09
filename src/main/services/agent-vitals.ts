@@ -30,6 +30,7 @@ import type {
 import { UPCOMING_TEXT_MAX } from '../../shared/types/agent-vitals.types'
 import { powerInputsFromConfig, scheduleIntervalMs, scoreAgent } from '../../shared/utils/agent-stats'
 import { bucketByLocalDay, windowStartMs } from '../../shared/utils/agent-activity'
+import { parseMetric } from '../../shared/utils/agent-metrics'
 import { localDateKey } from '../../shared/utils/date-key'
 import { resolveLoopThreshold } from '../../shared/utils/context-breakdown'
 import { verifyAttestation } from './attestation.service'
@@ -454,7 +455,7 @@ export function readVitalsCheapPart(q: Sql): VitalsCheapPart {
   const metrics = safe(
     q,
     "SELECT key, value FROM adf_meta WHERE key LIKE 'metric:%' ORDER BY key LIMIT 20",
-    (rows) => (rows as Array<{ key: string; value: unknown }>).map((r) => ({ name: r.key.slice('metric:'.length), value: r.value == null ? '' : String(r.value) })),
+    (rows) => (rows as Array<{ key: string; value: unknown }>).map((r) => parseMetric(r.key.slice('metric:'.length), r.value)),
     [] as AgentMetric[]
   )
 
@@ -537,6 +538,9 @@ function readAgentId(q: Sql): string | null {
 /** adf_loop rows scanned at most for the per-day turn counts. */
 export const DAILY_SCAN_CAP = 5_000
 
+/** Contents' "updated this week" window. */
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+
 /** bytes / 4, rounded: the overview's token estimate. */
 const approxTokens = (bytes: number): number => Math.round(bytes / 4)
 
@@ -544,15 +548,18 @@ const approxTokens = (bytes: number): number => Math.round(bytes / 4)
  * The Contents section: mind/ files and the agent's skills as counts and
  * approximate tokens, local tables as counts and rows. Aggregates only.
  */
-export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>): AgentContents {
+export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>, now = Date.now()): AgentContents {
+  const weekAgo = now - WEEK_MS
   let mindFiles = 0
   let mindBytes = 0
+  let mindRecent = 0
   let skillBytes = 0
   for (const f of files) {
     const size = typeof f.size === 'number' && Number.isFinite(f.size) ? f.size : 0
     if (f.path.startsWith('mind/')) {
       mindFiles++
       mindBytes += size
+      if (Date.parse(f.updated_at) >= weekAgo) mindRecent++
       continue
     }
     const skill = SKILL_FILE.exec(f.path)?.[1]
@@ -564,7 +571,7 @@ export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>)
   for (const t of tables) rows += safe(q, `SELECT COUNT(*) AS n FROM "${t}"`, (r) => firstNumber(r), 0)
 
   return {
-    mind: { files: mindFiles, tokens: approxTokens(mindBytes) },
+    mind: { files: mindFiles, tokens: approxTokens(mindBytes), updatedThisWeek: mindRecent },
     skills: { count: agentSkills.size, tokens: approxTokens(skillBytes) },
     tables: { count: tables.length, rows }
   }
@@ -677,7 +684,7 @@ export function readActivityHeavy(q: Sql, now: number, prior?: TurnScan): Activi
   return {
     daily,
     dailyPartial: turns.capped || compacted,
-    contents: readContents(q, files, agentSkills),
+    contents: readContents(q, files, agentSkills, now),
     turnScan: turns
   }
 }

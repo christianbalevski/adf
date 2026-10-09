@@ -60,6 +60,7 @@ beforeAll(() => {
   file_('skills/research/SKILL.md', iso(now - 2 * HOUR))
   file_('notes/today.md', iso(now - HOUR))
   file_('mind/people.md', iso(now - HOUR))
+  file_('mind/old.md', iso(now - 8 * DAY))
   file_('skills-registry.json', iso(now))
   sql("UPDATE adf_files SET content = ? WHERE path = 'skills-registry.json'", [Buffer.from(JSON.stringify({ skills: { starter: {}, legacy: {} } }))])
 
@@ -120,7 +121,8 @@ describe('readAgentActivity', () => {
     const a = readAgentActivity(q, now)
     const mind = q("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM adf_files WHERE path LIKE 'mind/%'")[0] as { n: number; bytes: number }
     expect(mind.n).toBeGreaterThan(0)
-    expect(a.contents.mind).toEqual({ files: mind.n, tokens: Math.round(mind.bytes / 4) })
+    // Only people.md is inside the last 7 days: old.md and the seeded files are older.
+    expect(a.contents.mind).toEqual({ files: mind.n, tokens: Math.round(mind.bytes / 4), updatedThisWeek: 1 })
     // research (file) + legacy (registry only, 0 tokens); starter excluded.
     expect(a.contents.skills).toEqual({ count: 2, tokens: Math.round('# skills/research/SKILL.md'.length / 4) })
     expect(a.contents.tables).toEqual({ count: 1, rows: 3 })

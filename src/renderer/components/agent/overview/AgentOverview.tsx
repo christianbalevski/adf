@@ -23,10 +23,15 @@
  *   gap 6, stats 109: grid 85, facts 6+18 (metrics: 6 + 3x18+2x2 + 2+18 = 84)
  *   gap 6, Coming up 75: rule+pad 7 + title 18 + 4 + 2 rows x 23
  *   gap 6, Activity 55: 31 + spark 24
- *   gap 6, Contents 47: 29 + one meter/legend line 18
- * Worst case (3-line status, 3 metrics + "+N") is ~642: it fits 660. Under
- * that (590 at zoom 1.1) useChartFold folds the Activity chart (61 with its
- * gap) into the facts line, ~581. Anything taller (banners, expanded "+N",
+ *   gap 6, Contents 47: 29 + one meter/legend line 18 (as measured)
+ * Contents is now one 18 px row per non-empty group (Memory, Skills,
+ * Tables) instead of the meter line: 29 + 18 per row, 47 / 65 / 83 for
+ * 1 / 2 / 3 rows, so the agent above with all three is ~577 (by reasoning,
+ * not re-measured). Metric bars sit on their 18 px line and add nothing.
+ * Worst case (3-line status, 3 metrics + "+N", 3 Contents rows) is ~678:
+ * useChartFold folds the Activity chart (61 with its gap) into the facts
+ * line, ~617, which fits 660. At 590 (zoom 1.1) the worst case scrolls
+ * by ~27; 1-2 Contents rows still fit. Anything taller (banners, expanded "+N",
  * a smaller window) scrolls.
  * Keep new rows inside this budget: cap lists with a row limit + "+N".
  */
@@ -45,6 +50,7 @@ import { orbitalMotionStateFor, useOpenAgentOrbitalSeed } from '../../orbital'
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import type { AgentMetric, AgentVitals, ExperienceStat, PowerStat } from '../../../../shared/types/agent-vitals.types'
 import { POWER_LEVEL_MAX } from '../../../../shared/utils/agent-stats'
+import { metricBar, metricText } from '../../../../shared/utils/agent-metrics'
 import {
   HIGH_POWER_LABEL,
   LEVELS_STORAGE_KEY,
@@ -338,19 +344,30 @@ function Badge({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** adf_meta `metric:*` rows, as written; the first OVERVIEW_ROW_LIMIT, then "+N more". */
+/**
+ * adf_meta `metric:*` rows; the first OVERVIEW_ROW_LIMIT, then "+N more".
+ * A JSON metric shows its label, value and unit, and a thin bar on the same
+ * 18 px line when it has a `max` (tick at `target`). See agent-metrics.ts.
+ */
 function MetricList({ metrics }: { metrics: AgentMetric[] }) {
   const [expanded, setExpanded] = useState(false)
   const { shown, hidden } = visibleItems(metrics, expanded, OVERVIEW_ROW_LIMIT)
   return (
     <div className="text-[12px] leading-[18px] space-y-0.5">
       <dl className="space-y-0.5" aria-label="Metrics">
-        {shown.map((m) => (
-          <div key={m.name} className="flex items-baseline justify-between gap-3">
-            <dt className="min-w-0 truncate text-[var(--ink-muted)]" title={m.name}>{m.name}</dt>
-            <dd className="min-w-0 truncate font-mono text-[11.5px] tabular-nums" title={m.value}>{m.value}</dd>
-          </div>
-        ))}
+        {shown.map((m) => {
+          const text = metricText(m)
+          const bar = metricBar(m)
+          return (
+            <div key={m.name} className="flex items-baseline justify-between gap-3">
+              <dt className="min-w-0 truncate text-[var(--ink-muted)]" title={m.label === m.name ? m.name : `${m.label} (${m.name})`}>{m.label}</dt>
+              <dd className="flex min-w-0 items-baseline gap-2 font-mono text-[11.5px] tabular-nums" title={m.raw}>
+                {bar && <MetricBar fill={bar.fill} target={bar.target} />}
+                <span className="min-w-0 truncate">{text}</span>
+              </dd>
+            </div>
+          )
+        })}
       </dl>
       {hidden > 0 && (
         <button type="button" onClick={() => setExpanded(true)} className="text-[var(--ink-muted)] hover:text-[var(--ink)]">
@@ -358,6 +375,18 @@ function MetricList({ metrics }: { metrics: AgentMetric[] }) {
         </button>
       )}
     </div>
+  )
+}
+
+/** Value's share of min..max as a thin track; a tick marks the target. Decorative: the value is printed beside it. */
+function MetricBar({ fill, target }: { fill: number; target?: number }) {
+  return (
+    <span aria-hidden className="relative self-center h-1 w-12 shrink-0 rounded-full bg-[var(--rule)]">
+      <span className="absolute inset-y-0 left-0 rounded-full bg-[var(--ink)]" style={{ width: `${fill * 100}%` }} />
+      {target !== undefined && (
+        <span className="absolute -top-0.5 -bottom-0.5 w-px bg-[var(--ink-muted)]" style={{ left: `calc(${target * 100}% - 0.5px)` }} />
+      )}
+    </span>
   )
 }
 

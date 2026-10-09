@@ -127,6 +127,7 @@ describe('agent vitals', () => {
     ws.writeFile('mind/memory.md', 'x'.repeat(4_000))
     ws.setMeta('metric:tickets_closed', '42')
     ws.setMeta('metric:a_rate', '0.93')
+    ws.setMeta('metric:weight', '{"value":82.4,"label":"Weight","unit":"kg","target":78}')
     ws.writeFile('skills/agent-skill/SKILL.md', '---\nname: agent-skill\ndescription: test skill\n---\nbody')
     // A real agent writes these long after creation; seed files stay inside the grace window.
     const later = new Date(Date.now() + 3_600_000).toISOString()
@@ -141,7 +142,11 @@ describe('agent vitals', () => {
     const live = await svc.getAgentVitals(fileB, { force: true })
     // mind/ counts as memory tokens (bytes / 4), not as a file.
     expect(live.maturity).toMatchObject({ messages: 4, filesWritten: 2, memoryTokens: Math.round((seededMind - Buffer.byteLength(DEFAULT_MIND_LOG_CONTENT) + 4_000) / 4), localTables: 1, localRows: 3, skills: 1 })
-    expect(live.metrics).toEqual([{ name: 'a_rate', value: '0.93' }, { name: 'tickets_closed', value: '42' }])
+    expect(live.metrics).toEqual([
+      { name: 'a_rate', label: 'a_rate', value: '0.93', raw: '0.93' },
+      { name: 'tickets_closed', label: 'tickets_closed', value: '42', raw: '42' },
+      { name: 'weight', label: 'Weight', value: 82.4, unit: 'kg', target: 78, raw: '{"value":82.4,"label":"Weight","unit":"kg","target":78}' }
+    ])
     expect(live.nextWakeAt).toBeGreaterThan(Date.now())
     expect(live.stats.autonomy.factors.find((f) => f.id === 'timers:fastest')?.label).toBe('Wakes every 2 min')
 

@@ -183,17 +183,30 @@ export interface AgentVitals {
   cost7dUsd?: number
   /** True when some calls in the window had no price (cost7dUsd is then a lower bound). */
   cost7dPartial?: boolean
-  /** adf_meta rows keyed `metric:<name>`, by key, at most 20. Shown as is; not part of any stat. */
+  /** adf_meta rows keyed `metric:<name>`, by key, at most 20 (parsed by `src/shared/utils/agent-metrics.ts`). Not part of any stat. */
   metrics: AgentMetric[]
   stats: AgentStats
   maturity: AgentExperienceInputs
 }
 
-/** One `metric:<name>` adf_meta row. */
+/**
+ * One `metric:<name>` adf_meta row. The stored value is a plain string or a
+ * JSON object `{value, label?, unit?, min?, max?, target?}`; a plain string
+ * (or anything not such an object) gives `value` = `raw`, `label` = `name`.
+ */
 export interface AgentMetric {
   /** Key without the `metric:` prefix. */
   name: string
-  value: string
+  /** The object's `label`, else `name`. */
+  label: string
+  value: number | string
+  unit?: string
+  /** Bar start when `max` is set (0 when absent). */
+  min?: number
+  max?: number
+  target?: number
+  /** The stored value as is. */
+  raw: string
 }
 
 // =============================================================================
@@ -242,8 +255,8 @@ export interface ActivityDay {
  * rarely read into context, so its size is not comparable.
  */
 export interface AgentContents {
-  /** Files under `mind/`: count and SUM(size) / 4. */
-  mind: { files: number; tokens: number }
+  /** Files under `mind/`: count, SUM(size) / 4, and files with updated_at in the last 7 days. */
+  mind: { files: number; tokens: number; updatedThisWeek: number }
   /**
    * Skills the agent installed or changed (the Experience stat's rule) and
    * the tokens of every file under those skills' directories. Registry
