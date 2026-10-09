@@ -794,7 +794,7 @@
           "Agents"
         ],
         "summary": "Agent activity",
-        "description": "The lower sections of Studio's agent overview: the next three timer wakes, the eight most recent events, 14 local days of finished turns with the usage ledger's cost per day, and what the agent keeps (skills, `local_*` tables, files it wrote). `{id}` resolves as in `GET /agents/{id}/vitals`. Recent events come from the newest 200 loop rows (tool calls, finished turns, failed tool results; consecutive calls of one tool fold into one line with `count`), the newest inbox and outbox messages, `error` rows of the agent log and the newest files the agent wrote. A finished turn is an assistant loop row without a tool call. The first read counts turns over at most the newest 5,000 loop rows and later reads add only new rows, so turns compacted away before the first read are not counted; `dailyPartial` is true when the row cap or a compaction cuts into the window. Files and skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.",
+        "description": "The lower sections of Studio's agent overview: the next three timer wakes, the eight most recent events, 14 local days of finished turns with the usage ledger's cost per day, and what the file holds (`mind/` files and skills with approximate tokens, `local_*` tables with rows). `{id}` resolves as in `GET /agents/{id}/vitals`. Recent events come from the newest 200 loop rows (tool calls, finished turns, failed tool results; consecutive calls of one tool fold into one line with `count`), the newest inbox and outbox messages, `error` rows of the agent log and the newest files the agent wrote. A finished turn is an assistant loop row without a tool call. The first read counts turns over at most the newest 5,000 loop rows and later reads add only new rows, so turns compacted away before the first read are not counted; `dailyPartial` is true when the row cap or a compaction cuts into the window. Recent files and skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.",
         "operationId": "getAgentActivity",
         "parameters": [
           {
@@ -18352,7 +18352,7 @@
           "recent",
           "daily",
           "dailyPartial",
-          "knowledge"
+          "contents"
         ],
         "properties": {
           "filePath": {
@@ -18395,71 +18395,66 @@
             "type": "boolean",
             "description": "True when the turn scan hit its row cap or compaction removed rows inside the window (the oldest days may read low)"
           },
-          "knowledge": {
+          "contents": {
             "type": "object",
+            "description": "What the file holds, in three groups. Tokens are approximate (bytes / 4, rounded) and given for mind and skills only: table data is rarely read into context.",
             "required": [
+              "mind",
               "skills",
-              "tables",
-              "files",
-              "filesTotal"
+              "tables"
             ],
             "properties": {
+              "mind": {
+                "type": "object",
+                "description": "Files under mind/",
+                "required": [
+                  "files",
+                  "tokens"
+                ],
+                "properties": {
+                  "files": {
+                    "type": "integer"
+                  },
+                  "tokens": {
+                    "type": "integer",
+                    "description": "SUM(size) / 4"
+                  }
+                }
+              },
               "skills": {
-                "type": "array",
-                "maxItems": 50,
-                "items": {
-                  "type": "string"
-                },
-                "description": "Skills the agent installed or changed, by name"
+                "type": "object",
+                "description": "Skills the agent installed or changed (the Experience stat rule)",
+                "required": [
+                  "count",
+                  "tokens"
+                ],
+                "properties": {
+                  "count": {
+                    "type": "integer"
+                  },
+                  "tokens": {
+                    "type": "integer",
+                    "description": "Size of every file under those skills' directories / 4; registry entries without files add 0"
+                  }
+                }
               },
               "tables": {
-                "type": "array",
-                "maxItems": 50,
-                "items": {
-                  "type": "object",
-                  "required": [
-                    "name",
-                    "rows"
-                  ],
-                  "properties": {
-                    "name": {
-                      "type": "string",
-                      "example": "local_notes"
-                    },
-                    "rows": {
-                      "type": "integer"
-                    }
+                "type": "object",
+                "description": "local_* tables (at most 50 read)",
+                "required": [
+                  "count",
+                  "rows"
+                ],
+                "properties": {
+                  "count": {
+                    "type": "integer",
+                    "maximum": 50
+                  },
+                  "rows": {
+                    "type": "integer",
+                    "description": "Total rows"
                   }
                 }
-              },
-              "files": {
-                "type": "array",
-                "maxItems": 20,
-                "description": "Files the agent wrote, newest first",
-                "items": {
-                  "type": "object",
-                  "required": [
-                    "path",
-                    "updatedAt",
-                    "size"
-                  ],
-                  "properties": {
-                    "path": {
-                      "type": "string"
-                    },
-                    "updatedAt": {
-                      "type": "string",
-                      "description": "ISO 8601"
-                    },
-                    "size": {
-                      "type": "integer"
-                    }
-                  }
-                }
-              },
-              "filesTotal": {
-                "type": "integer",
-                "description": "All files the agent wrote"
               }
             }
           }

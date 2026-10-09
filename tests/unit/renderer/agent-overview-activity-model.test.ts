@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   activityEventText,
+  approxTokens,
+  contentsView,
   dayTooltip,
   formatAgo,
   formatUntil,
@@ -116,5 +118,40 @@ describe('sparkline', () => {
   it('rowsLabel', () => {
     expect(rowsLabel(1)).toBe('1 row')
     expect(rowsLabel(1200)).toBe('1.2k rows')
+  })
+})
+
+describe('contents', () => {
+  const contents = (mind: number, mindTokens: number, skills: number, skillTokens: number, tables: number, rows: number) => ({
+    mind: { files: mind, tokens: mindTokens },
+    skills: { count: skills, tokens: skillTokens },
+    tables: { count: tables, rows }
+  })
+
+  it('approxTokens uses the compact formatter', () => {
+    expect(approxTokens(850)).toBe('~850')
+    expect(approxTokens(12_345)).toBe('~12k')
+    expect(approxTokens(1_234_567)).toBe('~1.2M')
+  })
+
+  it('meter groups are mind and skills; tables are facts beside them', () => {
+    expect(contentsView(contents(12, 20_000, 5, 18_000, 3, 2100))).toEqual({
+      groups: [
+        { key: 'mind', label: 'Mind', tokens: 20_000, text: 'Mind 12 files · ~20k' },
+        { key: 'skills', label: 'Skills', tokens: 18_000, text: 'Skills 5 · ~18k' }
+      ],
+      total: 38_000,
+      tables: 'Tables 3 · 2.1k rows'
+    })
+  })
+
+  it('hides empty groups, and everything when all are empty', () => {
+    expect(contentsView(contents(1, 3, 0, 0, 0, 0))).toEqual({
+      groups: [{ key: 'mind', label: 'Mind', tokens: 3, text: 'Mind 1 file · ~3' }],
+      total: 3,
+      tables: null
+    })
+    expect(contentsView(contents(0, 0, 0, 0, 1, 1))).toEqual({ groups: [], total: 0, tables: 'Tables 1 · 1 row' })
+    expect(contentsView(contents(0, 0, 0, 0, 0, 0))).toBeNull()
   })
 })

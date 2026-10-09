@@ -6,7 +6,7 @@
  */
 
 import type { AgentState } from '../../../../shared/types/ipc.types'
-import type { ActivityDay, ActivityEvent, ExperienceStat, PowerStat, StatFactor } from '../../../../shared/types/agent-vitals.types'
+import type { ActivityDay, ActivityEvent, AgentContents, ExperienceStat, PowerStat, StatFactor } from '../../../../shared/types/agent-vitals.types'
 import { RECENT_LIMIT, mergeRecent } from '../../../../shared/utils/agent-activity'
 
 // =============================================================================
@@ -540,4 +540,43 @@ export function sparkHeights(daily: ActivityDay[], height: number): number[] {
 
 export function rowsLabel(n: number): string {
   return plural(n, 'row')
+}
+
+// =============================================================================
+// Contents
+// =============================================================================
+
+/** Groups on the token meter, in fixed order. */
+export type ContentsKey = 'mind' | 'skills'
+
+export interface ContentsGroup {
+  key: ContentsKey
+  label: string
+  tokens: number
+  /** Legend line and segment tooltip: "Mind 12 files · ~20k". */
+  text: string
+}
+
+/** 850 → "~850", 12_345 → "~12k". */
+export function approxTokens(n: number): string {
+  return `~${compactCount(n)}`
+}
+
+export interface ContentsView {
+  /** Non-empty meter groups (mind, skills), fixed order. */
+  groups: ContentsGroup[]
+  /** Mind + skills tokens. */
+  total: number
+  /** "Tables 3 · 2.1k rows", null without tables. Not on the meter. */
+  tables: string | null
+}
+
+/** null when the file holds none of the three. */
+export function contentsView(c: AgentContents): ContentsView | null {
+  const groups: ContentsGroup[] = []
+  if (c.mind.files > 0) groups.push({ key: 'mind', label: 'Mind', tokens: c.mind.tokens, text: `Mind ${plural(c.mind.files, 'file')} · ${approxTokens(c.mind.tokens)}` })
+  if (c.skills.count > 0) groups.push({ key: 'skills', label: 'Skills', tokens: c.skills.tokens, text: `Skills ${compactCount(c.skills.count)} · ${approxTokens(c.skills.tokens)}` })
+  const tables = c.tables.count > 0 ? `Tables ${compactCount(c.tables.count)} · ${rowsLabel(c.tables.rows)}` : null
+  if (groups.length === 0 && !tables) return null
+  return { groups, total: groups.reduce((n, g) => n + g.tokens, 0), tables }
 }

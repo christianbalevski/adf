@@ -147,8 +147,6 @@ export interface AppState {
    * the overview's stat popovers). The matching Section consumes it.
    */
   pendingConfigSection: string | null
-  /** `local_*` table the Files tab expands and scrolls to once it renders (set by the overview). */
-  pendingFilesTable: string | null
   /** Global, persisted: which slot the Loops chat panel is mounted in. */
   chatPlacement: ChatPlacement
   /** Global, persisted: reading-column width of the chat. Center placement only. */
@@ -235,7 +233,6 @@ export interface AppState {
   setRightPanel: (panel: RightPanel) => void
   setAgentSubTab: (tab: AgentSubTab) => void
   setPendingConfigSection: (section: string | null) => void
-  setPendingFilesTable: (table: string | null) => void
   /**
    * Move the chat between the dock and the center stage. Persists the choice
    * and lands the user on the chat in its new slot: to `center` it selects the
@@ -351,7 +348,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   rightPanel: 'overview',
   agentSubTab: 'timers',
   pendingConfigSection: null,
-  pendingFilesTable: null,
   chatPlacement: loadChatPlacement(),
   chatWidth: loadChatWidth(),
   centerChatTabActive: loadChatPlacement() === 'center',
@@ -409,7 +405,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setRightPanel: (panel) => set({ rightPanel: panel }),
   setAgentSubTab: (tab) => set({ agentSubTab: tab }),
   setPendingConfigSection: (section) => set({ pendingConfigSection: section }),
-  setPendingFilesTable: (table) => set({ pendingFilesTable: table }),
   setChatPlacement: (placement) => {
     saveChatPlacement(placement)
     set((s) => {

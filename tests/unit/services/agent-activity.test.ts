@@ -1,7 +1,7 @@
 /**
  * AgentVitalsService.getAgentActivity / readAgentActivity against real .adf
  * files: upcoming wakes, recent events (tool-run grouping, failed results,
- * messages, files, log errors), per-day turns, knowledge filtering, the
+ * messages, files, log errors), per-day turns, contents (counts and approximate tokens), the
  * ledger's per-day cost, caching, and the closed-file peek path.
  */
 
@@ -59,6 +59,7 @@ beforeAll(() => {
   file_('skills/starter/SKILL.md', created)
   file_('skills/research/SKILL.md', iso(now - 2 * HOUR))
   file_('notes/today.md', iso(now - HOUR))
+  file_('mind/people.md', iso(now - HOUR))
   file_('skills-registry.json', iso(now))
   sql("UPDATE adf_files SET content = ? WHERE path = 'skills-registry.json'", [Buffer.from(JSON.stringify({ skills: { starter: {}, legacy: {} } }))])
 
@@ -132,12 +133,15 @@ describe('readAgentActivity', () => {
     expect(a.dailyPartial).toBe(false)
   })
 
-  it('knows agent skills, local tables and agent-written files; starter and derived files excluded', () => {
-    const a = readAgentActivity((s, p) => ws.querySQL(s, p), now)
-    expect(a.knowledge.skills).toEqual(['legacy', 'research'])
-    expect(a.knowledge.tables).toEqual([{ name: 'local_notes', rows: 3 }])
-    expect(a.knowledge.files.map((f) => f.path)).toEqual(['notes/today.md', 'skills/research/SKILL.md'])
-    expect(a.knowledge.filesTotal).toBe(2)
+  it('sums mind, agent skills and local tables; starter skills and derived files excluded', () => {
+    const q = (s: string, p?: unknown[]): unknown[] => ws.querySQL(s, p)
+    const a = readAgentActivity(q, now)
+    const mind = q("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM adf_files WHERE path LIKE 'mind/%'")[0] as { n: number; bytes: number }
+    expect(mind.n).toBeGreaterThan(0)
+    expect(a.contents.mind).toEqual({ files: mind.n, tokens: Math.round(mind.bytes / 4) })
+    // research (file) + legacy (registry only, 0 tokens); starter excluded.
+    expect(a.contents.skills).toEqual({ count: 2, tokens: Math.round('# skills/research/SKILL.md'.length / 4) })
+    expect(a.contents.tables).toEqual({ count: 1, rows: 3 })
   })
 
   it('scans turns incrementally from the last high-water seq', () => {
@@ -195,14 +199,14 @@ describe('AgentVitalsService.getAgentActivity', () => {
     clock.now = now + 5_000
     const cached = await svc.getAgentActivity(file)
     expect(cached.computedAt).toBe(now + 5_000)
-    expect(cached.knowledge).toEqual(a.knowledge)
+    expect(cached.contents).toEqual(a.contents)
 
-    file_('notes/later.md', iso(now))
+    file_('mind/later.md', iso(now))
     clock.now = now + 10_000
     const fresh = await svc.getAgentActivity(file)
     expect(fresh.computedAt).toBe(now + 10_000)
-    expect(fresh.knowledge.filesTotal).toBe(3)
-    expect(fresh.recent.some((e) => e.kind === 'file' && e.label === 'notes/later.md')).toBe(true)
+    expect(fresh.contents.mind.files).toBe(a.contents.mind.files + 1)
+    expect(fresh.recent.some((e) => e.kind === 'file' && e.label === 'mind/later.md')).toBe(true)
   })
 
   it('reads a closed file through a readonly peek', async () => {
@@ -210,7 +214,7 @@ describe('AgentVitalsService.getAgentActivity', () => {
     opened.splice(opened.indexOf(ws), 1)
     const a = await service(false, { now }).getAgentActivity(file)
     expect(a.live).toBe(false)
-    expect(a.knowledge.tables).toEqual([{ name: 'local_notes', rows: 3 }])
+    expect(a.contents.tables).toEqual({ count: 1, rows: 3 })
     expect(a.upcoming).toHaveLength(3)
     ws = AdfWorkspace.open(file)
     opened.push(ws)

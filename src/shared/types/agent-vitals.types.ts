@@ -219,16 +219,22 @@ export interface ActivityDay {
   costPartial?: boolean
 }
 
-export interface KnowledgeTable {
-  name: string
-  rows: number
-}
-
-export interface KnowledgeFile {
-  path: string
-  /** ISO updated_at. */
-  updatedAt: string
-  size: number
+/**
+ * What the agent's file holds, in three groups. Tokens are approximate
+ * (bytes / 4, rounded) and given for mind and skills only: table data is
+ * rarely read into context, so its size is not comparable.
+ */
+export interface AgentContents {
+  /** Files under `mind/`: count and SUM(size) / 4. */
+  mind: { files: number; tokens: number }
+  /**
+   * Skills the agent installed or changed (the Experience stat's rule) and
+   * the tokens of every file under those skills' directories. Registry
+   * entries without files count but add no tokens.
+   */
+  skills: { count: number; tokens: number }
+  /** `local_*` tables (at most 50 read) and their total rows. */
+  tables: { count: number; rows: number }
 }
 
 /** Result of `adf:agent:activity` and `GET /agents/:id/activity`. */
@@ -249,14 +255,5 @@ export interface AgentActivity {
    * oldest days may read low.
    */
   dailyPartial: boolean
-  knowledge: {
-    /** Skills the agent installed or changed (starter skills excluded), by name. At most 50. */
-    skills: string[]
-    /** `local_*` tables with row counts, by name. At most 50. */
-    tables: KnowledgeTable[]
-    /** Files the agent wrote, newest first (starter files and skills-registry.json excluded). At most 20. */
-    files: KnowledgeFile[]
-    /** All files the agent wrote (the same rule), for "N more". */
-    filesTotal: number
-  }
+  contents: AgentContents
 }

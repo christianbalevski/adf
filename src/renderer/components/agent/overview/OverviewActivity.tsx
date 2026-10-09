@@ -1,37 +1,37 @@
 /**
  * The overview's lower sections, under the stats: Coming up, Recent
- * activity, the 14-day Activity sparkline and What it knows. Each hides when
+ * activity, the 14-day Activity sparkline and Contents. Each hides when
  * it has nothing to show.
  *
- * Timers, recent events, per-day turns and knowledge come from
+ * Timers, recent events, per-day turns and contents come from
  * `adf:agent:activity` (AgentVitalsService.getAgentActivity), refetched with
  * the same triggers as vitals. Approvals, asks and the unread count are read
  * live from the renderer stores, and while a turn runs the store's log is
  * merged into the recent list so it moves before the next read.
  */
 
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { MAIN_LOOP, useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
-import { useEditorTabsStore } from '../../../stores/editor-tabs.store'
 import { useInboxStore } from '../../../stores/inbox.store'
 import { Tooltip } from '../../common/Tooltip'
 import type { AgentConfig } from '../../../../shared/types/adf-v02.types'
 import type { AgentState } from '../../../../shared/types/ipc.types'
-import type { ActivityDay, AgentActivity, KnowledgeFile, KnowledgeTable } from '../../../../shared/types/agent-vitals.types'
+import type { ActivityDay, AgentActivity, AgentContents } from '../../../../shared/types/agent-vitals.types'
 import { useOverviewRead, type OverviewReader } from './useOverviewRead'
 import {
   activityEventText,
+  approxTokens,
   compactCount,
+  contentsView,
   dayTooltip,
   formatAgo,
   formatUntil,
   mergeLiveActivity,
-  rowsLabel,
   sparkHeights,
   sparkSummary,
-  visibleItems,
-  waitingItems
+  waitingItems,
+  type ContentsKey
 } from './agent-overview-model'
 
 const readActivity: OverviewReader<AgentActivity> = (filePath, force) => window.adfApi?.getAgentActivity?.(filePath, { force })
@@ -59,7 +59,7 @@ export function OverviewActivity({ filePath, state, config, now }: {
       <ComingUp activity={activity} now={now} />
       <RecentActivity activity={activity} now={now} />
       <ActivitySpark daily={activity.daily} partial={activity.dailyPartial} />
-      <WhatItKnows knowledge={activity.knowledge} now={now} />
+      <Contents contents={activity.contents} />
     </>
   )
 }
@@ -240,95 +240,67 @@ function ActivitySpark({ daily, partial }: { daily: ActivityDay[]; partial: bool
 }
 
 // =============================================================================
-// What it knows
+// Contents
 // =============================================================================
 
-function openSkills(): void {
-  useAppStore.getState().expandRightPanelToTab('agent', 'skills')
+/**
+ * Segment colours, fixed per group (never by rank): ink and blue from the
+ * brand tokens, so each mode gets its own selected steps. The pair stays
+ * apart under protan/deutan simulation (dataviz validator), and every
+ * segment's numbers are also printed in the legend.
+ */
+const CONTENTS_COLOR: Record<ContentsKey, string> = {
+  mind: 'var(--ink)',
+  skills: 'var(--blue)'
 }
 
-function openTable(name: string): void {
-  const app = useAppStore.getState()
-  app.expandRightPanelToTab('files')
-  app.setPendingFilesTable(name)
-  // Drop a request the Files tab never picked up, so it cannot fire later.
-  setTimeout(() => {
-    if (useAppStore.getState().pendingFilesTable === name) useAppStore.getState().setPendingFilesTable(null)
-  }, 2000)
-}
-
-async function openFile(path: string): Promise<void> {
-  const result = await window.adfApi?.readInternalFile?.(path)
-  if (result?.content != null) {
-    useEditorTabsStore.getState().openTab(path, result.binary ? '' : result.content, result.binary, result.mimeType)
-  } else {
-    useAppStore.getState().expandRightPanelToTab('files')
-  }
-}
-
-function WhatItKnows({ knowledge, now }: { knowledge: AgentActivity['knowledge']; now: number }) {
-  const { skills, tables, files, filesTotal } = knowledge
-  if (skills.length + tables.length + files.length === 0) return null
-  return (
-    <Section title="What it knows">
-      <KnowGroup title="Skills" items={skills} total={skills.length} itemKey={(s) => s}>
-        {(s) => (
-          <button type="button" onClick={openSkills} className={ROW}>
-            <span className={`min-w-0 flex-1 truncate ${MONO}`}>{s}</span>
-          </button>
-        )}
-      </KnowGroup>
-      <KnowGroup title="Tables" items={tables} total={tables.length} itemKey={(t: KnowledgeTable) => t.name}>
-        {(t) => (
-          <button type="button" onClick={() => openTable(t.name)} className={ROW}>
-            <span className={`min-w-0 flex-1 truncate ${MONO}`}>{t.name}</span>
-            <span className={WHEN}>{rowsLabel(t.rows)}</span>
-          </button>
-        )}
-      </KnowGroup>
-      <KnowGroup title="Files" items={files} total={filesTotal} itemKey={(f: KnowledgeFile) => f.path}>
-        {(f) => (
-          <button type="button" onClick={() => void openFile(f.path)} className={ROW}>
-            <span className={`min-w-0 flex-1 truncate ${MONO}`}>{f.path}</span>
-            <span className={WHEN}>{formatAgo(Date.parse(f.updatedAt), now)}</span>
-          </button>
-        )}
-      </KnowGroup>
-    </Section>
-  )
+const openFiles = (): void => useAppStore.getState().expandRightPanelToTab('files')
+const openContents: Record<ContentsKey, () => void> = {
+  mind: openFiles,
+  skills: () => useAppStore.getState().expandRightPanelToTab('agent', 'skills')
 }
 
 /**
- * One group with "N more". `total` can exceed `items` (files are capped in
- * main); past the loaded items the expander opens the Files tab.
+ * One stacked bar of approximate tokens (mind, skills) with a legend line
+ * per group, then local tables as plain facts: table data is rarely read
+ * into context, so it is not on the token meter. Hidden when the file holds
+ * none of them.
  */
-function KnowGroup<T>({ title, items, total, itemKey, children }: {
-  title: string
-  items: T[]
-  total: number
-  itemKey: (item: T) => string
-  children: (item: T) => React.ReactNode
-}) {
-  const [expanded, setExpanded] = useState(false)
-  if (items.length === 0) return null
-  const { shown, hidden } = visibleItems(items, expanded)
-  const beyond = Math.max(0, total - items.length)
-  const more = expanded ? beyond : hidden + beyond
+function Contents({ contents }: { contents: AgentContents }) {
+  const view = useMemo(() => contentsView(contents), [contents])
+  if (!view) return null
+  const sized = view.groups.filter((g) => g.tokens > 0)
   return (
-    <div>
-      <h4 className="text-[11px] font-medium text-[var(--ink-muted)]">{title}</h4>
-      <ul>
-        {shown.map((item) => <li key={itemKey(item)}>{children(item)}</li>)}
-      </ul>
-      {more > 0 && (
-        <button
-          type="button"
-          onClick={() => (hidden > 0 && !expanded ? setExpanded(true) : useAppStore.getState().expandRightPanelToTab('files'))}
-          className="mt-0.5 text-[11.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] underline-offset-2 hover:underline tabular-nums"
-        >
-          {compactCount(more)} more
-        </button>
+    <Section
+      title="Contents"
+      aside={view.groups.length > 0 ? <span className="text-[11.5px] text-[var(--ink-muted)] tabular-nums">{approxTokens(view.total)} tokens</span> : undefined}
+    >
+      {sized.length > 0 && (
+        <div role="img" aria-label={view.groups.map((g) => g.text).join('; ')} className="flex h-2 gap-[2px]">
+          {sized.map((g) => (
+            <Tooltip key={g.key} tip={g.text} delay={0} className="flex min-w-[3px]" style={{ flexGrow: g.tokens, flexBasis: 0 }}>
+              <span className="block h-full w-full rounded-[2px]" style={{ background: CONTENTS_COLOR[g.key] }} />
+            </Tooltip>
+          ))}
+        </div>
       )}
-    </div>
+      <ul>
+        {view.groups.map((g) => (
+          <li key={g.key}>
+            <button type="button" onClick={openContents[g.key]} className={ROW}>
+              <span aria-hidden className="self-center h-2 w-2 shrink-0 rounded-[2px]" style={{ background: CONTENTS_COLOR[g.key] }} />
+              <span className="min-w-0 flex-1 truncate tabular-nums">{g.text}</span>
+            </button>
+          </li>
+        ))}
+        {view.tables && (
+          <li>
+            <button type="button" onClick={openFiles} className={ROW}>
+              <span className="min-w-0 flex-1 truncate tabular-nums">{view.tables}</span>
+            </button>
+          </li>
+        )}
+      </ul>
+    </Section>
   )
 }

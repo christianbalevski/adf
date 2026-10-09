@@ -136,7 +136,7 @@ describe('GET /agents/:id/vitals', () => {
 })
 
 describe('GET /agents/:id/activity', () => {
-  it('reads a loaded agent: 14 local days, wakes, recent events and what it knows', async () => {
+  it('reads a loaded agent: 14 local days, wakes, recent events and contents', async () => {
     const { dir, runtime, server } = setup()
     const { filePath, agentId } = seedAgent(dir, 1)
     await runtime.loadAgent(filePath)
@@ -150,13 +150,14 @@ describe('GET /agents/:id/activity', () => {
     expect(body.live).toBe(true)
     expect(body.daily).toHaveLength(14)
     expect(body.upcoming).toEqual([expect.objectContaining({ scope: 'agent', label: 'Check the inbox' })])
-    expect(body.knowledge.files.map(f => f.path)).toContain('notes/today.md')
+    expect(body.contents.tables).toEqual({ count: 0, rows: 0 })
     expect(body.recent).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'file', label: 'notes/today.md' })]))
 
     // A write lands on the next forced read, by agent id.
-    live.workspace.writeFile('notes/later.md', 'more')
+    live.workspace.writeFile('mind/later.md', 'x'.repeat(400))
     const forced = (await server.inject({ method: 'GET', url: `/agents/${agentId}/activity?force=1` })).json() as AgentActivity
-    expect(forced.knowledge.filesTotal).toBe(body.knowledge.filesTotal + 1)
+    expect(forced.contents.mind.files).toBe(body.contents.mind.files + 1)
+    expect(forced.contents.mind.tokens).toBe(body.contents.mind.tokens + 100)
   })
 
   it('reads a tracked agent that is not loaded from its file', async () => {

@@ -998,7 +998,7 @@ Example 200 (`application/json`):
 
 **Agent activity**
 
-The lower sections of Studio's agent overview: the next three timer wakes, the eight most recent events, 14 local days of finished turns with the usage ledger's cost per day, and what the agent keeps (skills, `local_*` tables, files it wrote). `{id}` resolves as in `GET /agents/{id}/vitals`. Recent events come from the newest 200 loop rows (tool calls, finished turns, failed tool results; consecutive calls of one tool fold into one line with `count`), the newest inbox and outbox messages, `error` rows of the agent log and the newest files the agent wrote. A finished turn is an assistant loop row without a tool call. The first read counts turns over at most the newest 5,000 loop rows and later reads add only new rows, so turns compacted away before the first read are not counted; `dailyPartial` is true when the row cap or a compaction cuts into the window. Files and skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.
+The lower sections of Studio's agent overview: the next three timer wakes, the eight most recent events, 14 local days of finished turns with the usage ledger's cost per day, and what the file holds (`mind/` files and skills with approximate tokens, `local_*` tables with rows). `{id}` resolves as in `GET /agents/{id}/vitals`. Recent events come from the newest 200 loop rows (tool calls, finished turns, failed tool results; consecutive calls of one tool fold into one line with `count`), the newest inbox and outbox messages, `error` rows of the agent log and the newest files the agent wrote. A finished turn is an assistant loop row without a tool call. The first read counts turns over at most the newest 5,000 loop rows and later reads add only new rows, so turns compacted away before the first read are not counted; `dailyPartial` is true when the row cap or a compaction cuts into the window. Recent files and skills follow the vitals rule: written more than 10 s after `adf_created_at`, `skills-registry.json` excluded. Cached like vitals (and per local day); `force=1` skips the cache. Pending approvals, asks and unread counts are not here: read `GET /agents/{id}/asks` and `GET /agents/{id}/inbox`.
 
 Operation `getAgentActivity` · bearer token
 
@@ -1055,24 +1055,19 @@ Example 200 (`application/json`):
     }
   ],
   "dailyPartial": true,
-  "knowledge": {
-    "skills": [
-      "string"
-    ],
-    "tables": [
-      {
-        "name": "local_notes",
-        "rows": 0
-      }
-    ],
-    "files": [
-      {
-        "path": "string",
-        "updatedAt": "string",
-        "size": 0
-      }
-    ],
-    "filesTotal": 0
+  "contents": {
+    "mind": {
+      "files": 0,
+      "tokens": 0
+    },
+    "skills": {
+      "count": 0,
+      "tokens": 0
+    },
+    "tables": {
+      "count": 0,
+      "rows": 0
+    }
   }
 }
 ```
@@ -13802,16 +13797,16 @@ Raw maturity counts read from the agent's file.
 | `recent` | [AgentActivityEvent](#schema-agentactivityevent)[] | yes | Most recent first |
 | `daily` | [AgentActivityDay](#schema-agentactivityday)[] | yes | 14 local days, oldest first; the last is today |
 | `dailyPartial` | boolean | yes | True when the turn scan hit its row cap or compaction removed rows inside the window (the oldest days may read low) |
-| `knowledge` | object | yes |  |
-| `knowledge.skills` | string[] | yes | Skills the agent installed or changed, by name |
-| `knowledge.tables` | object[] | yes |  |
-| `knowledge.tables[].name` | string | yes |  |
-| `knowledge.tables[].rows` | integer | yes |  |
-| `knowledge.files` | object[] | yes | Files the agent wrote, newest first |
-| `knowledge.files[].path` | string | yes |  |
-| `knowledge.files[].updatedAt` | string | yes | ISO 8601 |
-| `knowledge.files[].size` | integer | yes |  |
-| `knowledge.filesTotal` | integer | yes | All files the agent wrote |
+| `contents` | object | yes | What the file holds, in three groups. Tokens are approximate (bytes / 4, rounded) and given for mind and skills only: table data is rarely read into context. |
+| `contents.mind` | object | yes | Files under mind/ |
+| `contents.mind.files` | integer | yes |  |
+| `contents.mind.tokens` | integer | yes | SUM(size) / 4 |
+| `contents.skills` | object | yes | Skills the agent installed or changed (the Experience stat rule) |
+| `contents.skills.count` | integer | yes |  |
+| `contents.skills.tokens` | integer | yes | Size of every file under those skills' directories / 4; registry entries without files add 0 |
+| `contents.tables` | object | yes | local_* tables (at most 50 read) |
+| `contents.tables.count` | integer | yes |  |
+| `contents.tables.rows` | integer | yes | Total rows |
 
 <a id="schema-agentupcomingwake"></a>
 

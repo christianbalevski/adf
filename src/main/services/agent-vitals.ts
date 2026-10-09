@@ -21,6 +21,7 @@ import type { AgentState, FleetAgentStatus, FleetStatusResult, MeshAgentStatus }
 import type {
   ActivityEvent,
   AgentActivity,
+  AgentContents,
   AgentExperienceInputs,
   AgentMetric,
   AgentPowerInputs,
@@ -356,7 +357,7 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
 }
 
 // =============================================================================
-// Activity: upcoming wakes, recent events, per-day turns, what it knows
+// Activity: upcoming wakes, recent events, per-day turns, contents
 // =============================================================================
 
 /** config.id, the per-agent ledger's key. */
@@ -374,10 +375,41 @@ export const DAILY_SCAN_CAP = 5_000
 const RECENT_MESSAGES = 8
 const RECENT_LOG_ERRORS = 5
 const RECENT_FILES = 5
-const MAX_SKILLS = 50
 const MAX_TABLES = 50
-const MAX_FILES = 20
 const LABEL_MAX = 80
+
+/** bytes / 4, rounded: the overview's token estimate. */
+const approxTokens = (bytes: number): number => Math.round(bytes / 4)
+
+/**
+ * The Contents section: mind/ files and the agent's skills as counts and
+ * approximate tokens, local tables as counts and rows. Aggregates only.
+ */
+export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>): AgentContents {
+  let mindFiles = 0
+  let mindBytes = 0
+  let skillBytes = 0
+  for (const f of files) {
+    const size = typeof f.size === 'number' && Number.isFinite(f.size) ? f.size : 0
+    if (f.path.startsWith('mind/')) {
+      mindFiles++
+      mindBytes += size
+      continue
+    }
+    const skill = SKILL_FILE.exec(f.path)?.[1]
+    if (skill && agentSkills.has(skill)) skillBytes += size
+  }
+
+  const tables = listLocalTables(q).slice(0, MAX_TABLES)
+  let rows = 0
+  for (const t of tables) rows += safe(q, `SELECT COUNT(*) AS n FROM "${t}"`, (r) => firstNumber(r), 0)
+
+  return {
+    mind: { files: mindFiles, tokens: approxTokens(mindBytes) },
+    skills: { count: agentSkills.size, tokens: approxTokens(skillBytes) },
+    tables: { count: tables.length, rows }
+  }
+}
 
 /** The part of AgentActivity read from the file (costs and identity come from the service). */
 export type ActivityRead = Omit<AgentActivity, 'filePath' | 'computedAt' | 'live'>
@@ -517,8 +549,8 @@ function readTurnTimes(q: Sql, since: number, prior?: TurnScan): TurnScan {
  * Everything the overview's lower sections read from the file. Every query is
  * bounded: timers and messages by LIMIT on an indexed column, loop events by
  * the newest RECENT_LOOP_ROWS rowids, the per-day count by DAILY_SCAN_CAP
- * rowids, local tables and skills by MAX_*. adf_files is read path +
- * timestamps only (as the vitals read does).
+ * rowids, local tables by MAX_TABLES. adf_files is read path, timestamps
+ * and size only, never content.
  */
 export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): ActivityRead & { turnScan: TurnScan } {
   const createdAt = safe(
@@ -547,9 +579,10 @@ export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): Activi
     return { id: t.id, at: t.next_wake_at, scope, label: shortLabel(t.payload) || shortLabel(t.lambda) || scheduleLabel(t.schedule_json) }
   })
 
-  // Files: one path/timestamp scan, shared by recent events and knowledge.
+  // Files: one path/timestamp/size scan, shared by recent events and contents.
+  const files = safe(q, 'SELECT path, updated_at, size FROM adf_files', (rows) => rows as FileRow[], [])
   const { mine, agentSkills } = classifyFiles(
-    safe(q, 'SELECT path, updated_at, size FROM adf_files', (rows) => rows as FileRow[], []),
+    files,
     cutoff,
     readRegistrySkills(q)
   )
@@ -584,21 +617,12 @@ export function readAgentActivity(q: Sql, now: number, prior?: TurnScan): Activi
   const compacted = safe(q, "SELECT 1 AS n FROM adf_audit WHERE source = 'loop' AND created_at >= ? LIMIT 1", (r) => r.length > 0, false, [since])
   const daily = bucketByLocalDay(turns.times, now).map(({ date, count }) => ({ date, turns: count }))
 
-  // What it knows.
-  const tableNames = listLocalTables(q).slice(0, MAX_TABLES)
-  const tables = tableNames.map((name) => ({ name, rows: safe(q, `SELECT COUNT(*) AS n FROM "${name}"`, (r) => firstNumber(r), 0) }))
-
   return {
     upcoming,
     recent,
     daily,
     dailyPartial: turns.capped || compacted,
-    knowledge: {
-      skills: [...agentSkills].sort((a, b) => a.localeCompare(b)).slice(0, MAX_SKILLS),
-      tables,
-      files: mine.slice(0, MAX_FILES).map((f) => ({ path: f.path, updatedAt: f.updated_at, size: typeof f.size === 'number' ? f.size : 0 })),
-      filesTotal: mine.length
-    },
+    contents: readContents(q, files, agentSkills),
     turnScan: turns
   }
 }
@@ -906,8 +930,8 @@ export class AgentVitalsService {
 
   /**
    * The overview's lower sections: next wakes, recent events, 14 days of
-   * finished turns with the ledger's cost per day, and what the agent keeps
-   * (skills, local tables, files it wrote). Cached like the vitals slow part;
+   * finished turns with the ledger's cost per day, and what the file holds
+   * (mind and skills with approximate tokens, local tables with rows). Cached like the vitals slow part;
    * the per-day cost is read from the in-memory ledger on every call.
    */
   async getAgentActivity(filePath: string, opts?: { force?: boolean }): Promise<AgentActivity> {
