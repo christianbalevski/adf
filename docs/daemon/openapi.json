@@ -717,6 +717,77 @@
         }
       }
     },
+    "/agents/{id}/vitals": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Agent vitals",
+        "description": "Studio's overview card for one agent: header facts (context size, next wake, 7-day cost, model, age) and four stats: Reach, Access and Autonomy (5-segment power bars with the factors behind them) and Experience (a level from maturity counts). `{id}` names a loaded agent (id, handle or name, as every /agents/{id} route) or, when no loaded agent matches, a tracked agent that is not loaded (agent id or handle from its file). A loaded agent is read from its open workspace (`live: true`); any other file is read with a readonly open. Results are cached: a live agent's for at most 2 s and until its database changes, any other file's until its mtime or size changes. `force=1` skips the cache. `agentsSpawned` counts tracked agents whose parent DID names this agent, from a fleet scan at most 30 s old (`force=1` rescans). `contextTokens` and `contextThreshold` are present only for a loaded agent whose executor has reported usage; `cost7dUsd` only when the usage ledger has rows for this agent.",
+        "operationId": "getAgentVitals",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "description": "Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Vitals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentVitals"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "The agent is loaded without an .adf file; vitals are read from the file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Agent has no .adf file; vitals are read from the file.",
+                  "code": "conflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/agents/{id}/start": {
       "post": {
         "tags": [
@@ -17820,6 +17891,323 @@
               "filePath": "/work/b/twin.adf"
             }
           ]
+        }
+      },
+      "AgentVitals": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "computedAt",
+          "live",
+          "handle",
+          "ageDays",
+          "stats",
+          "maturity"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "computedAt": {
+            "type": "number",
+            "description": "When the stats and counts were computed (ms epoch)"
+          },
+          "live": {
+            "type": "boolean",
+            "description": "True when read from the workspace of a loaded agent"
+          },
+          "handle": {
+            "type": "string",
+            "example": "agent-1"
+          },
+          "name": {
+            "type": "string"
+          },
+          "did": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "adf_created_at (ISO 8601)"
+          },
+          "ageDays": {
+            "type": "number"
+          },
+          "contextTokens": {
+            "type": "integer",
+            "description": "Last API-reported context size (loaded agents only)"
+          },
+          "contextThreshold": {
+            "type": "integer",
+            "description": "Compact threshold (present with contextTokens)"
+          },
+          "nextWakeAt": {
+            "type": "number",
+            "description": "Earliest next_wake_at among non-expired timers (ms epoch)"
+          },
+          "cost7dUsd": {
+            "type": "number",
+            "description": "USD over the last 7 local days, from the usage ledger"
+          },
+          "cost7dPartial": {
+            "type": "boolean",
+            "description": "True when some calls had no price (cost7dUsd is a lower bound)"
+          },
+          "stats": {
+            "type": "object",
+            "required": [
+              "reach",
+              "access",
+              "autonomy",
+              "experience"
+            ],
+            "properties": {
+              "reach": {
+                "$ref": "#/components/schemas/AgentPowerStat"
+              },
+              "access": {
+                "$ref": "#/components/schemas/AgentPowerStat"
+              },
+              "autonomy": {
+                "$ref": "#/components/schemas/AgentPowerStat"
+              },
+              "experience": {
+                "$ref": "#/components/schemas/AgentExperienceStat"
+              }
+            }
+          },
+          "maturity": {
+            "$ref": "#/components/schemas/AgentMaturity"
+          }
+        }
+      },
+      "AgentPowerStat": {
+        "type": "object",
+        "description": "Reach, Access or Autonomy: a 5-segment power bar. `segments` is `gated` + `open`.",
+        "required": [
+          "segments",
+          "gated",
+          "open",
+          "rawPoints",
+          "factors"
+        ],
+        "properties": {
+          "segments": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5
+          },
+          "gated": {
+            "type": "integer",
+            "description": "Segments whose capability needs approval"
+          },
+          "open": {
+            "type": "integer",
+            "description": "Segments whose capability runs without approval"
+          },
+          "rawPoints": {
+            "type": "number",
+            "description": "Sum of factor points before the cap"
+          },
+          "factors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentStatFactor"
+            }
+          }
+        }
+      },
+      "AgentStatFactor": {
+        "type": "object",
+        "description": "One line of a stat breakdown.",
+        "required": [
+          "id",
+          "label",
+          "points",
+          "gated",
+          "configPath"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable id, e.g. `tool:compute_exec`, `mcp:github`, `visibility`",
+            "example": "tool:compute_exec"
+          },
+          "label": {
+            "type": "string"
+          },
+          "points": {
+            "type": "number",
+            "description": "Contribution before the 5-segment cap; negative for mitigations"
+          },
+          "gated": {
+            "type": "boolean",
+            "description": "True when the capability needs human approval"
+          },
+          "configPath": {
+            "type": "string",
+            "description": "Config path (or table) that controls this factor"
+          }
+        }
+      },
+      "AgentExperienceStat": {
+        "type": "object",
+        "description": "Experience. `level` is floor(log2(score)).",
+        "required": [
+          "level",
+          "progress",
+          "score",
+          "levelStart",
+          "nextLevelAt",
+          "breakdown",
+          "nextLevel"
+        ],
+        "properties": {
+          "level": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "progress": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Progress within the current level"
+          },
+          "score": {
+            "type": "number",
+            "description": "Total XP"
+          },
+          "levelStart": {
+            "type": "number",
+            "description": "XP at which the current level starts"
+          },
+          "nextLevelAt": {
+            "type": "number",
+            "description": "XP at which the next level starts"
+          },
+          "breakdown": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "label",
+                "value",
+                "xp"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "enum": [
+                    "loopEntries",
+                    "filesWritten",
+                    "localTables",
+                    "localRows",
+                    "skills",
+                    "compactions",
+                    "agentsSpawned",
+                    "ageDays"
+                  ]
+                },
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number",
+                  "description": "Raw count"
+                },
+                "xp": {
+                  "type": "number",
+                  "description": "XP this signal adds"
+                }
+              }
+            }
+          },
+          "nextLevel": {
+            "type": "object",
+            "description": "What one more level takes, in units of the cheapest signals",
+            "required": [
+              "xp",
+              "loopEntries",
+              "files",
+              "skills",
+              "hint"
+            ],
+            "properties": {
+              "xp": {
+                "type": "number"
+              },
+              "loopEntries": {
+                "type": "number"
+              },
+              "files": {
+                "type": "number"
+              },
+              "skills": {
+                "type": "number"
+              },
+              "hint": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "AgentMaturity": {
+        "type": "object",
+        "description": "Raw maturity counts read from the agent's file.",
+        "required": [
+          "loopEntries",
+          "filesWritten",
+          "localTables",
+          "localRows",
+          "skills",
+          "compactions",
+          "agentsSpawned",
+          "ageDays"
+        ],
+        "properties": {
+          "loopEntries": {
+            "type": "integer",
+            "description": "Lifetime adf_loop rows (compaction and clears do not lower it)"
+          },
+          "filesWritten": {
+            "type": "integer",
+            "description": "adf_files rows changed after the agent was created"
+          },
+          "localTables": {
+            "type": "integer",
+            "description": "`local_*` tables"
+          },
+          "localRows": {
+            "type": "integer",
+            "description": "Rows across `local_*` tables"
+          },
+          "skills": {
+            "type": "integer",
+            "description": "Distinct skills the agent installed or changed"
+          },
+          "compactions": {
+            "type": "integer",
+            "description": "Loop compactions"
+          },
+          "agentsSpawned": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Tracked agents whose adf_parent_did names this agent; null when no fleet scan has run"
+          },
+          "ageDays": {
+            "type": "number",
+            "description": "Days since adf_created_at"
+          }
         }
       }
     }

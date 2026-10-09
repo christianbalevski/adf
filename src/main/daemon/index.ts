@@ -289,6 +289,7 @@ const daemon = new DaemonHost({
   providerKeys: ownerIdentity.providerKeys,
   eventBus,
   wsService: wsConnectionManager,
+  mesh: meshManager,
   networkService: {
     getStatus: () => ({
       meshEnabled: meshManager.isEnabled(),

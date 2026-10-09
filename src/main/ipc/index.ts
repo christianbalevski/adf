@@ -9,6 +9,7 @@ import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectori
 import { initApplicationMenu, recordRecentFile } from '../menu'
 import { verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
+import { identityDrafts } from '../services/identity-drafts'
 import { BackgroundEventBatcher } from './background-event-batch'
 import { FileCreateRefusedError, makeFileCreateHandler, runFileCreateTransition, type FileCreateTransitionDeps } from './file-create-handler'
 import { recoverFileCreateCleanupFailure } from './file-create-recovery'
@@ -147,7 +148,7 @@ import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { openSharedMnemonicStore } from '../services/owner-secret-store'
 import { AdfDatabase } from '../adf/adf-database'
-import { AgentVitalsService } from '../services/agent-vitals'
+import { AgentVitalsService, overlayLiveStates } from '../services/agent-vitals'
 import type { AgentVitals } from '../../shared/types/agent-vitals.types'
 import { resolveDefaultProvider, applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { generateAgentName } from '../../shared/utils/agent-names'
@@ -2399,7 +2400,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
    * failure at each step leaves behind, lives in file-create-handler.
    */
   const studioCreateDeps = (
-    opts: { providerId?: string; modelId?: string; templateId?: string } = {}
+    opts: { providerId?: string; modelId?: string; templateId?: string; identityDraftId?: string } = {}
   ): FileCreateTransitionDeps<AdfWorkspace> => ({
     createWorkspace: async (filePath, agentName) => {
       // The file is written FIRST, from the template, and only then does the
@@ -2418,10 +2419,23 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       // D1: every new file gets identity keys, sealed in owner/runtime envelopes.
       // An instance is CREATED, not received: it gets a fresh identity here and
       // is reviewed below, so there is no claim step.
+      // An identity draft from the home composer: the agent gets the DID the
+      // user was shown. Taken (and so consumed) only once the file exists; an
+      // expired or unknown draft falls back to a fresh mint.
+      const draft = opts.identityDraftId ? identityDrafts.take(opts.identityDraftId) : null
       try {
-        settings.getOwnerIdentity().ensureWorkspaceIdentity(workspace)
+        const owner = settings.getOwnerIdentity()
+        try {
+          owner.ensureWorkspaceIdentity(workspace, draft ? { adoptKeys: draft } : {})
+        } catch (err) {
+          if (!draft) throw err
+          console.warn('[OwnerIdentity] Adopting the identity draft failed, minting a fresh identity:', err)
+          owner.ensureWorkspaceIdentity(workspace)
+        }
       } catch (err) {
         console.warn('[OwnerIdentity] Identity provisioning on create failed:', err)
+      } finally {
+        draft?.privateKey.fill(0)
       }
       return workspace
     },
@@ -2467,9 +2481,15 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // the save dialog.
   ipcMain.handle(IPC.AGENTS_FOLDER_DEFAULT_GET, async () => ({ path: resolveAgentsFolderPath() }))
 
+  // The composer shows the next agent's DID before it exists. The keypair
+  // stays here; FILE_CREATE_QUICK adopts it by draftId.
+  ipcMain.handle(IPC.IDENTITY_DRAFT_MINT, async () => identityDrafts.mint())
+  ipcMain.handle(IPC.IDENTITY_DRAFT_DISCARD, async (_event, draftId: unknown) =>
+    typeof draftId === 'string' ? identityDrafts.discard(draftId) : false)
+
   ipcMain.handle(IPC.FILE_CREATE_QUICK, async (
     _event,
-    args?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string }
+    args?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string; identityDraftId?: string }
   ) => {
     try {
       let folder = defaultAgentsFolder()
@@ -2498,9 +2518,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       const providerId = typeof args?.providerId === 'string' && args.providerId !== '' ? args.providerId : undefined
       const modelId = typeof args?.modelId === 'string' && args.modelId !== '' ? args.modelId : undefined
       const templateId = typeof args?.templateId === 'string' && args.templateId !== '' ? args.templateId : undefined
-      const made = await runFileCreateTransition(studioCreateDeps({ providerId, modelId, templateId }), filePath, basename(filePath, '.adf'))
+      const identityDraftId = typeof args?.identityDraftId === 'string' && args.identityDraftId !== '' ? args.identityDraftId : undefined
+      const made = await runFileCreateTransition(studioCreateDeps({ providerId, modelId, templateId, identityDraftId }), filePath, basename(filePath, '.adf'))
       if (!made.success) return made
-      return { success: true, filePath, name: basename(filePath, '.adf') }
+      return { success: true, filePath, name: basename(filePath, '.adf'), did: currentFilePath === filePath ? currentWorkspace?.getDid() ?? undefined : undefined }
     } catch (error) {
       console.error('[IPC] FILE_CREATE_QUICK error:', error)
       return { success: false, error: error instanceof Error ? error.message : String(error) }
@@ -5686,26 +5707,19 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // Shared by MESH_STATUS and MESH_FLEET_STATUS.
   function getLiveMeshAgents() {
     if (!meshManager || !meshManager.isEnabled()) return []
-    const liveStates = new Map<string, AgentState>()
     // Inner-loop counts ride along with the state overlay. Nothing in the fleet
     // map reads them yet; the sidebar count comes from the background status.
     // They are here so the map can pick them up without another IPC change.
-    const liveLoops = new Map<string, number>()
+    const live: Array<{ filePath: string; state: AgentState; activeLoops?: number }> = []
     if (backgroundAgentManager) {
       for (const s of backgroundAgentManager.getStatuses()) {
-        liveStates.set(s.filePath, s.state)
-        liveLoops.set(s.filePath, s.activeLoops ?? 0)
+        live.push({ filePath: s.filePath, state: s.state, activeLoops: s.activeLoops ?? 0 })
       }
     }
     if (currentFilePath && agentExecutor) {
-      liveStates.set(currentFilePath, toDisplayState(agentExecutor.getState()))
+      live.push({ filePath: currentFilePath, state: toDisplayState(agentExecutor.getState()) })
     }
-    return meshManager.getAgentStatuses().map((a) => {
-      const live = liveStates.get(a.filePath)
-      if (!live) return a
-      const activeLoops = liveLoops.get(a.filePath)
-      return activeLoops === undefined ? { ...a, state: live } : { ...a, state: live, activeLoops }
-    })
+    return overlayLiveStates(meshManager.getAgentStatuses(), live)
   }
 
   // Extracted so the fleet map's aggregate poll (MESH_MAP_POLL) can reuse the

@@ -541,3 +541,8 @@ export interface CredentialWriteOptions {
 /** GET /agents/:id/context: one loop's context breakdown, categories and compact threshold. */
 export type AgentContextResult = import('../../daemon/context-routes').AgentContextResult
 export type ContextCategory = import('../../../shared/utils/context-breakdown').ContextCategory
+
+// --- agent vitals (/vitals) ---------------------------------------------------
+
+/** GET /agents/:id/vitals: header facts and the four scored stats (Studio's overview card). */
+export type AgentVitals = import('../../../shared/types/agent-vitals.types').AgentVitals

@@ -791,12 +791,20 @@ export interface AgentRegistryBringHomeResult {
   error?: string
 }
 
+/** An identity minted ahead of an agent (home composer). The private key stays in main. */
+export interface IdentityDraft {
+  draftId: string
+  did: string
+}
+
 export interface QuickCreateResult {
   success: boolean
   /** Path of the new file inside the user's agents folder. */
   filePath?: string
   /** The generated name ("steady-fern"), also the file's stem. */
   name?: string
+  /** The new agent's DID: the identity draft's when one was adopted. */
+  did?: string
   error?: string
   /** Create failed after old cleanup began; renderer must show detached/no-file state. */
   foregroundDetached?: boolean

@@ -6271,8 +6271,27 @@ function Section({
   children: React.ReactNode
 }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const inTemplate = useContext(TemplateModeContext)
+  // The overview's stat popovers ask for a section by title: open it, bring
+  // it into view and move focus to it, once.
+  const pendingSection = useAppStore((s) => s.pendingConfigSection)
+  const isTarget = !inTemplate && typeof title === 'string' && pendingSection === title
+  useEffect(() => {
+    if (!isTarget) return
+    setCollapsed(false)
+    // Next frame, so the expanded body is laid out before scrolling. The
+    // request is cleared there too: clearing it here would re-run this
+    // effect and its cleanup would cancel the frame.
+    const raf = requestAnimationFrame(() => {
+      rootRef.current?.scrollIntoView({ block: 'start' })
+      rootRef.current?.focus({ preventScroll: true })
+      useAppStore.getState().setPendingConfigSection(null)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [isTarget])
   return (
-    <div data-testid={testId} className={`bg-white dark:bg-neutral-800 rounded-lg border ${locked ? 'border-amber-300 dark:border-amber-600' : 'border-neutral-200 dark:border-neutral-700'} ${collapsed ? 'p-2.5' : 'p-3'}`}>
+    <div ref={rootRef} tabIndex={-1} data-testid={testId} className={`bg-white dark:bg-neutral-800 rounded-lg border ${locked ? 'border-amber-300 dark:border-amber-600' : 'border-neutral-200 dark:border-neutral-700'} ${collapsed ? 'p-2.5' : 'p-3'}`}>
       <h4
         className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider flex items-center gap-1.5 cursor-pointer select-none"
         onClick={() => setCollapsed(!collapsed)}

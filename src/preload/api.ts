@@ -1,5 +1,5 @@
 import type { AppUpdateState, AppUpdateCheckResult, SpellcheckDownloadResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
-  QuickCreateResult, FileSharePrepareResult,
+  QuickCreateResult, IdentityDraft, FileSharePrepareResult,
   AgentTemplateListResult,
   AgentTemplateContents,
   ShippedTemplateId
@@ -24,7 +24,11 @@ export interface AdfApi {
   saveFile: () => Promise<FileOperationResult>
   createFile: (name: string) => Promise<FileOperationResult>
   /** New agent in the agents folder under a generated name; no dialog. Opens it like createFile. `providerId` picks its provider (else the app default). */
-  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string }) => Promise<QuickCreateResult>
+  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string; identityDraftId?: string }) => Promise<QuickCreateResult>
+  /** Mint an identity ahead of an agent; pass draftId to createQuickAgent to adopt it. */
+  mintIdentityDraft: () => Promise<IdentityDraft>
+  /** Forget a draft minted with mintIdentityDraft. */
+  discardIdentityDraft: (draftId: string) => Promise<boolean>
   /** The default folder for new agents (agentsFolder setting, else Documents/adf-agents). */
   getDefaultAgentsFolder: () => Promise<{ path: string }>
   closeFile: () => Promise<FileOperationResult>

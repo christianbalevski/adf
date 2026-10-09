@@ -8,6 +8,7 @@ import { FolderPickerChip, ProviderPickerChip, TemplatePickerChip } from './Home
 import { useHomeProviders } from './HomeProviders'
 import { useTemplatesStore } from '../../hooks/useTemplates'
 import { NameChip } from './NameChip'
+import { NextAgentIdentity, useIdentityDraft } from './NextAgentIdentity'
 import { generateAgentName } from '../../../shared/utils/agent-names'
 
 const MAX_ROWS = 8
@@ -64,6 +65,9 @@ export function HomeComposer() {
   // A name is drawn the first time the composer shows and kept until a send.
   useEffect(() => { if (!homeName) setHomeName(generateAgentName()) }, [homeName, setHomeName])
   const name = homeName ?? ''
+  // The next agent's DID, minted ahead so its orbital shows while it is
+  // being named. The create adopts exactly this identity.
+  const { draft: identityDraft, renew: renewIdentity, current: currentIdentity } = useIdentityDraft()
   // The caption reacts to how many times the name has been rolled for this
   // agent: the obvious at four, then a nudge, a shrug, and a plea. Each line
   // once per agent, and the count resets with every send.
@@ -172,6 +176,7 @@ export function HomeComposer() {
         modelId: homeModelId ?? undefined,
         folder: homeFolder ?? undefined,
         name: homeName ?? undefined,
+        identityDraftId: currentIdentity()?.draftId,
         files: files.length > 0 ? files : undefined
       })
       if (!result.success) {
@@ -195,13 +200,19 @@ export function HomeComposer() {
         } else if (result.code === 'template_missing') {
           setError(result.error ?? 'That template is not in the templates folder any more.')
           setHomeTemplateId(null)
-        } else setError(result.error ?? 'Could not create the agent')
+        } else {
+          setError(result.error ?? 'Could not create the agent')
+          // The create may have used the draft before failing; mint another so
+          // the DID on screen is the one the next agent gets.
+          renewIdentity()
+        }
         return
       }
       setText('')
       setFiles([])
-      // The next agent gets its own name.
+      // The next agent gets its own name and identity (the create used this one).
       setHomeName(generateAgentName())
+      renewIdentity()
       spins.current = 0
       shown.current.clear()
       setShowMeshGraph(false)
@@ -211,10 +222,11 @@ export function HomeComposer() {
       setCenterChatTabActive(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      renewIdentity()
     } finally {
       setBusy(false)
     }
-  }, [busy, createQuickAgent, defaultTemplateId, files, homeFolder, homeModelId, homeName, homeTemplateId, openTemplateReview, providerId, refuseName, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setHomeTemplateId, setShowMeshGraph, setText, text])
+  }, [busy, createQuickAgent, defaultTemplateId, files, homeFolder, homeModelId, homeName, homeTemplateId, currentIdentity, openTemplateReview, providerId, refuseName, renewIdentity, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setHomeTemplateId, setShowMeshGraph, setText, text])
   sendRef.current = send
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -244,8 +256,14 @@ export function HomeComposer() {
       {suggestionsOn && <SuggestionMarquee rows={rows} onPick={fill} disabled={busy} />}
 
       <div className="mx-auto w-full max-w-3xl px-4">
+      {/* The next agent's orbital beside the box, from its real DID. Hidden
+          on narrow windows, where the box needs the width. */}
+      <div className="flex items-start gap-3">
+      <div className="hidden sm:block">
+        <NextAgentIdentity did={identityDraft?.did ?? null} spinImpulse={name.length} onReroll={renewIdentity} disabled={busy} />
+      </div>
       <div
-        className={`home-composer relative rounded-[var(--radius-sm)] border bg-[var(--paper)] focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--focus)] ${dragOver ? 'border-[var(--blue)] outline outline-2 outline-offset-2 outline-[var(--focus)]' : 'border-[var(--rule-strong)]'}`}
+        className={`home-composer relative min-w-0 flex-1 rounded-[var(--radius-sm)] border bg-[var(--paper)] focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--focus)] ${dragOver ? 'border-[var(--blue)] outline outline-2 outline-offset-2 outline-[var(--focus)]' : 'border-[var(--rule-strong)]'}`}
         onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDragOver(true) } }}
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false) }}
         onDrop={(e) => { e.preventDefault(); setDragOver(false); if (!busy) addFiles(e.dataTransfer.files) }}
@@ -324,6 +342,7 @@ export function HomeComposer() {
             )}
           </button>
         </div>
+      </div>
       </div>
 
       {error && <p className="mt-2 text-[12px] text-[var(--adf-ui-danger)]">{error}</p>}

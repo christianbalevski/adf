@@ -42,6 +42,8 @@ export interface DaemonHostOptions {
   eventBus?: DaemonEventBus
   wsService?: DaemonWsService
   networkService?: DaemonNetworkService
+  /** See DaemonHttpApiOptions.mesh. */
+  mesh?: DaemonHttpApiOptions['mesh']
   mcpPackageService?: DaemonPackageService
   mcpPythonPackageService?: DaemonPythonPackageService
   adapterPackageService?: DaemonPackageService
@@ -109,6 +111,7 @@ export class DaemonHost {
   private readonly eventBus?: DaemonEventBus
   private readonly wsService?: DaemonWsService
   private readonly networkService?: DaemonNetworkService
+  private readonly mesh?: DaemonHttpApiOptions['mesh']
   private readonly mcpPackageService?: DaemonPackageService
   private readonly mcpPythonPackageService?: DaemonPythonPackageService
   private readonly adapterPackageService?: DaemonPackageService
@@ -141,6 +144,7 @@ export class DaemonHost {
     this.eventBus = opts.eventBus
     this.wsService = opts.wsService
     this.networkService = opts.networkService
+    this.mesh = opts.mesh
     this.mcpPackageService = opts.mcpPackageService
     this.mcpPythonPackageService = opts.mcpPythonPackageService
     this.adapterPackageService = opts.adapterPackageService
@@ -177,6 +181,7 @@ export class DaemonHost {
       eventBus: this.eventBus,
       wsService: this.wsService,
       networkService: this.networkService,
+      mesh: this.mesh,
       mcpPackageService: this.mcpPackageService,
       mcpPythonPackageService: this.mcpPythonPackageService,
       adapterPackageService: this.adapterPackageService,

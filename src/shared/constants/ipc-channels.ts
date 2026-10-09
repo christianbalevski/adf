@@ -404,7 +404,12 @@ export const IPC = {
   AGENT_VITALS: 'adf:agent:vitals',
 
   // Emergency stop
-  EMERGENCY_STOP: 'adf:emergency-stop'
+  EMERGENCY_STOP: 'adf:emergency-stop',
+
+  // Identity drafts: a keypair minted before the agent exists, so the home
+  // composer can show its DID. Only { draftId, did } crosses IPC.
+  IDENTITY_DRAFT_MINT: 'adf:identity:draft-mint',
+  IDENTITY_DRAFT_DISCARD: 'adf:identity:draft-discard'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

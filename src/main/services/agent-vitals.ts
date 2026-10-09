@@ -47,6 +47,28 @@ export interface AgentVitalsDeps {
   now?(): number
 }
 
+/**
+ * Mesh rows with running executors' display states laid over them.
+ * MeshManager.getAgentStatuses() has no executor access and reports 'idle'
+ * for everyone. Later `live` entries win the state; `activeLoops` keeps the
+ * last defined count. Studio and the daemon both build getLiveMeshAgents
+ * with this.
+ */
+export function overlayLiveStates(
+  meshAgents: MeshAgentStatus[],
+  live: Array<{ filePath: string; state: AgentState; activeLoops?: number }>
+): MeshAgentStatus[] {
+  const byPath = new Map<string, { state: AgentState; activeLoops?: number }>()
+  for (const l of live) {
+    byPath.set(l.filePath, { state: l.state, activeLoops: l.activeLoops ?? byPath.get(l.filePath)?.activeLoops })
+  }
+  return meshAgents.map((a) => {
+    const l = byPath.get(a.filePath)
+    if (!l) return a
+    return l.activeLoops === undefined ? { ...a, state: l.state } : { ...a, state: l.state, activeLoops: l.activeLoops }
+  })
+}
+
 // =============================================================================
 // Fleet metadata
 // =============================================================================
@@ -300,7 +322,6 @@ export class AgentVitalsService {
   private lastFleet: FleetAgentStatus[] | null = null
 
   private slowCache = new Map<string, { key: string; at: number; slow: VitalsSlowPart }>()
-  private inFlight = new Map<string, Promise<VitalsSlowPart>>()
   private workspaceIds = new WeakMap<object, number>()
   private nextWorkspaceId = 1
 
@@ -492,25 +513,21 @@ export class AgentVitalsService {
       return { slow: cached.slow, live: !!ws }
     }
 
-    const pending = this.inFlight.get(filePath)
-    if (pending) return { slow: await pending, live: !!ws }
-    const run = (async (): Promise<VitalsSlowPart> => {
-      try {
-        const slow = ws
-          ? readVitalsSlowPart((sql, params) => ws.querySQL(sql, params))
-          : AdfDatabase.peek(filePath, (db) => readVitalsSlowPart((sql, params) => db.prepare(sql).all(...(params ?? []))))
-        this.slowCache.set(filePath, { key, at: this.now(), slow })
-        return slow
-      } catch (err) {
-        // Transient lock on a peek: serve the last good read.
-        if (cached) return cached.slow
-        throw err
-      } finally {
-        this.inFlight.delete(filePath)
-      }
-    })()
-    this.inFlight.set(filePath, run)
-    return { slow: await run, live: !!ws }
+    // The read is synchronous, so no second caller can arrive mid-read and
+    // there is nothing to dedupe. (An in-flight map here once stuck: the async
+    // wrapper's `finally` ran before the entry was set, so every later
+    // cache miss and every `force` got the first read back forever.)
+    try {
+      const slow = ws
+        ? readVitalsSlowPart((sql, params) => ws.querySQL(sql, params))
+        : AdfDatabase.peek(filePath, (db) => readVitalsSlowPart((sql, params) => db.prepare(sql).all(...(params ?? []))))
+      this.slowCache.set(filePath, { key, at: this.now(), slow })
+      return { slow, live: !!ws }
+    } catch (err) {
+      // Transient lock on a peek: serve the last good read.
+      if (cached) return { slow: cached.slow, live: !!ws }
+      throw err
+    }
   }
 
   /** Children in the last fleet scan whose parent reference names this agent. */

@@ -7,19 +7,22 @@ import { createPortal } from 'react-dom'
  * Rendered into a body portal with fixed positioning so it never gets
  * clipped by overflow containers.
  */
-export function Tooltip({ tip, children, className, style, delay = 500 }: {
+export function Tooltip({ tip, children, className, style, delay = 500, disabled = false }: {
   tip: string
   children?: ReactNode
   className?: string
   style?: CSSProperties
   /** Hover delay in ms. Raise it for hints the pointer crosses constantly (list rows). */
   delay?: number
+  /** Hide and stop showing, e.g. while a popover from the same anchor is open. */
+  disabled?: boolean
 }) {
   const [pos, setPos] = useState<{ x: number; y: number; below: boolean } | null>(null)
   const anchorRef = useRef<HTMLSpanElement>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const show = useCallback(() => {
+    if (disabled) return
     timerRef.current = setTimeout(() => {
       const r = anchorRef.current?.getBoundingClientRect()
       if (!r) return
@@ -28,7 +31,7 @@ export function Tooltip({ tip, children, className, style, delay = 500 }: {
       const x = Math.min(Math.max(r.left + r.width / 2, halfWidth + 8), window.innerWidth - halfWidth - 8)
       setPos({ x, y: below ? r.bottom + 6 : r.top - 6, below })
     }, delay)
-  }, [delay])
+  }, [delay, disabled])
 
   const hide = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current)
@@ -37,6 +40,9 @@ export function Tooltip({ tip, children, className, style, delay = 500 }: {
   }, [])
 
   useEffect(() => hide, [hide])
+  useEffect(() => {
+    if (disabled) hide()
+  }, [disabled, hide])
 
   return (
     <span ref={anchorRef} onMouseEnter={show} onMouseLeave={hide} className={className} style={style}>

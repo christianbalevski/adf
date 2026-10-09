@@ -16,8 +16,10 @@ const api: AdfApi = {
   saveFile: () => ipcRenderer.invoke(IPC.FILE_SAVE),
   createFile: (name: string) =>
     ipcRenderer.invoke(IPC.FILE_CREATE, { name }),
-  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string }) =>
+  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string; identityDraftId?: string }) =>
     ipcRenderer.invoke(IPC.FILE_CREATE_QUICK, options ?? {}),
+  mintIdentityDraft: () => ipcRenderer.invoke(IPC.IDENTITY_DRAFT_MINT),
+  discardIdentityDraft: (draftId: string) => ipcRenderer.invoke(IPC.IDENTITY_DRAFT_DISCARD, draftId),
   getDefaultAgentsFolder: () => ipcRenderer.invoke(IPC.AGENTS_FOLDER_DEFAULT_GET),
   closeFile: () => ipcRenderer.invoke(IPC.FILE_CLOSE),
   deleteFile: (filePath: string) =>
