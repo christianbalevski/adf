@@ -65,7 +65,7 @@ export interface AgentExperienceInputs {
   memoryTokens: number
   /** `local_*` tables. */
   localTables: number
-  /** Total rows across `local_*` tables. */
+  /** Total rows across `local_*` tables (the first 50 by name). */
   localRows: number
   /** Distinct skills the agent installed or changed. */
   skills: number

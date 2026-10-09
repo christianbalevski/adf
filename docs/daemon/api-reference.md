@@ -13779,7 +13779,7 @@ Raw maturity counts read from the agent's file.
 | `filesWritten` | integer | yes | adf_files rows changed after the agent was created, `mind/` excluded |
 | `memoryTokens` | integer | yes | Approximate tokens in `mind/` files: total bytes, less the seeded `mind/log.md` header, / 4 |
 | `localTables` | integer | yes | `local_*` tables |
-| `localRows` | integer | yes | Rows across `local_*` tables |
+| `localRows` | integer | yes | Rows across `local_*` tables (the first 50 by name) |
 | `skills` | integer | yes | Distinct skills the agent installed or changed |
 | `agentsSpawned` | integer \| null | yes | Tracked agents whose adf_parent_did names this agent; null when no fleet scan has run |
 | `messages` | integer | yes | Loop messages ever written, every loop current and past (adf_loop's shared AUTOINCREMENT high-water mark; compaction, clears and loop deletion do not lower it) |

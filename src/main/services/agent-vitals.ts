@@ -209,6 +209,9 @@ function readRegistrySkills(q: Sql): string[] {
   )
 }
 
+/** `local_*` tables whose rows are counted, at most. */
+const MAX_TABLES = 50
+
 /** `local_*` table names (safe identifiers only). */
 function listLocalTables(q: Sql): string[] {
   return safe(
@@ -422,9 +425,12 @@ export function readVitalsSlowPart(q: Sql): VitalsSlowPart {
     [] as AgentMetric[]
   )
 
+  // COUNT(*) is a full scan per table: rows are summed over the first
+  // MAX_TABLES only, as Contents does, so an agent with hundreds of tables
+  // cannot stall the main process on every refresh.
   const tables = listLocalTables(q)
   let localRows = 0
-  for (const t of tables) localRows += safe(q, `SELECT COUNT(*) AS n FROM "${t}"`, (r) => firstNumber(r), 0)
+  for (const t of tables.slice(0, MAX_TABLES)) localRows += safe(q, `SELECT COUNT(*) AS n FROM "${t}"`, (r) => firstNumber(r), 0)
 
   return {
     meta,
@@ -466,7 +472,6 @@ function readAgentId(q: Sql): string | null {
 
 /** adf_loop rows scanned at most for the per-day turn counts. */
 export const DAILY_SCAN_CAP = 5_000
-const MAX_TABLES = 50
 
 /** bytes / 4, rounded: the overview's token estimate. */
 const approxTokens = (bytes: number): number => Math.round(bytes / 4)

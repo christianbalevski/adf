@@ -18341,7 +18341,7 @@
           },
           "localRows": {
             "type": "integer",
-            "description": "Rows across `local_*` tables"
+            "description": "Rows across `local_*` tables (the first 50 by name)"
           },
           "skills": {
             "type": "integer",
