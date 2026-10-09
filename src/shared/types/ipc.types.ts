@@ -240,6 +240,10 @@ export interface AppSettings {
   compactionPrompt?: string
   /** Per-tool and dynamic prompt overrides, keyed by prompt id. Absent = code defaults. */
   toolPrompts?: Record<string, string>
+  /** Overwrite all three prompts above when a release ships new defaults. Absent = off. */
+  autoApplyPromptUpdates?: boolean
+  /** Fingerprint of the shipped prompts last applied by autoApplyPromptUpdates. */
+  promptDefaultsApplied?: string
   /** OS notifications for agent events. Absent = enabled. */
   nativeNotificationsEnabled?: boolean
   /** macOS menu bar icon with running agents and pending approvals. Absent = enabled. */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applySettingsMigrations, LEGACY_MIND_PROMPT_SECTION, UI_FONT_BRAND_MIGRATION_KEY } from '../../src/shared/utils/settings-migrations'
+import { applySettingsMigrations, LEGACY_MIND_PROMPT_SECTION, UI_FONT_BRAND_MIGRATION_KEY, PROMPT_AUTO_UPDATE_KEY, PROMPT_DEFAULTS_APPLIED_KEY, currentPromptDefaults, promptDefaultsFingerprint } from '../../src/shared/utils/settings-migrations'
 import { MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS } from '../../src/shared/constants/adf-defaults'
 
 const CUSTOM_BASE = 'You are a custom agent. Do custom things.'
@@ -212,5 +212,36 @@ describe('settings migrations — uiFont brand default', () => {
     expect(data.uiFont).toBe('system')
     expect(result.changedKeys).not.toContain('uiFont')
     expect(result.changedKeys).not.toContain(UI_FONT_BRAND_MIGRATION_KEY)
+  })
+})
+
+describe('settings migrations — automatic prompt updates', () => {
+  const customized = () => ({
+    globalSystemPrompt: CUSTOM_BASE + SOUL_PROMPT_SECTION + MIND_PROMPT_SECTION,
+    compactionPrompt: 'My compaction rules.',
+    toolPrompts: { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS, dyn_inbox_hint: 'custom hint' },
+  })
+
+  it('leaves customized prompts alone when the toggle is off', () => {
+    const data: Record<string, unknown> = customized()
+    const before = structuredClone(data)
+    applySettingsMigrations(data)
+    expect(data).toMatchObject(before)
+  })
+
+  it('overwrites every prompt with the shipped defaults when the defaults changed', () => {
+    const data: Record<string, unknown> = { ...customized(), [PROMPT_AUTO_UPDATE_KEY]: true, [PROMPT_DEFAULTS_APPLIED_KEY]: 'older-release' }
+    const result = applySettingsMigrations(data)
+    expect(result.changedKeys).toEqual(expect.arrayContaining(['globalSystemPrompt', 'compactionPrompt', 'toolPrompts']))
+    expect(data).toMatchObject(currentPromptDefaults())
+    expect(data[PROMPT_DEFAULTS_APPLIED_KEY]).toBe(promptDefaultsFingerprint())
+  })
+
+  it('keeps edits made after an apply until the shipped defaults change again', () => {
+    const data: Record<string, unknown> = { ...customized(), [PROMPT_AUTO_UPDATE_KEY]: true, [PROMPT_DEFAULTS_APPLIED_KEY]: promptDefaultsFingerprint() }
+    const before = structuredClone(data)
+    const result = applySettingsMigrations(data)
+    expect(result.changedKeys).not.toContain('toolPrompts')
+    expect(data).toMatchObject(before)
   })
 })

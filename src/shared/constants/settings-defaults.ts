@@ -31,6 +31,9 @@ export function createSettingsDefaults(): Record<string, unknown> {
     // so they ride the existing settings→executor plumbing.
     toolPrompts: { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS },
     compactionPrompt: DEFAULT_COMPACTION_PROMPT,
+    // On = a release that changes any shipped prompt overwrites all three
+    // prompt keys above (settings-migrations applyPromptUpdates).
+    autoApplyPromptUpdates: false,
     trackedDirectories: [],
     // Empty = built-in default (Documents/adf-agents), resolved on demand.
     agentsFolder: '',

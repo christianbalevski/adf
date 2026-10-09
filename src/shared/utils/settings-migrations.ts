@@ -9,7 +9,7 @@
  * changed so callers can persist exactly those keys.
  */
 
-import { DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION } from '../constants/adf-defaults'
+import { DEFAULT_BASE_PROMPT, DEFAULT_COMPACTION_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION } from '../constants/adf-defaults'
 import { withBuiltInAdapterRegistrations } from '../constants/adapter-registry'
 import { DEFAULT_COMPUTE_SETTINGS } from '../constants/compute-defaults'
 import type { AdapterRegistration } from '../types/channel-adapter.types'
@@ -41,7 +41,8 @@ Your private working memory (\`mind.md\`), snapshotted at the start of each sess
 
 /**
  * Run every settings migration in the canonical order (adapters, compute,
- * tool prompts, skills placeholder, soul, mind, ui font). Idempotent.
+ * tool prompts, skills placeholder, soul, mind, prompt auto-update, ui font).
+ * Idempotent.
  */
 export function applySettingsMigrations(data: Record<string, unknown>): SettingsMigrationResult {
   const changedKeys = new Set<string>()
@@ -51,8 +52,49 @@ export function applySettingsMigrations(data: Record<string, unknown>): Settings
   if (migrateSkillsPromptPlaceholder(data)) changedKeys.add('toolPrompts')
   if (migrateGlobalSystemPromptSoul(data)) changedKeys.add('globalSystemPrompt')
   if (migrateGlobalSystemPromptMind(data)) changedKeys.add('globalSystemPrompt')
+  for (const key of applyPromptUpdates(data)) changedKeys.add(key)
   for (const key of migrateUiFontBrandDefault(data)) changedKeys.add(key)
   return { changed: changedKeys.size > 0, changedKeys: [...changedKeys] }
+}
+
+/** Owner opt-in (Settings → Prompts): overwrite every prompt when the shipped defaults change. */
+export const PROMPT_AUTO_UPDATE_KEY = 'autoApplyPromptUpdates'
+/** Fingerprint of the shipped prompt defaults last written by the auto-update. */
+export const PROMPT_DEFAULTS_APPLIED_KEY = 'promptDefaultsApplied'
+
+/** Every shipped prompt, keyed by the settings key that stores it. */
+export function currentPromptDefaults(): { globalSystemPrompt: string; compactionPrompt: string; toolPrompts: Record<string, string> } {
+  return {
+    globalSystemPrompt: DEFAULT_BASE_PROMPT,
+    compactionPrompt: DEFAULT_COMPACTION_PROMPT,
+    toolPrompts: { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS },
+  }
+}
+
+/** FNV-1a over the shipped prompts — changes whenever a release changes any of them. */
+export function promptDefaultsFingerprint(): string {
+  const text = JSON.stringify(currentPromptDefaults())
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0') + ':' + text.length
+}
+
+/**
+ * With auto-update on, a release whose shipped prompts differ from the last
+ * applied set overwrites all three prompt keys, customizations included.
+ * Edits made after an apply survive until the next release changes a default.
+ */
+function applyPromptUpdates(data: Record<string, unknown>): string[] {
+  if (data[PROMPT_AUTO_UPDATE_KEY] !== true) return []
+  const fingerprint = promptDefaultsFingerprint()
+  if (data[PROMPT_DEFAULTS_APPLIED_KEY] === fingerprint) return []
+  Object.assign(data, currentPromptDefaults())
+  data[PROMPT_DEFAULTS_APPLIED_KEY] = fingerprint
+  console.log('[Settings] Applied updated default prompts')
+  return ['globalSystemPrompt', 'compactionPrompt', 'toolPrompts', PROMPT_DEFAULTS_APPLIED_KEY]
 }
 
 /** One-time marker: set once the bundled-brand-font default has been applied. */

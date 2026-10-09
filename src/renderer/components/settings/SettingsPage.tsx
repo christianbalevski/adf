@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore, UI_FONT_PRESETS, UI_SCALE_OPTIONS, type SettingsSection, type UiFont, type UiScale } from '../../stores/app.store'
 import { isFontInstalled } from '../../utils/fonts'
+import { PROMPT_AUTO_UPDATE_KEY, PROMPT_DEFAULTS_APPLIED_KEY, currentPromptDefaults, promptDefaultsFingerprint } from '../../../shared/utils/settings-migrations'
 import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS } from '../../../shared/constants/adf-defaults'
 import { addCatalogSource, normalizeCatalogSources, MAX_CATALOG_SOURCES } from '../../utils/skills-panel'
 import { invalidateConfigCaches } from '../agent/AgentConfig'
@@ -1320,6 +1321,7 @@ export function SettingsPage() {
   const [compactionPrompt, setCompactionPrompt] = useState('')
   const [toolPrompts, setToolPrompts] = useState<Record<string, string>>({})
   const [expandedPromptKey, setExpandedPromptKey] = useState<string | null>(null)
+  const [autoApplyPromptUpdates, setAutoApplyPromptUpdates] = useState(false)
   const [mcpServers, setMcpServers] = useState<McpServerRegistration[]>([])
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
   const [activeTab, setActiveTab] = useState<SettingsSection>('general')
@@ -1503,6 +1505,7 @@ export function SettingsPage() {
       setToolPrompts(
         (settings.toolPrompts as Record<string, string>) ?? { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS }
       )
+      setAutoApplyPromptUpdates(settings[PROMPT_AUTO_UPDATE_KEY] === true)
       setNativeNotifications(settings.nativeNotificationsEnabled !== false)
       setMenuBar(settings.menuBarEnabled !== false)
       setUpdateChecks(settings.updateChecksEnabled !== false)
@@ -1679,6 +1682,31 @@ export function SettingsPage() {
     setSystemPrompt(DEFAULT_BASE_PROMPT)
     setCompactionPrompt(DEFAULT_COMPACTION_PROMPT)
     setToolPrompts({ ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS })
+  }
+
+  /**
+   * Turning auto-update on applies the current defaults right away and records
+   * their fingerprint, so the next launch only overwrites again once a release
+   * actually changes a shipped prompt.
+   */
+  const handleAutoApplyPromptUpdates = async (enabled: boolean) => {
+    if (!enabled) {
+      setAutoApplyPromptUpdates(false)
+      await writeSetting({ [PROMPT_AUTO_UPDATE_KEY]: false })
+      return
+    }
+    if (!window.confirm('Replace every prompt with the current defaults now, and again whenever an update ships new ones? Any customizations will be lost.')) return
+    const defaults = currentPromptDefaults()
+    setAutoApplyPromptUpdates(true)
+    setSystemPrompt(defaults.globalSystemPrompt)
+    setCompactionPrompt(defaults.compactionPrompt)
+    setToolPrompts(defaults.toolPrompts)
+    await writeSetting({
+      ...defaults,
+      [PROMPT_AUTO_UPDATE_KEY]: true,
+      [PROMPT_DEFAULTS_APPLIED_KEY]: promptDefaultsFingerprint(),
+    })
+    invalidateConfigCaches()
   }
 
   return (
@@ -2036,6 +2064,22 @@ export function SettingsPage() {
           {/* Agent defaults tab */}
           {activeTab === 'agents' && <>
           <SettingsGroup title="Prompts" description="Applied to every agent unless its file provides more specific instructions." docs={DOCS.settingsSystemPrompt}>
+          <SettingsRow
+            label="Apply prompt updates automatically"
+            description="When an update ships new default prompts, replace every prompt below with them. Off = your prompts stay as they are; use Reset All Prompts to pick up new defaults."
+          >
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={autoApplyPromptUpdates}
+                onChange={(e) => { void handleAutoApplyPromptUpdates(e.target.checked) }}
+                className="rounded text-blue-500"
+              />
+              <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
+                {autoApplyPromptUpdates ? 'On' : 'Off'}
+              </span>
+            </label>
+          </SettingsRow>
           <div className="flex justify-end px-4 pt-3">
             <Button onClick={handleResetAllPrompts} variant="ghost" size="compact">
               Reset All Prompts to Defaults
