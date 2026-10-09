@@ -99,7 +99,6 @@ export function registerVitalsRoutes(
   server: FastifyInstance,
   deps: { runtime: VitalsRuntime; vitals: AgentVitalsService; settings?: TrackedDirsSettings },
 ): void {
-  let lastFleetScan = 0
   type Req = { Params: { id: string }; Querystring: { force?: string } }
 
   /** Validate `force` and resolve the file; sends the error reply and returns null on failure. */
@@ -125,13 +124,9 @@ export function registerVitalsRoutes(
     const t = target(request, reply, 'vitals are')
     if (!t) return reply
     try {
-      // agentsSpawned counts children in the last fleet scan. Studio's fleet
-      // poll keeps that fresh; the daemon has no poll, so refresh it here.
-      const now = Date.now()
-      if (t.forced || now - lastFleetScan > FLEET_SCAN_MAX_AGE_MS) {
-        await deps.vitals.getFleetStatus()
-        lastFleetScan = now
-      }
+      // agentsSpawned counts children in the last fleet scan. The daemon has
+      // no fleet poll, so refresh it here.
+      await deps.vitals.ensureFleetScan(FLEET_SCAN_MAX_AGE_MS, t.forced)
       return await deps.vitals.getAgentVitals(t.filePath, { force: t.forced })
     } catch (err) {
       return fail(reply, err)

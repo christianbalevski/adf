@@ -5822,8 +5822,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // Overview card: header facts + Reach/Access/Autonomy/Experience. `force`
   // skips the cache (the renderer passes it after turn_complete).
-  ipcMain.handle(IPC.AGENT_VITALS, async (_event, args: { filePath: string; force?: boolean }): Promise<AgentVitals> =>
-    agentVitals.getAgentVitals(args.filePath, { force: args.force }))
+  // agentsSpawned needs a fleet scan; the map's poll keeps one fresh, so this
+  // rescans only while the map is closed (at most every 30 s).
+  ipcMain.handle(IPC.AGENT_VITALS, async (_event, args: { filePath: string; force?: boolean }): Promise<AgentVitals> => {
+    await agentVitals.ensureFleetScan(30_000).catch(() => {})
+    return agentVitals.getAgentVitals(args.filePath, { force: args.force })
+  })
 
   // Overview's lower sections. Same cache rules and refetch triggers as vitals.
   ipcMain.handle(IPC.AGENT_ACTIVITY, async (_event, args: { filePath: string; force?: boolean }): Promise<AgentActivity> =>

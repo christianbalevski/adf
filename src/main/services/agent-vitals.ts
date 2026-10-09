@@ -640,6 +640,7 @@ export class AgentVitalsService {
   private statusSinceMap = new Map<string, { value: string; since: number }>()
   /** Last fleet result, for the spawned-children count. */
   private lastFleet: FleetAgentStatus[] | null = null
+  private lastFleetAt = 0
 
   private slowCache = new Map<string, CacheEntry<VitalsSlowPart>>()
   private activityCache = new Map<string, CacheEntry<ActivityRead & { agentId: string | null }>>()
@@ -778,7 +779,19 @@ export class AgentVitalsService {
     }
 
     this.lastFleet = agents
+    this.lastFleetAt = now
     return { running, agents }
+  }
+
+  /**
+   * Redo the fleet scan behind agentsSpawned when it is missing or older than
+   * `maxAgeMs` (always when `force`). Studio's fleet map polls it anyway; a
+   * vitals read with the map closed, or from the daemon, refreshes it here so
+   * the Experience level does not depend on which screen was opened first.
+   */
+  async ensureFleetScan(maxAgeMs: number, force = false): Promise<void> {
+    if (!force && this.lastFleet && this.now() - this.lastFleetAt <= maxAgeMs) return
+    await this.getFleetStatus()
   }
 
   private findOpenWorkspace(filePath: string): VitalsWorkspace | undefined {
