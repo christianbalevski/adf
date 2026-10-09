@@ -18,6 +18,7 @@ Guides carry YAML frontmatter (`type`, `description`, `see_also`) mirroring the 
 - **settings.md** — global app settings shared across all agents
 - **agent-states.md** — the agent lifecycle states and how to control them
 - **fleet-map.md** — the RTS-style map for commanding your whole fleet: territories, selection, hotkeys, moving agents, approvals
+- **agent-overview.md** — how the Overview card scores Experience, Reach, Access and Autonomy; agent metrics; the Contents meter
 - **../../registry/README.md** — the agent files the app ships in its registry: how they are committed, indexed and shipped
 
 ## Execution & Automation

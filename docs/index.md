@@ -52,6 +52,7 @@ The [Knowledge Base](knowledge/index.md) is a task-oriented routing layer for re
 - [Creating and Configuring Agents](guides/creating-agents.md) — Set up an agent's identity, model, and instructions
 - [Agent States and Lifecycle](guides/agent-states.md) — Understand active, idle, hibernate, suspended, and off
 - [Fleet Map](guides/fleet-map.md) — Command your whole fleet from the RTS-style map: territories, selection, hotkeys, moving agents, approvals
+- [Agent Overview](guides/agent-overview.md) — How the Overview card scores Experience, Reach, Access and Autonomy, agent metrics, and the Contents meter
 - [Documents and Files](guides/documents-and-files.md) — The primary document, mind file, and virtual filesystem
 - [Skills](guides/skills.md) — File-backed reusable agent procedures and their catalog
 - [Tools](guides/tools.md) — Built-in tool catalog and how agents use them
