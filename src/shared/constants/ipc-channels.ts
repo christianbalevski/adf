@@ -402,7 +402,7 @@ export const IPC = {
 
   // Agent overview card: header facts + Reach/Access/Autonomy/Experience.
   AGENT_VITALS: 'adf:agent:vitals',
-  // Overview's lower sections: next wakes, recent events, 14-day activity, what it knows.
+  // Overview's lower sections: next wakes, 14-day activity, contents.
   AGENT_ACTIVITY: 'adf:agent:activity',
 
   // Emergency stop

@@ -190,7 +190,7 @@ export interface AdfApi {
   getMeshFleetStatus: () => Promise<FleetStatusResult>
   /** Overview card vitals for one agent. `force` skips the main-process cache (use after turn_complete). */
   getAgentVitals: (filePath: string, opts?: { force?: boolean }) => Promise<AgentVitals>
-  /** Overview's lower sections: next wakes, recent events, 14-day activity, what it knows. */
+  /** Overview's lower sections: next wakes, 14-day activity, contents. */
   getAgentActivity: (filePath: string, opts?: { force?: boolean }) => Promise<AgentActivity>
   getMeshTokenBurn: () => Promise<FleetBurnResult>
   onMeshEvent: (callback: (event: MeshEvent) => void) => () => void

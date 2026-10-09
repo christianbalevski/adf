@@ -903,7 +903,7 @@ export class DaemonClient {
     return this.get(`/agents/${enc(agentId)}/vitals`, { force: force ? 1 : undefined })
   }
 
-  /** Next wakes, recent events, 14 days of turns and cost, and what the agent keeps. `force` skips the daemon's cache. */
+  /** Next wakes, 14 days of turns and cost, and what the file holds (mind, skills, tables). `force` skips the daemon's cache. */
   agentActivity(agentId: string, force = false): Promise<import('./types').AgentActivity> {
     return this.get(`/agents/${enc(agentId)}/activity`, { force: force ? 1 : undefined })
   }
