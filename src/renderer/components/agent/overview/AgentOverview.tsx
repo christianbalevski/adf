@@ -1,9 +1,10 @@
 /**
  * Agent overview: the right dock's first tab. A centred card face mirroring
- * the agent's ALF card (orbital with its own status line as a speech bubble,
- * name and @handle, description, Public / Verified owner badges) and a state
- * line with the model; then four levelled stats (Experience, Reach, Access,
- * Autonomy) and a facts line (7-day cost, age, next wake).
+ * the agent's ALF card (the agent's own status line as a speech bubble above
+ * the orbital, name and @handle, description, Public / Verified owner
+ * badges) and a state line with the model; then four levelled stats
+ * (Experience, Reach, Access, Autonomy) and a facts line (7-day cost, age,
+ * next wake).
  *
  * Stats come from `adf:agent:vitals` (main/services/agent-vitals.ts), the
  * sections under them from `adf:agent:activity` (OverviewActivity). There is
@@ -11,24 +12,27 @@
  * changes, and every 10 s while the panel shows (useOverviewRead; main caches
  * both reads, so a poll costs little).
  *
- * Height budget: the whole panel fits without scrolling in a 1366x768 window
- * with the dock at its default 320 px. 768 - title bar 40 - status bar 28 -
- * dock tabs 36 = 664 px for the panel. Worst case (status, 2-line
- * description, both badges, 3 metrics + "+N", 3 Coming up rows + "+N"),
- * 18 px text lines:
+ * Height budget, measured in the dev build over CDP (CSS px, dock 307 px
+ * wide). The dock's scroll area is window height - 108: 660 in a 1366x768
+ * window at zoom 1.0, 590 at zoom 1.1. A real agent with every section
+ * (2-line status and description, both badges, 2 Coming up rows + "+N",
+ * chart, contents with tables) measured 541:
  *   padding 16
- *   card face: orbital 72 + 6 + name 20 + 2 + description 2x16 + 4
- *     + badges 16 + 2 + state 18 = 172 (status bubble sits beside the orbital)
- *   gap 8, stats grid 2x44 + borders 3 = 91, facts 6+18, metrics 6+78 -> 199
- *   gap 8, Coming up: rule+pad 7 + title 18 + 4 + 4 rows x 22 = 117
- *   gap 8, Activity: 29 + spark 28 = 57
- *   gap 8, Contents: 29 + meter 8 + 4 + legend 18 = 59
- *   total ~652 px. Anything taller (banners, a smaller window) scrolls.
- * Keep new rows inside this budget: cap lists with OVERVIEW_ROW_LIMIT + "+N".
+ *   card face 217: bubble 46 (3 lines: 62) + 6, orbital 64, name 4+20,
+ *     description 2+32, badges 4+18, state 2+19
+ *   gap 6, stats 109: grid 85, facts 6+18 (metrics: 6 + 3x18+2x2 + 2+18 = 84)
+ *   gap 6, Coming up 75: rule+pad 7 + title 18 + 4 + 2 rows x 23
+ *   gap 6, Activity 55: 31 + spark 24
+ *   gap 6, Contents 47: 29 + one meter/legend line 18
+ * Worst case (3-line status, 3 metrics + "+N") is ~642: it fits 660. Under
+ * that (590 at zoom 1.1) useChartFold folds the Activity chart (61 with its
+ * gap) into the facts line, ~581. Anything taller (banners, expanded "+N",
+ * a smaller window) scrolls.
+ * Keep new rows inside this budget: cap lists with a row limit + "+N".
  */
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { OverviewActivity } from './OverviewActivity'
+import { OverviewActivity, readActivity } from './OverviewActivity'
 import { useOverviewRead, type OverviewReader } from './useOverviewRead'
 import { useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
@@ -50,18 +54,20 @@ import {
   experienceHeadline,
   experienceTooltip,
   experienceValueText,
+  hasActivity,
   levelBarParts,
   overviewFacts,
   parseStoredLevels,
   powerSections,
   powerTooltip,
+  sparkFact,
   visibleItems,
   OVERVIEW_ROW_LIMIT,
   type LevelBarParts,
   type PowerItem
 } from './agent-overview-model'
 
-const ORBITAL_SIZE = 72
+const ORBITAL_SIZE = 64
 const PULSE_MS = 1200
 
 type StatKey = 'experience' | 'reach' | 'access' | 'autonomy'
@@ -110,6 +116,47 @@ function useLiveActivity(nextWakeAt: number | undefined, now: number): { state: 
     // structuralVersion: the log array is mutated in place for streamed deltas.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [log, structuralVersion, state, starting, approvals, asks, suspend, nextWakeAt, now])
+}
+
+/**
+ * Fold the Activity chart (the lowest-priority section) into the facts line
+ * while the panel would otherwise scroll in the dock. Unfolds once the
+ * content plus what folding saved fits again, so it cannot flap.
+ */
+function useChartFold(rootRef: React.RefObject<HTMLDivElement | null>, enabled: boolean, filePath: string | null): boolean {
+  const [folded, setFolded] = useState(false)
+  const foldedRef = useRef(false)
+  const beforeRef = useRef(0)
+  const savedRef = useRef(0)
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    const scroller = root?.parentElement
+    if (!root || !scroller) return
+    const set = (v: boolean) => {
+      foldedRef.current = v
+      setFolded(v)
+    }
+    set(false)
+    const check = () => {
+      const content = root.offsetHeight
+      const avail = scroller.clientHeight
+      if (!foldedRef.current) {
+        if (enabled && avail > 0 && content > avail) {
+          beforeRef.current = content
+          savedRef.current = 0
+          set(true)
+        }
+        return
+      }
+      if (!savedRef.current) savedRef.current = Math.max(1, beforeRef.current - content)
+      if (!enabled || content + savedRef.current <= avail) set(false)
+    }
+    const ro = new ResizeObserver(check)
+    ro.observe(root)
+    ro.observe(scroller)
+    return () => ro.disconnect()
+  }, [rootRef, enabled, filePath])
+  return folded
 }
 
 /** Pulse once when the level rose past the last one Studio saw for this DID. */
@@ -168,6 +215,9 @@ export function AgentOverview() {
   const seed = useOpenAgentOrbitalSeed()
   const state = useAgentStore((s) => s.state)
   const vitals = useOverviewRead(filePath, state, config, readVitals)
+  const activity = useOverviewRead(filePath, state, config, readActivity)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const chartFolded = useChartFold(rootRef, !!activity && hasActivity(activity.daily), filePath)
   const [now, setNow] = useState(() => Date.now())
   const live = useLiveActivity(vitals?.nextWakeAt, now)
   const pulsing = useLevelUpPulse(vitals?.did, vitals?.stats.experience.level)
@@ -191,20 +241,19 @@ export function AgentOverview() {
   // The state line already says when an idle agent wakes.
   const showsWake = live.label.includes(' · wakes') || live.label.includes(' · wake due')
   const facts = vitals ? overviewFacts(vitals, now).filter((f) => !(showsWake && f.id === 'wake')) : []
+  if (chartFolded && activity) facts.push({ id: 'turns', text: sparkFact(activity.daily) })
 
   return (
-    <div className="px-3 py-2 space-y-2 text-[var(--ink)]">
+    <div ref={rootRef} className="px-3 py-2 space-y-1.5 text-[var(--ink)]">
       <header className="flex flex-col items-center text-center">
-        <div className="relative w-full flex justify-center">
-          <div
-            className={`shrink-0 rounded-full ${pulsing ? 'pulse-ring' : ''}`}
-            style={{ width: ORBITAL_SIZE, height: ORBITAL_SIZE }}
-          >
-            <LiveOrbital seed={seed} size={ORBITAL_SIZE} state={motion} />
-          </div>
-          {status && <StatusBubble text={status} />}
+        {status && <StatusBubble text={status} />}
+        <div
+          className={`shrink-0 rounded-full ${pulsing ? 'pulse-ring' : ''}`}
+          style={{ width: ORBITAL_SIZE, height: ORBITAL_SIZE }}
+        >
+          <LiveOrbital seed={seed} size={ORBITAL_SIZE} state={motion} />
         </div>
-        <h2 className="mt-1.5 max-w-full truncate text-[15px] font-semibold leading-5" title={name}>
+        <h2 className="mt-1 max-w-full truncate text-[15px] font-semibold leading-5" title={name}>
           {name}
           {handle && handle !== name && <span className="ml-1.5 font-normal text-[12px] text-[var(--ink-muted)]">@{handle}</span>}
         </h2>
@@ -229,7 +278,7 @@ export function AgentOverview() {
         {vitals && <StatGrid vitals={vitals} />}
 
         {facts.length > 0 && (
-          <p className="text-[12px] leading-[18px] text-[var(--ink-muted)] tabular-nums">
+          <p className="truncate text-[12px] leading-[18px] text-[var(--ink-muted)] tabular-nums">
             {facts.map((f, i) => (
               <span key={f.id}>
                 {i > 0 && ' · '}
@@ -248,25 +297,33 @@ export function AgentOverview() {
         {vitals && vitals.metrics?.length > 0 && <MetricList metrics={vitals.metrics} />}
       </section>
 
-      <OverviewActivity filePath={filePath} state={live.state} config={config} now={now} />
+      <OverviewActivity activity={activity} now={now} chartFolded={chartFolded} />
     </div>
   )
 }
 
 /**
- * The agent's own status line (adf_meta `status`) beside the orbital, in the
- * home page's bubble. Static (persistent state, not a quip); two lines at
- * most, the full text in the tooltip. Fills the space right of the orbital.
+ * The agent's own status line (adf_meta `status`) above the orbital, in the
+ * home page's bubble with the tail pointing down at it. Static (persistent
+ * state, not a quip). As wide as the panel, three lines at most; the full
+ * text is in the tooltip only when it is cut.
  */
 function StatusBubble({ text }: { text: string }) {
+  const ref = useRef<HTMLSpanElement>(null)
+  const [clamped, setClamped] = useState(false)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const check = () => setClamped(el.scrollHeight > el.clientHeight + 1)
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [text])
   return (
-    <Tooltip
-      tip={text}
-      className="absolute top-1 w-fit"
-      style={{ left: `calc(50% + ${ORBITAL_SIZE / 2 + 10}px)`, right: 0 }}
-    >
-      <SpeechBubble className="relative px-2 py-1 text-[11.5px] leading-4">
-        <span className="line-clamp-2 break-words">{text}</span>
+    <Tooltip tip={text} disabled={!clamped} className="mb-1.5 block w-fit max-w-full">
+      <SpeechBubble tail="bottom" className="relative">
+        <span ref={ref} className="line-clamp-3 break-words">{text}</span>
       </SpeechBubble>
     </Tooltip>
   )
@@ -352,7 +409,7 @@ function StatGrid({ vitals }: { vitals: AgentVitals }) {
         aria-label={`${STAT_NAMES[key]}: ${tips[key]}`}
         aria-haspopup="dialog"
         aria-expanded={open === key}
-        className={`w-full h-full text-left px-3 py-2 transition-colors hover:bg-[var(--paper-sunken)] ${open === key ? 'bg-[var(--paper-sunken)]' : ''}`}
+        className={`w-full h-full text-left px-3 py-1.5 transition-colors hover:bg-[var(--paper-sunken)] ${open === key ? 'bg-[var(--paper-sunken)]' : ''}`}
       >
         <StatCell name={STAT_NAMES[key]} level={stats[key].level} bar={bars[key]} />
       </button>

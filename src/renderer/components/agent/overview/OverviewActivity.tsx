@@ -1,12 +1,13 @@
 /**
  * The overview's lower sections, under the stats: Coming up, the 14-day
  * Activity sparkline and Contents. Each hides when it has nothing to show.
- * Sized to the height budget in AgentOverview.tsx.
+ * Sized to the height budget in AgentOverview.tsx, which folds the
+ * sparkline into its facts line when the panel would scroll.
  *
  * Timers, per-day turns and contents come from `adf:agent:activity`
- * (AgentVitalsService.getAgentActivity), refetched with the same triggers as
- * vitals. Approvals, asks and the unread count are read live from the
- * renderer stores.
+ * (AgentVitalsService.getAgentActivity, read by AgentOverview with the same
+ * triggers as vitals). Approvals, asks and the unread count are read live
+ * from the renderer stores.
  */
 
 import { useMemo, useState } from 'react'
@@ -14,17 +15,16 @@ import { MAIN_LOOP, useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
 import { useInboxStore } from '../../../stores/inbox.store'
 import { Tooltip } from '../../common/Tooltip'
-import type { AgentConfig } from '../../../../shared/types/adf-v02.types'
-import type { AgentState } from '../../../../shared/types/ipc.types'
 import type { ActivityDay, AgentActivity, AgentContents, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
-import { useOverviewRead, type OverviewReader } from './useOverviewRead'
+import type { OverviewReader } from './useOverviewRead'
 import {
-  OVERVIEW_ROW_LIMIT,
+  COMING_UP_ROW_LIMIT,
   approxTokens,
   compactCount,
   contentsView,
   dayTooltip,
   formatUntil,
+  hasActivity,
   sparkHeights,
   sparkSummary,
   timerRowText,
@@ -34,9 +34,9 @@ import {
   type WaitingItem
 } from './agent-overview-model'
 
-const readActivity: OverviewReader<AgentActivity> = (filePath, force) => window.adfApi?.getAgentActivity?.(filePath, { force })
+export const readActivity: OverviewReader<AgentActivity> = (filePath, force) => window.adfApi?.getAgentActivity?.(filePath, { force })
 
-const SPARK_HEIGHT = 32
+const SPARK_HEIGHT = 24
 
 const ROW = 'w-full flex items-baseline gap-2 -mx-1.5 px-1.5 py-0.5 rounded text-left text-[13px] leading-[18px] hover:bg-[var(--paper-sunken)]'
 const WHEN = 'shrink-0 text-[11.5px] text-[var(--ink-faint)] tabular-nums'
@@ -46,18 +46,17 @@ function openLoops(): void {
   useAppStore.getState().expandRightPanelToTab('loop')
 }
 
-export function OverviewActivity({ filePath, state, config, now }: {
-  filePath: string | null
-  state: AgentState
-  config: AgentConfig | null
+export function OverviewActivity({ activity, now, chartFolded }: {
+  activity: AgentActivity | null
   now: number
+  /** The sparkline is a fact in the stats' facts line instead. */
+  chartFolded: boolean
 }) {
-  const activity = useOverviewRead(filePath, state, config, readActivity)
   if (!activity) return null
   return (
     <>
       <ComingUp activity={activity} now={now} />
-      <ActivitySpark daily={activity.daily} partial={activity.dailyPartial} />
+      {!chartFolded && <ActivitySpark daily={activity.daily} partial={activity.dailyPartial} />}
       <Contents contents={activity.contents} />
     </>
   )
@@ -65,7 +64,7 @@ export function OverviewActivity({ filePath, state, config, now }: {
 
 function Section({ title, aside, children }: { title: string; aside?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="border-t border-[var(--rule)] pt-2 space-y-1">
+    <section className="border-t border-[var(--rule)] pt-1.5 space-y-1">
       <div className="flex items-baseline justify-between gap-2 leading-[18px]">
         <h3 className="text-[13px] font-semibold">{title}</h3>
         {aside}
@@ -110,10 +109,17 @@ function ComingUp({ activity, now }: { activity: AgentActivity; now: number }) {
     ...activity.upcoming.map((t): ComingRow => ({ kind: 'timer', key: `timer:${t.id}`, t }))
   ]
   if (rows.length === 0) return null
-  const { shown, hidden } = visibleItems(rows, expanded, OVERVIEW_ROW_LIMIT)
+  const { shown, hidden } = visibleItems(rows, expanded, COMING_UP_ROW_LIMIT)
 
   return (
-    <Section title="Coming up">
+    <Section
+      title="Coming up"
+      aside={hidden > 0 ? (
+        <button type="button" onClick={() => setExpanded(true)} className="text-[11.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] tabular-nums">
+          +{hidden} more
+        </button>
+      ) : undefined}
+    >
       <ul>
         {shown.map((r) => (
           <li key={r.key}>
@@ -133,13 +139,6 @@ function ComingUp({ activity, now }: { activity: AgentActivity; now: number }) {
             )}
           </li>
         ))}
-        {hidden > 0 && (
-          <li>
-            <button type="button" onClick={() => setExpanded(true)} className={`${ROW} text-[12px] text-[var(--ink-muted)] hover:text-[var(--ink)]`}>
-              +{hidden} more
-            </button>
-          </li>
-        )}
       </ul>
     </Section>
   )
@@ -190,8 +189,7 @@ const PARTIAL_TIP = 'Older loop history was compacted away or is past the scan l
  */
 function ActivitySpark({ daily, partial }: { daily: ActivityDay[]; partial: boolean }) {
   const heights = useMemo(() => sparkHeights(daily, SPARK_HEIGHT), [daily])
-  const hasAny = daily.some((d) => d.turns > 0 || (d.costUsd ?? 0) > 0)
-  if (!hasAny) return null
+  if (!hasActivity(daily)) return null
   const summary = sparkSummary(daily)
   const last = daily.length - 1
   return (
@@ -221,7 +219,10 @@ function ActivitySpark({ daily, partial }: { daily: ActivityDay[]; partial: bool
           </Tooltip>
         ))}
       </div>
-      <table className="sr-only">
+      {/* A table ignores height: 1px, so sr-only goes on a wrapper; on the
+          table itself its full height extended the dock's scroll area. */}
+      <div className="sr-only">
+      <table>
         <caption>Finished turns per day</caption>
         <thead><tr><th>Day</th><th>Turns</th><th>Cost</th></tr></thead>
         <tbody>
@@ -234,6 +235,7 @@ function ActivitySpark({ daily, partial }: { daily: ActivityDay[]; partial: bool
           ))}
         </tbody>
       </table>
+      </div>
     </Section>
   )
 }
@@ -260,11 +262,11 @@ const openContents: Record<ContentsKey, () => void> = {
 }
 
 /**
- * One stacked bar of approximate tokens (mind, skills) and one legend line:
- * each group's tokens (file and skill counts in the tooltip), then local
- * tables as a plain fact: table data is rarely read
- * into context, so it is not on the token meter. Hidden when the file holds
- * none of them.
+ * One line: a stacked bar of approximate tokens (mind, skills), then the
+ * legend, each group's tokens (file and skill counts in the tooltip). Local
+ * tables are a plain fact after the total in the title row: table data is
+ * rarely read into context, so it is not on the token meter. Hidden when the
+ * file holds none of them.
  */
 function Contents({ contents }: { contents: AgentContents }) {
   const view = useMemo(() => contentsView(contents), [contents])
@@ -273,32 +275,41 @@ function Contents({ contents }: { contents: AgentContents }) {
   return (
     <Section
       title="Contents"
-      aside={view.groups.length > 0 ? <span className="text-[11.5px] text-[var(--ink-muted)] tabular-nums">{approxTokens(view.total)} tokens</span> : undefined}
+      aside={
+        <span className="flex min-w-0 items-baseline gap-1 text-[11.5px] text-[var(--ink-muted)] tabular-nums">
+          {view.groups.length > 0 && <span className="shrink-0">{approxTokens(view.total)} tokens</span>}
+          {view.groups.length > 0 && view.tables && <span aria-hidden className="shrink-0">·</span>}
+          {view.tables && (
+            <Tooltip tip={view.tables} className="flex min-w-0">
+              <button type="button" onClick={openFiles} className="min-w-0 truncate hover:text-[var(--ink)] hover:underline underline-offset-2">
+                {view.tables}
+              </button>
+            </Tooltip>
+          )}
+        </span>
+      }
     >
-      {sized.length > 0 && (
-        <div role="img" aria-label={view.groups.map((g) => g.text).join('; ')} className="flex h-2 gap-[2px]">
-          {sized.map((g) => (
-            <Tooltip key={g.key} tip={g.text} delay={0} className="flex min-w-[3px]" style={{ flexGrow: g.tokens, flexBasis: 0 }}>
-              <span className="block h-full w-full rounded-[2px]" style={{ background: CONTENTS_COLOR[g.key] }} />
+      {view.groups.length > 0 && (
+        <div className="flex items-center gap-3 min-w-0 text-[12px] leading-[18px] tabular-nums">
+          {sized.length > 0 && (
+            <div role="img" aria-label={view.groups.map((g) => g.text).join('; ')} className="flex h-2 min-w-[48px] flex-1 gap-[2px]">
+              {sized.map((g) => (
+                <Tooltip key={g.key} tip={g.text} delay={0} className="flex min-w-[3px]" style={{ flexGrow: g.tokens, flexBasis: 0 }}>
+                  <span className="block h-full w-full rounded-[2px]" style={{ background: CONTENTS_COLOR[g.key] }} />
+                </Tooltip>
+              ))}
+            </div>
+          )}
+          {view.groups.map((g) => (
+            <Tooltip key={g.key} tip={g.text} className="shrink-0">
+              <button type="button" onClick={openContents[g.key]} aria-label={g.text} className="inline-flex items-baseline gap-1.5 hover:underline underline-offset-2">
+                <span aria-hidden className="self-center h-2 w-2 shrink-0 rounded-[2px]" style={{ background: CONTENTS_COLOR[g.key] }} />
+                {g.short}
+              </button>
             </Tooltip>
           ))}
         </div>
       )}
-      <div className="flex items-baseline gap-3 min-w-0 text-[12px] leading-[18px] tabular-nums">
-        {view.groups.map((g) => (
-          <Tooltip key={g.key} tip={g.text} className="shrink-0">
-            <button type="button" onClick={openContents[g.key]} aria-label={g.text} className="inline-flex items-baseline gap-1.5 hover:underline underline-offset-2">
-              <span aria-hidden className="self-center h-2 w-2 shrink-0 rounded-[2px]" style={{ background: CONTENTS_COLOR[g.key] }} />
-              {g.short}
-            </button>
-          </Tooltip>
-        ))}
-        {view.tables && (
-          <button type="button" onClick={openFiles} className="min-w-0 truncate text-[var(--ink-muted)] hover:text-[var(--ink)] hover:underline underline-offset-2">
-            {view.tables}
-          </button>
-        )}
-      </div>
     </Section>
   )
 }

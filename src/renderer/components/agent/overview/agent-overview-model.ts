@@ -249,8 +249,11 @@ export function powerSections(stat: Pick<PowerStat, 'factors'>): PowerSections {
   }
 }
 
-/** Coming up rows and metrics shown before "+N", so the overview fits without scrolling. */
+/** Metrics shown before "+N", so the overview fits without scrolling. */
 export const OVERVIEW_ROW_LIMIT = 3
+
+/** Coming up rows shown before "+N" (in the section title row). */
+export const COMING_UP_ROW_LIMIT = 2
 
 /** The first `limit` items unless expanded, and how many are hidden. */
 export function visibleItems<T>(items: T[], expanded: boolean, limit = SECTION_LIMIT): { shown: T[]; hidden: number } {
@@ -293,7 +296,7 @@ export interface FactsInput {
 }
 
 export interface Fact {
-  id: 'cost' | 'age' | 'wake'
+  id: 'cost' | 'age' | 'wake' | 'turns'
   text: string
 }
 
@@ -530,6 +533,17 @@ export function waitingItems(slices: Array<{
     }
   }
   return out
+}
+
+/** Any finished turn or known cost in the window; the chart hides otherwise. */
+export function hasActivity(daily: ActivityDay[]): boolean {
+  return daily.some((d) => d.turns > 0 || (d.costUsd ?? 0) > 0)
+}
+
+/** The folded chart as a fact: "5 turns / 14d". */
+export function sparkFact(daily: ActivityDay[]): string {
+  const total = daily.reduce((n, d) => n + d.turns, 0)
+  return `${total === 1 ? '1 turn' : `${compactCount(total)} turns`} / ${daily.length}d`
 }
 
 export function sparkSummary(daily: ActivityDay[]): string {

@@ -5,7 +5,9 @@ import {
   contentsView,
   dayTooltip,
   formatUntil,
+  hasActivity,
   rowsLabel,
+  sparkFact,
   sparkHeights,
   sparkSummary,
   timerRowText,
@@ -94,6 +96,13 @@ describe('sparkline', () => {
     expect(dayTooltip(day('2026-10-05', 4, 0.123))).toBe('Mon 5 Oct · 4 turns · $0.12')
     expect(dayTooltip(day('2026-10-08', 1, 2, true), true)).toBe('Today · 1 turn · $2.00 or more')
     expect(dayTooltip(day('2026-10-06', 0))).toBe('Tue 6 Oct · 0 turns')
+  })
+
+  it('folded chart fact; no chart without turns or cost', () => {
+    expect(sparkFact([day('2026-10-07', 1), day('2026-10-08', 4)])).toBe('5 turns / 2d')
+    expect(sparkFact([day('2026-10-08', 1)])).toBe('1 turn / 1d')
+    expect(hasActivity([day('a', 0), day('b', 0)])).toBe(false)
+    expect(hasActivity([day('a', 0, 0.01)])).toBe(true)
   })
 
   it('heights scale to the busiest day; empty days are 0, tiny days at least 2 px', () => {
