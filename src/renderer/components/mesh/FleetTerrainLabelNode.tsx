@@ -8,6 +8,7 @@ import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.st
 import { useFleetStore } from '../../stores/fleet.store'
 import { HEX_SIZE, HEX_COL_W, HEX_ROW_H, joinDir, pathDirname, type TerrainNodeData } from './fleet-layout'
 import { hueFromPath, isDarkMode, truncate, formatTokens, PIP_COLOR } from './FleetTerrainNode'
+import { OrbitalSvgImage } from '../orbital/OrbitalSvgImage'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 
 /**
@@ -290,7 +291,7 @@ const UnitLayer = memo(function UnitLayer({
   )
 
   const memberIndex = useMemo(() => new Map(members.map((m, i) => [m.filePath, i])), [members])
-  const iconByPath = useMemo(() => new Map(members.map((m) => [m.filePath, m.icon])), [members])
+  const seedByPath = useMemo(() => new Map(members.map((m) => [m.filePath, m.seed])), [members])
 
   // Stewards — members whose DID exactly matches their directory's
   // designation. No history cascade: if a DID rotates, the user reappoints.
@@ -328,7 +329,7 @@ const UnitLayer = memo(function UnitLayer({
       {cells.map((cell) => {
         if (!cell.filePath) return null
         const agent = own.get(cell.filePath)
-        const icon = iconByPath.get(cell.filePath)
+        const seed = seedByPath.get(cell.filePath)
         const isGhostUnit = agent?.online === false
         const isPending = memberPending[memberIndex.get(cell.filePath) ?? -1] ?? false
         const stateDot = isGhostUnit
@@ -348,9 +349,7 @@ const UnitLayer = memo(function UnitLayer({
               opacity={isGhostUnit ? 0.45 : 1}
               style={{ userSelect: 'none', filter: isGhostUnit ? 'grayscale(0.9)' : undefined }}
             >
-              <text x={cell.x} y={cell.y - 26} textAnchor="middle" fontSize={86}>
-                {icon}
-              </text>
+              <OrbitalSvgImage seed={seed} cx={cell.x} cy={cell.y - 56} size={96} />
               {stateDot && <circle cx={cell.x} cy={cell.y + 30} r={8} fill={stateDot} />}
               {stewardCells.has(cell.filePath) && (
                 <circle cx={cell.x - HEX_SIZE * 0.52} cy={cell.y - HEX_SIZE * 0.62} r={10} fill={labelColor} />
@@ -424,9 +423,7 @@ const UnitLayer = memo(function UnitLayer({
             opacity={isGhostUnit ? 0.45 : 1}
             style={{ userSelect: 'none', filter: isGhostUnit ? 'grayscale(0.9)' : undefined }}
           >
-            <text x={cell.x} y={cell.y - 26} textAnchor="middle" fontSize={86}>
-              {icon}
-            </text>
+            <OrbitalSvgImage seed={seed} cx={cell.x} cy={cell.y - 56} size={96} />
             <text
               x={cell.x}
               y={cell.y + 36}

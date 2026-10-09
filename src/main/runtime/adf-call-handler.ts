@@ -636,7 +636,8 @@ export class AdfCallHandler {
           cache_read: metadata.cache_read_tokens,
           cache_write: metadata.cache_write_tokens,
           reasoning: metadata.reasoning_tokens,
-          cost_usd: metadata.cost_usd
+          cost_usd: metadata.cost_usd,
+          agent: this.config.id || undefined
         }
       )
       // Durable per-call usage record: model_invoke calls produce no loop row

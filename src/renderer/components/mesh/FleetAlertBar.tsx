@@ -4,6 +4,8 @@ import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { pathBasename } from './fleet-layout'
+import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { formatTokenCount as formatBurn } from '../../utils/token-estimate'
 
 /**
@@ -52,8 +54,8 @@ export const FleetAlertBar = memo(function FleetAlertBar({
   const handleByPath = useMeshStore(
     useShallow((s) => new Map(s.agents.map((a) => [a.filePath, a.handle])))
   )
-  const iconByPath = useMeshStore(
-    useShallow((s) => new Map(s.agents.map((a) => [a.filePath, a.icon])))
+  const seedByPath = useMeshStore(
+    useShallow((s) => new Map(s.agents.map((a) => [a.filePath, orbitalSeedFor({ did: a.did, filePath: a.filePath })])))
   )
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
   const fleetBurn = useFleetStore((s) => s.burn?.fleet)
@@ -96,8 +98,8 @@ export const FleetAlertBar = memo(function FleetAlertBar({
       best = { filePath: latestActivityPath, label: 'active' }
     }
     if (!best || !handleByPath.has(best.filePath)) return null
-    return { ...best, handle: handleByPath.get(best.filePath)!, icon: iconByPath.get(best.filePath) }
-  }, [perAgentBurn, latestActivityPath, handleByPath, iconByPath])
+    return { ...best, handle: handleByPath.get(best.filePath)!, seed: seedByPath.get(best.filePath) ?? null }
+  }, [perAgentBurn, latestActivityPath, handleByPath, seedByPath])
 
   const counts = useMeshStore(
     useShallow((s) => {
@@ -316,7 +318,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
           title="Highest token burn right now — click to fly there"
         >
           <span className="text-[11px]">🔥</span>
-          {mvp.icon && <span className="text-[12px] leading-none">{mvp.icon}</span>}
+          <OrbitalAvatar seed={mvp.seed} size={14} />
           <span className="text-[11px] font-medium text-neutral-700 dark:text-neutral-200">{mvp.handle}</span>
           <span className="text-[10px] text-orange-500 dark:text-orange-400 tabular-nums">{mvp.label}</span>
         </button>

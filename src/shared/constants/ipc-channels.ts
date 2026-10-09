@@ -396,6 +396,13 @@ export const IPC = {
   // Linux spell-check dictionaries: owner-initiated download from Settings → Privacy.
   SPELLCHECK_DOWNLOAD: 'adf:app:spellcheck:download',
 
+  // Rendered agent orbitals (PNG), cached under userData/orbitals.
+  ORBITAL_CACHE_GET: 'adf:orbital:cache-get',
+  ORBITAL_CACHE_PUT: 'adf:orbital:cache-put',
+
+  // Agent overview card: header facts + Reach/Access/Autonomy/Experience.
+  AGENT_VITALS: 'adf:agent:vitals',
+
   // Emergency stop
   EMERGENCY_STOP: 'adf:emergency-stop'
 } as const

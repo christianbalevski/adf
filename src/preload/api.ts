@@ -10,6 +10,8 @@ import type { ChatHistory, ChatHistoryEntry, Inbox, RendererOutboxMessage } from
 import type { ContentBlock } from '../shared/types/provider.types'
 import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
+import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
+import type { AgentVitals } from '../shared/types/agent-vitals.types'
 
 export interface AdfApi {
   // App
@@ -182,6 +184,8 @@ export interface AdfApi {
   disableMesh: () => Promise<{ success: boolean; error?: string }>
   getMeshStatus: () => Promise<MeshStatusResult>
   getMeshFleetStatus: () => Promise<FleetStatusResult>
+  /** Overview card vitals for one agent. `force` skips the main-process cache (use after turn_complete). */
+  getAgentVitals: (filePath: string, opts?: { force?: boolean }) => Promise<AgentVitals>
   getMeshTokenBurn: () => Promise<FleetBurnResult>
   onMeshEvent: (callback: (event: MeshEvent) => void) => () => void
   getMeshDebug: () => Promise<MeshDebugInfo>
@@ -647,6 +651,12 @@ export interface AdfApi {
   getFullscreenState: () => Promise<boolean>
   setFullscreen: (fullscreen: boolean) => Promise<void>
   onFullscreenChanged: (callback: (isFullscreen: boolean) => void) => () => void
+
+  // Rendered agent orbitals (disk cache under userData/orbitals)
+  /** Cached PNG bytes, or null when this seed/theme/kind was never stored. */
+  orbitalCacheGet: (req: OrbitalCacheRequest) => Promise<Uint8Array | null>
+  /** Store a rendered PNG. False when refused (not a PNG, too large) or the write failed. */
+  orbitalCachePut: (req: OrbitalCacheRequest, bytes: Uint8Array) => Promise<boolean>
 
   // Emergency stop
   emergencyStop: () => Promise<{ success: boolean; error?: string }>

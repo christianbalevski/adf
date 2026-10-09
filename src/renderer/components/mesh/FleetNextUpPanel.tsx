@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
-import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 
 const MAX_ROWS = 8
@@ -98,7 +99,7 @@ export const FleetNextUpPanel = memo(function FleetNextUpPanel({
                 title={`${a.handle} — ${new Date(a.nextWakeAt!).toLocaleString()}\n${scope}${sched ? ` · ${sched}` : ''}${a.nextWakeLabel ? `\n${a.nextWakeLabel}` : ''}`}
               >
                 <span className="shrink-0 text-base leading-none">
-                  {a.icon || pickAgentIcon(a.agentId || a.filePath)}
+                  <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} size={18} />
                 </span>
                 <span className="flex-1 min-w-0">
                   <span className="flex items-center gap-1.5">

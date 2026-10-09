@@ -1030,3 +1030,18 @@ body.panel-resizing webview {
 @media (prefers-reduced-motion: reduce) {
   .name-shake { animation: none; }
 }
+
+/* Agent orbital avatar playing its sprite strip (OrbitalAvatar). The strip
+   width comes in as --orbital-strip-w; duration and steps() are set inline. */
+@keyframes adf-orbital-strip {
+  from { background-position: 0 0; }
+  to { background-position: calc(-1 * var(--orbital-strip-w)) 0; }
+}
+.adf-orbital-strip {
+  background-repeat: no-repeat;
+  animation-name: adf-orbital-strip;
+  animation-iteration-count: infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .adf-orbital-strip { animation: none; }
+}

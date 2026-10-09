@@ -147,6 +147,8 @@ import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { openSharedMnemonicStore } from '../services/owner-secret-store'
 import { AdfDatabase } from '../adf/adf-database'
+import { AgentVitalsService } from '../services/agent-vitals'
+import type { AgentVitals } from '../../shared/types/agent-vitals.types'
 import { resolveDefaultProvider, applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { generateAgentName } from '../../shared/utils/agent-names'
 import { cloneAdfFile } from '../adf/clone-fixup'
@@ -5450,6 +5452,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         autonomous: msgConfig?.autonomous,
         agentId: msgConfig?.id,
         icon: msgConfig?.icon,
+        did: msgConfig?.did,
         isDirectory: false
       })
     }
@@ -5760,195 +5763,52 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.MESH_STATUS, async (_event, args?: { debug?: boolean; sinceSeq?: number }) => getMeshStatus(args))
 
-  // Ghost metadata cache, keyed by file path. Two jobs:
-  // 1. Perf — the 5s fleet poll would otherwise open every offline agent's
-  //    SQLite each cycle; unchanged mtime serves from memory.
-  // 2. Stability — a peek can fail transiently (SQLITE_BUSY while an agent
-  //    is mass-starting and writing its own file). Serving the last good
-  //    meta instead of dropping the entry stops agents blinking off the map.
-  const fleetMetaCache = new Map<string, { mtimeMs: number; meta: NonNullable<ReturnType<typeof AdfDatabase.peekFleetMeta>> }>()
-  // First-observed time of each agent's current status line (for status age)
-  const statusSinceMap = new Map<string, { value: string; since: number }>()
-  const peekFleetMetaCached = (filePath: string): ReturnType<typeof AdfDatabase.peekFleetMeta> => {
-    let mtimeMs: number
-    try {
-      mtimeMs = statSync(filePath).mtimeMs
-    } catch {
-      fleetMetaCache.delete(filePath) // file gone — genuine removal
-      return null
-    }
-    const cached = fleetMetaCache.get(filePath)
-    if (cached && cached.mtimeMs === mtimeMs) return cached.meta
-    const meta = AdfDatabase.peekFleetMeta(filePath)
-    if (meta) {
-      fleetMetaCache.set(filePath, { mtimeMs, meta })
-      return meta
-    }
-    // Peek failed (likely transient lock) — serve stale rather than blink
-    return cached?.meta ?? null
-  }
-
-  /**
-   * Fleet metadata read straight out of an agent's OPEN workspace. A running
-   * agent rewrites its own file constantly, so the mtime cache above never hits
-   * for one and every poll paid for a fresh readonly open (two opens plus a
-   * TRUNCATE checkpoint) of a database already held in memory.
-   */
-  const liveFleetMeta = (workspace: AdfWorkspace): ReturnType<typeof AdfDatabase.peekFleetMeta> => {
-    try {
-      const config = workspace.getAgentConfig()
-      let didHistory: string[] = []
-      const rawHistory = workspace.getMeta('adf_did_history')
-      if (rawHistory) {
-        try {
-          const parsed = JSON.parse(rawHistory)
-          didHistory = Array.isArray(parsed) ? parsed.filter((d) => typeof d === 'string' && d) : []
-        } catch {
-          didHistory = []
-        }
-      }
-      return {
-        handle: workspace.getMeta('adf_handle') || config?.handle || null,
-        name: workspace.getMeta('adf_name') || config?.name || null,
-        icon: config?.icon ?? null,
-        model: config?.model?.model_id || null,
-        status: workspace.getMeta('status') ?? null,
-        did: workspace.getMeta('adf_did') || null,
-        didHistory,
-        agentId: config?.id ?? null,
-        parentDid: workspace.getMeta('adf_parent_did') || null,
-        createdAt: workspace.getMeta('adf_created_at') || config?.metadata?.created_at || null
-      }
-    } catch {
-      return null
-    }
-  }
-
-  // Fleet map: live mesh agents plus on-disk .adf files in tracked
-  // directories that have no running executor ("ghost" nodes). Works even
-  // with the mesh disabled — every on-disk agent is then a ghost.
-  const getFleetStatus = async (): Promise<FleetStatusResult> => {
-    const running = !!(meshManager && meshManager.isEnabled())
-
-    const liveContext = (filePath: string): { tokens: number; threshold: number } | undefined => {
+  // Fleet status rows and the overview card's vitals live in AgentVitalsService
+  // (mtime-cached ghost peeks, open-workspace reads for live agents). The
+  // getters below hand it this module's mutable executor/workspace state.
+  const agentVitals = new AgentVitalsService({
+    isMeshRunning: () => !!(meshManager && meshManager.isEnabled()),
+    getLiveMeshAgents: () => getLiveMeshAgents(),
+    getTrackedDirectories: () => (settings.get('trackedDirectories') as string[]) ?? [],
+    getMaxScanDepth: () => (settings.get('maxDirectoryScanDepth') as number) ?? 5,
+    listAdfFiles: (dir, maxDepth) => listAdfFiles(dir, maxDepth),
+    getContextGauge: (filePath) => {
       if (filePath === currentFilePath && agentExecutor) return agentExecutor.getContextGauge()
       return backgroundAgentManager?.getExecutor(filePath)?.getContextGauge()
-    }
-    const agents: FleetAgentStatus[] = getLiveMeshAgents().map((a) => {
-      const ctx = liveContext(a.filePath)
-      return {
-      ...a,
-      online: true,
-      contextTokens: ctx && ctx.tokens > 0 ? ctx.tokens : undefined,
-      contextThreshold: ctx && ctx.tokens > 0 ? ctx.threshold : undefined,
-      // Standing boundary links — open WS pipes render as dashed channel
-      // edges to the perimeter, distinct from request traffic
-      wsConnections: wsConnectionManager
-        ? wsConnectionManager.getConnections(a.filePath).length || undefined
-        : undefined
-    }})
-
-    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-    const maxDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5
-    const seen = new Set(agents.map((a) => canonicalizePath(a.filePath)))
-
-    // Longest-prefix tracked-dir match, mirroring MeshManager.findTrackedDirRoot.
-    const findGhostTrackedDirRoot = (filePath: string): string | undefined => {
-      const canonFile = canonicalizePath(filePath)
-      let longestMatch: string | undefined
-      let longestLen = -1
-      for (const dir of trackedDirs) {
-        const canonDir = canonicalizePath(dir)
-        if (containsPath(canonDir, canonFile) && canonDir.length > longestLen) {
-          longestMatch = dir
-          longestLen = canonDir.length
+    },
+    getWsConnectionCount: (filePath) =>
+      wsConnectionManager ? wsConnectionManager.getConnections(filePath).length || undefined : undefined,
+    getLiveExecStates: () => {
+      const out: Array<{ filePath: string; state: AgentState }> = []
+      if (backgroundAgentManager) {
+        for (const s of backgroundAgentManager.getStatuses()) out.push({ filePath: s.filePath, state: s.state })
+      }
+      if (currentFilePath && agentExecutor) {
+        out.push({ filePath: currentFilePath, state: toDisplayState(agentExecutor.getState()) })
+      }
+      return out
+    },
+    getOpenWorkspaces: () => {
+      const out: Array<{ filePath: string; workspace: AdfWorkspace }> = []
+      if (backgroundAgentManager) {
+        for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
+          const ws = backgroundAgentManager.getAgent(fp)?.workspace
+          if (ws) out.push({ filePath: fp, workspace: ws })
         }
       }
-      return longestMatch
-    }
-
-    // Live executors independent of mesh registration — with the mesh
-    // disabled, getLiveMeshAgents() is empty, so a foreground chat-started
-    // agent (or a background executor) would otherwise be reported as an
-    // offline ghost on every poll, stomping the event-driven state the
-    // renderer just applied. Overlay their real display state so the poll
-    // stays truthful; a genuinely stopped executor leaves these maps and
-    // the ghost settles back to 'off' within one poll cycle.
-    //
-    // The open workspaces come along for the ride: a live agent's metadata is
-    // read out of the database it already has open, so the poll never reopens a
-    // file whose mtime is changing under it anyway.
-    const liveExecStates = new Map<string, AgentState>()
-    const liveWorkspaces = new Map<string, AdfWorkspace>()
-    if (backgroundAgentManager) {
-      for (const s of backgroundAgentManager.getStatuses()) {
-        liveExecStates.set(canonicalizePath(s.filePath), s.state)
-      }
-      for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
-        const ws = backgroundAgentManager.getAgent(fp)?.workspace
-        if (ws) liveWorkspaces.set(canonicalizePath(fp), ws)
-      }
-    }
-    if (currentFilePath && agentExecutor) {
-      liveExecStates.set(canonicalizePath(currentFilePath), toDisplayState(agentExecutor.getState()))
-    }
-    if (currentFilePath && currentWorkspace) {
-      liveWorkspaces.set(canonicalizePath(currentFilePath), currentWorkspace)
-    }
-
-    for (const dir of trackedDirs) {
-      const filePaths = await listAdfFiles(dir, maxDepth)
-      for (const filePath of filePaths) {
-        const canon = canonicalizePath(filePath)
-        if (seen.has(canon)) continue
-        seen.add(canon)
-        const openWorkspace = liveWorkspaces.get(canon)
-        const meta = (openWorkspace ? liveFleetMeta(openWorkspace) : null) ?? peekFleetMetaCached(filePath)
-        if (!meta) continue
-        const live = liveExecStates.get(canon)
-        const isLive = live !== undefined && live !== 'off'
-        const ctx = isLive ? liveContext(filePath) : undefined
-        agents.push({
-          filePath,
-          handle: meta.handle || deriveHandle(filePath),
-          did: meta.did ?? undefined,
-          agentId: meta.agentId ?? undefined,
-          parentDid: meta.parentDid ?? undefined,
-          didHistory: meta.didHistory.length > 0 ? meta.didHistory : undefined,
-          icon: meta.icon ?? undefined,
-          state: isLive ? live : 'off',
-          status: meta.status ?? undefined,
-          model: meta.model ?? undefined,
-          trackedDirRoot: findGhostTrackedDirRoot(filePath),
-          createdAt: meta.createdAt ?? undefined,
-          participating: false,
-          online: isLive,
-          contextTokens: ctx && ctx.tokens > 0 ? ctx.tokens : undefined,
-          contextThreshold: ctx && ctx.tokens > 0 ? ctx.threshold : undefined
-        })
-      }
-    }
-
-    // Status age — when the current status line was first observed. adf_meta
-    // has no timestamps, so this is poll-observation memory: good enough for
-    // the "now / 4m / 1h" chip, resets on app restart.
-    const now = Date.now()
-    for (const a of agents) {
-      if (!a.status) {
-        statusSinceMap.delete(a.filePath)
-        continue
-      }
-      const prev = statusSinceMap.get(a.filePath)
-      if (!prev || prev.value !== a.status) {
-        statusSinceMap.set(a.filePath, { value: a.status, since: now })
-      }
-      a.statusSince = statusSinceMap.get(a.filePath)!.since
-    }
-
-    return { running, agents }
-  }
+      if (currentFilePath && currentWorkspace) out.push({ filePath: currentFilePath, workspace: currentWorkspace })
+      return out
+    },
+    getAgentCost: (agentId) => getTokenUsageService().getAgentCost(agentId)
+  })
+  const getFleetStatus = (): Promise<FleetStatusResult> => agentVitals.getFleetStatus()
 
   ipcMain.handle(IPC.MESH_FLEET_STATUS, async (): Promise<FleetStatusResult> => getFleetStatus())
+
+  // Overview card: header facts + Reach/Access/Autonomy/Experience. `force`
+  // skips the cache (the renderer passes it after turn_complete).
+  ipcMain.handle(IPC.AGENT_VITALS, async (_event, args: { filePath: string; force?: boolean }): Promise<AgentVitals> =>
+    agentVitals.getAgentVitals(args.filePath, { force: args.force }))
 
   // The fleet map's 5s poll in ONE round-trip. It used to fire five separate
   // invokes every cycle; each is the same handler body as before, just called

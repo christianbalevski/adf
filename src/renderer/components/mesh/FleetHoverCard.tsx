@@ -3,6 +3,8 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { ACTIVITY_TYPE_MARKS } from './MeshGraphNode'
+import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentState } from '../../../shared/types/ipc.types'
 import { formatTokenCount as formatTokens } from '../../utils/token-estimate'
 
@@ -104,8 +106,8 @@ export const FleetHoverCard = memo(function FleetHoverCard({
     >
       {/* Identity */}
       <div className="flex items-center gap-2.5 px-3.5 py-2.5">
-        <span className={`text-2xl leading-none shrink-0 ${isGhost ? 'grayscale opacity-60' : ''}`}>
-          {agent.icon}
+        <span className={`shrink-0 ${isGhost ? 'grayscale opacity-60' : ''}`}>
+          <OrbitalAvatar seed={orbitalSeedFor({ did: agent.did, filePath: agent.filePath })} size={28} />
         </span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">

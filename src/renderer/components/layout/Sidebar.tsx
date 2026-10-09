@@ -19,7 +19,8 @@ import { Button } from '../ui'
 import { REVEAL_IN_FOLDER_LABEL } from '../../utils/platform'
 import { collectRunningAgents, type RunningAgentRow } from '../../utils/running-agents'
 import { SIDEBAR_RUNNING_CAP_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
-import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../../shared/types/ipc.types'
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
 
@@ -1263,11 +1264,8 @@ const AgentFileRow = memo(function AgentFileRow({
     ? (agentConfig?.autonomous ?? false)
     : (file.autonomous ?? false)
 
-  // Same avatar the fleet map draws: the file's icon, else a stable pick
-  // seeded by the agent id so the two surfaces never disagree.
-  const icon = isActive
-    ? (agentConfig?.icon || pickAgentIcon(agentConfig?.id || file.filePath))
-    : (file.icon || pickAgentIcon(file.agentId || file.filePath))
+  // The agent's orbital, seeded the same way the fleet map seeds it.
+  const seed = orbitalSeedFor({ did: file.did, filePath: file.filePath })
 
   const canReceive = isActive
     ? (agentConfig?.messaging?.receive ?? false)
@@ -1331,7 +1329,7 @@ const AgentFileRow = memo(function AgentFileRow({
       style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: '6px' }}
     >
       <AgentAvatar
-        icon={icon}
+        seed={seed}
         running={isRunning}
         state={dotState}
         starting={(toggling && !isRunning) || isStarting}
@@ -1428,19 +1426,23 @@ const AgentFileRow = memo(function AgentFileRow({
   )
 })
 
+/** Sidebar avatar size (BRAND.md section 10: 40 px orbital avatars). */
+const AVATAR_PX = 40
+
 /**
- * Emoji avatar with the status dot as a corner badge. A stopped agent is
- * drawn desaturated with no badge, so a quiet tree stays grey and only the
- * running agents carry colour; the badge then adds the finer state.
+ * The agent's orbital with the status dot as a corner badge. A stopped agent
+ * is drawn at half opacity with no badge, so a quiet tree stays muted and the
+ * running agents stand out; the badge then adds the finer state. The orbital
+ * turns only while the agent is active.
  */
 const AgentAvatar = memo(function AgentAvatar({
-  icon,
+  seed,
   running,
   state,
   starting,
   stopping
 }: {
-  icon: string
+  seed: string | null
   running: boolean
   state: AgentState
   starting?: boolean
@@ -1449,19 +1451,18 @@ const AgentAvatar = memo(function AgentAvatar({
   const busy = starting || stopping
   const showBadge = busy || state !== 'not_participating'
   return (
-    <span className="relative shrink-0 w-4 h-4 flex items-center justify-center">
-      <span
-        aria-hidden="true"
-        className={`text-[12px] leading-none select-none transition-[filter,opacity] ${
-          running || busy ? '' : 'grayscale opacity-70'
-        }`}
-      >
-        {icon}
-      </span>
+    <span className="relative shrink-0 flex items-center justify-center" style={{ width: AVATAR_PX, height: AVATAR_PX }}>
+      <OrbitalAvatar
+        seed={seed}
+        size={AVATAR_PX}
+        animated={state === 'active'}
+        state={running || busy ? undefined : 'off'}
+        className="transition-opacity"
+      />
       {showBadge && (
-        // A ring in the row's own colour lifts the badge off the glyph beneath
+        // A ring in the row's own colour lifts the badge off the orbital beneath
         // it; the row sets --row-bg for rest, hover and selected.
-        <span className="absolute -bottom-0.5 -right-0.5 flex rounded-full shadow-[0_0_0_1.5px_var(--row-bg,var(--adf-surface-2))]">
+        <span className="absolute bottom-0.5 right-0.5 flex rounded-full shadow-[0_0_0_1.5px_var(--row-bg,var(--adf-surface-2))]">
           <StatusDot state={state} starting={starting} stopping={stopping} />
         </span>
       )}

@@ -297,10 +297,12 @@ export interface TrackedDirEntry {
   canReceive?: boolean
   sendMode?: 'proactive' | 'respond_only' | 'listen_only'
   autonomous?: boolean
-  /** config.id — seeds the fallback avatar when the file sets no icon. */
+  /** config.id */
   agentId?: string
-  /** Emoji avatar from config; the tree and the fleet map draw the same one. */
+  /** Emoji icon from config. Studio draws the orbital instead; kept for other clients. */
   icon?: string
+  /** adf_meta 'adf_did': seeds the orbital avatar. */
+  did?: string
   isDirectory?: boolean
   children?: TrackedDirEntry[]
 }

@@ -2,7 +2,8 @@ import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
-import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { resolveLineage } from '../../../shared/utils/lineage'
 import { formatTokens } from './FleetTerrainNode'
 import { ACTIVITY_TYPE_MARKS, BubbleText } from './MeshGraphNode'
@@ -141,7 +142,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
       title={`${role} — fly to ${a.handle}`}
     >
       <span className={a.online === false ? 'grayscale opacity-60' : ''}>
-        {a.icon || pickAgentIcon(a.agentId || a.filePath)}
+        <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} size={16} />
       </span>
       {a.handle}
     </button>
@@ -160,7 +161,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
         {/* Header */}
         <div className="flex items-center gap-3 px-5 pt-4 pb-3">
           <span className={`text-3xl leading-none shrink-0 ${isGhost ? 'grayscale opacity-60' : ''}`}>
-            {agent.icon || pickAgentIcon(agent.agentId || agent.filePath)}
+            <OrbitalAvatar seed={orbitalSeedFor({ did: agent.did, filePath: agent.filePath })} size={32} />
           </span>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">

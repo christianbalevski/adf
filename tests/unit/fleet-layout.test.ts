@@ -183,14 +183,15 @@ describe('computeFleetLayout (hex world)', () => {
     }
   })
 
-  it('carries vitals and a guaranteed icon into node data', () => {
+  it('carries vitals and an orbital seed into node data', () => {
     const result = computeFleetLayout([
-      agent({ filePath: '/d/a.adf', trackedDirRoot: '/d', model: 'claude-sonnet-5', state: 'active', status: 'crunching' })
+      agent({ filePath: '/d/a.adf', trackedDirRoot: '/d', model: 'claude-sonnet-5', state: 'active', status: 'crunching' }),
+      agent({ filePath: '/d/b.adf', trackedDirRoot: '/d', did: 'did:key:z6MkfixtureAgentTwo' })
     ])
-    const node = nodeById(result, '/d/a.adf')
-    expect(node.data).toMatchObject({ model: 'claude-sonnet-5', state: 'active', status: 'crunching', online: true })
-    expect(typeof node.data.icon).toBe('string')
-    expect((node.data.icon as string).length).toBeGreaterThan(0)
+    expect(nodeById(result, '/d/a.adf').data).toMatchObject({
+      model: 'claude-sonnet-5', state: 'active', status: 'crunching', online: true, orbitalSeed: '/d/a.adf'
+    })
+    expect(nodeById(result, '/d/b.adf').data.orbitalSeed).toBe('did:key:z6MkfixtureAgentTwo')
   })
 
   it('includes offline ghosts in the same geography', () => {

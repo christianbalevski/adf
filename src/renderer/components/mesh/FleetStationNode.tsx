@@ -6,6 +6,7 @@ import { useMeshGraphStore, type EdgeHeatEntry } from '../../stores/mesh-graph.s
 import { useFleetStore } from '../../stores/fleet.store'
 import { hexCorners, hexSpiral, hexBoundaryPath, HEX_SIZE, HEX_COL_W, HEX_ROW_H } from './fleet-layout'
 import type { RemotePeerAgent } from '../../../shared/types/ipc.types'
+import { OrbitalSvgImage } from '../orbital/OrbitalSvgImage'
 
 export interface StationNodeData {
   kind: string
@@ -374,9 +375,13 @@ function FleetStationNodeFull({ id, data }: NodeProps) {
               stroke={faction.tileStroke}
               strokeWidth={2}
             />
-            <text x={p.x} y={p.y + 6} textAnchor="middle" fontSize={64} style={{ userSelect: 'none' }}>
-              {p.agent.icon || '🤖'}
-            </text>
+            {p.agent.did ? (
+              <OrbitalSvgImage seed={p.agent.did} cx={p.x} cy={p.y - 16} size={72} />
+            ) : (
+              <text x={p.x} y={p.y + 6} textAnchor="middle" fontSize={64} style={{ userSelect: 'none' }}>
+                {p.agent.icon || '🤖'}
+              </text>
+            )}
             {(() => {
               // Shrink-to-fit beats the old 11-char cut ("patternsca…") —
               // remote handles are identity, and the pad's mid-band has room

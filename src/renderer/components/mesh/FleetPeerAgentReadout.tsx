@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { marked } from 'marked'
 import type { RemotePeerAgent } from '../../../shared/types/ipc.types'
+import { PeerAvatar } from '../orbital/PeerAvatar'
 
 /**
  * Full agent-card readout for a remote agent on a peer runtime — the
@@ -170,7 +171,7 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
       >
         {/* Identity header — stays put in both card and file view */}
         <div className="flex items-center gap-3 px-5 pt-4 pb-3">
-          <span className="text-3xl leading-none shrink-0">{agent.icon || '🤖'}</span>
+          <PeerAvatar did={agent.did} icon={agent.icon} size={36} />
           <div className="flex-1 min-w-0">
             <div className="text-[15px] font-semibold text-neutral-800 dark:text-neutral-100 truncate">
               {agent.handle}

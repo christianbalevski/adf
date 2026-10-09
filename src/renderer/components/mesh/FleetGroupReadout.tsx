@@ -2,7 +2,8 @@ import { memo, useEffect, useMemo } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
-import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { hueFromPath, formatTokens } from './FleetTerrainNode'
 import { isUnder, pathSegments } from './fleet-layout'
 
@@ -193,7 +194,7 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
               title={a.status ?? a.handle}
             >
               <span className={`text-base leading-none shrink-0 ${a.online === false ? 'grayscale opacity-60' : ''}`}>
-                {a.icon || pickAgentIcon(a.agentId || a.filePath)}
+                <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} size={18} />
               </span>
               <span className="w-28 shrink-0 truncate text-[12px] font-medium text-neutral-700 dark:text-neutral-200">
                 {a.handle}

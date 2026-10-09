@@ -1,5 +1,6 @@
 import { memo, useMemo } from 'react'
 import type { RemotePeerAgent } from '../../../shared/types/ipc.types'
+import { PeerAvatar } from '../orbital/PeerAvatar'
 
 /**
  * Hover card for a remote agent on a peer-runtime station — the agent's
@@ -51,7 +52,7 @@ export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
     >
       {/* Identity */}
       <div className="flex items-center gap-2.5 px-3.5 py-2.5">
-        <span className="text-2xl leading-none shrink-0">{agent.icon || '🤖'}</span>
+        <PeerAvatar did={agent.did} icon={agent.icon} size={28} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-100 truncate">

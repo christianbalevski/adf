@@ -1,6 +1,7 @@
 import { app, BrowserWindow, crashReporter, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
 import { join } from 'path'
 import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace, readAppSetting, writeAppSetting } from './ipc'
+import { registerOrbitalCacheHandlers } from './ipc/orbital-cache'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
@@ -492,6 +493,7 @@ app.whenReady().then(() => {
   }
 
   registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
+  registerOrbitalCacheHandlers(app.getPath('userData'))
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
   ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {
     mainWindow?.setFullScreen(!!fullscreen)

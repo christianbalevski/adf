@@ -4,6 +4,8 @@ import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
+  // Vendored from adf-org/brand (scripts/check-brand-tokens.mjs); not ours to lint.
+  { ignores: ['src/renderer/lib/brand/orbital.js'] },
   {
     ignores: ['dist/**', 'out/**'],
     linterOptions: {

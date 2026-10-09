@@ -14,6 +14,8 @@ import { TokenUsageSection } from './UsageSection'
 import { ContainerDestroyDialog, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
+import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
+import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import { useMeshStore } from '../../stores/mesh.store'
@@ -975,7 +977,7 @@ function LanAgentsList({ agents }: { agents: MeshAgentStatus[] }) {
           <ul className="space-y-0.5">
             {lanAgents.map((a) => (
               <li key={a.filePath} className="flex items-center gap-2 font-mono text-neutral-600 dark:text-neutral-300">
-                {a.icon && <span>{a.icon}</span>}
+                <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} size={14} />
                 <span>{a.handle}</span>
                 <span className="text-neutral-400 dark:text-neutral-500 truncate">{a.filePath}</span>
               </li>
@@ -2418,7 +2420,7 @@ export function SettingsPage() {
                     >
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          {agent.icon && <span className="text-sm">{agent.icon}</span>}
+                          <OrbitalAvatar seed={orbitalSeedFor({ did: agent.did, filePath: agent.filePath })} size={16} />
                           <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200 truncate">
                             {agent.handle}
                           </span>

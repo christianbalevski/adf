@@ -2391,7 +2391,9 @@ export class AgentExecutor extends EventEmitter {
             cache_write: llmMetadata.cache_write_tokens,
             reasoning: llmMetadata.reasoning_tokens,
             // Unset when usage was estimated — no fake dollars in the ledger.
-            cost_usd: llmMetadata.cost_usd
+            cost_usd: llmMetadata.cost_usd,
+            // Per-agent ledger key (agent vitals 7-day cost)
+            agent: this.config.id || undefined
           }
         )
 
@@ -4958,7 +4960,8 @@ export class AgentExecutor extends EventEmitter {
           cache_read: compactionMetadata.cache_read_tokens,
           cache_write: compactionMetadata.cache_write_tokens,
           reasoning: compactionMetadata.reasoning_tokens,
-          cost_usd: compactionMetadata.cost_usd
+          cost_usd: compactionMetadata.cost_usd,
+          agent: this.config.id || undefined
         }
       )
       // Fleet map burn rate — compaction burns tokens too. Never fatal.
