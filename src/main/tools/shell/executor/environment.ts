@@ -128,9 +128,13 @@ export class EnvironmentResolver {
       } catch { return '' }
     }
 
-    // 6. Fall through to adf_identity
+    // 6. Fall through to adf_identity — via the code-safe reader. The shell is
+    // agent-driven code, so it must not expose key material (crypto:*) or
+    // rows the owner hid from code (code_access = 0); getIdentityForCode
+    // enforces both, matching get_identity from code. getIdentity here would
+    // have leaked signing keys and hidden credentials as ${crypto:signing:...}.
     try {
-      const val = this.workspace.getIdentity(name.toLowerCase())
+      const val = this.workspace.getIdentityForCode(name.toLowerCase(), null)
       if (val) return val
     } catch { /* identity not found */ }
 
