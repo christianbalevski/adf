@@ -5,7 +5,8 @@ import {
   readFileSync,
   writeFileSync,
   readdirSync,
-  statSync
+  statSync,
+  type Dirent
 } from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -88,17 +89,19 @@ export class SandboxPackagesService {
   ): Promise<{ name: string; version: string; size_mb: number; already_installed: boolean; scripts_skipped?: string[] }> {
     const manifest = this.loadManifest()
     const versionSpec = version ?? 'latest'
-    assertNpmSpec(name, versionSpec)
+    // Validate before anything reaches npm: on Windows npm.cmd runs through
+    // cmd.exe, so an unvalidated name like 'x & calc' was a host command.
+    try {
+      assertNpmSpec(name, versionSpec)
+    } catch (err) {
+      throw new InvalidPackageSpecError(err instanceof Error ? err.message : String(err))
+    }
 
     // Check if already installed at a compatible version
     const existing = manifest.packages[name]
     if (existing && version && existing.version === version) {
       return { name, version: existing.version, size_mb: existing.size_mb, already_installed: true }
     }
-
-    // Validate before anything reaches npm: on Windows npm.cmd runs through
-    // cmd.exe, so an unvalidated name like 'x & calc' was a host command.
-    validatePackageSpec(name, versionSpec)
 
     this.ensureBaseDir()
     const baseDir = this.getBaseDir()
@@ -112,7 +115,7 @@ export class SandboxPackagesService {
       // rejected below instead.
       const { stdout, stderr } = await execFileAsync(
         NPM_BIN,
-        ['install', '--save', '--ignore-scripts', '--no-audit', '--no-fund', shellArg(`${name}@${versionSpec}`)],
+        ['install', '--save', '--ignore-scripts', '--no-audit', '--no-fund', `${name}@${versionSpec}`],
         {
           cwd: baseDir,
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
@@ -341,6 +344,33 @@ export class SandboxPackagesService {
       } catch { /* ignore parse errors */ }
     }
 
+    // Prebuilt binaries (sharp, @resvg/resvg-js, onnxruntime-node ship .node
+    // files, no build step). The sandbox host runs under --permission, which
+    // refuses to load addons, so these would install and then fail on import.
+    const binary = this.findNodeBinary(dir, 0)
+    if (binary) return `prebuilt native addon ${binary}`
+
+    return null
+  }
+
+  /** First *.node file under `dir` (its own files only, not nested node_modules). */
+  private findNodeBinary(dir: string, depth: number): string | null {
+    if (depth > 6) return null
+    let entries: Dirent[]
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return null
+    }
+    for (const e of entries) {
+      if (e.isFile() && e.name.endsWith('.node')) return join(dir, e.name)
+    }
+    for (const e of entries) {
+      if (e.isDirectory() && e.name !== 'node_modules') {
+        const found = this.findNodeBinary(join(dir, e.name), depth + 1)
+        if (found) return found
+      }
+    }
     return null
   }
 
@@ -359,28 +389,34 @@ export class SandboxPackagesService {
    * The package and every installed dependency reachable from it, resolved the
    * way Node resolves them (nested node_modules first, then parents up to the
    * install root). Bounded so a pathological tree can't stall the install.
+   * optionalDependencies are followed for the package itself only: deeper down
+   * they are fallbacks the dependency copes without (pdfjs-dist ->
+   * @napi-rs/canvas -> a platform .node binary), and the sandbox host can't
+   * load a native addon anyway.
    */
   private walkDependencyTree(nodeModulesDir: string, packageName: string): Array<{ name: string; dir: string }> {
     const out: Array<{ name: string; dir: string }> = []
     const seen = new Set<string>()
     const rootDir = join(nodeModulesDir, packageName)
     if (!existsSync(rootDir)) return out
-    const queue: Array<{ name: string; dir: string }> = [{ name: packageName, dir: rootDir }]
+    const queue: Array<{ name: string; dir: string; depth: number }> = [{ name: packageName, dir: rootDir, depth: 0 }]
     while (queue.length > 0 && out.length < 5000) {
       const cur = queue.shift()!
       if (seen.has(cur.dir)) continue
       seen.add(cur.dir)
-      out.push(cur)
+      out.push({ name: cur.name, dir: cur.dir })
       let pkgJson: { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> }
       try {
         pkgJson = JSON.parse(readFileSync(join(cur.dir, 'package.json'), 'utf-8'))
       } catch {
         continue
       }
-      const deps = Object.keys({ ...pkgJson.dependencies, ...pkgJson.optionalDependencies })
+      const deps = Object.keys(
+        cur.depth === 0 ? { ...pkgJson.dependencies, ...pkgJson.optionalDependencies } : { ...pkgJson.dependencies }
+      )
       for (const depName of deps) {
         const depDir = this.resolveDepDir(cur.dir, nodeModulesDir, depName)
-        if (depDir && !seen.has(depDir)) queue.push({ name: depName, dir: depDir })
+        if (depDir && !seen.has(depDir)) queue.push({ name: depName, dir: depDir, depth: cur.depth + 1 })
       }
     }
     return out
@@ -460,7 +496,7 @@ export class SandboxPackagesService {
     try {
       await execFileAsync(
         NPM_BIN,
-        ['uninstall', '--save', '--ignore-scripts', '--no-audit', '--no-fund', shellArg(name)],
+        ['uninstall', '--save', '--ignore-scripts', '--no-audit', '--no-fund', name],
         {
           cwd: this.getBaseDir(),
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
@@ -491,33 +527,6 @@ export class InstallScriptError extends Error {
 export class InvalidPackageSpecError extends Error {
   readonly code = 'invalid_package'
   constructor(message: string) { super(message) }
-}
-
-// npm's own name rules (validate-npm-package-name, new packages): lowercase,
-// URL-safe, optional @scope/, at most 214 characters, no leading . or _.
-const PACKAGE_NAME_RE = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/
-// Versions, ranges and dist-tags. No quotes, %, !, backslash or shell
-// metacharacters beyond the range operators, which shellArg() quotes.
-const VERSION_SPEC_RE = /^[0-9A-Za-z.^~<>=|*+\- ]{1,64}$/
-
-export function validatePackageSpec(name: string, version: string): void {
-  if (typeof name !== 'string' || name.length === 0 || name.length > 214 || !PACKAGE_NAME_RE.test(name)) {
-    throw new InvalidPackageSpecError(
-      `Invalid package name ${JSON.stringify(name)}: expected an npm package name like "lodash" or "@scope/pkg".`
-    )
-  }
-  if (typeof version !== 'string' || !VERSION_SPEC_RE.test(version) || /\|\|?\s*$/.test(version)) {
-    throw new InvalidPackageSpecError(
-      `Invalid version ${JSON.stringify(version)}: expected a version, range or tag like "4.17.21", "^5.0.0" or "latest".`
-    )
-  }
-}
-
-/** On Windows npm.cmd runs through cmd.exe, which re-parses the command line:
- *  quote the (already validated) argument so range operators like < > | stay
- *  literal. Elsewhere there is no shell and the argument passes as-is. */
-function shellArg(arg: string): string {
-  return IS_WIN ? `"${arg}"` : arg
 }
 
 /** Thrown when a package exceeds size limits. */

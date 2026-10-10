@@ -10,7 +10,13 @@ process.env.ADF_USER_DATA_DIR = MOCK_USER_DATA
 vi.mock('electron', () => ({ app: { getPath: () => MOCK_USER_DATA } }))
 
 /** Fake npm: records argv and lays out node_modules the way `install` would. */
-type FakeTree = Record<string, { version?: string; scripts?: Record<string, string>; dependencies?: Record<string, string> }>
+type FakeTree = Record<string, {
+  version?: string
+  scripts?: Record<string, string>
+  dependencies?: Record<string, string>
+  optionalDependencies?: Record<string, string>
+  files?: Record<string, string>
+}>
 const npmCalls: string[][] = []
 let nextTree: FakeTree = {}
 vi.mock('child_process', async (orig) => {
@@ -23,8 +29,10 @@ vi.mock('child_process', async (orig) => {
         for (const [name, pkg] of Object.entries(nextTree)) {
           const dir = join(opts.cwd, 'node_modules', name)
           mkdirSync(dir, { recursive: true })
-          writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: pkg.version ?? '1.0.0', ...pkg }))
+          const { files, ...manifest } = pkg
+          writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: pkg.version ?? '1.0.0', ...manifest }))
           writeFileSync(join(dir, 'index.js'), 'module.exports = 1')
+          for (const [file, body] of Object.entries(files ?? {})) writeFileSync(join(dir, file), body)
         }
       }
       if (args[0] === 'uninstall') {
@@ -40,7 +48,7 @@ import {
   SandboxPackagesService,
   InstallScriptError,
   InvalidPackageSpecError,
-  validatePackageSpec
+  NativeAddonError
 } from '../../../src/main/services/sandbox-packages.service'
 
 describe('sandbox npm install: scripts and spec validation', () => {
@@ -98,8 +106,26 @@ describe('sandbox npm install: scripts and spec validation', () => {
     expect(service.isInstalled('banner')).toBe(true)
   })
 
+  it('rejects a native addon in a direct optional dependency', async () => {
+    nextTree = {
+      'sharp-like': { optionalDependencies: { 'sharp-like-darwin': '1.0.0' } },
+      'sharp-like-darwin': { files: { 'sharp.node': 'bin' } }
+    }
+    await expect(service.install('sharp-like', '1.0.0')).rejects.toBeInstanceOf(NativeAddonError)
+  })
+
+  it('ignores native addons behind a dependency\'s own optional dependencies', async () => {
+    nextTree = {
+      'pdf-like': { optionalDependencies: { 'canvas-like': '1.0.0' } },
+      'canvas-like': { optionalDependencies: { 'canvas-like-darwin': '1.0.0' } },
+      'canvas-like-darwin': { files: { 'skia.node': 'bin' } }
+    }
+    const result = await service.install('pdf-like', '1.0.0')
+    expect(result.name).toBe('pdf-like')
+  })
+
   it('rejects shell metacharacters in the name before npm ever runs', async () => {
-    for (const bad of ['lodash & calc', 'x;rm -rf /', '$(id)', '"q"', '%PATH%', 'a|b', '../evil', 'UPPER']) {
+    for (const bad of ['lodash & calc', 'x;rm -rf /', '$(id)', '"q"', '%PATH%', 'a|b', '../evil']) {
       await expect(service.install(bad, '1.0.0')).rejects.toBeInstanceOf(InvalidPackageSpecError)
     }
     await expect(service.install('lodash', '1.0.0 & calc')).rejects.toBeInstanceOf(InvalidPackageSpecError)
@@ -108,16 +134,18 @@ describe('sandbox npm install: scripts and spec validation', () => {
     expect(existsSync(join(MOCK_USER_DATA, 'sandbox-packages', 'node_modules'))).toBe(false)
   })
 
-  it('accepts ordinary names, scopes, versions, ranges and tags', () => {
+  it('accepts ordinary names, scopes, legacy uppercase names, versions, ranges and tags', async () => {
     for (const [n, v] of [
       ['lodash', '4.17.21'],
       ['@resvg/resvg-wasm', '^2.6.2'],
       ['vega-lite', '~5.21.0'],
-      ['date-fns', '>=2 <4'],
+      ['JSONStream', '1.x'],
       ['yaml', 'latest'],
-      ['left-pad', '1.x || 2.x'],
     ]) {
-      expect(() => validatePackageSpec(n, v)).not.toThrow()
+      nextTree = { [n]: { version: '1.0.0' } }
+      const result = await service.install(n, v)
+      expect(result.name).toBe(n)
+      expect(npmCalls.at(-1)).toContain(`${n}@${v}`)
     }
   })
 })
