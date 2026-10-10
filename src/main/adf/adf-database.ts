@@ -124,6 +124,9 @@ const CLEAN_CLOSE_META_KEY = 'adf_clean_close'
  */
 const SNAPSHOT_DEADLINE_MS = 30_000
 
+/** SQLite VDBE P5 flag: OpenRead/OpenWrite P2 is a register, not a root page. */
+const OPFLAG_P2ISREG = 0x10
+
 /** Render a meta counter value: integers stay integral (a token total must not
  *  become "32834693.0"), fractions lose float noise (0.1+0.2 → "0.3"). */
 function formatMetaNumber(n: number): string {
@@ -4375,12 +4378,13 @@ export class AdfDatabase {
    * `sqlite_master.rootpage` maps back to the owning table — including the base
    * table behind a view or alias, and any table reached through a subquery.
    * Virtual tables (pragma_*, fts5, vec0, json_each, dbstat) don't open a root
-   * page, so `usesVirtualTable` flags their presence for the caller to police
-   * separately; a virtual table that internally reads a real table (e.g. an
-   * external-content FTS index over adf_identity) still surfaces that real read
-   * here. `unresolvedRootPages` covers pages allocated at run time (e.g. the new
-   * table in CREATE ... AS SELECT), which never correspond to an existing
-   * sensitive table.
+   * page, so `usesVirtualTable` flags their presence. A virtual table's own
+   * reads of real tables (e.g. an external-content FTS index) run through its
+   * internal statements and never appear here — callers must police what a
+   * virtual table may point at when it is created (see db_execute).
+   * OpenWrite with OPFLAG_P2ISREG (CREATE ... AS SELECT) carries a register
+   * number in P2, not a root page, and is skipped: the page it opens is
+   * allocated at run time and is the new table itself.
    */
   analyzeStatement(
     sql: string,
@@ -4414,9 +4418,11 @@ export class AdfDatabase {
     const opcodes = (params && params.length ? explain.all(...params) : explain.all()) as Array<{
       opcode: string
       p2: number
+      p5: number
     }>
     for (const op of opcodes) {
       if (op.opcode === 'OpenRead' || op.opcode === 'OpenWrite') {
+        if (op.p5 & OPFLAG_P2ISREG) continue
         const name = rootToTable.get(op.p2)
         if (name) (op.opcode === 'OpenWrite' ? writes : reads).add(name.toLowerCase())
       } else if (op.opcode === 'VOpen' || op.opcode === 'VFilter' || op.opcode === 'VUpdate') {

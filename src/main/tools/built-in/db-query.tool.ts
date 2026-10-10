@@ -90,14 +90,17 @@ export class DbQueryTool implements Tool {
     }
 
     // Block PRAGMA table-valued functions (e.g. pragma_table_info) — prevents
-    // hiding sensitive table names inside string literals that sanitizeSQL strips
-    if (sanitized.includes('pragma_')) {
+    // hiding sensitive table names inside string literals that sanitizeSQL strips.
+    // These and the raw-page tables below are virtual, so static analysis can't
+    // see them; check the raw text, since SQLite also accepts a quoted string
+    // as a table name ('dbstat') and sanitizeSQL blanks those.
+    if (trimmed.includes('pragma_')) {
       return { content: 'PRAGMA table-valued functions are not allowed in queries.', isError: true }
     }
 
     // Raw-page virtual tables can read arbitrary bytes of the database file —
     // including adf_identity/adf_meta — bypassing per-table root-page checks.
-    if (sanitized.includes('sqlite_dbpage') || sanitized.includes('dbstat')) {
+    if (trimmed.includes('sqlite_dbpage') || trimmed.includes('dbstat')) {
       return { content: 'Access to raw-page virtual tables (sqlite_dbpage, dbstat) is not allowed.', isError: true }
     }
 

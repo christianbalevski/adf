@@ -88,6 +88,11 @@ describe('db access hardening (real sqlite)', () => {
       const r = await query.execute({ sql: 'SELECT * FROM dbstat' }, ws)
       rejected(r)
     })
+
+    it('blocks a quoted dbstat / pragma_ table name', async () => {
+      rejected(await query.execute({ sql: "SELECT * FROM 'dbstat'" }, ws))
+      rejected(await query.execute({ sql: "SELECT * FROM 'pragma_table_info'('adf_identity')" }, ws))
+    })
   })
 
   describe('db_execute', () => {
@@ -119,6 +124,64 @@ describe('db access hardening (real sqlite)', () => {
       rejected(r)
       const check = await query.execute({ sql: 'SELECT * FROM local_sink' }, ws)
       expect(check.content).toBe('[]')
+    })
+
+    it('allows CREATE local_x AS SELECT from a local_ table', async () => {
+      const r = await execute.execute(
+        { sql: 'CREATE TABLE local_copy AS SELECT body FROM local_notes' },
+        ws
+      )
+      expect(r.isError).toBe(false)
+      const check = await query.execute({ sql: 'SELECT * FROM local_copy' }, ws)
+      expect(check.content).toContain('hello')
+    })
+
+    it.each([
+      "content='adf_identity'",
+      'content="adf_identity"',
+      'content=[adf_identity]',
+      'content=`adf_identity`',
+      'CONTENT = adf_identity',
+      "content='ADF_IDENTITY'"
+    ])('blocks an FTS5 index with external content over adf_identity (%s)', async (opt) => {
+      const name = `local_fts_${Math.random().toString(36).slice(2, 8)}`
+      const r = await execute.execute(
+        { sql: `CREATE VIRTUAL TABLE ${name} USING fts5(value, ${opt})` },
+        ws
+      )
+      rejected(r)
+      const check = await query.execute({ sql: `SELECT * FROM ${name}` }, ws)
+      expect(check.content).not.toContain('TOP-SECRET')
+    })
+
+    it('blocks an FTS5 index whose content table is a local_ view', async () => {
+      const r = await execute.execute(
+        { sql: "CREATE VIRTUAL TABLE local_fts_view USING fts5(value, content='local_peek')" },
+        ws
+      )
+      rejected(r)
+    })
+
+    it('blocks virtual table modules that read other objects', async () => {
+      rejected(await execute.execute(
+        { sql: "CREATE VIRTUAL TABLE local_vocab USING fts5vocab('local_x', 'row')" },
+        ws
+      ))
+    })
+
+    it('allows FTS5 over a local_ table and contentless FTS5', async () => {
+      const ext = await execute.execute(
+        { sql: "CREATE VIRTUAL TABLE local_notes_fts USING fts5(body, content='local_notes', content_rowid='id')" },
+        ws
+      )
+      expect(ext.isError).toBe(false)
+      const none = await execute.execute(
+        { sql: "CREATE VIRTUAL TABLE local_bare_fts USING fts5(body, content='')" },
+        ws
+      )
+      expect(none.isError).toBe(false)
+      const plain = await execute.execute({ sql: 'CREATE VIRTUAL TABLE local_plain_fts USING fts5(body)' }, ws)
+      expect(plain.isError).toBe(false)
     })
   })
 })
