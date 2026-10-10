@@ -372,9 +372,13 @@ cdp_up() { wget -q -T 2 -t 1 -O /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/j
 # believes it crashed and asks "Restore pages?" on the next start. Mark the
 # last exit clean and restore the last session without asking.
 # (--disable-session-crashed-bubble no longer does anything.)
+# --no-sandbox: Chromium runs as root here and won't start as root with its
+# sandbox on. The sandbox would guard nothing: the agent already controls the
+# container as root, and the container is the boundary. --test-type drops the
+# "unsupported command-line flag" bar that would say otherwise.
 launch() {
   sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "$PROFILE/Default/Preferences" 2>/dev/null
-  exec '${chromium}' --no-sandbox --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --restore-last-session --hide-crash-restore-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} "$@" </dev/null >>/tmp/adf-browser/chromium.log 2>&1
+  exec '${chromium}' --no-sandbox --test-type --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --restore-last-session --hide-crash-restore-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} "$@" </dev/null >>/tmp/adf-browser/chromium.log 2>&1
 }
 # Browser (main) processes only — renderers/zygotes carry --type= and follow their parent.
 browser_pids() {
@@ -1767,7 +1771,7 @@ export class PodmanService extends EventEmitter {
         runArgs.push('-e', 'DISPLAY=:99')
         // Legacy Puppeteer compatibility. The managed browser is owned by ADF;
         // maintained browser MCP servers should attach to its CDP endpoint.
-        runArgs.push('-e', 'PUPPETEER_LAUNCH_OPTIONS={"headless":false,"defaultViewport":null,"args":["--no-sandbox","--disable-dev-shm-usage","--start-maximized"]}')
+        runArgs.push('-e', 'PUPPETEER_LAUNCH_OPTIONS={"headless":false,"defaultViewport":null,"args":["--no-sandbox","--test-type","--disable-dev-shm-usage","--start-maximized"]}')
         runArgs.push('-e', `PLAYWRIGHT_MCP_CDP_ENDPOINT=http://127.0.0.1:${BROWSER_CDP_PORT}`)
         runArgs.push('-e', 'ALLOW_DANGEROUS=true')
         this._novncPorts.set(containerName, hostPort)
