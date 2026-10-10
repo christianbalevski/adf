@@ -284,7 +284,7 @@ describe('AgentVitalsService.getAgentActivity', () => {
     opened.splice(opened.indexOf(ws), 1)
     const a = await service(false, { now }).getAgentActivity(file)
     expect(a.live).toBe(false)
-    expect(a.contents.tables).toEqual({ count: 1, rows: 3 })
+    expect(a.contents.tables).toEqual({ count: 1, rows: 3, items: [{ name: 'local_notes', rows: 3, columns: 2 }] })
     expect(a.upcoming).toHaveLength(3)
     ws = AdfWorkspace.open(file)
     opened.push(ws)
