@@ -1118,6 +1118,10 @@ function LoopStream({ loop }: { loop: string }) {
   )
   const toolPairIndex = useMemo(() => buildToolPairIndex(log), [log, structuralVersion])
   const isActive = state === 'active'
+  // Side loops never inherit the host's autonomy (derive-loop-config).
+  const autonomous = isMainLoop
+    ? config?.autonomous === true
+    : config?.loops?.find((l) => l.name === loop)?.autonomous === true
 
   // Every step stays in the transcript, including calls whose results have
   // not arrived. Agent activity outlives a tool's execution and result.
@@ -1125,7 +1129,8 @@ function LoopStream({ loop }: { loop: string }) {
     active: isActive,
     starting,
     waiting: pendingApprovals.size > 0 || pendingAsks.size > 0 || pendingSuspend !== null,
-  }), [log, structuralVersion, isActive, starting, pendingApprovals, pendingAsks, pendingSuspend])
+    autonomous,
+  }), [log, structuralVersion, isActive, starting, pendingApprovals, pendingAsks, pendingSuspend, autonomous])
 
   // The streaming entry is mutated in place, so the grouping passes above hold
   // the object it had when it was appended. Swap the live one back in at the
