@@ -14,6 +14,7 @@ import { IconPicker } from '../common/IconPicker'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import { loopColor } from '../../utils/loop-color'
 import { DocsLink, InfoHint } from '../common/DocsLink'
+import { ConfigNavProvider, useConfigNavEntry, CONFIG_NAV_OFFSET_CLASS } from './ConfigNav'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { ExecutionTarget } from '../../../shared/types/compute.types'
 import { resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
@@ -1377,6 +1378,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const bindingKeys = useRowKeys(local?.stream_bindings, filePath)
   const tapKeys = useRowKeys(local?.umbilical_taps, filePath)
   const logRuleKeys = useRowKeys(local?.logging?.rules, filePath)
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   if (!local) {
     return (
@@ -1396,7 +1398,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     <TemplateModeContext.Provider value={!!template}>
     {/* Leaving any field writes the pending edit through immediately, so a
         click that switches agent or starts one never races the debounce. */}
-    <div className={template ? '' : 'h-full overflow-y-auto'} onBlurCapture={flushSave}>
+    <div ref={scrollRef} className={template ? '' : 'h-full overflow-y-auto'} onBlurCapture={flushSave}>
+      <MaybeConfigNav enabled={!template} scrollRef={scrollRef}>
       <div className={template ? 'space-y-4' : 'p-3 space-y-4'}>
         {/* Identity */}
         <Section docs={DOCS.identity} title={template ? 'Startup' : 'Identity'}>
@@ -5862,6 +5865,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         </div>
         )}
       </div>
+      </MaybeConfigNav>
 
       {/* Tool definition modal */}
       <Dialog
@@ -6252,6 +6256,11 @@ function DidListPicker({
   )
 }
 
+/** The quick nav belongs to the panel; the template editor embeds the same sections without it. */
+function MaybeConfigNav({ enabled, scrollRef, children }: { enabled: boolean; scrollRef: React.RefObject<HTMLDivElement | null>; children: React.ReactNode }) {
+  return enabled ? <ConfigNavProvider scrollRef={scrollRef}>{children}</ConfigNavProvider> : <>{children}</>
+}
+
 function Section({
   title,
   locked,
@@ -6283,6 +6292,7 @@ function Section({
   // it into view and move focus to it, once.
   const pendingSection = useAppStore((s) => s.pendingConfigSection)
   const isTarget = !inTemplate && typeof title === 'string' && pendingSection === title
+  useConfigNavEntry(title, rootRef, summary, locked)
   useEffect(() => {
     if (!isTarget) return
     setCollapsed(false)
@@ -6297,7 +6307,7 @@ function Section({
     return () => cancelAnimationFrame(raf)
   }, [isTarget])
   return (
-    <div ref={rootRef} tabIndex={-1} data-testid={testId} className={`bg-white dark:bg-neutral-800 rounded-lg border ${locked ? 'border-amber-300 dark:border-amber-600' : 'border-neutral-200 dark:border-neutral-700'} ${collapsed ? 'p-2.5' : 'p-3'}`}>
+    <div ref={rootRef} tabIndex={-1} data-testid={testId} className={`${CONFIG_NAV_OFFSET_CLASS} bg-white dark:bg-neutral-800 rounded-lg border ${locked ? 'border-amber-300 dark:border-amber-600' : 'border-neutral-200 dark:border-neutral-700'} ${collapsed ? 'p-2.5' : 'p-3'}`}>
       <h4
         className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider flex items-center gap-1.5 cursor-pointer select-none"
         onClick={() => setCollapsed(!collapsed)}
