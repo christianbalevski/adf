@@ -46,7 +46,9 @@ const HOST_BOOT = [
   "  if (m.t === 'spawn') {",
   '    const wid = m.wid;',
   '    let w;',
-  "    try { w = new Worker(script, { eval: true, workerData: { prelude }, env: {}, argv: [], execArgv: [] }); }",
+  // No execArgv: a worker given its own execArgv runs WITHOUT the process's
+  // --permission restrictions. Inheriting is what keeps them in force.
+  "    try { w = new Worker(script, { eval: true, workerData: { prelude }, env: {}, argv: [] }); }",
   "    catch (e) { send({ t: 'error', wid, message: String(e && e.message || e) }); send({ t: 'exit', wid, code: 1 }); return; }",
   '    workers.set(wid, w);',
   "    w.on('message', (x) => send({ t: 'msg', wid, m: x }));",
@@ -109,8 +111,7 @@ export class SandboxHost {
   private nextWid = 0
   private idleTimer: NodeJS.Timeout | null = null
   private bootTimer: NodeJS.Timeout | null = null
-  /** A retired host takes no new workers and exits once its last one does. */
-  private retired = false
+  private failReason = ''
 
   /** `sources` is overridable so tests can append a probe to the real worker
    *  script and observe the host from inside; production always uses the default. */
@@ -131,9 +132,12 @@ export class SandboxHost {
   }
 
   spawnWorker(): RemoteWorker {
-    if (this.dead || this.retired) throw new Error('Sandbox host is not accepting workers')
+    if (this.dead) throw new Error('Sandbox host is not accepting workers')
     this.clearIdle()
     if (!this.child) this.start()
+    // A synchronous spawn failure already marked the host dead; a worker
+    // registered now would never hear an exit and wait out the boot timeout.
+    if (this.dead) throw new Error(this.failReason || 'Sandbox host failed to start')
     const wid = ++this.nextWid
     const worker = new RemoteWorker(this, wid)
     this.workers.set(wid, worker)
@@ -154,17 +158,17 @@ export class SandboxHost {
     }
   }
 
-  retire(): void {
-    this.retired = true
-    if (this.workers.size === 0) this.kill()
-  }
-
   kill(): void {
     if (this.dead) return
     this.fail('Sandbox host shut down')
   }
 
   private start(): void {
+    const unsupported = permissionModelUnsupported(process.versions)
+    if (unsupported) {
+      this.fail(unsupported)
+      return
+    }
     const args = [
       '--permission',
       '--allow-worker',
@@ -227,10 +231,6 @@ export class SandboxHost {
 
   private onWorkerGone(): void {
     if (this.workers.size > 0) return
-    if (this.retired) {
-      this.kill()
-      return
-    }
     this.clearIdle()
     this.idleTimer = setTimeout(() => {
       if (this.workers.size === 0) this.kill()
@@ -248,6 +248,7 @@ export class SandboxHost {
   private fail(reason: string): void {
     if (this.dead) return
     this.dead = true
+    this.failReason = reason
     this.clearIdle()
     if (this.bootTimer) clearTimeout(this.bootTimer)
     const child = this.child
@@ -263,6 +264,16 @@ export class SandboxHost {
     }
     onHostDead(this)
   }
+}
+
+/** Node's permission model needs 22.13+ without a flag (and --disable-warning
+ *  21.3+). Electron always bundles a new enough Node; the daemon runs on
+ *  whatever `node` is installed. Returns an error message, or null. */
+export function permissionModelUnsupported(versions: { node: string; electron?: string }): string | null {
+  const [major, minor] = versions.node.split('.').map(Number)
+  if (major > 22 || (major === 22 && minor >= 13)) return null
+  return `Code execution needs Node.js 22.13 or newer for the sandbox's permission model ` +
+    `(this process runs Node ${versions.node}). Upgrade Node, or run the agent in ADF Studio.`
 }
 
 /** Only what the runtime needs to start. Notably NOT the parent's env: API
@@ -308,7 +319,7 @@ export function getSandboxHost(readPaths: string[]): SandboxHost {
   return host
 }
 
-/** Test/shutdown hook: kill every host. */
+/** Kill every host. Called on app and daemon shutdown, and by tests. */
 export function shutdownSandboxHosts(): void {
   for (const host of Array.from(hosts.values())) host.kill()
   hosts.clear()

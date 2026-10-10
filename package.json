@@ -7,6 +7,9 @@
     "url": "git+https://github.com/christianbalevski/adf.git"
   },
   "main": "./out/main/index.js",
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "dev:2": "ADF_INSTANCE=2 electron-vite dev",
