@@ -152,7 +152,7 @@ describe('GET /agents/:id/activity', () => {
     expect(body.live).toBe(true)
     expect(body.daily).toHaveLength(14)
     expect(body.upcoming).toEqual([expect.objectContaining({ scope: 'agent', loop: 'main', prompt: 'Check the inbox' })])
-    expect(body.contents.tables).toEqual({ count: 0, rows: 0 })
+    expect(body.contents.tables).toEqual({ count: 0, rows: 0, items: [] })
 
     // A write lands on the next forced read, by agent id.
     live.workspace.writeFile('mind/later.md', 'x'.repeat(400))

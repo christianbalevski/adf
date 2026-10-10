@@ -173,7 +173,10 @@ describe('level curve', () => {
 
   it('progress is in [0,1) mid-level', () => {
     const mid = (xpForLevel(5, EXPERIENCE_CURVE) + xpForLevel(6, EXPERIENCE_CURVE)) / 2
-    expect(levelPosition(mid, EXPERIENCE_CURVE)).toMatchObject({ level: 5, progress: 0.5 })
+    const pos = levelPosition(mid, EXPERIENCE_CURVE)
+    expect(pos.level).toBe(5)
+    // The midpoint of two float level starts is only 0.5 to within rounding.
+    expect(pos.progress).toBeCloseTo(0.5, 12)
   })
 })
 

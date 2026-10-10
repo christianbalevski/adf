@@ -48,8 +48,8 @@ afterEach(async () => {
   setClipboardWriter(null)
 })
 
-async function mountChat(options: { rows?: number; columns?: number; pageSize?: number; fetch?: typeof fetch; before?: (m: MockDaemon) => void } = {}) {
-  mock = await startMockDaemon({ stepMs: 15 })
+async function mountChat(options: { rows?: number; columns?: number; pageSize?: number; stepMs?: number; fetch?: typeof fetch; before?: (m: MockDaemon) => void } = {}) {
+  mock = await startMockDaemon({ stepMs: options.stepMs ?? 15 })
   options.before?.(mock)
   store = createTuiStore({ client: new DaemonClient({ baseUrl: mock.url, fetch: options.fetch }), initialView: 'chat', pageSize: options.pageSize })
   ui = renderTui(<App store={store} theme={createTheme({ mono: true })} />, { columns: options.columns ?? 120, rows: options.rows ?? 36 })
@@ -147,7 +147,10 @@ describe('chat view', () => {
   })
 
   it('shows messages sent during a running turn as queued', async () => {
-    const { tui, mock } = await mountChat()
+    // The mock starts the sent message's turn after one step, and that turn's
+    // turn_id takes the message out of the queue. At 15ms that lands before
+    // the first frame is checked, so slow the script down.
+    const { tui, mock } = await mountChat({ stepMs: 1000 })
     mock.emit({ event_type: 'agent.state.changed', agent_id: AGENT_1_ID, payload: { state: 'thinking' } })
     await tui.waitFor('esc to interrupt')
     await typeInPrompt(tui, 'after that, this')
