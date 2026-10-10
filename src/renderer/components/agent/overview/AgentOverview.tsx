@@ -42,10 +42,11 @@
  * reverse. Anything taller (banners, expanded "+N", a smaller window)
  * scrolls.
  * Since measured: Website / Computer chips get their own line under the
- * badges (4 + 20, only when the agent has either), the Skills bookshelf adds
- * up to 22 px under its row (spines ≤ 20 + shelf), and the age moved from
- * the facts line to a footer (mt-auto: free when the panel has room, +28
- * when it scrolls).
+ * badges (4 + 20, only when the agent has either); every Contents row has a
+ * bookshelf under it instead of Memory's strip (up to 22 px: spines ≤ 20 +
+ * shelf, plus 6 between rows), so three full rows are ~29 + 3 x 46 = 167,
+ * and folding Contents saves ~142; the age moved from the facts line to a
+ * footer (mt-auto: free when the panel has room, +28 when it scrolls).
  * Keep new rows inside this budget: cap lists with a row limit + "+N".
  */
 

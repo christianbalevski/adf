@@ -12,8 +12,9 @@ import {
   sparkFact,
   sparkHeights,
   sparkSummary,
-  strataSegments,
-  strataSummary,
+  formatAgo,
+  memorySpines,
+  tableSpines,
   timerRowText,
   waitingItems,
   type FoldState
@@ -143,19 +144,26 @@ describe('contents', () => {
 
   it('memory, skills and tables are separate rows', () => {
     expect(contentsRows(contents(12, 20_000, 5, 18_000, 3, 2100, 3))).toEqual([
-      { key: 'mind', label: 'Memory', text: '~20k tokens · 12 files', aside: '3 updated this week' },
+      { key: 'mind', label: 'Memory', text: '12 files · ~20k tokens' },
       { key: 'skills', label: 'Skills', text: '5 skills · ~18k tokens' },
       { key: 'tables', label: 'Tables', text: '3 tables · 2.1k rows' }
     ])
   })
 
-  it('hides empty rows, the weekly note at 0, and everything when all are empty', () => {
-    expect(contentsRows(contents(1, 3, 0, 0, 0, 0))).toEqual([{ key: 'mind', label: 'Memory', text: '~3 tokens · 1 file' }])
+  it('hides empty rows, and everything when all are empty', () => {
+    expect(contentsRows(contents(1, 3, 0, 0, 0, 0))).toEqual([{ key: 'mind', label: 'Memory', text: '1 file · ~3 tokens' }])
     expect(contentsRows(contents(0, 0, 1, 10, 1, 1))).toEqual([
       { key: 'skills', label: 'Skills', text: '1 skill · ~10 tokens' },
       { key: 'tables', label: 'Tables', text: '1 table · 1 row' }
     ])
     expect(contentsRows(contents(0, 0, 0, 0, 0, 0))).toEqual([])
+  })
+
+  it('notes tables past the read limit', () => {
+    const c = contents(0, 0, 0, 0, 50, 900)
+    expect(contentsRows({ ...c, tables: { ...c.tables, unread: 12 } })).toEqual([
+      { key: 'tables', label: 'Tables', text: '50 tables · 900 rows', aside: '+12 not counted' }
+    ])
   })
 
   it('folds into one line', () => {
@@ -166,32 +174,41 @@ describe('contents', () => {
   })
 })
 
-describe('memory strata', () => {
-  it('segments run oldest to newest with widths as shares of the total', () => {
-    const segs = strataSegments({ older: 12_000, quarter: 3000, month: 0, week: 1000 })
-    expect(segs.map((s) => s.band)).toEqual(['older', 'quarter', 'week'])
-    expect(segs.map((s) => s.pct)).toEqual([75, 18.8, 6.3])
-    expect(segs.map((s) => s.tokens)).toEqual([12_000, 3000, 1000])
+describe('memory and table shelves', () => {
+  const now = Date.parse('2026-10-10T12:00:00Z')
+  const ago = (days: number) => new Date(now - days * 86_400_000).toISOString()
+
+  it('memory spines fade with time since the last update, never to invisible', () => {
+    const spines = memorySpines([
+      { path: 'mind/people.md', tokens: 1200, updatedAt: ago(2) },
+      { path: 'mind/plans.md', tokens: 1200, updatedAt: ago(20) },
+      { path: 'mind/old.md', tokens: 1200, updatedAt: ago(400) }
+    ], now)
+    expect(spines.map((s) => s.opacity)).toEqual([1, 0.7, 0.35])
+    expect(spines[0].tip).toBe('mind/people.md · ~1.2k tokens · updated 2 days ago')
+    expect(new Set(spines.map((s) => s.height)).size).toBe(1)
   })
 
-  it('tooltips name tokens and age', () => {
-    const tips = strataSegments({ older: 12_000, quarter: 3000, month: 800, week: 1000 }).map((s) => s.tip)
-    expect(tips).toEqual([
-      '~12k tokens last updated over 90 days ago',
-      '~3k tokens last updated 30–90 days ago',
-      '~800 tokens last updated 7–30 days ago',
-      '~1k tokens last updated in the last 7 days'
+  it('table spines grow with rows; an empty table is an outline', () => {
+    const [big, small, empty] = tableSpines([
+      { name: 'local_contacts', rows: 1240, columns: 6 },
+      { name: 'local_tags', rows: 3, columns: 1 },
+      { name: 'local_new', rows: 0, columns: 2 }
     ])
+    expect(big.height).toBeGreaterThan(small.height)
+    expect(big.tip).toBe('local_contacts · 1,240 rows · 6 columns')
+    expect(small.tip).toBe('local_tags · 3 rows · 1 column')
+    expect(empty).toMatchObject({ empty: true })
+    expect(tableSpines(undefined)).toEqual([])
   })
 
-  it('summary for screen readers', () => {
-    expect(strataSummary(strataSegments({ older: 12_000, quarter: 0, month: 0, week: 500 })))
-      .toBe('Memory by last update: ~12k tokens over 90 days ago, ~500 tokens in the last 7 days')
-  })
-
-  it('no strip when memory is 0 or missing', () => {
-    expect(strataSegments({ older: 0, quarter: 0, month: 0, week: 0 })).toEqual([])
-    expect(strataSegments(undefined)).toEqual([])
+  it('formats time since an update', () => {
+    expect(formatAgo(ago(0.2), now)).toBe('today')
+    expect(formatAgo(ago(1.5), now)).toBe('yesterday')
+    expect(formatAgo(ago(5), now)).toBe('5 days ago')
+    expect(formatAgo(ago(21), now)).toBe('3 weeks ago')
+    expect(formatAgo(ago(120), now)).toBe('4 months ago')
+    expect(formatAgo(ago(800), now)).toBe('2 years ago')
   })
 })
 

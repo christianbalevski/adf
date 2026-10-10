@@ -7,8 +7,8 @@
 
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import { POWER_LEVEL_MAX } from '../../../../shared/utils/agent-stats'
-import { MEMORY_STRATA_BANDS, MEMORY_STRATA_DAYS } from '../../../../shared/types/agent-vitals.types'
-import type { ActivityDay, AgentContents, ExperienceStat, MemoryStrata, MemoryStratum, PowerStat, SkillSize, StatFactor, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
+import { MEMORY_STRATA_DAYS } from '../../../../shared/types/agent-vitals.types'
+import type { ActivityDay, AgentContents, ExperienceStat, MemoryFileSize, PowerStat, SkillSize, StatFactor, TableSize, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
 
 // =============================================================================
 // Level bar
@@ -605,7 +605,7 @@ export interface ContentsRow {
   label: string
   /** "~20k tokens · 12 files", "5 skills · ~18k tokens", "3 tables · 2.1k rows". */
   text: string
-  /** Right-aligned note: "3 updated this week" (Memory only, absent when 0). */
+  /** Right-aligned note: "+12 not counted" (Tables past the 50 read; absent otherwise). */
   aside?: string
 }
 
@@ -621,17 +621,13 @@ export function approxTokens(n: number): string {
  */
 export function contentsRows(c: AgentContents): ContentsRow[] {
   const rows: ContentsRow[] = []
-  if (c.mind.files > 0) {
-    const recent = c.mind.updatedThisWeek ?? 0
-    rows.push({
-      key: 'mind',
-      label: 'Memory',
-      text: `${approxTokens(c.mind.tokens)} tokens · ${plural(c.mind.files, 'file')}`,
-      ...(recent > 0 ? { aside: `${compactCount(recent)} updated this week` } : {})
-    })
-  }
+  // Recency lives in the shelf's brightness, so the line is just the size.
+  if (c.mind.files > 0) rows.push({ key: 'mind', label: 'Memory', text: `${plural(c.mind.files, 'file')} · ${approxTokens(c.mind.tokens)} tokens` })
   if (c.skills.count > 0) rows.push({ key: 'skills', label: 'Skills', text: `${plural(c.skills.count, 'skill')} · ${approxTokens(c.skills.tokens)} tokens` })
-  if (c.tables.count > 0) rows.push({ key: 'tables', label: 'Tables', text: `${plural(c.tables.count, 'table')} · ${rowsLabel(c.tables.rows)}` })
+  if (c.tables.count > 0) {
+    const unread = c.tables.unread ?? 0
+    rows.push({ key: 'tables', label: 'Tables', text: `${plural(c.tables.count, 'table')} · ${rowsLabel(c.tables.rows)}`, ...(unread > 0 ? { aside: `+${compactCount(unread)} not counted` } : {}) })
+  }
   return rows
 }
 
@@ -645,84 +641,93 @@ export function contentsFoldedLine(c: AgentContents): string {
 }
 
 // =============================================================================
-// Skills bookshelf
+// Bookshelves (Contents)
 // =============================================================================
 
-/** Spine heights in px: a skill with no files, and the tallest any skill gets. */
+/** Spine heights in px: an empty item, and the tallest any item gets. */
 export const SHELF_MIN_PX = 3
 export const SHELF_MAX_PX = 20
-/** Tokens at which a spine reaches full height; larger skills stay at the top. */
-const SHELF_FULL_TOKENS = 50_000
-/** Past this many skills the spines go thin, then wrap to another shelf. */
+/** Past this many items the spines go thin, then wrap to another shelf. */
 export const SHELF_THIN_AFTER = 40
 
 export interface ShelfSpine {
   name: string
   height: number
-  /** Registry entry with no files: drawn as an outline. */
+  /** Nothing in it (a registry skill with no files, an empty table): drawn as an outline. */
   empty: boolean
+  /** 0..1; set on memory, where it fades with time since the file's last update. */
+  opacity?: number
   tip: string
 }
 
 /**
- * One spine per skill, largest first. Height is log-scaled on absolute
- * tokens, so the same skill reads the same height in every agent and a
- * shelf never needs a maximum count: more skills is more spines.
+ * Log-scaled spine height on the absolute size, so the same item reads the
+ * same height in every agent: `unit` is where growth starts to show, `full`
+ * where the spine tops out. Shelves never need a maximum count.
  */
+function spineHeight(value: number, unit: number, full: number): number {
+  const share = Math.min(1, Math.log10(1 + Math.max(0, value) / unit) / Math.log10(1 + full / unit))
+  return Math.round(SHELF_MIN_PX + (SHELF_MAX_PX - SHELF_MIN_PX) * share)
+}
+
+/** Skills, largest first; height by tokens, full at 50k. */
 export function shelfSpines(items: SkillSize[] | undefined): ShelfSpine[] {
   if (!items) return []
-  const top = Math.log10(1 + SHELF_FULL_TOKENS / 100)
-  return items.map((s) => {
-    const share = Math.min(1, Math.log10(1 + Math.max(0, s.tokens) / 100) / top)
+  return items.map((s) => ({
+    name: s.name,
+    height: spineHeight(s.tokens, 100, 50_000),
+    empty: s.files === 0,
+    tip: s.files === 0 ? `${s.name} · no files` : `${s.name} · ${approxTokens(s.tokens)} tokens · ${plural(s.files, 'file')}`
+  }))
+}
+
+const { week: WEEK_DAYS, month: MONTH_DAYS, quarter: QUARTER_DAYS } = MEMORY_STRATA_DAYS
+const DAY_MS = 86_400_000
+
+/** Brightness by time since the last update: this week full, fading to 0.35 past a quarter. Never so faint it reads as empty. */
+function memoryOpacity(days: number): number {
+  if (days <= WEEK_DAYS) return 1
+  if (days <= MONTH_DAYS) return 0.7
+  if (days <= QUARTER_DAYS) return 0.5
+  return 0.35
+}
+
+/** "today", "yesterday", "5 days ago", "3 weeks ago", "4 months ago", "2 years ago". */
+export function formatAgo(iso: string, now: number): string {
+  const days = Math.floor((now - Date.parse(iso)) / DAY_MS)
+  if (!Number.isFinite(days)) return 'at an unknown time'
+  if (days < 1) return 'today'
+  if (days < 2) return 'yesterday'
+  if (days < 14) return `${days} days ago`
+  if (days < 60) return `${Math.floor(days / 7)} weeks ago`
+  if (days < 730) return `${Math.floor(days / 30)} months ago`
+  return `${Math.floor(days / 365)} years ago`
+}
+
+/** Memory files, newest first; height by tokens (full at 20k), brightness by recency. */
+export function memorySpines(items: MemoryFileSize[] | undefined, now: number): ShelfSpine[] {
+  if (!items) return []
+  return items.map((f) => {
+    const days = (now - Date.parse(f.updatedAt)) / DAY_MS
     return {
-      name: s.name,
-      height: Math.round(SHELF_MIN_PX + (SHELF_MAX_PX - SHELF_MIN_PX) * share),
-      empty: s.files === 0,
-      tip: s.files === 0 ? `${s.name} · no files` : `${s.name} · ${approxTokens(s.tokens)} tokens · ${plural(s.files, 'file')}`
+      name: f.path,
+      height: spineHeight(f.tokens, 50, 20_000),
+      empty: f.tokens === 0,
+      opacity: memoryOpacity(Number.isFinite(days) ? days : Infinity),
+      tip: `${f.path} · ${approxTokens(f.tokens)} tokens · updated ${formatAgo(f.updatedAt, now)}`
     }
   })
 }
 
-// =============================================================================
-// Memory strata
-// =============================================================================
-
-const { week: WEEK_DAYS, month: MONTH_DAYS, quarter: QUARTER_DAYS } = MEMORY_STRATA_DAYS
-
-/** When a band's files were last updated, as the tooltip says it. */
-const STRATUM_AGE: Record<MemoryStratum, string> = {
-  older: `over ${QUARTER_DAYS} days ago`,
-  quarter: `${MONTH_DAYS}–${QUARTER_DAYS} days ago`,
-  month: `${WEEK_DAYS}–${MONTH_DAYS} days ago`,
-  week: `in the last ${WEEK_DAYS} days`
-}
-
-export interface StrataSegment {
-  band: MemoryStratum
-  tokens: number
-  /** Share of the strip, 0..100, one decimal. */
-  pct: number
-  /** "~12k tokens last updated over 90 days ago" */
-  tip: string
-}
-
-/** Non-empty bands, oldest first (left to right on the strip). Empty when memory is 0. */
-export function strataSegments(strata: MemoryStrata | undefined): StrataSegment[] {
-  if (!strata) return []
-  const tokens = (b: MemoryStratum): number => (Number.isFinite(strata[b]) && strata[b] > 0 ? strata[b] : 0)
-  const total = MEMORY_STRATA_BANDS.reduce((n, b) => n + tokens(b), 0)
-  if (total <= 0) return []
-  return MEMORY_STRATA_BANDS.filter((b) => tokens(b) > 0).map((band) => ({
-    band,
-    tokens: tokens(band),
-    pct: Math.round((tokens(band) / total) * 1000) / 10,
-    tip: `${approxTokens(tokens(band))} tokens last updated ${STRATUM_AGE[band]}`
+/** Tables, most rows first; height by rows, full at 100k. */
+export function tableSpines(items: TableSize[] | undefined): ShelfSpine[] {
+  if (!items) return []
+  return items.map((t) => ({
+    name: t.name,
+    height: spineHeight(t.rows, 1, 100_000),
+    empty: t.rows === 0,
+    tip: `${t.name} · ${t.rows.toLocaleString()} ${t.rows === 1 ? 'row' : 'rows'} · ${plural(t.columns, 'column')}`
   }))
-}
-
-/** "Memory by last update: ~12k tokens over 90 days ago, ~1k tokens in the last 7 days" */
-export function strataSummary(segments: StrataSegment[]): string {
-  return `Memory by last update: ${segments.map((s) => `${approxTokens(s.tokens)} tokens ${STRATUM_AGE[s.band]}`).join(', ')}`
 }
 
 // =============================================================================

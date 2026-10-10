@@ -128,7 +128,11 @@ describe('readAgentActivity', () => {
     const bytes = mind.reduce((n, f) => n + memoryBytes(f.path, f.size), 0)
     expect(bytes).toBe(mind.reduce((n, f) => n + f.size, 0) - Buffer.byteLength(DEFAULT_MIND_LOG_CONTENT))
     // Only people.md is inside the last 7 days: old.md and the seeded files are older.
-    expect(a.contents.mind).toEqual({ files: mind.length, tokens: Math.round(bytes / 4), updatedThisWeek: 1, strata: readMemoryStrata(q, now) })
+    const { items: mindItems, ...mindTotals } = a.contents.mind
+    expect(mindTotals).toEqual({ files: mind.length, tokens: Math.round(bytes / 4), updatedThisWeek: 1, strata: readMemoryStrata(q, now) })
+    // Every mind/ file, newest first (people.md was updated an hour ago).
+    expect(mindItems?.map((f) => f.path).sort()).toEqual(mind.map((f) => f.path).sort())
+    expect(mindItems?.[0]).toEqual({ path: 'mind/people.md', tokens: Math.round(('mind/people.md'.length + 2) / 4), updatedAt: iso(now - HOUR) })
     // research (file) + legacy (registry only, 0 tokens); starter excluded.
     const researchTokens = Math.round('# skills/research/SKILL.md'.length / 4)
     expect(a.contents.skills).toEqual({
@@ -140,7 +144,7 @@ describe('readAgentActivity', () => {
         { name: 'legacy', tokens: 0, files: 0 }
       ]
     })
-    expect(a.contents.tables).toEqual({ count: 1, rows: 3 })
+    expect(a.contents.tables).toEqual({ count: 1, rows: 3, items: [{ name: 'local_notes', rows: 3, columns: 2 }] })
   })
 
   it('scans incrementally from the last high-water seq', () => {

@@ -16,7 +16,7 @@ import { MAIN_LOOP, useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
 import { useInboxStore } from '../../../stores/inbox.store'
 import { Tooltip } from '../../common/Tooltip'
-import type { ActivityDay, AgentActivity, AgentContents, MemoryStratum, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
+import type { ActivityDay, AgentActivity, AgentContents, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
 import type { OverviewReader } from './useOverviewRead'
 import {
   COMING_UP_ROW_LIMIT,
@@ -29,14 +29,15 @@ import {
   hasActivity,
   sparkHeights,
   sparkSummary,
+  memorySpines,
   shelfSpines,
   SHELF_THIN_AFTER,
-  strataSegments,
-  strataSummary,
+  tableSpines,
   timerRowText,
   visibleItems,
   waitingItems,
   type ContentsKey,
+  type ShelfSpine,
   type WaitingItem
 } from './agent-overview-model'
 
@@ -57,7 +58,7 @@ export function OverviewActivity({ activity, now, chartFolded, contentsFolded }:
   now: number
   /** The sparkline is a fact in the stats' facts line instead. */
   chartFolded: boolean
-  /** Contents shows as one line in its title row, without rows or strip. */
+  /** Contents shows as one line in its title row, without rows or shelves. */
   contentsFolded: boolean
 }) {
   if (!activity) return null
@@ -65,7 +66,7 @@ export function OverviewActivity({ activity, now, chartFolded, contentsFolded }:
     <>
       <ComingUp activity={activity} now={now} />
       {!chartFolded && <ActivitySpark daily={activity.daily} />}
-      <Contents contents={activity.contents} folded={contentsFolded} />
+      <Contents contents={activity.contents} folded={contentsFolded} now={now} />
     </>
   )
 }
@@ -264,10 +265,10 @@ const CONTENTS_ROW = ROW.replace('py-0.5', 'py-0')
  * Memory (`mind/`, what the agent recorded since creation), Skills (loaded
  * capability) and Tables, one row each, no shared meter or total: memory and
  * skills are different things. Rows with nothing in them are left out; the
- * section hides when all are. Under Memory, the strata strip. Folded: one
+ * section hides when all are. Under each row, its bookshelf. Folded: one
  * line ("Memory ~20k · 5 skills · 3 tables") in the title row.
  */
-function Contents({ contents, folded }: { contents: AgentContents; folded: boolean }) {
+function Contents({ contents, folded, now }: { contents: AgentContents; folded: boolean; now: number }) {
   const rows = useMemo(() => contentsRows(contents), [contents])
   if (rows.length === 0) return null
   if (folded) {
@@ -296,8 +297,7 @@ function Contents({ contents, folded }: { contents: AgentContents; folded: boole
               </span>
               {r.aside && <span className={WHEN}>{r.aside}</span>}
             </button>
-            {r.key === 'mind' && <MemoryStrata contents={contents} />}
-            {r.key === 'skills' && <SkillShelf contents={contents} />}
+            <ContentsShelf group={r.key} contents={contents} now={now} />
           </li>
         ))}
       </ul>
@@ -305,60 +305,48 @@ function Contents({ contents, folded }: { contents: AgentContents; folded: boole
   )
 }
 
-/** Sequential, one ink family: settled memory darkest (most emphatic in dark), fresh lightest. */
-const STRATUM_FILL: Record<MemoryStratum, string> = {
-  older: 'var(--ink)',
-  quarter: 'var(--ink-muted)',
-  month: 'var(--ink-faint)',
-  week: 'var(--rule-strong)'
-}
-
 /**
- * The memory's tokens by when each file was last updated, oldest left. 4 px
- * plus a 2 px gap under the Memory row; a 2 px surface gap between segments.
- * No legend: each segment's tooltip names its band, the aria-label all of
- * them. Hidden when memory (less the seeded log header) is 0.
+ * One Contents group as a bookshelf: a spine per item, height by its size on
+ * a log scale (agent-overview-model), standing on a 1 px shelf. Past
+ * SHELF_THIN_AFTER the spines go thin, then wrap. Each spine's tooltip names
+ * the item and its size; a spine with `opacity` (memory) fades with age.
+ * Click opens where the group lives.
  */
-function MemoryStrata({ contents }: { contents: AgentContents }) {
-  const segments = useMemo(() => strataSegments(contents.mind.strata), [contents])
-  if (segments.length === 0) return null
-  return (
-    <div role="img" aria-label={strataSummary(segments)} className="mt-0.5 flex h-1 gap-[2px]">
-      {segments.map((s) => (
-        // Hit area 12 px tall, layout height 4.
-        <Tooltip key={s.band} tip={s.tip} delay={0} className="block -my-1 py-1 min-w-[3px]" style={{ flex: `${s.tokens} 1 0px` }}>
-          <span className="block h-1 rounded-[1px]" style={{ background: STRATUM_FILL[s.band] }} />
-        </Tooltip>
-      ))}
-    </div>
-  )
-}
-
-/**
- * The agent's skills as a bookshelf: one spine per skill, largest first,
- * height by its tokens on a log scale (shelfSpines). Spines stand on a 1 px
- * shelf; past SHELF_THIN_AFTER they go thin, then wrap. Each spine's tooltip
- * names the skill with its size and file count. Click opens the skills list.
- */
-function SkillShelf({ contents }: { contents: AgentContents }) {
-  const spines = useMemo(() => shelfSpines(contents.skills.items), [contents])
+function Shelf({ spines, label, onOpen }: { spines: ShelfSpine[]; label: string; onOpen: () => void }) {
   if (spines.length === 0) return null
   const width = spines.length > SHELF_THIN_AFTER ? 3 : 6
   return (
     <button
       type="button"
-      onClick={openContents.skills}
-      aria-label={`${spines.length} skills, largest ${spines[0].tip}`}
+      onClick={onOpen}
+      aria-label={label}
       className="mt-0.5 flex w-full flex-wrap items-end gap-x-[2px] gap-y-1 border-b border-[var(--rule)] pb-px"
     >
       {spines.map((s) => (
         <Tooltip key={s.name} tip={s.tip} delay={0} className="block">
           <span
-            className={`block rounded-t-[1px] ${s.empty ? 'border border-b-0 border-[var(--ink-faint)]' : 'bg-[var(--ink-muted)] hover:bg-[var(--ink)]'}`}
-            style={{ width, height: s.height }}
+            className={`block rounded-t-[1px] ${
+              s.empty
+                ? 'border border-b-0 border-[var(--ink-faint)]'
+                : s.opacity !== undefined ? 'bg-[var(--ink)]' : 'bg-[var(--ink-muted)] hover:bg-[var(--ink)]'
+            }`}
+            style={{ width, height: s.height, ...(s.opacity !== undefined && !s.empty ? { opacity: s.opacity } : {}) }}
           />
         </Tooltip>
       ))}
     </button>
   )
+}
+
+function ContentsShelf({ group, contents, now }: { group: ContentsKey; contents: AgentContents; now: number }) {
+  const spines = useMemo(
+    () => group === 'mind' ? memorySpines(contents.mind.items, now)
+      : group === 'skills' ? shelfSpines(contents.skills.items)
+      : tableSpines(contents.tables.items),
+    [group, contents, now]
+  )
+  const label = group === 'mind'
+    ? `${spines.length} memory files, newest first, brighter when updated more recently`
+    : group === 'skills' ? `${spines.length} skills, largest first` : `${spines.length} tables, most rows first`
+  return <Shelf spines={spines} label={label} onOpen={openContents[group]} />
 }

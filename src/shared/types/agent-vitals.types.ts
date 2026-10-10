@@ -268,11 +268,6 @@ export const MEMORY_STRATA_DAYS = { week: 7, month: 30, quarter: 90 } as const
 /** Approximate tokens of `mind/` per age band of the file's updated_at. */
 export type MemoryStrata = Record<MemoryStratum, number>
 
-/**
- * What the agent's file holds, in three groups. Tokens are approximate
- * (bytes / 4, rounded) and given for mind and skills only: table data is
- * rarely read into context, so its size is not comparable.
- */
 /** One skill's size, from its files under `skills/<name>/`. */
 export interface SkillSize {
   name: string
@@ -280,23 +275,47 @@ export interface SkillSize {
   files: number
 }
 
+/** One `mind/` file: memory tokens (memoryBytes / 4) and its updated_at. */
+export interface MemoryFileSize {
+  path: string
+  tokens: number
+  updatedAt: string
+}
+
+/** One `local_*` table: row and column counts. */
+export interface TableSize {
+  name: string
+  rows: number
+  columns: number
+}
+
+/**
+ * What the agent's file holds, in three groups. Tokens are approximate
+ * (bytes / 4, rounded) and given for mind and skills only: table data is
+ * rarely read into context, so its size is not comparable. Each group's
+ * `items` lists its members for the Overview's bookshelves; absent from
+ * older readers.
+ */
 export interface AgentContents {
   /**
    * Files under `mind/`: count, SUM(size) / 4, files with updated_at in the
    * last 7 days, and `strata`: the same tokens (less the seeded `mind/log.md`
    * header) split by each file's updated_at into MEMORY_STRATA_DAYS bands.
+   * `items`: every file, most recently updated first.
    */
-  mind: { files: number; tokens: number; updatedThisWeek: number; strata: MemoryStrata }
+  mind: { files: number; tokens: number; updatedThisWeek: number; strata: MemoryStrata; items?: MemoryFileSize[] }
   /**
    * Skills the agent installed or changed (the Experience stat's rule) and
    * the tokens of every file under those skills' directories. Registry
    * entries without files count but add no tokens. `items`: each of those
-   * skills with its own tokens and file count, largest first (the
-   * Overview's bookshelf); absent from older readers.
+   * skills with its own tokens and file count, largest first.
    */
   skills: { count: number; tokens: number; items?: SkillSize[] }
-  /** `local_*` tables (at most 50 read) and their total rows. */
-  tables: { count: number; rows: number }
+  /**
+   * `local_*` tables (at most 50 read) and their total rows. `items`: those
+   * tables, most rows first; `unread`: tables past the 50 (not counted).
+   */
+  tables: { count: number; rows: number; items?: TableSize[]; unread?: number }
 }
 
 /** Result of `adf:agent:activity` and `GET /agents/:id/activity`. */

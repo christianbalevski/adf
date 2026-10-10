@@ -25,7 +25,9 @@ import type {
   AgentMetric,
   AgentPowerInputs,
   AgentVitals,
+  MemoryFileSize,
   MemoryStrata,
+  TableSize,
   UpcomingWake
 } from '../../shared/types/agent-vitals.types'
 import { MEMORY_STRATA_DAYS, UPCOMING_TEXT_MAX } from '../../shared/types/agent-vitals.types'
@@ -577,6 +579,7 @@ export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>,
   let mindBytes = 0
   let mindRecent = 0
   let skillBytes = 0
+  const mindItems: MemoryFileSize[] = []
   const perSkill = new Map<string, { bytes: number; files: number }>()
   for (const name of agentSkills) perSkill.set(name, { bytes: 0, files: 0 })
   for (const f of files) {
@@ -584,6 +587,7 @@ export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>,
     if (f.path.startsWith('mind/')) {
       mindFiles++
       mindBytes += memoryBytes(f.path, size)
+      mindItems.push({ path: f.path, tokens: approxTokens(memoryBytes(f.path, size)), updatedAt: f.updated_at })
       if (Date.parse(f.updated_at) >= weekAgo) mindRecent++
       continue
     }
@@ -599,14 +603,26 @@ export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>,
     .map(([name, s]) => ({ name, tokens: approxTokens(s.bytes), files: s.files }))
     .sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name))
 
-  const tables = listLocalTables(q).slice(0, MAX_TABLES)
+  // ISO timestamps sort lexically: newest first.
+  mindItems.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : a.path.localeCompare(b.path)))
+
+  const allTables = listLocalTables(q)
+  const tables = allTables.slice(0, MAX_TABLES)
   let rows = 0
-  for (const t of tables) rows += safe(q, `SELECT COUNT(*) AS n FROM "${t}"`, (r) => firstNumber(r), 0)
+  const tableItems: TableSize[] = []
+  for (const t of tables) {
+    const n = safe(q, `SELECT COUNT(*) AS n FROM "${t}"`, (r) => firstNumber(r), 0)
+    const columns = safe(q, `SELECT COUNT(*) AS n FROM pragma_table_info('${t}')`, (r) => firstNumber(r), 0)
+    rows += n
+    tableItems.push({ name: t, rows: n, columns })
+  }
+  tableItems.sort((a, b) => b.rows - a.rows || a.name.localeCompare(b.name))
+  const unread = allTables.length - tables.length
 
   return {
-    mind: { files: mindFiles, tokens: approxTokens(mindBytes), updatedThisWeek: mindRecent, strata: readMemoryStrata(q, now) },
+    mind: { files: mindFiles, tokens: approxTokens(mindBytes), updatedThisWeek: mindRecent, strata: readMemoryStrata(q, now), items: mindItems },
     skills: { count: agentSkills.size, tokens: approxTokens(skillBytes), items },
-    tables: { count: tables.length, rows }
+    tables: { count: tables.length, rows, items: tableItems, ...(unread > 0 ? { unread } : {}) }
   }
 }
 
