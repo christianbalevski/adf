@@ -51,6 +51,8 @@ const ReflectDefineProperty = Reflect.defineProperty;
 const ReflectDeleteProperty = Reflect.deleteProperty;
 const ReflectGetPrototypeOf = Reflect.getPrototypeOf;
 const ReflectIsExtensible = Reflect.isExtensible;
+const ReflectSetPrototypeOf = Reflect.setPrototypeOf;
+const ReflectPreventExtensions = Reflect.preventExtensions;
 const ObjectDefine = Object.defineProperty;
 const ObjectHasOwn = Object.prototype.hasOwnProperty;
 const ArrayIsArray = Array.isArray;
@@ -263,6 +265,20 @@ function toHost(v, seen) {
   return copyToHost(v, seen || new Map());
 }
 
+// vm -> host by reference: like toHost, but an uncached object becomes a view
+// instead of a copy. For prototypes, where a copy would sever the link.
+function toHostRef(v) {
+  if (isPrimitive(v)) return v;
+  let h = vmProxyTarget.get(v);
+  if (h !== undefined) return h;
+  h = intrV2H.get(v);
+  if (h !== undefined) return h;
+  h = hostViewOf.get(v);
+  if (h !== undefined) return h;
+  if (typeof v === 'function') return makeHostFn(v);
+  return makeHostView(v);
+}
+
 function throwToVm(e) {
   throw toVm(e);
 }
@@ -343,22 +359,14 @@ const TYPED_ARRAYS = new Map([
 ]);
 const vmProtoName = new Map(); // vm intrinsic -> name
 
-// A real host function standing in for a vm function (not a proxy, so
-// util.types.isAsyncFunction and friends still classify it correctly).
+// Host side of a vm function. Sync functions get a view, so host code that
+// writes to the function (util.inherits sets ctor.super_ and the prototype's
+// prototype) changes the vm function itself. Async functions get a real host
+// async function instead, so util.types.isAsyncFunction still classifies them
+// (a proxy is never an async function); writes to those stay host-side.
 function makeHostFn(vf) {
-  let w;
-  if (isAsyncFunction(vf)) {
-    w = async function () { return callVm(vf, this, arguments); };
-  } else {
-    w = function () {
-      if (new.target !== undefined) {
-        try {
-          return toHost(ReflectConstruct(vf, mapArgs(arguments, toVm), toVm(new.target)));
-        } catch (e) { throw toHost(e); }
-      }
-      return callVm(vf, this, arguments);
-    };
-  }
+  if (!isAsyncFunction(vf)) return makeHostView(vf);
+  const w = async function () { return callVm(vf, this, arguments); };
   try {
     const n = vf.name;
     if (typeof n === 'string') ObjectDefine(w, 'name', { value: n });
@@ -369,17 +377,6 @@ function makeHostFn(vf) {
   } catch (e) { /* ignore */ }
   hostViewOf.set(vf, w);
   hostViewTarget.set(w, vf);
-  // 'new' through the wrapper (a vm class extending a host class reaches the
-  // host constructor with the wrapper as new.target) must give instances the
-  // vm class's prototype — as a view, never a copy.
-  try {
-    const d = ReflectGetOwnPropertyDescriptor(vf, 'prototype');
-    if (d && 'value' in d && d.value !== null && typeof d.value === 'object') {
-      const vp = d.value;
-      const hp = vmProxyTarget.get(vp) || intrV2H.get(vp) || hostViewOf.get(vp) || makeHostView(vp);
-      w.prototype = hp;
-    }
-  } catch (e) { /* ignore */ }
   return w;
 }
 
@@ -401,13 +398,18 @@ function mapArgs(args, fn) {
 //   into:  converts values arriving from the proxy's user side to the target side
 //   outof: converts target-side values to the user side
 //   fail:  converts a thrown target-side value for the user side
-function membraneHandler(real, into, outof) {
+//   intoRef/outofRef: the same, by reference (prototypes are never copied)
+function membraneHandler(real, into, outof, intoRef, outofRef) {
   function guard(fn) {
     try { return fn(); } catch (e) { throw outof(e); }
   }
+  const realIsFn = typeof real === 'function';
+  function outofProp(key, v) {
+    return realIsFn && key === 'prototype' ? outofRef(v) : outof(v);
+  }
   return {
     get(shadow, key) {
-      return guard(() => outof(ReflectGet(real, key)));
+      return guard(() => outofProp(key, ReflectGet(real, key)));
     },
     set(shadow, key, value) {
       return guard(() => ReflectSet(real, key, into(value)));
@@ -416,7 +418,12 @@ function membraneHandler(real, into, outof) {
       return guard(() => ReflectHas(real, key));
     },
     deleteProperty(shadow, key) {
-      return guard(() => ReflectDeleteProperty(real, key));
+      return guard(() => {
+        const ok = ReflectDeleteProperty(real, key);
+        // Keep a non-extensible shadow's key set equal to the target's.
+        if (ok) ReflectDeleteProperty(shadow, key);
+        return ok;
+      });
     },
     ownKeys(shadow) {
       return guard(() => {
@@ -439,7 +446,7 @@ function membraneHandler(real, into, outof) {
           return undefined;
         }
         const out = { configurable: d.configurable, enumerable: d.enumerable };
-        if ('value' in d) { out.value = outof(d.value); out.writable = d.writable; }
+        if ('value' in d) { out.value = outofProp(key, d.value); out.writable = d.writable; }
         else { out.get = outof(d.get); out.set = outof(d.set); }
         if (!d.configurable) {
           // Mirror onto the shadow so the non-configurable report is legal.
@@ -463,16 +470,37 @@ function membraneHandler(real, into, outof) {
       });
     },
     getPrototypeOf(shadow) {
-      return guard(() => outof(ReflectGetPrototypeOf(real)));
+      return guard(() => outofRef(ReflectGetPrototypeOf(real)));
     },
-    setPrototypeOf() {
-      return false;
+    setPrototypeOf(shadow, proto) {
+      return guard(() => ReflectSetPrototypeOf(real, intoRef(proto)));
     },
     isExtensible(shadow) {
       return ReflectIsExtensible(shadow);
     },
-    preventExtensions() {
-      return false;
+    preventExtensions(shadow) {
+      return guard(() => {
+        if (!ReflectIsExtensible(shadow)) return true;
+        if (!ReflectPreventExtensions(real)) return false;
+        // Proxy invariants bind to the shadow once it is non-extensible: its
+        // own keys and prototype must match what the traps report. Mirror the
+        // target's, drop any extras, then close the shadow too.
+        const keys = ReflectOwnKeys(real);
+        for (let i = 0; i < keys.length; i++) {
+          const d = ReflectGetOwnPropertyDescriptor(real, keys[i]);
+          if (!d) continue;
+          const out = { configurable: d.configurable, enumerable: d.enumerable };
+          if ('value' in d) { out.value = outofProp(keys[i], d.value); out.writable = d.writable; }
+          else { out.get = outof(d.get); out.set = outof(d.set); }
+          ReflectDefineProperty(shadow, keys[i], out);
+        }
+        const extra = ReflectOwnKeys(shadow);
+        for (let i = 0; i < extra.length; i++) {
+          if (keys.indexOf(extra[i]) < 0) ReflectDeleteProperty(shadow, extra[i]);
+        }
+        ReflectSetPrototypeOf(shadow, outofRef(ReflectGetPrototypeOf(real)));
+        return ReflectPreventExtensions(shadow);
+      });
     },
     apply(shadow, self, args) {
       return guard(() => outof(ReflectApply(real, into(self), mapArgs(args, into))));
@@ -496,7 +524,7 @@ function shadowKind(x) {
 
 function makeVmProxy(h) {
   const shadow = vmApi.shadow(shadowKind(h));
-  const p = new Proxy(shadow, membraneHandler(h, toHost, toVm));
+  const p = new Proxy(shadow, membraneHandler(h, toHost, toVm, toHostRef, toVm));
   vmProxyOf.set(h, p);
   vmProxyTarget.set(p, h);
   return p;
@@ -505,7 +533,7 @@ function makeVmProxy(h) {
 function makeHostView(v) {
   const kind = shadowKind(v);
   const shadow = kind === 'fn' ? function () {} : kind === 'arrow' ? () => {} : kind === 'arr' ? [] : {};
-  const p = new Proxy(shadow, membraneHandler(v, toVm, toHost));
+  const p = new Proxy(shadow, membraneHandler(v, toVm, toHost, toVm, toHostRef));
   hostViewOf.set(v, p);
   hostViewTarget.set(p, v);
   return p;

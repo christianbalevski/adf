@@ -127,6 +127,17 @@ export const SANDBOX_PRELUDE = String.raw`
   // ---- Timers (host timer, vm callback) -----------------------------------
   var timers = new MapCtor();
   var timerSeq = 0;
+  // The execution a timer belongs to: the one running when it was created
+  // (nested timers inherit it from the callback that created them). After an
+  // await that link is lost, so fall back to the newest unfinished execution.
+  var currentRun = null;
+  var activeRuns = new MapCtor();
+  function timerOwner() {
+    if (currentRun !== null) return currentRun;
+    var last = null;
+    activeRuns.forEach(function (_, id) { last = id; });
+    return last;
+  }
   function Timeout(id) { this._id = id; }
   Timeout.prototype.ref = function () { return this; };
   Timeout.prototype.unref = function () { return this; };
@@ -139,7 +150,7 @@ export const SANDBOX_PRELUDE = String.raw`
     var id = ++timerSeq;
     var delay = +ms;
     if (!(delay >= 1 && delay <= 2147483647)) delay = 1;
-    timers.set(id, { fn: fn, args: rest, ms: delay, repeat: repeat });
+    timers.set(id, { fn: fn, args: rest, ms: delay, repeat: repeat, owner: timerOwner() });
     B.timerStart(id, delay, repeat);
     return new Timeout(id);
   }
@@ -152,7 +163,22 @@ export const SANDBOX_PRELUDE = String.raw`
     var t = timers.get(id);
     if (!t) return;
     if (!t.repeat) timers.delete(id);
-    try { ReflectApply(t.fn, undefined, t.args); } catch (e) { /* an uncaught timer error must not kill the sandbox */ }
+    var prev = currentRun;
+    currentRun = t.owner;
+    try {
+      ReflectApply(t.fn, undefined, t.args);
+    } catch (e) {
+      // An uncaught timer error fails the execution that set the timer (a
+      // no-op if it already finished) instead of killing the sandbox.
+      if (t.owner !== null) {
+        var info = errorInfo(e);
+        var msg = 'Uncaught exception in timer callback: ' + info[0];
+        push(outFor(t.owner), '[error] ' + msg);
+        B.settle(t.owner, false, msg, info[1]);
+      }
+    } finally {
+      currentRun = prev;
+    }
   }
   function restArgs(args, from) {
     var out = [];
@@ -387,18 +413,25 @@ export const SANDBOX_PRELUDE = String.raw`
     processShim.stdout = { write: function (s) { push(buf, stripNl(s)); return true; } };
     processShim.stderr = { write: function (s) { push(buf, '[stderr] ' + stripNl(s)); return true; } };
     var p;
+    var prev = currentRun;
+    currentRun = id;
+    activeRuns.set(id, true);
     try {
       p = fn(makeAdf(id), con);
     } catch (e) {
       p = PromiseCtor.reject(e);
+    } finally {
+      currentRun = prev;
     }
     ReflectApply(PromiseThen, PromiseResolve(p), [
       function (v) {
+        activeRuns.delete(id);
         var s;
         try { s = serialize(v); } catch (e) { s = '[unserializable]'; }
         B.settle(id, true, s, undefined);
       },
       function (e) {
+        activeRuns.delete(id);
         var info = errorInfo(e);
         B.settle(id, false, info[0], info[1]);
       }
