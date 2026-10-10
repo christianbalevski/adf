@@ -1,7 +1,8 @@
 /**
  * Agent overview: the right dock's first tab. A centred card face mirroring
  * the agent's ALF card (orbital, name and @handle, description, Public /
- * Verified owner badges) and a state line with the model; the agent's own
+ * Verified owner badges), a state line with the model and a surfaces line
+ * (Website / Computer links, when the agent has them); the agent's own
  * status line lives in the titlebar, not here. Then four levelled stats
  * (Experience, Reach, Access, Autonomy) and a facts line (7-day cost, age,
  * next wake).
@@ -21,7 +22,8 @@
  * shorter now):
  *   padding 16
  *   card face 217: bubble 46 (3 lines: 62) + 6, orbital 64, name 4+20,
- *     description 2+32, badges 4+18, state 2+19
+ *     description 2+32, badges 4+18, state 2+19 (surfaces line, added
+ *     since: 2+18, only for agents serving a site or running a computer)
  *   gap 6, stats 109: grid 85, facts 6+18 (metrics: 6 + 3x18+2x2 + 2+18 = 84)
  *   gap 6, Coming up 75: rule+pad 7 + title 18 + 4 + 2 rows x 23
  *   gap 6, Activity 55: 31 + spark 24
@@ -45,6 +47,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { OverviewActivity, readActivity } from './OverviewActivity'
 import { OverviewOrbital } from './OverviewOrbital'
+import { OverviewSurfaces } from './OverviewSurfaces'
 import { useOverviewRead, type OverviewReader } from './useOverviewRead'
 import { useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
@@ -288,6 +291,7 @@ export function AgentOverview() {
             {model && <span className="text-[var(--ink-muted)]">{live.label && ' · '}<span className="font-mono text-[11.5px]">{model}</span></span>}
           </p>
         )}
+        <OverviewSurfaces />
       </header>
 
       <section className="space-y-1.5">

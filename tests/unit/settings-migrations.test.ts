@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applySettingsMigrations, LEGACY_MIND_PROMPT_SECTION, UI_FONT_BRAND_MIGRATION_KEY, PROMPT_AUTO_UPDATE_KEY, PROMPT_DEFAULTS_APPLIED_KEY, currentPromptDefaults, promptDefaultsFingerprint } from '../../src/shared/utils/settings-migrations'
+import { applySettingsMigrations, LEGACY_MIND_PROMPT_SECTION, UI_FONT_SYSTEM_MIGRATION_KEY, PROMPT_AUTO_UPDATE_KEY, PROMPT_DEFAULTS_APPLIED_KEY, currentPromptDefaults, promptDefaultsFingerprint } from '../../src/shared/utils/settings-migrations'
 import { MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS } from '../../src/shared/constants/adf-defaults'
 
 const CUSTOM_BASE = 'You are a custom agent. Do custom things.'
@@ -190,13 +190,13 @@ describe('settings migrations — {{skills-registry.json}} backfill', () => {
   })
 })
 
-describe('settings migrations — uiFont brand default', () => {
-  it('moves a store still on the old system default to inter-tight, once', () => {
-    const data: Record<string, unknown> = { uiFont: 'system' }
+describe('settings migrations — uiFont system default', () => {
+  it('moves a store on the old inter-tight default to system, once', () => {
+    const data: Record<string, unknown> = { uiFont: 'inter-tight' }
     const result = applySettingsMigrations(data)
-    expect(data.uiFont).toBe('inter-tight')
-    expect(data[UI_FONT_BRAND_MIGRATION_KEY]).toBe(true)
-    expect(result.changedKeys).toEqual(expect.arrayContaining(['uiFont', UI_FONT_BRAND_MIGRATION_KEY]))
+    expect(data.uiFont).toBe('system')
+    expect(data[UI_FONT_SYSTEM_MIGRATION_KEY]).toBe(true)
+    expect(result.changedKeys).toEqual(expect.arrayContaining(['uiFont', UI_FONT_SYSTEM_MIGRATION_KEY]))
   })
 
   it('keeps an explicit non-default choice', () => {
@@ -206,12 +206,12 @@ describe('settings migrations — uiFont brand default', () => {
     expect(result.changedKeys).not.toContain('uiFont')
   })
 
-  it('keeps System when picked after the migration ran', () => {
-    const data: Record<string, unknown> = { uiFont: 'system', [UI_FONT_BRAND_MIGRATION_KEY]: true }
+  it('keeps Inter Tight when picked after the migration ran', () => {
+    const data: Record<string, unknown> = { uiFont: 'inter-tight', [UI_FONT_SYSTEM_MIGRATION_KEY]: true }
     const result = applySettingsMigrations(data)
-    expect(data.uiFont).toBe('system')
+    expect(data.uiFont).toBe('inter-tight')
     expect(result.changedKeys).not.toContain('uiFont')
-    expect(result.changedKeys).not.toContain(UI_FONT_BRAND_MIGRATION_KEY)
+    expect(result.changedKeys).not.toContain(UI_FONT_SYSTEM_MIGRATION_KEY)
   })
 })
 

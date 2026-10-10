@@ -24,13 +24,14 @@ export type ChatPlacement = 'side' | 'center'
 export type ChatWidth = 'comfortable' | 'full'
 
 /**
- * Global, persisted (settings store): interface typeface. `inter-tight` (the
- * default) is the bundled brand face; the other presets are family stacks
- * that fall back to the system stack when the face is not installed.
+ * Global, persisted (settings store): interface typeface. `system` (the
+ * default) is the OS face; `inter-tight` is the bundled brand face; the other
+ * presets are family stacks that fall back to the system stack when the face
+ * is not installed.
  * `custom` reads `uiFontCustom`.
  */
 export type UiFont = 'inter-tight' | 'system' | 'segoe' | 'inter' | 'roboto' | 'sf' | 'calibri' | 'verdana' | 'georgia' | 'custom'
-export const UI_FONT_DEFAULT: UiFont = 'inter-tight'
+export const UI_FONT_DEFAULT: UiFont = 'system'
 export const UI_FONT_SYSTEM_STACK =
   "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif"
 export const UI_FONT_STACKS: Record<Exclude<UiFont, 'custom'>, string> = {
@@ -50,8 +51,8 @@ export const UI_FONT_STACKS: Record<Exclude<UiFont, 'custom'>, string> = {
  * that would silently fall back — on Windows, Inter/SF/Roboto usually would.
  */
 export const UI_FONT_PRESETS: { value: Exclude<UiFont, 'custom'>; label: string; family: string | null }[] = [
-  { value: 'inter-tight', label: 'Inter Tight', family: null },
   { value: 'system', label: 'System', family: null },
+  { value: 'inter-tight', label: 'Inter Tight', family: null },
   { value: 'segoe', label: 'Segoe UI', family: 'Segoe UI' },
   { value: 'inter', label: 'Inter', family: 'Inter' },
   { value: 'roboto', label: 'Roboto', family: 'Roboto' },
@@ -91,6 +92,15 @@ export const LOGS_PANEL_HEIGHT_DEFAULT = 200
 /** Same localStorage idiom the editor's line-wrap / open-tabs prefs use. */
 const CHAT_PLACEMENT_KEY = 'adf-chat-placement'
 const CHAT_WIDTH_KEY = 'adf-chat-width'
+const COMPUTER_MATCH_TAB_KEY = 'adf-computer-match-tab'
+
+function loadComputerMatchTab(): boolean {
+  try {
+    return localStorage.getItem(COMPUTER_MATCH_TAB_KEY) === '1'
+  } catch {
+    return false
+  }
+}
 
 function loadChatPlacement(): ChatPlacement {
   try {
@@ -152,6 +162,9 @@ export interface AppState {
   chatPlacement: ChatPlacement
   /** Global, persisted: reading-column width of the chat. Center placement only. */
   chatWidth: ChatWidth
+  /** Global, persisted: the computer tab resizes the agent's screen to fill
+   *  the tab (noVNC resize=remote) instead of scaling it to fit. */
+  computerMatchTab: boolean
   /**
    * Center-stage tab selection for the chat tab. Only meaningful while the
    * chat is placed in the center; the editor's own `activeTabPath` keeps
@@ -247,6 +260,7 @@ export interface AppState {
   setChatPlacement: (placement: ChatPlacement) => void
   /** Persisted; only observable while the chat is on the center stage. */
   setChatWidth: (width: ChatWidth) => void
+  setComputerMatchTab: (on: boolean) => void
   setCenterChatTabActive: (active: boolean) => void
   /**
    * Uncollapse the right panel WITHOUT changing which tab it shows —
@@ -354,6 +368,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingConfigSection: null,
   chatPlacement: loadChatPlacement(),
   chatWidth: loadChatWidth(),
+  computerMatchTab: loadComputerMatchTab(),
   centerChatTabActive: loadChatPlacement() === 'center',
   sidebarCollapsed: false,
   sidebarWidth: loadStoredSize(SIDEBAR_WIDTH_KEY, SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX),
@@ -410,6 +425,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   setRightPanel: (panel) => set({ rightPanel: panel }),
   setAgentSubTab: (tab) => set({ agentSubTab: tab }),
   setPendingConfigSection: (section) => set({ pendingConfigSection: section }),
+  setComputerMatchTab: (on) => {
+    try {
+      localStorage.setItem(COMPUTER_MATCH_TAB_KEY, on ? '1' : '0')
+    } catch { /* storage full/unavailable — non-fatal, the pref just won't stick */ }
+    set({ computerMatchTab: on })
+  },
   setChatPlacement: (placement) => {
     saveChatPlacement(placement)
     set((s) => {

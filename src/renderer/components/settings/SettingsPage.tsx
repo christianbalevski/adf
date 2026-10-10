@@ -1848,7 +1848,7 @@ export function SettingsPage() {
             </SettingsRow>
             <SettingsRow
               label="Font family"
-              description="Typeface for the whole interface. Inter Tight ships with Studio; other presets fall back to the system font if the face isn't installed."
+              description="Typeface for the whole interface. System and Inter Tight always work; other presets fall back to the system font if the face isn't installed."
             >
               <div className="flex items-center gap-2">
                 <Select

@@ -1,4 +1,6 @@
 import type { EditorTab } from '../../stores/editor-tabs.store'
+import { useAppStore } from '../../stores/app.store'
+import { Tooltip } from '../common/Tooltip'
 
 /**
  * The chat's stage tab, when the Loops panel is placed in the center. Pinned
@@ -53,6 +55,8 @@ function CloseGlyph() {
 }
 
 export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatTab }: Props) {
+  const computerMatchTab = useAppStore((s) => s.computerMatchTab)
+  const setComputerMatchTab = useAppStore((s) => s.setComputerMatchTab)
   if (tabs.length === 0 && !chatTab) return null
 
   return (
@@ -125,6 +129,31 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
               className={`${TAB_BASE} border-r border-hairline ${isActive ? TAB_ACTIVE : TAB_IDLE}`}
             >
               <span className="truncate max-w-[150px]" title={hoverTitle}>{fileName}</span>
+              {isBrowser && (
+                <Tooltip tip={computerMatchTab
+                  ? "Match tab size is on: the agent's screen resizes to fill this tab. Click to keep the agent's size and scale it to fit."
+                  : "Match tab size: resize the agent's screen to fill this tab. Off, the screen keeps the size the agent set, scaled to fit."}>
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setComputerMatchTab(!computerMatchTab)
+                    }}
+                    aria-pressed={computerMatchTab}
+                    className={`${TAB_ICON_BUTTON} ${
+                      computerMatchTab
+                        ? 'opacity-100 text-[var(--adf-ui-accent)]'
+                        : isActive ? 'opacity-60 hover:opacity-100' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100'
+                    }`}
+                  >
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="15 3 21 3 21 9" />
+                      <polyline points="9 21 3 21 3 15" />
+                      <line x1="21" y1="3" x2="14" y2="10" />
+                      <line x1="3" y1="21" x2="10" y2="14" />
+                    </svg>
+                  </span>
+                </Tooltip>
+              )}
               {isBrowser && onReload && (
                 <span
                   onClick={(e) => {

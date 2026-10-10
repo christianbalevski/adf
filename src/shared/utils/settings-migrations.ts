@@ -53,7 +53,7 @@ export function applySettingsMigrations(data: Record<string, unknown>): Settings
   if (migrateGlobalSystemPromptSoul(data)) changedKeys.add('globalSystemPrompt')
   if (migrateGlobalSystemPromptMind(data)) changedKeys.add('globalSystemPrompt')
   for (const key of applyPromptUpdates(data)) changedKeys.add(key)
-  for (const key of migrateUiFontBrandDefault(data)) changedKeys.add(key)
+  for (const key of migrateUiFontSystemDefault(data)) changedKeys.add(key)
   return { changed: changedKeys.size > 0, changedKeys: [...changedKeys] }
 }
 
@@ -97,25 +97,26 @@ function applyPromptUpdates(data: Record<string, unknown>): string[] {
   return ['globalSystemPrompt', 'compactionPrompt', 'toolPrompts', PROMPT_DEFAULTS_APPLIED_KEY]
 }
 
-/** One-time marker: set once the bundled-brand-font default has been applied. */
-export const UI_FONT_BRAND_MIGRATION_KEY = 'uiFontBrandDefaultApplied'
+/** One-time marker: set once the system-font default has been applied. */
+export const UI_FONT_SYSTEM_MIGRATION_KEY = 'uiFontSystemDefaultApplied'
 
 /**
- * The interface font default moved from the system stack to the bundled Inter
- * Tight. Stores still on the old default ('system', which defaults wrote to
- * disk for everyone) move to it once; any other explicit choice is kept. The
- * marker makes it one-shot, so picking System afterwards sticks. Deliberately
- * NOT in createSettingsDefaults: the defaults merge would set it before this
- * runs and existing stores would never migrate.
+ * The interface font default moved back from the bundled Inter Tight to the
+ * system face (Inter Tight read as hard on the eyes at UI sizes). Stores on
+ * Inter Tight — which an earlier one-shot wrote for everyone on the default —
+ * move to System once; any other explicit choice is kept. The marker makes it
+ * one-shot, so picking Inter Tight afterwards sticks. Deliberately NOT in
+ * createSettingsDefaults: the defaults merge would set it before this runs and
+ * existing stores would never migrate.
  */
-function migrateUiFontBrandDefault(data: Record<string, unknown>): string[] {
-  if (data[UI_FONT_BRAND_MIGRATION_KEY] === true) return []
-  data[UI_FONT_BRAND_MIGRATION_KEY] = true
-  if (data.uiFont === undefined || data.uiFont === 'system') {
-    data.uiFont = 'inter-tight'
-    return [UI_FONT_BRAND_MIGRATION_KEY, 'uiFont']
+function migrateUiFontSystemDefault(data: Record<string, unknown>): string[] {
+  if (data[UI_FONT_SYSTEM_MIGRATION_KEY] === true) return []
+  data[UI_FONT_SYSTEM_MIGRATION_KEY] = true
+  if (data.uiFont === undefined || data.uiFont === 'inter-tight') {
+    data.uiFont = 'system'
+    return [UI_FONT_SYSTEM_MIGRATION_KEY, 'uiFont']
   }
-  return [UI_FONT_BRAND_MIGRATION_KEY]
+  return [UI_FONT_SYSTEM_MIGRATION_KEY]
 }
 
 /**

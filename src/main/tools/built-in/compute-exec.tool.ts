@@ -62,7 +62,7 @@ export class ComputeExecTool implements Tool {
         ? ` Commands run in ${targets[0]}.`
         : ''
     const displayNote = capabilities.hasIsolated && capabilities.browserDisplay
-      ? ' Your isolated container has a visible display at DISPLAY=:99 that the user can watch and interact with — launch browsers with headless:false (and --no-sandbox) to show them something.'
+      ? ' Your isolated container has a visible display at DISPLAY=:99 that the user can watch and interact with — launch browsers with headless:false (and --no-sandbox) to show them something. You set its size with `xrandr --fb 1440x900`; the user\'s view scales to fit.'
       : ''
     this.description = `${BASE_DESCRIPTION}${targetNote}${displayNote}${capabilities.hostInfo ? ` ${capabilities.hostInfo}` : ''}`
   }

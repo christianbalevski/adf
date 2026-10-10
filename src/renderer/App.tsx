@@ -196,6 +196,7 @@ export default function App() {
   // Interface typeface: rewrite the CSS token the html/body rule reads.
   useEffect(() => {
     document.documentElement.style.setProperty('--adf-font-ui', resolveUiFontStack(uiFont, uiFontCustom))
+    document.documentElement.dataset.uiFont = uiFont
   }, [uiFont, uiFontCustom])
 
   // UI scale via Electron zoom; Ctrl+= / Ctrl+- (menu roles) layer on top.

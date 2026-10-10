@@ -30,10 +30,14 @@ interface ViewerState {
  * failed) and follows live phase events, so a rebuild started in Settings or
  * an agent start turns into the desktop without reopening the tab.
  *
- * resize=remote — Xtigervnc supports dynamic desktop resize, so the container
- * desktop always matches the viewer tab exactly (no letterboxing); Openbox
- * re-fits maximized windows on each resize. reconnect=1 retries every 2s
- * while the display stack is down, so a restart reattaches by itself.
+ * The screen size belongs to the agent: by default the viewer uses
+ * resize=scale, so dragging the panel only zooms the picture and the agent's
+ * coordinates stay put (it sets the size itself with `xrandr --fb WxH`).
+ * "Match tab size" (a button on the tab itself) switches to resize=remote,
+ * where Xtigervnc resizes the desktop to fill the tab — for when the user
+ * takes the desktop over.
+ * reconnect=1 retries every 2s while the display stack is down, so a restart
+ * reattaches by itself.
  */
 export function BrowserViewer({ meta, reloadNonce }: Props) {
   const [state, setState] = useState<ViewerState>(() => ({
@@ -79,12 +83,14 @@ export function BrowserViewer({ meta, reloadNonce }: Props) {
 }
 
 function DesktopWebview({ hostPort, reloadNonce }: { hostPort: number; reloadNonce?: number }) {
+  // Toggled from the tab's own button (TabBar); one choice for every agent.
+  const matchTab = useAppStore((s) => s.computerMatchTab)
   const webviewRef = useRef<WebviewElement | null>(null)
   // reload() throws until the webview is attached and dom-ready has fired
   // (e.g. on StrictMode remount, or a reload click during initial load —
   // skipping is fine there, a fresh load is already in progress).
   const domReadyRef = useRef(false)
-  const src = `http://127.0.0.1:${hostPort}/vnc.html?autoconnect=1&resize=remote&reconnect=1&reconnect_delay=2000`
+  const src = `http://127.0.0.1:${hostPort}/vnc.html?autoconnect=1&resize=${matchTab ? 'remote' : 'scale'}&reconnect=1&reconnect_delay=2000`
 
   useEffect(() => {
     const webview = webviewRef.current

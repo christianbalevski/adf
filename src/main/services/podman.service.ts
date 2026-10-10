@@ -433,10 +433,10 @@ const waitUntil = (test: string, tries = 40) =>
  *  alive under the container's `sleep infinity` PID 1.
  *
  *  Xtigervnc is X server + VNC server in one and supports dynamic desktop
- *  resize (ExtendedDesktopSize) — the noVNC viewer (resize=remote) resizes the
- *  container desktop to exactly fit the viewer tab. Openbox (window manager),
- *  tint2 (panel: app menu, launchers, task buttons) and pcmanfm (wallpaper,
- *  file manager) make it a small standard desktop: every window gets a close
+ *  resize — the agent sets the size with `xrandr --fb`, and the noVNC viewer
+ *  scales to fit (or, with "Match tab size", resizes the desktop to the tab).
+ *  Openbox (window manager), tint2 (panel: app menu, launchers, task
+ *  buttons) and pcmanfm (wallpaper, file manager) make it a small standard desktop: every window gets a close
  *  button and a task button, so popups (OAuth sign-in, print dialogs, second
  *  windows) can always be closed or switched away from by the user; all follow
  *  XRandR resizes. Chromium draws its own frame; other windows get Breeze. */
@@ -467,8 +467,9 @@ const BROWSER_STACK_DAEMONS: { proc: string; command: string; waitAfter?: string
 ]
 
 /** Desktop packages: display server, window manager, panel, app menu, file
- *  manager, terminal, editor, appearance settings, icons, computer-use CLI tools. */
-const DESKTOP_PACKAGES = ['tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm']
+ *  manager, terminal, editor, appearance settings, icons, computer-use CLI tools
+ *  (xrandr from x11-xserver-utils: the agent sets its own screen size). */
+const DESKTOP_PACKAGES = ['tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm', 'x11-xserver-utils']
 
 /** Stock Debian rc.xml with: the flat Breeze theme; one virtual desktop (the
  *  stock four have no pager here — Ctrl+Alt+Right would land on an empty
@@ -644,7 +645,7 @@ export interface ComputeEnvSettings {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SETTINGS: ComputeEnvSettings = {
-  containerPackages: ['python3-full', 'python3-pip', 'nftables', 'iproute2', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm'],
+  containerPackages: ['python3-full', 'python3-pip', 'nftables', 'iproute2', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm', 'x11-xserver-utils'],
   machineCpus: 2,
   machineMemoryMb: 2048,
   containerImage: 'docker.io/library/node:20-slim',
