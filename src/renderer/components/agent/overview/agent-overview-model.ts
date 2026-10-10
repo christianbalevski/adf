@@ -752,15 +752,18 @@ export interface FoldState<K extends string> {
  * next enabled section in `order` (one per check: the next check measures
  * what it saved). While it fits, unfold the last fold, then the one before,
  * as long as the content plus what that fold saved still fits, so an unfold
- * never overflows and re-folds. A disabled section unfolds at once. Returns
- * `s` itself when nothing changed.
+ * never overflows and re-folds. A disabled section unfolds at once. With
+ * `mayFold` false (the user expanded a list: they asked for the height) an
+ * overflow folds nothing and the panel scrolls. Returns `s` itself when
+ * nothing changed.
  */
 export function foldStep<K extends string>(
   s: FoldState<K>,
   order: readonly K[],
   enabled: Record<K, boolean>,
   content: number,
-  avail: number
+  avail: number,
+  mayFold = true
 ): FoldState<K> {
   let folds = s.folds.filter((f) => enabled[f.key])
   let before = s.before
@@ -772,6 +775,7 @@ export function foldStep<K extends string>(
   }
   if (avail > 0) {
     if (content > avail) {
+      if (!mayFold) return changed ? { folds, before } : s
       const next = order.find((k) => enabled[k] && !folds.some((f) => f.key === k))
       if (next !== undefined) {
         folds = [...folds, { key: next, saved: 0 }]

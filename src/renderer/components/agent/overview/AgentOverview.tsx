@@ -155,16 +155,29 @@ const NONE_FOLDED: Folded = { chart: false, contents: false }
  * Fold sections while the panel would otherwise scroll in the dock: the
  * Activity chart into the facts line first, then the Contents rows into one
  * line. Unfolds in reverse order, each once the content plus what folding it
- * saved fits again, so it cannot flap (foldStep).
+ * saved fits again, so it cannot flap (foldStep). Measures `bodyRef` (the
+ * sections) plus the footer and padding, never the root: the root is at least
+ * the dock's height (min-h-full, so the footer sits at the bottom), and
+ * measuring it would never see the content shrink back and never unfold.
+ * While `userExpanded`, overflow scrolls instead of folding.
  */
-function useOverflowFolds(rootRef: React.RefObject<HTMLDivElement | null>, enabled: Folded, filePath: string | null): Folded {
+function useOverflowFolds(
+  rootRef: React.RefObject<HTMLDivElement | null>,
+  bodyRef: React.RefObject<HTMLDivElement | null>,
+  enabled: Folded,
+  filePath: string | null,
+  userExpanded: boolean
+): Folded {
   const [folded, setFolded] = useState<Folded>(NONE_FOLDED)
   const stateRef = useRef<FoldState<FoldKey>>({ folds: [], before: 0 })
+  const expandedRef = useRef(userExpanded)
+  expandedRef.current = userExpanded
   const { chart, contents } = enabled
   useLayoutEffect(() => {
     const root = rootRef.current
+    const body = bodyRef.current
     const scroller = root?.parentElement
-    if (!root || !scroller) return
+    if (!root || !body || !scroller) return
     const on: Folded = { chart, contents }
     const apply = (s: FoldState<FoldKey>) => {
       stateRef.current = s
@@ -172,14 +185,17 @@ function useOverflowFolds(rootRef: React.RefObject<HTMLDivElement | null>, enabl
     }
     apply({ folds: [], before: 0 })
     const check = () => {
-      const next = foldStep(stateRef.current, FOLD_ORDER, on, root.offsetHeight, scroller.clientHeight)
+      const footer = root.querySelector('footer')
+      const pad = parseFloat(getComputedStyle(root).paddingTop) + parseFloat(getComputedStyle(root).paddingBottom)
+      const content = body.offsetHeight + (footer?.offsetHeight ?? 0) + pad
+      const next = foldStep(stateRef.current, FOLD_ORDER, on, content, scroller.clientHeight, !expandedRef.current)
       if (next !== stateRef.current) apply(next)
     }
     const ro = new ResizeObserver(check)
-    ro.observe(root)
+    ro.observe(body)
     ro.observe(scroller)
     return () => ro.disconnect()
-  }, [rootRef, chart, contents, filePath])
+  }, [rootRef, bodyRef, chart, contents, filePath])
   return folded
 }
 
@@ -240,10 +256,14 @@ export function AgentOverview() {
   const vitals = useOverviewRead(filePath, state, config, readVitals)
   const activity = useOverviewRead(filePath, state, config, readActivity)
   const rootRef = useRef<HTMLDivElement>(null)
-  const folded = useOverflowFolds(rootRef, {
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [metricsExpanded, setMetricsExpanded] = useState(false)
+  const folded = useOverflowFolds(rootRef, bodyRef, {
     chart: !!activity && hasActivity(activity.daily),
     contents: !!activity && contentsRows(activity.contents).length > 0
-  }, filePath)
+  }, filePath, metricsExpanded)
+  // A newly opened agent starts with its lists collapsed.
+  useEffect(() => setMetricsExpanded(false), [filePath])
   const chartFolded = folded.chart
   const [now, setNow] = useState(() => Date.now())
   const live = useLiveActivity(vitals?.nextWakeAt, now)
@@ -273,66 +293,68 @@ export function AgentOverview() {
   if (chartFolded && activity) facts.push({ id: 'messages', text: sparkFact(activity.daily) })
 
   return (
-    <div ref={rootRef} className="flex min-h-full flex-col px-3 py-2 space-y-1.5 text-[var(--ink)]">
-      <header className="flex flex-col items-center text-center">
-        <div
-          className={`shrink-0 rounded-full ${pulsing ? 'pulse-ring' : ''}`}
-          style={{ width: ORBITAL_SIZE, height: ORBITAL_SIZE }}
-        >
-          <OverviewOrbital seed={seed} size={ORBITAL_SIZE} state={motion} waiting={live.waiting} />
-        </div>
-        <h2 className="mt-1 max-w-full truncate text-[15px] font-semibold leading-5" title={name}>
-          {name}
-          {handle && handle !== name && <span className="ml-1.5 font-normal text-[12px] text-[var(--ink-muted)]">@{handle}</span>}
-        </h2>
-        {description && (
-          <Tooltip tip={description} className="mt-0.5 block max-w-full">
-            <p className="line-clamp-2 text-[11.5px] leading-4 text-[var(--ink-muted)]">{description}</p>
-          </Tooltip>
-        )}
-        {(isPublic || vitals?.ownerVerified) && (
-          <div className="mt-1 flex flex-wrap justify-center gap-1.5">
-            {isPublic && <Badge tip="Its website is open to anyone who can reach it.">Public</Badge>}
-            {vitals?.ownerVerified && <Badge tip="Its owner signed this agent, and the signature checks out.">Verified owner</Badge>}
+    <div ref={rootRef} className="flex min-h-full flex-col px-3 py-2 text-[var(--ink)]">
+      <div ref={bodyRef} className="space-y-1.5">
+        <header className="flex flex-col items-center text-center">
+          <div
+            className={`shrink-0 rounded-full ${pulsing ? 'pulse-ring' : ''}`}
+            style={{ width: ORBITAL_SIZE, height: ORBITAL_SIZE }}
+          >
+            <OverviewOrbital seed={seed} size={ORBITAL_SIZE} state={motion} waiting={live.waiting} />
           </div>
-        )}
-        {hasSurfaces && (
-          <div className="mt-1 flex flex-wrap justify-center gap-1.5">
-            <SurfaceChips surfaces={surfaces} />
-          </div>
-        )}
-        {(live.label || model) && (
-          <p className="mt-0.5 max-w-full truncate text-[12px] leading-[18px]">
-            {live.label}
-            {model && <span className="text-[var(--ink-muted)]">{live.label && ' · '}<span className="font-mono text-[11.5px]">{model}</span></span>}
-          </p>
-        )}
-      </header>
+          <h2 className="mt-1 max-w-full truncate text-[15px] font-semibold leading-5" title={name}>
+            {name}
+            {handle && handle !== name && <span className="ml-1.5 font-normal text-[12px] text-[var(--ink-muted)]">@{handle}</span>}
+          </h2>
+          {description && (
+            <Tooltip tip={description} className="mt-0.5 block max-w-full">
+              <p className="line-clamp-2 text-[11.5px] leading-4 text-[var(--ink-muted)]">{description}</p>
+            </Tooltip>
+          )}
+          {(isPublic || vitals?.ownerVerified) && (
+            <div className="mt-1 flex flex-wrap justify-center gap-1.5">
+              {isPublic && <Badge tip="Its website is open to anyone who can reach it.">Public</Badge>}
+              {vitals?.ownerVerified && <Badge tip="Its owner signed this agent, and the signature checks out.">Verified owner</Badge>}
+            </div>
+          )}
+          {hasSurfaces && (
+            <div className="mt-1 flex flex-wrap justify-center gap-1.5">
+              <SurfaceChips surfaces={surfaces} />
+            </div>
+          )}
+          {(live.label || model) && (
+            <p className="mt-0.5 max-w-full truncate text-[12px] leading-[18px]">
+              {live.label}
+              {model && <span className="text-[var(--ink-muted)]">{live.label && ' · '}<span className="font-mono text-[11.5px]">{model}</span></span>}
+            </p>
+          )}
+        </header>
 
-      <section className="space-y-1.5">
-        {vitals && <StatGrid vitals={vitals} />}
+        <section className="space-y-1.5">
+          {vitals && <StatGrid vitals={vitals} />}
 
-        {facts.length > 0 && (
-          <p className="truncate text-[12px] leading-[18px] text-[var(--ink-muted)] tabular-nums">
-            {facts.map((f, i) => (
-              <span key={f.id}>
-                {i > 0 && ' · '}
-                {f.id === 'cost' && vitals?.cost7dPartial ? (
-                  <Tooltip tip="Some calls had no known price, so the real cost is higher.">
-                    <span className="underline decoration-dotted decoration-[var(--ink-faint)] underline-offset-2">{f.text}</span>
-                  </Tooltip>
-                ) : (
-                  f.text
-                )}
-              </span>
-            ))}
-          </p>
-        )}
+          {facts.length > 0 && (
+            <p className="truncate text-[12px] leading-[18px] text-[var(--ink-muted)] tabular-nums">
+              {facts.map((f, i) => (
+                <span key={f.id}>
+                  {i > 0 && ' · '}
+                  {f.id === 'cost' && vitals?.cost7dPartial ? (
+                    <Tooltip tip="Some calls had no known price, so the real cost is higher.">
+                      <span className="underline decoration-dotted decoration-[var(--ink-faint)] underline-offset-2">{f.text}</span>
+                    </Tooltip>
+                  ) : (
+                    f.text
+                  )}
+                </span>
+              ))}
+            </p>
+          )}
 
-        {vitals && vitals.metrics?.length > 0 && <MetricList metrics={vitals.metrics} />}
-      </section>
+          {vitals && vitals.metrics?.length > 0 && <MetricList metrics={vitals.metrics} expanded={metricsExpanded} onExpand={setMetricsExpanded} />}
+        </section>
 
-      <OverviewActivity activity={activity} now={now} chartFolded={chartFolded} contentsFolded={folded.contents} />
+        <OverviewActivity activity={activity} now={now} chartFolded={chartFolded} contentsFolded={folded.contents} />
+      </div>
 
       {age && (
         <footer className="mt-auto pt-3 text-center text-[11px] leading-4 text-[var(--ink-faint)] tabular-nums">{age}</footer>
@@ -362,21 +384,32 @@ function Badge({ tip, children }: { tip: string; children: React.ReactNode }) {
  * A JSON metric shows its label, value and unit, and a thin bar on the same
  * 18 px line when it has a `max` (tick at `target`). See agent-metrics.ts.
  */
-function MetricList({ metrics }: { metrics: AgentMetric[] }) {
-  const [expanded, setExpanded] = useState(false)
+function MetricList({ metrics, expanded, onExpand: setExpanded }: { metrics: AgentMetric[]; expanded: boolean; onExpand: (expanded: boolean) => void }) {
   const { shown, hidden } = visibleItems(metrics, expanded, OVERVIEW_ROW_LIMIT)
+  const listRef = useRef<HTMLDivElement>(null)
+  // Expanding grows the panel, which scrolls as a whole; bring the new rows
+  // into view rather than leaving them below the fold.
+  useEffect(() => {
+    if (expanded) listRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [expanded])
   return (
-    <div className="text-[12px] leading-[18px] space-y-0.5">
-      <dl className="space-y-0.5" aria-label="Metrics">
+    <div ref={listRef} className="text-[12px] leading-[18px] space-y-0.5">
+      {/* One grid for every row, so every bar starts and ends at the same x
+          whatever its own range. Labels get the larger share (3:2 against
+          the bars) so they rarely truncate. The value column is as wide as
+          the values beside bars only. */}
+      <dl className="grid grid-cols-[minmax(0,3fr)_minmax(3rem,2fr)_minmax(0,max-content)] items-baseline gap-x-3 gap-y-0.5" aria-label="Metrics">
         {shown.map((m) => {
           const text = metricText(m)
           const bar = metricBar(m)
           return (
-            // The bar takes whatever the label and value leave, so it reads at panel width.
-            <div key={m.name} className="flex items-baseline gap-3">
-              <dt className="min-w-0 max-w-[50%] shrink-0 truncate text-[var(--ink-muted)]" title={m.label === m.name ? m.name : `${m.label} (${m.name})`}>{m.label}</dt>
-              {bar ? <MetricBar fill={bar.fill} target={bar.target} /> : <span className="flex-1" />}
-              <dd className="min-w-0 max-w-[40%] truncate font-mono text-[11.5px] tabular-nums" title={m.raw}>{text}</dd>
+            // A row without a bar spans the grid as its own line, so its value
+            // (often wide: "14 / 48 h") never widens the value column and
+            // squeezes the bars.
+            <div key={m.name} className={bar ? 'contents' : 'col-span-3 flex items-baseline justify-between gap-3'}>
+              <dt className="min-w-0 truncate text-[var(--ink-muted)]" title={m.label === m.name ? m.name : `${m.label} (${m.name})`}>{m.label}</dt>
+              {bar && <MetricBar fill={bar.fill} target={bar.target} />}
+              <dd className="min-w-0 shrink-0 truncate text-right font-mono text-[11.5px] tabular-nums" title={m.raw}>{text}</dd>
             </div>
           )
         })}
@@ -386,6 +419,11 @@ function MetricList({ metrics }: { metrics: AgentMetric[] }) {
           +{hidden} more
         </button>
       )}
+      {expanded && metrics.length > OVERVIEW_ROW_LIMIT && (
+        <button type="button" onClick={() => setExpanded(false)} className="text-[var(--ink-muted)] hover:text-[var(--ink)]">
+          Show less
+        </button>
+      )}
     </div>
   )
 }
@@ -393,7 +431,7 @@ function MetricList({ metrics }: { metrics: AgentMetric[] }) {
 /** Value's share of min..max as a thin track; a tick marks the target. Decorative: the value is printed beside it. */
 function MetricBar({ fill, target }: { fill: number; target?: number }) {
   return (
-    <span aria-hidden className="relative self-center h-1 min-w-12 flex-1 rounded-full bg-[var(--rule)]">
+    <span aria-hidden className="relative self-center h-1 w-full rounded-full bg-[var(--rule)]">
       <span className="absolute inset-y-0 left-0 rounded-full bg-[var(--ink)]" style={{ width: `${fill * 100}%` }} />
       {target !== undefined && (
         // 2 px accent tick, 3 px past the track each side, with a paper-coloured

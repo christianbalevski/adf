@@ -212,6 +212,16 @@ describe('memory and table shelves', () => {
   })
 })
 
+describe('overflow folds — user expanded', () => {
+  it('scrolls instead of folding while the user has expanded a list, and still unfolds', () => {
+    const on = { chart: true, contents: true }
+    const fresh = { folds: [], before: 0 }
+    expect(foldStep(fresh, ['chart', 'contents'] as const, on, 900, 600, false)).toBe(fresh)
+    const folded = { folds: [{ key: 'chart' as const, saved: 60 }], before: 700 }
+    expect(foldStep(folded, ['chart', 'contents'] as const, on, 500, 600, false).folds).toEqual([])
+  })
+})
+
 describe('overflow folds', () => {
   type K = 'chart' | 'contents'
   const ORDER = ['chart', 'contents'] as const
