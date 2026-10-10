@@ -53,7 +53,26 @@ describe('loop activity', () => {
 
   it('lets the assistant response replace the glimmer without a duplicate thinking row', () => {
     expect(getLoopActivity([user, call, result, entry('Reply', 'text')], active)).toEqual(none)
-    expect(getLoopActivity([user, call, result, entry('say', 'tool_call', { name: 'say' })], active)).toEqual(none)
+  })
+
+  it('shows the thinking phase after say, without animating its prose', () => {
+    const say = entry('say', 'tool_call', { name: 'say', tool_id: 'say' })
+    const sayResult = entry('say result', 'tool_result', { tool_use_id: 'say', isError: false })
+    expect(getLoopActivity([user, call, result, say], active)).toEqual(thinking)
+    expect(getLoopActivity([user, say, sayResult], active)).toEqual(thinking)
+    expect(getLoopActivity([user, say, sayResult, entry('Turn complete', 'system')], active)).toEqual(none)
+  })
+
+  it('shows the thinking phase after a finished reply in autonomous mode', () => {
+    const autonomous = { ...active, autonomous: true }
+    const streaming = entry('Reply', 'text')
+    const closed = entry('Reply', 'text', { seq: 7 })
+    const quiet = entry('', 'text', { quietTurn: true })
+    expect(getLoopActivity([user, streaming], autonomous)).toEqual(none)
+    expect(getLoopActivity([user, closed], autonomous)).toEqual(thinking)
+    expect(getLoopActivity([user, quiet], autonomous)).toEqual(thinking)
+    expect(getLoopActivity([user, closed], active)).toEqual(none)
+    expect(getLoopActivity([user, closed], { ...autonomous, active: false })).toEqual(none)
   })
 
   it('stops on errors and quiet endings', () => {
