@@ -52,6 +52,8 @@ The sandbox exposes a curated set of standard JavaScript globals:
 
 **Binary data:** `ArrayBuffer`, `SharedArrayBuffer`, `DataView`, `Uint8Array`, `Uint16Array`, `Uint32Array`, `Uint8ClampedArray`, `Int8Array`, `Int16Array`, `Int32Array`, `Float32Array`, `Float64Array`, `BigInt64Array`, `BigUint64Array`, `Buffer`
 
+`Buffer` lives outside the sandbox, so every `buf[i]` crosses the boundary: a loop over a 20 MB file takes seconds. Let one call do the scan instead — `buf.indexOf(10, from)` to find newlines, `buf.subarray(a, b)` / `buf.toString('utf-8', a, b)` for slices, `crypto.createHash('sha256').update(buf)` for checksums.
+
 **Async and timing:** `Promise`, `setTimeout`, `clearTimeout`, `setInterval`, `clearInterval`, `queueMicrotask`
 
 **Utilities:** `Math`, `Date`, `JSON`, `structuredClone`, `TextEncoder`, `TextDecoder`, `URL`, `URLSearchParams`

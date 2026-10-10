@@ -17,6 +17,7 @@ import {
 } from './http-api'
 import type { DaemonEventBus } from './event-bus'
 import { daemonHostAllowList, isLoopbackName, parseAllowedHostsEnv } from './request-guard'
+import { shutdownSandboxHosts } from '../runtime/sandbox-host'
 
 export interface DaemonHostOptions {
   runtime: RuntimeService
@@ -350,6 +351,7 @@ export class DaemonHost {
       }
     } finally {
       await this.stopRuntimeAgents()
+      shutdownSandboxHosts()
       await this.stopCompute()
       await this.runShutdownHooks()
       this.removePidFile()

@@ -11,6 +11,7 @@ import { showOrCreateMainWindow } from './utils/main-window'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 import { initSpellcheckDictionaries } from './services/spellcheck-dictionaries.service'
+import { shutdownSandboxHosts } from './runtime/sandbox-host'
 
 // A console.log after the parent's stdout pipe is gone (app quitting, or the
 // dev harness restarting the main process underneath us) emits EIO/EPIPE on
@@ -130,6 +131,9 @@ function runShutdownCleanup(): Promise<void> {
       if (timedOut) console.error('[App] Shutdown proceeded past incomplete cleanup')
     } catch (error) {
       console.error('[App] Cleanup error:', error)
+    } finally {
+      // Sandbox hosts also exit when their IPC channel closes; don't rely on it.
+      shutdownSandboxHosts()
     }
   })()
   return shutdownCleanup
