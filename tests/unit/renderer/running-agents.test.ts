@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { collectRunningAgents } from '../../../src/renderer/utils/running-agents'
+import { collectRunningAgents, collectRailAgents } from '../../../src/renderer/utils/running-agents'
 import type { TrackedDirEntry } from '../../../src/shared/types/ipc.types'
 
 const file = (filePath: string, agentName?: string): TrackedDirEntry => ({
@@ -93,5 +93,32 @@ describe('collectRunningAgents', () => {
       foregroundRunning: false,
       isBackgroundRunning: () => false
     })).toEqual([])
+  })
+})
+
+describe('collectRailAgents', () => {
+  const root = '/r'
+  const a = file('/r/a.adf', 'a')
+  const b = file('/r/sub/b.adf', 'b')
+  const filesByDir = { [root]: [a, dir('/r/sub', [b])] }
+  const running = [{ file: b, dirPath: root }]
+
+  it('is the running list when the open agent is one of them', () => {
+    expect(collectRailAgents(running, { directories: [root], filesByDir, currentFilePath: '/r/sub/b.adf' }))
+      .toEqual([{ file: b, dirPath: root }])
+  })
+
+  it('puts an open agent that is not running first, marked openOnly', () => {
+    expect(collectRailAgents(running, { directories: [root], filesByDir, currentFilePath: '/r/a.adf' }))
+      .toEqual([{ file: a, dirPath: root, openOnly: true }, { file: b, dirPath: root }])
+  })
+
+  it('still shows an open file outside every tracked root', () => {
+    const rail = collectRailAgents([], { directories: [root], filesByDir, currentFilePath: '/elsewhere/x.adf' })
+    expect(rail).toEqual([{ file: { filePath: '/elsewhere/x.adf', fileName: 'x.adf', agentName: 'x' }, openOnly: true }])
+  })
+
+  it('is empty with nothing open and nothing running', () => {
+    expect(collectRailAgents([], { directories: [root], filesByDir, currentFilePath: null })).toEqual([])
   })
 })

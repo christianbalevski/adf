@@ -17,7 +17,8 @@ import { CloneDialog } from '../common/CloneDialog'
 import { Dialog } from '../common/Dialog'
 import { Button } from '../ui'
 import { REVEAL_IN_FOLDER_LABEL } from '../../utils/platform'
-import { collectRunningAgents, type RunningAgentRow } from '../../utils/running-agents'
+import { collectRunningAgents, collectRailAgents, type RunningAgentRow } from '../../utils/running-agents'
+import { useApprovalsStore } from '../../stores/approvals.store'
 import { SIDEBAR_RUNNING_CAP_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
 import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
@@ -327,6 +328,7 @@ export function Sidebar() {
     ? directories.filter((d) => (visibleFilesByDir[d]?.length ?? 0) > 0)
     : directories
 
+  const startingPaths = useAppStore((s) => s.startingFilePaths)
   // Pinned "Running" list: every running agent across all roots, flat. Built
   // from the unfiltered trees so it does not depend on folder state; hidden
   // while searching because search already flattens the tree.
@@ -334,9 +336,18 @@ export function Sidebar() {
     directories,
     filesByDir,
     currentFilePath: filePath,
-    foregroundRunning: foregroundAgentState !== 'off',
-    isBackgroundRunning: (fp) => backgroundAgentMap.has(fp)
-  }), [directories, filesByDir, filePath, foregroundAgentState, backgroundAgentMap])
+    // A running agent being opened is marked starting for the whole switch
+    // (main takes it off the background list, then the foreground state is
+    // reset to 'off'); counting it keeps its row and rail avatar in place
+    // instead of leaving and coming back.
+    foregroundRunning: foregroundAgentState !== 'off' || (filePath !== null && startingPaths.has(filePath)),
+    isBackgroundRunning: (fp) => backgroundAgentMap.has(fp) || startingPaths.has(fp)
+  }), [directories, filesByDir, filePath, foregroundAgentState, backgroundAgentMap, startingPaths])
+  // The collapsed rail: the same agents as avatars, plus the open one.
+  const railAgents = useMemo(
+    () => (collapsed ? collectRailAgents(runningRows, { directories, filesByDir, currentFilePath: filePath }) : []),
+    [collapsed, runningRows, directories, filesByDir, filePath]
+  )
 
   const handleOpenFile = useCallback((fp: string) => {
     if (showSettings) setShowSettings(false)
@@ -507,20 +518,84 @@ export function Sidebar() {
     await rescanDirectory(target.dirPath)
   }, [filePath, closeFile, rescanDirectory])
 
+  // Menus and dialogs a row can open; the rail's avatars open them too.
+  const overlays = (
+    <>
+        <ContextMenu
+          position={menu ? { x: menu.x, y: menu.y } : null}
+          items={menuItems}
+          onClose={closeMenu}
+        />
+        <ContextMenu
+          position={dirMenu ? { x: dirMenu.x, y: dirMenu.y } : null}
+          items={dirMenuItems}
+          onClose={closeDirMenu}
+        />
+        <ContextMenu position={folderMenu} items={folderMenuItems} onClose={closeFolderMenu} />
+        {untrackTarget && (
+          <UntrackFolderDialog
+            dirPath={untrackTarget}
+            runningCount={untrackRunning.length}
+            onClose={() => setUntrackTarget(null)}
+            onConfirm={handleUntrack}
+          />
+        )}
+        {renameTarget && (
+          <RenameAgentDialog
+            target={renameTarget}
+            onClose={() => setRenameTarget(null)}
+            onRenamed={handleRenamed}
+          />
+        )}
+        {cloneTarget && (
+          <CloneDialog
+            open
+            onClose={() => setCloneTarget(null)}
+            filePath={cloneTarget.file.filePath}
+            dirPath={cloneTarget.dirPath}
+            onCloned={() => rescanDirectory(cloneTarget.dirPath)}
+          />
+        )}
+        {deleteTarget && (
+          <DeleteAgentDialog
+            target={deleteTarget}
+            onClose={() => setDeleteTarget(null)}
+            onDeleted={handleDeleted}
+          />
+        )}
+    </>
+  )
+
   if (collapsed) {
     return (
-      <div className="w-10 bg-surface-2 border-r border-hairline flex flex-col items-center py-2 gap-1">
+      <div className="w-10 bg-surface-2 border-r border-hairline flex flex-col items-center py-2 gap-1 min-h-0">
         <button
           onClick={toggleSidebar}
           title="Expand sidebar"
           aria-label="Expand sidebar"
-          className="w-7 h-7 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
+          className="w-7 h-7 shrink-0 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="9 18 15 12 9 6" />
           </svg>
         </button>
-        <div className="flex-1" />
+        {/* Running agents, and the open one; only these scroll. */}
+        <div className="scrollbar-none flex-1 min-h-0 w-full overflow-y-auto flex flex-col items-center gap-1 pt-1">
+          {railAgents.map((a, i) => (
+            <div key={a.file.filePath} className="contents">
+              <RailAvatar
+                file={a.file}
+                dirPath={a.dirPath}
+                isActive={a.file.filePath === filePath}
+                backgroundStatus={backgroundAgentMap.get(a.file.filePath)}
+                onOpenFile={handleOpenFile}
+                onFileContextMenu={handleFileContextMenu}
+              />
+              {a.openOnly && i < railAgents.length - 1 && <div className="w-5 shrink-0 border-t border-hairline my-0.5" />}
+            </div>
+          ))}
+        </div>
+        {overlays}
       </div>
     )
   }
@@ -646,48 +721,7 @@ export function Sidebar() {
         )}
       </div>
 
-      <ContextMenu
-        position={menu ? { x: menu.x, y: menu.y } : null}
-        items={menuItems}
-        onClose={closeMenu}
-      />
-      <ContextMenu
-        position={dirMenu ? { x: dirMenu.x, y: dirMenu.y } : null}
-        items={dirMenuItems}
-        onClose={closeDirMenu}
-      />
-      <ContextMenu position={folderMenu} items={folderMenuItems} onClose={closeFolderMenu} />
-      {untrackTarget && (
-        <UntrackFolderDialog
-          dirPath={untrackTarget}
-          runningCount={untrackRunning.length}
-          onClose={() => setUntrackTarget(null)}
-          onConfirm={handleUntrack}
-        />
-      )}
-      {renameTarget && (
-        <RenameAgentDialog
-          target={renameTarget}
-          onClose={() => setRenameTarget(null)}
-          onRenamed={handleRenamed}
-        />
-      )}
-      {cloneTarget && (
-        <CloneDialog
-          open
-          onClose={() => setCloneTarget(null)}
-          filePath={cloneTarget.file.filePath}
-          dirPath={cloneTarget.dirPath}
-          onCloned={() => rescanDirectory(cloneTarget.dirPath)}
-        />
-      )}
-      {deleteTarget && (
-        <DeleteAgentDialog
-          target={deleteTarget}
-          onClose={() => setDeleteTarget(null)}
-          onDeleted={handleDeleted}
-        />
-      )}
+      {overlays}
     </div>
   )
 }
@@ -1438,6 +1472,106 @@ const AgentFileRow = memo(function AgentFileRow({
  * adds the finer state. The orbital turns only while the agent is active.
  * In emoji mode the 12 px emoji sits in the same slot, desaturated when stopped.
  */
+const RAIL_STATE_LABEL: Partial<Record<AgentState, string>> = {
+  active: 'Working',
+  idle: 'Idle',
+  hibernate: 'Hibernating',
+  suspended: 'Suspended',
+  error: 'Error',
+  not_participating: 'Not running'
+}
+
+/**
+ * One agent on the collapsed rail: its avatar with the tree's status dot,
+ * the inner-loop count, and an amber ring while it waits on the user. Click
+ * opens it and right-click opens the row menu, exactly like its tree row.
+ */
+const RailAvatar = memo(function RailAvatar({
+  file,
+  dirPath,
+  isActive,
+  backgroundStatus,
+  onOpenFile,
+  onFileContextMenu
+}: {
+  file: TrackedDirEntry
+  dirPath?: string
+  isActive: boolean
+  backgroundStatus: BackgroundAgentStatus | undefined
+  onOpenFile: (filePath: string) => void
+  onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
+}) {
+  const agentState = useAgentStore((s) => isActive ? s.state : 'off')
+  const foregroundActiveLoops = useAgentStore((s) =>
+    isActive ? Object.values(s.sideLoops).filter((l) => l.state === 'active').length : 0
+  )
+  const agentConfig = useAgentStore((s) => isActive ? s.config : null)
+  const isStarting = useAppStore((s) => s.startingFilePaths.has(file.filePath))
+  const isStopping = useAppStore((s) => s.stoppingFilePaths.has(file.filePath))
+  // Oldest first, like the snapshot: the request the agent is blocked on.
+  const waiting = useApprovalsStore((s) => s.approvals.find((n) => n.filePath === file.filePath)?.kind ?? null)
+
+  const isRunning = isActive ? agentState !== 'off' : backgroundStatus !== undefined
+  const state: AgentState = isActive
+    ? (agentState === 'off' ? 'not_participating' : agentState as AgentState)
+    : (backgroundStatus ? toDisplayState(backgroundStatus.state) : 'not_participating')
+  const activeLoops = !isRunning ? 0 : isActive ? foregroundActiveLoops : backgroundStatus?.activeLoops ?? 0
+  const busy = isStarting || isStopping
+  const showBadge = busy || state !== 'not_participating'
+
+  const name = file.agentName ?? file.fileName.replace(/\.adf$/i, '')
+  const tip = [
+    name,
+    isStarting ? 'Starting' : isStopping ? 'Stopping' : RAIL_STATE_LABEL[state] ?? state,
+    waiting === 'approval' ? 'Waiting for your approval' : waiting === 'ask' ? 'Has a question for you' : null,
+    activeLoops > 0 ? `${activeLoops} inner ${activeLoops === 1 ? 'loop' : 'loops'} working` : null
+  ].filter(Boolean).join(' · ')
+
+  const emoji = useAgentAvatarMode() === 'emoji'
+  const quiet = isRunning || busy ? '' : emoji ? 'grayscale opacity-70' : 'opacity-70'
+
+  return (
+    <Tooltip tip={tip} delay={300} className="flex shrink-0">
+      <button
+        type="button"
+        onClick={() => onOpenFile(file.filePath)}
+        onContextMenu={dirPath ? (e) => onFileContextMenu(e, file, dirPath) : undefined}
+        aria-label={tip}
+        aria-current={isActive || undefined}
+        className={`relative w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
+          isActive
+            ? 'bg-[var(--adf-ui-accent-subtle)] [--row-bg:var(--adf-ui-accent-subtle)]'
+            : 'hover:bg-[var(--adf-ui-surface-hover)] [--row-bg:var(--adf-surface-2)] hover:[--row-bg:var(--adf-ui-surface-hover)]'
+        }`}
+      >
+        {waiting && (
+          <span className="absolute inset-0.5 rounded-full ring-2 ring-amber-400 dark:ring-amber-400 animate-pulse" aria-hidden />
+        )}
+        <span className={`flex transition-[filter,opacity] ${quiet}`}>
+          <OrbitalAvatar
+            seed={orbitalSeedFor({ did: file.did, filePath: file.filePath })}
+            icon={isActive ? agentConfig?.icon : file.icon}
+            iconSeed={isActive ? (agentConfig?.id || file.filePath) : (file.agentId || file.filePath)}
+            size={20}
+            emojiSize={15}
+            animated={state === 'active'}
+          />
+        </span>
+        {showBadge && (
+          <span className="absolute bottom-0.5 right-0.5 flex rounded-full shadow-[0_0_0_1.5px_var(--row-bg,var(--adf-surface-2))]">
+            <StatusDot state={state} starting={isStarting} stopping={isStopping} bare />
+          </span>
+        )}
+        {activeLoops > 0 && (
+          <span className="absolute top-0 right-0 text-[9px] leading-none font-semibold text-amber-600 dark:text-yellow-400 tabular-nums">
+            {activeLoops}
+          </span>
+        )}
+      </button>
+    </Tooltip>
+  )
+})
+
 const AgentAvatar = memo(function AgentAvatar({
   seed,
   icon,
@@ -1477,7 +1611,8 @@ const AgentAvatar = memo(function AgentAvatar({
   )
 })
 
-const StatusDot = memo(function StatusDot({ state, starting, stopping }: { state: AgentState; starting?: boolean; stopping?: boolean }) {
+/** `bare` drops the dot's own tooltip, for a dot inside a control that already has one. */
+const StatusDot = memo(function StatusDot({ state, starting, stopping, bare }: { state: AgentState; starting?: boolean; stopping?: boolean; bare?: boolean }) {
   const config: Record<AgentState, { color: string; label: string; pulse?: boolean; ring?: boolean }> = {
     active: { color: 'bg-yellow-400', label: 'Active', pulse: true },
     idle: { color: 'bg-green-400', label: 'Idle' },
@@ -1494,7 +1629,7 @@ const StatusDot = memo(function StatusDot({ state, starting, stopping }: { state
   // are all `absolute`, so the flex wrapper leaves the 8px box unchanged.
   if (starting) {
     return (
-      <Tooltip tip="Starting" className="relative shrink-0 w-2 h-2 flex">
+      <Tooltip tip="Starting" disabled={bare} className="relative shrink-0 w-2 h-2 flex">
         <span className="absolute inset-[-1px] rounded-full border border-yellow-400 border-t-transparent animate-spin" />
       </Tooltip>
     )
@@ -1502,14 +1637,14 @@ const StatusDot = memo(function StatusDot({ state, starting, stopping }: { state
 
   if (stopping) {
     return (
-      <Tooltip tip="Stopping" className="relative shrink-0 w-2 h-2 flex">
+      <Tooltip tip="Stopping" disabled={bare} className="relative shrink-0 w-2 h-2 flex">
         <span className="absolute inset-[-1px] rounded-full border border-neutral-400 dark:border-neutral-500 border-t-transparent animate-spin" />
       </Tooltip>
     )
   }
 
   return (
-    <Tooltip tip={label} className="relative shrink-0 w-2 h-2 flex">
+    <Tooltip tip={label} disabled={bare} className="relative shrink-0 w-2 h-2 flex">
       {pulse && (
         <span
           className={`absolute inset-0 rounded-full ${color} animate-ping opacity-75`}

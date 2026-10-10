@@ -3,6 +3,7 @@ import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useAppStore } from '../stores/app.store'
 import { useDocumentStore } from '../stores/document.store'
 import { foldAgentStatuses } from '../utils/background-agent-statuses'
+import { openingFilePaths } from './useAdfFile'
 import type { RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 
 /**
@@ -75,7 +76,9 @@ export function useBackgroundAgentEvents() {
             // was extracted for foreground attach (FILE_OPEN), and openFile is
             // re-starting it right now. Dropping its spinner here would race the
             // re-attach and blank the indicator for the whole rebuild window.
-            if (filePath !== useDocumentStore.getState().filePath) dropStarting(filePath)
+            // The event can land before openFile sets filePath (it fetches the
+            // agent first), so a file mid-open counts as open here.
+            if (filePath !== useDocumentStore.getState().filePath && !openingFilePaths.has(filePath)) dropStarting(filePath)
             dropStopping(filePath)
             break
           }

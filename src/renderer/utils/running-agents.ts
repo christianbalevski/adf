@@ -74,3 +74,45 @@ export function collectRunningAgents(input: RunningAgentsInput): RunningAgentRow
   }
   return rows
 }
+
+/** One avatar in the collapsed sidebar's rail. */
+export interface RailAgent {
+  file: TrackedDirEntry
+  /** Tracked root, when the file is in one (the row menu needs it). */
+  dirPath?: string
+  /** The open agent while it is not running: shown first, above a divider. */
+  openOnly?: boolean
+}
+
+function findEntry(entries: TrackedDirEntry[], filePath: string): TrackedDirEntry | null {
+  for (const e of entries) {
+    if (e.isDirectory) {
+      const hit = findEntry(e.children ?? [], filePath)
+      if (hit) return hit
+    } else if (e.filePath === filePath) {
+      return e
+    }
+  }
+  return null
+}
+
+/**
+ * The collapsed rail: every running agent in the Running list's order, and
+ * the open agent when it is not one of them. The open agent goes first then,
+ * so what the stage shows is always on the rail. An open file outside every
+ * tracked root still gets an avatar, from its path alone.
+ */
+export function collectRailAgents(
+  running: RunningAgentRow[],
+  input: Pick<RunningAgentsInput, 'directories' | 'filesByDir' | 'currentFilePath'>
+): RailAgent[] {
+  const rail: RailAgent[] = running.map((r) => ({ file: r.file, dirPath: r.dirPath }))
+  const open = input.currentFilePath
+  if (!open || running.some((r) => r.file.filePath === open)) return rail
+  for (const dirPath of input.directories) {
+    const entry = findEntry(input.filesByDir[dirPath] ?? [], open)
+    if (entry) return [{ file: entry, dirPath, openOnly: true }, ...rail]
+  }
+  const fileName = open.split('/').pop() ?? open
+  return [{ file: { filePath: open, fileName, agentName: fileName.replace(/\.adf$/i, '') }, openOnly: true }, ...rail]
+}

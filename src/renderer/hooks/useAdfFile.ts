@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import { useDocumentStore } from '../stores/document.store'
 import { useAgentStore } from '../stores/agent.store'
 import { useAppStore } from '../stores/app.store'
+import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useEditorTabsStore, beginAgentSwitch, endAgentSwitch } from '../stores/editor-tabs.store'
 import { nanoid } from 'nanoid'
 import { toDisplayState } from './useAgent'
@@ -16,6 +17,50 @@ import { fileOperationDetachedForeground, reportFileOperationError } from '../ut
  * way back, and both paths must agree on the set.
  */
 export const DEFAULT_OPEN_TABS = ['README.md', 'mind.md', 'soul.md'] as const
+
+// window.adfApi is untyped in the web project, so the batch is too.
+type FileBatch = Awaited<ReturnType<typeof window.adfApi.getBatch>>
+type TabFile = { content: string; binary?: boolean; mimeType?: string }
+
+/** Everything an agent switch shows, read before any store changes. */
+export interface FileContents {
+  batch: FileBatch
+  /** Saved or default tab files by path; missing when the file is gone. */
+  tabFiles: Map<string, TabFile>
+}
+
+/**
+ * Read the open workspace's batch and the files its editor tabs will show,
+ * in parallel, without touching any store. `agentFilePath` picks the saved
+ * tab set; main must already have this agent as its workspace.
+ */
+export async function fetchFileContents(agentFilePath: string | null): Promise<FileContents> {
+  const t0 = performance.now()
+  const saved = agentFilePath ? loadOpenTabs(agentFilePath) : null
+  const paths = (saved ? saved.paths : [...DEFAULT_OPEN_TABS])
+    .filter((p) => p !== 'README.md' && !p.startsWith('browser://'))
+  const [batch, files] = await Promise.all([
+    window.adfApi.getBatch() as Promise<FileBatch>,
+    Promise.all(paths.map(async (path) => {
+      try {
+        const file = await window.adfApi.readInternalFile(path)
+        return file?.content != null ? [path, file as TabFile] as const : null
+      } catch {
+        return null // file gone since last session — skip
+      }
+    }))
+  ])
+  console.log(`[PERF:renderer] fetchFileContents: ${(performance.now() - t0).toFixed(1)}ms`)
+  return { batch, tabFiles: new Map(files.filter((f): f is readonly [string, TabFile] => f !== null)) }
+}
+
+/**
+ * Files an openFile is switching to right now. main extracts a running
+ * background agent for the foreground attach and reports it `agent_stopped`
+ * while the renderer is still fetching it; the background event handler
+ * keeps such a file's starting mark instead of dropping it.
+ */
+export const openingFilePaths = new Set<string>()
 
 /**
  * Hook for managing ADF file operations.
@@ -33,7 +78,114 @@ export function useAdfFile() {
   const resetAgent = useAgentStore((s) => s.reset)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
 
-  const loadFileContents = useCallback(async () => {
+  /**
+   * Apply fetched contents to the stores, synchronously. Nothing in here
+   * awaits, so the whole switch lands in one React render: no frame shows the
+   * cleared stores, and the editor tabs appear together instead of one by one.
+   */
+  const applyFileContents = useCallback((contents: FileContents) => {
+    const { batch, tabFiles } = contents
+    const t1 = performance.now()
+    setDocumentContent(batch.document)
+    setConfig(batch.agentConfig)
+    setStatusText(batch.statusText ?? '')
+    setDirty(false)
+
+    // Restore loop (conversation history) if present
+    if (batch.chat && batch.chat.uiLog.length > 0) {
+      setLog(batch.chat.uiLog, batch.chat.earlierCount ?? 0)
+      console.log(`[PERF:renderer] loadFileContents.setStores: ${(performance.now() - t1).toFixed(1)}ms (logEntries=${batch.chat.uiLog.length})`)
+    } else {
+      clearLog()
+      console.log(`[PERF:renderer] loadFileContents.setStores: ${(performance.now() - t1).toFixed(1)}ms (empty log)`)
+    }
+
+    // Restore the context gauge from the persisted baseline — the same
+    // number the live path settles on, so reload and live agree:
+    //   - exact baseline (last call completed): tokenUsage = the last row's
+    //     full breakdown (same call, keeps cache/cost for the modal),
+    //     estimate cleared → gauge shows the exact percentage;
+    //   - estimated baseline (compaction/clear was the last thing to
+    //     happen): estimate = baseline, usage zeroed → gauge shows "~%";
+    //   - no baseline (file predates it): the pre-baseline behaviour, the
+    //     last assistant row's usage.
+    // Any live pre-flight estimate belonged to the previous agent.
+    const lastTokens = batch.lastTokens
+      ? { ...batch.lastTokens, input: batch.lastTokens.input ?? 0, output: batch.lastTokens.output ?? 0 }
+      : null
+    const baseline = batch.contextBaseline ?? null
+    if (baseline?.estimated) {
+      setTokenUsage({ input: 0, output: 0 })
+      useAgentStore.getState().setTokenEstimate(baseline.tokens)
+    } else {
+      if (baseline) setTokenUsage(lastTokens ?? { input: baseline.tokens, output: 0 })
+      else if (lastTokens) setTokenUsage(lastTokens)
+      useAgentStore.getState().setTokenEstimate(null)
+    }
+
+    // Restore this agent's previously open editor tabs. Falls back to the
+    // core set (README + mind + soul) when nothing restorable is saved —
+    // those three are the agent's own document, memory, and voice, so they
+    // are the default view rather than bespoke panels.
+    const agentFilePath = useDocumentStore.getState().filePath
+    const saved = agentFilePath ? loadOpenTabs(agentFilePath) : null
+    const tabStore = useEditorTabsStore.getState()
+    tabStore.reset()
+
+    // README.md content came down in the batch; the rest was read up front
+    // by fetchFileContents. False for files that no longer exist.
+    const openWorkspaceFile = (path: string): boolean => {
+      if (path === 'README.md') {
+        tabStore.openTab('README.md', batch.document, false)
+        return true
+      }
+      const file = tabFiles.get(path)
+      if (!file) return false
+      tabStore.openTab(path, file.binary ? '' : file.content, !!file.binary, file.mimeType)
+      return true
+    }
+
+    let restoredAny = false
+    for (const path of saved?.paths ?? []) {
+      if (openWorkspaceFile(path)) restoredAny = true
+    }
+    if (!restoredAny && !saved) {
+      // Only seed the defaults for an agent we have never opened. A saved
+      // entry — even an empty one — is the user's own choice: closing every
+      // tab persists `{paths: []}`, and resurrecting three files they just
+      // dismissed (and re-saving them) would make that state impossible to
+      // keep.
+      for (const path of DEFAULT_OPEN_TABS) openWorkspaceFile(path)
+      // README is the landing tab — the others opened after it, and openTab
+      // focuses whatever it opened last.
+      tabStore.setActiveTab('README.md')
+    } else if (!restoredAny && saved && saved.paths.length > 0) {
+      // Every saved file is gone. Fall back to the document rather than
+      // leaving a blank editor.
+      tabStore.openTab('README.md', batch.document, false)
+    } else if (saved?.active && useEditorTabsStore.getState().tabs.some((t) => t.path === saved.active)) {
+      tabStore.setActiveTab(saved.active)
+    }
+
+    // Persist the restored state now that the switch is complete (the
+    // subscriber was suspended for everything above).
+    resumeTabPersistence()
+    if (agentFilePath) {
+      const state = useEditorTabsStore.getState()
+      saveOpenTabs(
+        agentFilePath,
+        state.tabs.filter((t) => t.kind === 'file').map((t) => t.path),
+        state.activeTabPath
+      )
+    }
+  }, [setDocumentContent, setConfig, setStatusText, setDirty, setLog, clearLog, setTokenUsage])
+
+  /**
+   * Load the open file's contents into the stores. `prefetched` (from
+   * fetchFileContents) skips the reads, so a caller that fetched before
+   * resetting the stores gets the reset and the new contents in one render.
+   */
+  const loadFileContents = useCallback(async (prefetched?: FileContents) => {
     // Suspend tab persistence for the whole switch: setDocumentContent below
     // triggers EditorPanel's README content-sync into the tab store while the
     // OLD agent's tabs are still present and filePath already points at the
@@ -46,109 +198,9 @@ export function useAdfFile() {
     beginAgentSwitch()
     try {
       const t0 = performance.now()
-      // Single IPC round-trip instead of 4 separate calls
-      const batch = await window.adfApi.getBatch()
-      console.log(`[PERF:renderer] loadFileContents.getBatch IPC: ${(performance.now() - t0).toFixed(1)}ms`)
-
-      const t1 = performance.now()
-      setDocumentContent(batch.document)
-      setConfig(batch.agentConfig)
-      setStatusText(batch.statusText ?? '')
-      setDirty(false)
-
-      // Restore loop (conversation history) if present
-      if (batch.chat && batch.chat.uiLog.length > 0) {
-        setLog(batch.chat.uiLog, batch.chat.earlierCount ?? 0)
-        console.log(`[PERF:renderer] loadFileContents.setStores: ${(performance.now() - t1).toFixed(1)}ms (logEntries=${batch.chat.uiLog.length})`)
-      } else {
-        clearLog()
-        console.log(`[PERF:renderer] loadFileContents.setStores: ${(performance.now() - t1).toFixed(1)}ms (empty log)`)
-      }
-
-      // Restore the context gauge from the persisted baseline — the same
-      // number the live path settles on, so reload and live agree:
-      //   - exact baseline (last call completed): tokenUsage = the last row's
-      //     full breakdown (same call, keeps cache/cost for the modal),
-      //     estimate cleared → gauge shows the exact percentage;
-      //   - estimated baseline (compaction/clear was the last thing to
-      //     happen): estimate = baseline, usage zeroed → gauge shows "~%";
-      //   - no baseline (file predates it): the pre-baseline behaviour, the
-      //     last assistant row's usage.
-      // Any live pre-flight estimate belonged to the previous agent.
-      const lastTokens = batch.lastTokens
-        ? { ...batch.lastTokens, input: batch.lastTokens.input ?? 0, output: batch.lastTokens.output ?? 0 }
-        : null
-      const baseline = batch.contextBaseline ?? null
-      if (baseline?.estimated) {
-        setTokenUsage({ input: 0, output: 0 })
-        useAgentStore.getState().setTokenEstimate(baseline.tokens)
-      } else {
-        if (baseline) setTokenUsage(lastTokens ?? { input: baseline.tokens, output: 0 })
-        else if (lastTokens) setTokenUsage(lastTokens)
-        useAgentStore.getState().setTokenEstimate(null)
-      }
+      const contents = prefetched ?? await fetchFileContents(useDocumentStore.getState().filePath)
+      applyFileContents(contents)
       console.log(`[PERF:renderer] loadFileContents total: ${(performance.now() - t0).toFixed(1)}ms`)
-
-      // Restore this agent's previously open editor tabs. Falls back to the
-      // core set (README + mind + soul) when nothing restorable is saved —
-      // those three are the agent's own document, memory, and voice, so they
-      // are the default view rather than bespoke panels.
-      const agentFilePath = useDocumentStore.getState().filePath
-      const saved = agentFilePath ? loadOpenTabs(agentFilePath) : null
-      const tabStore = useEditorTabsStore.getState()
-      tabStore.reset()
-
-      // README.md content already came down in the batch; everything else is
-      // read on demand. Returns false for files that no longer exist.
-      const openWorkspaceFile = async (path: string): Promise<boolean> => {
-        if (path === 'README.md') {
-          tabStore.openTab('README.md', batch.document, false)
-          return true
-        }
-        if (path.startsWith('browser://')) return false
-        try {
-          const file = await window.adfApi.readInternalFile(path)
-          if (file?.content != null) {
-            tabStore.openTab(path, file.binary ? '' : file.content, file.binary, file.mimeType)
-            return true
-          }
-        } catch { /* file gone since last session — skip */ }
-        return false
-      }
-
-      let restoredAny = false
-      for (const path of saved?.paths ?? []) {
-        if (await openWorkspaceFile(path)) restoredAny = true
-      }
-      if (!restoredAny && !saved) {
-        // Only seed the defaults for an agent we have never opened. A saved
-        // entry — even an empty one — is the user's own choice: closing every
-        // tab persists `{paths: []}`, and resurrecting three files they just
-        // dismissed (and re-saving them) would make that state impossible to
-        // keep.
-        for (const path of DEFAULT_OPEN_TABS) await openWorkspaceFile(path)
-        // README is the landing tab — the others opened after it, and openTab
-        // focuses whatever it opened last.
-        tabStore.setActiveTab('README.md')
-      } else if (!restoredAny && saved && saved.paths.length > 0) {
-        // Every saved file is gone. Fall back to the document rather than
-        // leaving a blank editor.
-        tabStore.openTab('README.md', batch.document, false)
-      } else if (saved?.active && useEditorTabsStore.getState().tabs.some((t) => t.path === saved.active)) {
-        tabStore.setActiveTab(saved.active)
-      }
-
-      // Persist the restored state now that the switch is complete (the
-      // subscriber was suspended for everything above).
-      resumeTabPersistence()
-      if (agentFilePath) {
-        const state = useEditorTabsStore.getState()
-        saveOpenTabs(
-          agentFilePath,
-          state.tabs.filter((t) => t.kind === 'file').map((t) => t.path),
-          state.activeTabPath
-        )
-      }
     } catch (error) {
       console.error('[useAdfFile] Error loading file contents:', error)
       throw error
@@ -156,7 +208,7 @@ export function useAdfFile() {
       resumeTabPersistence()
       endAgentSwitch()
     }
-  }, [setDocumentContent, setConfig, setStatusText, setDirty, setLog, clearLog, setTokenUsage])
+  }, [applyFileContents])
 
   const completeFileOpen = useCallback(async () => {
     setShowSettings(false)
@@ -188,6 +240,21 @@ export function useAdfFile() {
     // across the whole span: writeInternalFile carries no agent identity, so a
     // write delivered inside it lands in the wrong file (see beginAgentSwitch).
     beginAgentSwitch()
+    // A running agent stays "running" through the whole switch. main moves it
+    // off the background list inside the openFile IPC, and the reset below
+    // drops the foreground state to 'off', so without a starting mark its
+    // sidebar row and rail avatar would leave and come back. Marked before
+    // the IPC; the re-attach's startAgent clears it, or the finally does.
+    const marked = new Set<string>()
+    const markStarting = (fp: string) => {
+      marked.add(fp)
+      openingFilePaths.add(fp)
+      useAppStore.getState().addStartingFilePath(fp)
+    }
+    let startHandedOff = false
+    if (filePath && useBackgroundAgentsStore.getState().agents.some((a) => a.filePath === filePath)) {
+      markStarting(filePath)
+    }
     let switchOpen = true
     const endSwitch = () => {
       if (!switchOpen) return
@@ -235,20 +302,26 @@ export function useAdfFile() {
         // Close settings if it's open
         setShowSettings(false)
 
-        // Reset agent state and update filePath immediately so any in-flight
-        // async handlers from the previous agent see the filePath has changed
-        // (prevents their stillViewing checks from passing incorrectly).
+        if (result.agentWasRunning) markStarting(result.filePath)
+
+        // Read the incoming agent before touching any store, so the old agent
+        // stays on screen until the new one can replace it in a single render
+        // (no blank frame, no tabs arriving one at a time).
+        t1 = performance.now()
+        const contents = await fetchFileContents(result.filePath)
+        console.log(`[PERF:renderer] openFile.fetchFileContents: ${(performance.now() - t1).toFixed(1)}ms`)
+
+        // Reset agent state and update filePath, then apply the contents, all
+        // in this one synchronous stretch. filePath still changes before any
+        // further await, so in-flight handlers from the previous agent see it
+        // has changed (their stillViewing checks fail as before).
         t1 = performance.now()
         resetAgent()
         setFilePath(result.filePath)
         // Review state belongs to the previous file until main re-checks below.
         useAppStore.getState().resetAgentReview()
-        console.log(`[PERF:renderer] openFile.resetAgent: ${(performance.now() - t1).toFixed(1)}ms`)
-
-        // Load new file contents (document, mind, loop, config)
-        t1 = performance.now()
-        await loadFileContents()
-        console.log(`[PERF:renderer] openFile.loadFileContents: ${(performance.now() - t1).toFixed(1)}ms`)
+        await loadFileContents(contents)
+        console.log(`[PERF:renderer] openFile.reset+apply: ${(performance.now() - t1).toFixed(1)}ms`)
 
         // The incoming agent is fully loaded — saves are safe to deliver again.
         endSwitch()
@@ -273,12 +346,13 @@ export function useAdfFile() {
           // reset above left the store at its default 'off', so without this the
           // whole window reads as "the agent turned itself off". Marking the file
           // as starting makes every indicator (title bar, agent panel, sidebar
-          // row) show "Starting…" until the real state arrives.
-          useAppStore.getState().addStartingFilePath(result.filePath)
+          // row) show "Starting…" until the real state arrives. That mark went
+          // on above, before the reset.
+          startHandedOff = true
           const startResult = await window.adfApi.startAgent().finally(() => {
             // Clears on both outcomes — including the re-attach failure below,
             // whose message must not be hidden behind a stuck spinner.
-            useAppStore.getState().removeStartingFilePath(result.filePath)
+            for (const fp of marked) useAppStore.getState().removeStartingFilePath(fp)
           })
           console.log(`[PERF:renderer] openFile.startAgent IPC: ${(performance.now() - t1).toFixed(1)}ms`)
           if (startResult.success) {
@@ -377,6 +451,9 @@ export function useAdfFile() {
       }
       return result
     } finally {
+      // Every way out short of the re-attach (gate, error, not running) clears it here.
+      if (!startHandedOff) for (const fp of marked) useAppStore.getState().removeStartingFilePath(fp)
+      for (const fp of marked) openingFilePaths.delete(fp)
       endSwitch()
     }
   }, [setShowSettings, resetAgent, resetDocument, loadFileContents, setFilePath])
