@@ -368,8 +368,13 @@ ${DESKTOP_ENV} TZ='${identity.timezone}' LANG=C.UTF-8 LC_ALL=C.UTF-8
 mkdir -p "$PROFILE" /tmp/adf-browser
 # Bounded: a Chromium still shutting down accepts the connection and never answers.
 cdp_up() { wget -q -T 2 -t 1 -O /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/json/version 2>/dev/null; }
+# Chromium is usually stopped by a container or display restart, so it
+# believes it crashed and asks "Restore pages?" on the next start. Mark the
+# last exit clean and restore the last session without asking.
+# (--disable-session-crashed-bubble no longer does anything.)
 launch() {
-  exec '${chromium}' --no-sandbox --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-session-crashed-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} "$@" </dev/null >>/tmp/adf-browser/chromium.log 2>&1
+  sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "$PROFILE/Default/Preferences" 2>/dev/null
+  exec '${chromium}' --no-sandbox --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --restore-last-session --hide-crash-restore-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} "$@" </dev/null >>/tmp/adf-browser/chromium.log 2>&1
 }
 # Browser (main) processes only — renderers/zygotes carry --type= and follow their parent.
 browser_pids() {
@@ -397,7 +402,7 @@ case "$cmd" in
     # A Chromium that owns the profile but serves no CDP (crash, port clash)
     # would swallow our launch via its singleton: reclaim the profile first.
     [ -n "$(browser_pids)" ] && kill_browser
-    [ $# -eq 0 ] && set -- about:blank
+    # No URL: the restored session is the window (no extra blank tab per start).
     setsid -f "$0" launch-detached "$@" </dev/null >/dev/null 2>&1
     i=0; while ! cdp_up && [ $i -lt 100 ]; do i=$((i+1)); sleep 0.25; done
     cdp_up || { echo "managed Chromium did not come up; see /tmp/adf-browser/chromium.log" >&2; exit 1; } ;;
