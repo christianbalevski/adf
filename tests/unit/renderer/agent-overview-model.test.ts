@@ -3,6 +3,9 @@ import {
   HIGH_POWER_LABEL,
   SECTION_LIMIT,
   agentStatusLabel,
+  shelfSpines,
+  SHELF_MAX_PX,
+  SHELF_MIN_PX,
   compactCount,
   configTargetFor,
   decideLevelUp,
@@ -336,5 +339,26 @@ describe('configTargetFor', () => {
 
   it('falls back to the config tab for unknown paths', () => {
     expect(configTargetFor('something_new')).toEqual({ subTab: 'config' })
+  })
+})
+
+describe('skills bookshelf', () => {
+  it('one spine per skill, taller for bigger skills, on an absolute scale', () => {
+    const spines = shelfSpines([
+      { name: 'big', tokens: 20_000, files: 9 },
+      { name: 'small', tokens: 800, files: 1 },
+      { name: 'registry', tokens: 0, files: 0 }
+    ])
+    expect(spines.map((s) => s.name)).toEqual(['big', 'small', 'registry'])
+    expect(spines[0].height).toBeGreaterThan(spines[1].height)
+    expect(spines[2]).toMatchObject({ height: SHELF_MIN_PX, empty: true, tip: 'registry · no files' })
+    expect(spines[0].tip).toBe('big · ~20k tokens · 9 files')
+  })
+
+  it('caps a spine at full height and never limits the count', () => {
+    expect(shelfSpines([{ name: 'huge', tokens: 5_000_000, files: 400 }])[0].height).toBe(SHELF_MAX_PX)
+    const many = Array.from({ length: 300 }, (_, i) => ({ name: `s${i}`, tokens: 1000, files: 1 }))
+    expect(shelfSpines(many)).toHaveLength(300)
+    expect(shelfSpines(undefined)).toEqual([])
   })
 })

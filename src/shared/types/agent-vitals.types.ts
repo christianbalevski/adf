@@ -273,6 +273,13 @@ export type MemoryStrata = Record<MemoryStratum, number>
  * (bytes / 4, rounded) and given for mind and skills only: table data is
  * rarely read into context, so its size is not comparable.
  */
+/** One skill's size, from its files under `skills/<name>/`. */
+export interface SkillSize {
+  name: string
+  tokens: number
+  files: number
+}
+
 export interface AgentContents {
   /**
    * Files under `mind/`: count, SUM(size) / 4, files with updated_at in the
@@ -283,9 +290,11 @@ export interface AgentContents {
   /**
    * Skills the agent installed or changed (the Experience stat's rule) and
    * the tokens of every file under those skills' directories. Registry
-   * entries without files count but add no tokens.
+   * entries without files count but add no tokens. `items`: each of those
+   * skills with its own tokens and file count, largest first (the
+   * Overview's bookshelf); absent from older readers.
    */
-  skills: { count: number; tokens: number }
+  skills: { count: number; tokens: number; items?: SkillSize[] }
   /** `local_*` tables (at most 50 read) and their total rows. */
   tables: { count: number; rows: number }
 }

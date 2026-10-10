@@ -8,7 +8,7 @@
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import { POWER_LEVEL_MAX } from '../../../../shared/utils/agent-stats'
 import { MEMORY_STRATA_BANDS, MEMORY_STRATA_DAYS } from '../../../../shared/types/agent-vitals.types'
-import type { ActivityDay, AgentContents, ExperienceStat, MemoryStrata, MemoryStratum, PowerStat, StatFactor, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
+import type { ActivityDay, AgentContents, ExperienceStat, MemoryStrata, MemoryStratum, PowerStat, SkillSize, StatFactor, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
 
 // =============================================================================
 // Level bar
@@ -642,6 +642,45 @@ export function contentsFoldedLine(c: AgentContents): string {
   if (c.skills.count > 0) parts.push(plural(c.skills.count, 'skill'))
   if (c.tables.count > 0) parts.push(plural(c.tables.count, 'table'))
   return parts.join(' · ')
+}
+
+// =============================================================================
+// Skills bookshelf
+// =============================================================================
+
+/** Spine heights in px: a skill with no files, and the tallest any skill gets. */
+export const SHELF_MIN_PX = 3
+export const SHELF_MAX_PX = 20
+/** Tokens at which a spine reaches full height; larger skills stay at the top. */
+const SHELF_FULL_TOKENS = 50_000
+/** Past this many skills the spines go thin, then wrap to another shelf. */
+export const SHELF_THIN_AFTER = 40
+
+export interface ShelfSpine {
+  name: string
+  height: number
+  /** Registry entry with no files: drawn as an outline. */
+  empty: boolean
+  tip: string
+}
+
+/**
+ * One spine per skill, largest first. Height is log-scaled on absolute
+ * tokens, so the same skill reads the same height in every agent and a
+ * shelf never needs a maximum count: more skills is more spines.
+ */
+export function shelfSpines(items: SkillSize[] | undefined): ShelfSpine[] {
+  if (!items) return []
+  const top = Math.log10(1 + SHELF_FULL_TOKENS / 100)
+  return items.map((s) => {
+    const share = Math.min(1, Math.log10(1 + Math.max(0, s.tokens) / 100) / top)
+    return {
+      name: s.name,
+      height: Math.round(SHELF_MIN_PX + (SHELF_MAX_PX - SHELF_MIN_PX) * share),
+      empty: s.files === 0,
+      tip: s.files === 0 ? `${s.name} · no files` : `${s.name} · ${approxTokens(s.tokens)} tokens · ${plural(s.files, 'file')}`
+    }
+  })
 }
 
 // =============================================================================

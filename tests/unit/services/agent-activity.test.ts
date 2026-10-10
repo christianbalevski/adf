@@ -130,7 +130,16 @@ describe('readAgentActivity', () => {
     // Only people.md is inside the last 7 days: old.md and the seeded files are older.
     expect(a.contents.mind).toEqual({ files: mind.length, tokens: Math.round(bytes / 4), updatedThisWeek: 1, strata: readMemoryStrata(q, now) })
     // research (file) + legacy (registry only, 0 tokens); starter excluded.
-    expect(a.contents.skills).toEqual({ count: 2, tokens: Math.round('# skills/research/SKILL.md'.length / 4) })
+    const researchTokens = Math.round('# skills/research/SKILL.md'.length / 4)
+    expect(a.contents.skills).toEqual({
+      count: 2,
+      tokens: researchTokens,
+      // Per skill, largest first: the bookshelf's spines.
+      items: [
+        { name: 'research', tokens: researchTokens, files: 1 },
+        { name: 'legacy', tokens: 0, files: 0 }
+      ]
+    })
     expect(a.contents.tables).toEqual({ count: 1, rows: 3 })
   })
 

@@ -568,8 +568,8 @@ export function readMemoryStrata(q: Sql, now = Date.now()): MemoryStrata {
 
 /**
  * The Contents section: mind/ files and the agent's skills as counts and
- * approximate tokens (mind also by age band), local tables as counts and
- * rows. Aggregates only. Mind tokens use memoryBytes, as memoryTokens does.
+ * approximate tokens (mind also by age band, skills also per skill), local
+ * tables as counts and rows. Mind tokens use memoryBytes, as memoryTokens does.
  */
 export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>, now = Date.now()): AgentContents {
   const weekAgo = now - WEEK_MS
@@ -577,6 +577,8 @@ export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>,
   let mindBytes = 0
   let mindRecent = 0
   let skillBytes = 0
+  const perSkill = new Map<string, { bytes: number; files: number }>()
+  for (const name of agentSkills) perSkill.set(name, { bytes: 0, files: 0 })
   for (const f of files) {
     const size = typeof f.size === 'number' && Number.isFinite(f.size) ? f.size : 0
     if (f.path.startsWith('mind/')) {
@@ -586,8 +588,16 @@ export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>,
       continue
     }
     const skill = SKILL_FILE.exec(f.path)?.[1]
-    if (skill && agentSkills.has(skill)) skillBytes += size
+    if (skill && agentSkills.has(skill)) {
+      skillBytes += size
+      const s = perSkill.get(skill)!
+      s.bytes += size
+      s.files++
+    }
   }
+  const items = [...perSkill]
+    .map(([name, s]) => ({ name, tokens: approxTokens(s.bytes), files: s.files }))
+    .sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name))
 
   const tables = listLocalTables(q).slice(0, MAX_TABLES)
   let rows = 0
@@ -595,7 +605,7 @@ export function readContents(q: Sql, files: FileRow[], agentSkills: Set<string>,
 
   return {
     mind: { files: mindFiles, tokens: approxTokens(mindBytes), updatedThisWeek: mindRecent, strata: readMemoryStrata(q, now) },
-    skills: { count: agentSkills.size, tokens: approxTokens(skillBytes) },
+    skills: { count: agentSkills.size, tokens: approxTokens(skillBytes), items },
     tables: { count: tables.length, rows }
   }
 }

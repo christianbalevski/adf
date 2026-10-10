@@ -29,6 +29,8 @@ import {
   hasActivity,
   sparkHeights,
   sparkSummary,
+  shelfSpines,
+  SHELF_THIN_AFTER,
   strataSegments,
   strataSummary,
   timerRowText,
@@ -283,7 +285,8 @@ function Contents({ contents, folded }: { contents: AgentContents; folded: boole
   }
   return (
     <Section title="Contents">
-      <ul>
+      {/* Gap between rows: each visual belongs to the row above it only. */}
+      <ul className="space-y-1.5">
         {rows.map((r) => (
           <li key={r.key}>
             <button type="button" onClick={openContents[r.key]} className={CONTENTS_ROW}>
@@ -294,6 +297,7 @@ function Contents({ contents, folded }: { contents: AgentContents; folded: boole
               {r.aside && <span className={WHEN}>{r.aside}</span>}
             </button>
             {r.key === 'mind' && <MemoryStrata contents={contents} />}
+            {r.key === 'skills' && <SkillShelf contents={contents} />}
           </li>
         ))}
       </ul>
@@ -327,5 +331,34 @@ function MemoryStrata({ contents }: { contents: AgentContents }) {
         </Tooltip>
       ))}
     </div>
+  )
+}
+
+/**
+ * The agent's skills as a bookshelf: one spine per skill, largest first,
+ * height by its tokens on a log scale (shelfSpines). Spines stand on a 1 px
+ * shelf; past SHELF_THIN_AFTER they go thin, then wrap. Each spine's tooltip
+ * names the skill with its size and file count. Click opens the skills list.
+ */
+function SkillShelf({ contents }: { contents: AgentContents }) {
+  const spines = useMemo(() => shelfSpines(contents.skills.items), [contents])
+  if (spines.length === 0) return null
+  const width = spines.length > SHELF_THIN_AFTER ? 3 : 6
+  return (
+    <button
+      type="button"
+      onClick={openContents.skills}
+      aria-label={`${spines.length} skills, largest ${spines[0].tip}`}
+      className="mt-0.5 flex w-full flex-wrap items-end gap-x-[2px] gap-y-1 border-b border-[var(--rule)] pb-px"
+    >
+      {spines.map((s) => (
+        <Tooltip key={s.name} tip={s.tip} delay={0} className="block">
+          <span
+            className={`block rounded-t-[1px] ${s.empty ? 'border border-b-0 border-[var(--ink-faint)]' : 'bg-[var(--ink-muted)] hover:bg-[var(--ink)]'}`}
+            style={{ width, height: s.height }}
+          />
+        </Tooltip>
+      ))}
+    </button>
   )
 }

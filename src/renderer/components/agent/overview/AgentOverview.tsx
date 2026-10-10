@@ -41,13 +41,18 @@
  * (89 -> 25 + 0, saves ~64), ~559, which fits 590 (zoom 1.1). Unfolds run in
  * reverse. Anything taller (banners, expanded "+N", a smaller window)
  * scrolls.
+ * Since measured: Website / Computer chips get their own line under the
+ * badges (4 + 20, only when the agent has either), the Skills bookshelf adds
+ * up to 22 px under its row (spines ≤ 20 + shelf), and the age moved from
+ * the facts line to a footer (mt-auto: free when the panel has room, +28
+ * when it scrolls).
  * Keep new rows inside this budget: cap lists with a row limit + "+N".
  */
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { OverviewActivity, readActivity } from './OverviewActivity'
 import { OverviewOrbital } from './OverviewOrbital'
-import { OverviewSurfaces } from './OverviewSurfaces'
+import { CHIP, SurfaceChips, useAgentSurfaces } from './OverviewSurfaces'
 import { useOverviewRead, type OverviewReader } from './useOverviewRead'
 import { useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
@@ -64,6 +69,7 @@ import {
   LEVELS_STORAGE_KEY,
   agentStatusLabel,
   compactCount,
+  formatAge,
   configTargetFor,
   contentsRows,
   decideLevelUp,
@@ -258,11 +264,15 @@ export function AgentOverview() {
 
   // The state line already says when an idle agent wakes.
   const showsWake = /\bwake/i.test(live.label)
-  const facts = vitals ? overviewFacts(vitals, now).filter((f) => !(showsWake && f.id === 'wake')) : []
+  // Age moved to the footer; the facts line keeps what changes week to week.
+  const facts = vitals ? overviewFacts(vitals, now).filter((f) => f.id !== 'age' && !(showsWake && f.id === 'wake')) : []
+  const age = vitals?.createdAt && Number.isFinite(vitals.ageDays) ? ageFooter(vitals.createdAt, vitals.ageDays) : null
+  const surfaces = useAgentSurfaces()
+  const hasSurfaces = !!(surfaces.website || surfaces.computer)
   if (chartFolded && activity) facts.push({ id: 'messages', text: sparkFact(activity.daily) })
 
   return (
-    <div ref={rootRef} className="px-3 py-2 space-y-1.5 text-[var(--ink)]">
+    <div ref={rootRef} className="flex min-h-full flex-col px-3 py-2 space-y-1.5 text-[var(--ink)]">
       <header className="flex flex-col items-center text-center">
         <div
           className={`shrink-0 rounded-full ${pulsing ? 'pulse-ring' : ''}`}
@@ -280,9 +290,14 @@ export function AgentOverview() {
           </Tooltip>
         )}
         {(isPublic || vitals?.ownerVerified) && (
-          <div className="mt-1 flex gap-1.5">
-            {isPublic && <Badge>Public</Badge>}
-            {vitals?.ownerVerified && <Badge>Verified owner</Badge>}
+          <div className="mt-1 flex flex-wrap justify-center gap-1.5">
+            {isPublic && <Badge tip="Its website is open to anyone who can reach it.">Public</Badge>}
+            {vitals?.ownerVerified && <Badge tip="Its owner signed this agent, and the signature checks out.">Verified owner</Badge>}
+          </div>
+        )}
+        {hasSurfaces && (
+          <div className="mt-1 flex flex-wrap justify-center gap-1.5">
+            <SurfaceChips surfaces={surfaces} />
           </div>
         )}
         {(live.label || model) && (
@@ -291,7 +306,6 @@ export function AgentOverview() {
             {model && <span className="text-[var(--ink-muted)]">{live.label && ' · '}<span className="font-mono text-[11.5px]">{model}</span></span>}
           </p>
         )}
-        <OverviewSurfaces />
       </header>
 
       <section className="space-y-1.5">
@@ -318,13 +332,27 @@ export function AgentOverview() {
       </section>
 
       <OverviewActivity activity={activity} now={now} chartFolded={chartFolded} contentsFolded={folded.contents} />
+
+      {age && (
+        <footer className="mt-auto pt-3 text-center text-[11px] leading-4 text-[var(--ink-faint)] tabular-nums">{age}</footer>
+      )}
     </div>
   )
 }
 
-function Badge({ children }: { children: React.ReactNode }) {
+/** "282 days old · since Jan 1, 2026": the card's footer. */
+function ageFooter(createdAt: string, ageDays: number): string {
+  const since = new Date(createdAt)
+  // "created today · since today" says it twice; a new agent gets the first half.
+  if (Number.isNaN(since.getTime()) || ageDays < 1) return formatAge(ageDays)
+  return `${formatAge(ageDays)} · since ${since.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
+}
+
+function Badge({ tip, children }: { tip: string; children: React.ReactNode }) {
   return (
-    <span className="rounded border border-[var(--rule)] px-1.5 text-[11px] leading-4 text-[var(--ink-muted)]">{children}</span>
+    <Tooltip tip={tip}>
+      <span className={`${CHIP} text-[var(--ink-muted)] cursor-default`}>{children}</span>
+    </Tooltip>
   )
 }
 
@@ -343,12 +371,11 @@ function MetricList({ metrics }: { metrics: AgentMetric[] }) {
           const text = metricText(m)
           const bar = metricBar(m)
           return (
-            <div key={m.name} className="flex items-baseline justify-between gap-3">
-              <dt className="min-w-0 truncate text-[var(--ink-muted)]" title={m.label === m.name ? m.name : `${m.label} (${m.name})`}>{m.label}</dt>
-              <dd className="flex min-w-0 items-baseline gap-2 font-mono text-[11.5px] tabular-nums" title={m.raw}>
-                {bar && <MetricBar fill={bar.fill} target={bar.target} />}
-                <span className="min-w-0 truncate">{text}</span>
-              </dd>
+            // The bar takes whatever the label and value leave, so it reads at panel width.
+            <div key={m.name} className="flex items-baseline gap-3">
+              <dt className="min-w-0 max-w-[50%] shrink-0 truncate text-[var(--ink-muted)]" title={m.label === m.name ? m.name : `${m.label} (${m.name})`}>{m.label}</dt>
+              {bar ? <MetricBar fill={bar.fill} target={bar.target} /> : <span className="flex-1" />}
+              <dd className="min-w-0 max-w-[40%] truncate font-mono text-[11.5px] tabular-nums" title={m.raw}>{text}</dd>
             </div>
           )
         })}
@@ -365,10 +392,15 @@ function MetricList({ metrics }: { metrics: AgentMetric[] }) {
 /** Value's share of min..max as a thin track; a tick marks the target. Decorative: the value is printed beside it. */
 function MetricBar({ fill, target }: { fill: number; target?: number }) {
   return (
-    <span aria-hidden className="relative self-center h-1 w-12 shrink-0 rounded-full bg-[var(--rule)]">
+    <span aria-hidden className="relative self-center h-1 min-w-12 flex-1 rounded-full bg-[var(--rule)]">
       <span className="absolute inset-y-0 left-0 rounded-full bg-[var(--ink)]" style={{ width: `${fill * 100}%` }} />
       {target !== undefined && (
-        <span className="absolute -top-0.5 -bottom-0.5 w-px bg-[var(--ink-muted)]" style={{ left: `calc(${target * 100}% - 0.5px)` }} />
+        // 2 px accent tick, 3 px past the track each side, with a paper-coloured
+        // ring so it stays separate from the fill it sits on.
+        <span
+          className="absolute -top-[3px] -bottom-[3px] w-0.5 rounded-full bg-[var(--adf-ui-accent)] shadow-[0_0_0_1px_var(--paper)]"
+          style={{ left: `calc(${target * 100}% - 1px)` }}
+        />
       )}
     </span>
   )
