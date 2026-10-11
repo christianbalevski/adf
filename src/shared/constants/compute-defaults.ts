@@ -26,6 +26,7 @@ export const DEFAULT_COMPUTE_SETTINGS = {
     'fonts-liberation',
     'fonts-noto-core',
     'fonts-noto-color-emoji',
+    'fonts-dejavu-core',
     'tzdata',
     'libnss3',
     'libatk-bridge2.0-0',

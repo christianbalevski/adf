@@ -303,6 +303,31 @@ gtk-cursor-theme-name=Adwaita
 const DESKTOP_LIBFM_CONF = `[config]
 terminal=lxterminal
 `
+/** Generic "monospace" resolves to DejaVu Sans Mono. Unset, fontconfig picks
+ *  Nimbus Mono PS (a thin Courier clone) — near-illegible over VNC. System-wide
+ *  so the terminal, xterm, the editor and Chromium's fixed-width font agree. */
+const DESKTOP_FONTCONFIG = `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<!-- Written by ADF Studio -->
+<fontconfig>
+  <alias binding="strong"><family>monospace</family><prefer><family>DejaVu Sans Mono</family></prefer></alias>
+</fontconfig>
+`
+/** LXTerminal: DejaVu Sans Mono, light text on the panel colour (the stock
+ *  #aaaaaa on black is low contrast), Tango palette (the stock VGA blue is
+ *  unreadable on a dark background). The palette keys apply only under
+ *  color_preset=Custom; any named preset overrides them. */
+const DESKTOP_TERMINAL_PALETTE = ['#000000', '#cc0000', '#4e9a06', '#c4a000', '#3465a4', '#75507b', '#06989a', '#d3d7cf', '#555753', '#ef2929', '#8ae234', '#fce94f', '#729fcf', '#ad7fa8', '#34e2e2', '#eeeeec']
+const DESKTOP_LXTERMINAL_CONF = `[general]
+fontname=DejaVu Sans Mono 11
+bgcolor=#1c1c21
+fgcolor=#e6e6e6
+color_preset=Custom
+${DESKTOP_TERMINAL_PALETTE.map((color, i) => `palette_color_${i}=${color}`).join('\n')}
+scrollback=5000
+geometry_columns=100
+geometry_rows=30
+`
 const BROWSER_MIME_TYPES = ['text/html', 'application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml', 'x-scheme-handler/http', 'x-scheme-handler/https']
 /** Web content, images and PDFs open in the managed browser — no extra viewers. */
 const DESKTOP_MIMEAPPS = `[Default Applications]
@@ -496,6 +521,8 @@ const DESKTOP_CONFIG_FILES: [string, string | Buffer][] = [
   [`${DESKTOP_CONFIG_DIR}/wallpaper.png`, gradientWallpaperPng(DESKTOP_WALLPAPER_TOP, DESKTOP_WALLPAPER_BOTTOM)],
   [`${DESKTOP_CONFIG_DIR}/gtk-3.0/settings.ini`, DESKTOP_GTK_SETTINGS],
   [`${DESKTOP_CONFIG_DIR}/libfm/libfm.conf`, DESKTOP_LIBFM_CONF],
+  [`${DESKTOP_CONFIG_DIR}/lxterminal/lxterminal.conf`, DESKTOP_LXTERMINAL_CONF],
+  ['/etc/fonts/local.conf', DESKTOP_FONTCONFIG],
   [`${DESKTOP_CONFIG_DIR}/mimeapps.list`, DESKTOP_MIMEAPPS],
   [`${DESKTOP_CONFIG_DIR}/apps.desktop`, desktopEntry('Applications', 'Application menu', 'jgmenu_run', 'start-here')],
   [`${DESKTOP_CONFIG_DIR}/browser.desktop`, DESKTOP_BROWSER_LAUNCHER],
@@ -517,8 +544,8 @@ const DESKTOP_CONFIG_UPDATED_MARK = 'desktop-config-updated'
  *  install runs first — rc.xml derives from the stock Debian one (Alt+F4
  *  close, Alt+Tab, … keybindings). */
 const BROWSER_STACK_PREP = [
-  `mkdir -p /tmp/adf-browser ${BROWSER_PROFILE_DIR} /workspace /usr/local/share/applications ${['openbox', 'tint2', 'jgmenu', 'pcmanfm/default', 'gtk-3.0', 'libfm'].map((d) => `${DESKTOP_CONFIG_DIR}/${d}`).join(' ')}`,
-  `{ missing=''; for pkg in ${DESKTOP_PACKAGES.join(' ')} tzdata fonts-noto-core fonts-noto-color-emoji; do dpkg-query -W -f='\${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $pkg"; done; if [ -n "$missing" ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; fi; }`,
+  `mkdir -p /tmp/adf-browser ${BROWSER_PROFILE_DIR} /workspace /usr/local/share/applications ${['openbox', 'tint2', 'jgmenu', 'pcmanfm/default', 'gtk-3.0', 'libfm', 'lxterminal'].map((d) => `${DESKTOP_CONFIG_DIR}/${d}`).join(' ')}`,
+  `{ missing=''; for pkg in ${DESKTOP_PACKAGES.join(' ')} tzdata fonts-noto-core fonts-noto-color-emoji fonts-dejavu-core; do dpkg-query -W -f='\${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $pkg"; done; if [ -n "$missing" ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; fi; }`,
   `if [ "$(cat ${DESKTOP_CONFIG_DIR}/.version 2>/dev/null)" != '${DESKTOP_CONFIG_VERSION}' ]; then ${[
     OPENBOX_RC_SED,
     STOCK_CHROMIUM_ENTRY_SED,
@@ -654,7 +681,7 @@ export interface ComputeEnvSettings {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SETTINGS: ComputeEnvSettings = {
-  containerPackages: ['python3-full', 'python3-pip', 'nftables', 'iproute2', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm', 'x11-xserver-utils'],
+  containerPackages: ['python3-full', 'python3-pip', 'nftables', 'iproute2', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'fonts-dejavu-core', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm', 'x11-xserver-utils'],
   machineCpus: 2,
   machineMemoryMb: 2048,
   containerImage: 'docker.io/library/node:20-slim',
