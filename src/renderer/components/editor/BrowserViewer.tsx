@@ -36,6 +36,8 @@ interface ViewerState {
  * "Match tab size" (a button on the tab itself) switches to resize=remote,
  * where Xtigervnc resizes the desktop to fill the tab — for when the user
  * takes the desktop over.
+ * quality=9/compression=0: the stream is loopback-only, so JPEG at noVNC's
+ * default quality 6 saved nothing and smeared text.
  * reconnect=1 retries every 2s while the display stack is down, so a restart
  * reattaches by itself.
  */
@@ -90,7 +92,7 @@ function DesktopWebview({ hostPort, reloadNonce }: { hostPort: number; reloadNon
   // (e.g. on StrictMode remount, or a reload click during initial load —
   // skipping is fine there, a fresh load is already in progress).
   const domReadyRef = useRef(false)
-  const src = `http://127.0.0.1:${hostPort}/vnc.html?autoconnect=1&resize=${matchTab ? 'remote' : 'scale'}&reconnect=1&reconnect_delay=2000`
+  const src = `http://127.0.0.1:${hostPort}/vnc.html?autoconnect=1&resize=${matchTab ? 'remote' : 'scale'}&reconnect=1&reconnect_delay=2000&quality=9&compression=0`
 
   useEffect(() => {
     const webview = webviewRef.current
