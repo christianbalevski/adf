@@ -545,6 +545,8 @@ Files tab (tree):
 | `Space` | Toggle a folder |
 | `/` | Filter by path (fuzzy) |
 | `e` | Edit in $EDITOR, then confirm the write (diff shown) |
+| `o` | Open in the default app (xlsx, images, pdf, …) |
+| `s` | Save the default-app copy back (asks) |
 | `n` | New file |
 | `m` | Rename / move (a folder moves with its files) |
 | `d` `Delete` | Delete (asks) |
@@ -560,6 +562,7 @@ Viewer:
 | `↑` `↓` | Scroll (j k; PgUp PgDn Space page; g G top/bottom) |
 | `/` | Search, then n N next / previous hit |
 | `e` | Edit this file |
+| `o` `s` | Open in the default app · save that copy back |
 
 Inbox · Outbox · Meta (read-only):
 

@@ -7,11 +7,14 @@
 import { promises as fs, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openBrowser } from '../../../cli/auth-flow'
+import * as authFlowNs from '../../../cli/auth-flow'
 import type { DaemonClient } from '../../api/client'
+import { cjs } from '../../interop'
 import type { TuiActions } from '../../state/store'
 import { loadTarget, writeTarget, type LoadedContent } from './io'
 import { formatBytes, targetFileName, targetKey, targetLabel, type FileTarget } from './model'
+
+const { openBrowser } = cjs(authFlowNs)
 
 export interface ExternalCopy {
   agentId: string
