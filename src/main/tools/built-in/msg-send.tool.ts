@@ -5,6 +5,8 @@ import { DOCS_GUIDES_URL } from '../../../shared/constants/adf-defaults'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
+import type { InboxMessage } from '../../../shared/types/adf-v02.types'
+import { isLoopbackHostname, isLoopbackIp } from '../../utils/ssrf-guard'
 
 const InputSchema = z.object({
   recipient: z
@@ -36,7 +38,7 @@ const InputSchema = z.object({
   parent_id: z
     .string()
     .optional()
-    .describe('Message ID for threading/replies. To reply to an inbound message, set this to the inbox message id and omit recipient/address — the runtime resolves both from the parent (from becomes recipient, reply_to becomes address), keeping the reply in the originating channel/chat. Putting the sender in recipient instead can misroute group/channel replies.'),
+    .describe('Message ID for threading/replies. To reply to an inbound message, set this to the inbox message id and omit recipient/address — the runtime resolves both from the parent (from becomes recipient, reply_to becomes address — a loopback reply_to from a remote peer is routed to the host it was received from), keeping the reply in the originating channel/chat. Putting the sender in recipient instead can misroute group/channel replies.'),
   attachments: z
     .array(z.string())
     .optional()
@@ -50,6 +52,47 @@ const InputSchema = z.object({
     .optional()
     .describe('Metadata on the outer message. Always cleartext — visible to relays and intermediaries. Use for routing hints (e.g. { forward_to: "did:key:..." }), PoW proofs, TTL, priority.')
 })
+
+function isLoopbackUrlHost(hostname: string): boolean {
+  return isLoopbackIp(hostname) || isLoopbackHostname(hostname)
+}
+
+/**
+ * Delivery address for a parent_id reply.
+ *
+ * Normally the parent's signed reply_to. Remote senders build reply_to before
+ * they know the delivery route, so cross-host mesh packets commonly carry
+ * http://127.0.0.1:<port>/... — posting there hits THIS runtime, not the sender.
+ * The HTTP ingress (mesh-server rewriteLoopbackHost) stores the transport-
+ * observed form as return_path. Prefer it only when it is exactly that rewrite:
+ *   - the row arrived over the mesh (adapter rows carry wire-sourced
+ *     return_path values, e.g. an email Return-Path header — never trusted);
+ *   - reply_to's host is loopback and return_path's host is not;
+ *   - everything but the host (scheme, credentials, port, path, query) matches
+ *     the signed reply_to, so the reply still goes to the sender-declared
+ *     endpoint, just on the host the packet actually came from.
+ * Non-loopback reply_to, same-host delivery (no rewrite) and same-runtime
+ * delivery (no return_path) keep reply_to unchanged.
+ */
+export function resolveParentReplyAddress(
+  parentMsg: Pick<InboxMessage, 'reply_to' | 'return_path' | 'source'>
+): string | undefined {
+  const replyTo = parentMsg.reply_to || undefined
+  const returnPath = parentMsg.return_path
+  if (!replyTo || !returnPath || parentMsg.source !== 'mesh') return replyTo
+  let declared: URL
+  let observed: URL
+  try {
+    declared = new URL(replyTo)
+    observed = new URL(returnPath)
+  } catch {
+    return replyTo
+  }
+  if (!isLoopbackUrlHost(declared.hostname) || isLoopbackUrlHost(observed.hostname)) return replyTo
+  const rewritten = new URL(declared.toString())
+  rewritten.hostname = observed.hostname
+  return rewritten.toString() === observed.toString() ? returnPath : replyTo
+}
 
 export type SendMessageFn = (
   recipient: string,
@@ -145,7 +188,7 @@ export class SendMessageTool implements Tool {
       }
       // Use || (not ??) so an empty-string `from` (identity-less legacy rows) falls through to sender_alias.
       if (!recipient) recipient = parentMsg.from || parentMsg.sender_alias || ''
-      if (!address && parentMsg.reply_to) address = parentMsg.reply_to
+      if (!address) address = resolveParentReplyAddress(parentMsg)
       if (!thread_id && parentMsg.thread_id) thread_id = parentMsg.thread_id
       if (!thread_id) thread_id = parent_id
     }
