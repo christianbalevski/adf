@@ -46,6 +46,22 @@
       ]
     },
     {
+      "name": "file-search",
+      "description": "Search the agent's virtual filesystem by literal keyword, BM25 relevance, or regex and get ranked paths with line-located snippets plus an explicit coverage report. Use when you need to find which files mention something before reading them, instead of listing and reading files one by one.",
+      "path": "skills/file-search/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/file-search/SKILL.md",
+      "files": [
+        {
+          "path": "scripts/file-search.js",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/file-search/scripts/file-search.js"
+        },
+        {
+          "path": "tests/file-search.test.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/file-search/tests/file-search.test.mjs"
+        }
+      ]
+    },
+    {
       "name": "goal-seeking",
       "description": "Pursue an authorized goal through concrete action, creative experiments, learning and pivots, coordinating ADF loops, peers and timers through verified delivery. Use for open-ended or multi-session goals, not routine one-step answers.",
       "path": "skills/goal-seeking/SKILL.md",
