@@ -246,7 +246,7 @@ const MARKDOWN_SETTLE_MS = 200
 // the block still being written instead of the whole accumulated text (which is
 // quadratic at ~20 deltas/s). A row that never changes — every restored
 // transcript row — takes exactly the one full parse it always did.
-const MarkdownEntry = memo(({ content }: { content: string }) => {
+const MarkdownEntry = memo(({ content, className = 'px-1.5 py-1 text-neutral-800 dark:text-neutral-200' }: { content: string; className?: string }) => {
   const renderIncrementally = useRef<((source: string) => string) | null>(null)
   if (!renderIncrementally.current) renderIncrementally.current = createIncrementalMarkdownRenderer(encodeAdfFileUrls)
   const mountedContent = useRef(content)
@@ -284,7 +284,7 @@ const MarkdownEntry = memo(({ content }: { content: string }) => {
   }, [])
   return (
     <div
-      className="px-1.5 py-1 loop-markdown text-neutral-800 dark:text-neutral-200"
+      className={`loop-markdown ${className}`}
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={handleClick}
     />
@@ -888,9 +888,7 @@ const LogEntryRow = memo(({
               </span>
             )}
           </div>
-          <div className="whitespace-pre-wrap break-words text-xs text-[var(--ink-muted)]">
-            {entry.content}
-          </div>
+          <MarkdownEntry content={entry.content} className="break-words text-xs text-[var(--ink-muted)]" />
         </div>
       )}
       {entry.type === 'system' && entry.metadata?.isAsk && (
