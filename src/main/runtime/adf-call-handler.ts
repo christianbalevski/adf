@@ -1327,6 +1327,7 @@ export class AdfCallHandler {
       if (result.isError && result.protection && !authorized) {
         const stored = { ...((args as Record<string, unknown> | undefined) ?? {}), __protection: result.protection }
         this.workspace.updateTaskArgs(taskId, JSON.stringify(stored))
+        this.workspace.setTaskApprovalMeta(taskId, JSON.stringify({ reason: 'protection', protection: result.protection }))
         this.workspace.setTaskRequiresAuthorization(taskId, true)
         this.workspace.updateTaskStatus(taskId, 'pending_approval')
         return
