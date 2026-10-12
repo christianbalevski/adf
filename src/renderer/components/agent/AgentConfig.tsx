@@ -826,6 +826,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     template ? { ...structuredClone(template.value), tools: ensureRuntimeTools(template.value.tools) } : null
   )
   const [providers, setProviders] = useState<ProviderConfig[]>([])
+  /** Model "Advanced" fold, toggled by hand for this file; otherwise it follows whether anything is non-default. */
+  const [advancedOpen, setAdvancedOpen] = useState<{ file: string | null; open: boolean } | null>(null)
   /** The agent file, when `providerId` is stored on it (lists models with the agent's key). */
   const carriedFilePath = (providerId: string | undefined): string | undefined =>
     filePath && providerId && local?.providers?.some((p) => p.id === providerId) ? filePath : undefined
@@ -1557,41 +1559,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           <Field label="Providers on this agent" hint="Stored on the agent, so they go with the file. A key is only stored when you set one.">
             <AgentProvidersList filePath={filePath} config={local} appProviders={providers} save={save} />
           </Field>
-          <div className="flex gap-3">
-            <Field label="Temperature">
-              <NumberInput
-                float
-                min={0}
-                max={2}
-                step={0.1}
-                value={local.model.temperature ?? 0.7}
-                onChange={(v) =>
-                  save({
-                    ...local,
-                    model: { ...local.model, temperature: v }
-                  })
-                }
-                className="field-input w-20"
-              />
-            </Field>
-            <Field label="Max Tokens">
-              <NumberInput
-                min={0}
-                step={256}
-                value={local.model.max_tokens ?? 4096}
-                onChange={(v) =>
-                  save({
-                    ...local,
-                    model: { ...local.model, max_tokens: v }
-                  })
-                }
-                className="field-input w-24"
-              />
-              {(local.model.max_tokens ?? 4096) === 0 && (
-                <span className="text-[10px] text-neutral-400 dark:text-neutral-500 ml-1">0 = model default</span>
-              )}
-            </Field>
-          </div>
           <Field
             label="Reasoning"
             hint={'Thinking effort, mapped per provider (Anthropic token budget; OpenRouter/OpenAI effort). Displayed traces are provider-side summaries, not full reasoning.\n\nSome models always produce reasoning tokens and can’t have it disabled — when set to Off, their reasoning is still captured and shown (never hidden).'}
@@ -1692,9 +1659,57 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               ))}
             </div>
           </Field>
+          {(() => {
+            const temperature = local.model.temperature ?? 0.7
+            const maxTokens = local.model.max_tokens ?? 4096
+            const paramCount = (local.model.params ?? []).length
+            // Opens by itself when anything differs from the defaults, so a
+            // changed value is never hidden behind the fold.
+            const nonDefault = temperature !== 0.7 || maxTokens !== 4096 || paramCount > 0
+            const open = advancedOpen?.file === filePath ? advancedOpen.open : nonDefault
+            const summary = [`temp ${temperature}`, `max ${maxTokens === 0 ? 'model default' : maxTokens.toLocaleString()}`, `${paramCount} param${paramCount === 1 ? '' : 's'}`].join(' · ')
+            return (
           <div>
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen({ file: filePath, open: !open })}
+              className="flex w-full items-center gap-1.5 text-left text-xs text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+              aria-expanded={open}
+            >
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}><path d="M6 3l5 5-5 5z" /></svg>
+              <span>Advanced</span>
+              {!open && <span className="truncate text-[10px] text-neutral-400 dark:text-neutral-500">{summary}</span>}
+            </button>
+            {open && (
+            <div className="mt-1.5 space-y-2 pl-4">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+                <label className="flex items-center gap-1.5 whitespace-nowrap">
+                  Temperature
+                  <NumberInput
+                    float
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    value={temperature}
+                    onChange={(v) => save({ ...local, model: { ...local.model, temperature: v } })}
+                    className="field-input !h-6 !px-1.5 !text-[11px] !w-14"
+                  />
+                </label>
+                <label className="flex items-center gap-1.5 whitespace-nowrap">
+                  Max tokens
+                  <NumberInput
+                    min={0}
+                    step={256}
+                    value={maxTokens}
+                    onChange={(v) => save({ ...local, model: { ...local.model, max_tokens: v } })}
+                    className="field-input !h-6 !px-1.5 !text-[11px] !w-20"
+                  />
+                  {maxTokens === 0 && <span className="text-[10px] text-neutral-400 dark:text-neutral-500">model default</span>}
+                </label>
+              </div>
+            <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs text-neutral-500 dark:text-neutral-400">Parameters</label>
+                <label className="block text-[11px] text-neutral-500 dark:text-neutral-400">Parameters</label>
                 <button
                   className="text-[10px] text-blue-500 hover:text-blue-700 font-medium"
                   onClick={() => {
@@ -1751,7 +1766,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   Override provider params for this file. Blank value = remove key.
                 </p>
               )}
+            </div>
+            </div>
+            )}
           </div>
+            )
+          })()}
 
           {/* Recovery — auto-retry of transient provider errors */}
           <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">

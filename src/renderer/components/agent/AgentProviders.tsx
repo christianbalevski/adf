@@ -231,14 +231,16 @@ export function AgentProvidersList({ filePath, config, appProviders, save }: {
         return (
           <div key={p.id} className="rounded-md border border-neutral-200 dark:border-neutral-700 px-2 py-1.5">
             <div className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 truncate text-xs text-neutral-700 dark:text-neutral-200">{labelOf(p)}</span>
-              {filePath && source && (
-                <Tooltip tip={SOURCE_TIP[source]}>
-                  <span className={`shrink-0 text-[10px] ${source === 'none' ? 'text-red-500' : source === 'locked' ? 'text-amber-500' : 'text-neutral-400 dark:text-neutral-500'}`}>
-                    {SOURCE_TEXT[source]}
-                  </span>
-                </Tooltip>
-              )}
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs text-neutral-700 dark:text-neutral-200">{labelOf(p)}</div>
+                {filePath && source && (
+                  <Tooltip tip={SOURCE_TIP[source]}>
+                    <span className={`text-[10px] ${source === 'none' ? 'text-red-500' : source === 'locked' ? 'text-amber-500' : 'text-neutral-400 dark:text-neutral-500'}`}>
+                      {SOURCE_TEXT[source]}
+                    </span>
+                  </Tooltip>
+                )}
+              </div>
               {filePath && !editingKey && source !== 'app_sign_in' && (
                 <Button size="compact" variant="ghost" disabled={busy} onClick={() => { setKeyEditing(p.id); setKeyDraft('') }}>
                   {source === 'agent' || source === 'locked' ? 'Replace key' : 'Set key'}
