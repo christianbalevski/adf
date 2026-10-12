@@ -683,7 +683,7 @@ function SkillsTab() {
                   </span>
                 )}
                 <IconButton
-                  onClick={() => void save(list.filter((s) => s !== source))}
+                  onClick={() => { if (window.confirm(`Remove catalog source ${source}?`)) void save(list.filter((s) => s !== source)) }}
                   aria-label={`Remove catalog source ${source}`}
                   title="Remove source"
                   variant="danger"
@@ -850,7 +850,7 @@ function PackagesTab({
                   {pkg.name}<span className="text-neutral-400 dark:text-neutral-500">@{pkg.version}</span>
                 </span>
                 <IconButton
-                  onClick={() => setSandboxPackages(sandboxPackages.filter((p) => p.name !== pkg.name))}
+                  onClick={() => { if (window.confirm(`Remove ${pkg.name}? Agents that import it will fail until it is added again.`)) setSandboxPackages(sandboxPackages.filter((p) => p.name !== pkg.name)) }}
                   aria-label={`Remove ${pkg.name}`}
                   variant="danger"
                   title="Remove package"
@@ -1282,7 +1282,7 @@ function ManualPeersEditor() {
               <li key={p} className="flex items-center gap-2 font-mono text-neutral-600 dark:text-neutral-300">
                 <span>{p}</span>
                 <IconButton
-                  onClick={() => void save(peers.filter((x) => x !== p))}
+                  onClick={() => { if (window.confirm(`Remove peer ${p}?`)) void save(peers.filter((x) => x !== p)) }}
                   aria-label={`Remove peer ${p}`}
                   variant="danger"
                   title="Remove peer"
@@ -2909,6 +2909,7 @@ function ComputeTab({
                 size="compact"
                 variant="danger"
                 onClick={async () => {
+                  if (!window.confirm(`Remove execution target ${alias}?`)) return
                   setTargetBusy(true)
                   setTargetMessage(null)
                   try {

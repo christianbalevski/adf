@@ -218,6 +218,7 @@ export function IdentityPanel() {
   }, [sharePassword, refresh])
 
   const handleRemoveSharePassword = useCallback(async () => {
+    if (!window.confirm('Remove the share password? Anyone you gave it to can no longer unlock the credentials with it.')) return
     await window.adfApi.removeSharePassword()
     await refresh()
   }, [refresh])

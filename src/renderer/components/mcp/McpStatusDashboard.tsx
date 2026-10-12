@@ -174,6 +174,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
 
   const handleRemove = async (id: string) => {
     const server = mcpServers.find((s) => s.id === id)
+    if (!window.confirm(`Remove ${server?.name ?? 'this server'}?${server?.managed ? ' Its installed package is uninstalled.' : ''}`)) return
 
     // Uninstall the managed package before removing the config entry
     if (server?.managed) {

@@ -125,6 +125,7 @@ export function LogsPanel() {
   }, [])
 
   const handleClear = useCallback(() => {
+    if (!window.confirm('Clear all logs? This cannot be undone.')) return
     window.adfApi?.clearLogs().then(() => {
       setLogs([])
       highestIdRef.current = 0

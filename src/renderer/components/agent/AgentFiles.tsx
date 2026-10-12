@@ -324,6 +324,7 @@ export function AgentFiles() {
   }, [])
 
   const handleDelete = async (path: string) => {
+    if (!window.confirm(`Delete ${path}? This cannot be undone.`)) return
     await window.adfApi?.deleteInternalFile(path)
     useEditorTabsStore.getState().closeTab(path)
     fetchFiles()
@@ -422,6 +423,7 @@ export function AgentFiles() {
   }
 
   const handleDropTable = async (name: string) => {
+    if (!window.confirm(`Drop table ${name}? Its rows are deleted and cannot be recovered.`)) return
     await window.adfApi?.dropLocalTable(name)
     if (expandedTable === name) {
       setExpandedTable(null)

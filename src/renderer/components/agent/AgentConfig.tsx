@@ -2577,7 +2577,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       providers.find((p) => p.id === picked)?.defaultModel ?? ''
                     }
                     patchLoop={(patch) => patchLoop(i, patch)}
-                    onRemove={() => { loopKeys.removeAt(i); saveLoops(loops.filter((_, j) => j !== i)) }}
+                    onRemove={() => {
+                      if (!window.confirm(`Remove loop "${loops[i].name || 'unnamed'}"?`)) return
+                      loopKeys.removeAt(i); saveLoops(loops.filter((_, j) => j !== i))
+                    }}
                     defaultExpanded={i === newLoopIndex}
                   />
                 ))}
@@ -2766,6 +2769,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       </span>
                       <button
                         onClick={() => {
+                          if (!window.confirm(`Remove ${pkg.name} from this agent's packages?`)) return
                           const updated = local.code_execution!.packages!.filter((p) => p.name !== pkg.name)
                           save({
                             ...local,
@@ -6026,6 +6030,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               {/* Delete */}
               <button
                 onClick={async () => {
+                  if (!window.confirm(`Delete meta key "${viewingMeta.key}"?`)) return
                   await window.adfApi?.deleteMeta(viewingMeta.key)
                   setViewingMeta(null)
                   refreshMeta()

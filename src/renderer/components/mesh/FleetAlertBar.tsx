@@ -42,6 +42,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
   }, [openMenu])
 
   const deleteGroup = async (name: string) => {
+    if (!window.confirm(`Forget group "${name}"? The agents in it are not affected.`)) return
     const rest = { ...namedGroups }
     delete rest[name]
     setNamedGroups(rest)

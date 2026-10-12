@@ -485,6 +485,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
               hint="forget every move — re-pack automatically"
               onClick={() => {
                 setMoreOpen(false)
+                if (!window.confirm('Reset the layout? Every move you made is forgotten.')) return
                 // Blank placement = first-run semantics: the world shelf-packs
                 // fresh and the new (automatic) geography freezes again.
                 useFleetStore.getState().setPlacement({ regionOrigins: {}, cellPins: {}, districtAnchors: {}, stationPins: {} })

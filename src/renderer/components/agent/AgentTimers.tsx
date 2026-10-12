@@ -613,6 +613,7 @@ export function AgentTimers() {
   usePollWhenVisible(fetchTimers, 5000, { ref: rootRef })
 
   const handleDelete = async (id: number) => {
+    if (!window.confirm('Delete this timer? It will not fire again.')) return
     await window.adfApi?.deleteTimer(id)
     fetchTimers()
   }

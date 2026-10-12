@@ -309,6 +309,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
   }
 
   const removeFile = async (id: string, path: string) => {
+    if (!window.confirm(`Remove ${path} from this template?`)) return
     await runWrite(id, () => window.adfApi.removeTemplateFile({ id, path }))
     await refreshContents(id)
   }
