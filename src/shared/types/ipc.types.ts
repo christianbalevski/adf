@@ -917,8 +917,10 @@ export interface McpCredentialFileInfo {
  * - `app`: no own key; borrows the app key of the same id and endpoint
  * - `not_needed`: no key anywhere, and the type works without one
  * - `none`: no key anywhere, and calls will fail
+ * - `app_sign_in`: a subscription provider; it always uses this app's sign-in
+ *   and the agent stores no credential for it
  */
-export type AgentProviderKeySource = 'agent' | 'locked' | 'app' | 'not_needed' | 'none'
+export type AgentProviderKeySource = 'agent' | 'locked' | 'app' | 'not_needed' | 'none' | 'app_sign_in'
 
 export interface ProviderCredentialFileInfo {
   filePath: string

@@ -164,6 +164,9 @@ export function agentProviderKeySource(
   derivedKey: Buffer | null,
   settings: ProviderSettingsStore
 ): AgentProviderKeySource {
+  // Subscriptions authenticate through the app's own sign-in (the auth
+  // manager singleton); an agent's copy of one is settings only.
+  if (entry.type === 'chatgpt-subscription' || entry.type === 'grok-subscription') return 'app_sign_in'
   const purpose = `provider:${entry.id}:apiKey`
   const stored = workspace.getIdentityDecrypted(purpose, derivedKey)
   if (stored) return 'agent'

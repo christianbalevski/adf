@@ -64,6 +64,8 @@ describe('agentProviderKeySource', () => {
     // Another endpoint under the same id never borrows.
     expect(agentProviderKeySource({ ...lm, baseUrl: 'https://elsewhere/v1' }, workspace({}), null, settings)).toBe('not_needed')
     expect(agentProviderKeySource({ id: 'openai', type: 'openai', baseUrl: '' }, workspace({}), null, settings)).toBe('none')
+    // A subscription copy is settings only: it always signs in through the app.
+    expect(agentProviderKeySource({ id: 'chatgpt', type: 'chatgpt-subscription', baseUrl: '' }, workspace({}), null, settings)).toBe('app_sign_in')
   })
 })
 

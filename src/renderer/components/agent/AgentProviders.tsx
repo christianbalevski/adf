@@ -106,6 +106,7 @@ const SOURCE_TEXT: Record<AgentProviderKeySource, string> = {
   app: "Uses the app's key",
   not_needed: 'No key needed',
   none: 'No key: calls will fail',
+  app_sign_in: "Uses the app's sign-in",
 }
 
 const SOURCE_TIP: Record<AgentProviderKeySource, string> = {
@@ -114,6 +115,7 @@ const SOURCE_TIP: Record<AgentProviderKeySource, string> = {
   app: "No key is stored on this agent. It uses the app's key for this provider, which does not go with the file.",
   not_needed: 'No key is stored, and this provider works without one.',
   none: 'No key is stored on this agent and the app has none for this provider.',
+  app_sign_in: 'Subscriptions sign in through the app. The agent stores only the provider settings, so on another machine it uses that machine\'s sign-in.',
 }
 
 /** What on the agent still points at a provider (blocks removal). */
@@ -237,7 +239,7 @@ export function AgentProvidersList({ filePath, config, appProviders, save }: {
                   </span>
                 </Tooltip>
               )}
-              {filePath && !editingKey && (
+              {filePath && !editingKey && source !== 'app_sign_in' && (
                 <Button size="compact" variant="ghost" disabled={busy} onClick={() => { setKeyEditing(p.id); setKeyDraft('') }}>
                   {source === 'agent' || source === 'locked' ? 'Replace key' : 'Set key'}
                 </Button>
