@@ -339,6 +339,8 @@ export function assembleAgent<P extends AgentProfileName>(
     options.compactionPrompt,
     preLlmHookRunner,
   )
+  // context.compaction_model reuses the model_invoke factory (any configured provider).
+  executor.setModelProviderFactory(adfCallHandler ? (model) => adfCallHandler.providerForModel(model) : null)
   executor.recoverStaleTurnCheckpoint()
   // Both sweeps run before any turn of this session: every row/field they see
   // predates this load, so nothing legitimately in flight can be affected.

@@ -6,7 +6,7 @@ import { useEditorTabsStore, registerPreSwitchFlush } from '../../stores/editor-
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useRowKeys, useRowKeysGroup } from '../../hooks/useRowKeys'
 import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, LOOP_PROHIBITED_TOOLS, DEFAULT_NEW_LOOP_TOOLS } from '../../../shared/types/adf-v02.types'
-import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig } from '../../../shared/types/adf-v02.types'
+import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig, ModelConfig } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
@@ -2107,6 +2107,52 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               </span>
             </div>
           </Field>
+          {(() => {
+            const adfProviders: AdfProviderConfig[] = local.providers ?? []
+            const adfIds = new Set(adfProviders.map((p) => p.id))
+            const mergedProviders: { id: string; label: string }[] = [
+              ...adfProviders.map((p) => ({ id: p.id, label: p.name || p.baseUrl || p.id })),
+              ...providers.filter((p) => !adfIds.has(p.id)).map((p) => ({ id: p.id, label: p.name || p.baseUrl || p.id }))
+            ]
+            const compactionModel = local.context?.compaction_model ?? null
+            const saveCompactionModel = (model: ModelConfig | undefined) =>
+              save({ ...local, context: { ...local.context, compaction_model: model } })
+            return (
+              <Field label="Compaction Model" hint="The model that writes the summary when the loop is compacted. If it can't be reached, compaction fails and the history is kept.">
+                <div className="flex gap-1.5 items-center">
+                  <select
+                    value={compactionModel?.provider ?? '__agent__'}
+                    onChange={(e) => {
+                      if (e.target.value === '__agent__') return saveCompactionModel(undefined)
+                      const picked = e.target.value
+                      const defaultModel = adfProviders.find((p) => p.id === picked)?.defaultModel ??
+                        providers.find((p) => p.id === picked)?.defaultModel ?? ''
+                      saveCompactionModel({ provider: picked, model_id: compactionModel?.model_id || defaultModel })
+                    }}
+                    className="field-input flex-1"
+                  >
+                    <option value="__agent__">Agent&apos;s model</option>
+                    {mergedProviders.map((p) => (
+                      <option key={p.id} value={p.id}>{p.label}</option>
+                    ))}
+                  </select>
+                  {compactionModel && (
+                    <input
+                      type="text"
+                      list={compactionModel.provider === local.model.provider ? 'compaction-model-options' : undefined}
+                      value={compactionModel.model_id}
+                      onChange={(e) => saveCompactionModel({ ...compactionModel, model_id: e.target.value })}
+                      placeholder="model id"
+                      className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                    />
+                  )}
+                </div>
+                <datalist id="compaction-model-options">
+                  {modelOptions.map((m) => <option key={m} value={m} />)}
+                </datalist>
+              </Field>
+            )
+          })()}
           <Field label="Max Tool Result" hint="Truncates tool results exceeding this token limit to protect the context window.">
             <div className="flex items-center gap-2">
               <NumberInput

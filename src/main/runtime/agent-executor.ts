@@ -2,7 +2,7 @@ import { EventEmitter } from 'events'
 import type { CreateMessageOptions, LLMProvider } from '../providers/provider.interface'
 import type { ToolRegistry } from '../tools/tool-registry'
 import { stripInternalToolFlags } from '../tools/tool-registry'
-import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage } from '../../shared/types/adf-v02.types'
+import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage, type ModelConfig } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
 import type { AgentExecutionEvent, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts, ToolCallResultTargets } from '../../shared/types/ipc.types'
@@ -1124,6 +1124,40 @@ export class AgentExecutor extends EventEmitter {
    *  agent's (review M4d). */
   getProvider(): LLMProvider | null {
     return this.provider
+  }
+
+  private modelProviderFactory: ((model: ModelConfig) => LLMProvider | null) | null = null
+
+  /** Builds a provider for another model (the host's model_invoke factory).
+   *  Needed only when `context.compaction_model` is set. */
+  setModelProviderFactory(factory: ((model: ModelConfig) => LLMProvider | null) | null): void {
+    this.modelProviderFactory = factory
+  }
+
+  /**
+   * The provider that writes the compaction summary. Read from the live config
+   * on every compaction, so a changed `context.compaction_model` applies at the
+   * next one. An override that cannot be built throws: the compaction fails
+   * plainly instead of running on the agent's model behind the owner's back.
+   */
+  private compactionProvider(): LLMProvider {
+    const model = this.config.context?.compaction_model
+    if (!model) {
+      if (!this.provider) throw new Error('Provider unavailable')
+      return this.provider
+    }
+    const label = `${model.provider}/${model.model_id}`
+    if (!this.modelProviderFactory) {
+      throw new Error(`context.compaction_model is ${label}, but this runtime cannot build a second provider. Remove compaction_model to compact with the agent's own model.`)
+    }
+    let built: LLMProvider | null
+    try {
+      built = this.modelProviderFactory(model)
+    } catch (error) {
+      throw new Error(`compaction model ${label} is unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (!built) throw new Error(`compaction model ${label} is unavailable: no provider could be built for it`)
+    return built
   }
 
   private buildToolSnapshot(): ToolSnapshot {
@@ -4051,10 +4085,11 @@ export class AgentExecutor extends EventEmitter {
     source: LlmCallEventData['source'],
     options: CreateMessageOptions,
     extra?: Pick<LlmCallEventData, 'turn_id'>,
+    provider: LLMProvider | null = this.provider,
   ) {
-    if (!this.provider) throw new Error('Provider unavailable')
+    if (!provider) throw new Error('Provider unavailable')
     try {
-      const result = await callLlmWithMetadata(this.provider, options)
+      const result = await callLlmWithMetadata(provider, options)
       const eventData = toLlmCallEventData(result.metadata, source, extra)
       this.onLlmCall?.(eventData)
       this.emitLlmCallEvent(eventData)
@@ -4896,6 +4931,9 @@ export class AgentExecutor extends EventEmitter {
     let compactionModel: string | undefined
     let compactionTokens: LoopTokenUsage | undefined
     let compactionTranscriptChars = 0
+    // Named before the try so a failed build is logged against the override.
+    const override = this.config.context?.compaction_model
+    let summarizer: LLMProvider | null = null
     try {
       // Serialize conversation history as a text transcript. Role tags carry
       // the loop seq when known ([USER S137]) so the summary can cite [S<seq>]
@@ -4936,6 +4974,7 @@ export class AgentExecutor extends EventEmitter {
       compactionTranscriptChars = transcript.length
 
       const entryCount = workspace.getLoopCount()
+      summarizer = this.compactionProvider()
       const { response: compactionResponse, metadata: compactionMetadata } = await this.createMessageWithLlmCall('compaction', {
         system: this.compactionPrompt,
         messages: [{
@@ -4945,7 +4984,7 @@ export class AgentExecutor extends EventEmitter {
         maxTokens: COMPACTION_TEXT_BUDGET + COMPACTION_REASONING_HEADROOM,
         temperature: 0.3,
         signal: this.abortController?.signal
-      })
+      }, undefined, summarizer)
 
       // Record compaction token usage
       const compactionTokenUsage = getTokenUsageService()
@@ -4998,10 +5037,12 @@ export class AgentExecutor extends EventEmitter {
         : typeof err.status === 'number' ? err.status : undefined
       const responseBody = typeof err.responseBody === 'string' ? err.responseBody.slice(0, 500) : undefined
       try {
-        workspace.insertLog('error', 'runtime', 'compaction_failed', compactionModel ?? this.provider?.modelId ?? null, detail, {
+        const failedProvider = summarizer ?? (override ? null : this.provider)
+        const failedModel = compactionModel ?? failedProvider?.modelId ?? override?.model_id
+        workspace.insertLog('error', 'runtime', 'compaction_failed', failedModel ?? null, detail, {
           trigger: reason,
-          model: compactionModel ?? this.provider?.modelId,
-          provider: this.provider?.providerId ?? this.provider?.name,
+          model: failedModel,
+          provider: failedProvider?.providerId ?? failedProvider?.name ?? override?.provider,
           status_code: statusCode,
           response_body: responseBody,
           retryable: typeof err.isRetryable === 'boolean' ? err.isRetryable : undefined,

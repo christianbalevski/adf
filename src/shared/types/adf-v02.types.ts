@@ -575,6 +575,12 @@ export interface DynamicInstructionsConfig {
 
 export interface ContextConfig {
   compact_threshold?: number | null
+  /**
+   * Model that writes the compaction summary. Absent = the agent's own model.
+   * `provider` may be any configured provider (credentials resolve by its id).
+   * A model that cannot be built fails the compaction; it never falls back.
+   */
+  compaction_model?: ModelConfig | null
   audit?: AuditConfig
   dynamic_instructions?: DynamicInstructionsConfig
 }

@@ -1195,6 +1195,8 @@ export class LoopPool implements LoopPoolApi {
         preLlmHookRunner,
       )
       callHandler?.attachSession(session)
+      const modelHandler = callHandler ?? this.deps.adfCallHandler
+      executor.setModelProviderFactory(modelHandler ? (model) => modelHandler.providerForModel(model) : null)
 
       const runtime = new LoopRuntime({
         name: loop.name, config: loop, derived, workspace, session, executor, registry, callHandler,

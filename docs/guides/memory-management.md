@@ -129,6 +129,18 @@ This is a signal-only tool — it takes only an optional `instructions` string (
 
 The `context.compact_threshold` setting (default: 100,000) defines the token count that triggers automatic compaction.
 
+### Compaction Model
+
+By default the agent's own model writes the summary. Set `context.compaction_model` to use a different one, from any configured provider:
+
+```json
+"context": {
+  "compaction_model": { "provider": "openrouter", "model_id": "google/gemini-2.5-flash" }
+}
+```
+
+If that model can't be reached (the provider isn't configured, or its key is missing), the compaction fails: the history is kept and a `compaction_failed` row in `adf_logs` names the model and the reason. The runtime never switches to the agent's model on its own. Fix the provider, or remove `compaction_model`.
+
 ## Audit
 
 When you clear loop entries, delete messages, delete files, or compact the loop, the data doesn't have to be lost forever. ADF supports an **audit system** that compresses and stores snapshots of cleared data before deletion.

@@ -110,6 +110,11 @@ const InputSchema = z.object({
 
   context: z.object({
     compact_threshold: z.number().nullable().optional(),
+    compaction_model: z.object({
+      provider: z.string(),
+      model_id: z.string()
+    }).passthrough().nullable().optional()
+      .describe("Model that writes compaction summaries (any configured provider). Absent = the agent's own model."),
     audit: AuditSchema.optional(),
     dynamic_instructions: z.object({
       inbox_hints: z.boolean().optional(),

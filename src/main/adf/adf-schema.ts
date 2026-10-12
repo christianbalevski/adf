@@ -522,6 +522,12 @@ export const AgentConfigSchema = z.object({
   bare_prompt: z.boolean().optional(),
   context: z.object({
     compact_threshold: z.number().int().positive().nullable().optional(),
+    compaction_model: ModelConfigSchema.nullable().optional()
+      .describe(
+        "Model that writes the compaction summary. Absent = the agent's own model. `provider` may name any " +
+        'configured provider; credentials are resolved by that provider id. If it cannot be built, the ' +
+        "compaction fails (history kept, compaction_failed logged) — it never falls back to the agent's model."
+      ),
     audit: z.object({
       loop: z.boolean().default(true),
       inbox: z.boolean().default(false),
