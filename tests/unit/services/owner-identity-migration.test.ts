@@ -66,6 +66,8 @@ beforeEach(() => {
   h.decryptThrows = false
   rootDir = mkdtempSync(join(tmpdir(), 'adf-owner-identity-'))
   h.userDataDir = join(rootDir, 'userData')
+  // getUserDataPath() prefers the env var over the mocked app.getPath.
+  process.env.ADF_USER_DATA_DIR = h.userDataDir
   trackedDir = join(rootDir, 'agents')
   mkdirSync(h.userDataDir, { recursive: true })
   mkdirSync(trackedDir, { recursive: true })
