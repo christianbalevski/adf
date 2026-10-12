@@ -222,20 +222,21 @@ import type { ProviderConfig, McpServerRegistration, AdapterRegistration, System
 import type { AdapterInstanceConfig } from '../../../shared/types/channel-adapter.types'
 import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { findAdapterRegistryEntry } from '../../../shared/constants/adapter-registry'
+import { invalidateProviderModels } from '../../hooks/useProviderModels'
+import { AgentProvidersList, ModelIdField, ProviderOptions } from './AgentProviders'
 
 // Module-level caches to avoid redundant IPC calls on every tab switch
 let _cachedProviders: ProviderConfig[] | null = null
 let _cachedMcpRegistrations: McpServerRegistration[] | null = null
 let _cachedAdapterRegistrations: AdapterRegistration[] | null = null
 let _cachedToolDefs: Record<string, unknown> | null = null
-let _cachedModels: Map<string, { models: string[]; error?: string }> = new Map()
 
 /** Call this when settings change (e.g. from SettingsPage) to bust stale caches */
 export function invalidateConfigCaches(): void {
   _cachedProviders = null
   _cachedMcpRegistrations = null
   _cachedAdapterRegistrations = null
-  _cachedModels = new Map()
+  invalidateProviderModels()
 }
 
 // ---------------------------------------------------------------------------
@@ -572,8 +573,9 @@ function LoopCard({
   entry,
   duplicate,
   grantableTools,
-  mergedProviders,
-  agentModelProvider,
+  agentProviders,
+  appProviders,
+  modelFilePath,
   defaultModelFor,
   patchLoop,
   onRemove,
@@ -582,8 +584,10 @@ function LoopCard({
   entry: LoopConfig
   duplicate: boolean
   grantableTools: string[]
-  mergedProviders: { id: string; label: string }[]
-  agentModelProvider: string
+  agentProviders: AdfProviderConfig[] | undefined
+  appProviders: ProviderConfig[]
+  /** The agent file when the provider is stored on it, for model listing. */
+  modelFilePath: (providerId: string) => string | undefined
   defaultModelFor: (providerId: string) => string
   patchLoop: (patch: Partial<LoopConfig>) => void
   onRemove: () => void
@@ -710,18 +714,14 @@ function LoopCard({
               className="field-input flex-1"
             >
               <option value="__inherit__">Model: inherit from agent</option>
-              {mergedProviders.map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
-              ))}
+              <ProviderOptions agentProviders={agentProviders} appProviders={appProviders} />
             </select>
             {!inherits && (
-              <input
-                type="text"
-                list={entry.model!.provider === agentModelProvider ? 'agent-model-options' : undefined}
+              <ModelIdField
+                providerId={entry.model!.provider}
+                filePath={modelFilePath(entry.model!.provider)}
                 value={entry.model!.model_id}
-                onChange={(e) => patchLoop({ model: { ...entry.model!, model_id: e.target.value } })}
-                placeholder="model id"
-                className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                onChange={(modelId) => patchLoop({ model: { ...entry.model!, model_id: modelId } })}
               />
             )}
           </div>
@@ -825,11 +825,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [local, setLocal] = useState<AgentConfigType | null>(() =>
     template ? { ...structuredClone(template.value), tools: ensureRuntimeTools(template.value.tools) } : null
   )
-  const [modelOptions, setModelOptions] = useState<string[]>([])
-  const [modelsLoading, setModelsLoading] = useState(false)
-  const [modelsError, setModelsError] = useState<string | null>(null)
-  const [customModelEntry, setCustomModelEntry] = useState(false)
   const [providers, setProviders] = useState<ProviderConfig[]>([])
+  /** The agent file, when `providerId` is stored on it (lists models with the agent's key). */
+  const carriedFilePath = (providerId: string | undefined): string | undefined =>
+    filePath && providerId && local?.providers?.some((p) => p.id === providerId) ? filePath : undefined
   const [editingName, setEditingName] = useState<string | null>(null)
   const [nameError, setNameError] = useState<string | null>(null)
   const [knownAgents, setKnownAgents] = useState<{ did: string; label: string }[]>([])
@@ -867,10 +866,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [adapterIdentityKeys, setAdapterIdentityKeys] = useState<Record<string, Set<string>>>({})
   /** Email account identifier pulled from adf_identity when present */
   const [emailAccount, setEmailAccount] = useState<string | null>(null)
-  /** Whether the current provider has credentials saved on this ADF */
-  const [providerSavedOnAdf, setProviderSavedOnAdf] = useState(false)
-  const [savingProviderToAdf, setSavingProviderToAdf] = useState(false)
-  const [showDetachProviderDialog, setShowDetachProviderDialog] = useState(false)
   const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string }>({ running: false, port: 7295, host: '127.0.0.1' })
   const [hasSigningKeys, setHasSigningKeys] = useState(false)
   const [metaEntries, setMetaEntries] = useState<Array<{ key: string; value: string; protection: MetaProtectionLevel }>>([])
@@ -1083,24 +1078,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     return () => window.removeEventListener('focus', check)
   }, [filePath])
 
-  // Check if current provider is saved on this ADF (config.providers[] or identity)
-  useEffect(() => {
-    if (template || !local?.model.provider) {
-      setProviderSavedOnAdf(false)
-      return
-    }
-    // Primary check: is the provider config stored in the ADF?
-    const inConfig = local.providers?.some(p => p.id === local.model.provider) ?? false
-    if (inConfig) {
-      setProviderSavedOnAdf(true)
-      return
-    }
-    // Fallback: check identity for credential entries
-    window.adfApi?.listIdentityPurposes(`provider:${local.model.provider}:`).then((purposes) => {
-      setProviderSavedOnAdf(purposes.length > 0)
-    }).catch(() => setProviderSavedOnAdf(false))
-  }, [local?.model.provider, local?.providers])
-
   // Fetch tool definitions (cached — tool registry doesn't change at runtime)
   useEffect(() => {
     const t0 = performance.now()
@@ -1115,43 +1092,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       })
     }
   }, [])
-
-  // Fetch available models when provider changes (cached per provider)
-  useEffect(() => {
-    if (!local) return
-    const provider = local.model.provider
-    const cached = _cachedModels.get(provider)
-    if (cached) {
-      setModelOptions(cached.models)
-      setModelsError(cached.error ?? null)
-      if (cached.models.length > 0 && !cached.models.includes(local.model.model_id)) {
-        setCustomModelEntry(true)
-      }
-      // console.log(`[PERF:renderer] AgentConfig.listModels: 0ms (cached, provider=${provider})`)
-      return
-    }
-    const t0 = performance.now()
-    setModelsLoading(true)
-    setModelsError(null)
-    setCustomModelEntry(false)
-    // Pass filePath when provider is ADF-stored so backend resolves the API key from identity
-    const isAdfProvider = local.providers?.some(p => p.id === provider)
-    window.adfApi?.listModels(provider, isAdfProvider ? filePath ?? undefined : undefined).then((result) => {
-      _cachedModels.set(provider, result)
-      setModelOptions(result.models)
-      setModelsError(result.error ?? null)
-      // If current model_id is not in the list, show custom entry
-      if (result.models.length > 0 && !result.models.includes(local.model.model_id)) {
-        setCustomModelEntry(true)
-      }
-    }).catch((err) => {
-      setModelsError(String(err))
-      setModelOptions([])
-    }).finally(() => {
-      setModelsLoading(false)
-      // console.log(`[PERF:renderer] AgentConfig.listModels: ${(performance.now() - t0).toFixed(1)}ms (fetched, provider=${provider})`)
-    })
-  }, [local?.model.provider])
 
   const updateFileEntry = useTrackedDirsStore((s) => s.updateFileEntry)
 
@@ -1559,186 +1499,63 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         {/* Model */}
         <Section docs={DOCS.model} title="Model" locked={isSectionLocked('model')} onToggleLock={() => toggleSectionLock('model')} summary={`${local.model.provider ?? 'none'} / ${local.model.model_id || 'default'}`}>
           <Field label="Provider">
-            {(() => {
-              // Merge app-wide providers with ADF-stored providers (ADF takes priority)
-              const adfProviders: AdfProviderConfig[] = local.providers ?? []
-              const adfIds = new Set(adfProviders.map(p => p.id))
-              const mergedProviders: { id: string; label: string }[] = [
-                ...adfProviders.map(p => ({ id: p.id, label: p.name || p.baseUrl || p.id })),
-                ...providers.filter(p => !adfIds.has(p.id)).map(p => ({ id: p.id, label: p.name || p.baseUrl || p.id }))
-              ]
-
-              const handleSaveToAdf = async () => {
-                if (!filePath || !local.model.provider) return
-                const providerId = local.model.provider
-                // Find the provider config from app settings
-                const appProvider = providers.find(p => p.id === providerId)
-                if (!appProvider) return
-                setSavingProviderToAdf(true)
-                try {
-                  const { apiKey: _omit, credentialStorage: _omit2, ...providerWithoutKey } = appProvider
-                  // Attach the provider config to the ADF
-                  await window.adfApi?.attachProvider({ filePath, provider: providerWithoutKey })
-                  // Save the API key to ADF identity
-                  if (appProvider.apiKey) {
-                    await window.adfApi?.setProviderCredential({ filePath, providerId, value: appProvider.apiKey })
-                  }
-                  setProviderSavedOnAdf(true)
-                  // Update local config to include the ADF provider
-                  const existingProviders = local.providers ?? []
-                  if (!existingProviders.some(p => p.id === providerId)) {
-                    save({ ...local, providers: [...existingProviders, providerWithoutKey] })
-                  }
-                } catch {
-                  // Ignore errors
-                } finally {
-                  setSavingProviderToAdf(false)
+            <select
+              value={local.model.provider}
+              onChange={async (e) => {
+                const newProvider = e.target.value
+                // A provider stored on the agent uses the agent's own copy
+                const adfMatch = (local.providers ?? []).find(p => p.id === newProvider)
+                if (adfMatch) {
+                  save({
+                    ...local,
+                    model: {
+                      ...local.model,
+                      provider: newProvider,
+                      model_id: adfMatch.defaultModel || '',
+                      params: adfMatch.params?.length ? adfMatch.params.map((p) => ({ ...p })) : undefined
+                    }
+                  })
+                  return
                 }
-              }
 
-              return (
-                <div className="flex gap-1.5 items-center">
-                  <select
-                    value={local.model.provider}
-                    onChange={async (e) => {
-                      const newProvider = e.target.value
-                      // Check if it's an ADF-stored provider
-                      const adfMatch = adfProviders.find(p => p.id === newProvider)
-                      if (adfMatch) {
-                        _cachedModels.delete(newProvider)
-                        save({
-                          ...local,
-                          model: {
-                            ...local.model,
-                            provider: newProvider,
-                            model_id: adfMatch.defaultModel || '',
-                            params: adfMatch.params?.length ? adfMatch.params.map((p) => ({ ...p })) : undefined
-                          }
-                        })
-                        return
-                      }
+                // Re-fetch settings to get the latest defaults (invalidate cache)
+                _cachedProviders = null
+                const settings = await window.adfApi?.getSettings()
+                const freshProviders = (settings?.providers as ProviderConfig[]) ?? []
+                _cachedProviders = freshProviders
+                setProviders(freshProviders)
 
-                      // Re-fetch settings to get the latest defaults (invalidate cache)
-                      _cachedProviders = null
-                      const settings = await window.adfApi?.getSettings()
-                      const freshProviders = (settings?.providers as ProviderConfig[]) ?? []
-                      _cachedProviders = freshProviders
-                      setProviders(freshProviders)
-
-                      const selected = freshProviders.find((p) => p.id === newProvider)
-                      save({
-                        ...local,
-                        model: {
-                          ...local.model,
-                          provider: newProvider,
-                          model_id: selected?.defaultModel || '',
-                          params: selected?.params?.length ? selected.params.map((p) => ({ ...p })) : undefined
-                        }
-                      })
-                    }}
-                    className="field-input flex-1"
-                  >
-                    {!mergedProviders.some((p) => p.id === local.model.provider) && (
-                      <option value={local.model.provider}>
-                        {local.model.provider || '— Select a provider —'}
-                      </option>
-                    )}
-                    {mergedProviders.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.label}
-                      </option>
-                    ))}
-                  </select>
-                  {/* Save/remove provider credentials on this ADF */}
-                  {local.model.provider && filePath && (
-                    <button
-                      onClick={() => {
-                        if (providerSavedOnAdf) {
-                          setShowDetachProviderDialog(true)
-                        } else {
-                          handleSaveToAdf()
-                        }
-                      }}
-                      disabled={savingProviderToAdf}
-                      title={providerSavedOnAdf ? 'Credentials saved on ADF — click to remove' : 'Save credentials to ADF'}
-                      className={`shrink-0 p-1 rounded transition-colors ${
-                        providerSavedOnAdf
-                          ? 'text-amber-500 dark:text-amber-400 hover:text-amber-600 dark:hover:text-amber-300'
-                          : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300'
-                      } ${savingProviderToAdf ? 'opacity-50 cursor-wait' : ''}`}
-                    >
-                      {providerSavedOnAdf ? (
-                        /* Floppy disk saved icon */
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
-                          <path d="M3.5 2A1.5 1.5 0 0 0 2 3.5v9A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V4.621a1.5 1.5 0 0 0-.44-1.06l-1.12-1.122A1.5 1.5 0 0 0 11.378 2H3.5ZM5 3.5h4v2H5v-2Zm3 5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Z" />
-                        </svg>
-                      ) : (
-                        /* Floppy disk unsaved icon */
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" className="w-4 h-4">
-                          <path d="M3.5 2.5h7.878a1 1 0 0 1 .707.293l1.122 1.122a1 1 0 0 1 .293.707V12.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Z" />
-                          <path d="M5 2.5v2.5h4V2.5" />
-                          <circle cx="8" cy="9.5" r="1.5" />
-                        </svg>
-                      )}
-                    </button>
-                  )}
-                </div>
-              )
-            })()}
+                const selected = freshProviders.find((p) => p.id === newProvider)
+                save({
+                  ...local,
+                  model: {
+                    ...local.model,
+                    provider: newProvider,
+                    model_id: selected?.defaultModel || '',
+                    params: selected?.params?.length ? selected.params.map((p) => ({ ...p })) : undefined
+                  }
+                })
+              }}
+              className="field-input w-full"
+            >
+              {!(local.providers ?? []).some((p) => p.id === local.model.provider) && !providers.some((p) => p.id === local.model.provider) && (
+                <option value={local.model.provider}>
+                  {local.model.provider || '— Select a provider —'}
+                </option>
+              )}
+              <ProviderOptions agentProviders={local.providers} appProviders={providers} />
+            </select>
           </Field>
           <Field label="Model ID">
-            {modelsLoading ? (
-              <div className="field-input text-neutral-400 dark:text-neutral-500 text-xs flex items-center">Loading models...</div>
-            ) : customModelEntry ? (
-              <div className="flex gap-1">
-                <input
-                  type="text"
-                  value={local.model.model_id}
-                  onChange={(e) =>
-                    save({
-                      ...local,
-                      model: { ...local.model, model_id: e.target.value }
-                    })
-                  }
-                  className="field-input flex-1"
-                  placeholder="Enter model ID"
-                />
-                {modelOptions.length > 0 && (
-                  <button
-                    className="text-[10px] text-blue-500 hover:text-blue-700 whitespace-nowrap"
-                    onClick={() => setCustomModelEntry(false)}
-                  >
-                    Pick from list
-                  </button>
-                )}
-              </div>
-            ) : (
-              <select
-                value={modelOptions.includes(local.model.model_id) ? local.model.model_id : '__custom__'}
-                onChange={(e) => {
-                  if (e.target.value === '__custom__') {
-                    setCustomModelEntry(true)
-                  } else {
-                    save({
-                      ...local,
-                      model: { ...local.model, model_id: e.target.value }
-                    })
-                  }
-                }}
-                className="field-input"
-              >
-                {[...modelOptions].sort((a, b) => a.localeCompare(b)).map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-                {!modelOptions.includes(local.model.model_id) && local.model.model_id && (
-                  <option value={local.model.model_id}>{local.model.model_id} (current)</option>
-                )}
-                <option value="__custom__">Custom...</option>
-              </select>
-            )}
-            {modelsError && (
-              <p className="text-[10px] text-red-400 mt-0.5">{modelsError}</p>
-            )}
+            <ModelIdField
+              providerId={local.model.provider}
+              filePath={carriedFilePath(local.model.provider)}
+              value={local.model.model_id}
+              onChange={(modelId) => save({ ...local, model: { ...local.model, model_id: modelId } })}
+            />
+          </Field>
+          <Field label="Providers on this agent" hint="Stored on the agent, so they go with the file. A key is only stored when you set one.">
+            <AgentProvidersList filePath={filePath} config={local} appProviders={providers} save={save} />
           </Field>
           <div className="flex gap-3">
             <Field label="Temperature">
@@ -2109,11 +1926,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           </Field>
           {(() => {
             const adfProviders: AdfProviderConfig[] = local.providers ?? []
-            const adfIds = new Set(adfProviders.map((p) => p.id))
-            const mergedProviders: { id: string; label: string }[] = [
-              ...adfProviders.map((p) => ({ id: p.id, label: p.name || p.baseUrl || p.id })),
-              ...providers.filter((p) => !adfIds.has(p.id)).map((p) => ({ id: p.id, label: p.name || p.baseUrl || p.id }))
-            ]
             const compactionModel = local.context?.compaction_model ?? null
             const saveCompactionModel = (model: ModelConfig | undefined) =>
               save({ ...local, context: { ...local.context, compaction_model: model } })
@@ -2132,24 +1944,18 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     className="field-input flex-1"
                   >
                     <option value="__agent__">Agent&apos;s model</option>
-                    {mergedProviders.map((p) => (
-                      <option key={p.id} value={p.id}>{p.label}</option>
-                    ))}
+                    <ProviderOptions agentProviders={local.providers} appProviders={providers} />
                   </select>
                   {compactionModel && (
-                    <input
-                      type="text"
-                      list={compactionModel.provider === local.model.provider ? 'compaction-model-options' : undefined}
+                    <ModelIdField
+                      providerId={compactionModel.provider}
+                      filePath={carriedFilePath(compactionModel.provider)}
                       value={compactionModel.model_id}
-                      onChange={(e) => saveCompactionModel({ ...compactionModel, model_id: e.target.value })}
-                      placeholder="model id"
-                      className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                      onChange={(modelId) => saveCompactionModel({ ...compactionModel, model_id: modelId })}
+                      className="field-input w-full"
                     />
                   )}
                 </div>
-                <datalist id="compaction-model-options">
-                  {modelOptions.map((m) => <option key={m} value={m} />)}
-                </datalist>
               </Field>
             )
           })()}
@@ -2554,11 +2360,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               .map((t) => t.name)
               .sort((a, b) => a.localeCompare(b))
             const adfProviders: AdfProviderConfig[] = local.providers ?? []
-            const adfIds = new Set(adfProviders.map((p) => p.id))
-            const mergedProviders: { id: string; label: string }[] = [
-              ...adfProviders.map((p) => ({ id: p.id, label: p.name || p.baseUrl || p.id })),
-              ...providers.filter((p) => !adfIds.has(p.id)).map((p) => ({ id: p.id, label: p.name || p.baseUrl || p.id }))
-            ]
             const takenNames = new Set(['main', ...loops.map((l) => l.name)])
 
             return (
@@ -2616,8 +2417,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     entry={entry}
                     duplicate={loops.some((other, j) => j !== i && other.name === entry.name)}
                     grantableTools={grantableTools}
-                    mergedProviders={mergedProviders}
-                    agentModelProvider={local.model.provider}
+                    agentProviders={local.providers}
+                    appProviders={providers}
+                    modelFilePath={carriedFilePath}
                     defaultModelFor={(picked) =>
                       adfProviders.find((p) => p.id === picked)?.defaultModel ??
                       providers.find((p) => p.id === picked)?.defaultModel ?? ''
@@ -2630,11 +2432,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     defaultExpanded={i === newLoopIndex}
                   />
                 ))}
-
-                {/* Shared model-id suggestions for loops on the agent's own provider. */}
-                <datalist id="agent-model-options">
-                  {modelOptions.map((m) => <option key={m} value={m} />)}
-                </datalist>
               </>
             )
           })()}
@@ -5935,47 +5732,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             onClick={() => setViewingTool(null)}
           >
             Close
-          </button>
-        </div>
-      </Dialog>
-
-      {/* Provider Detach Confirmation Dialog */}
-      <Dialog
-        open={showDetachProviderDialog}
-        onClose={() => setShowDetachProviderDialog(false)}
-        title="Remove Provider Credentials"
-      >
-        <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-4">
-          Any credentials associated with this provider saved on this ADF will be removed. The provider will still be available from app-wide settings.
-        </p>
-        <div className="flex justify-end gap-2">
-          <button
-            className="px-3 py-1.5 text-xs bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-200 rounded hover:bg-neutral-300 dark:hover:bg-neutral-600"
-            onClick={() => setShowDetachProviderDialog(false)}
-          >
-            Cancel
-          </button>
-          <button
-            className="px-3 py-1.5 text-xs bg-red-500 text-white rounded hover:bg-red-600"
-            disabled={savingProviderToAdf}
-            onClick={async () => {
-              if (!filePath || !local?.model.provider) return
-              const providerId = local.model.provider
-              setSavingProviderToAdf(true)
-              try {
-                await window.adfApi?.detachProvider({ filePath, providerId })
-                setProviderSavedOnAdf(false)
-                const updatedProviders = (local.providers ?? []).filter(p => p.id !== providerId)
-                save({ ...local, providers: updatedProviders.length > 0 ? updatedProviders : undefined as any })
-              } catch {
-                // Ignore errors
-              } finally {
-                setSavingProviderToAdf(false)
-                setShowDetachProviderDialog(false)
-              }
-            }}
-          >
-            {savingProviderToAdf ? 'Removing...' : 'Remove'}
           </button>
         </div>
       </Dialog>

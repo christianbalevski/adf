@@ -26,7 +26,7 @@ import { approvalHub } from './approval-hub'
 import { SystemScopeHandler } from './system-scope-handler'
 import type { CodeSandboxService } from './code-sandbox'
 import type { SandboxPackagesService } from '../services/sandbox-packages.service'
-import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
+import { createProvider, providerNeedsApiKey, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { ensureCoreToolDeclarations } from './core-tool-declarations'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { createScratchDir, removeScratchDir } from '../utils/scratch-dir'
@@ -207,15 +207,6 @@ class BackgroundStartError extends Error {
     super(message)
     this.name = 'BackgroundStartError'
   }
-}
-
-/**
- * Provider types whose requests cannot work without an API key. The
- * subscription providers authenticate out of band, and openai-compatible
- * endpoints are routinely keyless (local llama.cpp, Ollama, LM Studio).
- */
-function providerNeedsApiKey(type: string): boolean {
-  return type !== 'openai-compatible' && type !== 'chatgpt-subscription' && type !== 'grok-subscription'
 }
 
 export class BackgroundAgentManager extends EventEmitter {

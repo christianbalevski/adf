@@ -5,7 +5,7 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import type { LanguageModel } from 'ai'
 import type { LLMProvider } from './provider.interface'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
-import type { ProviderConfig } from '../../shared/types/ipc.types'
+import type { AgentProviderKeySource, ProviderConfig } from '../../shared/types/ipc.types'
 import { AiSdkProvider } from './ai-sdk-provider'
 import { recordProviderOrigin } from './provider-origin'
 import { getTokenCounterService } from '../services/token-counter.service'
@@ -143,6 +143,34 @@ export function mayBorrowAppKey(
   if (!appProvider || agentEntry.type !== appProvider.type) return false
   if (FIXED_ENDPOINT_TYPES.has(agentEntry.type)) return true
   return normalizeBaseUrl(agentEntry.baseUrl) === normalizeBaseUrl(appProvider.baseUrl)
+}
+
+/**
+ * Provider types whose requests cannot work without an API key. The
+ * subscription providers authenticate out of band, and openai-compatible
+ * endpoints are routinely keyless (local llama.cpp, Ollama, LM Studio).
+ */
+export function providerNeedsApiKey(type: string): boolean {
+  return type !== 'openai-compatible' && type !== 'chatgpt-subscription' && type !== 'grok-subscription'
+}
+
+/**
+ * Where the key for one of the agent's provider copies comes from — the same
+ * decision resolveAgentProviderConfig makes, reported instead of applied.
+ */
+export function agentProviderKeySource(
+  entry: Pick<ProviderConfig, 'id' | 'type' | 'baseUrl'>,
+  workspace: ProviderIdentitySource,
+  derivedKey: Buffer | null,
+  settings: ProviderSettingsStore
+): AgentProviderKeySource {
+  const purpose = `provider:${entry.id}:apiKey`
+  const stored = workspace.getIdentityDecrypted(purpose, derivedKey)
+  if (stored) return 'agent'
+  if (stored === null && workspace.getIdentityRow?.(purpose)) return 'locked'
+  const appProvider = settings.getProvider(entry.id)
+  if (appProvider?.apiKey && mayBorrowAppKey(entry, appProvider)) return 'app'
+  return providerNeedsApiKey(entry.type) ? 'none' : 'not_needed'
 }
 
 /**

@@ -169,7 +169,7 @@ import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } f
 import { MenuBarController } from '../tray/menu-bar'
 import type { MenuBarAction, MenuBarAgent, MenuBarSnapshot } from '../tray/menu-bar-model'
 import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
-import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
+import { agentProviderKeySource, createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { providerSelectionChanged } from '../providers/provider-selection'
 import { ensureCoreToolDeclarations } from '../runtime/core-tool-declarations'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
@@ -8630,6 +8630,32 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       }
     } catch (error) {
       return { success: false, error: String(error) }
+    }
+  })
+
+  // Where each of an agent's provider copies gets its key (never the key itself).
+  // The entries come from the caller: the renderer's config save is debounced,
+  // so the file can lag the copy just added. Only the keys are read from disk.
+  ipcMain.handle(IPC.PROVIDER_AGENT_KEY_SOURCES, async (_event, rawArgs: unknown) => {
+    const args = z.object({
+      filePath: z.string(),
+      providers: z.array(z.object({ id: z.string(), type: z.string(), baseUrl: z.string() }))
+    }).parse(rawArgs)
+    try {
+      const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)
+      if (!workspace) return { sources: {}, error: 'Cannot open file' }
+      try {
+        const derivedKey = derivedKeyCache.get(args.filePath) ?? null
+        const sources: Record<string, string> = {}
+        for (const entry of args.providers) {
+          sources[entry.id] = agentProviderKeySource(entry, workspace, derivedKey, settings)
+        }
+        return { sources }
+      } finally {
+        if (args.filePath !== currentFilePath) workspace.close()
+      }
+    } catch (error) {
+      return { sources: {}, error: String(error) }
     }
   })
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mayBorrowAppKey, resolveAgentProviderConfig, resolveEffectiveProviderConfig } from '../../../src/main/providers/provider-factory'
+import { agentProviderKeySource, mayBorrowAppKey, resolveAgentProviderConfig, resolveEffectiveProviderConfig } from '../../../src/main/providers/provider-factory'
 import { providerSelectionChanged } from '../../../src/main/providers/provider-selection'
 import type { AgentConfig } from '../../../src/shared/types/adf-v02.types'
 import type { ProviderConfig } from '../../../src/shared/types/ipc.types'
@@ -51,6 +51,19 @@ describe('app key borrowing', () => {
     expect(resolveAgentProviderConfig(config(entry), workspace({ 'provider:custom:lm:apiKey': null }), null, settings)?.apiKey).toBe('')
     // Stored empty ('') is "no key": the same-endpoint app key is lent.
     expect(resolveAgentProviderConfig(config(entry), workspace({ 'provider:custom:lm:apiKey': '' }), null, settings)?.apiKey).toBe('app-lm')
+  })
+})
+
+describe('agentProviderKeySource', () => {
+  const lm = { id: 'custom:lm', type: 'openai-compatible' as const, baseUrl: 'http://localhost:1234/v1' }
+
+  it('reports the same decision resolution makes', () => {
+    expect(agentProviderKeySource(lm, workspace({ 'provider:custom:lm:apiKey': 'own' }), null, settings)).toBe('agent')
+    expect(agentProviderKeySource(lm, workspace({ 'provider:custom:lm:apiKey': null }), null, settings)).toBe('locked')
+    expect(agentProviderKeySource(lm, workspace({}), null, settings)).toBe('app')
+    // Another endpoint under the same id never borrows.
+    expect(agentProviderKeySource({ ...lm, baseUrl: 'https://elsewhere/v1' }, workspace({}), null, settings)).toBe('not_needed')
+    expect(agentProviderKeySource({ id: 'openai', type: 'openai', baseUrl: '' }, workspace({}), null, settings)).toBe('none')
   })
 })
 

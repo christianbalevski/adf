@@ -337,6 +337,7 @@ export const IPC = {
   PROVIDER_CREDENTIAL_LIST_FILES: 'adf:provider:credential-list-files',
   PROVIDER_ATTACH: 'adf:provider:attach',
   PROVIDER_DETACH: 'adf:provider:detach',
+  PROVIDER_AGENT_KEY_SOURCES: 'adf:provider:agent-key-sources',
   PROVIDER_TEST: 'adf:provider:test',
 
   // ChatGPT Subscription Auth

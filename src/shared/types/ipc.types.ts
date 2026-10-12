@@ -910,6 +910,16 @@ export interface McpCredentialFileInfo {
 
 // --- Provider Credential types ---
 
+/**
+ * Where the key for one of an agent's provider copies comes from:
+ * - `agent`: its own key in adf_identity
+ * - `locked`: its own key exists but cannot be opened right now (never borrows)
+ * - `app`: no own key; borrows the app key of the same id and endpoint
+ * - `not_needed`: no key anywhere, and the type works without one
+ * - `none`: no key anywhere, and calls will fail
+ */
+export type AgentProviderKeySource = 'agent' | 'locked' | 'app' | 'not_needed' | 'none'
+
 export interface ProviderCredentialFileInfo {
   filePath: string
   fileName: string

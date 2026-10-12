@@ -536,6 +536,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.PROVIDER_ATTACH, args),
   detachProvider: (args: { filePath: string; providerId: string }) =>
     ipcRenderer.invoke(IPC.PROVIDER_DETACH, args),
+  getAgentProviderKeySources: (args: { filePath: string; providers: { id: string; type: string; baseUrl: string }[] }) =>
+    ipcRenderer.invoke(IPC.PROVIDER_AGENT_KEY_SOURCES, args),
 
   // Identity / Keystore
   setIdentity: (purpose: string, value: string) =>

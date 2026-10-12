@@ -1,4 +1,4 @@
-import type { AppUpdateState, AppUpdateCheckResult, SpellcheckDownloadResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
+import type { AppUpdateState, AppUpdateCheckResult, SpellcheckDownloadResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentProviderKeySource, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
   QuickCreateResult, IdentityDraft, FileSharePrepareResult,
   AgentTemplateListResult,
   AgentTemplateContents,
@@ -547,6 +547,9 @@ export interface AdfApi {
   }) => Promise<{ success: boolean; alreadyAttached?: boolean; error?: string }>
   detachProvider: (args: { filePath: string; providerId: string }) =>
     Promise<{ success: boolean; error?: string }>
+  /** Where each provider copy on the agent gets its key, by provider id. */
+  getAgentProviderKeySources: (args: { filePath: string; providers: { id: string; type: string; baseUrl: string }[] }) =>
+    Promise<{ sources: Record<string, AgentProviderKeySource>; error?: string }>
 
   // Identity / Keystore
   setIdentity: (purpose: string, value: string) => Promise<void>
