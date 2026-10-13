@@ -318,6 +318,7 @@ const TRIGGER_LABELS: Record<string, string> = {
 const CONTEXT_LABELS: Record<string, string> = {
   system_prompt: 'System Prompt',
   dynamic_instructions: 'Dynamic Instructions',
+  provider_context: 'Added by Provider',
   loop: 'Loop Message'
 }
 
@@ -2224,6 +2225,7 @@ function LoopStream({ loop }: { loop: string }) {
                       <button
                         type="button"
                         onClick={() => handleInterruptSend(msg.id)}
+                        title="Delivered at the agent's next step without stopping its work. Use Stop to interrupt."
                         className="text-[10px] text-[var(--blue)] hover:underline"
                       >
                         Send now

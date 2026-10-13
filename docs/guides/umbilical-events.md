@@ -136,8 +136,11 @@ tool-driven stop). `content` is the final assistant text for this turn.
 | `chat.discarded` | `{ reason: 'stopped' \| 'off', count, turn_ids, unanswered_turn_ids? }` |
 
 Owner chats that arrive while a loop is busy queue in arrival order; nothing
-is dropped silently. The first one interrupts the running turn, and the oldest
-queued chat runs next under its own `turn_id`. `chat.delivered` fires inside
+is dropped silently, and a working turn is never cut off. In a tool loop the
+queue joins the running turn after the current tool results (`delivery:
+'next_step'`, carrying that turn's `turn_id`). Otherwise the oldest queued chat
+runs next under its own `turn_id` (a chat to a loop waiting on the owner ends
+that wait first). `chat.delivered` fires inside
 that turn (carrying its `turn_id`) when the rest of the queue joins it as
 consecutive user rows: `turn_ids` are those chats' request ids (`count` also
 covers chats sent without one, e.g. from Studio). They complete with the turn

@@ -24,7 +24,8 @@ export const PROVIDER_TYPES = [
   { type: 'openai-compatible', label: 'OpenAI Compatible', placeholder: { apiKey: 'Optional', model: 'e.g. llama-3-8b' } },
   { type: 'openrouter', label: 'OpenRouter', placeholder: { apiKey: 'sk-or-...', model: 'e.g. anthropic/claude-sonnet-4' } },
   { type: 'chatgpt-subscription', label: 'ChatGPT Subscription', placeholder: { apiKey: 'OAuth — click Sign In', model: 'e.g. gpt-5.6-sol' } },
-  { type: 'grok-subscription', label: 'Grok Subscription', placeholder: { apiKey: 'OAuth — click Sign In', model: 'e.g. grok-4.5' } }
+  { type: 'grok-subscription', label: 'Grok Subscription', placeholder: { apiKey: 'OAuth — click Sign In', model: 'e.g. grok-4.5' } },
+  { type: 'claude-subscription', label: 'Claude Subscription', placeholder: { apiKey: 'Claude Code sign-in — click Sign In', model: 'e.g. claude-sonnet-5-5' } }
 ] as const
 
 export type ProviderType = (typeof PROVIDER_TYPES)[number]['type']

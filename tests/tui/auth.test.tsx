@@ -7,7 +7,7 @@ import { createTuiStore, type TuiStore } from '../../src/main/tui/state/store'
 import { setAuthFlowSeams } from '../../src/main/tui/auth/flow'
 import { authNeedOf, describeStatus, formatExpiry, spacedCode, subscriptionOfType } from '../../src/main/tui/auth/model'
 import { startMockDaemon, AGENT_2_ID, type MockDaemon } from './fixtures/mock-daemon'
-import { createAuthFetch, CHATGPT_AUTH_URL, GROK_CODE, GROK_URL, type AuthMock, type AuthMockOptions } from './fixtures/auth-daemon'
+import { createAuthFetch, CHATGPT_AUTH_URL, CLAUDE_INSTALL_URL, CLAUDE_URL, GROK_CODE, GROK_URL, type AuthMock, type AuthMockOptions } from './fixtures/auth-daemon'
 import { renderTui, type RenderedTui } from './fixtures/render'
 
 const KEY = { tab: '\t', enter: '\r', esc: '\u001b', down: '\u001b[B' }
@@ -51,6 +51,12 @@ describe('auth model', () => {
   it('maps provider types, formats status and codes', () => {
     expect(subscriptionOfType('chatgpt-subscription')).toBe('chatgpt')
     expect(subscriptionOfType('grok-subscription')).toBe('grok')
+    expect(subscriptionOfType('claude-subscription')).toBe('claude')
+    // An Anthropic API-key provider is not the Claude subscription, whatever its name.
+    expect(subscriptionOfType('anthropic', 'claude')).toBeNull()
+    expect(subscriptionOfType(undefined, 'claude')).toBeNull()
+    expect(describeStatus({ authenticated: true, installed: true, email: 'a@b.c', plan: 'max' }).text).toBe('signed in as a@b.c · max plan')
+    expect(describeStatus({ authenticated: false, installed: false, installUrl: CLAUDE_INSTALL_URL }).text).toBe(`Claude Code not installed (${CLAUDE_INSTALL_URL})`)
     expect(subscriptionOfType('openai-compatible', 'chatgpt-proxy')).toBeNull()
     expect(subscriptionOfType(undefined, 'chatgpt-sub')).toBe('chatgpt')
     expect(spacedCode('AB-12')).toBe('A B - 1 2')
@@ -111,6 +117,61 @@ describe('provider sign-in', () => {
     const polls = auth.state.grok.polls
     await new Promise(r => setTimeout(r, 120))
     expect(auth.state.grok.polls).toBe(polls)
+  })
+
+  it('/login claude: shows the fallback URL (no browser opened here), sends a pasted code, then reports success', async () => {
+    const { tui, auth, store } = await mount({ agentProviders: { [AGENT_2_ID]: 'claude-sub' } })
+    await tui.waitFor('signed out')
+    await slash(tui, '/login claude')
+    let frame = await tui.waitFor('If the page shows a code, paste it here')
+    expect(frame).toContain('Sign in to Claude')
+    expect(frame).toContain('ADF stores no Claude')
+    expect(frame).toContain('https://claude.ai/oauth/authorize')
+    // Claude Code on the daemon host opens the browser itself.
+    expect(opened).toEqual([])
+    expect(auth.calls).toContain('POST /auth/claude/start')
+    await tui.type('abc#def')
+    await tui.press(KEY.enter)
+    await tui.waitFor('Code sent')
+    expect(auth.claudeCodes).toEqual(['abc#def'])
+    auth.approve('claude')
+    frame = await tui.waitFor('Signed in to Claude as owner@example.test')
+    await tui.press(KEY.enter)
+    await tui.waitFor(() => store.getState().auth?.claude.authenticated === true)
+    expect(CLAUDE_URL).toContain('claude.ai')
+  })
+
+  it('/login claude while already signed in waits for the new sign-in to finish', async () => {
+    const { tui, auth } = await mount({ signedIn: { claude: true } })
+    await tui.waitFor('agent-1')
+    await slash(tui, '/login claude')
+    await tui.waitFor('If the page shows a code, paste it here')
+    await tui.waitFor(() => auth.state.claude.polls >= 2)
+    expect(tui.lastFrame()).not.toContain('Signed in to Claude as')
+    auth.approve('claude')
+    await tui.waitFor('Signed in to Claude as owner@example.test')
+  })
+
+  it('/login claude: Esc cancels the daemon-side sign-in', async () => {
+    const { tui, auth } = await mount()
+    await tui.waitFor('agent-1')
+    await slash(tui, '/login claude')
+    await tui.waitFor('If the page shows a code, paste it here')
+    await tui.waitFor(() => auth.state.claude.polls >= 1)
+    await tui.press(KEY.esc)
+    await tui.waitFor('Claude sign-in cancelled')
+    await tui.waitFor(() => auth.calls.includes('POST /auth/claude/cancel'))
+  })
+
+  it('/login claude without Claude Code installed says where to get it', async () => {
+    const { tui, auth } = await mount({ claudeInstalled: false })
+    await tui.waitFor('agent-1')
+    await slash(tui, '/login claude')
+    const frame = await tui.waitFor('Sign-in failed: Claude Code is not installed')
+    expect(frame).toContain(CLAUDE_INSTALL_URL)
+    expect(auth.calls).not.toContain('POST /auth/claude/start')
+    await tui.press(KEY.esc)
+    await tui.waitFor(f => f.includes('Provider sign-in') && f.includes('Claude Code not installed'))
   })
 
   it('a failed sign-in is shown clearly and can be retried', async () => {

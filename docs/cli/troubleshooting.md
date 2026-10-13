@@ -128,7 +128,11 @@ access clipboard".
   `--url`; `--relay` through an SSH tunnel). See
   [Remote daemon › Sign in to ChatGPT](remote-daemon.md#sign-in-to-chatgpt).
 - An agent shows `signed out`: its provider is a subscription the daemon is
-  not signed in to: `/login chatgpt` or `/login grok`.
+  not signed in to: `/login chatgpt`, `/login grok` or `/login claude`.
+- **Claude:** sign-in reports Claude Code missing or too old: install or
+  update it on the daemon's machine (`claude update`; 2.1.248 or newer). If
+  Claude Code is signed in with an Anthropic Console account, `/login claude`
+  to sign in with a Claude plan instead.
 
 ## Credentials are locked
 

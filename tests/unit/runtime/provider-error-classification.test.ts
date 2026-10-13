@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isTransientProviderError, isAuthError, retryAfterMs } from '../../../src/main/runtime/agent-executor'
+import { isTransientProviderError, isAuthError, retryAfterMs, authFixHint } from '../../../src/main/runtime/agent-executor'
 import { toProviderError } from '../../../src/main/providers/ai-sdk-provider'
 
 function err(props: Record<string, unknown>, message = 'x'): Error {
@@ -117,6 +117,25 @@ describe('isAuthError', () => {
       expect(isAuthError(new Error(msg), msg)).toBe(true)
       expect(isTransientProviderError(new Error(msg), msg)).toBe(false)
     }
+  })
+
+  it('classifies Claude Code setup and sign-in failures as auth', () => {
+    for (const msg of [
+      'Not logged in · Please run /login',
+      'Claude Code is not installed. Install it (https://claude.com/claude-code), then sign in with Claude.',
+      'Claude Code 1.0.0 is too old (need 2.1.0 or newer). Run `claude update`.',
+      'Claude Code 2.0.0 is installed; ADF needs 2.1.248 or newer. Run `claude update`.',
+      'Claude Code is not installed (https://code.claude.com/docs/en/setup).',
+    ]) {
+      expect(isAuthError(new Error(msg), msg)).toBe(true)
+      expect(isTransientProviderError(new Error(msg), msg)).toBe(false)
+    }
+  })
+
+  it('gives Claude subscription agents a sign-in hint, not an API-key hint', () => {
+    expect(authFixHint({ providerType: 'claude-subscription' })).toMatch(/claude auth login/)
+    expect(authFixHint({ providerType: 'claude-subscription' })).not.toMatch(/API key/)
+    expect(authFixHint({ providerType: 'claude-subscription' })).toMatch(/claude update/)
   })
 })
 

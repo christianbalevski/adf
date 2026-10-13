@@ -155,9 +155,11 @@ export const REPORTS: Record<ReportKind, Report> = {
     async load(client) {
       const d = await client.authStatus()
       const lines: Line[] = [heading('Subscription sign-ins')]
-      for (const [name, status] of [['chatgpt', d.chatgpt], ['grok', d.grok]] as const) {
+      for (const [name, status] of [['chatgpt', d.chatgpt], ['grok', d.grok], ['claude', d.claude]] as const) {
         const s = (status ?? {}) as Record<string, unknown>
-        lines.push(indent([{ text: name.padEnd(9), tone: 'key' }, s.authenticated ? { text: 'signed in', tone: 'success' } : { text: 'not signed in', tone: 'muted' }, { text: s.email ? `  ${String(s.email)}` : '', tone: 'muted' }]))
+        const state = s.authenticated ? { text: 'signed in', tone: 'success' as const } : s.installed === false ? { text: 'Claude Code not installed', tone: 'warn' as const } : { text: 'not signed in', tone: 'muted' as const }
+        const extra = [s.email ? String(s.email) : '', s.plan ? `${String(s.plan)} plan` : '', s.installed === false && s.installUrl ? String(s.installUrl) : ''].filter(Boolean).join(' · ')
+        lines.push(indent([{ text: name.padEnd(9), tone: 'key' }, state, { text: extra ? `  ${extra}` : '', tone: 'muted' }]))
       }
       lines.push(blank(), heading('API-key providers'))
       lines.push(...tableLines(
@@ -165,8 +167,8 @@ export const REPORTS: Record<ReportKind, Report> = {
         d.providers.map(p => [p.id, p.type, p.hasApiKey ? 'set' : 'missing', p.credentialStorage]),
       ).map(indent))
       lines.push(blank(), heading('Sign in or out'))
-      lines.push(indent(plain('Enter opens the sign-in dialog · /login chatgpt · /login grok · /logout <chatgpt|grok>', 'accent')))
-      lines.push(indent(plain('From a shell: adf auth login <chatgpt|grok>', 'muted')))
+      lines.push(indent(plain('Enter opens the sign-in dialog · /login chatgpt · /login grok · /login claude · /logout <chatgpt|grok|claude>', 'accent')))
+      lines.push(indent(plain('From a shell: adf auth login <chatgpt|grok|claude>', 'muted')))
       lines.push(indent(plain('API keys: Studio settings, stored by the daemon (never shown here).', 'muted')))
       return { data: redactSecrets(d), lines }
     },

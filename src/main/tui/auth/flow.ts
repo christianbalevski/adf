@@ -5,11 +5,11 @@ import * as authFlowNs from '../../cli/auth-flow'
 import { cjs } from '../interop'
 import type { DaemonClient } from '../api/client'
 import type { SubscriptionProvider } from '../api/types'
-import type { AuthCallbackServer, AuthOutcome, ChatGptStartInfo, GrokStartInfo } from '../../cli/auth-flow'
+import type { AuthCallbackServer, AuthOutcome, ChatGptStartInfo, ClaudeStartInfo, GrokStartInfo } from '../../cli/auth-flow'
 
-const { loginChatGpt, loginGrok, openBrowser } = cjs(authFlowNs)
+const { loginChatGpt, loginClaude, loginGrok, openBrowser } = cjs(authFlowNs)
 
-export type { AuthOutcome, ChatGptStartInfo, GrokStartInfo }
+export type { AuthOutcome, ChatGptStartInfo, ClaudeStartInfo, GrokStartInfo }
 
 interface Seams {
   openBrowser: (url: string) => void
@@ -32,6 +32,7 @@ export function openUrl(url: string): void {
 export interface SignInHandlers {
   onChatGpt?: (info: ChatGptStartInfo) => void
   onGrok?: (info: GrokStartInfo) => void
+  onClaude?: (info: ClaudeStartInfo) => void
 }
 
 /** Run one sign-in. Abort `signal` to cancel (outcome `cancelled`). Never throws. */
@@ -44,6 +45,9 @@ export async function signIn(client: DaemonClient, provider: SubscriptionProvide
     startCallbackServer: seams.startCallbackServer,
   }
   try {
+    // Claude: Claude Code on the daemon host opens the browser itself; the
+    // URL is shown as the fallback, never opened from here.
+    if (provider === 'claude') return await loginClaude(deps, { onStart: info => handlers.onClaude?.(info) })
     return provider === 'chatgpt'
       ? await loginChatGpt(deps, { daemonUrl: client.baseUrl, onStart: info => handlers.onChatGpt?.(info) })
       : await loginGrok(deps, { onStart: info => handlers.onGrok?.(info) })

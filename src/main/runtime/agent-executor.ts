@@ -17,6 +17,7 @@ import {
   type LlmCallEventData,
 } from '../../shared/types/adf-event.types'
 import { getTokenUsageService } from '../services/token-usage.service'
+import { MIN_CLAUDE_CODE_VERSION } from '../providers/claude-subscription/claude-code'
 import { getFleetBurnService } from '../services/fleet-burn.service'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prompt'
@@ -425,6 +426,9 @@ export function isAuthError(error: unknown, message: string): boolean {
   // failures — surface them as auth so the user gets "sign in again", not a
   // generic structural error.
   if (msg.includes('not authenticated') || msg.includes('session expired') || msg.includes('sign in')) return true
+  // Claude subscription: Claude Code missing, too old, or signed out.
+  if (msg.includes('not logged in') || msg.includes('please run /login') || msg.includes('claude code is not installed')) return true
+  if (msg.includes('claude code') && (msg.includes('too old') || msg.includes('or newer') || msg.includes('claude update'))) return true
 
   return false
 }
@@ -439,6 +443,8 @@ export function authFixHint(provider: Pick<LLMProvider, 'providerType'> | null |
       return 'Sign in to ChatGPT: `adf auth login chatgpt` (or /login chatgpt in the TUI, or Settings → Providers in Studio). The agent recovers once sign-in completes.'
     case 'grok-subscription':
       return 'Sign in to Grok: `adf auth login grok` (or /login grok in the TUI, or Settings → Providers in Studio). The agent recovers once sign-in completes.'
+    case 'claude-subscription':
+      return `Sign in with Claude in Settings → Providers, or run \`claude auth login\` (requires Claude Code ≥ ${MIN_CLAUDE_CODE_VERSION} — \`claude update\`).`
     default:
       return 'Check the API key, account balance, and plan limits in Settings → Providers, then try again.'
   }
@@ -1968,10 +1974,16 @@ export class AgentExecutor extends EventEmitter {
     // listed before the agent target must not queue the agent's own wake.
     const anotherTurnActive = !opts?.nested && this.activeAgentTurnCount > 1
     if (anotherTurnActive || this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended') {
-      // User messages queue in arrival order. The first one aborts the current
-      // turn and restarts with the queue; a burst interrupts only once.
+      // User messages queue in arrival order. While the agent is working
+      // (thinking, running tools) nothing is cut off: the queue is delivered at
+      // the next safe step — between tool results, or as the next turn when the
+      // current one ends. Stop is the hard interrupt. While the agent waits on
+      // the owner (approval, ask, suspend), the message ends that wait: the
+      // first one aborts and restarts with the queue; a burst interrupts once.
       if (eventType === 'chat') {
         this.pendingChats.push(dispatch)
+        const working = this.state === 'thinking' || this.state === 'tool_use' || (anotherTurnActive && this.state !== 'awaiting_approval' && this.state !== 'awaiting_ask' && this.state !== 'suspended')
+        if (working) return
         if (this._interruptRestart) return
         this._interruptRestart = true
         this.abortController?.abort()
@@ -2407,6 +2419,22 @@ export class AgentExecutor extends EventEmitter {
         // Store provider metadata (e.g. rate limits) on workspace for tool access
         if (response.providerMetadata) {
           this.session.getWorkspace()._providerMeta = response.providerMetadata
+        }
+
+        // Model input a provider added on its own (Claude Code's reminders:
+        // environment, date, account) — recorded so the loop shows everything
+        // the model received.
+        const providerContext = (response.providerMetadata?.adf as { contextInjections?: unknown } | undefined)?.contextInjections
+        if (Array.isArray(providerContext)) {
+          for (const content of providerContext) {
+            if (typeof content !== 'string' || !content) continue
+            const pcSeq = this.session.appendContextEntry('provider_context', content)
+            this.emitEvent({
+              type: 'context_injected',
+              payload: { category: 'provider_context', content, ...(pcSeq !== undefined ? { seq: pcSeq } : {}) },
+              timestamp: Date.now()
+            })
+          }
         }
 
         // Record token usage

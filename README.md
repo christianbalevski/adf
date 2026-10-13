@@ -65,7 +65,7 @@ Studio and the CLI share the same settings file and owner identity (OS keychain)
 - **One file per agent.** Copy or move the file to copy or move the agent ([what's inside](ADF_SPEC_v0.2.md#13-one-file-one-agent)).
 - **ADF Studio:** a desktop IDE for agents. Author them, follow their turns, configure their tools and approve restricted tool calls.
 - **Fleet map:** an RTS-style command surface. Every agent is a tile on a hex map; select, message, hold and command whole groups with hotkeys.
-- **Model providers:** Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio and others), or a ChatGPT or Grok subscription via OAuth.
+- **Model providers:** Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio and others), a ChatGPT or Grok subscription via OAuth, or a Claude Pro/Max plan through your installed Claude Code.
 - **Built-in tools and services:** sandboxed code execution, lambdas, timers, triggers, skills, MCP servers, container-backed compute, HTTP serving and WebSockets.
 - **Code path:** lambdas run on a trigger, a timer or a message, and middleware sits on the inbox, outbox, routes and fetches. A model turn runs only when a trigger, timer or message starts one.
 - **Inner loops:** up to 16 inner loops (side loops) next to the main loop, each with its own transcript, goal and tool subset, all stored in the agent's file.
@@ -113,7 +113,7 @@ npm run dev        # launches ADF Studio
 
 Then, in Studio:
 
-1. **Connect a provider.** Settings → Providers → **Add provider**, pick a service from the catalog, paste an API key (or sign in, for the ChatGPT and Grok subscription tiles).
+1. **Connect a provider.** Settings → Providers → **Add provider**, pick a service from the catalog, paste an API key (or sign in, for the Claude, ChatGPT and Grok subscription tiles; Claude needs [Claude Code](https://code.claude.com/docs/en/setup) installed).
 2. **Create an agent.** Click **New .adf** in the sidebar and name it.
 3. **Send a message.** Open the Loop tab and send a message.
 

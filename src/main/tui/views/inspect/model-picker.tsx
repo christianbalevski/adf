@@ -34,8 +34,8 @@ export function providerChoices(providers: Array<Record<string, unknown>>, auth:
     const type = String(p.type ?? '')
     const id = String(p.id ?? '')
     const name = String(p.name ?? id)
-    if (type === 'chatgpt-subscription' || type === 'grok-subscription') {
-      const signedIn = (type === 'chatgpt-subscription' ? auth?.chatgpt : auth?.grok) as { authenticated?: boolean } | undefined
+    if (type === 'chatgpt-subscription' || type === 'grok-subscription' || type === 'claude-subscription') {
+      const signedIn = (type === 'chatgpt-subscription' ? auth?.chatgpt : type === 'grok-subscription' ? auth?.grok : auth?.claude) as { authenticated?: boolean } | undefined
       return { id, name, type, access: signedIn?.authenticated ? 'signed in' : 'not signed in (/login)', ready: !!signedIn?.authenticated }
     }
     if (p.hasApiKey === true) return { id, name, type, access: 'key set', ready: true }

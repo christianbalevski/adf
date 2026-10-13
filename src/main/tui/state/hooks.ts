@@ -24,7 +24,7 @@ export function useIdentity() {
   return useTuiSelector(s => s.identity)
 }
 
-/** The subscription (chatgpt | grok) this agent needs and the daemon is not signed in to, else null. */
+/** The subscription (chatgpt | grok | claude) this agent needs and the daemon is not signed in to, else null. */
 export function useAuthNeed(agentId: string | null | undefined) {
   return useTuiSelector(s => authNeedOf(s, agentId))
 }

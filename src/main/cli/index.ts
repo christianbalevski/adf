@@ -1,13 +1,16 @@
 // The one-shot CLI and TUI dispatch. The `adf` executable is bin.ts; it
 // calls runCli (this module never runs itself).
 
+import { createInterface } from 'readline'
 import { DEFAULT_DAEMON_URL, isLocalDaemonUrl, localProofHeaders, loopbackPort, resolveDaemonToken, resolveDaemonUrl, tunnelTokenHint } from './daemon-url'
 import {
   AUTH_PROVIDER_LABELS,
   loginChatGpt,
+  loginClaude,
   loginGrok,
   normalizeAuthProvider,
   openBrowser,
+  submitClaudeCode,
   type AuthFlowDeps,
   type AuthOutcome,
   type AuthProvider,
@@ -38,6 +41,14 @@ export interface CliIo {
    * may not be started). Absent (tests) = never start anything.
    */
   ensureDaemon?: (url: string) => Promise<{ pid: number } | null>
+  /**
+   * Test seam for line input read while something else runs (the Claude
+   * sign-in code). Calls onLine per line until the returned stop is called.
+   * Default: stdin lines when it is a TTY, nothing otherwise.
+   */
+  readLines?: (onLine: (line: string) => void) => () => void
+  /** Test seam for Ctrl-C. Calls fn on interrupt until the returned stop is called. */
+  onInterrupt?: (fn: () => void) => () => void
 }
 
 export interface CliCallbackServer {
@@ -450,7 +461,7 @@ function authDeps(io: CliIo, options: CliOptions): AuthFlowDeps {
 
 function requireAuthProvider(value: string | undefined): AuthProvider {
   const provider = normalizeAuthProvider(value)
-  if (!provider) throw new Error('Specify a provider: chatgpt or grok')
+  if (!provider) throw new Error('Specify a provider: chatgpt, grok or claude')
   return provider
 }
 
@@ -463,6 +474,7 @@ async function authCommand(io: CliIo, options: CliOptions, args: string[]): Prom
 
   if (action === 'login') {
     const provider = requireAuthProvider(positional[1])
+    if (provider === 'claude') return await loginClaudeCli(io, options)
     return provider === 'chatgpt'
       ? await loginChatGptCli(io, options, flags)
       : await loginGrokCli(io, options)
@@ -477,7 +489,7 @@ async function authCommand(io: CliIo, options: CliOptions, args: string[]): Prom
     return 0
   }
 
-  throw new Error('Usage: adf auth [status | login <chatgpt|grok> | logout <chatgpt|grok>]')
+  throw new Error('Usage: adf auth [status | login <chatgpt|grok|claude> | logout <chatgpt|grok|claude>]')
 }
 
 /** Print the outcome of a sign-in; exit code. */
@@ -538,6 +550,65 @@ async function loginGrokCli(io: CliIo, options: CliOptions): Promise<number> {
   })
   if (options.json) return 0
   return reportAuth(io, 'grok', outcome)
+}
+
+async function loginClaudeCli(io: CliIo, options: CliOptions): Promise<number> {
+  // Claude Code on the daemon host runs the sign-in and opens the browser
+  // there; the URL is the fallback, a pasted code is relayed to it.
+  const stop = new AbortController()
+  const deps: AuthFlowDeps = { ...authDeps(io, options), signal: stop.signal }
+  let stopLines = () => {}
+  const stopInterrupt = (io.onInterrupt ?? defaultOnInterrupt)(() => stop.abort())
+  try {
+    const outcome = await loginClaude(deps, {
+      onStart: (info) => {
+        if (options.json) {
+          io.stdout(`${JSON.stringify(info.raw, null, 2)}\n`)
+          stop.abort()
+          return
+        }
+        io.stdout(`Opening Claude sign-in in your browser…\n${info.url ? `If it does not open, visit:\n\n  ${info.url}\n\n` : '\n'}If the page shows a code, paste it here (or wait): `)
+        stopLines = (io.readLines ?? defaultReadLines)((line) => {
+          const code = line.trim()
+          if (!code) return
+          submitClaudeCode(deps, code)
+            .then(() => io.stdout('Code sent. Waiting for Claude Code to finish...\n'))
+            .catch((err: unknown) => io.stderr(`Could not send the code: ${err instanceof Error ? err.message : String(err)}\n`))
+        })
+      },
+    })
+    if (!outcome.ok && outcome.notInstalled) {
+      io.stderr(`${outcome.error}\n`)
+      return 1
+    }
+    if (options.json) return outcome.ok || outcome.cancelled ? 0 : reportAuth(io, 'claude', outcome)
+    io.stdout('\n')
+    if (outcome.ok) {
+      const plan = isRecord(outcome.raw) && typeof outcome.raw.plan === 'string' ? outcome.raw.plan : ''
+      io.stdout(`Signed in to Claude${outcome.email ? ` as ${outcome.email}` : ''}${plan ? ` (${plan} plan)` : ''}.\n`)
+      return 0
+    }
+    if (outcome.cancelled) {
+      io.stderr('Claude sign-in cancelled.\n')
+      return 130
+    }
+    return reportAuth(io, 'claude', outcome)
+  } finally {
+    stopLines()
+    stopInterrupt()
+  }
+}
+
+function defaultReadLines(onLine: (line: string) => void): () => void {
+  if (!process.stdin.isTTY) return () => {}
+  const rl = createInterface({ input: process.stdin, terminal: false, historySize: 0 })
+  rl.on('line', onLine)
+  return () => { rl.close(); process.stdin.pause() }
+}
+
+function defaultOnInterrupt(fn: () => void): () => void {
+  process.once('SIGINT', fn)
+  return () => { process.removeListener('SIGINT', fn) }
 }
 
 async function networkAdmin(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
@@ -915,6 +986,7 @@ function formatAuth(value: JsonValue): string {
   if (!isRecord(value)) return formatJsonPretty(value)
   const chatgpt = isRecord(value.chatgpt) ? value.chatgpt : {}
   const grok = isRecord(value.grok) ? value.grok : {}
+  const claude = isRecord(value.claude) ? value.claude : {}
   const providers = Array.isArray(value.providers) ? value.providers.filter(isRecord) : []
   const chatgptTable = `ChatGPT:\n${table(['field', 'value'], [
     ['authenticated', String(chatgpt.authenticated ?? false)],
@@ -924,6 +996,18 @@ function formatAuth(value: JsonValue): string {
     ['authenticated', String(grok.authenticated ?? false)],
     ['email', String(grok.email ?? '')],
   ])}`
+  const claudeRows: string[][] = claude.installed === false
+    ? [['authenticated', 'false'], ['claude code', `not installed (${String(claude.installUrl ?? '')})`]]
+    : [
+      ['authenticated', String(claude.authenticated ?? false)],
+      ['email', String(claude.email ?? '')],
+      ['plan', String(claude.plan ?? '')],
+      ['claude code', claude.updateRequired
+        ? `${String(claude.version ?? '')} (update required: ADF needs ${String(claude.minVersion ?? '')} or newer)`
+        : String(claude.version ?? '')],
+      ...(typeof claude.flowError === 'string' && claude.flowError ? [['error', claude.flowError]] : []),
+    ]
+  const claudeTable = `Claude:\n${table(['field', 'value'], claudeRows)}`
   const providersTable = providers.length === 0
     ? 'Provider credentials: none\n'
     : `Provider credentials:\n${table(['id', 'type', 'storage', 'apiKey'], providers.map(provider => [
@@ -932,7 +1016,7 @@ function formatAuth(value: JsonValue): string {
       String(provider.credentialStorage ?? ''),
       String(provider.hasApiKey ?? false),
     ]))}`
-  return `${chatgptTable}\n${grokTable}\n${providersTable}`
+  return `${chatgptTable}\n${grokTable}\n${claudeTable}\n${providersTable}`
 }
 
 function formatNetwork(value: JsonValue): string {
@@ -1218,11 +1302,16 @@ Commands:
   runtime [agent]                Show daemon or agent runtime diagnostics
   providers                      Show provider configuration and agent resolution
   auth                           Show auth and credential presence
-  auth login <chatgpt|grok>      Sign in to a subscription provider
+  auth login <chatgpt|grok|claude>
+                                  Sign in to a subscription provider
                                   [--relay|--loopback] chooses where the
                                   ChatGPT OAuth callback is served; defaults to
-                                  relay when --url points at a remote daemon
-  auth logout <chatgpt|grok>     Clear a subscription provider's tokens
+                                  relay when --url points at a remote daemon.
+                                  claude signs in through Claude Code on the
+                                  daemon host (ADF stores no Claude credentials)
+  auth logout <chatgpt|grok|claude>
+                                  Clear a subscription provider's tokens
+                                  (claude: signs Claude Code out on that host)
   settings                       Show sanitized daemon runtime settings
   network                        Show mesh and WebSocket diagnostics
   network mesh [enable|disable]  Control daemon mesh registration

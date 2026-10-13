@@ -13,6 +13,7 @@ import { getChatGptAuthManager } from './chatgpt-subscription/auth-manager'
 import { createChatGPTSubscriptionProvider } from './chatgpt-subscription'
 import { getGrokAuthManager } from './grok-subscription/auth-manager'
 import { createGrokSubscriptionProvider } from './grok-subscription'
+import { createClaudeSubscriptionProvider } from './claude-subscription'
 
 /**
  * Pool AI SDK provider instances by key to reuse HTTP connections.
@@ -116,7 +117,7 @@ export interface ProviderIdentitySource {
 }
 
 /** Types whose builder ignores `baseUrl` (fixed first-party endpoint). */
-const FIXED_ENDPOINT_TYPES = new Set(['anthropic', 'openai', 'chatgpt-subscription', 'grok-subscription'])
+const FIXED_ENDPOINT_TYPES = new Set(['anthropic', 'openai', 'chatgpt-subscription', 'grok-subscription', 'claude-subscription'])
 
 function normalizeBaseUrl(url: string | undefined): string {
   const trimmed = (url ?? '').trim().replace(/\/+$/, '')
@@ -151,7 +152,7 @@ export function mayBorrowAppKey(
  * endpoints are routinely keyless (local llama.cpp, Ollama, LM Studio).
  */
 export function providerNeedsApiKey(type: string): boolean {
-  return type !== 'openai-compatible' && type !== 'chatgpt-subscription' && type !== 'grok-subscription'
+  return type !== 'openai-compatible' && type !== 'chatgpt-subscription' && type !== 'grok-subscription' && type !== 'claude-subscription'
 }
 
 /**
@@ -166,7 +167,7 @@ export function agentProviderKeySource(
 ): AgentProviderKeySource {
   // Subscriptions authenticate through the app's own sign-in (the auth
   // manager singleton); an agent's copy of one is settings only.
-  if (entry.type === 'chatgpt-subscription' || entry.type === 'grok-subscription') return 'app_sign_in'
+  if (entry.type === 'chatgpt-subscription' || entry.type === 'grok-subscription' || entry.type === 'claude-subscription') return 'app_sign_in'
   const purpose = `provider:${entry.id}:apiKey`
   const stored = workspace.getIdentityDecrypted(purpose, derivedKey)
   if (stored) return 'agent'
@@ -356,6 +357,16 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
       providerId: providerKey,
       providerType: cfg.type,
       reasoningStyle: 'xai'
+    })
+  }
+
+  if (cfg.type === 'claude-subscription') {
+    return createClaudeSubscriptionProvider({
+      providerId: providerKey,
+      displayName,
+      modelId,
+      requestDelayMs: delayMs,
+      extraParams: hasExtraParams ? extraParams : undefined
     })
   }
 

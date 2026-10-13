@@ -275,7 +275,7 @@ export interface TuiState {
    * when the daemon has no identity routes. Never holds the seed phrase.
    */
   identity: IdentityStatus | null
-  /** `GET /runtime/auth`: ChatGPT / Grok sign-in + provider registrations; null until read. */
+  /** `GET /runtime/auth`: ChatGPT / Grok / Claude sign-in + provider registrations; null until read. */
   auth: AuthDiagnostics | null
   /** The mesh web server + what each agent serves (`GET /network/mesh`); null until read. */
   web: WebState | null

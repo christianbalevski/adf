@@ -1,7 +1,7 @@
 # Models and providers
 
 An agent needs a model provider: an API key, a local model server, or a
-ChatGPT or Grok subscription signed in on the daemon.
+Claude, ChatGPT or Grok subscription signed in on the daemon.
 
 ## API keys and local servers
 
@@ -29,22 +29,30 @@ before.
 
 One-shot: `adf providers` (providers and which agent resolves to which).
 
-## ChatGPT and Grok subscriptions
+## Subscriptions
 
 Agents on a subscription need the **daemon** to be signed in. The daemon's
-sign-in is its own, separate from Studio's.
+ChatGPT and Grok sign-ins are its own, separate from Studio's. Claude's is
+not: it is the sign-in of the Claude Code installed on the daemon's machine,
+shared with Studio and with Claude Code itself.
 
 | In the app | One-shot | How |
 |---|---|---|
 | `/login chatgpt` | `adf auth login chatgpt` | Opens your browser; the URL is shown too (`c` copies it) in case it does not open |
 | `/login grok` | `adf auth login grok` | Shows a device code and URL; approve in any browser |
-| `/auth` | `adf auth` | Status of both, and which providers have keys |
+| `/login claude` | `adf auth login claude` | Runs `claude auth login`, which opens your browser; the URL is shown too. Paste the code if the page shows one |
+| `/auth` | `adf auth` | Status of each, and which providers have keys |
 | `/logout <provider>` | `adf auth logout <provider>` | Sign out (the app asks first) |
+
+Claude requires [Claude Code](https://code.claude.com/docs/en/setup) 2.1.248
+or newer on the daemon's machine. `adf auth logout claude` runs `claude auth
+logout`, which signs Claude Code out on that machine too.
 
 When the daemon runs on another machine, ChatGPT's browser callback is
 received on your machine and handed to the daemon (relay mode, chosen
 automatically for a remote `--url`; `--relay` / `--loopback` override it).
-Grok's device code works anywhere. Details:
+Grok's device code works anywhere. For Claude, open the shown URL in any
+browser and paste the code the page shows. Details:
 [Remote daemon](remote-daemon.md#sign-in-to-chatgpt).
 
 An agent whose subscription is not signed in shows `signed out` on the Fleet

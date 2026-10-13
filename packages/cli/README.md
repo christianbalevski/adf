@@ -34,7 +34,7 @@ In the terminal app (a welcome checklist opens on first run):
 
 ```text
 /identity create        # your owner identity: 12 words, the same as in ADF Studio
-/login chatgpt          # or /login grok, or /provider add for an API key
+/login chatgpt          # or /login grok, /login claude, or /provider add for an API key
 /new                    # create an agent; its chat opens
 /loop new consolidator  # optional: an inner loop that tidies memory nightly
 ```

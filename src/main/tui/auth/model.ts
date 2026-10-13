@@ -1,4 +1,4 @@
-// Subscription provider sign-in (ChatGPT, Grok): pure helpers for the /auth
+// Subscription provider sign-in (ChatGPT, Grok, Claude): pure helpers for the /auth
 // dialog and the "not signed in" hints in Fleet and Chat.
 
 import type { AuthDiagnostics, SubscriptionAuthStatus, SubscriptionProvider } from '../api/types'
@@ -6,9 +6,12 @@ import type { TuiState } from '../state/types'
 
 export const AUTH_OVERLAY = 'auth'
 
-export const SUBSCRIPTIONS: SubscriptionProvider[] = ['chatgpt', 'grok']
+export const SUBSCRIPTIONS: SubscriptionProvider[] = ['chatgpt', 'grok', 'claude']
 
-export const SUBSCRIPTION_LABELS: Record<SubscriptionProvider, string> = { chatgpt: 'ChatGPT', grok: 'Grok' }
+export const SUBSCRIPTION_LABELS: Record<SubscriptionProvider, string> = { chatgpt: 'ChatGPT', grok: 'Grok', claude: 'Claude' }
+
+/** Said in the Claude sign-in: ADF never holds Claude credentials. */
+export const CLAUDE_EXPLAINER = 'Claude signs in through Claude Code on the daemon host; ADF stores no Claude credentials. The sign-in is shared with Claude Code there.'
 
 /** Said once in the dialog. */
 export const AUTH_EXPLAINER = 'The daemon keeps its own sign-in, separate from ADF Studio’s. Agents that use these providers need no changes.'
@@ -23,6 +26,8 @@ export function subscriptionOfType(type: string | undefined, id?: string): Subsc
   const t = `${type ?? ''} ${id ?? ''}`.toLowerCase()
   if (t.includes('chatgpt-subscription') || (!type && /chatgpt/.test(t))) return 'chatgpt'
   if (t.includes('grok-subscription') || (!type && /grok/.test(t))) return 'grok'
+  // No bare-name fallback: an `anthropic` (API key) provider may well be called "claude".
+  if (t.includes('claude-subscription')) return 'claude'
   return null
 }
 
@@ -67,7 +72,11 @@ export function formatExpiry(expiresAt: number | undefined, now = Date.now()): s
 /** One status line per provider. */
 export function describeStatus(status: SubscriptionAuthStatus | null): { text: string; ok: boolean } {
   if (!status) return { text: 'unknown', ok: false }
+  if (status.installed === false) return { text: `Claude Code not installed${status.installUrl ? ` (${status.installUrl})` : ''}`, ok: false }
+  if (status.updateRequired) return { text: `Claude Code ${status.version ?? ''} is too old · ADF needs ${status.minVersion ?? 'a newer version'} or newer (run \`claude update\`)`, ok: false }
+  const cc = status.version ? ` · Claude Code ${status.version}` : ''
   if (status.authenticated) {
+    if (status.plan) return { text: `signed in${status.email ? ` as ${status.email}` : ''} · ${status.plan} plan${cc}`, ok: true }
     const expiry = formatExpiry(status.expiresAt)
     return { text: `signed in${status.email ? ` as ${status.email}` : ''}${expiry ? ` · token ${expiry.startsWith('expired') ? expiry : `renews in ${expiry}`}` : ''}`, ok: true }
   }

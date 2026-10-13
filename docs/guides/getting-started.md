@@ -13,7 +13,7 @@ This guide walks you through your first agent: making one from a message, runnin
 ## Prerequisites
 
 1. **ADF Studio** installed on your machine
-2. Either an LLM API key (Anthropic, OpenAI, OpenRouter, or any OpenAI-compatible endpoint) or a ChatGPT / Grok subscription to sign in with. You are asked for it the first time you run an agent, not before.
+2. Either an LLM API key (Anthropic, OpenAI, OpenRouter, or any OpenAI-compatible endpoint) or a ChatGPT / Grok subscription to sign in with, or a Claude Pro/Max plan with [Claude Code](https://code.claude.com/docs/en/setup) installed. You are asked for it the first time you run an agent, not before.
 
 ## First run
 
@@ -38,8 +38,8 @@ Providers can also be managed ahead of time, or changed later, in Settings.
 1. Open **Settings** (gear icon in the sidebar, or `Cmd/Ctrl + ,`)
 2. Go to the **Providers** section
 3. Click **Add provider** — a catalog opens, grouped into **Subscriptions**, **APIs**, **Local**, and **Other**
-4. Click the tile for the service you use (Anthropic, OpenAI, ChatGPT, Grok, a hosted OpenAI-compatible API, or a local server). The provider is created with its base URL prefilled and its configure modal opens
-5. Enter your API key (or click **Sign in with ChatGPT** / **Sign in with Grok** for the subscription tiles)
+4. Click the tile for the service you use (Anthropic, OpenAI, Claude, ChatGPT, Grok, a hosted OpenAI-compatible API, or a local server). The provider is created with its base URL prefilled and its configure modal opens
+5. Enter your API key (or sign in, for the Claude, ChatGPT and Grok subscription tiles)
 6. Optionally set a default model
 7. Save
 

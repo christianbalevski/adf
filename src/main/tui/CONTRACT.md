@@ -115,7 +115,7 @@ interface OverlayProps { overlay: Overlay; close(): void; width: number; height:
   create / restore / unlock; props `IdentityOverlayProps`) and `new-agent`
   (the new-agent wizard) from `src/main/tui/identity/` — open them with
   `openIdentity(store, props)` / `openNewAgent(store, name?)`, and `auth`
-  (provider sign-in, `src/main/tui/auth/`; props `{ login?: 'chatgpt'|'grok' }`),
+  (provider sign-in, `src/main/tui/auth/`; props `{ login?: 'chatgpt'|'grok'|'claude' }`),
   `terminal-setup` (Shift+Enter help, `app/terminal-setup.tsx`), and from
   `setup/`: `welcome` (`openWelcome(store)`), `channels` (`openChannels(store,
   {agentId?, channel?})`: the agent's channels, or one channel's setup form)
@@ -212,7 +212,10 @@ Provider sign-in: `refreshAuth` (on connect, resync, `llm.failed` /
 which subscription an agent needs and the daemon lacks. The sign-in flows
 themselves are `auth/flow.ts` `signIn(client, provider, signal, handlers)`
 over `cli/auth-flow.ts` (the same code as `adf auth login`); tests swap the
-browser and poll sleep with `setAuthFlowSeams`.
+browser and poll sleep with `setAuthFlowSeams`. Claude (`claude`) holds no
+credentials in ADF: the daemon runs Claude Code on its host, which opens the
+browser there; the dialog shows the URL as the fallback and a box that sends
+a pasted page code (`client.submitClaudeCode`).
 
 Owner identity + agent creation: `refreshIdentity` (on connect and every
 resync) · `createIdentity(passphrase?)` · `restoreIdentity(mnemonic,
@@ -296,7 +299,8 @@ body, unreachable }`. Types in `api/types.ts` are type-imported from the daemon
   · compute / mesh: `computeStatus computeContainers meshStatus setMesh(on)
   meshServer meshServerAction(start|stop|restart) lanAddresses`
   · `withBaseUrl(url, token?)` (same transport, other daemon)
-- sign-in: `subscriptionStatus(provider) logoutSubscription(provider)`
+- sign-in: `subscriptionStatus(provider) logoutSubscription(provider)
+  submitClaudeCode(code) cancelClaudeAuth`
   (`authStatus` = GET /runtime/auth)
 - owner identity + creation: `identity createIdentity(passphrase?)
   restoreIdentity(mnemonic, passphrase?) unlockIdentity lockIdentity

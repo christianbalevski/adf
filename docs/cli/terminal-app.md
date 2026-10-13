@@ -137,9 +137,10 @@ stopped agents. Track a folder with `f` on the Fleet or `/track [dir]`;
 ## Chat
 
 - **Send:** `Enter`. While the loop is running your message shows
-  `[queued]`. Send several and none is lost: the first interrupts the turn,
-  then they all go to the agent together, in order, and each loses `[queued]`
-  as the new turn takes it. If the agent is stopped first, the ones it never
+  `[queued]`. Send several and none is lost: they go to the agent together,
+  in order, at its next step (after the current tool results, or as the next
+  turn), and each loses `[queued]` when it is delivered. The running work is
+  not cut off; `Esc` interrupts it. If the agent is stopped first, the ones it never
   got show `[not delivered]` with a notice. `Esc` (interrupt) keeps them.
 - **Loops:** the tabs above the transcript. `Shift+←/→` switches; each loop
   keeps its own transcript, scroll position, draft and prompt history

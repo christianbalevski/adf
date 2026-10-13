@@ -57,6 +57,7 @@ export class TokenCounterService {
     const modelLooksClaude = !!model && model.toLowerCase().includes('claude')
     switch (type) {
       case 'anthropic':
+      case 'claude-subscription':
         return 'anthropic'
       case 'openai':
       case 'chatgpt-subscription':

@@ -24,6 +24,37 @@ vi.mock('electron', () => {
   }
 })
 
+// Claude sign-in runs the user's Claude Code; never spawn the real binary here.
+const claudeAuth = vi.hoisted(() => {
+  type Status = Record<string, unknown>
+  const state = {
+    status: { authenticated: false, installed: true, version: '2.1.250' } as Status,
+    calls: [] as string[],
+    finish: null as null | (() => void),
+  }
+  const manager = {
+    getAuthStatus: async () => state.status,
+    isAuthenticated: async () => state.status.authenticated === true,
+    startAuthFlowDetached: async () => {
+      state.calls.push('start')
+      const completion = new Promise<void>(resolve => { state.finish = resolve })
+      return { url: 'https://claude.ai/oauth/authorize?code=true&state=s', completion }
+    },
+    submitCode: (code: string) => {
+      if (!state.finish) throw new Error('No Claude sign-in is in progress.')
+      state.calls.push(`code ${code}`)
+    },
+    cancelAuthFlow: () => { state.calls.push('cancel'); state.finish = null },
+    logout: async () => { state.calls.push('logout') },
+  }
+  return { state, manager }
+})
+vi.mock('../src/main/providers/claude-subscription/auth-manager', () => ({ getClaudeAuthManager: () => claudeAuth.manager }))
+vi.mock('../src/main/providers/claude-subscription', () => ({
+  getClaudeAuthManager: () => claudeAuth.manager,
+  listClaudeSubscriptionModels: async () => ['claude-opus-5-5', 'claude-sonnet-5-5'],
+}))
+
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
@@ -465,6 +496,85 @@ describe('daemon HTTP API', () => {
     expect(status.json()).toEqual(expect.objectContaining({
       authenticated: expect.any(Boolean),
     }))
+  })
+
+  describe('Claude subscription sign-in (delegated to Claude Code)', () => {
+    afterEach(() => {
+      claudeAuth.state.status = { authenticated: false, installed: true, version: '2.1.250' }
+      claudeAuth.state.calls = []
+      claudeAuth.state.finish = null
+    })
+
+    it('reports status, also under /runtime/auth', async () => {
+      claudeAuth.state.status = { authenticated: true, installed: true, version: '2.1.250', email: 'user@example.test', plan: 'max' }
+      const server = createDaemonHttpApi(new RuntimeService({ enforceReviewGate: false }))
+      servers.push(server)
+      const status = await server.inject({ method: 'GET', url: '/auth/claude/status' })
+      expect(status.statusCode).toBe(200)
+      expect(status.json()).toEqual(claudeAuth.state.status)
+      const auth = await server.inject({ method: 'GET', url: '/runtime/auth' })
+      expect(auth.json().claude).toEqual(claudeAuth.state.status)
+    })
+
+    it('start answers the fallback URL; a code reaches Claude Code; completion recovers auth-errored loops', async () => {
+      const runtime = new RuntimeService({ enforceReviewGate: false })
+      const recover = vi.spyOn(runtime, 'recoverAuthErroredAgents')
+      const server = createDaemonHttpApi(runtime)
+      servers.push(server)
+
+      const start = await server.inject({ method: 'POST', url: '/auth/claude/start' })
+      expect(start.statusCode).toBe(200)
+      expect(start.json()).toEqual({ started: true, url: 'https://claude.ai/oauth/authorize?code=true&state=s' })
+
+      const empty = await server.inject({ method: 'POST', url: '/auth/claude/code', payload: { code: ' ' } })
+      expect(empty.statusCode).toBe(400)
+      const code = await server.inject({ method: 'POST', url: '/auth/claude/code', payload: { code: 'abc#def' } })
+      expect(code.statusCode).toBe(200)
+      expect(claudeAuth.state.calls).toEqual(['start', 'code abc#def'])
+
+      claudeAuth.state.finish?.()
+      await vi.waitFor(() => expect(recover).toHaveBeenCalledWith('claude-subscription', 'Claude'))
+    })
+
+    it('start is 409 with the install URL when Claude Code is missing; code without a flow is 400', async () => {
+      claudeAuth.state.status = { authenticated: false, installed: false, installUrl: 'https://code.claude.com/docs/en/setup' }
+      const server = createDaemonHttpApi(new RuntimeService({ enforceReviewGate: false }))
+      servers.push(server)
+      const start = await server.inject({ method: 'POST', url: '/auth/claude/start' })
+      expect(start.statusCode).toBe(409)
+      expect(start.json()).toMatchObject({ code: 'claude_code_not_installed', installUrl: 'https://code.claude.com/docs/en/setup' })
+      expect(claudeAuth.state.calls).toEqual([])
+      const code = await server.inject({ method: 'POST', url: '/auth/claude/code', payload: { code: 'abc' } })
+      expect(code.statusCode).toBe(400)
+      expect(code.json().error).toContain('No Claude sign-in')
+    })
+
+    it('cancels and signs out', async () => {
+      const server = createDaemonHttpApi(new RuntimeService({ enforceReviewGate: false }))
+      servers.push(server)
+      expect((await server.inject({ method: 'POST', url: '/auth/claude/cancel' })).json()).toEqual({ success: true })
+      expect((await server.inject({ method: 'POST', url: '/auth/claude/logout' })).json()).toEqual({ success: true })
+      expect(claudeAuth.state.calls).toEqual(['cancel', 'logout'])
+    })
+
+    it('lists the plan models for a claude-subscription provider and refuses it as a key provider', async () => {
+      const data: Record<string, unknown> = { providers: [{ id: 'claude-sub', type: 'claude-subscription', name: 'Claude', baseUrl: '', apiKey: '' }] }
+      const server = createDaemonHttpApi(new RuntimeService({ enforceReviewGate: false }), {
+        settingsStore: {
+          filePath: '/tmp/adf-settings.json',
+          get: key => data[key],
+          set: (key, value) => { data[key] = value },
+          getAll: () => ({ ...data }),
+          update: values => { Object.assign(data, values) },
+        },
+      })
+      servers.push(server)
+      const models = await server.inject({ method: 'GET', url: '/runtime/models?provider=claude-sub' })
+      expect(models.json()).toEqual({ provider: 'claude-sub', models: ['claude-opus-5-5', 'claude-sonnet-5-5'] })
+      const add = await server.inject({ method: 'POST', url: '/runtime/providers', payload: { type: 'claude-subscription', name: 'Claude', apiKey: 'x' } })
+      expect(add.statusCode).toBe(400)
+      expect(add.json().code).toBe('subscription_type')
+    })
   })
 
   it('exposes health, agent listing, and async chat acknowledgement', async () => {

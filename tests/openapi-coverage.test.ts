@@ -45,6 +45,17 @@ vi.mock('electron', () => {
   }
 })
 
+// /runtime/auth asks Claude Code for its sign-in; never spawn the real binary here.
+vi.mock('../src/main/providers/claude-subscription/auth-manager', () => ({
+  getClaudeAuthManager: () => ({
+    getAuthStatus: async () => ({ authenticated: true, installed: true, version: '2.1.250', email: 'user@example.test', plan: 'max' }),
+    startAuthFlowDetached: async () => ({ url: 'https://claude.ai/oauth/authorize?code=true', completion: new Promise<void>(() => {}) }),
+    submitCode: () => { throw new Error('No Claude sign-in is in progress.') },
+    cancelAuthFlow: () => {},
+    logout: async () => {},
+  }),
+}))
+
 import Ajv2020 from 'ajv/dist/2020'
 import spec from '../docs/daemon/openapi.json'
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
@@ -215,9 +226,12 @@ describe('OpenAPI response conformance', () => {
       await call('GET', '/tracked-dirs/agents', `/tracked-dirs/agents?path=${encodeURIComponent(folder)}`)
       for (const p of ['/health', '/agents', '/diagnostics', '/runtime', '/runtime/providers', '/runtime/auth', '/runtime/settings', '/runtime/mcp',
         '/runtime/adapters', '/runtime/network', '/network', '/runtime/usage', '/settings', '/tracked-dirs', '/tracked-dirs/agents/all',
-        '/auth/chatgpt/status', '/auth/grok/status', '/identity', '/templates', '/compute/status', '/network/mesh', '/admin/mcp/packages']) {
+        '/auth/chatgpt/status', '/auth/grok/status', '/auth/claude/status', '/identity', '/templates', '/compute/status', '/network/mesh', '/admin/mcp/packages']) {
         await call('GET', p, p)
       }
+      await call('POST', '/auth/claude/code', '/auth/claude/code', { code: 'abc' }) // no flow: 400
+      await call('POST', '/auth/claude/start', '/auth/claude/start')
+      await call('POST', '/auth/claude/cancel', '/auth/claude/cancel')
       await call('GET', '/settings/{key}', '/settings/meshEnabled')
       await call('PUT', '/settings/{key}', '/settings/meshEnabled', { value: true })
       await call('PUT', '/settings/{key}', '/settings/ownerDid', { value: 'did:key:x' })

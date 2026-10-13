@@ -55,7 +55,7 @@ Providers are the LLM services that power your agents. You need at least one con
 ### Adding a Provider
 
 1. Go to **Settings > Providers**
-2. Click **Add provider**. A picker lists everything you can connect, grouped as **Subscriptions** (ChatGPT, Grok — sign in, no key), **APIs** (Anthropic, OpenAI, OpenRouter, Gemini, xAI, Mistral, DeepSeek, Groq, Cerebras, Together, Fireworks, and other hosted endpoints), **Local** (LM Studio, Ollama, vLLM, llama.cpp, …), and **Other** (any OpenAI-compatible URL).
+2. Click **Add provider**. A picker lists everything you can connect, grouped as **Subscriptions** (Claude, ChatGPT, Grok — sign in, no key), **APIs** (Anthropic, OpenAI, OpenRouter, Gemini, xAI, Mistral, DeepSeek, Groq, Cerebras, Together, Fireworks, and other hosted endpoints), **Local** (LM Studio, Ollama, vLLM, llama.cpp, …), and **Other** (any OpenAI-compatible URL).
 3. Pick a tile. The provider is created with its base URL prefilled and a default name (`Groq`, then `Groq 2`, … — rename it freely; you can add the same service more than once for separate accounts) and its configure modal opens.
 
 Every provider row opens the same modal, in two parts:
@@ -74,7 +74,7 @@ Every provider row opens the same modal, in two parts:
 
 Under the hood every override is a copy of the provider inside the agent's `.adf` (see [Per-ADF Provider Configurations](#per-adf-provider-configurations)). Studio also puts an unchanged, key-less copy into every agent it creates; those are not overrides and stay hidden behind a *Show N agents with an unchanged copy* link.
 
-Most tiles are the same OpenAI-compatible runtime with a different base URL and logo; the modal says which API it speaks under the status line. The underlying types are `anthropic`, `openai`, `openai-compatible`, `openrouter`, `chatgpt-subscription`, and `grok-subscription`.
+Most tiles are the same OpenAI-compatible runtime with a different base URL and logo; the modal says which API it speaks under the status line. The underlying types are `anthropic`, `openai`, `openai-compatible`, `openrouter`, `claude-subscription`, `chatgpt-subscription`, and `grok-subscription`.
 
 ### Provider Types
 
@@ -125,7 +125,33 @@ Notes:
 
 Available models (fetched live from xAI when signed in; fallback catalog): `grok-4.5`, `grok-4.3`, `grok-build-0.1`, `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`
 
+**Claude Subscription** — Use your Claude Pro or Max plan to power agents with Claude models. adf never handles Claude credentials: sign-in runs through your installed, unmodified Claude Code (`claude auth login`), and requests go through the official Claude Agent SDK, which drives that Claude Code binary. Usage draws from your plan's limits as Agent SDK (third-party) usage.
+
+Requirements: Claude Code 2.1.248 or newer, installed per [Claude Code setup](https://code.claude.com/docs/en/setup). adf looks for `claude` in the usual install locations and on `PATH`; set `ADF_CLAUDE_CODE_PATH` to use a specific executable.
+
+Setup:
+1. Add a provider and pick **Claude** under Subscriptions
+2. Click **Sign in with Claude** — Claude Code opens your browser to Claude's sign-in page. If the page shows a code instead of finishing on its own, paste it into adf
+3. After signing in, the provider shows your email and plan
+4. Select a model from the dropdown (e.g., `claude-opus-5-5`, `claude-sonnet-5-5`)
+
+Notes:
+- The session is Claude Code's own and is shared with your normal Claude Code use on that machine. Signing in from Studio, the daemon or a terminal `claude auth login` signs in all of them; **signing out from adf also signs Claude Code out**
+- Claude Code MUST be signed in with a Claude plan. A Claude Code session signed in with an Anthropic Console account is reported as signed out
+- `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_BASE_URL` are removed from Claude Code's environment, so usage is never billed to an API key by accident
+- adf stays the agent: tools, permissions and history are adf's. Claude Code's built-in tools are disabled; it relays the model's tool calls back to adf through an in-process MCP bridge
+- Differences from the **Anthropic** (API key) provider: temperature, top-p and Custom Parameters are ignored; images in tool results are passed, audio and video are replaced by a one-line note
+- Claude Code adds model input of its own that adf cannot turn off: the system prompt prefix "You are a Claude agent, built on Anthropic's Claude Agent SDK.", and reminders with the environment (working directory, platform, shell), the model name and knowledge cutoff, **the signed-in Claude account's email address**, and the date. adf records each of these in the loop verbatim as an **Added by Provider** context entry. Agents that talk to third parties SHOULD NOT use this provider if the owner's email must stay private
+- adf turns off the rest: Claude Code's token-countdown reminder, CLAUDE.md and auto-memory loading, skills, plugins, hooks and user settings from `~/.claude`
+- Dynamic instructions are delivered when they change and stay in the conversation (other providers resend them on every request). During a tool loop Claude Code wraps them as `PostToolBatch hook additional context: …` in a system reminder
+- When a new Claude Code session has to resume in the middle of a tool loop, adf sends the prompt `Continue.`; it is recorded in the loop
+- The fallback sign-in URL lets a remote daemon sign in from any browser (`POST /auth/claude/start`, then `POST /auth/claude/code` with the code shown)
+
+Available models (reported by Claude Code for the signed-in plan; fallback catalog): `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-fable-5-1`, `claude-haiku-4-5`
+
 #### Where subscription sessions are stored
+
+adf does not store the Claude session. It lives in Claude Code's own credential store, shared by every surface on the machine. The rest of this section covers ChatGPT and Grok.
 
 Sessions are **per-surface**: Studio and the daemon each own a token file and never write to the other's.
 
@@ -201,6 +227,7 @@ The app translates this to each provider's native format:
 | **OpenAI** | `reasoning: { effort, summary }` | `summary` defaults to `auto`. |
 | **ChatGPT Subscription** | `reasoning: { effort, summary }` | Same as OpenAI (Responses API backend). |
 | **Grok Subscription** | `reasoning_effort` | Effort is clamped to xAI's none/low/medium/high scale (`minimal`→`low`, `xhigh`→`high`). Only some Grok models accept an effort level (e.g. `grok-4.3`: none/low/medium/high; `grok-4.5`: low/medium/high) — others reject it; turn Reasoning off for those. Models that return `reasoning_content` traces have them displayed; the Grok 4 family keeps its chain-of-thought server-side. |
+| **Claude Subscription** | Agent SDK `thinking` / `effort` | Max tokens → fixed thinking budget; otherwise adaptive thinking at the chosen effort (`minimal`→`low`). Exclude hides the trace. Off disables thinking. Summarized traces are displayed. |
 | **OpenRouter** | `reasoning: { effort \| max_tokens, exclude }` | Returns full `reasoning_details`; **Preserve** round-trips them (including encrypted blocks) across tool calls. |
 | **OpenAI-compatible** | *(not auto-mapped)* | Reasoning support varies by server — set it via Custom Parameters. |
 

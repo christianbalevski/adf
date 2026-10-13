@@ -110,6 +110,7 @@ export function buildLlmCallMetadata(
 const SUBSCRIPTION_PROVIDER_TYPES: ReadonlySet<ProviderType> = new Set<ProviderType>([
   'chatgpt-subscription',
   'grok-subscription',
+  'claude-subscription',
 ])
 
 /** Flat-fee providers: tokens are recorded, but no per-token dollar figure exists. */

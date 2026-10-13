@@ -104,8 +104,8 @@ export interface EffectiveRuntimeSnapshot {
 }
 
 /** Types whose builder ignores baseUrl — reporting one would name an endpoint that is not used. */
-const FIXED_ENDPOINT_TYPES = new Set(['anthropic', 'openai', 'chatgpt-subscription', 'grok-subscription'])
-const SUBSCRIPTION_TYPES = new Set(['chatgpt-subscription', 'grok-subscription'])
+const FIXED_ENDPOINT_TYPES = new Set(['anthropic', 'openai', 'chatgpt-subscription', 'grok-subscription', 'claude-subscription'])
+const SUBSCRIPTION_TYPES = new Set(['chatgpt-subscription', 'grok-subscription', 'claude-subscription'])
 
 /** Drop userinfo, query string and fragment — the places credentials hide in URLs. */
 export function redactUrl(url: string | undefined): string | undefined {

@@ -132,7 +132,7 @@ Each provider entry has this shape:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | Yes | Provider ID referenced by agent config, such as `openai` or `custom:local` |
-| `type` | Yes | `anthropic`, `openai`, `openrouter`, `openai-compatible`, `chatgpt-subscription`, or `grok-subscription` |
+| `type` | Yes | `anthropic`, `openai`, `openrouter`, `openai-compatible`, `claude-subscription`, `chatgpt-subscription`, or `grok-subscription` |
 | `name` | Yes | Display name used in logs and usage tracking |
 | `baseUrl` | Type-dependent | Required for `openai-compatible`; empty string for standard providers |
 | `apiKey` | Type-dependent | API credential for API-key providers |
@@ -144,11 +144,14 @@ Each provider entry has this shape:
 
 `defaultProviderId` names the provider new agents use by default.
 
-Subscription providers (`chatgpt-subscription`, `grok-subscription`) sign in
-instead of taking an API key: `adf auth login chatgpt|grok`, `/login` in the
-terminal app, or the `/auth/chatgpt/*` and `/auth/grok/*` endpoints (see
-[subscription sign-in](api-guide.md#channels-mcp-servers-and-providers)). The
-daemon keeps its own session, separate from Studio's.
+Subscription providers (`claude-subscription`, `chatgpt-subscription`,
+`grok-subscription`) sign in instead of taking an API key: `adf auth login
+claude|chatgpt|grok`, `/login` in the terminal app, or the `/auth/claude/*`,
+`/auth/chatgpt/*` and `/auth/grok/*` endpoints (see
+[subscription sign-in](api-guide.md#channels-mcp-servers-and-providers)). For
+ChatGPT and Grok the daemon keeps its own session, separate from Studio's.
+Claude's session is the local Claude Code install's own, shared with Studio and
+with Claude Code itself.
 
 ## MCP Settings
 

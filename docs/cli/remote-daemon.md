@@ -103,7 +103,9 @@ ssh -N -L 7386:127.0.0.1:7385 -L 1455:127.0.0.1:1455 user@server &
 adf auth login chatgpt --loopback
 ```
 
-Grok's device code works anywhere.
+Grok's device code works anywhere. Claude prints a sign-in URL: open it in
+any browser and paste the code the page shows. Claude Code must be installed
+and signed in on the server, not your laptop.
 
 ## Things that stay on the server
 

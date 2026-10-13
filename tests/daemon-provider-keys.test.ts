@@ -15,6 +15,17 @@ vi.mock('electron', () => {
   }
 })
 
+// /runtime/auth asks Claude Code for its sign-in; never spawn the real binary here.
+vi.mock('../src/main/providers/claude-subscription/auth-manager', () => ({
+  getClaudeAuthManager: () => ({
+    getAuthStatus: async () => ({ authenticated: true, installed: true, version: '2.1.250', email: 'user@example.test', plan: 'max' }),
+    startAuthFlowDetached: async () => ({ url: 'https://claude.ai/oauth/authorize?code=true', completion: new Promise<void>(() => {}) }),
+    submitCode: () => { throw new Error('No Claude sign-in is in progress.') },
+    cancelAuthFlow: () => {},
+    logout: async () => {},
+  }),
+}))
+
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { FileSettingsStore } from '../src/main/daemon/file-settings-store'
 import { MemoryProviderKeyVault, SecretBackendProviderKeyVault } from '../src/main/daemon/provider-key-vault'

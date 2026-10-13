@@ -4,7 +4,9 @@ import {
   PROVIDER_CATALOG_GROUPS,
   catalogEntryForProvider,
   findCatalogEntry,
+  isSubscriptionType,
   nextProviderName,
+  providerTypeHint,
 } from '../../../src/shared/constants/provider-catalog'
 import { PROVIDER_TYPES } from '../../../src/shared/constants/adf-defaults'
 
@@ -39,6 +41,19 @@ describe('provider catalog', () => {
     expect(catalogEntryForProvider({ type: 'openai-compatible', preset: 'groq' })?.label).toBe('Groq')
     expect(catalogEntryForProvider({ type: 'openai-compatible' })?.label).toBe('OpenAI-compatible')
     expect(catalogEntryForProvider({ type: 'anthropic', preset: 'does-not-exist' })?.label).toBe('Anthropic')
+  })
+
+  it('treats the sign-in providers, and only those, as subscriptions', () => {
+    const subs = PROVIDER_TYPES.map((t) => t.type).filter(isSubscriptionType)
+    expect(subs).toEqual(['chatgpt-subscription', 'grok-subscription', 'claude-subscription'])
+    for (const t of subs) expect(findCatalogEntry(t)?.group).toBe('subscription')
+  })
+
+  it('lists Claude as a subscription via Claude Code', () => {
+    const claude = findCatalogEntry('claude-subscription')
+    expect(claude).toMatchObject({ label: 'Claude', type: 'claude-subscription', iconKey: 'anthropic' })
+    expect(claude?.keyPlaceholder).toBeUndefined()
+    expect(providerTypeHint('claude-subscription')).toMatch(/Claude Code/)
   })
 
   it('numbers duplicate names case-insensitively', () => {

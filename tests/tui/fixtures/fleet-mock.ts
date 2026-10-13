@@ -44,7 +44,7 @@ export function createFleetFetch(mock: MockDaemon, options: FleetMockOptions = {
         daemon: { uptime: 3 * 3600 + 12 * 60, pid: 4242 },
         settings: { configured: true, filePath: null, trackedDirectories: options.trackedDirectories ?? [], maxDirectoryScanDepth: null, autoCompactThreshold: null, promptOverrides: { globalSystemPrompt: false, compactionPrompt: false, toolPrompts: 0 }, packageCounts: { sandboxPackages: 0, mcpServers: 0, adapters: 0, providers: 1 } },
         providers: { providers: [{ id: 'mock', type: 'openai', name: 'Mock', baseUrl: '', hasApiKey: true, requestDelayMs: 0, credentialStorage: 'app', params: [] }], agentUsage: [] },
-        auth: { chatgpt: { authenticated: false }, grok: { authenticated: false }, providers: [] },
+        auth: { chatgpt: { authenticated: false }, grok: { authenticated: false }, claude: { authenticated: false, installed: true, version: '2.1.250' }, providers: [] },
         mcp: { servers: [] },
         adapters: { adapters: [] },
         network: {

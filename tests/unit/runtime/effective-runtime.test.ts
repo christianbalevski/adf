@@ -97,6 +97,17 @@ describe('buildEffectiveRuntime', () => {
     expect(snap.provider.api_key_source).toBe('app')
   })
 
+  it('reports a Claude subscription as subscription auth with no base URL', () => {
+    const s = settings({ providers: [{ id: 'claude', type: 'claude-subscription', name: 'Claude', baseUrl: '', apiKey: '' }] })
+    const cfg = config({ model: { provider: 'claude', model_id: 'claude-sonnet-5-5' } } as Partial<AgentConfig>)
+    const snap = buildEffectiveRuntime({
+      host: 'daemon', config: cfg, provider: createProvider(cfg, s),
+      basePrompt: '', toolPrompts: {}, sources: { settings: s },
+    })
+    expect(snap.provider).toMatchObject({ type: 'claude-subscription', api_key_source: 'subscription', model: 'claude-sonnet-5-5' })
+    expect(snap.provider.base_url).toBeUndefined()
+  })
+
   it("prefers the agent's own provider copy and reports whose key it uses", () => {
     const own = { ...APP_PROVIDER, baseUrl: 'https://own.example/v1', apiKey: 'own-key' }
     const s = settings(baseSettings)

@@ -44,7 +44,7 @@ examples: [Base URL and authentication](api-guide.md#base-url-and-authentication
 | Owner identity | `/identity`, `/identity/{create,restore,unlock,lock,confirm-backup}` | [Owner identity](api-guide.md#owner-identity) |
 | Credentials | `/agents/:id/identity[...]`, `/agents/:id/{adapters,mcp}/credentials`, `/agents/:id/providers/:providerId/credential[s]` | [Credentials](api-guide.md#credentials) |
 | Channels and MCP servers | `/agents/:id/adapters[...]`, `/agents/:id/mcp/servers[...]`, `/admin/{mcp,adapters,sandbox}/packages` | [Channels, MCP servers and providers](api-guide.md#channels-mcp-servers-and-providers) |
-| Providers and sign-in | `/runtime/providers`, `/runtime/models`, `/agents/:id/providers`, `/auth/chatgpt/*`, `/auth/grok/*` | [Channels, MCP servers and providers](api-guide.md#channels-mcp-servers-and-providers) |
+| Providers and sign-in | `/runtime/providers`, `/runtime/models`, `/agents/:id/providers`, `/auth/claude/*`, `/auth/chatgpt/*`, `/auth/grok/*` | [Channels, MCP servers and providers](api-guide.md#channels-mcp-servers-and-providers) |
 | Templates and new agents | `/templates[...]`, `POST /agents/create` | [Templates](api-guide.md#templates-and-creating-agents) |
 | Agent resources | `/agents/:id/{config,tools,document,mind,files,inbox,outbox,timers,meta,logs,tables,usage}` (skills are files) | [Skills](api-guide.md#skills), [Concurrency](api-guide.md#concurrency) |
 | Context and compaction | `GET /agents/:id/context`, `POST /agents/:id/compact` | [Context and compaction](api-guide.md#context-and-compaction) |

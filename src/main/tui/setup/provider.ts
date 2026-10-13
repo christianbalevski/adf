@@ -2,7 +2,7 @@
 // Studio's provider catalog (shared/constants/provider-catalog.ts); the key
 // goes to POST /runtime/providers, which keeps it in the daemon secret store
 // (OS keychain or the owner's passphrase file), never in the settings file,
-// and never sends it back. Subscriptions (ChatGPT, Grok) sign in via /login.
+// and never sends it back. Subscriptions (ChatGPT, Grok, Claude) sign in via /login.
 
 import * as catalogNs from '../../../shared/constants/provider-catalog'
 import type { ProviderCatalogEntry } from '../../../shared/constants/provider-catalog'
@@ -16,10 +16,17 @@ export const PROVIDER_OVERLAY = 'provider.add'
 /** API-key types the daemon route accepts. */
 const API_TYPES = new Set(['anthropic', 'openai', 'openrouter', 'openai-compatible'])
 
+/** Subscription provider type → the /login it opens. */
+const SIGN_IN: Record<string, 'chatgpt' | 'grok' | 'claude' | undefined> = {
+  'chatgpt-subscription': 'chatgpt',
+  'grok-subscription': 'grok',
+  'claude-subscription': 'claude',
+}
+
 export interface ProviderChoiceRow {
   entry: ProviderCatalogEntry
   /** Subscriptions open the sign-in dialog instead of the form. */
-  signIn?: 'chatgpt' | 'grok'
+  signIn?: 'chatgpt' | 'grok' | 'claude'
 }
 
 /** Subscriptions first (they sign in), then APIs, local servers, other. */
@@ -30,7 +37,7 @@ export function providerRows(): ProviderChoiceRow[] {
     .sort((a, b) => (order[a.group] ?? 9) - (order[b.group] ?? 9))
     .map(entry => ({
       entry,
-      ...(entry.type === 'chatgpt-subscription' ? { signIn: 'chatgpt' as const } : entry.type === 'grok-subscription' ? { signIn: 'grok' as const } : {}),
+      ...(SIGN_IN[entry.type] ? { signIn: SIGN_IN[entry.type] } : {}),
     }))
 }
 

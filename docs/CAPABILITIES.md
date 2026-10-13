@@ -174,7 +174,7 @@ An agent can write small scripts (lambdas) that the runtime executes in a sandbo
 
 - **Any major provider** — Anthropic, OpenAI, OpenRouter, and 25+ OpenAI-compatible services (Gemini, xAI, Mistral, DeepSeek, Groq, Cerebras, Together, Fireworks, Perplexity, Azure, and more).
 - **Local models** — LM Studio, Ollama, vLLM, llama.cpp, or any custom URL. Every tool-driven capability works on any model with native tool calling, the one model requirement ([details](guides/settings.md#provider-types)).
-- **Subscriptions instead of API keys** — sign in with a ChatGPT Plus/Pro account or an xAI account and use the flat-rate allowance. The agent can see how much of the allowance is left.
+- **Subscriptions instead of API keys** — sign in with a ChatGPT Plus/Pro account or an xAI account and use the flat-rate allowance; the agent can see how much of the ChatGPT allowance is left. A Claude Pro/Max plan works through the user's installed Claude Code, which handles the sign-in; ADF never sees Claude credentials.
 - **Multiple accounts per service** — with per-agent overrides so one agent can use a different key, model, or parameters.
 - **Reasoning controls** — one setting for thinking effort and budget, translated to each provider's mechanism.
 - **Custom request parameters** — inject any provider-specific parameter per provider or per agent.
@@ -208,7 +208,7 @@ An agent can write small scripts (lambdas) that the runtime executes in a sandbo
 - **Headless daemon** — the same runtime under plain Node.js for servers, with an HTTP API and Server-Sent Events stream.
 - **Command-line client** — list, start, stop, chat, approve, answer, inspect files and messages, follow events, manage auth; with no command it opens the terminal app for the whole fleet and every agent's loops.
 - **Full HTTP API** — agents, chat, files, timers, identity, tasks, compute, network, settings, with an OpenAPI document.
-- **Subscription sign-in over SSH** — device-code and relay flows so a remote daemon can use a ChatGPT or xAI subscription without exposing credentials.
+- **Subscription sign-in over SSH** — device-code and relay flows so a remote daemon can use a ChatGPT or xAI subscription without exposing credentials; Claude sign-in gives a URL to open in any browser and takes the code it shows.
 - **Review gate** — the daemon only autostarts agents you have reviewed.
 - **Cross-platform packaging** — signed and notarized macOS builds, signed Windows installer, Linux deb and AppImage.
 
@@ -347,7 +347,7 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 - **Unified provider interface** — one `createMessage` contract; connection pooling by key and base URL for 100+ concurrent agents.
 - **Reasoning translation** — one effort/max-tokens/exclude/preserve setting mapped to Anthropic thinking, OpenAI reasoning, xAI effort clamps, and OpenRouter reasoning details round-tripped across tool calls.
 - **Error enrichment** — retry errors unwrapped to the underlying status, body, and `Retry-After` for the executor's classifier; structural faults enter `error`, transient ones return to `idle`.
-- **Subscription sessions** — Studio and daemon keep separate encrypted token files with concurrent-writer safety and refusal to downgrade encryption.
+- **Subscription sessions** — Studio and daemon keep separate encrypted token files with concurrent-writer safety and refusal to downgrade encryption. The Claude session stays in Claude Code's own store; ADF keeps no Claude tokens.
 - **Cost precedence** — provider-reported cost wins, then a local pricing table with cache-aware input math, never for subscriptions; `cost_source` is recorded.
 - **Ledgers** — per-call tokens on each loop row; app-wide `token-usage.json` with delta-merge so Studio and daemon never clobber each other; in-memory rolling burn window per agent.
 

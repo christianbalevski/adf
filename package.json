@@ -56,6 +56,7 @@
     "@ai-sdk/anthropic": "^3.0.37",
     "@ai-sdk/openai": "^3.0.25",
     "@ai-sdk/openai-compatible": "^2.0.27",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.296",
     "@anthropic-ai/tokenizer": "^0.0.4",
     "@bjorn3/browser_wasi_shim": "^0.4.2",
     "@codemirror/autocomplete": "^6.20.0",
@@ -172,5 +173,11 @@
     "vite": "^7.3.1",
     "vite-tsconfig-paths": "^6.0.5",
     "vitest": "^4.0.18"
+  },
+  "overrides": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "zod": "$zod",
+      "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk"
+    }
   }
 }

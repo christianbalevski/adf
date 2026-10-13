@@ -17,6 +17,6 @@ The ADF CLI docs moved to [docs/cli](../cli/index.md):
 
 ## Auth
 
-`adf auth`, `adf auth login chatgpt|grok`, `adf auth logout`: see
-[Models and providers](../cli/models-and-providers.md#chatgpt-and-grok-subscriptions)
+`adf auth`, `adf auth login claude|chatgpt|grok`, `adf auth logout`: see
+[Models and providers](../cli/models-and-providers.md#subscriptions)
 and, for a remote daemon, [Sign in to ChatGPT](../cli/remote-daemon.md#sign-in-to-chatgpt).

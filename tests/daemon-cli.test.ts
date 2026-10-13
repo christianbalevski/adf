@@ -451,6 +451,126 @@ describe('daemon CLI', () => {
     expect(io.errorOutput()).toContain('Sign-in was denied')
   })
 
+  describe('Claude sign-in (Claude Code on the daemon host)', () => {
+    const CLAUDE_URL = 'https://claude.ai/oauth/authorize?code=true&state=s'
+    const signedOut = { authenticated: false, installed: true, version: '2.1.250' }
+
+    it('shows the fallback URL, relays a pasted code, and polls until signed in', async () => {
+      const calls: string[] = []
+      let polls = 0
+      let typeLine: ((line: string) => void) | null = null
+      let linesStopped = false
+      const opened: string[] = []
+      const io = {
+        ...fakeIo(async (url, init) => {
+          calls.push(`${init?.method ?? 'GET'} ${url.replace('http://127.0.0.1:7385', '')}${init?.body ? ` ${String(init.body)}` : ''}`)
+          if (url.endsWith('/auth/claude/start')) return jsonResponse({ started: true, url: CLAUDE_URL })
+          if (url.endsWith('/auth/claude/code')) return jsonResponse({ success: true })
+          if (calls.length === 1) return jsonResponse(signedOut)
+          polls += 1
+          if (polls === 1) { typeLine?.('  abc#def  '); return jsonResponse({ ...signedOut, flowPending: true, flowUrl: CLAUDE_URL }) }
+          return jsonResponse(polls < 3
+            ? { ...signedOut, flowPending: true, flowUrl: CLAUDE_URL }
+            : { authenticated: true, installed: true, version: '2.1.250', email: 'user@example.com', plan: 'max' })
+        }),
+        sleep: async () => {},
+        openBrowser: (url: string) => { opened.push(url) },
+        readLines: (onLine: (line: string) => void) => { typeLine = onLine; return () => { linesStopped = true } },
+        onInterrupt: () => () => {},
+      }
+
+      const code = await runCli(['auth', 'login', 'claude'], io)
+
+      expect(code).toBe(0)
+      expect(io.output()).toContain('Opening Claude sign-in in your browser')
+      expect(io.output()).toContain(CLAUDE_URL)
+      expect(io.output()).toContain('If the page shows a code, paste it here (or wait):')
+      expect(io.output()).toContain('Signed in to Claude as user@example.com (max plan).')
+      expect(calls.slice(0, 2)).toEqual(['GET /auth/claude/status', 'POST /auth/claude/start'])
+      expect(calls).toContain('POST /auth/claude/code {"code":"abc#def"}')
+      // Claude Code opens the browser on the daemon host, not the CLI.
+      expect(opened).toEqual([])
+      expect(linesStopped).toBe(true)
+    })
+
+    it('prints the install URL and fails when Claude Code is not installed', async () => {
+      const calls: string[] = []
+      const io = {
+        ...fakeIo(async (url, init) => {
+          calls.push(`${init?.method ?? 'GET'} ${url}`)
+          return jsonResponse({ authenticated: false, installed: false, installUrl: 'https://code.claude.com/docs/en/setup' })
+        }),
+        sleep: async () => {},
+        readLines: () => () => {},
+        onInterrupt: () => () => {},
+      }
+
+      const code = await runCli(['auth', 'login', 'claude-code'], io)
+
+      expect(code).toBe(1)
+      expect(io.errorOutput()).toContain('not installed')
+      expect(io.errorOutput()).toContain('https://code.claude.com/docs/en/setup')
+      expect(calls).toEqual(['GET http://127.0.0.1:7385/auth/claude/status'])
+    })
+
+    it('Ctrl-C cancels the daemon-side sign-in', async () => {
+      const calls: string[] = []
+      let interrupt: (() => void) | null = null
+      const io = {
+        ...fakeIo(async (url, init) => {
+          calls.push(`${init?.method ?? 'GET'} ${url.replace('http://127.0.0.1:7385', '')}`)
+          if (url.endsWith('/auth/claude/start')) return jsonResponse({ started: true, url: CLAUDE_URL })
+          if (url.endsWith('/auth/claude/cancel')) return jsonResponse({ success: true })
+          if (calls.length > 2) interrupt?.()
+          return jsonResponse({ ...signedOut, flowPending: calls.length > 1 })
+        }),
+        sleep: async () => {},
+        readLines: () => () => {},
+        onInterrupt: (fn: () => void) => { interrupt = fn; return () => { interrupt = null } },
+      }
+
+      const code = await runCli(['auth', 'login', 'claude'], io)
+
+      expect(code).toBe(130)
+      expect(io.errorOutput()).toContain('Claude sign-in cancelled')
+      expect(calls.at(-1)).toBe('POST /auth/claude/cancel')
+      expect(interrupt).toBeNull()
+    })
+
+    it('shows Claude in auth status and signs out', async () => {
+      const calls: string[] = []
+      const io = fakeIo(async (url, init) => {
+        calls.push(`${init?.method ?? 'GET'} ${url.replace('http://127.0.0.1:7385', '')}`)
+        if (url.endsWith('/runtime/auth')) {
+          return jsonResponse({
+            chatgpt: { authenticated: false },
+            grok: { authenticated: false },
+            claude: { authenticated: true, installed: true, version: '2.1.250', email: 'user@example.com', plan: 'max' },
+            providers: [],
+          })
+        }
+        return jsonResponse({ success: true })
+      })
+
+      expect(await runCli(['auth', 'status'], io)).toBe(0)
+      expect(io.output()).toMatch(/Claude:[\s\S]*user@example\.com[\s\S]*max/)
+      expect(await runCli(['auth', 'logout', 'claude'], io)).toBe(0)
+      expect(io.output()).toContain('Signed out of Claude.')
+      expect(calls).toContain('POST /auth/claude/logout')
+    })
+
+    it('auth status says when Claude Code is not installed', async () => {
+      const io = fakeIo(async () => jsonResponse({
+        chatgpt: { authenticated: false },
+        grok: { authenticated: false },
+        claude: { authenticated: false, installed: false, installUrl: 'https://code.claude.com/docs/en/setup' },
+        providers: [],
+      }))
+      expect(await runCli(['auth', 'status'], io)).toBe(0)
+      expect(io.output()).toContain('not installed (https://code.claude.com/docs/en/setup)')
+    })
+  })
+
   it('uses relay mode for ChatGPT when the daemon is remote', async () => {
     const bodies: unknown[] = []
     const io = {
@@ -562,7 +682,7 @@ describe('daemon CLI', () => {
     const code = await runCli(['auth', 'login', 'gemini'], io)
 
     expect(code).toBe(1)
-    expect(io.errorOutput()).toContain('chatgpt or grok')
+    expect(io.errorOutput()).toContain('chatgpt, grok or claude')
   })
 
   describe('owner identity + new agent', () => {

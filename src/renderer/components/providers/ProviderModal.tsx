@@ -21,8 +21,25 @@ export interface SubscriptionAuthState {
   /** Grok device-code flow in progress */
   device?: { userCode: string; verificationUri: string } | null
   flowError?: string
+  /** False when the sign-in depends on a local tool (Claude Code) that isn't installed. */
+  installed?: boolean
+  installUrl?: string
+  /** Installed version of the local tool, and the oldest this runtime supports. */
+  version?: string
+  minVersion?: string
+  updateRequired?: boolean
+  plan?: string
+  /** Browser sign-in in progress (Claude Code). */
+  flowPending?: boolean
+  flowUrl?: string
+  signOutHint?: string
   signIn: () => void
   signOut: () => void
+  /** Paste-back for a sign-in page that shows a code instead of finishing on its own. */
+  submitCode?: (code: string) => Promise<void> | void
+  cancel?: () => void
+  /** Look for the local tool again (after installing it). */
+  recheck?: () => void
 }
 
 export interface ModelListState {
@@ -47,6 +64,7 @@ interface ProviderModalProps {
   onFetchModels: () => void
   chatgpt: SubscriptionAuthState
   grok: SubscriptionAuthState
+  claude: SubscriptionAuthState
   /** Agents whose .adf carries a copy of this provider (keyed or not). */
   onCarrierCountChange?: (count: number) => void
   /** One line above the picker and the form: why the modal opened (the at-need sheet). */
@@ -153,11 +171,14 @@ function Field({ label, hint, children }: { label: string; hint?: React.ReactNod
 
 function ProviderForm({
   provider, entry, isDefault, status, onUpdate, onRemove, onMakeDefault, onTest, onClose,
-  models, onFetchModels, chatgpt, grok, onCarrierCountChange, onDone, requireDefaultModel,
+  models, onFetchModels, chatgpt, grok, claude, onCarrierCountChange, onDone, requireDefaultModel,
 }: ProviderModalProps & { provider: ProviderConfig; entry?: ProviderCatalogEntry }) {
   const doneBlocked = !!requireDefaultModel && !(provider.defaultModel ?? '').trim()
   const subscription = isSubscriptionType(provider.type)
-  const auth = provider.type === 'chatgpt-subscription' ? chatgpt : provider.type === 'grok-subscription' ? grok : null
+  const auth = provider.type === 'chatgpt-subscription' ? chatgpt
+    : provider.type === 'grok-subscription' ? grok
+    : provider.type === 'claude-subscription' ? claude
+    : null
   const [customModel, setCustomModel] = useState(false)
   const modelList = models?.models ?? []
   const listMode = modelList.length > 0 && !customModel
@@ -302,15 +323,74 @@ function ProviderForm({
 }
 
 function SubscriptionAuth({ auth, label }: { auth: SubscriptionAuthState; label: string }) {
-  if (auth.authenticated) {
+  if (!auth.version) return <SubscriptionAccount auth={auth} label={label} />
+  return (
+    <>
+      <LocalToolVersion auth={auth} />
+      <SubscriptionAccount auth={auth} label={label} />
+    </>
+  )
+}
+
+/** Installed Claude Code version, and whether this runtime can use it. */
+function LocalToolVersion({ auth }: { auth: SubscriptionAuthState }) {
+  const outdated = !!auth.updateRequired
+  return (
+    <Field
+      label="Claude Code"
+      hint={outdated
+        ? <span className="text-[var(--adf-ui-danger)]">ADF needs version {auth.minVersion} or newer. Run <code>claude update</code>, then check again.</span>
+        : auth.minVersion ? `ADF needs version ${auth.minVersion} or newer.` : undefined}
+    >
+      <div className="flex items-center justify-between gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-2.5 py-1.5">
+        <span className="font-mono text-[12px] text-[var(--adf-ui-text)]">{auth.version}</span>
+        <span className="flex items-center gap-1.5">
+          <span className={`text-[11px] ${outdated ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-success)]'}`}>
+            {outdated ? 'Update required' : 'Supported'}
+          </span>
+          {outdated && auth.recheck && <Button variant="ghost" size="compact" onClick={auth.recheck}>Check again</Button>}
+        </span>
+      </div>
+    </Field>
+  )
+}
+
+function SubscriptionAccount({ auth, label }: { auth: SubscriptionAuthState; label: string }) {
+  if (auth.updateRequired) {
     return (
       <Field label="Account">
+        <p className="text-[12px] text-[var(--adf-ui-text-subtle)]">Update Claude Code to sign in with {label}.</p>
+      </Field>
+    )
+  }
+  if (auth.authenticated) {
+    const plan = auth.plan ? ` · ${auth.plan.charAt(0).toUpperCase()}${auth.plan.slice(1)} plan` : ''
+    return (
+      <Field label="Account" hint={auth.flowError ? <span className="text-[var(--adf-ui-danger)]">{auth.flowError}</span> : auth.signOutHint}>
         <div className="flex items-center justify-between rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-success)]/40 bg-[var(--adf-ui-success-subtle)] px-2.5 py-1.5">
-          <span className="text-[12px] text-[var(--adf-ui-success)]">Signed in{auth.email ? ` as ${auth.email}` : ''}</span>
+          <span className="text-[12px] text-[var(--adf-ui-success)]">Signed in{auth.email ? ` as ${auth.email}` : ''}{plan}</span>
           <Button variant="ghost" size="compact" className="text-[var(--adf-ui-danger)]" onClick={auth.signOut}>Sign out</Button>
         </div>
       </Field>
     )
+  }
+  if (auth.installed === false) {
+    return (
+      <Field label="Account">
+        <div className="space-y-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-3 py-2.5">
+          <p className="text-[12px] leading-5 text-[var(--adf-ui-text)]">{label} uses your Claude Pro or Max plan through Claude Code, which isn't installed.</p>
+          <div className="flex gap-1.5">
+            {auth.installUrl && (
+              <Button variant="primary" className="flex-1" onClick={() => window.open(auth.installUrl, '_blank', 'noopener,noreferrer')}>Install Claude Code</Button>
+            )}
+            {auth.recheck && <Button variant="secondary" onClick={auth.recheck}>Check again</Button>}
+          </div>
+        </div>
+      </Field>
+    )
+  }
+  if (auth.flowPending) {
+    return <PendingBrowserSignIn auth={auth} />
   }
   if (auth.device) {
     return (
@@ -330,6 +410,43 @@ function SubscriptionAuth({ auth, label }: { auth: SubscriptionAuthState; label:
       <Button variant="primary" className="w-full" onClick={auth.signIn} disabled={auth.loading} loading={auth.loading}>
         {auth.loading ? 'Signing in…' : `Sign in with ${label}`}
       </Button>
+    </Field>
+  )
+}
+
+function PendingBrowserSignIn({ auth }: { auth: SubscriptionAuthState }) {
+  const [code, setCode] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const submit = async () => {
+    if (!auth.submitCode || !code.trim()) return
+    setSubmitting(true)
+    try {
+      await auth.submitCode(code)
+      setCode('')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+  return (
+    <Field label="Account" hint={auth.flowError ? <span className="text-[var(--adf-ui-danger)]">{auth.flowError}</span> : undefined}>
+      <div className="space-y-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-3 py-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[12px] text-[var(--adf-ui-text)]">Finish signing in in your browser…</p>
+          {auth.cancel && <Button variant="ghost" size="compact" onClick={auth.cancel}>Cancel</Button>}
+        </div>
+        {auth.flowUrl && (
+          <p className="text-[11px]"><ExternalLink href={auth.flowUrl}>Open sign-in page ↗</ExternalLink></p>
+        )}
+        {auth.submitCode && (
+          <form className="space-y-1" onSubmit={(e) => { e.preventDefault(); void submit() }}>
+            <p className="text-[10.5px] text-[var(--adf-ui-text-subtle)]">If the page shows a code, paste it here.</p>
+            <div className="flex gap-1.5">
+              <TextInput aria-label="Sign-in code" type="text" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Code" className="flex-1 font-mono text-[12px]" />
+              <Button type="submit" variant="secondary" size="compact" disabled={!code.trim() || submitting} loading={submitting}>Submit</Button>
+            </div>
+          </form>
+        )}
+      </div>
     </Field>
   )
 }
