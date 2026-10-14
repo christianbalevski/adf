@@ -50,7 +50,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W0-D | Daemon packaging, process control, `/version`, route hook | 0 | none | MERGED |
 | W0-E | Backend selection at boot, Settings → Backend | 0 | W0-A (merge order) | MERGED c0305508 |
 | W0-F | Parity harness, embedded side | 0 | none | MERGED |
-| W1-A | RuntimeService parity hooks | 1 | W0-C, W0-D | TODO |
+| W1-A | RuntimeService parity hooks | 1 | W0-C, W0-D | MERGED |
 | W1-B | AgentRuntimeBuilder and mesh parity | 1 | W0-D | MERGED |
 | W1-C | Daemon identity: runtime adoption, unlock cascade, app OAuth store, owner import | 1 | W0-D | MERGED |
 | W1-D | Gap routes: approvals, fleet, dashboard, registries, MCP probes | 1 | W0-D | MERGED |
@@ -302,7 +302,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-A | `TEMPLATE_DELETE`: templates-trash vs OS trash semantics differ | W3-A |
 | W0-A | `fleetGroups`, `fleetStewards`, `fleetMapState` missing from `AppSettings` (`ipc.types.ts`) | W2-C |
 | W0-D | Pre-existing: the daemon's podman probe writes a stray `NUL` file in its working directory | W1-G (fixed) |
-| W1-B | **BLOCKING for W1-A**: nothing calls `builder.applyDerivedKey`; `RuntimeService` never passes `build({derivedKey})` (`runtime-service.ts:2449`), `unlockAgentIdentityPassword` (`:1812`) rebuilds only the provider, `createProviderForModel` fixes `derivedKey:null` (`:2457`). Password-protected agents unlocked in the daemon keep MCP, adapters and AdfCallHandler locked | W1-A |
+| W1-B | (done in W1-A) **BLOCKING for W1-A**: nothing calls `builder.applyDerivedKey`; `RuntimeService` never passes `build({derivedKey})` (`runtime-service.ts:2449`), `unlockAgentIdentityPassword` (`:1812`) rebuilds only the provider, `createProviderForModel` fixes `derivedKey:null` (`:2457`). Password-protected agents unlocked in the daemon keep MCP, adapters and AdfCallHandler locked | W1-A |
 | W1-B | Mesh-parity test runs at MeshManager level, not through the daemon builder; full in-daemon scenario | W5-A |
 | W1-F | `adf_file_created` missing from `AgentExecutionEvent['type']` and `BackgroundAgentEvent['type']` (`ipc.types.ts:9,686`); add with real payload type, drop BAM cast | W2-C |
 | W1-F | Wire serializer MUST treat missing key == `undefined` and MUST NOT throw on BigInt/circular values (`writeSse*`) | W2-B |
@@ -323,6 +323,9 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W1-D | Job cancel only abandons work: OAuth loopback listener lives to its 5 min timeout; an in-flight stdio connect may outlive `disconnectAll` (orphan server process); running jobs unbounded, Python install not deduped | W3-C |
 | W1-D | Peer fetch: DNS rebinding between guard lookup and fetch (pre-existing); daemon port blocked only on loopback | W4-B |
 | W1-D | SSRF guard: map NAT64 `64:ff9b::/96` and 6to4 `2002::/16` back to IPv4 before checks (pre-existing gap, all callers); extend always-blocked metadata list (EKS `169.254.170.23`/`fd00:ec2::23`, Alibaba `100.100.100.200`, Azure `168.63.129.16`, OCI `192.0.0.192`); DNS-lookup failure currently passes through | W4-B |
+| W1-A | Key drop (remove/wipe) restarts every running adapter, not only those using the key | W3-B |
+| W1-A | Daemon-mode client must prompt for the file password before start, using the preflight `credentials_locked` code (design §6.1 row 27) | W3-A |
+| Lead | Regenerate `docs/daemon/api-reference.md`/`.html` once after Wave 1 merges (`npm run docs:api`) | Lead |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |

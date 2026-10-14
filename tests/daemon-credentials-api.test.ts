@@ -10,6 +10,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AdfWorkspace } from '../src/main/adf/adf-workspace'
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
+import { resolveAgentWorkspace, resolveAgentWorkspaceByPath } from '../src/main/daemon/routes/agent-resolver'
+import { loadedAgentIndex } from '../src/main/daemon/routes/loaded-agents'
 import { MockLLMProvider } from '../src/main/runtime/headless'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { agentProviderKeySource } from '../src/main/providers/provider-factory'
@@ -137,5 +139,33 @@ describe('key-sources on a file nobody has open', () => {
     expect(after.size).toBe(before.size)
     expect(existsSync(`${closedPath}-wal`)).toBe(false)
     expect(existsSync(`${closedPath}-shm`)).toBe(false)
+  })
+})
+
+describe('a password-protected agent unlocked in the daemon', () => {
+  it('reads as unlocked through the resolver and key-sources, not as locked', async () => {
+    const { outside, runtime, server } = setup()
+    let key: Buffer | null = null
+    const filePath = agentFile(outside, 'agent-1', (ws) => {
+      ws.setIdentity('provider:custom:own:apiKey', SECRET)
+      key = ws.setPassword('pw')
+    })
+    const ref = await runtime.loadAgent(filePath)
+    const payload = { filePath, providers: [{ id: 'custom:own', type: 'openai', baseUrl: '' }] }
+
+    const before = await server.inject({ method: 'POST', url: '/credentials/providers/key-sources', payload })
+    expect(before.json()).toEqual({ sources: { 'custom:own': 'locked' } })
+    expect(resolveAgentWorkspace(runtime, ref.id)).toMatchObject({ ok: true, agent: { derivedKey: null } })
+
+    const unlock = await server.inject({ method: 'POST', url: `/agents/${ref.id}/identity/password/unlock`, payload: { password: 'pw' } })
+    expect(unlock.statusCode).toBe(200)
+
+    const after = await server.inject({ method: 'POST', url: '/credentials/providers/key-sources', payload })
+    expect(after.json()).toEqual({ sources: { 'custom:own': 'agent' } })
+    expect(after.body).not.toContain(SECRET)
+    const resolved = resolveAgentWorkspace(runtime, ref.id)
+    expect(resolved.ok && resolved.agent.derivedKey?.equals(key!)).toBe(true)
+    expect(resolveAgentWorkspaceByPath(runtime, filePath)?.derivedKey?.equals(key!)).toBe(true)
+    expect(loadedAgentIndex(runtime).get(ref.id)?.derivedKey?.equals(key!)).toBe(true)
   })
 })
