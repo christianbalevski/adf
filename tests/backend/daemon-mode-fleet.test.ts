@@ -251,6 +251,24 @@ describe('emergency stop', () => {
     ])
     await invoke(IPC.FILE_CLOSE)
   })
+
+  it('a partial stop that stopped the open agent shows it stopped (its agent_stopped came while detached)', async () => {
+    const filePath = await openRunning()
+    daemon.routes.set('POST /runtime/emergency-stop', () => {
+      // The daemon unloads the open agent during the stop; the frame reaches a detached agent.
+      handle.bridge.handleFrame({ kind: 'host', type: 'agent_stopped', agentId: OPEN, filePath, payload: {}, timestamp: 1 } as never)
+      return { success: false, error: 'Emergency stop was partial — not wired on this daemon, left running: mesh server.', skipped: ['mesh server'] }
+    })
+    daemon.routes.set(`GET /agents/${OPEN}/status`, () => ({ status: 404, body: { error: `Unknown agent "${OPEN}"`, code: 'not_found' } }))
+    electronStub.pushes.length = 0
+    await invoke(IPC.EMERGENCY_STOP)
+    expect(electronStub.pushes.filter((p) => p.channel === IPC.AGENT_EVENT).map((p) => p.args[0])).toEqual([
+      { type: 'state_changed', payload: { state: 'stopped' }, timestamp: expect.any(Number) },
+    ])
+    // Not listed as running again.
+    expect(handle.bridge.runningAgents().some((a) => a.agentId === OPEN)).toBe(false)
+    await invoke(IPC.FILE_CLOSE)
+  })
 })
 
 describe('compute', () => {

@@ -137,30 +137,35 @@ function fleetStatusView(answer: FleetStatusResult, overlay: ClientOverlay): Fle
 interface EmergencyStopResult { success: boolean; error?: string; skipped?: string[]; failed?: string[] }
 
 /**
- * A partial stop may have left the open agent running (the daemon names it
- * in `failed` as `agent <id>`, or it still has a status): show it again and
- * send its current state, so the window does not keep the detached view.
+ * After a partial stop the open agent was detached, so the window saw none
+ * of its teardown. Show where it ended: still running (the daemon named it in
+ * `failed`, or it has a status) is attached again with its current state;
+ * gone (404) gets the foreground `state_changed: stopped`, as embedded's
+ * AGENT_STOP would show, since the status bar no longer resets the window
+ * after a partial stop. Its bridge entry is not recreated (no file path).
  */
-async function resyncAfterPartialStop(ctx: DaemonModeContext, agentId: string, result: EmergencyStopResult): Promise<void> {
+async function resyncAfterPartialStop(ctx: DaemonModeContext, agentId: string, _result: EmergencyStopResult): Promise<void> {
   const client = await ctx.ready()
   let status: { runtimeState?: string; filePath?: string | null } | null = null
+  let gone = false
   try {
     status = await client.request('GET', `/agents/${encodeURIComponent(agentId)}/status`)
   } catch (err) {
-    if (!(err instanceof DaemonError) || err.status !== 404) ctx.log.warn(`[EmergencyStop] Could not read the open agent's state after a partial stop: ${errorMessage(err)}`)
+    if (err instanceof DaemonError && err.status === 404) gone = true
+    else ctx.log.warn(`[EmergencyStop] Could not read the open agent's state after a partial stop: ${errorMessage(err)}`)
   }
-  const named = result.failed?.includes(`agent ${agentId}`) ?? false
-  if (!named && !status) return
   ctx.bridge.attach(agentId)
-  if (status?.runtimeState) {
-    ctx.log.log(`[EmergencyStop] ${ctx.session.filePath} is still running after the partial stop (${status.runtimeState}); showing it again`)
-    ctx.bridge.handleFrame({
-      kind: 'executor',
-      agentId,
-      filePath: status.filePath ?? ctx.session.filePath,
-      event: { type: 'state_changed', payload: { state: status.runtimeState }, timestamp: Date.now() },
-    } as never)
-  }
+  const state = status?.runtimeState ?? (gone ? 'stopped' : null)
+  if (!state) return
+  ctx.log.log(gone
+    ? `[EmergencyStop] ${ctx.session.filePath} stopped in the partial stop`
+    : `[EmergencyStop] ${ctx.session.filePath} is still running after the partial stop (${state}); showing it again`)
+  ctx.bridge.handleFrame({
+    kind: 'executor',
+    agentId,
+    filePath: null,
+    event: { type: 'state_changed', payload: { state }, timestamp: Date.now() },
+  } as never)
 }
 
 /** Studio's own writes make the next poll fresh (a read in flight may predate them). */
