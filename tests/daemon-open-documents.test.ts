@@ -742,6 +742,32 @@ describe('open documents: holders', () => {
     expect(runtime.getOpenDocument(two.agentId)).toMatchObject({ holders: 1 })
   })
 
+  it('a document a session keeps using survives past the TTL; requests from other sessions do not keep it', async () => {
+    const dir = tempDir()
+    const { filePath, agentId } = seedAgent(dir, 'agent-1')
+    const { runtime, server } = setup({ runtime: { documentHoldTtlMs: 300 } })
+    const opened: unknown[] = []
+    runtime.on('document-opened', e => opened.push(e))
+    await runtime.openDocument(filePath, { holder: S1 })
+    expect(opened).toEqual([{ agentId, filePath }]) // no holder id in events
+    const until = Date.now() + 900
+    while (Date.now() < until) {
+      const res = await server.inject({ method: 'PUT', url: `/agents/${agentId}/document`, payload: { content: String(Date.now()) }, headers: { 'x-adf-client-session': S1 } })
+      expect(res.statusCode).toBe(200)
+      expect(await runtime.sweepDocumentHolders()).toEqual([])
+      await new Promise(r => setTimeout(r, 100))
+    }
+    expect(runtime.getOpenDocument(agentId)).toMatchObject({ holders: 1 })
+    // Another session's requests do not refresh S1's hold.
+    const idleUntil = Date.now() + 400
+    while (Date.now() < idleUntil) {
+      await server.inject({ method: 'GET', url: `/agents/${agentId}/document`, headers: { 'x-adf-client-session': S2 } })
+      await new Promise(r => setTimeout(r, 100))
+    }
+    expect(await runtime.sweepDocumentHolders()).toEqual([S1])
+    expect(runtime.getOpenDocument(agentId)).toBeUndefined()
+  })
+
   it('surfaces a rename the document could not follow', async () => {
     const dir = tempDir()
     const { filePath, agentId } = seedAgent(dir, 'agent-1')

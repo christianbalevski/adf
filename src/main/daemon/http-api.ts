@@ -2589,6 +2589,9 @@ function registerOpenDocumentGuards(server: FastifyInstance, runtime: RuntimeSer
     const id = (request.params as { id?: unknown } | undefined)?.id
     if (typeof id !== 'string') return
     // A document whose file is being moved has no open workspace until it reopens.
+    // A session using its document keeps the hold alive (the holder sweep's idle clock).
+    const session = clientSessionOf(request).holder
+    if (session) runtime.touchDocumentHolder(session, id)
     if (runtime.isFileMoving(id)) {
       const body = request.body as { resume?: () => void } | undefined
       if (typeof body?.resume === 'function') body.resume()

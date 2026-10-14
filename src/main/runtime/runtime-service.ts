@@ -219,8 +219,7 @@ export interface RuntimeOpenDocumentInfo {
 export interface RuntimeDocumentEvent {
   agentId: string
   filePath: string
-  /** opened: the first holder; closed: why (released, deleted, shutdown). */
-  holder?: string
+  /** closed: why (released, deleted, shutdown). Holder ids are never in events. */
   reason?: 'released' | 'deleted' | 'shutdown'
 }
 
@@ -1613,7 +1612,7 @@ export class RuntimeService extends EventEmitter {
     this.ensureHolderSweep()
     if (doc.workspace.isPasswordProtected() && !doc.keyCell.current) this.restoreCachedKey(doc, holder)
     console.log(`[RuntimeService] ${first ? 'Opened' : 'Holding'} document ${canonicalPath} for ${holder}`)
-    if (first) this.emitSafely('document-opened', { agentId: doc.agentId, filePath: doc.filePath, holder } satisfies RuntimeDocumentEvent)
+    if (first) this.emitSafely('document-opened', { agentId: doc.agentId, filePath: doc.filePath } satisfies RuntimeDocumentEvent)
     return { ...this.documentInfo(doc), ...(nameChangedFrom !== null ? { nameChangedFrom } : {}) }
   }
 
@@ -1774,6 +1773,18 @@ export class RuntimeService extends EventEmitter {
       this.holderSweep = null
     }
     return gone
+  }
+
+  /**
+   * A request from `holder` (its X-ADF-Client-Session header) on this
+   * document: the holder is in use, so the sweep's idle clock restarts. A
+   * holder that does not hold the document is not refreshed.
+   */
+  touchDocumentHolder(holder: string, identifier: string): boolean {
+    const doc = this.documentFor(identifier)
+    if (!doc?.holders.has(holder)) return false
+    this.holderSeen.set(holder, Date.now())
+    return true
   }
 
   private ensureHolderSweep(): void {
