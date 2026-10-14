@@ -52,6 +52,9 @@ const SECTIONS = [
 
 const buckets = new Map(SECTIONS.map(([, h]) => [h, []]))
 const other = []
+// `type!:` / `type(scope)!:` (Conventional Commits breaking marker) is listed
+// under its own heading first, instead of under its type.
+const breaking = []
 
 for (const c of commits) {
   // Skip the version-bump commit `npm version` makes (subject is the bare
@@ -59,10 +62,14 @@ for (const c of commits) {
   if (/^\d+\.\d+\.\d+$/.test(c.subject)) continue
   if (/^chore\(release\):/.test(c.subject)) continue
 
-  const m = c.subject.match(/^(\w+)(?:\([^)]+\))?!?:\s*(.+)$/)
+  const m = c.subject.match(/^(\w+)(?:\([^)]+\))?(!)?:\s*(.+)$/)
   const short = c.hash.slice(0, 7)
-  const line = `- ${m ? m[2] : c.subject} (\`${short}\`)`
+  const line = `- ${m ? m[3] : c.subject} (\`${short}\`)`
 
+  if (m?.[2]) {
+    breaking.push(line)
+    continue
+  }
   if (m) {
     const section = SECTIONS.find(([types]) =>
       types.split('|').includes(m[1].toLowerCase())
@@ -76,6 +83,7 @@ for (const c of commits) {
 }
 
 const parts = []
+if (breaking.length) parts.push(`### ⚠️ Breaking changes\n${breaking.join('\n')}`)
 for (const [, heading] of SECTIONS) {
   const items = buckets.get(heading)
   if (items.length) parts.push(`${heading}\n${items.join('\n')}`)
