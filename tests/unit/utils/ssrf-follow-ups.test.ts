@@ -18,7 +18,7 @@ vi.mock('node:dns/promises', async (importOriginal) => {
   }) as typeof real.lookup
   return { ...real, lookup, default: { ...real, lookup } }
 })
-import { checkFetchTarget, isCloudMetadataIp } from '../../../src/main/utils/ssrf-guard'
+import { checkConnectTarget, checkFetchTarget, isCloudMetadataIp } from '../../../src/main/utils/ssrf-guard'
 import { guardedFetch, isFetchFailure } from '../../../src/main/utils/guarded-fetch'
 
 const servers: Server[] = []
@@ -60,8 +60,9 @@ describe('cloud metadata endpoints beyond AWS/GCP 169.254.169.254', () => {
 })
 
 describe('a host name that does not resolve', () => {
-  it('before: passes the guard (the fetch itself then fails or resolves differently)', async () => {
-    expect(await checkFetchTarget('http://no-such-host.invalid/')).toBeNull()
+  it('after: refused with the resolver\'s reason (the connection\'s own lookup could get another answer)', async () => {
+    expect(await checkFetchTarget('http://no-such-host.invalid/')).toMatch(/^Blocked: the address of "no-such-host\.invalid" could not be looked up \(E[A-Z_]+\)/)
+    expect(await checkConnectTarget('wss://no-such-host.invalid/socket')).toMatch(/could not be looked up/)
   })
 })
 

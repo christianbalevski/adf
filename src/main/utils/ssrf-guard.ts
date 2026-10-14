@@ -264,6 +264,10 @@ function connectBlockedMessage(target: string): string {
   )
 }
 
+function unresolvedMessage(target: string, reason: string): string {
+  return `Blocked: the address of "${target}" could not be looked up (${reason}), so the egress guard could not check it. Check the host name and the network.`
+}
+
 interface HostClass {
   anyMetadata: boolean
   anyLinkLocal: boolean
@@ -274,11 +278,12 @@ interface HostClass {
 }
 
 /**
- * Resolve `host` to candidate IPs and classify them. Returns null when a
- * hostname fails to resolve — the caller lets the network layer surface the
- * real error instead of masking it as a security denial.
+ * Resolve `host` to candidate IPs and classify them. A host name that does
+ * not resolve answers `{ unresolved }` (W1-D follow-up): the guard cannot
+ * check it, and the connection's own lookup could get another answer, so
+ * the caller refuses it with the resolver's reason.
  */
-async function classifyHost(host: string): Promise<HostClass | null> {
+async function classifyHost(host: string): Promise<HostClass | { unresolved: string }> {
   let loopbackHost = false
   let candidates: string[] = []
 
@@ -294,9 +299,10 @@ async function classifyHost(host: string): Promise<HostClass | null> {
       try {
         const addresses = await lookup(host, { all: true, verbatim: true })
         candidates = addresses.map((a) => a.address)
-      } catch {
-        return null
+      } catch (err) {
+        return { unresolved: (err as NodeJS.ErrnoException)?.code ?? (err instanceof Error ? err.message : String(err)) }
       }
+      if (candidates.length === 0) return { unresolved: 'no addresses' }
     }
   }
 
@@ -385,7 +391,7 @@ export async function checkFetchTarget(
   const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80
 
   const cls = await classifyHost(host)
-  if (!cls) return null
+  if ('unresolved' in cls) return unresolvedMessage(url.hostname, cls.unresolved)
   return applyPolicy(url.hostname, port, url.pathname, cls, opts, blockedMessage)
 }
 
@@ -413,6 +419,6 @@ export async function checkConnectTarget(
   const port = url.port ? Number(url.port) : secure ? 443 : 80
 
   const cls = await classifyHost(host)
-  if (!cls) return null
+  if ('unresolved' in cls) return unresolvedMessage(url.hostname, cls.unresolved)
   return applyPolicy(url.hostname, port, url.pathname, cls, opts, connectBlockedMessage)
 }
