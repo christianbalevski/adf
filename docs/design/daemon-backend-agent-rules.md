@@ -11,6 +11,8 @@ Every workstream agent reads this file, `docs/design/daemon-backend.md` and its 
 - The owner's real ADF Studio and daemon may be running on this machine. Tests and manual runs MUST use isolated state (`ADF_USER_DATA_DIR`, a temp settings file, a non-default port, `ADF_SECRET_STORE=file` where supported). Never read or write the real keychain entries, the real `adf-settings.json` or port 7385. Stop every process you start; on Windows use `taskkill /T /F /PID <pid>` (plain kill leaves children).
 - **Podman safety (incident 2026-10-14).** A graceful daemon or Studio shutdown (`DaemonHost.stop`, `POST /shutdown`, `adf daemon stop`, Studio `cleanupAllProcesses`) calls `PodmanService.stopAll`, which stops EVERY running `adf-*` container on the machine, including the owner's real agents. Processes you start MUST be stopped with `taskkill /T /F /PID <pid>`, never gracefully. Tests MUST inject a fake compute service and MUST NOT construct a real `PodmanService`. Never run `podman stop`, `rm` or `start` against containers you did not create.
 
+- **Junction safety (incident 2026-10-14).** On Windows, Node's `rmSync`/`rm` with `recursive` follows junctions and deletes the target. Never delete a directory that contains or may contain a junction or symlink (for example a temp copy with a linked `node_modules`) without unlinking the link first (`fs.unlinkSync` on the junction itself) and checking the unlink succeeded. Never create links to the shared `node_modules` from tests.
+
 ## Code
 
 - Embedded-mode code changes only under rules E1-E3 (design §3.2). An E1 extraction lands with a characterization test written first, in the same commit.
