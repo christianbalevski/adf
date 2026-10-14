@@ -120,6 +120,13 @@ describe('open file: prompt before start (design §6.1 row 27)', () => {
       pendingAsks: [{ requestId: 'ask_1', question: 'Why?' }],
     })
   })
+  it('AGENT_START reuse: a failed side read never fails the re-attach', async () => {
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1, { runtimeState: 'idle', sessionId: 'session-8' }))
+    daemon.routes.set(`GET /agents/${AGENT}/triggers`, () => ({ status: 500, body: { error: 'boom' } }))
+    daemon.routes.set('GET /approvals/interactions', () => ({ status: 500, body: { error: 'boom' } }))
+    await call(IPC.FILE_OPEN, { filePath: file1 })
+    expect(await call(IPC.AGENT_START, {})).toEqual({ success: true, sessionId: 'session-8', agentState: 'idle', pendingApprovals: [], pendingAsks: [] })
+  })
 })
 
 describe('the open file\'s agent', () => {

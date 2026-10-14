@@ -202,9 +202,14 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       // state, its session id, and main's pending approvals and asks.
       ctx.session.noteAgent(filePath, running.id)
       const agentPath = running.filePath ?? filePath
+      // Side reads: a failed one never fails the re-attach (embedded reads them from the live executor).
+      const sideRead = <T,>(what: string, fallback: T) => (err: unknown): T => {
+        ctx.log.warn(`[Backend] AGENT_START: could not read ${what} of ${filePath}: ${err instanceof Error ? err.message : String(err)}`)
+        return fallback
+      }
       const [triggers, interactions] = await Promise.all([
-        client.request<{ displayState: string | null }>('GET', `/agents/${enc(running.id)}/triggers`),
-        client.request<FleetPendingInteraction[]>('GET', '/approvals/interactions'),
+        client.request<{ displayState: string | null }>('GET', `/agents/${enc(running.id)}/triggers`).catch(sideRead('the display state', { displayState: null })),
+        client.request<FleetPendingInteraction[]>('GET', '/approvals/interactions').catch(sideRead('the pending approvals and asks', [] as FleetPendingInteraction[])),
       ])
       const mine = interactions.filter((i) => samePath(i.filePath, agentPath))
       return {
