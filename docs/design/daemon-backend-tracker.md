@@ -44,7 +44,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 
 | ID | Workstream | Wave | Depends on | Status |
 |---|---|---|---|---|
-| W0-A | Channel map and settings-key classes | 0 | none | TODO |
+| W0-A | Channel map and settings-key classes | 0 | none | MERGED |
 | W0-B | Shared daemon client | 0 | none | MERGED e23ec054 |
 | W0-C | Agent lease and runtime host registry | 0 | none | TODO |
 | W0-D | Daemon packaging, process control, `/version`, route hook | 0 | none | MERGED |
@@ -297,6 +297,10 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-D | If the race-winning daemon is still booting 3 s after our child exits, Studio shows "exited during startup"; keep waiting while a pid file appears or retry `ensure` once | W4-A |
 | W0-D | "Waiting for the ADF daemon (pid N)…" progress is not shown in the UI yet | W4-A |
 | W0-D | Packaged build not verified with a real `node_modules` (junction drops transitive deps); lead verifies `npm run package` in a real checkout | Lead, W5-B |
+| W0-A | `TEMPLATE_CHECK_REVIEW`: daemon reports provider status `unchecked` where Studio runs `autoProviderCheck`, and returns 409 when owner identity is not ready where embedded returns `needsReview:false` | W2-A |
+| W0-A | `DOC_READ_INTERNAL_FILE` needs a metadata-only / size-capped read so Studio does not download whole binaries to discard them | W1-E |
+| W0-A | `TEMPLATE_DELETE`: templates-trash vs OS trash semantics differ | W3-A |
+| W0-A | `fleetGroups`, `fleetStewards`, `fleetMapState` missing from `AppSettings` (`ipc.types.ts`) | W2-C |
 | W0-D | Pre-existing: the daemon's podman probe writes a stray `NUL` file in its working directory | W1-G |
 
 ## 7. Parity triage (filled in W5-A)
