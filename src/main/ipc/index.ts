@@ -248,61 +248,8 @@ import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 
 import { encrypt } from '../crypto/identity-crypto'
-
-/**
- * Read recent tool calls from an agent's workspace loop table.
- * Extracts tool_use/tool_result pairs from the last ~30 loop entries.
- */
-function readRecentToolsFromWorkspace(
-  workspace: AdfWorkspace,
-  limit: number
-): { name: string; args?: string; isError?: boolean; timestamp: number }[] {
-  try {
-    const totalCount = workspace.getLoopCount()
-    const offset = Math.max(0, totalCount - 30)
-    const entries = offset > 0
-      ? workspace.getLoopPaginated(30, offset)
-      : workspace.getLoop()
-
-    const toolUseMap = new Map<string, { name: string; args?: string; timestamp: number }>()
-    const tools: { name: string; args?: string; isError?: boolean; timestamp: number }[] = []
-
-    for (const entry of entries) {
-      for (const block of entry.content_json) {
-        if (block.type === 'tool_use' && block.name && block.id) {
-          let args: string | undefined
-          if (block.input) {
-            try {
-              const input = block.input as Record<string, unknown>
-              if (typeof input._reason === 'string' && input._reason) {
-                args = input._reason
-              } else {
-                const str = typeof block.input === 'string' ? block.input : JSON.stringify(block.input)
-                args = str.length > 40 ? str.slice(0, 40) + '...' : str
-              }
-            } catch { /* ignore */ }
-          }
-          toolUseMap.set(block.id, { name: block.name, args, timestamp: entry.created_at })
-        } else if (block.type === 'tool_result' && block.tool_use_id) {
-          const matched = toolUseMap.get(block.tool_use_id)
-          if (matched) {
-            tools.push({ ...matched, isError: !!block.is_error })
-            toolUseMap.delete(block.tool_use_id)
-          }
-        }
-      }
-    }
-
-    // Unmatched tool_use (still in progress)
-    for (const pending of toolUseMap.values()) {
-      tools.push(pending)
-    }
-
-    return tools.slice(-limit)
-  } catch {
-    return []
-  }
-}
+import { readRecentToolsFromWorkspace } from '../services/recent-tools'
+import { buildMeshStatus } from '../services/mesh-status'
 
 // Application state
 let currentWorkspace: AdfWorkspace | null = null
@@ -5741,51 +5688,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // that sequence come back and `logSeq` names the newest one the bus holds, so
   // the 5s poll stops re-sending the whole 200-entry log (with its content) every
   // cycle. Callers that omit it get the full log exactly as before.
-  const getMeshStatus = async (args?: { debug?: boolean; sinceSeq?: number }): Promise<Record<string, unknown>> => {
-    if (!meshManager || !meshManager.isEnabled()) {
-      if (args?.debug) {
-        return {
-          running: false,
-          agents: [],
-          busRegistrations: [],
-          backgroundAgents: [],
-          foregroundAgents: [],
-          messageLog: []
-        }
-      }
-      return { running: false, agents: [] }
-    }
-
-    const agents = getLiveMeshAgents()
-
-    const result: Record<string, unknown> = {
-      running: true,
-      agents
-    }
-
-    if (args?.debug) {
-      try {
-        const debugInfo = meshManager.getDebugInfo()
-        Object.assign(result, debugInfo)
-        const fullLog = debugInfo.messageLog
-        const newest = fullLog.length > 0 ? fullLog[fullLog.length - 1].seq ?? 0 : 0
-        result.logSeq = newest
-        if (typeof args.sinceSeq === 'number') {
-          result.messageLog = fullLog.filter((e) => (e.seq ?? 0) > args.sinceSeq!)
-          result.logIncremental = true
-        }
-      } catch (error) {
-        console.error('[IPC] Mesh debug error:', error)
-        result.busRegistrations = []
-        result.backgroundAgents = []
-        result.foregroundAgents = []
-        result.messageLog = []
-        result.error = String(error)
-      }
-    }
-
-    return result
-  }
+  const getMeshStatus = (args?: { debug?: boolean; sinceSeq?: number }): Promise<Record<string, unknown>> =>
+    buildMeshStatus({
+      isRunning: () => !!meshManager && meshManager.isEnabled(),
+      liveAgents: () => getLiveMeshAgents(),
+      debugInfo: () => meshManager!.getDebugInfo(),
+    }, args)
 
   ipcMain.handle(IPC.MESH_STATUS, async (_event, args?: { debug?: boolean; sinceSeq?: number }) => getMeshStatus(args))
 
