@@ -8,3 +8,8 @@ import { join } from 'node:path'
 // touched the token-usage ledger (or settings) wiped real data on every run.
 // Suites that set ADF_USER_DATA_DIR themselves still win and restore to this.
 process.env.ADF_USER_DATA_DIR = mkdtempSync(join(tmpdir(), 'adf-test-userdata-'))
+
+// Agent leases (runtime/agent-lease.ts) live in a per-user directory that
+// ignores ADF_USER_DATA_DIR on purpose; tests that start agents must not
+// write leases next to the developer's running Studio or daemon.
+process.env.ADF_LEASE_DIR = mkdtempSync(join(tmpdir(), 'adf-test-leases-'))
