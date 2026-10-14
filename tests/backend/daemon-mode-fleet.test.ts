@@ -51,7 +51,10 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-beforeEach(() => {
+beforeEach(async () => {
+  // A write of Studio's own drops the polls the previous test left fresh (poll.ts).
+  daemon.routes.set('POST /fleet/state', () => ({ updated: [], failed: [] }))
+  await invoke(IPC.MESH_SET_AGENT_STATE, { filePaths: [], state: 'idle' })
   daemon.requests.length = 0
 })
 
@@ -103,6 +106,35 @@ describe('fleet map (W1-D routes)', () => {
     await invoke(IPC.MESH_TOKEN_BURN)
     expect(requests('GET', '/fleet/map')).toHaveLength(2)
     expect(requests('POST', '/fleet/burn/hydrate')).toHaveLength(1)
+  })
+
+  it('fleet and mesh rows get the Studio foreground/background split (D3): background state and inner-loop count from the bridge', async () => {
+    const A1 = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e11'
+    const A2 = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e12'
+    const f1 = join(dir, 'fg-agent-1.adf')
+    const f2 = join(dir, 'fg-agent-2.adf')
+    handle.bridge.seed([{ id: A1, filePath: f1, handle: 'agent-1', runtimeState: 'idle' as never }, { id: A2, filePath: f2, handle: 'agent-2', runtimeState: 'idle' as never }])
+    handle.bridge.handleFrame({ kind: 'host', type: 'agent_state_changed', agentId: A1, filePath: f1, payload: { state: 'hibernate' }, timestamp: 1 } as never)
+    daemon.routes.set('GET /files/agent', ({ query }) => ({ filePath: query.path, agentId: query.path === f2 ? A2 : A1, loaded: true, tracked: true }))
+    daemon.routes.set(`GET /agents/${A2}/status`, () => ({ id: A2, filePath: f2, name: 'agent-2', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0 }))
+    daemon.routes.set(`GET /agents/${A2}/identity/password`, () => ({ agentId: A2, needsPassword: false, unlocked: false }))
+    await invoke(IPC.FILE_OPEN, { filePath: f2 })
+    const row = (filePath: string, state: string) => ({ filePath, handle: 'x', state, canReceive: true, participating: true })
+    daemon.routes.set('GET /fleet/status', () => ({ running: true, agents: [row(f1, 'idle'), row(f2, 'idle'), { filePath: join(dir, 'agent-3.adf'), state: 'off', online: false, participating: false }] }))
+    expect(await invoke(IPC.MESH_FLEET_STATUS)).toEqual({ running: true, agents: [
+      { ...row(f1, 'hibernate'), activeLoops: 0 },
+      row(f2, 'idle'),
+      { filePath: join(dir, 'agent-3.adf'), state: 'off', online: false, participating: false },
+    ] })
+    daemon.routes.set('GET /fleet/mesh', () => ({
+      running: true, agents: [row(f1, 'idle')],
+      backgroundAgents: [{ filePath: f1, name: 'fg-agent-1', state: 'idle', onMessageReceived: true, hasMessaging: true, toolCount: 3 }, { filePath: f2, name: 'fg-agent-2', state: 'idle', onMessageReceived: true, hasMessaging: true, toolCount: 3 }],
+      foregroundAgents: [],
+    }))
+    const debug = await invoke(IPC.MESH_STATUS, { debug: true }) as Record<string, unknown>
+    expect(debug.backgroundAgents).toEqual([{ filePath: f1, name: 'fg-agent-1', state: 'idle', onMessageReceived: true, hasMessaging: true, toolCount: 3 }])
+    expect(debug.foregroundAgents).toEqual([{ filePath: f2, name: 'fg-agent-2', onMessageReceived: true, hasMessaging: true }])
+    await invoke(IPC.FILE_CLOSE)
   })
 
   it('MESH_STATUS, MESH_FLEET_STATUS, MESH_GET_RECENT_TOOLS read the fleet routes', async () => {
@@ -229,6 +261,16 @@ describe('token usage and context', () => {
     await invoke(IPC.FILE_CLOSE)
     daemon.routes.set('GET /files/agent', () => ({ filePath: join(dir, 'agent-2.adf'), agentId: null, loaded: false, tracked: false }))
     expect(await invoke(IPC.CONTEXT_BREAKDOWN_GET, { filePath: join(dir, 'agent-2.adf') })).toBeNull()
+  })
+})
+
+describe('compute phase pushes', () => {
+  it('a compute_phase push reaches COMPUTE_CONTAINER_PHASE with the payload embedded forwards (PodmanService container-phase)', () => {
+    const phase = { containerName: 'adf-agent-1-5f1d7a3e', phase: 'provisioning', detail: 'Creating container', agentId: AGENT, timestamp: 1 }
+    electronStub.pushes.length = 0
+    handle.bridge.handleFrame({ kind: 'push', topic: 'compute_phase', agentId: AGENT, payload: phase })
+    handle.bridge.handleFrame({ kind: 'push', topic: 'compute_phase', agentId: AGENT, payload: { ...phase, phase: 'ready', detail: undefined } })
+    expect(electronStub.pushes.filter((p) => p.channel === IPC.COMPUTE_CONTAINER_PHASE).map((p) => p.args)).toEqual([[phase], [{ ...phase, phase: 'ready', detail: undefined }]])
   })
 })
 

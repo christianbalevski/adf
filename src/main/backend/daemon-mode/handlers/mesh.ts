@@ -3,7 +3,10 @@ import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError } from '../../../../shared/daemon-client'
 import type { AgentActivity, AgentVitals } from '../../../../shared/types/agent-vitals.types'
 import type { FleetMessageResult, FleetPendingInteraction, FleetStateResult, FleetStatusResult } from '../../../../shared/types/ipc.types'
+import type { AgentState } from '../../../../shared/types/ipc.types'
+import { countActiveLoops } from '../../../runtime/background-event-mapping'
 import type { DaemonHandlerTable, DaemonModeContext } from '../context'
+import { pathKey, samePath } from '../session'
 import { fleetState, hydrateBurn } from './poll'
 
 /**
@@ -14,7 +17,9 @@ import { fleetState, hydrateBurn } from './poll'
  * W1-D's fleet routes, the network routes and W3-D's path-addressed fleet
  * routes (daemon/routes/fleet-client-routes.ts).
  *
- * The polled reads go through the coalescer (poll.ts). The firewall is the
+ * The polled reads go through the coalescer (poll.ts), then get Studio's
+ * client state (clientOverlay): which agent is in the foreground is D3
+ * client state the daemon does not have. The firewall is the
  * Studio host's own: it is checked and changed here, with the mesh port and
  * LAN binding of the daemon's server; in remote mode that server is on
  * another machine, so both channels answer with the sentence below.
@@ -60,6 +65,75 @@ async function polled<T>(ctx: DaemonModeContext, key: string, path: string, quer
   return fleetState(ctx).polls.get(key, () => client.request<T>('GET', path, { query, timeoutMs: 60_000 }))
 }
 
+type Row = Record<string, unknown>
+
+/**
+ * The foreground/background split embedded mode reports, from Studio's
+ * client state (D3, D6). Embedded builds the live rows from the background
+ * manager's statuses (display state from the event mapping, inner-loop
+ * count) and the foreground executor's raw state (no inner-loop count), and
+ * the mesh lists the foreground registration apart. The daemon has no
+ * foreground: it answers every agent from its executor. So the session's
+ * open, running agent keeps the daemon's row, and every other running agent
+ * gets the state and inner-loop count of the bridge's background mapping
+ * (the same mapping embedded's background manager keeps,
+ * background-event-mapping.ts).
+ */
+interface ClientOverlay {
+  focusedPath: string | null
+  background: Map<string, { state: AgentState; activeLoops: number }>
+}
+
+function clientOverlay(ctx: DaemonModeContext): ClientOverlay {
+  const background = new Map<string, { state: AgentState; activeLoops: number }>()
+  for (const agent of ctx.bridge.runningAgents()) {
+    if (ctx.session.isFocused(agent.agentId, agent.filePath)) continue
+    background.set(pathKey(agent.filePath), { state: agent.mapping.state, activeLoops: countActiveLoops(agent.mapping.loopStates) })
+  }
+  return { focusedPath: ctx.session.filePath, background }
+}
+
+/** Live rows (mesh statuses) and ghost rows (tracked files) of a fleet or mesh answer. */
+function overlayRows(rows: unknown, overlay: ClientOverlay): void {
+  if (!Array.isArray(rows)) return
+  for (const row of rows as Row[]) {
+    if (!row || typeof row.filePath !== 'string') continue
+    const live = overlay.background.get(pathKey(row.filePath))
+    if (!live) continue
+    row.state = live.state
+    // A mesh row (getAgentStatuses) carries `canReceive`; embedded overlays the inner-loop count onto it.
+    if (typeof row.canReceive === 'boolean') row.activeLoops = live.activeLoops
+    else if ('online' in row) row.online = live.state !== 'off'
+  }
+}
+
+/** The mesh debug view: the foreground registration is listed apart, without state and tool count. */
+function overlayDebug(debug: Row, overlay: ClientOverlay): void {
+  const background = debug.backgroundAgents
+  if (!Array.isArray(background) || !overlay.focusedPath) return
+  const at = (background as Row[]).findIndex((a) => typeof a?.filePath === 'string' && samePath(a.filePath, overlay.focusedPath))
+  if (at < 0) return
+  const [entry] = (background as Row[]).splice(at, 1)
+  const foreground = Array.isArray(debug.foregroundAgents) ? debug.foregroundAgents as Row[] : []
+  foreground.push({ filePath: entry.filePath, name: entry.name, onMessageReceived: entry.onMessageReceived, hasMessaging: entry.hasMessaging })
+  debug.foregroundAgents = foreground
+}
+
+/** A mesh status answer (buildMeshStatus) with Studio's client state; the cached answer is not touched. */
+function meshStatusView(answer: Row | null, overlay: ClientOverlay): Row | null {
+  if (!answer) return answer
+  const view = structuredClone(answer)
+  overlayRows(view.agents, overlay)
+  overlayDebug(view, overlay)
+  return view
+}
+
+function fleetStatusView(answer: FleetStatusResult, overlay: ClientOverlay): FleetStatusResult {
+  const view = structuredClone(answer)
+  overlayRows(view.agents, overlay)
+  return view
+}
+
 /** Studio's own writes make the next poll fresh. */
 function invalidate(ctx: DaemonModeContext): void {
   fleetState(ctx).polls.invalidate()
@@ -93,13 +167,14 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
   },
 
   // --- fleet map reads (polled) --------------------------------------------------
-  [IPC.MESH_STATUS]: (ctx, _event, args?: { debug?: boolean; sinceSeq?: number }) => {
+  [IPC.MESH_STATUS]: async (ctx, _event, args?: { debug?: boolean; sinceSeq?: number }) => {
     const debug = args?.debug ? 1 : undefined
     const sinceSeq = typeof args?.sinceSeq === 'number' ? args.sinceSeq : undefined
-    return polled<Record<string, unknown>>(ctx, `mesh:${debug ?? 0}:${sinceSeq ?? ''}`, '/fleet/mesh', { debug, sinceSeq })
+    const answer = await polled<Row>(ctx, `mesh:${debug ?? 0}:${sinceSeq ?? ''}`, '/fleet/mesh', { debug, sinceSeq })
+    return meshStatusView(answer, clientOverlay(ctx))
   },
 
-  [IPC.MESH_FLEET_STATUS]: (ctx) => polled<FleetStatusResult>(ctx, 'fleet', '/fleet/status'),
+  [IPC.MESH_FLEET_STATUS]: async (ctx) => fleetStatusView(await polled<FleetStatusResult>(ctx, 'fleet', '/fleet/status'), clientOverlay(ctx)),
 
   [IPC.MESH_TOKEN_BURN]: async (ctx) => {
     await hydrateBurn(ctx, await ctx.ready())
@@ -110,7 +185,9 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
   [IPC.MESH_MAP_POLL]: async (ctx, _event, args?: { sinceSeq?: number }) => {
     await hydrateBurn(ctx, await ctx.ready())
     const sinceSeq = typeof args?.sinceSeq === 'number' ? args.sinceSeq : undefined
-    return polled<unknown>(ctx, `map:${sinceSeq ?? ''}`, '/fleet/map', { sinceSeq })
+    const answer = await polled<{ debug: Row | null; fleet: FleetStatusResult } & Row>(ctx, `map:${sinceSeq ?? ''}`, '/fleet/map', { sinceSeq })
+    const overlay = clientOverlay(ctx)
+    return { ...answer, debug: meshStatusView(answer.debug, overlay), fleet: fleetStatusView(answer.fleet, overlay) }
   },
 
   [IPC.MESH_GET_RECENT_TOOLS]: (ctx) => polled<Record<string, unknown>>(ctx, 'recent-tools', '/fleet/recent-tools'),
@@ -281,6 +358,11 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
   [IPC.EMERGENCY_STOP]: async (ctx) => {
     const client = await ctx.ready()
     ctx.log.log('[EmergencyStop] Asking the ADF daemon to stop everything...')
+    // Embedded detaches the foreground host first: the renderer sees none of
+    // its teardown events and resets its own state after the call. The
+    // bridge drops the detach when the agent's stop arrives.
+    const focused = ctx.session.agentId
+    if (focused) ctx.bridge.detach(focused)
     try {
       const result = await client.request<{ success: boolean; error?: string; skipped?: string[]; failed?: string[] }>(
         'POST', '/runtime/emergency-stop', { timeoutMs: 120_000 })
@@ -300,6 +382,10 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
         }).catch(() => {})
       }
       return result
+    } catch (err) {
+      // Nothing was stopped as far as Studio knows: keep showing the open agent.
+      if (focused) ctx.bridge.attach(focused)
+      throw err
     } finally {
       invalidate(ctx)
     }
