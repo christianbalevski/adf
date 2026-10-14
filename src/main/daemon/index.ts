@@ -23,6 +23,7 @@ import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
 import { noteAutostartReport } from './tracked-dirs'
 import { TrackedDirWatcher } from './dir-watcher'
+import { createMeshControls } from './mesh-controls'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import { ensureDaemonToken } from './daemon-token'
 import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof } from './local-access'
@@ -399,43 +400,20 @@ const daemon = new DaemonHost({
       agents: meshManager.getAgentStatuses(),
       debug: meshManager.getDebugInfo(),
     }),
-    enableMesh: () => {
-      // Persist so an explicit enable survives restart (boot auto-enables
-      // unless meshEnabled === false) — parity with Studio's MESH_ENABLE IPC.
-      settings.set('meshEnabled', true)
-      if (!meshManager.isEnabled()) meshManager.enableMesh()
-      for (const event of meshWiring.loaded()) registerAgentWithMesh(event)
-      return { success: true, meshEnabled: meshManager.isEnabled(), agents: meshManager.getAgentStatuses() }
-    },
-    disableMesh: () => {
-      // Persist first: boot auto-enables mesh when meshEnabled !== false, so
-      // without this a user's disable would not survive restart.
-      settings.set('meshEnabled', false)
-      meshManager.disableMesh()
-      return { success: true, meshEnabled: meshManager.isEnabled(), agents: meshManager.getAgentStatuses() }
-    },
+    // Mesh on/off (off closes WS connections) and server start/stop/restart (mesh-controls.ts).
+    ...createMeshControls({
+      settings,
+      mesh: meshManager,
+      server: meshServer,
+      ws: wsConnectionManager,
+      registerLoaded: () => { for (const event of meshWiring.loaded()) registerAgentWithMesh(event) },
+    }),
     getRecentTools: (limit) => meshManager.getRecentTools(limit),
     getServerStatus: () => ({
       running: meshServer.isRunning(),
       port: meshServer.getPort(),
       host: meshServer.getHost(),
     }),
-    // Start/stop persist, so a user's choice survives restart (default: on).
-    startServer: async () => {
-      settings.set('meshServerEnabled', true)
-      await meshServer.start()
-      return { success: meshServer.isRunning(), running: meshServer.isRunning(), port: meshServer.getPort(), host: meshServer.getHost() }
-    },
-    stopServer: async () => {
-      settings.set('meshServerEnabled', false)
-      await meshServer.stop()
-      return { success: true, running: meshServer.isRunning(), port: meshServer.getPort(), host: meshServer.getHost() }
-    },
-    restartServer: async () => {
-      await meshServer.stop()
-      await meshServer.start()
-      return { success: meshServer.isRunning(), running: meshServer.isRunning(), port: meshServer.getPort(), host: meshServer.getHost() }
-    },
     getLanAddresses,
     getDiscoveredRuntimes: (args?: { force?: boolean }) => runtimeDiscovery.getDiscoveredRuntimes(args),
   },
