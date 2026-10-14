@@ -192,6 +192,29 @@ describe('daemon-mode handlers: review fixes', () => {
     await electronStub.handlers.get(IPC.FILE_CLOSE)!({})
   })
 
+  it('W2-A routes: DOC_GET_BATCH and DOC_GET_HEADER in the embedded shape; AGENT_INVOKE sends content blocks as they are', async () => {
+    daemon.routes.set('GET /files/agent', () => ({ filePath: join(dir, 'agent-1.adf'), agentId: AGENT, loaded: true, tracked: false }))
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0 }))
+    daemon.routes.set(`GET /agents/${AGENT}/identity/password`, () => ({ agentId: AGENT, needsPassword: false, unlocked: false }))
+    const header = { agentId: AGENT, document: '# doc', agentConfig: { id: AGENT, name: 'agent-1' }, statusText: 'busy' }
+    daemon.routes.set(`GET /agents/${AGENT}/header`, () => header)
+    daemon.routes.set(`GET /agents/${AGENT}/batch`, () => ({ ...header, lastTokens: { input: 5 }, contextBaseline: 42, chat: { version: 1, uiLog: [{ role: 'user' }], llmMessages: [], earlierCount: 3, total: 4 } }))
+    daemon.routes.set(`POST /agents/${AGENT}/chat`, () => ({ status: 202, body: { accepted: true, turnId: 'turn_blocks' } }))
+    await electronStub.handlers.get(IPC.FILE_OPEN)!({}, { filePath: join(dir, 'agent-1.adf') })
+    expect(await electronStub.handlers.get(IPC.DOC_GET_HEADER)!({})).toEqual({ document: '# doc', agentConfig: header.agentConfig, statusText: 'busy' })
+    expect(await electronStub.handlers.get(IPC.DOC_GET_BATCH)!({})).toEqual({
+      document: '# doc', agentConfig: header.agentConfig, lastTokens: { input: 5 }, contextBaseline: 42, statusText: 'busy',
+      chat: { version: 1, uiLog: [{ role: 'user' }], llmMessages: [], earlierCount: 3 },
+    })
+    const content = [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }]
+    const result = Promise.resolve(electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { content, userMessage: 'ignored' }))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(daemon.requests.filter((r) => r.path === `/agents/${AGENT}/chat` && r.method === 'POST').at(-1)?.body).toEqual({ content })
+    handle.bridge.failTurns('disconnected')
+    await result
+    await electronStub.handlers.get(IPC.FILE_CLOSE)!({})
+  })
+
   it('a pending channel warns once, and BACKGROUND_AGENT_STATUS announces the running agents', async () => {
     logs.length = 0
     const fn = electronStub.handlers.get(IPC.MESH_STATUS)!

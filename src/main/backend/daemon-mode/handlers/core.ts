@@ -1,6 +1,6 @@
 import { dialog } from 'electron'
 import { IPC } from '../../../../shared/constants/ipc-channels'
-import type { AgentStatus, ChatHistory, ContentResult, MetaResult } from '../../../../shared/daemon-client'
+import type { AgentStatus, ChatHistory } from '../../../../shared/daemon-client'
 import { resolveStartInState, type AgentConfig } from '../../../../shared/types/adf-v02.types'
 import { MAX_INLINE_BINARY_BYTES } from '../../../../shared/utils/image-files'
 import { DaemonModeUnavailableError } from '../errors'
@@ -15,10 +15,12 @@ import { TURN_WAIT_TIMEOUT_MS } from '../event-bridge'
  * W3-A handlers for the rest of FILE_*, DOC_*, AGENT_* build on the same
  * session.
  *
- * Until open documents (W2-A) and client sessions (W2-B) land, a file's
- * contents are reachable only while its agent runs in the daemon. Reading a
- * file that is open but not running throws a DaemonModeUnavailableError
- * naming W2-A; it never reads the file another way.
+ * The daemon's /agents/:id routes reach running agents and open documents
+ * (W2-A), but a client opens a document only through its client session's
+ * hold (W2-B). Until then a file's contents are reachable only while its
+ * agent runs in the daemon. Reading a file that is open but not running
+ * throws a DaemonModeUnavailableError naming W2-B; it never reads the file
+ * another way.
  */
 
 /** Same window as embedded DOC_GET_BATCH / DOC_GET_CHAT. */
@@ -31,17 +33,17 @@ const TEXT_EXTS = new Set(['md', 'txt', 'json', 'js', 'ts', 'py', 'html', 'css',
 function requireOpenAgent(ctx: DaemonModeContext, what: string): string {
   const id = ctx.session.agentId
   if (id) return id
-  throw new DaemonModeUnavailableError(what, 'W2-A', `${ctx.session.filePath} is not running in the daemon, and open documents are not available yet`)
+  throw new DaemonModeUnavailableError(what, 'W2-B', `${ctx.session.filePath} is not running in the daemon, and holding it open needs a client session`)
 }
 
-/** Reads of the open agent; a 404 means it stopped (W2-A keeps the document open across a stop). */
+/** Reads of the open agent; a 404 means it stopped (a session's hold keeps the document open across a stop, W2-B). */
 async function readOpenAgent<T>(ctx: DaemonModeContext, what: string, read: (agentId: string) => Promise<T>): Promise<T> {
   const agentId = requireOpenAgent(ctx, what)
   try {
     return await read(agentId)
   } catch (err) {
     if (isNotFound(err)) {
-      throw new DaemonModeUnavailableError(what, 'W2-A', `${ctx.session.filePath} is no longer running in the daemon, and open documents are not available yet`)
+      throw new DaemonModeUnavailableError(what, 'W2-B', `${ctx.session.filePath} is no longer running in the daemon, and holding it open needs a client session`)
     }
     throw err
   }
@@ -64,7 +66,14 @@ async function agentStatus(ctx: DaemonModeContext, agentId: string | null): Prom
   }
 }
 
-let batchFieldsLogged = false
+/** GET /agents/:id/header (document-routes.ts). */
+interface AgentHeader { agentId: string; document: string; agentConfig: AgentConfig; statusText: string }
+/** GET /agents/:id/batch: the header, the token figures and main's last 200 display entries. */
+interface AgentBatch extends AgentHeader {
+  lastTokens?: unknown
+  contextBaseline: unknown
+  chat: { version: number; uiLog: unknown[]; llmMessages: unknown[]; earlierCount: number; total: number }
+}
 
 export const CORE_HANDLERS: DaemonHandlerTable = {
   [IPC.FILE_OPEN]: async (ctx, _event, args?: { filePath?: string }) => {
@@ -113,27 +122,19 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     return { filePath, agentRunning: status !== null }
   },
 
+  // W2-A's one-call reads (document-routes.ts), each the embedded handler's body.
   [IPC.DOC_GET_BATCH]: async (ctx) => {
     if (!ctx.session.filePath) return { document: '', agentConfig: null, chat: null }
     const client = await ctx.ready()
     return readOpenAgent(ctx, 'Reading the open agent', async (id) => {
-      const [document, config, chat, meta] = await Promise.all([
-        client.request<ContentResult>('GET', `/agents/${enc(id)}/document`),
-        client.request<{ config: AgentConfig }>('GET', `/agents/${enc(id)}/config`),
-        client.request<ChatHistory>('GET', `/agents/${enc(id)}/chat`, { query: { limit: LOOP_DISPLAY_LIMIT } }),
-        client.request<MetaResult>('GET', `/agents/${enc(id)}/meta`),
-      ])
-      if (!batchFieldsLogged) {
-        batchFieldsLogged = true
-        ctx.log.warn('[Backend] DOC_GET_BATCH: lastTokens and contextBaseline are not available in daemon mode yet: W2-A (no route returns them)')
-      }
+      const b = await client.request<AgentBatch>('GET', `/agents/${enc(id)}/batch`)
       return {
-        document: document.content,
-        agentConfig: config.config,
-        lastTokens: undefined,
-        contextBaseline: null,
-        statusText: meta.entries.find((e) => e.key === 'status')?.value ?? '',
-        chat: mapChat(chat.chatHistory),
+        document: b.document,
+        agentConfig: b.agentConfig,
+        lastTokens: b.lastTokens,
+        contextBaseline: b.contextBaseline,
+        statusText: b.statusText,
+        chat: { version: b.chat.version, uiLog: b.chat.uiLog, llmMessages: b.chat.llmMessages, earlierCount: b.chat.earlierCount },
       }
     })
   },
@@ -142,12 +143,8 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     if (!ctx.session.filePath) return { document: '', agentConfig: null, statusText: '' }
     const client = await ctx.ready()
     return readOpenAgent(ctx, 'Reading the open agent', async (id) => {
-      const [document, config, meta] = await Promise.all([
-        client.request<ContentResult>('GET', `/agents/${enc(id)}/document`),
-        client.request<{ config: AgentConfig }>('GET', `/agents/${enc(id)}/config`),
-        client.request<MetaResult>('GET', `/agents/${enc(id)}/meta`),
-      ])
-      return { document: document.content, agentConfig: config.config, statusText: meta.entries.find((e) => e.key === 'status')?.value ?? '' }
+      const h = await client.request<AgentHeader>('GET', `/agents/${enc(id)}/header`)
+      return { document: h.document, agentConfig: h.agentConfig, statusText: h.statusText }
     })
   },
 
@@ -176,7 +173,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       if (!isNotFound(err)) throw err
       // Unknown file, or the agent stopped: tell them apart.
       if (!(await agentStatus(ctx, agentId))) {
-        throw new DaemonModeUnavailableError('Reading a file of the open agent', 'W2-A', `${ctx.session.filePath} is no longer running in the daemon`)
+        throw new DaemonModeUnavailableError('Reading a file of the open agent', 'W2-B', `${ctx.session.filePath} is no longer running in the daemon, and holding it open needs a client session`)
       }
       return { content: null, binary: false }
     }
@@ -218,8 +215,8 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     }
     // Fresh start: W1-A's start route on the file, with Studio's provider
     // gate (`preflight`: provider_missing / provider_unconfigured) and the
-    // startup turn. Until W2-A's start on the open document, the route has
-    // no `hasUserMessage`; a file whose own key is locked starts unchecked
+    // startup turn (on the open document's workspace when one is held, W2-A).
+    // The route takes no `hasUserMessage` (W3-A); a file whose own key is locked starts unchecked
     // (`preflight.code: credentials_locked`), and the prompt-before-start of
     // design §6.1 row 27 is W3-A's.
     ctx.bridge.holdForeground()
@@ -258,19 +255,17 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     return { success: true }
   },
 
-  [IPC.AGENT_INVOKE]: async (ctx, _event, args: { userMessage?: string; filePath?: string; content?: Array<{ type: string; text?: string }>; loop?: string }) => {
+  [IPC.AGENT_INVOKE]: async (ctx, _event, args: { userMessage?: string; filePath?: string; content?: Array<{ type: string }>; loop?: string }) => {
     const client = await ctx.ready()
     const target = args?.filePath ?? ctx.session.filePath
     if (!target) return { success: false, error: 'Agent not running' }
     const agentId = samePath(target, ctx.session.filePath) && ctx.session.agentId ? ctx.session.agentId : await ctx.runningAgentAt(target)
     if (!agentId || !(await agentStatus(ctx, agentId))) return { success: false, error: 'Agent not running' }
+    // Content blocks (images, files) go as they are, as embedded's content_json.
     const blocks = Array.isArray(args?.content) && args.content.length > 0 ? args.content : null
-    if (blocks?.some((b) => b.type !== 'text')) {
-      throw new DaemonModeUnavailableError('Sending images or files in a chat message', 'W2-A', 'POST /agents/:id/chat takes text only')
-    }
-    const text = blocks ? blocks.map((b) => b.text ?? '').join('') : (args?.userMessage ?? '')
+    const body = blocks ? { content: blocks } : { text: args?.userMessage ?? '' }
     try {
-      const { turnId } = await client.request<{ turnId: string }>('POST', `/agents/${enc(agentId)}/chat`, { body: { text, ...(args?.loop ? { loop: args.loop } : {}) } })
+      const { turnId } = await client.request<{ turnId: string }>('POST', `/agents/${enc(agentId)}/chat`, { body: { ...body, ...(args?.loop ? { loop: args.loop } : {}) } })
       // Embedded resolves once the dispatched turn has run; so does this.
       const outcome = await ctx.bridge.waitForTurn(agentId, turnId, args?.loop ?? 'main')
       if (outcome === 'disconnected') return { success: false, error: 'The connection to the ADF daemon was lost while the message waited for its turn; the chat shows what arrived.' }

@@ -124,6 +124,13 @@ async function waitForLog(logFile: string, text: string, timeoutMs: number, from
 }
 
 /**
+ * The harness emulates W4-A's switch to local mode (below). Set to false
+ * once W4-A ships the switch: the allowlist entry `w4a:local-mode-switch`
+ * matches only while this is true, so it cannot outlive the emulation.
+ */
+export const EMULATE_W4A = true
+
+/**
  * W4-A EMULATION: what the switch from embedded to local mode does before
  * Studio first attaches (design §4.3, §5.3, tracker W4-A). Until W4-A ships
  * it, the harness does it the same way:
@@ -214,7 +221,7 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
       const logFile = join(outside, 'adf-daemon.log')
       const keychainFile = join(outside, 'keychain.json')
       const settingsPath = join(env.userDataDir, 'adf-settings.json')
-      emulateLocalModeSwitch(env, keychainFile)
+      if (EMULATE_W4A) emulateLocalModeSwitch(env, keychainFile)
 
       const startChild = async (): Promise<DaemonChild> => {
         const stdlibDir = writeStdlibManifest(env)

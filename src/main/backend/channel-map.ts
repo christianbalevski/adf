@@ -28,7 +28,7 @@
  * (D3: the open document, W2-A/W2-B) or GET /tracked-dirs/agents/all, which
  * covers tracked files only. A path with no id (an untracked file that is
  * neither loaded nor held) MUST first be held as a document (W2-B) or reached
- * through a path-addressed file route (W1-E, the PATH_FILE gap).
+ * through a path-addressed file route (`/files/agent*`, W1-E).
  *
  * A `gaps` entry names the workstream that adds what the daemon lacks today
  * (docs/design/daemon-backend-tracker.md §4). The same list, grouped by
@@ -57,7 +57,7 @@ export type ChannelClass = 'local' | 'proxied' | 'remote-variant' | 'remote-unsu
 export type ChannelKind = 'invoke' | 'send' | 'push' | 'none'
 
 /** Workstreams that add daemon routes, producers or behaviour a channel needs. */
-export type GapWorkstream = 'W1-A' | 'W1-B' | 'W1-C' | 'W1-D' | 'W1-E' | 'W2-A' | 'W2-B' | 'W2-C'
+export type GapWorkstream = 'W1-A' | 'W1-B' | 'W1-C' | 'W1-D' | 'W1-E' | 'W2-A' | 'W2-B' | 'W2-C' | 'W3-A'
 
 export interface ChannelGap {
   ws: GapWorkstream
@@ -103,88 +103,64 @@ function unsupported(kind: ChannelKind, routes: readonly string[], remote: strin
 
 // Gaps shared by many channels.
 
-/** D4: every /agents/:id/* resource route works on an open, not-running document. */
-const OPEN_DOC = gap('W2-A', 'the route works on an open, not-running document (D4)')
 /** D5: hold / release the open file as a session document. */
 const HOLD_DOC = gap('W2-B', 'hold the file as the session document (POST /client/sessions/:id/documents)')
-/** W1-E: raw octet-stream file routes; the JSON base64 routes stop at Fastify's 1 MiB body limit. */
-const RAW_FILE = gap('W1-E', 'GET/PUT /agents/:id/files/raw (octet-stream, own bodyLimit)')
-/** W1-E: daemon-side folder and file listing for remote pickers and folder-scoped actions. */
-const FS_BROWSE = gap('W1-E', 'GET /fs/browse')
-const SHARE_SNAPSHOT = gap('W1-E', 'identity-free share snapshot of an agent file as bytes (AdfDatabase.snapshotForSend)')
-/**
- * The channel addresses any agent file by path, open or not. Embedded opens a
- * temporary workspace for a closed file (e.g. ipc/index.ts:7471, 8438); the
- * agent routes 404 for a file that is neither loaded nor held.
- */
-const PATH_FILE = gap('W1-E', 'reach a closed agent file by path: transient hold or path-addressed file routes (embedded opens a temporary workspace)')
-/** POST /agents/create ends in runtime.loadAgent (daemon-agent-factory.ts:328), which starts the agent. */
-const CREATE_NO_LOAD = gap('W2-A', 'create without load (load: false) and hold the new file as an open document; POST /agents/create loads and starts it (daemon-agent-factory.ts:328)')
-const CREATE_TRACKED_PUSH = gap('W1-E', 'tracked_dirs push when create auto-tracks the folder')
-/** The daemon resolves the default as homedir()/Documents/adf-agents and only after identity is ready. */
-const AGENTS_FOLDER = gap('W1-E', 'agents folder default without the identity precondition of GET /templates, resolving Documents as Electron app.getPath(\'documents\') does (the daemon uses homedir()/Documents, daemon-agent-factory.ts:249)')
 /** Design §6 recipe rows owned by W1-B, for every start path. */
 const RECIPE = [
   gap('W1-B', 'full mesh registration: message bus subscription, isMessageTriggered, config updates (registerAgent)'),
   gap('W1-B', 'umbilical taps on, or a written reason'),
   gap('W1-B', 'shared ensureCoreToolDeclarations (delete the private copy, agent-runtime-builder.ts:350)'),
   gap('W1-B', 'interactive MCP OAuth as a HIL request carrying the authorize URL; keep the MCP manager on setup failure'),
-  gap('W1-A', 'prompt settings read at use, not at boot'),
 ] as const
 const streamTopic = (topic: string): ChannelGap => gap('W2-B', `client-stream push topic \`${topic}\``)
 
 /** Lifetime burn totals live in the client key fleetMapState.burnTotals (§4.1). */
 const BURN_HYDRATE = 'Once per session, POST /fleet/burn/hydrate with the client key fleetMapState.burnTotals.'
 
-const REMOTE_FOLDER_PICKER = 'Daemon-side folder picker over tracked directories and GET /fs/browse (W1-E); the native dialog would pick a path on the laptop.'
-const REMOTE_FILE_PICKER = 'Daemon-side .adf picker over tracked directories and GET /fs/browse (W1-E); the native dialog would pick a path on the laptop.'
+const REMOTE_FOLDER_PICKER = 'Daemon-side folder picker over tracked directories and GET /fs/browse (picker UI: W4-B); the native dialog would pick a path on the laptop.'
+const REMOTE_FILE_PICKER = 'Daemon-side .adf picker over tracked directories and GET /fs/browse (picker UI: W4-B); the native dialog would pick a path on the laptop.'
 
 export const CHANNEL_MAP = {
   // --- File operations -------------------------------------------------------
-  [IPC.FILE_OPEN]: variant('invoke', ['GET /agents/:id/identity/password', 'PATCH /settings'], `${REMOTE_FILE_PICKER} A dropped or OS-opened laptop file is uploaded first (POST /files/import, W1-E).`, {
+  [IPC.FILE_OPEN]: variant('invoke', ['GET /agents/:id/identity/password', 'PATCH /settings'], `${REMOTE_FILE_PICKER} A dropped or OS-opened laptop file is uploaded first (POST /files/import).`, {
     gaps: [
       HOLD_DOC,
-      OPEN_DOC,
-      gap('W1-A', 'config.name <- file basename on open'),
-      gap('W2-A', 'on open: lazy legacy-DID restamp (restampAndAttest), ensureWorkspaceIdentity (keys minted only when reviewed), ADF-stored providers copied into settings.providers, orphan WAL sweep of the folder'),
-      gap('W1-E', 'self-heal on open: move a reviewed agent stranded in the OS temp dir into the agents folder (persistAcceptedAgent)'),
+      gap('W2-B', 'self-heal on open: the hold relocates a reviewed file stranded in the daemon host\'s OS temp dir into the agents folder (POST /files/relocate exists; nothing reports the temp location)'),
     ],
     note: 'Native open dialog in Studio main; the handler records the client key recentFiles. A running agent is reattached, not reopened.',
   }),
-  [IPC.FILE_SAVE]: proxied('invoke', [], { gaps: [gap('W2-A', 'checkpoint the WAL of an open document')] }),
-  [IPC.FILE_CREATE]: variant('invoke', ['POST /agents/create'], 'The save dialog picks a laptop path; remote needs a daemon-side folder picker plus a name (GET /fs/browse, W1-E).', {
-    gaps: [CREATE_NO_LOAD, HOLD_DOC, CREATE_TRACKED_PUSH],
+  [IPC.FILE_SAVE]: proxied('invoke', ['POST /agents/:id/checkpoint']),
+  [IPC.FILE_CREATE]: variant('invoke', ['POST /agents/create'], 'The save dialog picks a laptop path; remote needs a daemon-side folder picker plus a name (GET /fs/browse; picker UI: W4-B).', {
+    gaps: [HOLD_DOC],
     note: 'Save dialog in Studio main, then create (directory + name). The created file becomes the open file, not running; the handler records recentFiles.',
   }),
-  [IPC.FILE_CREATE_QUICK]: proxied('invoke', ['POST /agents/create'], {
-    gaps: [CREATE_NO_LOAD, HOLD_DOC, CREATE_TRACKED_PUSH, AGENTS_FOLDER],
+  [IPC.FILE_CREATE_QUICK]: proxied('invoke', ['POST /agents/create', 'GET /files/agents-folder'], {
+    gaps: [HOLD_DOC],
     note: 'A typed name that exists is refused with code name_taken; the folder must exist and must not be under the OS temp dir.',
   }),
-  [IPC.AGENTS_FOLDER_DEFAULT_GET]: proxied('invoke', ['GET /templates'], { gaps: [AGENTS_FOLDER], note: 'GET /templates carries defaultDirectory.' }),
+  [IPC.AGENTS_FOLDER_DEFAULT_GET]: proxied('invoke', ['GET /files/agents-folder']),
   [IPC.FILE_CLOSE]: proxied('invoke', [], { gaps: [gap('W2-B', 'release the session document (DELETE /client/sessions/:id/documents/:agentId)')] }),
-  [IPC.FILE_DELETE]: proxied('invoke', [], { gaps: [gap('W1-E', 'delete an agent file, stopping a running agent first')] }),
-  [IPC.FILE_CLONE]: proxied('invoke', [], { gaps: [gap('W1-E', 'clone with selected tables and clone-fixup'), CREATE_TRACKED_PUSH] }),
-  [IPC.FILE_LIST_TABLES]: proxied('invoke', ['GET /agents/:id/tables'], { gaps: [OPEN_DOC, PATH_FILE, gap('W1-E', 'table list with row counts and without FTS shadow tables')], note: 'Clone dialog.' }),
-  [IPC.FILE_RENAME]: proxied('invoke', [], { gaps: [gap('W1-E', 'rename an agent file; deferred while it runs (rekeyAgentPath, W1-A)')] }),
-  [IPC.FILE_RENAMED]: proxied('push', [], { frame: 'push:file_renamed', gaps: [streamTopic('file_renamed'), gap('W1-E', 'emit file_renamed on rename and on accept-relocate')] }),
+  [IPC.FILE_DELETE]: proxied('invoke', ['DELETE /files']),
+  [IPC.FILE_CLONE]: proxied('invoke', ['POST /files/clone']),
+  [IPC.FILE_LIST_TABLES]: proxied('invoke', ['GET /files/agent/tables'], { note: 'Clone dialog.' }),
+  [IPC.FILE_RENAME]: proxied('invoke', ['POST /files/rename']),
+  [IPC.FILE_RENAMED]: proxied('push', [], { frame: 'push:file_renamed', gaps: [streamTopic('file_renamed')] }),
   [IPC.FILE_GET_CURRENT]: proxied('invoke', ['GET /agents/:id/status'], { note: 'filePath is DaemonModeSession state (D3); agentRunning comes from the status.' }),
   [IPC.FILE_REVEAL]: unsupported('invoke', [], 'Disabled; the path is shown as text (§9.3).', { note: 'Local mode: shell.showItemInFolder on the daemon path (same machine).' }),
-  [IPC.FILE_SHARE_PREPARE]: proxied('invoke', [], {
-    gaps: [SHARE_SNAPSHOT],
+  [IPC.FILE_SHARE_PREPARE]: proxied('invoke', ['GET /files/snapshot'], {
     note: 'Studio main writes the bytes into its scratch share dir and registers the token FILE_SHARE_DRAG_START drags; app.getFileIcon stays local.',
   }),
   [IPC.FILE_SHARE_DRAG_START]: local('send', 'startDrag of the temp file FILE_SHARE_PREPARE wrote. Reads no backend state, but works only when the daemon-mode PREPARE handler fills the same token map.'),
   [IPC.FILE_SHARE_DISCARD]: local('invoke', 'Deletes the Studio-side temp snapshot that FILE_SHARE_PREPARE wrote; the daemon holds no state for it.'),
-  [IPC.FILE_SHARE_SAVE_AS]: proxied('invoke', [], { gaps: [SHARE_SNAPSHOT], note: 'Save dialog and the write stay in Studio main (a laptop path in remote mode).' }),
+  [IPC.FILE_SHARE_SAVE_AS]: proxied('invoke', ['GET /files/snapshot'], { note: 'Save dialog and the write stay in Studio main (a laptop path in remote mode).' }),
 
   // --- Document content ------------------------------------------------------
-  [IPC.DOC_GET_DOCUMENT]: proxied('invoke', ['GET /agents/:id/document'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_SET_DOCUMENT]: proxied('invoke', ['PUT /agents/:id/document'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_GET_AGENT_CONFIG]: proxied('invoke', ['GET /agents/:id/config'], { gaps: [OPEN_DOC] }),
+  [IPC.DOC_GET_DOCUMENT]: proxied('invoke', ['GET /agents/:id/document']),
+  [IPC.DOC_SET_DOCUMENT]: proxied('invoke', ['PUT /agents/:id/document']),
+  [IPC.DOC_GET_AGENT_CONFIG]: proxied('invoke', ['GET /agents/:id/config']),
   [IPC.DOC_SET_AGENT_CONFIG]: proxied('invoke', ['PUT /agents/:id/config'], {
     gaps: [
-      OPEN_DOC,
-      gap('W1-E', 'a name change renames the file (syncAgentFileToName) and returns filePath or renameDeferred'),
+      gap('W3-A', 'a running agent\'s name change: renameDeferred from GET /files/agent pendingName (PUT /agents/:id/config reports filePath / renameDeferred for open documents only)'),
       gap('W1-B', 'MCP reconcile on config change'),
       gap('W1-B', 'mesh config update on config change (meshManager.updateAgentConfig)'),
     ],
@@ -195,40 +171,34 @@ export const CHANNEL_MAP = {
     gaps: [streamTopic('config_changed'), gap('W2-B', 'origin dedup: a config write made by a session is not echoed to that session')],
     note: 'Runtime-originated changes only, for the open file.',
   }),
-  [IPC.DOC_GET_CHAT]: proxied('invoke', ['GET /agents/:id/chat'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_GET_CHAT_OLDER]: proxied('invoke', ['GET /agents/:id/loop'], { gaps: [OPEN_DOC, gap('W2-A', 'keyset page of display entries before a seq (beforeSeq); the route pages by offset')] }),
+  [IPC.DOC_GET_CHAT]: proxied('invoke', ['GET /agents/:id/chat']),
+  [IPC.DOC_GET_CHAT_OLDER]: proxied('invoke', ['GET /agents/:id/chat']),
   [IPC.DOC_SET_CHAT]: local('invoke', 'No-op stub that returns success; chat is written by the runtime only. No daemon call.'),
-  [IPC.DOC_CLEAR_CHAT]: proxied('invoke', ['DELETE /agents/:id/chat'], { gaps: [OPEN_DOC, gap('W1-B', 'main-loop clear resets the mesh session (meshManager.resetAgentSession)')] }),
-  [IPC.DOC_GET_INBOX]: proxied('invoke', ['GET /agents/:id/inbox'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_CLEAR_INBOX]: proxied('invoke', ['DELETE /agents/:id/inbox'], { gaps: [OPEN_DOC, gap('W2-B', 'clearing the inbox emits the inbox topic with an empty inbox')] }),
-  [IPC.DOC_GET_OUTBOX]: proxied('invoke', ['GET /agents/:id/outbox'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_GET_BATCH]: proxied('invoke', ['GET /agents/:id/document', 'GET /agents/:id/config', 'GET /agents/:id/chat', 'GET /agents/:id/meta'], {
-    gaps: [OPEN_DOC, gap('W2-A', 'lastTokens and contextBaseline of an agent (no route returns them)'), gap('W2-A', 'one-call batch read: document, config, status meta and the last 200 display entries')],
-  }),
-  [IPC.DOC_GET_HEADER]: proxied('invoke', ['GET /agents/:id/document', 'GET /agents/:id/config', 'GET /agents/:id/meta'], {
-    gaps: [OPEN_DOC, gap('W2-A', 'one-call header read: document, config, status meta (called at every main-loop turn end)')],
-  }),
+  [IPC.DOC_CLEAR_CHAT]: proxied('invoke', ['DELETE /agents/:id/chat'], { gaps: [gap('W1-B', 'main-loop clear resets the mesh session (meshManager.resetAgentSession)')] }),
+  [IPC.DOC_GET_INBOX]: proxied('invoke', ['GET /agents/:id/inbox']),
+  [IPC.DOC_CLEAR_INBOX]: proxied('invoke', ['DELETE /agents/:id/inbox'], { gaps: [gap('W2-B', 'clearing the inbox emits the inbox topic with an empty inbox')] }),
+  [IPC.DOC_GET_OUTBOX]: proxied('invoke', ['GET /agents/:id/outbox']),
+  [IPC.DOC_GET_BATCH]: proxied('invoke', ['GET /agents/:id/batch']),
+  [IPC.DOC_GET_HEADER]: proxied('invoke', ['GET /agents/:id/header']),
 
   // --- Agent runtime ---------------------------------------------------------
   [IPC.AGENT_START]: proxied('invoke', ['POST /agents/:id/start', 'GET /agents/:id/status', 'GET /agents/:id/tasks', 'GET /agents/:id/asks'], {
     gaps: [
-      gap('W2-A', 'start assembles a runtime on the open document'),
-      gap('W1-A', 'provider_missing / provider_unconfigured preflight codes'),
+      gap('W3-A', 'start with hasUserMessage (skip the startup turn\'s greeting when a message is queued); the answer carries the runtime sessionId'),
       gap('W2-B', 'set the session focus to the started agent'),
       ...RECIPE,
     ],
     note: 'The reuse path (agent already running) returns sessionId, agentState, pendingApprovals and pendingAsks.',
   }),
-  [IPC.AGENT_STOP]: proxied('invoke', ['POST /agents/:id/stop'], { gaps: [gap('W2-A', 'stop keeps the document open while the session holds it')] }),
+  [IPC.AGENT_STOP]: proxied('invoke', ['POST /agents/:id/stop']),
   [IPC.AGENT_STATUS]: proxied('invoke', ['GET /agents/:id/status']),
   [IPC.AGENT_INVOKE]: proxied('invoke', ['POST /agents/:id/chat'], {
-    gaps: [gap('W2-A', 'content blocks (images, files) in the chat body; the route takes text only')],
     note: 'filePath may name a background agent; loop selects the stream.',
   }),
   [IPC.AGENT_COMPACT]: proxied('invoke', ['POST /agents/:id/compact']),
   [IPC.AGENT_EVENT]: proxied('push', [], {
     frame: 'executor',
-    gaps: [gap('W2-B', 'executor frames, deltas for the focused agent only'), gap('W1-A', 'trigger_message, trigger errors and startup-dispatch failures through the host attachment')],
+    gaps: [gap('W2-B', 'executor frames, deltas for the focused agent only')],
     note: 'Focused agent only. Mesh inter_agent_message and chat_updated outside the executor are synthesized onto this channel (§7).',
   }),
   [IPC.AGENT_TOOL_APPROVAL_RESPOND]: proxied('invoke', ['POST /agents/:id/tasks/:taskId/resolve'], { note: 'requestId is the HIL task id; feedback maps to reason.' }),
@@ -251,11 +221,10 @@ export const CHANNEL_MAP = {
   [IPC.AGENT_SUSPEND_RESPOND]: proxied('invoke', ['POST /agents/:id/suspend/respond']),
 
   // --- Models and settings ---------------------------------------------------
-  [IPC.MODELS_LIST]: proxied('invoke', ['GET /runtime/models'], { gaps: [OPEN_DOC, PATH_FILE], note: 'filePath maps to agentId for ADF-stored providers.' }),
+  [IPC.MODELS_LIST]: proxied('invoke', ['GET /runtime/models'], { note: 'filePath maps to agentId for ADF-stored providers.' }),
   [IPC.SETTINGS_GET]: proxied('invoke', ['GET /settings'], {
     note: 'Returns {...daemonSettings, ...clientSettings} (§4.2); provider apiKey arrives as __redacted__. Studio main runs the client-key migrations on studio-client-settings.json when it loads it (daemon-mode/settings.ts).' }),
   [IPC.SETTINGS_SET]: proxied('invoke', ['PATCH /settings'], {
-    gaps: [gap('W1-A', 'apply sandboxMaxWorkers live (read once at boot, daemon/index.ts:183), like the prompt keys')],
     note: 'Split by settingsKeyClass(): client keys go to studio-client-settings.json, backend keys to the daemon. menuBarEnabled applies in Studio main.',
   }),
 
@@ -274,7 +243,7 @@ export const CHANNEL_MAP = {
   [IPC.TEMPLATE_SET_CONFIG]: proxied('invoke', ['PUT /templates/:id/config']),
   [IPC.TEMPLATE_SET_FILE]: proxied('invoke', ['PUT /templates/:id/files']),
   [IPC.TEMPLATE_ADD_FILES]: proxied('invoke', ['PUT /templates/:id/files'], {
-    gaps: [gap('W1-E', 'binary template extra files up to 25 MiB; the route takes text content in a 1 MiB JSON body')],
+    gaps: [gap('W3-A', 'binary template extra files up to 25 MiB; PUT /templates/:id/files takes text content in a 1 MiB JSON body')],
     note: 'Native multi-select dialog in Studio main; Studio reads the picked files locally.',
   }),
   [IPC.TEMPLATE_REMOVE_FILE]: proxied('invoke', ['DELETE /templates/:id/files']),
@@ -282,13 +251,11 @@ export const CHANNEL_MAP = {
   [IPC.TEMPLATE_REVIEW_ACCEPT]: proxied('invoke', ['POST /templates/:id/review/accept']),
 
   // --- Tracked directories ---------------------------------------------------
-  [IPC.TRACKED_DIRS_GET]: proxied('invoke', ['GET /tracked-dirs'], { gaps: [gap('W1-E', 'tracked-dir watcher (embedded starts it from TRACKED_DIRS_GET)')] }),
+  [IPC.TRACKED_DIRS_GET]: proxied('invoke', ['GET /tracked-dirs']),
   [IPC.TRACKED_DIRS_ADD]: variant('invoke', ['POST /tracked-dirs'], REMOTE_FOLDER_PICKER, { note: 'Native folder dialog in Studio main.' }),
   [IPC.TRACKED_DIRS_REMOVE]: proxied('invoke', ['DELETE /tracked-dirs']),
-  [IPC.TRACKED_DIRS_SCAN]: proxied('invoke', ['GET /tracked-dirs/agents'], {
-    gaps: [gap('W1-E', 'folder tree scan in the TrackedDirEntry shape: children, pendingName, messaging fields, agentId, icon, did')],
-  }),
-  [IPC.TRACKED_DIRS_CHANGED]: proxied('push', [], { frame: 'push:tracked_dirs', gaps: [gap('W1-E', 'watcher emits tracked_dirs'), streamTopic('tracked_dirs')] }),
+  [IPC.TRACKED_DIRS_SCAN]: proxied('invoke', ['GET /tracked-dirs/tree']),
+  [IPC.TRACKED_DIRS_CHANGED]: proxied('push', [], { frame: 'push:tracked_dirs', gaps: [streamTopic('tracked_dirs')] }),
 
   // --- Mesh ------------------------------------------------------------------
   [IPC.MESH_ENABLE]: proxied('invoke', ['POST /network/mesh/enable']),
@@ -307,7 +274,6 @@ export const CHANNEL_MAP = {
   [IPC.MESH_MESSAGE_AGENTS]: proxied('invoke', ['POST /fleet/message']),
   [IPC.MESH_SET_AGENT_STATE]: proxied('invoke', ['POST /agents/:id/state']),
   [IPC.MESH_FOUND_AGENT]: proxied('invoke', ['POST /agents/create', 'GET /settings/:key'], {
-    gaps: [gap('W2-A', 'create without load (load: false); the file stays closed after creating (ipc/index.ts:6089), POST /agents/create loads and starts it'), CREATE_TRACKED_PUSH],
     note: 'Studio main checks the destination against trackedDirectories (newRoot: sibling of a tracked root) and slugs the file name.',
   }),
 
@@ -318,21 +284,20 @@ export const CHANNEL_MAP = {
   }),
   [IPC.BACKGROUND_AGENT_EVENT_BATCH]: proxied('push', [], {
     frame: 'executor',
-    gaps: [gap('W2-B', 'executor and host frames for every agent'), gap('W1-A', 'agent_starting ... agent_stopped host lifecycle events')],
+    gaps: [gap('W2-B', 'executor and host frames for every agent')],
     note: 'Non-focused agents: frames go through background-event-mapping.ts (W1-F) and BackgroundEventBatcher (W2-C). Also fed by host frames.',
   }),
-  [IPC.BACKGROUND_AGENT_STATUS]: proxied('invoke', ['GET /agents'], { gaps: [gap('W1-A', 'in-flight starts (embedded `starting`): agent_starting / agent_start_failed host events')] }),
+  [IPC.BACKGROUND_AGENT_STATUS]: proxied('invoke', ['GET /agents'], { gaps: [gap('W2-B', 'in-flight starts (embedded `starting`): host frames agent_starting / agent_start_failed (GET /agents lists loaded agents only)')] }),
   [IPC.BACKGROUND_AGENT_STOP]: proxied('invoke', ['POST /agents/:id/stop']),
   [IPC.BACKGROUND_AGENT_ASK_RESPOND]: proxied('invoke', ['POST /agents/:id/asks/:requestId/respond']),
   [IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND]: proxied('invoke', ['POST /agents/:id/tasks/:taskId/resolve']),
   [IPC.BACKGROUND_AGENT_ALWAYS_APPROVE]: proxied('invoke', ['POST /agents/:id/tasks/:taskId/always-approve']),
 
   // --- Directory bulk operations ---------------------------------------------
-  [IPC.DIRECTORY_START_ALL]: proxied('invoke', ['POST /agents/load'], {
-    gaps: [FS_BROWSE],
+  [IPC.DIRECTORY_START_ALL]: proxied('invoke', ['POST /agents/load', 'GET /fs/browse'], {
     note: 'The .adf files directly in dirPath (not recursive), skipping the open file, with requireReview: false.',
   }),
-  [IPC.DIRECTORY_STOP_ALL]: proxied('invoke', ['POST /agents/:id/stop'], { gaps: [FS_BROWSE] }),
+  [IPC.DIRECTORY_STOP_ALL]: proxied('invoke', ['POST /agents/:id/stop', 'GET /fs/browse']),
 
   // --- Tools and token usage -------------------------------------------------
   [IPC.TOOLS_DESCRIPTIONS]: proxied('invoke', ['GET /runtime/tools/descriptions', 'GET /agents/:id/tools'], {
@@ -352,42 +317,39 @@ export const CHANNEL_MAP = {
   [IPC.DASHBOARD_AGENT_STATS]: proxied('invoke', ['GET /dashboard/agent-stats']),
 
   // --- Timers ----------------------------------------------------------------
-  [IPC.DOC_GET_TIMERS]: proxied('invoke', ['GET /agents/:id/timers'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_ADD_TIMER]: proxied('invoke', ['POST /agents/:id/timers'], { gaps: [OPEN_DOC], note: 'The daemon validates `loop` against the declared loops (requireLoopName, runtime-service.ts:1446).' }),
-  [IPC.DOC_UPDATE_TIMER]: proxied('invoke', ['PUT /agents/:id/timers/:timerId'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_DELETE_TIMER]: proxied('invoke', ['DELETE /agents/:id/timers/:timerId'], { gaps: [OPEN_DOC] }),
+  [IPC.DOC_GET_TIMERS]: proxied('invoke', ['GET /agents/:id/timers']),
+  [IPC.DOC_ADD_TIMER]: proxied('invoke', ['POST /agents/:id/timers'], { note: 'The daemon validates `loop` against the declared loops (requireLoopName, runtime-service.ts:1446).' }),
+  [IPC.DOC_UPDATE_TIMER]: proxied('invoke', ['PUT /agents/:id/timers/:timerId']),
+  [IPC.DOC_DELETE_TIMER]: proxied('invoke', ['DELETE /agents/:id/timers/:timerId']),
 
   // --- Internal files --------------------------------------------------------
-  [IPC.DOC_GET_FILES]: proxied('invoke', ['GET /agents/:id/files'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_UPLOAD_FILE]: proxied('invoke', ['PUT /agents/:id/files/content'], {
-    gaps: [OPEN_DOC, RAW_FILE, gap('W1-E', 'unique naming on upload (writeFileBufferUnique)')],
-  }),
-  [IPC.DOC_IMPORT_PATHS]: proxied('invoke', ['PUT /agents/:id/files/content'], {
-    gaps: [OPEN_DOC, RAW_FILE],
+  [IPC.DOC_GET_FILES]: proxied('invoke', ['GET /agents/:id/files']),
+  [IPC.DOC_UPLOAD_FILE]: proxied('invoke', ['PUT /agents/:id/files/raw'], { note: 'unique=true names the file as writeFileBufferUnique does.' }),
+  [IPC.DOC_IMPORT_PATHS]: proxied('invoke', ['PUT /agents/:id/files/raw'], {
     note: 'The dropped paths are on the Studio machine: Studio main reads them (directories recurse) and uploads.',
   }),
-  [IPC.DOC_PICK_AND_IMPORT]: proxied('invoke', ['PUT /agents/:id/files/content'], { gaps: [OPEN_DOC, RAW_FILE], note: 'Native picker and file reads in Studio main, then upload.' }),
-  [IPC.DOC_DELETE_INTERNAL_FILE]: proxied('invoke', ['DELETE /agents/:id/files/content'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_RENAME_INTERNAL_FILE]: proxied('invoke', ['POST /agents/:id/files/rename'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_RENAME_FOLDER]: proxied('invoke', ['POST /agents/:id/files/rename-folder'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_SET_FILE_PROTECTION]: proxied('invoke', ['PATCH /agents/:id/files/protection'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_SET_FILE_AUTHORIZED]: proxied('invoke', ['PATCH /agents/:id/files/authorized'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_READ_INTERNAL_FILE]: proxied('invoke', ['GET /agents/:id/files/content'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_WRITE_INTERNAL_FILE]: proxied('invoke', ['PUT /agents/:id/files/content'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_DOWNLOAD_INTERNAL_FILE]: proxied('invoke', ['GET /agents/:id/files/content'], { gaps: [OPEN_DOC, RAW_FILE], note: 'Save dialog and the write stay in Studio main.' }),
+  [IPC.DOC_PICK_AND_IMPORT]: proxied('invoke', ['PUT /agents/:id/files/raw'], { note: 'Native picker and file reads in Studio main, then upload.' }),
+  [IPC.DOC_DELETE_INTERNAL_FILE]: proxied('invoke', ['DELETE /agents/:id/files/content']),
+  [IPC.DOC_RENAME_INTERNAL_FILE]: proxied('invoke', ['POST /agents/:id/files/rename']),
+  [IPC.DOC_RENAME_FOLDER]: proxied('invoke', ['POST /agents/:id/files/rename-folder']),
+  [IPC.DOC_SET_FILE_PROTECTION]: proxied('invoke', ['PATCH /agents/:id/files/protection']),
+  [IPC.DOC_SET_FILE_AUTHORIZED]: proxied('invoke', ['PATCH /agents/:id/files/authorized']),
+  [IPC.DOC_READ_INTERNAL_FILE]: proxied('invoke', ['GET /agents/:id/files/meta', 'GET /agents/:id/files/raw']),
+  [IPC.DOC_WRITE_INTERNAL_FILE]: proxied('invoke', ['PUT /agents/:id/files/content']),
+  [IPC.DOC_DOWNLOAD_INTERNAL_FILE]: proxied('invoke', ['GET /agents/:id/files/raw'], { note: 'Save dialog and the write stay in Studio main.' }),
 
   // --- Meta, logs, tasks, local tables ---------------------------------------
-  [IPC.DOC_GET_ALL_META]: proxied('invoke', ['GET /agents/:id/meta'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_SET_META]: proxied('invoke', ['PUT /agents/:id/meta/:key'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_DELETE_META]: proxied('invoke', ['DELETE /agents/:id/meta/:key'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_SET_META_PROTECTION]: proxied('invoke', ['PATCH /agents/:id/meta/:key/protection'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_GET_LOGS]: proxied('invoke', ['GET /agents/:id/logs'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_GET_LOGS_AFTER]: proxied('invoke', ['GET /agents/:id/logs/after'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_CLEAR_LOGS]: proxied('invoke', ['DELETE /agents/:id/logs'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_GET_TASKS]: proxied('invoke', ['GET /agents/:id/tasks'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_LIST_LOCAL_TABLES]: proxied('invoke', ['GET /agents/:id/tables'], { gaps: [OPEN_DOC] }),
-  [IPC.DOC_QUERY_LOCAL_TABLE]: proxied('invoke', ['GET /agents/:id/tables/:table'], { gaps: [OPEN_DOC], note: 'Accepts local_* tables and adf_audit, as the daemon does (runtime-service.ts:2659).' }),
-  [IPC.DOC_DROP_LOCAL_TABLE]: proxied('invoke', ['DELETE /agents/:id/tables/:table'], { gaps: [OPEN_DOC] }),
+  [IPC.DOC_GET_ALL_META]: proxied('invoke', ['GET /agents/:id/meta']),
+  [IPC.DOC_SET_META]: proxied('invoke', ['PUT /agents/:id/meta/:key']),
+  [IPC.DOC_DELETE_META]: proxied('invoke', ['DELETE /agents/:id/meta/:key']),
+  [IPC.DOC_SET_META_PROTECTION]: proxied('invoke', ['PATCH /agents/:id/meta/:key/protection']),
+  [IPC.DOC_GET_LOGS]: proxied('invoke', ['GET /agents/:id/logs']),
+  [IPC.DOC_GET_LOGS_AFTER]: proxied('invoke', ['GET /agents/:id/logs/after']),
+  [IPC.DOC_CLEAR_LOGS]: proxied('invoke', ['DELETE /agents/:id/logs']),
+  [IPC.DOC_GET_TASKS]: proxied('invoke', ['GET /agents/:id/tasks']),
+  [IPC.DOC_LIST_LOCAL_TABLES]: proxied('invoke', ['GET /agents/:id/tables']),
+  [IPC.DOC_QUERY_LOCAL_TABLE]: proxied('invoke', ['GET /agents/:id/tables/:table'], { note: 'Accepts local_* tables and adf_audit, as the daemon does (runtime-service.ts:2659).' }),
+  [IPC.DOC_DROP_LOCAL_TABLE]: proxied('invoke', ['DELETE /agents/:id/tables/:table']),
 
   // --- Workspace pushes ------------------------------------------------------
   [IPC.INBOX_UPDATED]: proxied('push', [], { frame: 'push:inbox', gaps: [streamTopic('inbox')], note: 'Open file only.' }),
@@ -406,11 +368,11 @@ export const CHANNEL_MAP = {
   [IPC.MCP_GET_SERVER_LOGS]: proxied('invoke', ['GET /admin/mcp/logs/:serverName'], { note: 'Passes the open agent as agentId (session) for its live logs; without one the daemon answers the logs it kept from probe, test and agent runs.' }),
   [IPC.MCP_INSTALL_PROGRESS]: proxied('push', [], { frame: 'push:mcp_install', gaps: [gap('W2-B', 'client-stream push topic `mcp_install`, fed by progress callbacks in the install routes')] }),
   [IPC.MCP_SERVER_STATUS_CHANGED]: proxied('push', [], { frame: 'push:mcp_status', gaps: [streamTopic('mcp_status')], note: 'Open file only.' }),
-  [IPC.MCP_CREDENTIAL_SET]: proxied('invoke', ['PUT /agents/:id/mcp/credentials'], { gaps: [OPEN_DOC, PATH_FILE], note: 'Refuses plaintext when the credentials envelope is locked or foreign.' }),
-  [IPC.MCP_CREDENTIAL_GET]: proxied('invoke', ['GET /agents/:id/mcp/credentials'], { gaps: [OPEN_DOC, PATH_FILE] }),
+  [IPC.MCP_CREDENTIAL_SET]: proxied('invoke', ['PUT /agents/:id/mcp/credentials', 'PUT /files/agent/mcp/credentials'], { note: 'Refuses plaintext when the credentials envelope is locked or foreign.' }),
+  [IPC.MCP_CREDENTIAL_GET]: proxied('invoke', ['GET /agents/:id/mcp/credentials', 'GET /files/agent/mcp/credentials']),
   [IPC.MCP_CREDENTIAL_LIST_FILES]: proxied('invoke', ['GET /credentials/mcp/files']),
-  [IPC.MCP_ATTACH_SERVER]: proxied('invoke', ['POST /agents/:id/mcp/servers'], { gaps: [OPEN_DOC, PATH_FILE] }),
-  [IPC.MCP_DETACH_SERVER]: proxied('invoke', ['DELETE /agents/:id/mcp/servers/:serverName'], { gaps: [OPEN_DOC, PATH_FILE] }),
+  [IPC.MCP_ATTACH_SERVER]: proxied('invoke', ['POST /agents/:id/mcp/servers', 'POST /files/agent/mcp/servers']),
+  [IPC.MCP_DETACH_SERVER]: proxied('invoke', ['DELETE /agents/:id/mcp/servers/:serverName', 'DELETE /files/agent/mcp/servers/:serverName']),
   [IPC.MCP_PICK_ADF_FILE]: variant('invoke', [], REMOTE_FILE_PICKER, { note: 'Native open dialog in Studio main.' }),
   [IPC.MCP_INSTALL_PYTHON_PACKAGE]: proxied('invoke', ['POST /admin/mcp/packages/python']),
   [IPC.MCP_UNINSTALL_PYTHON_PACKAGE]: proxied('invoke', ['DELETE /admin/mcp/packages/python']),
@@ -424,7 +386,7 @@ export const CHANNEL_MAP = {
     gaps: [gap('W2-B', 'push adf_file_created for the brought-home file')],
     note: 'The handler records the client key recentFiles.',
   }),
-  [IPC.AGENT_MODEL_SET_FOR_FILE]: proxied('invoke', ['PUT /agents/:id/config'], { gaps: [OPEN_DOC, PATH_FILE], note: 'Refused for the open file and for a running agent.' }),
+  [IPC.AGENT_MODEL_SET_FOR_FILE]: proxied('invoke', ['PUT /agents/:id/config', 'PUT /files/agent/model'], { note: 'Refused for the open file and for a running agent.' }),
   [IPC.MCP_OAUTH_SIGNOUT]: proxied('invoke', ['POST /admin/mcp/oauth/signout'], { gaps: [gap('W1-C', 'DaemonAppOAuthStore')] }),
   [IPC.MCP_OAUTH_STATUS]: proxied('invoke', ['GET /admin/mcp/oauth/status'], { gaps: [gap('W1-C', 'DaemonAppOAuthStore')] }),
 
@@ -462,29 +424,28 @@ export const CHANNEL_MAP = {
   [IPC.SANDBOX_LIST_INSTALLED]: proxied('invoke', ['GET /admin/sandbox/packages']),
 
   // --- Identity / keystore (per agent) ---------------------------------------
-  [IPC.IDENTITY_SET]: proxied('invoke', ['PUT /agents/:id/identity/:purpose'], { gaps: [OPEN_DOC], note: 'The derived key of a password-protected file lives in the daemon (§5.4).' }),
-  [IPC.IDENTITY_GET]: proxied('invoke', ['GET /agents/:id/identity/:purpose'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_DELETE]: proxied('invoke', ['DELETE /agents/:id/identity/:purpose'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_DELETE_PREFIX]: proxied('invoke', ['DELETE /agents/:id/identity-prefix'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_LIST]: proxied('invoke', ['GET /agents/:id/identity'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_PASSWORD_CHECK]: proxied('invoke', ['GET /agents/:id/identity/password'], { gaps: [OPEN_DOC] }),
+  [IPC.IDENTITY_SET]: proxied('invoke', ['PUT /agents/:id/identity/:purpose'], { note: 'The derived key of a password-protected file lives in the daemon (§5.4).' }),
+  [IPC.IDENTITY_GET]: proxied('invoke', ['GET /agents/:id/identity/:purpose']),
+  [IPC.IDENTITY_DELETE]: proxied('invoke', ['DELETE /agents/:id/identity/:purpose']),
+  [IPC.IDENTITY_DELETE_PREFIX]: proxied('invoke', ['DELETE /agents/:id/identity-prefix']),
+  [IPC.IDENTITY_LIST]: proxied('invoke', ['GET /agents/:id/identity']),
+  [IPC.IDENTITY_PASSWORD_CHECK]: proxied('invoke', ['GET /agents/:id/identity/password']),
   [IPC.IDENTITY_PASSWORD_UNLOCK]: proxied('invoke', ['POST /agents/:id/identity/password/unlock'], {
     gaps: [
-      OPEN_DOC,
       gap('W1-B', 'the derived key reaches provider, MCP, adapters and AdfCallHandler; restart after unlock'),
       gap('W1-C', 'unlock converts the owner\'s own legacy whole-file password to envelopes, keeps the password as a share slot, and returns converted'),
     ],
   }),
   [IPC.IDENTITY_PASSWORD_SET]: local('invoke', 'Deprecated: always refuses. The daemon-mode handler returns the same refusal and MUST NOT call PUT /agents/:id/identity/password.'),
-  [IPC.IDENTITY_PASSWORD_REMOVE]: proxied('invoke', ['DELETE /agents/:id/identity/password'], { gaps: [OPEN_DOC] }),
+  [IPC.IDENTITY_PASSWORD_REMOVE]: proxied('invoke', ['DELETE /agents/:id/identity/password']),
   [IPC.IDENTITY_PASSWORD_CHANGE]: local('invoke', 'Deprecated: always refuses. The daemon-mode handler returns the same refusal.'),
-  [IPC.IDENTITY_LIST_ENTRIES]: proxied('invoke', ['GET /agents/:id/identity/entries'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_REVEAL]: proxied('invoke', ['GET /agents/:id/identity/:purpose'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_WIPE_ALL]: proxied('invoke', ['POST /agents/:id/identity/wipe'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_GET_DID]: proxied('invoke', ['GET /agents/:id/identity/did'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_GENERATE_KEYS]: proxied('invoke', ['POST /agents/:id/identity/generate-keys'], { gaps: [OPEN_DOC], note: 'The daemon issues owner and operator attestations too (runtime-service.ts:1879).' }),
-  [IPC.IDENTITY_CLAIM]: proxied('invoke', ['POST /agents/:id/claim'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_SET_CODE_ACCESS]: proxied('invoke', ['PATCH /agents/:id/identity/:purpose/code-access'], { gaps: [OPEN_DOC] }),
+  [IPC.IDENTITY_LIST_ENTRIES]: proxied('invoke', ['GET /agents/:id/identity/entries']),
+  [IPC.IDENTITY_REVEAL]: proxied('invoke', ['GET /agents/:id/identity/:purpose']),
+  [IPC.IDENTITY_WIPE_ALL]: proxied('invoke', ['POST /agents/:id/identity/wipe']),
+  [IPC.IDENTITY_GET_DID]: proxied('invoke', ['GET /agents/:id/identity/did']),
+  [IPC.IDENTITY_GENERATE_KEYS]: proxied('invoke', ['POST /agents/:id/identity/generate-keys'], { note: 'The daemon issues owner and operator attestations too (runtime-service.ts:1879).' }),
+  [IPC.IDENTITY_CLAIM]: proxied('invoke', ['POST /agents/:id/claim']),
+  [IPC.IDENTITY_SET_CODE_ACCESS]: proxied('invoke', ['PATCH /agents/:id/identity/:purpose/code-access']),
 
   // --- Owner identity --------------------------------------------------------
   [IPC.IDENTITY_OWNER_STATUS]: proxied('invoke', ['GET /identity'], { note: 'Mapped to the Studio status shape (§5.4).' }),
@@ -495,14 +456,14 @@ export const CHANNEL_MAP = {
   [IPC.IDENTITY_OWNER_IMPORT]: unsupported('invoke', [], 'Refused by the daemon (local-only route); Studio shows its message.', {
     gaps: [gap('W1-C', 'POST /identity/import (local-only): importMnemonic, restamp, reload loaded agents')],
   }),
-  [IPC.IDENTITY_ATTESTATIONS_GET]: proxied('invoke', ['GET /agents/:id/attestations'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_ATTESTATIONS_REISSUE]: proxied('invoke', ['POST /agents/:id/attestations/reissue'], { gaps: [OPEN_DOC] }),
+  [IPC.IDENTITY_ATTESTATIONS_GET]: proxied('invoke', ['GET /agents/:id/attestations']),
+  [IPC.IDENTITY_ATTESTATIONS_REISSUE]: proxied('invoke', ['POST /agents/:id/attestations/reissue']),
 
   // --- Envelope keystore -----------------------------------------------------
-  [IPC.IDENTITY_ENVELOPE_STATUS]: proxied('invoke', ['GET /agents/:id/envelope'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_ENVELOPE_SHARE_SET_PASSWORD]: proxied('invoke', ['PUT /agents/:id/envelope/share-password'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD]: proxied('invoke', ['DELETE /agents/:id/envelope/share-password'], { gaps: [OPEN_DOC] }),
-  [IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD]: proxied('invoke', ['POST /agents/:id/envelope/unlock-password'], { gaps: [OPEN_DOC] }),
+  [IPC.IDENTITY_ENVELOPE_STATUS]: proxied('invoke', ['GET /agents/:id/envelope']),
+  [IPC.IDENTITY_ENVELOPE_SHARE_SET_PASSWORD]: proxied('invoke', ['PUT /agents/:id/envelope/share-password']),
+  [IPC.IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD]: proxied('invoke', ['DELETE /agents/:id/envelope/share-password']),
+  [IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD]: proxied('invoke', ['POST /agents/:id/envelope/unlock-password']),
 
   // --- Channel adapters ------------------------------------------------------
   [IPC.ADAPTER_INSTALL_PACKAGE]: proxied('invoke', ['POST /admin/adapters/packages'], { note: 'Progress arrives as ADAPTER_INSTALL_PROGRESS.' }),
@@ -515,18 +476,18 @@ export const CHANNEL_MAP = {
   [IPC.ADAPTER_GET_LOGS]: proxied('invoke', ['GET /agents/:id/runtime/adapters'], { note: 'Logs ride in states[].' }),
   [IPC.ADAPTER_INSTALL_PROGRESS]: proxied('push', [], { frame: 'push:adapter_install', gaps: [gap('W2-B', 'client-stream push topic `adapter_install`, fed by progress callbacks in the install route')] }),
   [IPC.ADAPTER_STATUS_CHANGED]: proxied('push', [], { frame: 'push:adapter_status', gaps: [streamTopic('adapter_status')], note: 'Open file only.' }),
-  [IPC.ADAPTER_CREDENTIAL_SET]: proxied('invoke', ['PUT /agents/:id/adapters/credentials'], { gaps: [OPEN_DOC, PATH_FILE] }),
-  [IPC.ADAPTER_CREDENTIAL_GET]: proxied('invoke', ['GET /agents/:id/adapters/credentials'], { gaps: [OPEN_DOC, PATH_FILE], note: 'storedKeys lists rows it cannot decrypt.' }),
+  [IPC.ADAPTER_CREDENTIAL_SET]: proxied('invoke', ['PUT /agents/:id/adapters/credentials', 'PUT /files/agent/adapters/credentials']),
+  [IPC.ADAPTER_CREDENTIAL_GET]: proxied('invoke', ['GET /agents/:id/adapters/credentials', 'GET /files/agent/adapters/credentials'], { note: 'storedKeys lists rows it cannot decrypt.' }),
   [IPC.ADAPTER_CREDENTIAL_LIST_FILES]: proxied('invoke', ['GET /credentials/adapters/files']),
-  [IPC.ADAPTER_ATTACH]: proxied('invoke', ['POST /agents/:id/adapters'], { gaps: [OPEN_DOC, PATH_FILE] }),
-  [IPC.ADAPTER_DETACH]: proxied('invoke', ['DELETE /agents/:id/adapters/:adapterType'], { gaps: [OPEN_DOC, PATH_FILE] }),
+  [IPC.ADAPTER_ATTACH]: proxied('invoke', ['POST /agents/:id/adapters', 'POST /files/agent/adapters']),
+  [IPC.ADAPTER_DETACH]: proxied('invoke', ['DELETE /agents/:id/adapters/:adapterType', 'DELETE /files/agent/adapters/:adapterType']),
 
   // --- Provider credentials (per agent) --------------------------------------
-  [IPC.PROVIDER_CREDENTIAL_SET]: proxied('invoke', ['PUT /agents/:id/providers/:providerId/credential'], { gaps: [OPEN_DOC, PATH_FILE] }),
-  [IPC.PROVIDER_CREDENTIAL_GET]: proxied('invoke', ['GET /agents/:id/providers/:providerId/credentials'], { gaps: [OPEN_DOC, PATH_FILE] }),
+  [IPC.PROVIDER_CREDENTIAL_SET]: proxied('invoke', ['PUT /agents/:id/providers/:providerId/credential', 'PUT /files/agent/providers/:providerId/credential']),
+  [IPC.PROVIDER_CREDENTIAL_GET]: proxied('invoke', ['GET /agents/:id/providers/:providerId/credentials', 'GET /files/agent/providers/:providerId/credentials']),
   [IPC.PROVIDER_CREDENTIAL_LIST_FILES]: proxied('invoke', ['GET /credentials/providers/files']),
-  [IPC.PROVIDER_ATTACH]: proxied('invoke', ['POST /agents/:id/providers'], { gaps: [OPEN_DOC, PATH_FILE] }),
-  [IPC.PROVIDER_DETACH]: proxied('invoke', ['DELETE /agents/:id/providers/:providerId'], { gaps: [OPEN_DOC, PATH_FILE] }),
+  [IPC.PROVIDER_ATTACH]: proxied('invoke', ['POST /agents/:id/providers', 'POST /files/agent/providers']),
+  [IPC.PROVIDER_DETACH]: proxied('invoke', ['DELETE /agents/:id/providers/:providerId', 'DELETE /files/agent/providers/:providerId']),
   [IPC.PROVIDER_AGENT_KEY_SOURCES]: proxied('invoke', ['POST /credentials/providers/key-sources']),
   [IPC.PROVIDER_TEST]: proxied('invoke', ['POST /runtime/providers/:id/test']),
 
@@ -568,15 +529,8 @@ export const CHANNEL_MAP = {
   }),
 
   // --- Agent review ----------------------------------------------------------
-  [IPC.FILE_CHECK_REVIEW]: proxied('invoke', ['GET /agents/review'], {
-    gaps: [gap('W2-A', 'review summary parity: identity scenario (deriveReviewIdentity), provider usability (honours providerChecksEnabled), willRelocate and relocateTo')],
-  }),
-  [IPC.FILE_REVIEW_ACCEPT]: proxied('invoke', ['POST /agents/review/accept'], {
-    gaps: [
-      gap('W2-A', 'accept parity: claim (removes a legacy whole-file password first, needs the derived key), model override, auto-locked fields, envelope provisioning (the route only marks the config reviewed)'),
-      gap('W1-E', 'move an untracked file into the agents folder on accept (persistAcceptedAgent)'),
-    ],
-  }),
+  [IPC.FILE_CHECK_REVIEW]: proxied('invoke', ['GET /agents/review']),
+  [IPC.FILE_REVIEW_ACCEPT]: proxied('invoke', ['POST /agents/review/accept', 'POST /files/relocate'], { note: 'An untracked file moves into the agents folder after the accept (POST /files/relocate), as persistAcceptedAgent.' }),
 
   // --- Open file request, dialogs, app ---------------------------------------
   [IPC.OPEN_FILE_REQUEST]: local('push', 'Finder / menu / second-instance open; the renderer then calls FILE_OPEN.'),

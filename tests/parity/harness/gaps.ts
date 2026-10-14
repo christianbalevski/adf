@@ -1,6 +1,7 @@
 import { IPC } from '../../../src/shared/constants/ipc-channels'
 import { CLIENT_SETTINGS_KEYS } from '../../../src/shared/constants/client-settings-keys'
 import { clientSettingsDefaults } from '../../../src/main/backend/daemon-mode/settings'
+import { EMULATE_W4A } from './daemon-backend'
 import type { ComparableRecording, StepRecord } from './recording'
 
 /**
@@ -70,15 +71,33 @@ const eventLineType = (line: string): string | null => {
   return m ? m[1] : null
 }
 
-/** The Help items daemon mode adds (menu.ts daemonHelpItems). */
-function stripDaemonHelp(items: unknown): unknown {
-  if (!Array.isArray(items)) return items
-  return items.map((item) => {
-    const i = item as { role?: string; submenu?: Array<{ label?: string; type?: string }> }
-    if (i.role !== 'help' || !Array.isArray(i.submenu)) return item
-    const docs = i.submenu.findIndex((s) => s.label === 'ADF Studio Documentation')
-    return { ...i, submenu: i.submenu.slice(0, docs + 1) }
+type MenuItem = { label?: string; type?: string; role?: string; enabled?: boolean; submenu?: MenuItem[] }
+const STATUS_LINE = /^ADF daemon: /
+
+/**
+ * The Help items daemon mode adds (menu.ts daemonHelpItems), stripped one by
+ * one: the separator and "Open Daemon Log" right after "ADF Studio
+ * Documentation", then the disabled status line and "Reconnect to the ADF
+ * Daemon" when present. Anything else stays (and shows in the diff).
+ * Answers null when the menu lacks the daemon items.
+ */
+function stripDaemonHelp(items: unknown): { items: MenuItem[]; status: boolean } | null {
+  if (!Array.isArray(items)) return null
+  let found = false
+  let status = false
+  const out = (items as MenuItem[]).map((item) => {
+    if (item.role !== 'help' || !Array.isArray(item.submenu)) return item
+    const sub = [...item.submenu]
+    const at = sub.findIndex((s) => s.label === 'ADF Studio Documentation') + 1
+    if (at === 0 || sub[at]?.type !== 'separator' || sub[at + 1]?.label !== 'Open Daemon Log') return item
+    found = true
+    let end = at + 2
+    if (sub[end]?.enabled === false && STATUS_LINE.test(sub[end]?.label ?? '')) { status = true; end++ }
+    if (status && sub[end]?.label === 'Reconnect to the ADF Daemon') end++
+    sub.splice(at, end - at)
+    return { ...item, submenu: sub }
   })
+  return found ? { items: out, status } : null
 }
 
 // --- the list -----------------------------------------------------------------
@@ -91,6 +110,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     path: 'harness: emulateLocalModeSwitch() (daemon-backend.ts)',
     what: 'The harness does what the switch to local mode will do: client keys moved to studio-client-settings.json, owner phrase and studio-runtime entry in the (test) keychain.',
     apply(d) {
+      if (!EMULATE_W4A) return 0
       // Proof the emulation ran: the client file holds client keys only.
       const client = d.state.userDataJson['studio-client-settings.json'] as Record<string, unknown> | undefined
       const keys = new Set<string>(CLIENT_SETTINGS_KEYS)
@@ -98,30 +118,38 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2a:open-document-reads',
-    ws: 'W2-A',
+    id: 'w2b:open-document-reads',
+    ws: 'W2-B',
     scenarios: ALL,
-    path: 'steps: DOC_GET_BATCH and DOC_READ_INTERNAL_FILE before the agent runs (and their `(threw)` timeline markers)',
-    what: 'Reading a file that is not running throws "not available in daemon mode yet: W2-A": no open documents.',
+    path: 'steps: every DOC_GET_BATCH and DOC_READ_INTERNAL_FILE before the first AGENT_START (and their `(threw)` timeline markers), no other step',
+    what: 'Reading a file that is not running throws "not available in daemon mode yet: W2-B": the daemon serves open documents (W2-A), but Studio holds one only through its client session.',
     apply(d, e) {
-      let n = 0
-      d.steps.forEach((step, i) => {
+      const reads = new Set<string>([IPC.DOC_GET_BATCH, IPC.DOC_READ_INTERNAL_FILE])
+      const start = e.steps.findIndex((s) => s.kind === 'invoke' && s.channel === IPC.AGENT_START)
+      const before = start < 0 ? e.steps : e.steps.slice(0, start)
+      const want = before.filter((s) => s.kind === 'invoke' && reads.has(s.channel)).length
+      const hits: number[] = []
+      for (const [i, step] of d.steps.entries()) {
         const base = e.steps[i]
-        if (step.kind !== 'invoke-error' || base?.kind !== 'invoke' || base.channel !== step.channel) return
-        if ((step.error as { code?: unknown }).code !== 'daemon_mode_unavailable' || !/W2-A/.test(step.error.message)) return
-        d.steps[i] = clone(base)
+        if (step.kind !== 'invoke-error' || base?.kind !== 'invoke' || base.channel !== step.channel) continue
+        if (!reads.has(step.channel) || (start >= 0 && i >= start)) return 0
+        if ((step.error as { code?: unknown }).code !== 'daemon_mode_unavailable' || !/: W2-B\b/.test(step.error.message)) return 0
+        hits.push(i)
+      }
+      if (hits.length !== want) return 0
+      for (const i of hits) {
+        d.steps[i] = clone(e.steps[i])
         for (const lines of Object.values(d.timelines)) {
           const at = lines.indexOf(`< ${i + 1} (threw)`)
           if (at >= 0) lines[at] = `< ${i + 1}`
         }
-        n++
-      })
-      return n
+      }
+      return hits.length
     },
   },
   {
-    id: 'w2a:start-session-id',
-    ws: 'W2-A',
+    id: 'w3a:start-session-id',
+    ws: 'W3-A',
     scenarios: RUNNING,
     path: 'steps: AGENT_START result `sessionId`',
     what: 'The start route answers no runtime session id.',
@@ -177,11 +205,11 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2a:identity-on-open',
-    ws: 'W2-A',
+    id: 'w2b:identity-on-open',
+    ws: 'W2-B',
     scenarios: ALL,
     path: 'state: adf_identity and adf_attestations rows',
-    what: 'Opening does not provision the agent identity (ensureWorkspaceIdentity on open): no keys, no owner and operator attestations.',
+    what: 'The daemon runs its open steps (ensureWorkspaceIdentity on open, W2-A) only for a document a client session holds: no keys, no owner and operator attestations.',
     apply(d, e) {
       let n = 0
       for (const name of ['adf_identity', 'adf_attestations']) {
@@ -194,11 +222,11 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2a:identity-meta',
-    ws: 'W2-A',
+    id: 'w2b:identity-meta',
+    ws: 'W2-B',
     scenarios: ALL,
     path: 'state: adf_meta rows adf_did, adf_owner_did, adf_runtime_did',
-    what: 'Same cause as w2a:identity-on-open: the identity stamps are written on open.',
+    what: 'Same cause as w2b:identity-on-open: the identity stamps are written on open.',
     apply(d, e) {
       let n = 0
       for (const { file, rows } of table(d, 'adf_meta')) {
@@ -215,11 +243,11 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2a:open-document-handle',
-    ws: 'W2-A',
+    id: 'w2b:open-document-handle',
+    ws: 'W2-B',
     scenarios: NOT_RUNNING_AT_DUMP,
     path: 'state: adf_meta row adf_clean_close',
-    what: 'Nothing holds the file open (no open document), so the fixture\'s clean-close marker stays set.',
+    what: 'Nothing holds the file open (no client session to hold it), so the fixture\'s clean-close marker stays set.',
     apply(d, e) {
       let n = 0
       for (const { file, rows } of table(d, 'adf_meta')) {
@@ -232,11 +260,11 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2a:open-document-wal',
-    ws: 'W2-A',
+    id: 'w2b:open-document-wal',
+    ws: 'W2-B',
     scenarios: NOT_RUNNING_AT_DUMP,
     path: 'state.tree: the -wal and -shm files of an open agent file',
-    what: 'Same cause as w2a:open-document-handle: the file is not held open, so no -wal/-shm beside it.',
+    what: 'Same cause as w2b:open-document-handle: the file is not held open, so no -wal/-shm beside it.',
     apply(d, e) {
       let n = 0
       for (const line of e.state.tree) {
@@ -252,19 +280,22 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     id: 'mode:help-menu',
     ws: 'mode',
     scenarios: ALL,
-    path: 'local calls: Menu.setApplicationMenu',
-    what: 'Daemon mode adds "Open Daemon Log" and the connection status line to Help (§8.1) and rebuilds the menu on every connection change.',
-    apply(d) {
+    path: 'local calls: Menu.setApplicationMenu (Help: the separator, "Open Daemon Log", the status line, "Reconnect to the ADF Daemon")',
+    what: 'Daemon mode adds a separator, "Open Daemon Log" and, while not connected, the status line (and "Reconnect to the ADF Daemon") to Help (§8.1). A menu built while not connected (at boot: connecting) is rebuilt on connect; those calls carry the status line and are the daemon mode\'s own.',
+    apply(d, e) {
+      const menus = (calls: typeof d.local) => calls.filter((c) => c.api === 'Menu.setApplicationMenu').length
       let n = 0
       const out: typeof d.local = []
       for (const call of d.local) {
         if (call.api !== 'Menu.setApplicationMenu') { out.push(call); continue }
-        const stripped = { ...call, args: [stripDaemonHelp(call.args[0])] }
-        if (!same(stripped, call)) n++
-        const prev = out[out.length - 1]
-        if (prev?.api === 'Menu.setApplicationMenu' && same(prev, stripped)) continue
-        out.push(stripped)
+        const stripped = stripDaemonHelp(call.args[0])
+        if (!stripped) return 0
+        n++
+        if (stripped.status) continue
+        out.push({ ...call, args: [stripped.items, ...call.args.slice(1)] })
       }
+      // Every remaining call is one embedded makes too.
+      if (menus(out) !== menus(e.local)) return 0
       d.local = out
       return n
     },
@@ -377,7 +408,20 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     scenarios: ALL,
     path: 'state.leases and their tree lines: runtime host and Studio records',
     what: 'In daemon mode the daemon is the runtime host (hosts/<pid:daemon>.json, lease holder kind daemon, with its controlUrl, §10.2) and Studio a client (clients/<pid>.json, §10.3); mapped to the embedded roles.',
-    apply(d) {
+    apply(d, e) {
+      // Checked before anything is rewritten: Studio's client record is the
+      // embedded host record in client form, and every daemon record names
+      // the daemon's own port.
+      const client = d.state.leases['clients/<pid:this-process>.json'] as Record<string, unknown> | undefined
+      const host = e.state.leases['hosts/<pid:this-process>.json'] as Record<string, unknown> | undefined
+      if (!client || !host) return 0
+      const { containers: _c, ...hostFields } = host
+      const wantClient = { ...hostFields, kind: 'studio-client', mode: 'local', endpoint: '<lease-endpoint:studio-client>', runtimeId: '<lease-runtime-id:studio-client>', controlUrl: client.controlUrl }
+      if (typeof client.controlUrl !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(client.controlUrl) || !same(client, wantClient)) return 0
+      const daemonRecords = Object.values(d.state.leases).map((rec) => rec as Record<string, unknown>)
+        .flatMap((r) => [r, ...(r.holder && typeof r.holder === 'object' ? [r.holder as Record<string, unknown>] : [])])
+        .filter((r) => r.kind === 'daemon')
+      if (daemonRecords.length === 0 || daemonRecords.some((r) => r.controlUrl !== 'http://127.0.0.1:<DAEMON_PORT>')) return 0
       let n = 0
       const role = (r: Record<string, unknown>) => {
         if (r.kind !== 'daemon') return
