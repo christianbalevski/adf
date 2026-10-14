@@ -9,15 +9,17 @@
  *
  * Layout (one OS user, one machine):
  *
- *   <lease dir>/<sha256(hostname, canonical path)>.json   one lease per agent file
- *   <lease dir>/hosts/<pid>.json                          one entry per runtime host
- *   <lease dir>/clients/<pid>.json                        Studio in local/remote mode
+ *   <lease dir>/<sha256(canonical path)>.json   one lease per agent file
+ *   <lease dir>/hosts/<pid>.json                one entry per runtime host
+ *   <lease dir>/clients/<pid>.json              Studio in local/remote mode
  *
- * The lease dir is `<per-user config dir>/adf/leases` and ignores
- * ADF_USER_DATA_DIR, ADF_DAEMON_SETTINGS and ADF_INSTANCE: hosts on different
- * settings files must still see each other. ADF_LEASE_DIR overrides it (tests).
- * The hostname is part of the key so a config dir shared between machines
- * (roaming profiles) never mixes their leases.
+ * The lease dir is per user and per machine (%LOCALAPPDATA%\adf\leases on
+ * Windows, so a roaming profile never carries it to another machine; the
+ * config dir elsewhere). It ignores ADF_USER_DATA_DIR, ADF_DAEMON_SETTINGS and
+ * ADF_INSTANCE: hosts on different settings files must still see each other.
+ * ADF_LEASE_DIR overrides it (tests). Directories are created 0700. The key is
+ * the canonical path alone; the hostname is recorded for people and never
+ * compared (a machine rename must not split one file into two leases).
  *
  * Crash safety. A lease names its holder's pid and a local endpoint (a named
  * pipe on Windows, a Unix socket elsewhere) the holder listens on for its
@@ -29,9 +31,12 @@
  *                                              connection)
  *   - anything inconclusive (timeout, EBUSY) → live: a lease is never taken
  *                                              from a holder that may be alive
- * A stale lease is replaced with an atomic rename to a tomb file; the taker
- * checks the tomb holds the bytes it judged stale and puts a newer lease back
- * otherwise, so two takers racing on one stale lease cannot both win.
+ * A stale lease is replaced under a per-lease takeover lock
+ * (`<lease>.takeover`, created exclusively): the taker re-reads the lease,
+ * removes it only if it still holds the bytes judged stale, and writes its
+ * own exclusively. Any number of takers racing on one stale lease leave
+ * exactly one holder. Endpoints are probed only in the exact local form this
+ * module creates (never a UNC/SMB path).
  *
  * In-process accounting. A process holds a lease once, however many of its
  * hosts (Studio foreground, BackgroundAgentManager, RuntimeService) touch the
@@ -41,9 +46,11 @@
  * disposing an agent. On process exit the remaining leases are removed.
  *
  * Failure policy. A live holder elsewhere refuses the start (`agent_leased`).
- * A lease dir that cannot be written (permissions, read-only volume) is
- * logged and the start proceeds without cross-process protection: that is
- * today's behaviour, and a broken config dir must not stop every agent.
+ * A lease dir that cannot be written (permissions, read-only volume) lets the
+ * start proceed without cross-process protection (today's behaviour: a broken
+ * dir must not stop every agent). The result carries `unprotected`, a
+ * sentence hosts show the user; the process remembers the broken dir for a
+ * minute so starts do not stall on it.
  */
 
 import { createHash, randomBytes } from 'node:crypto'
@@ -121,7 +128,6 @@ export interface AgentLeaseRegistryOptions extends AgentLeaseHostInfo {
 /** Paths a host runs or is starting. Any form: they are canonicalized here. */
 export type HostedPathsProbe = () => Iterable<string>
 
-const HOSTNAME = osHostname().toLowerCase()
 const DEFAULT_DAEMON_PORT = 7385
 /** How long a liveness probe may take before the holder counts as alive. */
 const PROBE_TIMEOUT_MS = 1500
@@ -131,14 +137,28 @@ const PARTIAL_WRITE_GRACE_MS = 2000
 const ACQUIRE_BUDGET_MS = 5000
 /** Unix socket paths are limited to ~104 bytes (macOS). */
 const MAX_SOCKET_PATH = 100
+/**
+ * Windows reports a file in delete-pending state (another process still has
+ * it open) as EPERM/EACCES/EBUSY. Such an error is retried; it marks the dir
+ * unusable only when a write of a fresh probe file fails the same way.
+ */
 const TRANSIENT_FS_CODES = new Set(['EPERM', 'EBUSY', 'EACCES'])
+/** How long a broken lease dir is remembered before it is tried again. */
+const UNUSABLE_DIR_MEMO_MS = 60_000
+/** A takeover lock this old (or whose pid is gone) was left by a crash. */
+const TAKEOVER_LOCK_TTL_MS = 10_000
+const TAKEOVER_LOCK_WAIT_MS = 2_000
+/** A takeover lock older than this has its pid checked. */
+const TAKEOVER_LOCK_SUSPECT_MS = 500
+const DIR_MODE = 0o700
+const FILE_MODE = 0o600
 
 /** `<per-user config dir>/adf/leases`, or ADF_LEASE_DIR. */
 export function leaseDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.ADF_LEASE_DIR) return resolve(env.ADF_LEASE_DIR)
   let base: string
   if (process.platform === 'darwin') base = join(homedir(), 'Library', 'Application Support')
-  else if (process.platform === 'win32') base = env.APPDATA ?? join(homedir(), 'AppData', 'Roaming')
+  else if (process.platform === 'win32') base = env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local')
   else base = env.XDG_CONFIG_HOME ?? join(homedir(), '.config')
   return join(base, 'adf', 'leases')
 }
@@ -163,7 +183,7 @@ export function leaseKeyForCanonicalPath(canonicalPath: string, platform: NodeJS
   let norm = canonicalPath
   if (platform === 'win32') norm = norm.replace(/\//g, '\\').toLowerCase()
   else if (platform === 'darwin') norm = norm.normalize('NFC').toLowerCase()
-  return createHash('sha256').update(`${HOSTNAME}\n${norm}`).digest('hex')
+  return createHash('sha256').update(norm).digest('hex')
 }
 
 function stripLongPathPrefix(p: string): string {
@@ -258,6 +278,22 @@ function probeEndpoint(endpoint: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<
   })
 }
 
+/**
+ * The holder's endpoint, if it has exactly the local form startEndpoint()
+ * creates for that runtime id. Anything else (a UNC path, a foreign socket)
+ * is never connected to; liveness then rests on the pid.
+ */
+function trustedEndpoint(holder: Pick<LeaseHolder, 'endpoint' | 'runtimeId'>, dir: string): string | null {
+  const { endpoint, runtimeId } = holder
+  if (!endpoint || !/^[0-9a-f]{16}$/.test(runtimeId)) return null
+  if (process.platform === 'win32') return endpoint === pipeName(runtimeId) ? endpoint : null
+  return endpoint === join(dir, 'hosts', `${runtimeId}.sock`) || endpoint === join(tmpdir(), `adf-runtime-${runtimeId}.sock`) ? endpoint : null
+}
+
+function pipeName(runtimeId: string): string {
+  return `\\\\.\\pipe\\adf-runtime-${runtimeId}`
+}
+
 async function fetchDaemonPid(controlUrl: string): Promise<number | null> {
   try {
     const res = await fetch(`${controlUrl.replace(/\/+$/, '')}/version`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
@@ -273,10 +309,11 @@ async function fetchDaemonPid(controlUrl: string): Promise<number | null> {
  * Is the process that wrote this holder record still the one running? Only a
  * definite answer counts as dead; everything inconclusive is alive.
  */
-export async function holderLiveness(holder: LeaseHolder): Promise<{ alive: boolean; reason: string }> {
+export async function holderLiveness(holder: LeaseHolder, dir: string = leaseDir()): Promise<{ alive: boolean; reason: string }> {
   if (!(await pidAlive(holder.pid))) return { alive: false, reason: `pid ${holder.pid} is not running` }
-  if (holder.endpoint) {
-    const probe = await probeEndpoint(holder.endpoint)
+  const endpoint = trustedEndpoint(holder, dir)
+  if (endpoint) {
+    const probe = await probeEndpoint(endpoint)
     if (probe === 'connected') return { alive: true, reason: 'endpoint answered' }
     // A named pipe disappears with its process; a Unix socket file stays
     // behind and refuses. A missing socket file was deleted by someone else
@@ -320,7 +357,7 @@ async function readLease(file: string): Promise<ReadLease | null> {
 /** Write `data` to `file` through a temp file and a rename (readers never see a partial file). */
 async function writeAtomic(file: string, data: string): Promise<void> {
   const tmp = `${file}.${process.pid}-${randomBytes(4).toString('hex')}.tmp`
-  await fsp.writeFile(tmp, data)
+  await fsp.writeFile(tmp, data, { mode: FILE_MODE })
   try {
     await fsp.rename(tmp, file)
   } catch (err) {
@@ -331,7 +368,31 @@ async function writeAtomic(file: string, data: string): Promise<void> {
 
 interface LeaseTarget { key: string; canonical: string; file: string }
 
-interface HeldLease { file: string; record: AgentLeaseRecord }
+/**
+ * Remove our takeover lock. A process reading or stat-ing it at that moment
+ * leaves it delete-pending on Windows (EPERM): retry, since a lock left
+ * behind would block every taker until its TTL.
+ */
+async function unlockTakeover(lock: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    try {
+      await fsp.rm(lock, { force: true })
+      return
+    } catch (err) {
+      const code = errCode(err)
+      if (!code || !TRANSIENT_FS_CODES.has(code)) break
+      await delay(5)
+    }
+  }
+  console.warn(`[AgentLease] Could not remove the takeover lock ${lock}; it expires after ${TAKEOVER_LOCK_TTL_MS / 1000}s`)
+}
+
+interface HeldLease {
+  file: string
+  record: AgentLeaseRecord
+  /** Bumped by every acquire (re-entrant ones too); reconcile releases only an unchanged lease. */
+  generation: number
+}
 
 /** One process 'exit' listener for every registry that holds something. */
 const exitHookRegistries = new Set<AgentLeaseRegistry>()
@@ -365,6 +426,9 @@ export class AgentLeaseRegistry {
   private ready: Promise<void> | null = null
   private hostEntryWritten = false
   private clientMode: string | null = null
+  private generation = 0
+  /** The lease dir refused writes: remembered so every start does not stall on it. */
+  private unusable: { reason: string; at: number } | null = null
 
   constructor(opts: AgentLeaseRegistryOptions = {}) {
     this.dir = opts.dir ?? leaseDir()
@@ -404,7 +468,7 @@ export class AgentLeaseRegistry {
       kind: this.info.kind,
       pid: process.pid,
       runtimeId: this.runtimeId,
-      hostname: HOSTNAME,
+      hostname: osHostname(),
       settingsPath: this.info.settingsPath,
       startedAt: this.startedAt,
       version: this.info.version,
@@ -428,11 +492,24 @@ export class AgentLeaseRegistry {
   async reconcile(): Promise<void> {
     if (this.held.size === 0) return
     try {
-      for (const key of [...this.held.keys()]) {
+      // Every probe and every lease generation in one synchronous snapshot:
+      // awaiting between probes could miss an agent handed from one host to
+      // another in between.
+      const paths: string[] = []
+      for (const probe of [...this.probes]) {
+        try { for (const p of probe()) paths.push(p) } catch (err) {
+          console.error('[AgentLease] Hosted-paths probe failed; nothing released:', err)
+          return
+        }
+      }
+      const generations = new Map([...this.held].map(([key, h]) => [key, h.generation]))
+      const hosted = new Set<string>()
+      for (const p of paths) hosted.add((await this.target(p)).key)
+      for (const [key, generation] of generations) {
+        if (hosted.has(key)) continue
         await this.withKey(key, async () => {
-          if (!this.held.has(key)) return
-          // Re-checked under the key lock: a start may have claimed it meanwhile.
-          if ((await this.hostedKeys()).has(key)) return
+          // Acquired again since the snapshot (a new start): still in use.
+          if (this.held.get(key)?.generation !== generation) return
           await this.releaseLocked(key)
         })
       }
@@ -492,6 +569,7 @@ export class AgentLeaseRegistry {
 
   /** Test / shutdown helper: release everything, remove host entries, close the endpoint. */
   async close(): Promise<void> {
+    await this.ready?.catch(() => {})
     for (const key of [...this.held.keys()]) await this.withKey(key, () => this.releaseLocked(key))
     await this.removeOwnEntries()
     const server = this.server
@@ -538,19 +616,6 @@ export class AgentLeaseRegistry {
     return null
   }
 
-  private async hostedKeys(): Promise<Set<string>> {
-    const keys = new Set<string>()
-    for (const probe of [...this.probes]) {
-      let paths: string[]
-      try { paths = [...probe()] } catch (err) {
-        console.error('[AgentLease] Hosted-paths probe failed:', err)
-        continue
-      }
-      for (const p of paths) keys.add((await this.target(p)).key)
-    }
-    return keys
-  }
-
   private withKey<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.chains.get(key) ?? Promise.resolve()
     const run = prev.then(fn, fn)
@@ -565,29 +630,39 @@ export class AgentLeaseRegistry {
     const name = agentNameOf(target.canonical)
     const own = this.held.get(target.key)
     if (own) {
+      own.generation = ++this.generation
       await this.verifyOwn(target, own)
       return { ok: true, leaseFile: target.file }
+    }
+    if (this.unusable && Date.now() - this.unusable.at < UNUSABLE_DIR_MEMO_MS) {
+      return this.unprotected(name, target, this.unusable.reason, false)
     }
     const record: AgentLeaseRecord = { v: 1, path: target.canonical, agentId, holder: this.holder(), acquiredAt: Date.now() }
     const body = JSON.stringify(record, null, 2)
     const deadline = Date.now() + ACQUIRE_BUDGET_MS
+    const won = (): AgentLeaseResult => {
+      this.held.set(target.key, { file: target.file, record, generation: ++this.generation })
+      this.unusable = null
+      this.installExitHook()
+      return { ok: true, leaseFile: target.file }
+    }
     let lastError: unknown = null
-    let sawLease = false
+    try {
+      await fsp.mkdir(this.dir, { recursive: true, mode: DIR_MODE })
+    } catch (err) {
+      return this.unprotected(name, target, err instanceof Error ? err.message : String(err), true)
+    }
     while (Date.now() < deadline) {
       try {
-        await fsp.mkdir(this.dir, { recursive: true })
-        await fsp.writeFile(target.file, body, { flag: 'wx' })
-        this.held.set(target.key, { file: target.file, record })
-        this.installExitHook()
-        return { ok: true, leaseFile: target.file }
+        await fsp.writeFile(target.file, body, { flag: 'wx', mode: FILE_MODE })
+        return won()
       } catch (err) {
         const code = errCode(err)
         if (code !== 'EEXIST') {
           lastError = err
-          if (code && TRANSIENT_FS_CODES.has(code)) { await delay(50); continue }
-          return this.unprotected(name, target, err)
+          if (code && TRANSIENT_FS_CODES.has(code) && await this.dirWritable()) { await delay(20); continue }
+          return this.unprotected(name, target, err instanceof Error ? err.message : String(err), true)
         }
-        sawLease = true
       }
       let existing: ReadLease | null
       try { existing = await readLease(target.file) } catch (err) {
@@ -601,15 +676,15 @@ export class AgentLeaseRegistry {
         const age = Date.now() - existing.mtimeMs
         if (age < PARTIAL_WRITE_GRACE_MS) { await delay(Math.min(250, PARTIAL_WRITE_GRACE_MS - age + 10)); continue }
         console.warn(`[AgentLease] ${name}: replacing an unreadable lease file ${target.file}`)
-        await this.takeOver(target.file, existing.raw)
+        if (await this.takeOver(target.file, existing.raw, body)) return won()
         continue
       }
       const holder = existing.record.holder
       if (holder.runtimeId === this.runtimeId) {
-        this.held.set(target.key, { file: target.file, record: existing.record })
+        this.held.set(target.key, { file: target.file, record: existing.record, generation: ++this.generation })
         return { ok: true, leaseFile: target.file }
       }
-      const liveness = await holderLiveness(holder)
+      const liveness = await holderLiveness(holder, this.dir)
       if (liveness.alive) {
         return {
           ok: false,
@@ -620,11 +695,8 @@ export class AgentLeaseRegistry {
         }
       }
       console.warn(`[AgentLease] ${name}: replacing a stale lease held by ${describeHolder(holder)} (${liveness.reason})`)
-      await this.takeOver(target.file, existing.raw)
+      if (await this.takeOver(target.file, existing.raw, body)) return won()
     }
-    // The lease dir never accepted a write and no lease file was there: an
-    // unusable dir, not a competitor.
-    if (!sawLease) return this.unprotected(name, target, lastError)
     // Contention that never settled (or a lease file that cannot be replaced).
     // Refuse rather than risk running the agent twice; the message says where
     // to look.
@@ -641,10 +713,31 @@ export class AgentLeaseRegistry {
     }
   }
 
-  private unprotected(name: string, target: LeaseTarget, err: unknown): AgentLeaseResult {
-    const reason = err instanceof Error ? err.message : String(err)
-    console.error(`[AgentLease] ${name}: cannot write the lease in ${this.dir} (${reason}). Starting without protection against a second ADF process running it.`)
-    return { ok: true, leaseFile: target.file, unprotected: reason }
+  /** Can a fresh file be created in the lease dir? Tells a delete-pending lease from an unusable dir. */
+  private async dirWritable(): Promise<boolean> {
+    const probe = join(this.dir, `.${this.runtimeId}-${randomBytes(4).toString('hex')}.probe`)
+    try {
+      await fsp.writeFile(probe, '', { flag: 'wx', mode: FILE_MODE })
+      await fsp.rm(probe, { force: true })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * The lease dir refused a write: proceed without a lease and say so. The
+   * dir is remembered as unusable for a minute (`remember`), so the next
+   * starts skip it instead of retrying.
+   */
+  private unprotected(name: string, target: LeaseTarget, reason: string, remember: boolean): AgentLeaseResult {
+    const message = `Agent leases unavailable: ${this.dir} cannot be written (${reason}). ` +
+      `${name} runs without protection against a second ADF Studio or daemon on this machine running it.`
+    if (remember) {
+      this.unusable = { reason, at: Date.now() }
+      console.error(`[AgentLease] ${message}`)
+    }
+    return { ok: true, leaseFile: target.file, unprotected: message }
   }
 
   /** Our lease file should exist and name us. Recreate it if it was deleted. */
@@ -652,8 +745,8 @@ export class AgentLeaseRegistry {
     try {
       const current = await readLease(own.file)
       if (!current) {
-        await fsp.mkdir(this.dir, { recursive: true })
-        await fsp.writeFile(own.file, JSON.stringify(own.record, null, 2), { flag: 'wx' })
+        await fsp.mkdir(this.dir, { recursive: true, mode: DIR_MODE })
+        await fsp.writeFile(own.file, JSON.stringify(own.record, null, 2), { flag: 'wx', mode: FILE_MODE })
         console.warn(`[AgentLease] ${agentNameOf(target.canonical)}: lease file was missing; recreated`)
       } else if (current.record && current.record.holder.runtimeId !== this.runtimeId) {
         console.warn(`[AgentLease] ${agentNameOf(target.canonical)}: lease file now names ${describeHolder(current.record.holder)} while this process runs the agent`)
@@ -664,28 +757,79 @@ export class AgentLeaseRegistry {
   }
 
   /**
-   * Remove a stale lease file whose content was `expectedRaw`. The rename is
-   * atomic; if what we moved is not what we judged stale, a newer lease won
-   * the race and is put back.
+   * Replace a lease judged stale (its bytes were `expectedRaw`) with ours,
+   * under the takeover lock. Under the lock the lease is re-read: it is
+   * removed only if it still holds exactly those bytes, and ours is written
+   * exclusively (a plain acquirer that slipped in wins; the caller then
+   * re-evaluates). Returns true when our lease was written.
    */
-  private async takeOver(file: string, expectedRaw: string): Promise<void> {
-    const tomb = `${file}.${this.runtimeId}-${randomBytes(4).toString('hex')}.stale`
+  private async takeOver(file: string, expectedRaw: string, body: string): Promise<boolean> {
+    const lock = `${file}.takeover`
+    if (!(await this.lockTakeover(lock))) return false
     try {
-      await fsp.rename(file, tomb)
-    } catch (err) {
-      if (errCode(err) !== 'ENOENT') await delay(50)
-      return
-    }
-    let moved: string | null = null
-    try { moved = await fsp.readFile(tomb, 'utf-8') } catch { /* gone */ }
-    if (moved !== null && moved !== expectedRaw) {
-      try {
-        await fsp.writeFile(file, moved, { flag: 'wx' })
-      } catch (err) {
-        console.warn(`[AgentLease] Lease race on ${file}: could not restore a newer lease (${errCode(err) ?? err})`)
+      let current: string | null = null
+      try { current = await fsp.readFile(file, 'utf-8') } catch (err) {
+        if (errCode(err) !== 'ENOENT') return false
       }
+      if (current !== null && current !== expectedRaw) return false
+      if (current !== null) await fsp.rm(file, { force: true })
+      // A reader that still has the old file open leaves it delete-pending
+      // for a moment (Windows): retry the exclusive create briefly.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await fsp.writeFile(file, body, { flag: 'wx', mode: FILE_MODE })
+          return true
+        } catch (err) {
+          const code = errCode(err)
+          if (code === 'EEXIST') return false
+          if (!code || !TRANSIENT_FS_CODES.has(code) || attempt >= 20) throw err
+          await delay(10)
+        }
+      }
+    } catch (err) {
+      console.warn(`[AgentLease] Takeover of ${file} failed:`, err instanceof Error ? err.message : err)
+      return false
+    } finally {
+      await unlockTakeover(lock)
     }
-    await fsp.rm(tomb, { force: true }).catch(() => {})
+  }
+
+  /**
+   * Create `<lease>.takeover` exclusively. A lock left by a crash (its pid
+   * gone, or older than the TTL, while the critical section takes
+   * milliseconds) is removed.
+   */
+  private async lockTakeover(lock: string): Promise<boolean> {
+    const deadline = Date.now() + TAKEOVER_LOCK_WAIT_MS
+    while (Date.now() < deadline) {
+      try {
+        await fsp.writeFile(lock, JSON.stringify({ pid: process.pid, runtimeId: this.runtimeId, at: Date.now() }), { flag: 'wx', mode: FILE_MODE })
+        return true
+      } catch (err) {
+        const code = errCode(err)
+        if (code && TRANSIENT_FS_CODES.has(code)) { await delay(5); continue } // previous lock delete-pending
+        if (code !== 'EEXIST') return false
+      }
+      try {
+        // The critical section takes milliseconds: only an older lock is
+        // opened to read its pid (an open handle would delay its removal).
+        const st = await fsp.stat(lock)
+        const age = Date.now() - st.mtimeMs
+        let crashed = age > TAKEOVER_LOCK_TTL_MS
+        if (!crashed && age > TAKEOVER_LOCK_SUSPECT_MS) {
+          let pid = 0
+          try { pid = Number((JSON.parse(await fsp.readFile(lock, 'utf-8')) as { pid?: unknown }).pid) || 0 } catch { /* being written */ }
+          crashed = pid > 0 && !(await pidAlive(pid))
+        }
+        if (crashed) {
+          console.warn(`[AgentLease] Removing a takeover lock left by a crashed process: ${lock}`)
+          await fsp.rm(lock, { force: true })
+          continue
+        }
+      } catch { /* released meanwhile */ }
+      await delay(5 + Math.floor(Math.random() * 15))
+    }
+    return false
   }
 
   private async releaseLocked(key: string): Promise<void> {
@@ -742,13 +886,13 @@ export class AgentLeaseRegistry {
   private async startEndpoint(): Promise<void> {
     let endpoint: string
     if (process.platform === 'win32') {
-      endpoint = `\\\\.\\pipe\\adf-runtime-${this.runtimeId}`
+      endpoint = pipeName(this.runtimeId)
     } else {
       endpoint = join(this.dir, 'hosts', `${this.runtimeId}.sock`)
       if (endpoint.length > MAX_SOCKET_PATH) endpoint = join(tmpdir(), `adf-runtime-${this.runtimeId}.sock`)
     }
     try {
-      if (process.platform !== 'win32') await fsp.mkdir(join(this.dir, 'hosts'), { recursive: true })
+      if (process.platform !== 'win32') await fsp.mkdir(join(this.dir, 'hosts'), { recursive: true, mode: DIR_MODE })
       const server = createServer((socket) => {
         socket.on('error', () => {})
         socket.end(`${JSON.stringify({ pid: process.pid, runtimeId: this.runtimeId })}\n`)
@@ -779,7 +923,7 @@ export class AgentLeaseRegistry {
       mode: this.clientMode ?? this.info.mode,
     }
     try {
-      await fsp.mkdir(join(this.dir, this.clientMode ? 'clients' : 'hosts'), { recursive: true })
+      await fsp.mkdir(join(this.dir, this.clientMode ? 'clients' : 'hosts'), { recursive: true, mode: DIR_MODE })
       await writeAtomic(this.entryFile(), JSON.stringify(entry, null, 2))
       this.hostEntryWritten = true
       this.installExitHook()
@@ -815,9 +959,8 @@ async function readEntries(dir: string): Promise<Array<{ file: string; raw: stri
 async function sweepDeadEntries(dir: string): Promise<void> {
   for (const sub of ['hosts', 'clients']) {
     for (const { file, raw, record } of await readEntries(join(dir, sub))) {
-      if (record.hostname && record.hostname !== HOSTNAME) continue
       if (record.pid === process.pid) continue
-      if ((await holderLiveness(record as LeaseHolder)).alive) continue
+      if ((await holderLiveness(record as LeaseHolder, dir)).alive) continue
       try {
         if ((await fsp.readFile(file, 'utf-8')) === raw) await fsp.rm(file, { force: true })
       } catch { /* gone */ }
@@ -829,19 +972,19 @@ export interface LiveRuntimeHost extends RuntimeHostRecord { alive: boolean }
 
 /** Runtime hosts (embedded Studio, daemons) on this machine, with liveness. */
 export async function listRuntimeHosts(dir: string = leaseDir()): Promise<LiveRuntimeHost[]> {
-  return listEntries(join(dir, 'hosts'))
+  return listEntries(dir, 'hosts')
 }
 
 /** Studio instances running in local or remote mode (clients, not hosts). */
 export async function listStudioClients(dir: string = leaseDir()): Promise<LiveRuntimeHost[]> {
-  return listEntries(join(dir, 'clients'))
+  return listEntries(dir, 'clients')
 }
 
-async function listEntries(dir: string): Promise<LiveRuntimeHost[]> {
-  const entries = (await readEntries(dir)).filter((e) => !e.record.hostname || e.record.hostname === HOSTNAME)
+async function listEntries(dir: string, sub: 'hosts' | 'clients'): Promise<LiveRuntimeHost[]> {
+  const entries = await readEntries(join(dir, sub))
   return Promise.all(entries.map(async ({ record }) => ({
     ...record,
-    alive: record.pid === process.pid ? true : (await holderLiveness(record as LeaseHolder)).alive,
+    alive: record.pid === process.pid ? true : (await holderLiveness(record as LeaseHolder, dir)).alive,
   })))
 }
 
@@ -889,4 +1032,11 @@ let processRegistry: AgentLeaseRegistry | null = null
 export function processAgentLeases(): AgentLeaseRegistry {
   processRegistry ??= new AgentLeaseRegistry()
   return processRegistry
+}
+
+/** Tests: release and forget the process registry, if one was created. */
+export async function resetProcessAgentLeases(): Promise<void> {
+  const registry = processRegistry
+  processRegistry = null
+  await registry?.close()
 }
