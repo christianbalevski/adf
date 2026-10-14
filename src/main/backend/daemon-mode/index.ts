@@ -319,10 +319,6 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
           warned = true
           log.warn(`[Backend] ${channelKey(channel)} was called; it is not available in daemon mode yet: ${workstream}`)
         }
-        // Until W3-A's BACKGROUND_AGENT_STATUS: a fresh renderer still learns
-        // what already runs, as agent_started events (its listener is
-        // registered by the time this call arrives).
-        if (channel === IPC.BACKGROUND_AGENT_STATUS) setImmediate(() => bridge.announceRunning())
         throw new DaemonModeUnavailableError(channelKey(channel), workstream)
       })
       pending.push({ channel, workstream })
