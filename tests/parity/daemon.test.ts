@@ -8,6 +8,7 @@ import { applyGapAllowlist, GAP_ALLOWLIST } from './harness/gaps'
 import { toGoldenForm } from './harness/normalize'
 import { runScenario } from './harness/scenario'
 import { CORE_SCENARIOS } from './scenarios/core'
+import { MESH_SCENARIOS } from './mesh/scenarios'
 
 /**
  * Parity harness, daemon side (tracker W2-C, README "Daemon backend").
@@ -78,8 +79,8 @@ describe.skipIf(!BUNDLE)('parity: daemon backend (child process)', () => {
     }, 120_000 + RUNS * 120_000)
   }
 
-  it('every gap entry names a workstream and lists only core scenarios', () => {
-    const names = new Set(CORE_SCENARIOS.map((s) => s.name))
+  it('every gap entry names a workstream and lists only known scenarios', () => {
+    const names = new Set([...CORE_SCENARIOS, ...MESH_SCENARIOS].map((s) => s.name))
     for (const entry of GAP_ALLOWLIST) {
       expect(entry.ws).toMatch(/^(W\d-[A-Z]|mode)$/)
       for (const s of entry.scenarios) expect(names.has(s), `${entry.id}: ${s}`).toBe(true)
