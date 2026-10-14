@@ -1,6 +1,9 @@
 import { app, BrowserWindow, crashReporter, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
 import { join } from 'path'
-import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace, readAppSetting, writeAppSetting } from './ipc'
+// The embedded IPC layer (./ipc) is imported only in embedded mode, at boot:
+// loading it constructs embedded services (a PodmanService, the uvx manifest
+// repair) that must never exist in a daemon-mode Studio.
+type EmbeddedIpc = typeof import('./ipc')
 import { registerOrbitalCacheHandlers } from './ipc/orbital-cache'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
@@ -100,6 +103,8 @@ let fileToOpen: string | null = null
 // Set at boot when studio-backend.json selects a daemon backend (design D9).
 // Every branch on it below keeps the embedded path exactly as it was.
 let daemonMode: DaemonModeHandle | null = null
+// Set at boot in embedded mode only.
+let embeddedIpc: EmbeddedIpc | null = null
 // Set at the end of the whenReady continuation, once IPC handlers and the
 // adf-file protocol exist. app.isReady() flips earlier, on the 'ready' event.
 let startupComplete = false
@@ -134,7 +139,7 @@ function runShutdownCleanup(): Promise<void> {
       // synchronous workspace-close/WAL-sweep phase still gets to run.
       const cleanupOpts = budget < SHUTDOWN_BUDGET_MS ? { teardownBudgetMs: 1_500 } : undefined
       // Daemon mode runs no agents here: quitting ends the client session.
-      const cleanup = daemonMode ? daemonMode.shutdown() : cleanupAllProcesses(cleanupOpts)
+      const cleanup = daemonMode ? daemonMode.shutdown() : embeddedIpc ? embeddedIpc.cleanupAllProcesses(cleanupOpts) : Promise.resolve()
       const { timedOut } = await withDeadline(cleanup, budget, () => {
         console.error(`[App] Cleanup exceeded ${budget}ms budget — forcing exit`)
       })
@@ -179,7 +184,7 @@ function handleSessionEnd(): void {
   shutdownBudgetMs = FAST_SHUTDOWN_BUDGET_MS
   shutdownCleanup = (async () => {
     try {
-      await withDeadline(daemonMode ? daemonMode.shutdown() : fastSessionEndCleanup(2_000), FAST_SHUTDOWN_BUDGET_MS, () => {
+      await withDeadline(daemonMode ? daemonMode.shutdown() : embeddedIpc ? embeddedIpc.fastSessionEndCleanup(2_000) : Promise.resolve(), FAST_SHUTDOWN_BUDGET_MS, () => {
         console.error('[App] Session-end cleanup exceeded budget — exiting')
       })
     } catch (error) {
@@ -497,7 +502,7 @@ app.on('web-contents-created', (_event, contents) => {
   })
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Dev/diagnostic only: logs one line per multi-hundred-ms main-thread freeze.
   // Creates nothing in a packaged build unless ADF_STALL_MONITOR=1.
   const stallMonitor = startStallMonitor({ packaged: app.isPackaged })
@@ -510,7 +515,8 @@ app.whenReady().then(() => {
   // No studio-backend.json and no ADF_STUDIO_BACKEND means embedded, as before.
   const backend = resolveBootBackend(backendConfigPath(getUserDataPath()), process.env)
   if (backend.mode === 'embedded') {
-    registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
+    embeddedIpc = await import('./ipc')
+    embeddedIpc.registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
   } else {
     const userDataDir = getUserDataPath()
     daemonMode = registerDaemonModeHandlers({
@@ -523,10 +529,10 @@ app.whenReady().then(() => {
     })
   }
   // Client keys (updater, spellcheck) come from studio-client-settings.json in daemon mode (§4.1).
-  const readClientSetting = (key: string): unknown => daemonMode ? daemonMode.clientSettings.get(key) : readAppSetting(key)
+  const readClientSetting = (key: string): unknown => daemonMode ? daemonMode.clientSettings.get(key) : embeddedIpc?.readAppSetting(key)
   const writeClientSetting = (key: string, value: unknown): void => {
     if (daemonMode) daemonMode.clientSettings.set(key, value)
-    else writeAppSetting(key, value)
+    else embeddedIpc?.writeAppSetting(key, value)
   }
   registerBackendSettingsHandlers(backend)
   registerOrbitalCacheHandlers(app.getPath('userData'))
@@ -539,7 +545,7 @@ app.whenReady().then(() => {
   // (daemon mode: from the daemon's raw file route, daemon-mode/adf-file.ts).
   if (daemonMode) protocol.handle('adf-file', daemonMode.adfFile)
   else protocol.handle('adf-file', (request) => {
-    const workspace = getCurrentWorkspace()
+    const workspace = embeddedIpc?.getCurrentWorkspace()
     if (!workspace) {
       return new Response('No workspace open', { status: 404 })
     }
