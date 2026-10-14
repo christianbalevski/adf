@@ -2557,7 +2557,7 @@ export class PodmanService extends EventEmitter {
     return bin
   }
 
-  private async exec0(cmd: string, args: string[], timeout = 30_000): Promise<ExecResult> {
+  protected async exec0(cmd: string, args: string[], timeout = 30_000): Promise<ExecResult> {
     const cwd = await podmanCwd(args)
     return new Promise((resolve) => {
       execFile(cmd, args, { timeout, windowsHide: true, cwd }, (error, stdout, stderr) => {
