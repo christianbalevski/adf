@@ -13,9 +13,15 @@ import { fileURLToPath } from 'url'
 
 export const TEST_SEAMS_ENV = 'ADF_TEST_SEAMS'
 
-/** True for a module path inside app.asar or a node_modules tree. */
+/**
+ * True for a module path inside app.asar, a node_modules tree, or Deno's npm
+ * cache (`<DENO_DIR>/npm/<registry host>/…`, e.g. `~/.cache/deno/npm/registry.npmjs.org`).
+ */
 export function isPackagedModulePath(modulePath: string): boolean {
-  return modulePath.includes('app.asar') || modulePath.split(/[\\/]/).includes('node_modules')
+  if (modulePath.includes('app.asar')) return true
+  const segments = modulePath.split(/[\\/]/).map((s) => s.toLowerCase())
+  if (segments.includes('node_modules') || segments.includes('registry.npmjs.org')) return true
+  return segments.some((s, i) => s === 'deno' && segments[i + 1] === 'npm')
 }
 
 /**

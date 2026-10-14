@@ -38,7 +38,7 @@ import { dirname, join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import { deriveOwnerIdentity, validateMnemonic } from '../crypto/mnemonic-identity'
-import { OWNER_SEED_DERIVED_KEY, OwnerIdentityService, type OwnerIdentitySettings, type RestampResult } from '../services/owner-identity.service'
+import { OWNER_SEED_DERIVED_KEY, OwnerIdentityService, ownerMnemonicSupersededKey, type OwnerIdentitySettings, type RestampResult } from '../services/owner-identity.service'
 import { DaemonAppOAuthStore, daemonAppOAuthAccount } from '../services/mcp-oauth-store'
 import { settingsScope } from '../services/provider-key-store'
 import type { WorkspaceIdentityHooks } from '../runtime/identity-provisioner'
@@ -705,9 +705,15 @@ export class DaemonIdentity {
     if (switching && this.store.get('ownerSeedBackupConfirmed') !== true && opts.previousOwnerBackupConfirmed !== true) {
       throw new DaemonIdentityError(
         'backup_unconfirmed',
-        `The seed phrase of ${previousOwnerDid} is not confirmed as written down. The switch deletes it from this machine ` +
-          `(the OS keychain entry and ADF Studio's copy). Without a written copy, ${previousOwnerDid} and every envelope ` +
-          'only its owner key opens (agents copied to other machines, backups) are lost for good. Back it up first ' +
+        `The seed phrase of ${previousOwnerDid} is not confirmed as written down. The switch overwrites the daemon's copy of it ` +
+          `(${this.backend.kind === 'keychain'
+            ? 'the OS keychain entry ADF / owner-mnemonic'
+            : `the passphrase-protected ${SECRET_FILE_NAME}; a copy in the OS keychain, if ADF Studio put one there, is left as it is`}).` +
+          (this.store.get('ownerMnemonic') !== undefined
+            ? ` ADF Studio's own copy is moved aside to ${ownerMnemonicSupersededKey(previousOwnerDid!)} in the settings file, readable by ADF Studio on this machine only.`
+            : '') +
+          ` Without a written copy, ${previousOwnerDid} and every envelope only its owner key opens (agents copied to other ` +
+          'machines, backups) may be lost for good. Back it up first ' +
           '(Settings → Back Up Seed Phrase in ADF Studio), or confirm you have it (previousOwnerBackupConfirmed: true, ' +
           'adf identity import --i-have-a-backup).',
         409,
@@ -733,9 +739,10 @@ export class DaemonIdentity {
    * Studio re-delegates and rewrites the keychain entry.
    *
    * On a switch, ADF Studio's own copy of the previous phrase (`ownerMnemonic`
-   * in the shared settings file) is deleted, so embedded Studio takes the new
-   * phrase from the keychain at its next start instead of mirroring the old
-   * one back over it.
+   * in the shared settings file) is moved, still encrypted, to
+   * `ownerMnemonicSuperseded:<previous owner DID>`, so embedded Studio takes the new phrase from the
+   * keychain at its next start instead of mirroring the old one back over it,
+   * and the old phrase stays recoverable.
    */
   importOwner(opts: DaemonOwnerImportOptions): DaemonOwnerImportResult {
     const { ownerDid, previousOwnerDid } = this.checkImport(opts)
@@ -748,10 +755,19 @@ export class DaemonIdentity {
     } finally {
       this.identitySettings.allowOwnerChange = false
     }
-    if (switched && this.store.get('ownerMnemonic') !== undefined) {
-      if (this.store.delete) {
+    const studioCopy = this.store.get('ownerMnemonic')
+    if (switched && studioCopy !== undefined) {
+      const key = ownerMnemonicSupersededKey(previousOwnerDid!)
+      if (this.store.get(key) !== undefined) {
+        // Never overwrite a kept phrase. Studio moves its copy itself at its
+        // next start (it can decrypt it and knows its real owner).
+        console.warn(`[ADF Daemon] Owner switch: ${key} already exists; left ADF Studio's stored phrase in place for Studio to move at its next start`)
+      } else if (this.store.delete) {
+        // The value is Studio's `safe:` ciphertext (or its plaintext fallback),
+        // moved verbatim: the daemon never decrypts it.
+        this.store.set(key, studioCopy)
         this.store.delete('ownerMnemonic')
-        console.log(`[ADF Daemon] Owner switch: removed ADF Studio's stored phrase for ${previousOwnerDid} from the settings file; Studio takes the phrase for ${ownerDid} from the OS keychain at its next start`)
+        console.log(`[ADF Daemon] Owner switch: moved ADF Studio's stored phrase for ${previousOwnerDid} to ${key} in the settings file; Studio takes the phrase for ${ownerDid} from the OS keychain at its next start`)
       } else {
         console.warn(`[ADF Daemon] Owner switch: ADF Studio's stored phrase for ${previousOwnerDid} is still in the settings file (this store cannot delete keys)`)
       }

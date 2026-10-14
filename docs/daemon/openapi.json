@@ -4145,7 +4145,7 @@
           "Owner identity"
         ],
         "summary": "Import an owner seed phrase, switching owners when confirmed (loopback only)",
-        "description": "Studio's Import identity. The phrase of this machine's owner acts as a restore. The phrase of another owner answers 409 `switch_unconfirmed`, naming both DIDs, unless `switchOwner` is true; then that owner replaces this machine's owner and the agents of the previous owner in tracked directories are restamped. Loaded agents are unloaded before the restamp and loaded again after it; the response lists both. A Studio runtime identity the daemon had adopted is certified by the previous owner, so after a switch `identity.runtime.state` is `rejected` (`owner_mismatch`) until Studio rewrites it. Unlike the other local-only routes, this one always requires X-ADF-Local-Proof (the daemon writes the proof file on every run), not only in proxy mode. Every refusal (phrase, confirmations, file-storage passphrase) happens before an agent is unloaded; imports run one at a time. On a switch the daemon also deletes ADF Studio's stored copy of the previous phrase (`ownerMnemonic` in the settings file), so Studio takes the new phrase from the OS keychain at its next start. The phrase never appears in a response, log or error. Local callers only (see Local-only routes).",
+        "description": "Studio's Import identity. The phrase of this machine's owner acts as a restore. The phrase of another owner answers 409 `switch_unconfirmed`, naming both DIDs, unless `switchOwner` is true; then that owner replaces this machine's owner and the agents of the previous owner in tracked directories are restamped. Loaded agents are unloaded before the restamp and loaded again after it; the response lists both. A Studio runtime identity the daemon had adopted is certified by the previous owner, so after a switch `identity.runtime.state` is `rejected` (`owner_mismatch`) until Studio rewrites it. Unlike the other local-only routes, this one always requires X-ADF-Local-Proof (the daemon writes the proof file on every run), not only in proxy mode. Every refusal (phrase, confirmations, file-storage passphrase) happens before an agent is unloaded; imports run one at a time. On a switch the daemon also moves ADF Studio's stored copy of the previous phrase, still encrypted, from `ownerMnemonic` to `ownerMnemonicSuperseded:<previous owner DID>` in the settings file, so Studio takes the new phrase from the OS keychain at its next start. The phrase never appears in a response, log or error. Local callers only (see Local-only routes).",
         "operationId": "importOwnerIdentity",
         "requestBody": {
           "required": true,
@@ -4197,7 +4197,7 @@
             "$ref": "#/components/responses/LoopbackOnly"
           },
           "409": {
-            "description": "The phrase belongs to another owner and `switchOwner` is not true (`switch_unconfirmed`), or the previous owner's backup is unconfirmed and `previousOwnerBackupConfirmed` is not true (`backup_unconfirmed`; the switch deletes that phrase from this machine)",
+            "description": "The phrase belongs to another owner and `switchOwner` is not true (`switch_unconfirmed`), or the previous owner's backup is unconfirmed and `previousOwnerBackupConfirmed` is not true (`backup_unconfirmed`; the switch overwrites the daemon's copy of that phrase)",
             "content": {
               "application/json": {
                 "schema": {

@@ -42,7 +42,7 @@ import { SettingsService } from '../src/main/services/settings.service'
 import { OwnerIdentityService } from '../src/main/services/owner-identity.service'
 import { FileSecretBackend, OWNER_MNEMONIC_ACCOUNT, type SecretBackend, type SharedMnemonicStore } from '../src/main/services/owner-secret-store'
 import { settingsScope } from '../src/main/services/provider-key-store'
-import { DaemonAppOAuthStore, SECRET_CHUNK_CHARS, daemonAppOAuthAccount } from '../src/main/services/mcp-oauth-store'
+import { DaemonAppOAuthStore, SECRET_CHUNK_CHARS, daemonAppOAuthAccount, splitOnCodePoints } from '../src/main/services/mcp-oauth-store'
 import { createAttestation, readAdfAttestations, verifyAttestation } from '../src/main/services/attestation.service'
 import { deriveReviewIdentity, markConfigReviewed } from '../src/main/services/agent-review'
 import { deriveOwnerIdentity, generateMnemonic } from '../src/main/crypto/mnemonic-identity'
@@ -416,6 +416,9 @@ describe('test keychain seam', () => {
     expect(testSeamsAllowed({ env: { ADF_TEST_SEAMS: '1' }, modulePath: 'C:\\Program Files\\ADF Studio\\resources\\app.asar\\out\\main\\daemon.js', isPackagedRuntime: unpackaged })).toBe(false)
     expect(testSeamsAllowed({ env: { ADF_TEST_SEAMS: '1' }, modulePath: '/usr/lib/node_modules/adf-cli/dist/daemon.js', isPackagedRuntime: unpackaged })).toBe(false)
     expect(testSeamsAllowed({ env: { ADF_TEST_SEAMS: '1' }, modulePath: null, isPackagedRuntime: unpackaged })).toBe(false)
+    for (const deno of ['/home/u/.cache/deno/npm/registry.npmjs.org/adf-cli/0.6.1/dist/daemon.js', 'C:\\Users\\u\\AppData\\Local\\deno\\npm\\registry.npmjs.org\\adf-cli\\0.6.1\\dist\\daemon.js', '/srv/deno/npm/npm.example.test/adf-cli/1.0.0/daemon.js']) {
+      expect(testSeamsAllowed({ env: { ADF_TEST_SEAMS: '1' }, modulePath: deno, isPackagedRuntime: unpackaged })).toBe(false)
+    }
     expect(testSeamsAllowed({ env: { ADF_TEST_SEAMS: '1' }, modulePath: dev, isPackagedRuntime: () => true })).toBe(false)
   })
 
@@ -644,7 +647,8 @@ describe('POST /identity/import', () => {
     expect(noBackup.statusCode).toBe(409)
     expect(noBackup.json().code).toBe('backup_unconfirmed')
     expect(noBackup.json().error).toContain(s.ownerDid)
-    expect(noBackup.json().error).toContain('deletes it from this machine')
+    expect(noBackup.json().error).toContain("overwrites the daemon's copy of it (the OS keychain entry ADF / owner-mnemonic)")
+    expect(noBackup.json().error).toContain('ownerMnemonicSuperseded:' + s.ownerDid)
     expect(settings.get('ownerDid')).toBe(s.ownerDid)
     expect(runtime.listAgents().map((a) => a.id)).toEqual([loadedId]) // nothing unloaded
     expect(made.filePath).toBeTruthy()
@@ -653,6 +657,15 @@ describe('POST /identity/import', () => {
     expect(stated.statusCode).toBe(200)
     expect(stated.json()).toMatchObject({ switched: true, ownerDid: nextOwner })
   }, 90_000)
+
+  it('file storage on a machine with a keychain: the backup message says the keychain copy is left as it is', async () => {
+    const backend = new FileSecretBackend(join(h.userDataDir, 'owner-secrets.json'))
+    const { server } = makeDaemon(backend)
+    await server.inject({ method: 'POST', url: '/identity/create', payload: { passphrase: 'a long passphrase' } })
+    const res = await server.inject({ method: 'POST', url: '/identity/import', headers: withProof, payload: { mnemonic: generateMnemonic(), switchOwner: true } })
+    expect(res.json().code).toBe('backup_unconfirmed')
+    expect(res.json().error).toContain('owner-secrets.json; a copy in the OS keychain, if ADF Studio put one there, is left as it is')
+  })
 
   it('a failed import (missing or wrong passphrase) unloads nothing', async () => {
     const backend = () => new FileSecretBackend(join(h.userDataDir, 'owner-secrets.json'))
@@ -756,7 +769,9 @@ describe('owner switch from the CLI, then embedded Studio starts', () => {
     const res = await daemon.server.inject({ method: 'POST', url: '/identity/import', headers: withProof, payload: { mnemonic: next, switchOwner: true } })
     expect(res.statusCode).toBe(200)
     expect(res.json().identity.runtime).toMatchObject({ state: 'rejected', reason: 'owner_mismatch' })
-    expect(diskSettings().ownerMnemonic).toBeUndefined() // Studio's copy of the old phrase is gone
+    expect(diskSettings().ownerMnemonic).toBeUndefined() // moved aside, still encrypted:
+    expect(diskSettings()['ownerMnemonicSuperseded:' + s.ownerDid]).toBe(staleBlob)
+    expect((await daemon.server.inject({ method: 'GET', url: '/settings' })).body).not.toContain('ownerMnemonicSuperseded')
     expect(keychain.shared.read()).toBe(next)
     if (opts.reinsertStaleStudioPhrase) new FileSettingsStore(settingsPath).set('ownerMnemonic', staleBlob)
     return { keychain, s, daemon, made, next, nextOwner }
@@ -847,6 +862,66 @@ describe('DaemonAppOAuthStore', () => {
     await store.invalidate('https://other.example.test/mcp', 'tokens')
     expect(store.listServerUrls()).toEqual([])
     expect([...keychain.store.keys()].filter((k) => k.includes(index()))).toEqual([])
+  })
+
+  it('a crash at any point of a rewrite leaves the old or the new record, never a mix; the next write cleans up', async () => {
+    const recordA = { tokens: { access_token: 'A'.repeat(1500), refresh_token: 'a'.repeat(1500), token_type: 'Bearer' }, serverUrl: url, updatedAt: 1 }
+    const recordB = { tokens: { access_token: 'B'.repeat(1700), refresh_token: 'b'.repeat(1700), token_type: 'Bearer' }, serverUrl: url, updatedAt: 2 }
+    // Count the backend operations of one complete rewrite, then crash after each of them.
+    const probe = fakeKeychain()
+    await new DaemonAppOAuthStore(probe.backend, index()).save(url, recordA)
+    let ops = 0
+    const counting = { ...probe.backend, isUnlocked: () => true, get: (a: string) => probe.backend.get(a), set: (a: string, v: string) => { ops++; probe.backend.set(a, v) }, delete: (a: string) => { ops++; probe.backend.delete(a) } }
+    await new DaemonAppOAuthStore(counting, index()).save(url, recordB)
+    expect(ops).toBeGreaterThan(4)
+
+    for (let crashAfter = 0; crashAfter < ops; crashAfter++) {
+      const keychain = fakeKeychain()
+      await new DaemonAppOAuthStore(keychain.backend, index()).save(url, recordA)
+      let done = 0
+      const crashing = {
+        isUnlocked: () => true,
+        get: (a: string) => keychain.backend.get(a),
+        set: (a: string, v: string) => { if (done++ >= crashAfter) throw new Error('crash'); keychain.backend.set(a, v) },
+        delete: (a: string) => { if (done++ >= crashAfter) throw new Error('crash'); keychain.backend.delete(a) },
+      }
+      await expect(new DaemonAppOAuthStore(crashing, index()).save(url, recordB)).rejects.toThrow('crash')
+      const store = new DaemonAppOAuthStore(keychain.backend, index())
+      const after = await store.get(url)
+      expect([JSON.stringify(recordA), JSON.stringify(recordB)]).toContain(JSON.stringify(after))
+      // A later complete write leaves exactly one generation per account.
+      await store.save(url, recordA)
+      expect(await store.get(url)).toEqual(recordA)
+      const chunkGens = new Set([...keychain.store.keys()].filter((k) => k.includes('#')).map((k) => k.slice(0, k.lastIndexOf(':'))))
+      expect(chunkGens.size).toBe(2) // the index and the record, one generation each
+    }
+  })
+
+  it('a chunk whose bytes do not match the head checksum reads as absent', async () => {
+    const keychain = fakeKeychain()
+    const store = new DaemonAppOAuthStore(keychain.backend, index())
+    await store.save(url, { tokens: { access_token: 'x'.repeat(2500), token_type: 'Bearer' }, serverUrl: url, updatedAt: 1 })
+    const chunk = [...keychain.store.keys()].find((k) => k.includes(':') && k.endsWith(':1') && k.includes('#'))!
+    keychain.store.set(chunk, 'tampered')
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await store.get(url)).toBeUndefined()
+  })
+
+  it('chunks never split a surrogate pair', async () => {
+    const value = 'x' + '😀'.repeat(1200)
+    const chunks = splitOnCodePoints(value, SECRET_CHUNK_CHARS)
+    expect(chunks.join('')).toBe(value)
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(SECRET_CHUNK_CHARS)
+      const last = chunk.charCodeAt(chunk.length - 1)
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false)
+      expect(() => encodeURIComponent(chunk)).not.toThrow() // a lone surrogate would throw
+    }
+    const keychain = fakeKeychain()
+    const store = new DaemonAppOAuthStore(keychain.backend, index())
+    const record = { tokens: { access_token: value, token_type: 'Bearer' }, serverUrl: url, updatedAt: 1 }
+    await store.save(url, record)
+    expect(await store.get(url)).toEqual(record)
   })
 
   it('refuses a record pinned to another URL, and never writes while the file store is locked', async () => {

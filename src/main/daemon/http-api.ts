@@ -529,6 +529,12 @@ function getOpenApiSpec(): unknown {
 // Key material must never leave the process over HTTP — same deny-list as
 // SettingsService.getAll() (settings.service.ts).
 const SETTINGS_SECRET_KEYS = ['ownerMnemonic', 'runtimePrivateKey', 'runtimeEncPrivateKey', 'mcpOauthCredentials']
+// Previous owners' phrases kept after an owner switch: `ownerMnemonicSuperseded:<did>`.
+const SUPERSEDED_MNEMONIC_PREFIX = 'ownerMnemonicSuperseded:'
+
+function isSecretSettingsKey(key: string): boolean {
+  return SETTINGS_SECRET_KEYS.includes(key) || key.startsWith(SUPERSEDED_MNEMONIC_PREFIX)
+}
 
 // Trust/identity-critical keys that must never be WRITTEN over HTTP either:
 // an unauthenticated loopback caller writing trustedDaemonEncKeys would enroll
@@ -597,7 +603,7 @@ function restoreRedactedProviderKeys(incoming: unknown, existing: unknown): unkn
 function redactSettings(all: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!all) return all
   const redacted = { ...all }
-  for (const key of SETTINGS_SECRET_KEYS) delete redacted[key]
+  for (const key of Object.keys(redacted)) if (isSecretSettingsKey(key)) delete redacted[key]
   if ('providers' in redacted) redacted.providers = redactProviders(redacted.providers)
   return redacted
 }
@@ -776,6 +782,7 @@ export function createDaemonHttpApi(
       return badRequest(reply, 'Request body must be a JSON object.')
     }
     const deniedKey = SETTINGS_WRITE_DENY_KEYS.find(key => Object.prototype.hasOwnProperty.call(patch, key))
+      ?? Object.keys(patch).find(isSecretSettingsKey)
     if (deniedKey) {
       return forbidden(reply, `Settings key "${deniedKey}" cannot be written through the daemon API.`, 'setting_not_writable')
     }
@@ -791,7 +798,7 @@ export function createDaemonHttpApi(
 
   server.get<{ Params: SettingsKeyParams }>('/settings/:key', async (request, reply) => {
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
-    if (SETTINGS_SECRET_KEYS.includes(request.params.key)) {
+    if (isSecretSettingsKey(request.params.key)) {
       return { key: request.params.key, value: null }
     }
     const value = opts.settingsStore.get(request.params.key) ?? null
@@ -804,7 +811,7 @@ export function createDaemonHttpApi(
   server.put<{ Params: SettingsKeyParams; Body: SettingsPutBody }>('/settings/:key', async (request, reply) => {
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
     if (!opts.settingsStore.set) return methodNotAllowed(reply, 'Settings store is read-only.')
-    if (SETTINGS_WRITE_DENY_KEYS.includes(request.params.key)) {
+    if (SETTINGS_WRITE_DENY_KEYS.includes(request.params.key) || isSecretSettingsKey(request.params.key)) {
       return forbidden(reply, `Settings key "${request.params.key}" cannot be written through the daemon API.`, 'setting_not_writable')
     }
     if (!request.body || !Object.prototype.hasOwnProperty.call(request.body, 'value')) {
@@ -814,7 +821,7 @@ export function createDaemonHttpApi(
       ? restoreRedactedProviderKeys(request.body.value, opts.settingsStore.get('providers'))
       : request.body.value
     opts.settingsStore.set(request.params.key, incoming)
-    const stored = SETTINGS_SECRET_KEYS.includes(request.params.key)
+    const stored = isSecretSettingsKey(request.params.key)
       ? null
       : opts.settingsStore.get(request.params.key) ?? null
     return {

@@ -25,7 +25,7 @@
  * AdfWorkspace-shaped handle — both injected, so this module is usable from
  * Studio, the daemon builder, and tests.
  */
-import { createHash } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import type {
   McpOAuthStore,
   McpOAuthRecord,
@@ -200,48 +200,109 @@ export function daemonAppOAuthRecordAccount(indexAccount: string, serverUrl: str
 export const SECRET_CHUNK_CHARS = 1000
 
 /**
- * Chunked secret value: the head account holds `{"v":1,"n":<chunks>}`, chunk
- * i is at `<account>#<i>`. Chunks are written before the head, so a reader
- * never sees a head that points at missing chunks from a complete write;
- * chunks beyond a shorter new value are deleted afterwards.
+ * Chunked secret value with generations. The head account holds
+ * `{"v":1,"gen":<hex>,"n":<chunks>,"sha256":<hex of the value>}`; chunk i of
+ * a generation is at `<account>#<gen>:<i>`. A write stores a new generation,
+ * then flips the head to it, then deletes the old generation, so a crash at
+ * any point leaves the head on one complete generation (old or new), never a
+ * mix of both (an access token of one write with the refresh token of
+ * another). A head whose chunks do not hash to `sha256` reads as absent.
+ *
+ * Chunks a crash left behind are listed in the head (`pending` before the
+ * flip, `prev` after it) and deleted by the next write. Chunks end on code
+ * point boundaries, never inside a surrogate pair.
  */
-export function chunkedSecretWrite(backend: OAuthSecretBackendHandle, account: string, value: string): void {
-  const previous = chunkCount(backend, account)
-  const chunks: string[] = []
-  for (let i = 0; i < value.length; i += SECRET_CHUNK_CHARS) chunks.push(value.slice(i, i + SECRET_CHUNK_CHARS))
-  if (chunks.length === 0) chunks.push('')
-  chunks.forEach((chunk, i) => backend.set(`${account}#${i}`, chunk))
-  backend.set(account, JSON.stringify({ v: 1, n: chunks.length }))
-  for (let i = chunks.length; i < previous; i++) backend.delete(`${account}#${i}`)
+interface ChunkHead {
+  v: 1
+  gen?: string
+  n?: number
+  sha256?: string
+  /** A generation being written (crash before the flip leaves it orphaned). */
+  pending?: { gen: string; n: number }
+  /** The generation the last flip replaced (crash before its deletion leaves it orphaned). */
+  prev?: { gen: string; n: number }
 }
 
-/** The whole value, or null when absent or incomplete (a missing chunk). */
+function readHead(backend: OAuthSecretBackendHandle, account: string): ChunkHead | null {
+  const raw = backend.get(account)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as ChunkHead
+    return parsed && parsed.v === 1 ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function isGeneration(g: unknown): g is { gen: string; n: number } {
+  const value = g as { gen?: unknown; n?: unknown } | undefined
+  return !!value && typeof value.gen === 'string' && /^[0-9a-f]{1,32}$/.test(value.gen) &&
+    typeof value.n === 'number' && Number.isInteger(value.n) && value.n > 0 && value.n < 1000
+}
+
+function deleteGeneration(backend: OAuthSecretBackendHandle, account: string, g: { gen: string; n: number }): void {
+  for (let i = 0; i < g.n; i++) backend.delete(`${account}#${g.gen}:${i}`)
+}
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex')
+}
+
+/** Split into chunks of at most `size` UTF-16 units, never between the halves of a surrogate pair. */
+export function splitOnCodePoints(value: string, size: number = SECRET_CHUNK_CHARS): string[] {
+  const chunks: string[] = []
+  let start = 0
+  while (start < value.length) {
+    let end = Math.min(start + size, value.length)
+    const last = value.charCodeAt(end - 1)
+    if (end < value.length && last >= 0xd800 && last <= 0xdbff) end -= 1
+    chunks.push(value.slice(start, end))
+    start = end
+  }
+  return chunks.length > 0 ? chunks : ['']
+}
+
+export function chunkedSecretWrite(backend: OAuthSecretBackendHandle, account: string, value: string): void {
+  const head = readHead(backend, account)
+  // Leftovers of an earlier crash (never referenced by a live head).
+  for (const leftover of [head?.pending, head?.prev]) if (isGeneration(leftover)) deleteGeneration(backend, account, leftover)
+  const current = head && isGeneration(head) ? { gen: head.gen!, n: head.n! } : null
+  const chunks = splitOnCodePoints(value)
+  const next = { gen: randomBytes(8).toString('hex'), n: chunks.length }
+  const live: ChunkHead = current ? { v: 1, gen: current.gen, n: current.n, sha256: head!.sha256 } : { v: 1 }
+  backend.set(account, JSON.stringify({ ...live, pending: next }))
+  chunks.forEach((chunk, i) => backend.set(`${account}#${next.gen}:${i}`, chunk))
+  backend.set(account, JSON.stringify({ v: 1, gen: next.gen, n: next.n, sha256: sha256Hex(value), ...(current ? { prev: current } : {}) }))
+  if (current) {
+    deleteGeneration(backend, account, current)
+    backend.set(account, JSON.stringify({ v: 1, gen: next.gen, n: next.n, sha256: sha256Hex(value) }))
+  }
+}
+
+/** The whole value, or null when absent, incomplete or not matching its checksum. */
 export function chunkedSecretRead(backend: OAuthSecretBackendHandle, account: string): string | null {
-  const n = chunkCount(backend, account)
-  if (n === 0) return null
+  const head = readHead(backend, account)
+  if (!head || !isGeneration(head) || typeof head.sha256 !== 'string') return null
   const parts: string[] = []
-  for (let i = 0; i < n; i++) {
-    const part = backend.get(`${account}#${i}`)
+  for (let i = 0; i < head.n!; i++) {
+    const part = backend.get(`${account}#${head.gen}:${i}`)
     if (part === null) return null
     parts.push(part)
   }
-  return parts.join('')
+  const value = parts.join('')
+  if (sha256Hex(value) !== head.sha256) {
+    console.warn(`[MCP][oauth] Secret ${account} does not match its checksum; treating it as absent`)
+    return null
+  }
+  return value
 }
 
 export function chunkedSecretDelete(backend: OAuthSecretBackendHandle, account: string): void {
-  const n = chunkCount(backend, account)
+  const head = readHead(backend, account)
   backend.delete(account)
-  for (let i = 0; i < n; i++) backend.delete(`${account}#${i}`)
-}
-
-function chunkCount(backend: OAuthSecretBackendHandle, account: string): number {
-  const head = backend.get(account)
-  if (!head) return 0
-  try {
-    const parsed = JSON.parse(head) as { v?: unknown; n?: unknown }
-    return parsed?.v === 1 && typeof parsed.n === 'number' && Number.isInteger(parsed.n) && parsed.n > 0 && parsed.n < 1000 ? parsed.n : 0
-  } catch {
-    return 0
+  if (!head) return
+  for (const g of [isGeneration(head) ? { gen: head.gen!, n: head.n! } : null, head.pending, head.prev]) {
+    if (isGeneration(g)) deleteGeneration(backend, account, g)
   }
 }
 
