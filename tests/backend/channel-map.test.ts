@@ -118,34 +118,44 @@ describe('channel map', () => {
     expect(missing).toEqual([])
   })
 
-  it('keeps docs/design/daemon-backend-gaps.md in step with the map', () => {
+  it('keeps docs/design/daemon-backend-gaps.md in step with the map, need by need', () => {
     const doc = readFileSync(join(ROOT, 'docs', 'design', 'daemon-backend-gaps.md'), 'utf8')
-    const sections = new Map<string, Set<string>>()
+    // "## W1-D" section -> need -> channel names, from rows "| need | `A`, `B` |".
+    const inDoc = new Map<string, Map<string, string[]>>()
     for (const part of doc.split(/^## /m).slice(1)) {
       const ws = /^(W\d-[A-Z])\b/.exec(part)?.[1]
       if (!ws) continue
-      sections.set(ws, new Set([...part.matchAll(/`([A-Za-z][\w:-]*)`/g)].map((m) => m[1])))
-    }
-
-    const expected = new Map<string, Set<string>>()
-    for (const g of listChannelGaps()) {
-      const name = nameOf.get(g.channel) ?? g.channel
-      if (!expected.has(g.ws)) expected.set(g.ws, new Set())
-      expected.get(g.ws)!.add(name)
-    }
-
-    const problems: string[] = []
-    for (const [ws, names] of expected) {
-      const listed = sections.get(ws)
-      if (!listed) { problems.push(`no "## ${ws}" section`); continue }
-      for (const name of names) if (!listed.has(name)) problems.push(`${ws}: ${name} missing from the doc`)
-    }
-    const channelNames = new Set([...nameOf.values(), ...RAW_CHANNELS])
-    for (const [ws, listed] of sections) {
-      for (const name of listed) {
-        if (channelNames.has(name) && !expected.get(ws)?.has(name)) problems.push(`${ws}: doc lists ${name}, the map has no ${ws} gap for it`)
+      const rows = new Map<string, string[]>()
+      for (const line of part.split('\n')) {
+        if (!line.startsWith('| ') || line.startsWith('| Need |')) continue
+        const cut = line.lastIndexOf(' | ')
+        const need = line.slice(2, cut).replaceAll('\\|', '|')
+        const channels = [...line.slice(cut).matchAll(/`([^`]+)`/g)].map((m) => m[1]).sort()
+        rows.set(need, channels)
       }
+      inDoc.set(ws, rows)
     }
-    expect(problems).toEqual([])
+
+    const inMap = new Map<string, Map<string, string[]>>()
+    for (const g of listChannelGaps()) {
+      const rows = inMap.get(g.ws) ?? new Map<string, string[]>()
+      const list = rows.get(g.need) ?? []
+      const name = nameOf.get(g.channel) ?? g.channel
+      if (!list.includes(name)) list.push(name)
+      rows.set(g.need, list)
+      inMap.set(g.ws, rows)
+    }
+    const flatten = (m: Map<string, Map<string, string[]>>) =>
+      [...m].flatMap(([ws, rows]) => [...rows].map(([need, names]) => `${ws} | ${need} | ${[...names].sort().join(', ')}`)).sort()
+    expect(flatten(inDoc)).toEqual(flatten(inMap))
+  })
+
+  it('keeps embedded side effects out of notes', () => {
+    // A note that describes what embedded mode does is a parity difference;
+    // it belongs in `gaps`, where a workstream owns it.
+    const offenders = entries
+      .filter(([, entry]) => entry.note && /\bembedded\b/i.test(entry.note))
+      .map(([channel, entry]) => `${nameOf.get(channel) ?? channel}: ${entry.note}`)
+    expect(offenders).toEqual([])
   })
 })
