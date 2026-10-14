@@ -295,14 +295,23 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     // Embedded detaches the foreground host before it disposes the agent:
     // the renderer sees none of the teardown's events.
     ctx.bridge.detach(agentId)
+    // A rename deferred while it ran moves the file now; embedded applies it
+    // (and pushes FILE_RENAMED) before it answers, so this waits for the push.
+    const filePath = ctx.session.filePath
+    const pending = filePath
+      ? await client.request<{ pendingName?: string }>('GET', '/files/agent', { query: { path: filePath } }).then((i) => i.pendingName, () => undefined)
+      : undefined
+    const moved = pending && filePath ? ctx.bridge.awaitPush('file_renamed', (p) => samePath((p as { oldPath?: string })?.oldPath, filePath)) : null
     try {
       await client.request('POST', `/agents/${enc(agentId)}/stop`, { timeoutMs: 60_000 })
     } catch (err) {
+      moved?.cancel()
       if (!isNotFound(err)) {
         ctx.bridge.attach(agentId)
         throw err
       }
     }
+    if (moved && !(await moved.done)) ctx.log.warn(`[Backend] AGENT_STOP: ${filePath} was to be renamed to "${pending}" at the stop; no rename arrived from the ADF daemon`)
     return { success: true }
   },
 

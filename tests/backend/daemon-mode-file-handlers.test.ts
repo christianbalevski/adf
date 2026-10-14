@@ -69,7 +69,8 @@ function setup(mode: 'local' | 'remote' = 'local'): void {
     mode,
     connection: {} as never,
     session,
-    bridge: {} as never,
+    // The relocate's FILE_RENAMED push has reached the window (EventBridge.awaitPush).
+    bridge: { awaitPush: () => ({ done: Promise.resolve(true), cancel: () => {} }) } as never,
     clientSettings: new ClientSettingsStore(join(dir, `client-${Math.random()}.json`), quiet),
     approvals: {} as never,
     ready: async () => client,

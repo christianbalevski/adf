@@ -45,7 +45,11 @@ const W3B_RUNNING = ['agent-keystore', 'agent-claim'] as const
 const W3C = ['w3c-install-progress', 'w3c-mcp-attach-credentials', 'w3c-adapter-telegram', 'w3c-mcp-connect-test', 'w3c-mcp-oauth-connect'] as const
 /** Scenarios that open a file that is not running, held by the client session (W2-C2). */
 const HELD_ONLY = ['legacy-password-unlock'] as const
-const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY] as const
+/** W3-A scenarios (tests/parity/documents) that start an agent and stop it before the state dump. */
+const W3A_RAN = ['switch-with-background', 'password-unlock', 'config-during-start', 'rename-while-running'] as const
+/** W3-A scenarios that run no agent. */
+const W3A_NO_AGENT = ['review-accept-foreign', 'template-create', 'delete', 'doc-resources'] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT] as const
 const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING] as const
 /** The mesh scenarios (tests/parity/mesh, W3-D). */
 const MESH = ['fleet-map', 'emergency-stop'] as const
@@ -343,7 +347,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-host-record-lazy',
     ws: 'W0-C',
-    scenarios: ['open-agent', ...W3B_NO_AGENT, ...W3C, ...HELD_ONLY],
+    scenarios: ['open-agent', ...W3B_NO_AGENT, ...W3C, ...HELD_ONLY, ...W3A_NO_AGENT],
     path: 'state.leases: the daemon\'s hosts/<pid>.json while it holds no lease',
     what: 'Bug: the daemon writes its runtime host record only once it holds an agent lease; §10.3 has every runtime host register (embedded Studio does at boot).',
     apply(d, e) {
@@ -375,7 +379,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0d:daemon-version-null',
     ws: 'W0-D',
-    scenarios: [...RUNNING, ...MESH],
+    scenarios: [...RUNNING, ...MESH, ...W3A_RAN],
     path: 'state.leases: `version` of the daemon\'s host record and lease holder',
     what: 'Bug: the daemon records version null in its host record and agent leases.',
     apply(d) {
@@ -453,7 +457,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'mode:effective-runtime-host',
     ws: 'mode',
-    scenarios: [...RUNNING, ...MESH],
+    scenarios: [...RUNNING, ...MESH, ...W3A_RAN],
     path: 'state: adf_meta adf_effective_runtime `host` field only',
     what: 'The agent file records which host profile ran it: `daemon`, not `studioForeground`.',
     apply(d) {
@@ -545,6 +549,37 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       // Channels in name order, as the recording keeps them.
       d.pushes = Object.fromEntries(Object.keys(d.pushes).sort().map((c) => [c, d.pushes[c]]))
       if (d.pushSeq) d.pushSeq[IPC.AGENT_EVENT] = clone(e.pushSeq?.[IPC.AGENT_EVENT] ?? [])
+      return n
+    },
+  },
+  {
+    id: 'e3:stop-startup-dispatch-error',
+    ws: 'E3',
+    scenarios: ['password-unlock', 'config-during-start', 'rename-while-running'],
+    path: 'AGENT_STOP: the embedded AGENT_EVENT error push, its timeline line and the step push watermarks it shifts',
+    what: 'Embedded bug (tracker §6, E3 candidate, as e3:emergency-stop-startup-dispatch-error): stopping an agent started idle sends "Cannot dispatch startup while agent lifecycle is disposed" on AGENT_EVENT, which the chat shows as an error. Daemon mode sends no such error.',
+    apply(d, e) {
+      const step = e.steps.findIndex((st) => st.kind === 'invoke' && st.channel === IPC.AGENT_STOP)
+      if (step < 0) return 0
+      const errors = (e.pushes[IPC.AGENT_EVENT] ?? []) as Array<{ type?: string; payload?: { error?: string } }>
+      if ((d.pushes[IPC.AGENT_EVENT] ?? []).length !== 0 || errors.length !== 1 || errors[0].type !== 'error' || !/Cannot dispatch startup while agent lifecycle is disposed/.test(errors[0].payload?.error ?? '')) return 0
+      let n = 0
+      for (const [agent, lines] of Object.entries(d.timelines)) {
+        const eb = stepBlock(e.timelines[agent] ?? [], step + 1)
+        const db = stepBlock(lines, step + 1)
+        if (!eb || !db) continue
+        const block = e.timelines[agent].slice(eb.from, eb.to)
+        const at = block.findIndex((l) => /^ {2}adf:agent:event error$/.test(l))
+        if (at < 0) continue
+        lines.splice(db.from + at, 0, block[at])
+        n++
+      }
+      if (n !== 1) return 0
+      if (d.steps.length !== e.steps.length || d.steps.some((st, i) => !same(withoutPushes(st), withoutPushes(e.steps[i])))) return 0
+      d.pushes[IPC.AGENT_EVENT] = clone(e.pushes[IPC.AGENT_EVENT])
+      d.pushes = Object.fromEntries(Object.keys(d.pushes).sort().map((c) => [c, d.pushes[c]]))
+      if (d.pushSeq) d.pushSeq[IPC.AGENT_EVENT] = clone(e.pushSeq?.[IPC.AGENT_EVENT] ?? [])
+      d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
       return n
     },
   },

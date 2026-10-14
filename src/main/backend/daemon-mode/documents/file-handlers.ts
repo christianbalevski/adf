@@ -173,6 +173,20 @@ async function createAndOpen(ctx: DaemonModeContext, body: Record<string, unknow
 
 // --- review of the open file ----------------------------------------------------
 
+/**
+ * The review summary as embedded builds it (buildReviewSummaryFor): its
+ * provider entry always has `configuredType`, undefined for a provider the
+ * file does not embed; JSON drops undefined keys on the wire, and the
+ * renderer's row comparison counts keys.
+ */
+export function reviewSummaryKeys<T>(summary: T): T {
+  const provider = (summary as { provider?: Record<string, unknown> } | null)?.provider
+  if (provider && typeof provider === 'object' && !('configuredType' in provider)) {
+    return { ...summary, provider: { ...provider, configuredType: undefined } }
+  }
+  return summary
+}
+
 /** Embedded's claim refusal names a template (ipc/index.ts FILE_REVIEW_ACCEPT); the daemon's names the agent. */
 const CLAIM_KEYS_UNAVAILABLE = 'Owner and runtime encryption keys are unavailable (keystore locked?), so the template cannot be claimed securely.'
 
@@ -442,7 +456,7 @@ export const FILE_HANDLERS: DaemonHandlerTable = {
       const client = await ctx.ready()
       const review = await client.request<{ reviewed: boolean; summary: unknown }>('GET', '/agents/review', { query: { filePath } })
       if (review.reviewed) return { needsReview: false }
-      return { needsReview: true, configSummary: review.summary }
+      return { needsReview: true, configSummary: reviewSummaryKeys(review.summary) }
     } catch (err) {
       ctx.log.warn('[IPC] FILE_CHECK_REVIEW error:', err)
       return { needsReview: false }
@@ -473,11 +487,18 @@ export const FILE_HANDLERS: DaemonHandlerTable = {
     }
     // An accepted agent must survive restart: an untracked file moves into the agents folder.
     const at = accepted.filePath ?? filePath
+    // Embedded pushes TRACKED_DIRS_CHANGED and FILE_RENAMED of the move before
+    // it answers: the answer waits for the rename push (it comes last).
+    const renamed = ctx.bridge.awaitPush('file_renamed', (p) => samePath((p as { oldPath?: string })?.oldPath, at))
     try {
       const moved = await client.request<{ movedTo?: string; moveError?: string }>('POST', '/files/relocate', { body: { path: at }, timeoutMs: 60_000 })
-      if (moved.movedTo) noteMoved(ctx, filePath, moved.movedTo)
+      if (moved.movedTo) {
+        if (!(await renamed.done)) ctx.log.warn(`[Review] ${at} moved to ${moved.movedTo}; no rename push arrived from the ADF daemon`)
+        noteMoved(ctx, filePath, moved.movedTo)
+      } else renamed.cancel()
       return { success: true, ...(moved.movedTo ? { movedTo: moved.movedTo } : {}), ...(moved.moveError ? { moveError: moved.moveError } : {}) }
     } catch (err) {
+      renamed.cancel()
       // The accept stands; the move is best-effort (persistAcceptedAgent).
       ctx.log.warn('[Review] Moving the accepted agent into the agents folder failed:', err)
       return { success: true }

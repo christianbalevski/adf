@@ -148,7 +148,9 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
   })
 
   server.post<{ Body: { path?: unknown; newName?: unknown } | undefined }>('/files/rename', async (request, reply) => {
-    try { return await files.rename(request.body?.path, request.body?.newName) } catch (err) { return fail(reply, err) }
+    const header = request.headers['x-adf-client-session']
+    const origin = Array.isArray(header) ? header[0] : header
+    try { return await files.rename(request.body?.path, request.body?.newName, origin ? { origin } : {}) } catch (err) { return fail(reply, err) }
   })
 
   server.post<{ Body: { path?: unknown; selectedTables?: unknown } | undefined }>('/files/clone', async (request, reply) => {

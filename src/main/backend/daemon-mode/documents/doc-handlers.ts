@@ -286,7 +286,8 @@ export const DOC_HANDLERS: DaemonHandlerTable = {
 
   [IPC.DOC_GET_TIMERS]: (ctx) => onOpenFile(ctx, 'Reading the open agent\'s timers', { timers: [] }, async (client, id) => {
     const { timers } = await client.request<{ timers: Timer[] }>('GET', `/agents/${enc(id)}/timers`)
-    return { timers }
+    // Embedded's rows (AdfDatabase rowToTimer) always carry these keys, undefined when unset; JSON drops them.
+    return { timers: timers.map((t) => ({ ...t, payload: t.payload, lambda: t.lambda, warm: t.warm, last_fired_at: t.last_fired_at, locked: t.locked, loop: t.loop, expired: t.expired })) }
   }),
 
   /** The loop is kept only for an agent-scope timer (embedded's effectiveLoop). */

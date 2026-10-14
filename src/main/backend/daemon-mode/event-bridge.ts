@@ -47,6 +47,8 @@ export interface PushTopicRoute {
   action?: 'adf_file_created' | 'notice' | 'rekey'
   /** No Studio push and no action: why. */
   none?: string
+  /** The channel carries no payload in embedded Studio (TEMPLATES_CHANGED): the frame's `{}` is not passed on. */
+  noPayload?: boolean
 }
 
 /** Every push topic and the channel it feeds. The payload is the channel's own (client-stream.ts). */
@@ -58,7 +60,7 @@ export const PUSH_TOPICS: Readonly<Record<PushTopic, PushTopicRoute>> = {
   adapter_install: { channel: IPC.ADAPTER_INSTALL_PROGRESS },
   sandbox_install: { channel: IPC.SANDBOX_INSTALL_PROGRESS },
   tracked_dirs: { channel: IPC.TRACKED_DIRS_CHANGED },
-  templates: { channel: IPC.TEMPLATES_CHANGED },
+  templates: { channel: IPC.TEMPLATES_CHANGED, noPayload: true },
   file_renamed: { channel: IPC.FILE_RENAMED },
   config_changed: { channel: IPC.DOC_AGENT_CONFIG_CHANGED, openFileOnly: true },
   workspace_data: { channel: IPC.WORKSPACE_DATA_CHANGED, openFileOnly: true },
@@ -651,9 +653,39 @@ export class EventBridge {
       }
     }
     if (frame.topic === 'approvals') this.deps.onApprovals?.(frame.payload as NotificationsSnapshot)
-    const args = frame.payload === undefined ? [] : [frame.payload]
+    const args = frame.payload === undefined || route.noPayload ? [] : [frame.payload]
     if (route.allWindows) this.deps.output.sendAll(route.channel, ...args)
     else this.deps.output.send(route.channel, ...args)
+    this.settlePushWaits(frame)
+  }
+
+  /**
+   * Resolves true once a push of `topic` whose payload `match`es has reached
+   * the window, false after `timeoutMs`. A handler whose embedded twin sends
+   * the push before it answers (a rename applied at stop, a relocate on
+   * review accept) registers before its request and awaits it before
+   * answering, so the renderer sees the same order. Register first: the push
+   * can arrive before the HTTP answer.
+   */
+  awaitPush(topic: PushTopic, match: (payload: unknown) => boolean, timeoutMs = 5_000): { done: Promise<boolean>; cancel(): void } {
+    let settle!: (seen: boolean) => void
+    const done = new Promise<boolean>((resolve) => { settle = resolve })
+    const wait = { topic, match, settle: (seen: boolean) => { clearTimeout(timer); this.pushWaits.delete(wait); settle(seen) } }
+    const timer = setTimeout(() => wait.settle(false), timeoutMs)
+    timer.unref?.()
+    this.pushWaits.add(wait)
+    return { done, cancel: () => wait.settle(false) }
+  }
+
+  private readonly pushWaits = new Set<{ topic: PushTopic; match: (payload: unknown) => boolean; settle: (seen: boolean) => void }>()
+
+  private settlePushWaits(frame: PushFrame): void {
+    for (const wait of [...this.pushWaits]) {
+      if (wait.topic !== frame.topic) continue
+      let hit = false
+      try { hit = wait.match(frame.payload) } catch { hit = false }
+      if (hit) wait.settle(true)
+    }
   }
 
   // --- resync --------------------------------------------------------------

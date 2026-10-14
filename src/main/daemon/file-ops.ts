@@ -47,6 +47,7 @@ import {
   type AgentLeaseRegistry,
 } from '../runtime/agent-lease'
 import type { DaemonIdentity } from './daemon-identity'
+import { runAsClientWrite } from './client-sessions'
 import type { TrackedDirWatcher } from './dir-watcher'
 import { forgetTrackedFile, maxDepthOf, peekBootStatusCached, storedDirs, type TrackedDirsSettings } from './tracked-dirs'
 
@@ -902,7 +903,13 @@ export class AgentFileOps {
    * agent's file is renamed here, now: after the lease check, by inode (so a
    * case-only rename works on case-insensitive volumes), folded WAL first.
    */
-  async rename(input: unknown, newNameInput: unknown): Promise<RenameResult> {
+  /**
+   * `opts.origin`: the client session asking (X-ADF-Client-Session). A running
+   * agent's live name change is that session's own write: its config_changed
+   * echo skips that session (D5.1), as Studio's rename pushes nothing to the
+   * window that renamed.
+   */
+  async rename(input: unknown, newNameInput: unknown, opts: { origin?: string } = {}): Promise<RenameResult> {
     const filePath = await this.adfPath(input, { destructive: true })
     const newName = typeof newNameInput === 'string' ? newNameInput.trim() : ''
     if (!isValidAgentFileName(newName)) {
@@ -915,7 +922,10 @@ export class AgentFileOps {
     const loaded = this.loadedAt(filePath)
     if (loaded) {
       const { config } = this.runtime.getAgentConfig(loaded.id)
-      if (config.name !== newName) await this.runtime.setAgentConfig(loaded.id, { ...config, name: newName })
+      if (config.name !== newName) {
+        const write = () => this.runtime.setAgentConfig(loaded.id, { ...config, name: newName })
+        await (opts.origin ? runAsClientWrite(opts.origin, write) : write())
+      }
       const sync = this.runtime.syncAgentFileToName(filePath, newName)
       if (sync.error) throw new FileOpError(sync.error, 409, 'conflict')
       if (!sync.deferred) return { success: true, filePath, renameDeferred: false, agentId: loaded.id }

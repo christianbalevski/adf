@@ -7,6 +7,7 @@ import type { AgentConfig } from '../../../../shared/types/adf-v02.types'
 import type { AgentConfigSummary, AgentTemplateContents, AgentTemplateListResult, AgentTemplateSummary } from '../../../../shared/types/ipc.types'
 import { enc, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { daemonCode, daemonStatus, errorMessage } from './open-file'
+import { reviewSummaryKeys } from './file-handlers'
 
 /**
  * Templates (Settings > Agent templates, the home composer's picker) in
@@ -281,7 +282,7 @@ export const TEMPLATE_HANDLERS: DaemonHandlerTable = {
     try {
       const client = await ctx.ready()
       const review = await client.request<{ needsReview: boolean; summary?: AgentConfigSummary }>('GET', `/templates/${enc(args.id)}/review`)
-      return review.needsReview && review.summary ? { needsReview: true, configSummary: review.summary } : { needsReview: false }
+      return review.needsReview && review.summary ? { needsReview: true, configSummary: reviewSummaryKeys(review.summary) } : { needsReview: false }
     } catch (err) {
       ctx.log.warn('[Backend] TEMPLATE_CHECK_REVIEW error:', errorMessage(err))
       return { needsReview: false }

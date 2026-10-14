@@ -163,6 +163,42 @@ export const deleteScenario: ParityScenario = {
   },
 }
 
+export const docResourcesScenario: ParityScenario = {
+  name: 'doc-resources',
+  description: 'The resource panels of the open file while its agent is not running: document, timers, internal files (not the listing: its timestamps tie by the millisecond), meta, tasks, inbox, outbox, local tables, older chat, then save and the table listing.',
+  fixtures: [{ name: 'agent-1' }],
+  quietMs: 1000,
+  async run(ctx) {
+    const agent = ctx.agent('agent-1')
+    await openAgent(ctx, agent.filePath)
+    await ctx.invoke(IPC.DOC_GET_DOCUMENT)
+    await ctx.invoke(IPC.DOC_SET_DOCUMENT, { content: '# Plan\n\nShip it.' })
+    await ctx.invoke(IPC.DOC_GET_DOCUMENT)
+    await ctx.invoke(IPC.DOC_GET_TIMERS)
+    await ctx.invoke(IPC.DOC_ADD_TIMER, { mode: 'once_at', at: 1, scope: ['agent'] })
+    // A fixed instant far ahead: a relative delay would put a run-dependent time in the recording.
+    const timer = await ctx.invoke<{ id?: number }>(IPC.DOC_ADD_TIMER, { mode: 'once_at', at: 4_102_444_800_000, scope: ['agent'], payload: 'check in' })
+    await ctx.invoke(IPC.DOC_GET_TIMERS)
+    if (timer?.id !== undefined) await ctx.invoke(IPC.DOC_DELETE_TIMER, { id: timer.id })
+    await ctx.invoke(IPC.DOC_WRITE_INTERNAL_FILE, { path: 'notes/a.md', content: 'first note' })
+    await ctx.invoke(IPC.DOC_RENAME_INTERNAL_FILE, { oldPath: 'notes/a.md', newPath: 'notes/b.md' })
+    await ctx.invoke(IPC.DOC_SET_FILE_PROTECTION, { path: 'notes/b.md', protection: 'read_only' })
+    await ctx.invoke(IPC.DOC_READ_INTERNAL_FILE, { path: 'notes/b.md', binaryContent: false })
+    await ctx.invoke(IPC.DOC_DELETE_INTERNAL_FILE, { path: 'notes/missing.md' })
+    await ctx.invoke(IPC.DOC_SET_META, { key: 'parity_key', value: 'parity value' })
+    await ctx.invoke(IPC.DOC_GET_ALL_META)
+    await ctx.invoke(IPC.DOC_DELETE_META, { key: 'parity_key' })
+    await ctx.invoke(IPC.DOC_GET_TASKS, {})
+    await ctx.invoke(IPC.DOC_GET_INBOX)
+    await ctx.invoke(IPC.DOC_GET_OUTBOX)
+    await ctx.invoke(IPC.DOC_LIST_LOCAL_TABLES)
+    await ctx.invoke(IPC.DOC_QUERY_LOCAL_TABLE, { table: 'adf_config' })
+    await ctx.invoke(IPC.DOC_GET_CHAT_OLDER, { beforeSeq: 1_000_000 })
+    await ctx.invoke(IPC.FILE_SAVE)
+    await ctx.invoke(IPC.FILE_LIST_TABLES, { filePath: agent.filePath })
+  },
+}
+
 /** W3-A's scenarios, in run order. */
 export const DOCUMENT_SCENARIOS: readonly ParityScenario[] = [
   switchWithBackgroundScenario,
@@ -172,4 +208,5 @@ export const DOCUMENT_SCENARIOS: readonly ParityScenario[] = [
   templateCreateScenario,
   renameWhileRunningScenario,
   deleteScenario,
+  docResourcesScenario,
 ]
