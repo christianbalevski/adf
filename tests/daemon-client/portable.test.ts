@@ -5,7 +5,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { builtinModules } from 'node:module'
-import { join, resolve } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { build } from 'esbuild'
 import ts from 'typescript'
@@ -15,39 +15,60 @@ const DIR = resolve(__dirname, '../../src/shared/daemon-client')
 const FILES = readdirSync(DIR).filter(f => f.endsWith('.ts'))
 const NODE = new Set([...builtinModules, ...builtinModules.map(m => `node:${m}`)])
 
+const parse = (file: string, source: string) => ts.createSourceFile(file, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS)
+
 /** Every module specifier in `source`, and whether it is erased at runtime (type-only). */
 function specifiers(file: string, source: string): Array<{ spec: string; typeOnly: boolean }> {
   const out: Array<{ spec: string; typeOnly: boolean }> = []
   const visit = (node: ts.Node): void => {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
       const typeOnly = ts.isImportDeclaration(node)
         ? !!node.importClause?.isTypeOnly ||
           (!!node.importClause && !node.importClause.name && !!node.importClause.namedBindings && ts.isNamedImports(node.importClause.namedBindings) &&
             node.importClause.namedBindings.elements.every(e => e.isTypeOnly))
         : node.isTypeOnly
       out.push({ spec: node.moduleSpecifier.text, typeOnly })
-    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteral(node.argument.literal)) {
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && ts.isStringLiteralLike(node.moduleReference.expression)) {
+      out.push({ spec: node.moduleReference.expression.text, typeOnly: node.isTypeOnly })
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteralLike(node.argument.literal)) {
       out.push({ spec: node.argument.literal.text, typeOnly: true })
-    } else if (ts.isCallExpression(node) && node.arguments[0] && ts.isStringLiteral(node.arguments[0]) &&
+    } else if (ts.isCallExpression(node) &&
       (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))) {
-      out.push({ spec: node.arguments[0].text, typeOnly: false })
+      const arg = node.arguments[0]
+      // A computed specifier cannot be checked: count it as a violation.
+      out.push({ spec: arg && ts.isStringLiteralLike(arg) ? arg.text : '<computed>', typeOnly: false })
     }
     ts.forEachChild(node, visit)
   }
-  visit(ts.createSourceFile(file, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS))
+  visit(parse(file, source))
   return out
+}
+
+/** A value import is fine only when it resolves inside the folder. */
+function staysInside(spec: string): boolean {
+  if (!spec.startsWith('./') && !spec.startsWith('../')) return false
+  const target = resolve(DIR, spec)
+  return target.startsWith(DIR + sep)
 }
 
 const NODE_GLOBALS = new Set(['process', 'Buffer', 'NodeJS', 'require', '__dirname', '__filename', 'global'])
 
-/** Node-only globals referenced in code (comments and property names do not count). */
+/** Node-only globals referenced in code, bare or through globalThis (comments and other property names do not count). */
 function nodeGlobals(file: string, source: string): string[] {
   const out: string[] = []
   const visit = (node: ts.Node): void => {
-    if (ts.isIdentifier(node) && NODE_GLOBALS.has(node.text) && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)) out.push(node.text)
+    if (ts.isIdentifier(node) && NODE_GLOBALS.has(node.text)) {
+      const parent = node.parent
+      const asProperty = ts.isPropertyAccessExpression(parent) && parent.name === node
+      const onGlobalThis = asProperty && ts.isIdentifier(parent.expression) && parent.expression.text === 'globalThis'
+      if (!asProperty || onGlobalThis) out.push(node.text)
+    } else if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'globalThis' &&
+      ts.isStringLiteralLike(node.argumentExpression) && NODE_GLOBALS.has(node.argumentExpression.text)) {
+      out.push(node.argumentExpression.text)
+    }
     ts.forEachChild(node, visit)
   }
-  visit(ts.createSourceFile(file, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS))
+  visit(parse(file, source))
   return out
 }
 
@@ -65,6 +86,9 @@ describe('shared daemon client portability', () => {
       "const d = require('fs')",
       "type E = import('../e').E",
       "void import('os')",
+      'void import(`node:os`)',
+      "import F = require('node:path')",
+      'void import(name)',
     ].join('\n'))
     expect(found).toEqual([
       { spec: 'node:fs', typeOnly: false },
@@ -74,7 +98,15 @@ describe('shared daemon client portability', () => {
       { spec: 'fs', typeOnly: false },
       { spec: '../e', typeOnly: true },
       { spec: 'os', typeOnly: false },
+      { spec: 'node:os', typeOnly: false },
+      { spec: 'node:path', typeOnly: false },
+      { spec: '<computed>', typeOnly: false },
     ])
+    expect(staysInside('./sse')).toBe(true)
+    expect(staysInside('./../../main/x')).toBe(false)
+    expect(staysInside('../daemon-client/sse')).toBe(true)
+    expect(staysInside('../types/x')).toBe(false)
+    expect(nodeGlobals('x.ts', "// process.env\nconst a = globalThis.process; const b = globalThis['Buffer']; const c = x.process; const d = globalThis.fetch")).toEqual(['process', 'Buffer'])
   })
 
   it.each(FILES)('%s imports no Node module and loads values only from this folder', file => {
@@ -84,7 +116,7 @@ describe('shared daemon client portability', () => {
     for (const { spec, typeOnly } of found) {
       expect(NODE.has(spec), `${file} imports ${spec}`).toBe(false)
       expect(spec === 'fs' || spec.startsWith('fs/'), `${file} imports ${spec}`).toBe(false)
-      if (!typeOnly) expect(spec.startsWith('./'), `${file} loads code from ${spec}`).toBe(true)
+      if (!typeOnly) expect(staysInside(spec), `${file} loads code from ${spec}`).toBe(true)
     }
     expect(nodeGlobals(file, source), `${file} uses Node globals`).toEqual([])
   })
