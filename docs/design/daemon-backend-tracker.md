@@ -322,6 +322,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W1-D | Unknown/expired identity draft id on create silently mints a fresh DID (console.warn only); report it in the create response | W2-A |
 | W1-D | Job cancel only abandons work: OAuth loopback listener lives to its 5 min timeout; an in-flight stdio connect may outlive `disconnectAll` (orphan server process); running jobs unbounded, Python install not deduped | W3-C |
 | W1-D | Peer fetch: DNS rebinding between guard lookup and fetch (pre-existing); daemon port blocked only on loopback | W4-B |
+| W1-D | SSRF guard: map NAT64 `64:ff9b::/96` and 6to4 `2002::/16` back to IPv4 before checks (pre-existing gap, all callers); extend always-blocked metadata list (EKS `169.254.170.23`/`fd00:ec2::23`, Alibaba `100.100.100.200`, Azure `168.63.129.16`, OCI `192.0.0.192`); DNS-lookup failure currently passes through | W4-B |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
