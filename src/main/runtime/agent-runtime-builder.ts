@@ -149,6 +149,21 @@ interface BuiltAgentState {
   connectMcpServer: (serverName: string, reason: string) => Promise<McpConnectOutcome>
 }
 
+/**
+ * `interactive`: an agent call that may raise the OAuth sign-in now.
+ * `deferSignIn`: an http+oauth server left without a token is marked
+ * `needs_sign_in` and signed in on the agent's next turn instead.
+ */
+interface McpConnectOpts {
+  interactive: boolean
+  deferSignIn?: boolean
+  /** Interactive outside a turn (before a dispatch): approvals restore the executor state. */
+  outsideTurn?: boolean
+}
+
+/** Whether an OAuth token is stored after prepareHttpOAuth. */
+type OAuthReadiness = 'signed_in' | 'no_token' | 'unknown'
+
 /** Input of an `mcp_oauth_authorize` request. */
 interface AuthorizeInput {
   server: string
@@ -164,15 +179,19 @@ interface PrepareHttpOAuthParams {
   keyRef: DerivedKeyRef
   executor: AgentExecutor | null
   signIns: Set<AbortController>
+  /** Raised outside a turn: each approval restores the executor state. */
+  restoreState: boolean
 }
 
 /** The agent's MCP wiring, as registerMcpTools returns it. */
 interface McpRuntime {
   manager: McpClientManager | null
   scratchDir: string | null
-  connect: (freshConfig: AgentConfig, serverName: string, reason: string, opts: { interactive: boolean }) => Promise<McpConnectOutcome>
+  connect: (freshConfig: AgentConfig, serverName: string, reason: string, opts: McpConnectOpts) => Promise<McpConnectOutcome>
   reconcile: (nextConfig: AgentConfig) => Promise<void>
   abortInteractiveSignIns: () => void
+  /** Run the sign-ins deferred to this agent's next turn (host beforeDispatch). */
+  runDeferredSignIns: () => Promise<void>
 }
 
 /**
@@ -362,6 +381,9 @@ export class AgentRuntimeBuilder {
           { name: 'daemon-runtime-resources', stop: cleanup },
         ],
         host: {
+          // A sign-in deferred from a config write while no turn ran is
+          // raised here, before the agent's next turn.
+          beforeDispatch: () => mcpRuntime.runDeferredSignIns(),
           onTriggerError: (error, dispatch) => {
             const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
             try {
@@ -608,7 +630,10 @@ export class AgentRuntimeBuilder {
     const manager = new McpClientManager(scratchDir, oauthProviderFactory)
     // Interactive sign-ins in flight, aborted at teardown; one per server.
     const signIns = new Set<AbortController>()
-    const signInsByServer = new Map<string, Promise<void>>()
+    const signInsByServer = new Map<string, Promise<OAuthReadiness>>()
+    // Servers whose sign-in waits for the next turn (deferSignIn).
+    const deferredSignIns = new Set<string>()
+    let deferredRun: Promise<void> | null = null
 
     manager.on('log', (serverName, entry) => {
       const level = entry.stream === 'stderr' ? 'warn' : 'info'
@@ -638,7 +663,7 @@ export class AgentRuntimeBuilder {
       freshConfig: AgentConfig,
       serverName: string,
       reason: string,
-      connectOpts: { interactive: boolean },
+      connectOpts: McpConnectOpts,
     ): Promise<McpConnectOutcome> => {
       const serverCfg = freshConfig.mcp?.servers?.find(s => s.name === serverName)
       if (!serverCfg) throw new Error(`Server "${serverName}" not found.`)
@@ -681,10 +706,11 @@ export class AgentRuntimeBuilder {
       const computeSettings = this.getComputeRoutingSettings()
       const willContainerize = connCfg.transport !== 'http'
         && shouldContainerize(connCfg.name, connCfg, freshConfig, computeSettings)
+      let oauthReadiness: OAuthReadiness | null = null
       if (connCfg.transport === 'http') {
         location = 'remote http'
         if (connCfg.oauth && connCfg.url) {
-          await this.prepareHttpOAuth({
+          oauthReadiness = await this.prepareHttpOAuth({
             serverCfg: connCfg,
             url: connCfg.url,
             registration,
@@ -693,6 +719,7 @@ export class AgentRuntimeBuilder {
             executor: connectOpts.interactive ? getAssembled()?.executor ?? null : null,
             signIns,
             inFlight: signInsByServer,
+            restoreState: connectOpts.outsideTurn === true,
           })
         }
       } else if (this.podmanService && willContainerize) {
@@ -768,10 +795,21 @@ export class AgentRuntimeBuilder {
       console.log(`[AgentRuntimeBuilder][MCP] ${reason}: connecting "${serverName}" (${location})`)
       const tools = await manager.connect(connCfg, connectOptions)
       if (!tools) {
+        if (connectOpts.deferSignIn && oauthReadiness === 'no_token') {
+          // No turn to raise the sign-in in (a config write to an idle or off
+          // agent): it is raised before the agent's next turn. Visible as the
+          // server status and in adf_logs until then.
+          deferredSignIns.add(serverName)
+          const message = `Sign-in required for "${serverName}": the OAuth sign-in is requested before this agent's next turn, or when the agent calls mcp_restart("${serverName}").`
+          manager.markNeedsSignIn(serverCfg, message)
+          console.warn(`[AgentRuntimeBuilder][MCP] ${message}`)
+          try { workspace.insertLog('warn', 'mcp', 'oauth_signin_pending', serverName, message) } catch { /* non-fatal */ }
+        }
         const state = manager.getServerState(serverName)
         const stderrTail = state?.logs.filter(l => l.stream === 'stderr').slice(-5).map(l => l.message)
         return { toolsDiscovered: 0, location, hostDenied, error: state?.error, stderrTail: stderrTail?.length ? stderrTail : undefined }
       }
+      deferredSignIns.delete(serverName)
 
       const changed = syncDiscoveredMcpTools(freshConfig, serverCfg, tools, registry, manager)
       const nextSchema = captureEnvSchema(serverCfg, appEnvKeys, agentEnvKeys)
@@ -818,7 +856,7 @@ export class AgentRuntimeBuilder {
           // sys_update_config). A daemon config write to an idle or off agent
           // must not leave it in awaiting_approval with no turn to resume.
           const interactive = getAssembled()?.executor.isTurnActive() ?? false
-          const result = await connectOneServer(nextConfig, name, 'Attached', { interactive })
+          const result = await connectOneServer(nextConfig, name, 'Attached', { interactive, deferSignIn: !interactive })
           if (result.toolsDiscovered > 0) {
             console.log(`[AgentRuntimeBuilder][MCP] Reconcile: connected "${name}" — ${result.toolsDiscovered} tools now available to agent`)
           } else if (result.error) {
@@ -838,6 +876,7 @@ export class AgentRuntimeBuilder {
         } catch (err) {
           console.warn(`[AgentRuntimeBuilder][MCP] Reconcile: disconnect failed for "${name}":`, err instanceof Error ? err.message : err)
         }
+        deferredSignIns.delete(name)
         // The removed server's tools stop reaching the model.
         const toolPrefix = `mcp_${name}_`
         for (const tool of registry.getAll()) {
@@ -855,6 +894,30 @@ export class AgentRuntimeBuilder {
       abortInteractiveSignIns: () => {
         for (const controller of signIns) controller.abort()
         signIns.clear()
+      },
+      runDeferredSignIns: () => {
+        // Single flight: every dispatch arriving meanwhile waits for it, so no
+        // turn starts while its sign-in request is open.
+        if (deferredRun) return deferredRun
+        if (deferredSignIns.size === 0) return Promise.resolve()
+        const executor = getAssembled()?.executor
+        // Mid-turn: the turn's own state machine owns the executor; retry
+        // before the next dispatch.
+        if (!executor || executor.isTurnActive()) return Promise.resolve()
+        const names = [...deferredSignIns]
+        deferredSignIns.clear()
+        deferredRun = (async () => {
+          for (const name of names) {
+            const fresh = workspace.getAgentConfig()
+            if (!fresh.mcp?.servers?.some(s => s.name === name)) continue
+            try {
+              await connectOneServer(fresh, name, 'Sign-in before turn', { interactive: true, outsideTurn: true })
+            } catch (err) {
+              console.error(`[AgentRuntimeBuilder][MCP] Deferred sign-in failed for "${name}":`, err instanceof Error ? err.message : err)
+            }
+          }
+        })().finally(() => { deferredRun = null })
+        return deferredRun
       },
     }
 
@@ -1021,7 +1084,10 @@ export class AgentRuntimeBuilder {
    * One sign-in per server at a time: a concurrent call for the same server
    * waits for the one in flight, then connects with whatever it stored.
    */
-  private async prepareHttpOAuth(params: PrepareHttpOAuthParams & { inFlight: Map<string, Promise<void>> }): Promise<void> {
+  private async prepareHttpOAuth(params: PrepareHttpOAuthParams & { inFlight: Map<string, Promise<OAuthReadiness>> }): Promise<OAuthReadiness> {
+    // A non-interactive caller (initial connect, owner restart) never prompts
+    // and never waits on an interactive sign-in in flight.
+    if (!params.executor) return this.prepareHttpOAuthOnce(params)
     const key = `${params.serverCfg.name} ${canonicalizeServerUrl(params.url)}`
     const pending = params.inFlight.get(key)
     if (pending) return pending
@@ -1030,7 +1096,7 @@ export class AgentRuntimeBuilder {
     return run
   }
 
-  private async prepareHttpOAuthOnce(params: PrepareHttpOAuthParams): Promise<void> {
+  private async prepareHttpOAuthOnce(params: PrepareHttpOAuthParams): Promise<OAuthReadiness> {
     const { serverCfg, url, workspace, executor } = params
     const serverName = serverCfg.name
     const agentStore = new AgentKeystoreOAuthStore(workspace, serverName, params.keyRef.current)
@@ -1049,10 +1115,13 @@ export class AgentRuntimeBuilder {
     }
 
     const reg = params.registration as { oauthClientId?: string; oauthScopes?: string[] } | undefined
+    const gateExecutor = executor && params.restoreState
+      ? { requestApproval: (n: string, i: unknown, o?: { canAlwaysApprove?: boolean }) => executor.requestApproval(n, i, { ...o, restoreState: true }) }
+      : executor
     try {
       await gateInteractiveOAuthSignIn({
         server: { name: serverName, url },
-        executor,
+        executor: gateExecutor,
         isAlreadySignedIn: async () => !!(await agentStore.get(url))?.tokens,
         runInteractiveFlow: () => this.runInteractiveOAuthFlow({
           serverName,
@@ -1063,12 +1132,18 @@ export class AgentRuntimeBuilder {
           agentStore,
           appStore,
           signIns: params.signIns,
+          restoreState: params.restoreState,
           log,
         }),
         log,
       })
     } catch (err) {
       log('warn', `OAuth sign-in failed for "${serverName}": ${err instanceof Error ? err.message : String(err)}`)
+    }
+    try {
+      return (await agentStore.get(url))?.tokens ? 'signed_in' : 'no_token'
+    } catch {
+      return 'unknown' // locked keystore: the connect reports it
     }
   }
 
@@ -1081,6 +1156,7 @@ export class AgentRuntimeBuilder {
     agentStore: AgentKeystoreOAuthStore
     appStore: McpOAuthStore | null
     signIns: Set<AbortController>
+    restoreState: boolean
     log: (level: 'info' | 'warn', message: string) => void
   }): Promise<boolean> {
     const { serverName, url, executor, agentStore, appStore, log } = params
@@ -1090,17 +1166,24 @@ export class AgentRuntimeBuilder {
     // identity the settle looks it up by.
     let authorizeInput: AuthorizeInput | null = null
     let finished = false
+    // Approve ("opened") re-raises the request once so the URL stays on screen;
+    // a second approve only acknowledges, so an auto-approver cannot cycle.
+    let reraised = false
     const raise = (input: AuthorizeInput): void => {
       authorizeInput = input
-      void executor.requestApproval(MCP_OAUTH_AUTHORIZE_APPROVAL, input, { canAlwaysApprove: false })
+      void executor.requestApproval(MCP_OAUTH_AUTHORIZE_APPROVAL, input, { canAlwaysApprove: false, restoreState: params.restoreState })
         .then((approved) => {
           // Settled by the runtime (callback landed, flow ended, superseded):
           // a newer request or nothing is pending now.
           if (finished || authorizeInput !== input) return
           if (approved) {
-            // "Opened": the page is open, the flow still waits for its
-            // callback, so the URL stays on screen.
+            // "Opened": the page is open, the flow still waits for its callback.
             log('info', `OAuth authorization page for "${serverName}" opened — waiting for the callback.`)
+            if (reraised) {
+              authorizeInput = null
+              return
+            }
+            reraised = true
             raise({ ...input })
           } else if (!controller.signal.aborted) {
             // Denied, or drained by agent teardown: stop waiting.
@@ -1113,6 +1196,7 @@ export class AgentRuntimeBuilder {
         // One authorize request per flow: a repeated redirect replaces it.
         const previous = authorizeInput
         authorizeInput = null
+        reraised = false
         if (previous) settlePendingApproval(executor, previous, 'Superseded by a new authorization URL')
         log('info', `OAuth sign-in for "${serverName}" approved — authorization URL raised as a "${MCP_OAUTH_AUTHORIZE_APPROVAL}" request; open it to continue.`)
         raise({ server: serverName, url, authorize_url: authorizeUrl })

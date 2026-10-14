@@ -15,6 +15,8 @@ import { AgentKeystoreOAuthStore } from '../src/main/services/mcp-oauth-store'
 import { MCP_OAUTH_AUTHORIZE_APPROVAL, MCP_OAUTH_SIGNIN_APPROVAL } from '../src/main/services/mcp-oauth-connect'
 import { currentAgentDerivedKey, subscribeAgentRuntimeSignals } from '../src/main/runtime/agent-runtime-signals'
 import { approvalHub } from '../src/main/runtime/approval-hub'
+import { mcpConnectorFor } from '../src/main/runtime/mcp-connectors'
+import { createDispatch, createEvent } from '../src/shared/types/adf-event.types'
 import type { runMcpHttpOAuthFlow } from '../src/main/services/mcp-http-oauth'
 import type { McpOAuthRecord } from '../src/main/services/mcp-oauth.types'
 import type { AgentConfig, McpServerConfig, McpToolInfo } from '../src/shared/types/adf-v02.types'
@@ -331,6 +333,106 @@ describe('AgentRuntimeBuilder parity: interactive MCP OAuth', () => {
       expect(agent.executor.getPendingApprovals()).toEqual([])
       expect(agent.executor.getState()).toBe(before)
       expect(flow).not.toHaveBeenCalled()
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('defers the sign-in of a server added to an idle agent to its next turn, visibly', async () => {
+    const records = fakeAgentStore()
+    let completeCallback!: () => void
+    const flow = vi.fn<typeof runMcpHttpOAuthFlow>(async (url, store, io) => {
+      await io.openUrl('https://auth.example.test/authorize?state=s')
+      await new Promise<void>(resolve => { completeCallback = resolve })
+      await store.save(url, { tokens: { access_token: 'd', token_type: 'Bearer' }, updatedAt: Date.now() } as McpOAuthRecord)
+      return { authorized: true }
+    })
+    const connect = vi.spyOn(McpClientManager.prototype, 'connect').mockResolvedValue(null)
+    const provider = new MockLLMProvider()
+    const { filePath, workspace } = makeAgentFile('agent-1')
+    const agent = await new AgentRuntimeBuilder({ mcpHttpOAuthFlow: flow }).build({ workspace, filePath, config: workspace.getAgentConfig(), provider })
+    try {
+      const next = { ...workspace.getAgentConfig(), mcp: { servers: [oauthServer()] } }
+      workspace.setAgentConfig(next)
+      agent.applyConfigChange(next)
+      await waitFor(() => agent.mcpManager?.getServerState('remote')?.status === 'needs_sign_in')
+      expect(agent.mcpManager?.getServerState('remote')?.error).toContain('next turn')
+      expect(JSON.stringify(workspace.getLogs())).toContain('oauth_signin_pending')
+      expect(flow).not.toHaveBeenCalled()
+
+      // The next turn raises the sign-in before it runs.
+      const turn = agent.dispatch(createDispatch(
+        createEvent({ type: 'chat', source: 'test', data: { message: { seq: 0, role: 'user', content_json: [{ type: 'text', text: 'hi' }], created_at: Date.now() } } }),
+        { scope: 'agent' },
+      ))
+      await waitFor(() => agent.executor.getPendingApprovals().some(a => a.name === MCP_OAUTH_SIGNIN_APPROVAL))
+      expect(provider.getCallCount()).toBe(0)
+      agent.executor.resolveHilTask(agent.executor.getPendingApprovals()[0].requestId, true)
+      await waitFor(() => agent.executor.getPendingApprovals().some(a => a.name === MCP_OAUTH_AUTHORIZE_APPROVAL))
+      completeCallback()
+      await turn
+      expect(records.get('https://mcp.example.test/mcp')?.tokens?.access_token).toBe('d')
+      expect(provider.getCallCount()).toBeGreaterThan(0)
+      // Write-time connect + the one after the sign-in.
+      expect(connect).toHaveBeenCalledTimes(2)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('a second "opened" approve acknowledges without raising the request again', async () => {
+    fakeAgentStore()
+    let completeCallback!: () => void
+    let aborted = false
+    const flow = vi.fn<typeof runMcpHttpOAuthFlow>(async (url, store, io, opts) => {
+      opts?.signal?.addEventListener('abort', () => { aborted = true })
+      await io.openUrl('https://auth.example.test/authorize?state=s')
+      await new Promise<void>(resolve => { completeCallback = resolve })
+      await store.save(url, { tokens: { access_token: 'e', token_type: 'Bearer' }, updatedAt: Date.now() } as McpOAuthRecord)
+      return { authorized: true }
+    })
+    const { agent, workspace } = await setup(flow)
+    try {
+      const result = agent.registry.get('mcp_restart')!.execute({ name: 'remote' }, workspace)
+      await waitFor(() => agent.executor.getPendingApprovals().length === 1)
+      agent.executor.resolveHilTask(agent.executor.getPendingApprovals()[0].requestId, true)
+      const authorizeIds = new Set<string>()
+      for (let i = 0; i < 2; i++) {
+        await waitFor(() => agent.executor.getPendingApprovals().some(a => a.name === MCP_OAUTH_AUTHORIZE_APPROVAL && !authorizeIds.has(a.requestId)))
+        const request = agent.executor.getPendingApprovals().find(a => a.name === MCP_OAUTH_AUTHORIZE_APPROVAL)!
+        authorizeIds.add(request.requestId)
+        agent.executor.resolveHilTask(request.requestId, true)
+      }
+      await new Promise(resolve => setTimeout(resolve, 30))
+      // One re-raise at most: two requests in all, none pending, flow still waiting.
+      expect(authorizeIds.size).toBe(2)
+      expect(agent.executor.getPendingApprovals()).toEqual([])
+      expect(aborted).toBe(false)
+      completeCallback()
+      await result
+      expect(aborted).toBe(false)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('an owner restart during an interactive sign-in does not wait for it', async () => {
+    fakeAgentStore()
+    const flow = vi.fn<typeof runMcpHttpOAuthFlow>()
+    const { agent, workspace, connect } = await setup(flow)
+    try {
+      const interactive = agent.registry.get('mcp_restart')!.execute({ name: 'remote' }, workspace)
+      await waitFor(() => agent.executor.getPendingApprovals().length === 1)
+
+      const ownerRestart = mcpConnectorFor(agent.mcpManager)!('remote')
+      const outcome = await Promise.race([ownerRestart, new Promise(resolve => setTimeout(() => resolve('hung'), 1000))])
+      expect(outcome).not.toBe('hung')
+      expect(agent.executor.getPendingApprovals()).toHaveLength(1)
+
+      agent.executor.resolveHilTask(agent.executor.getPendingApprovals()[0].requestId, false)
+      await interactive
+      expect(flow).not.toHaveBeenCalled()
+      expect(connect).toHaveBeenCalledTimes(3)
     } finally {
       await agent.disposeAsync()
     }

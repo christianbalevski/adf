@@ -1368,12 +1368,18 @@ export class AgentExecutor extends EventEmitter {
    * persist an inert phantom tool declaration and NOT actually suppress future
    * prompts (the gate always re-asks), so only one-shot approve/deny is offered —
    * and the server-side alwaysApproveTool guard refuses it via this meta too.
+   *
+   * `opts.restoreState: true` puts the executor back in the state it had
+   * before the request instead of `tool_use`: for a request raised outside a
+   * turn (the daemon's deferred OAuth sign-in before a dispatch), where no
+   * turn would ever move it out of `tool_use`.
    */
   async requestApproval(
     name: string,
     input: unknown,
-    opts?: { canAlwaysApprove?: boolean }
+    opts?: { canAlwaysApprove?: boolean; restoreState?: boolean }
   ): Promise<boolean> {
+    const priorState = this.state
     const meta: ApprovalMeta | undefined = opts?.canAlwaysApprove === false
       ? { reason: 'restricted', canAlwaysApprove: false, alwaysApproveBlockedReason: 'One-time approval only for this request' }
       : undefined
@@ -1391,7 +1397,7 @@ export class AgentExecutor extends EventEmitter {
     // If the agent was stopped while awaiting approval, don't resurrect it —
     // abort()/teardown resolve pending HIL as denied, and flipping state back
     // to tool_use here would contradict the stopped-agent guarantee.
-    if (this.state !== 'stopped') this.setState('tool_use')
+    if (this.state !== 'stopped') this.setState(opts?.restoreState ? priorState : 'tool_use')
     return approved
   }
 
