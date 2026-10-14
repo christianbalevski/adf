@@ -78,6 +78,12 @@ export function ContainerDestroyDialog({
         The agent definition, its identity, and the shared npm cache are not affected.
       </p>
 
+      {container.users && container.users.length > 0 && (
+        <p className="mt-3 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[11px] text-[var(--adf-ui-warning)]">
+          {container.users.join(', ')} also {container.users.length === 1 ? 'uses' : 'use'} this container. It is deleted anyway; the other runtime creates it again the next time it needs it.
+        </p>
+      )}
+
       {activeAgents.length > 0 && (
         <p className="mt-3 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[11px] text-[var(--adf-ui-warning)]">
           {activeAgents.length} active agent{activeAgents.length === 1 ? '' : 's'} use this container and will be interrupted mid-run.
