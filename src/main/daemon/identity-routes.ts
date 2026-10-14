@@ -12,6 +12,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { DaemonIdentityError, type DaemonIdentity } from './daemon-identity'
 import { AgentCreateError, type CreateAgentInput, type DaemonAgentFactory } from './daemon-agent-factory'
 import { isLoopbackAddress, localAccessRefusal, type LocalAccessOptions } from './local-access'
+import { DOCUMENT_HOLDER_FORMAT } from '../runtime/runtime-service'
 
 const OWNER_SECRETS = 'Owner identity secrets can be handled'
 
@@ -148,6 +149,20 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
     }
     if (body?.start !== undefined && typeof body.start !== 'boolean') {
       return reply.code(400).send({ error: 'start must be a boolean', code: 'bad_request' })
+    }
+    if (body?.load !== undefined && typeof body.load !== 'boolean') {
+      return reply.code(400).send({ error: 'load must be a boolean', code: 'bad_request' })
+    }
+    // A holder is a client session id (W2-B mints UUIDs); one that never
+    // releases is swept (RuntimeService.sweepDocumentHolders).
+    if (body?.holder !== undefined && (typeof body.holder !== 'string' || !DOCUMENT_HOLDER_FORMAT.test(body.holder))) {
+      return reply.code(400).send({ error: 'holder must be a client session id (a UUID)', code: 'bad_request' })
+    }
+    if (body?.load === false && body.start === true) {
+      return reply.code(400).send({ error: 'start needs the agent loaded: drop load: false, or start it later', code: 'bad_request' })
+    }
+    if (body?.holder !== undefined && body.load !== false) {
+      return reply.code(400).send({ error: 'holder is for load: false (the new file is held open, not running)', code: 'bad_request' })
     }
     try {
       const created = await deps.agentFactory.create(body ?? {})

@@ -32,6 +32,7 @@ import { registerFileRoutes } from './file-routes'
 import type { TrackedDirWatcher } from '../dir-watcher'
 import { registerClientRoutes } from './client-routes'
 import type { ClientSessionRegistry } from '../client-sessions'
+import { registerDocumentRoutes } from './document-routes'
 
 /** Dependencies of route modules that DaemonHttpApiOptions does not carry. Every field is optional. */
 export interface DaemonRouteDeps {
@@ -74,6 +75,7 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerIdentityImportRoutes,
   registerFileRoutes,
   registerClientRoutes,
+  registerDocumentRoutes,
 ]
 
 export function registerDaemonRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
