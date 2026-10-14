@@ -336,16 +336,20 @@ Attachments are transferred **by value** — the actual file data is copied, not
 2. Include the file path in `msg_send` attachments
 3. Runtime reads the file from the sender's file store
 
+A file larger than the sender's `limits.max_file_write_bytes` (default 5,000,000 bytes) is not sent; the outbox row lists it with `skipped: true` and a `reason`.
+
 ### Receiving Attachments
 
 1. Runtime extracts inline attachment data to the recipient's file store
-2. Files are namespaced to prevent collisions: `imported/{sender_name}/{filename}`
+2. Files are namespaced to prevent collisions: `imported/{sender_name}/{filename}`. For a sender on another runtime, `{sender_name}` is the sender's `sender_alias`, or the last characters of its DID when no alias was sent. A name that is already taken gets a counter: `report (1).pdf`.
 3. The attachment's `transfer` field is changed from `"inline"` to `"imported"` and the `path` field points to the local file
 4. The base64 `data` is removed from the stored message — only metadata and local path are kept
 
+An inline attachment from another runtime is not written when its data is not valid base64, when the decoded size differs from `size_bytes`, or when it decodes to more than 25 MiB. The message is still delivered; the attachment keeps its record with `skipped: true` and a `reason`, and the recipient's log gets a `mesh` / `attachment_rejected` warning.
+
 ### Cross-Machine Transport
 
-For HTTP transport (across machines), attachments are base64-encoded in the message payload.
+For HTTP and WebSocket transport (another runtime), the file bytes are base64-encoded in the attachment's `data` field before the message is signed, so the signature covers them. The HTTP inbox (`POST /agents/{handle}/inbox`) accepts request bodies up to 34 MiB, which fits 25 MiB of attachments after base64 encoding. Same-runtime delivery copies the file directly and does not put the bytes in the message.
 
 ### Per-Message Audit
 
