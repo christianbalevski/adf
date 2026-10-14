@@ -19,6 +19,9 @@ import { DaemonConnection } from '../../src/main/backend/daemon-mode/connection'
 import { ConnectionStatusUi } from '../../src/main/backend/daemon-mode/status-ui'
 import { createAdfFileHandler } from '../../src/main/backend/daemon-mode/adf-file'
 import { initApplicationMenu } from '../../src/main/menu'
+import { ApprovalsUi } from '../../src/main/backend/daemon-mode/approvals-ui'
+import { IPC } from '../../src/shared/constants/ipc-channels'
+import type { PendingNotification } from '../../src/shared/types/ipc.types'
 
 const BASE = 'http://127.0.0.1:47385'
 const quiet = { log: () => {}, warn: () => {}, error: () => {} }
@@ -206,5 +209,44 @@ describe('adf-file:// (daemon mode)', () => {
     const res = await handler(new Request('adf-file://img1.png'))
     expect(res.status).toBe(501)
     expect(await res.text()).toContain('not available in daemon mode yet: W1-E')
+  })
+})
+
+describe('native notifier and approvals reveal fed from the stream', () => {
+  const entry = (n: number): PendingNotification => ({
+    id: `C:/a/agent-1.adf|main|task_${n}`, kind: 'approval', requestId: `task_${n}`, filePath: 'C:/a/agent-1.adf',
+    agentName: 'agent-1', loop: 'main', toolName: 'fs_write', preview: 'note.md', createdAt: 1,
+  } as PendingNotification)
+
+  it('adopts the state found at connect without toasts, toasts new requests while Studio is not focused, and reveals on click', () => {
+    electronStub.calls.length = 0
+    electronStub.pushes.length = 0
+    electronStub.toastClicks.length = 0
+    let enabled = true
+    const ui = new ApprovalsUi({
+      notificationsEnabled: () => enabled,
+      menuBarEnabled: () => false,
+      agents: () => [],
+      foreground: () => null,
+      tokensToday: () => ({ input: 0, output: 0 }),
+      log: quiet,
+    })
+    electronStub.focused = false
+    ui.apply({ pending: [entry(1)], history: [] })
+    expect(electronStub.calls.filter((c) => c.api === 'Notification.show')).toEqual([])
+    ui.apply({ pending: [entry(1), entry(2)], history: [] })
+    expect(electronStub.calls.filter((c) => c.api === 'Notification.show')).toHaveLength(1)
+    electronStub.toastClicks[0]()
+    expect(electronStub.pushes.at(-1)).toEqual({ channel: IPC.APPROVALS_REVEAL, args: [{ filePath: 'C:/a/agent-1.adf', notificationId: entry(2).id }] })
+    // Focused, or switched off: no toast.
+    electronStub.focused = true
+    ui.apply({ pending: [entry(1), entry(2), entry(3)], history: [] })
+    electronStub.focused = false
+    enabled = false
+    ui.apply({ pending: [entry(1), entry(2), entry(3), entry(4)], history: [] })
+    expect(electronStub.calls.filter((c) => c.api === 'Notification.show')).toHaveLength(1)
+    expect(ui.takePendingReveal()).toBeNull()
+    electronStub.focused = true
+    ui.dispose()
   })
 })

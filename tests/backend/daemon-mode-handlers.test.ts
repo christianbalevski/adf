@@ -142,4 +142,35 @@ describe('daemon-mode handler registration (D2)', () => {
     expect(approvals.every((r) => r.auth === `Bearer ${TOKEN}`)).toBe(true)
     expect(logs.join('\n')).not.toContain(TOKEN)
   })
+
+  it('SETTINGS_SET splits the patch: backend keys to PATCH /settings, client keys to studio-client-settings.json', async () => {
+    daemon.routes.set('PATCH /settings', ({ body }) => ({ settings: body }))
+    daemon.routes.set('GET /settings', () => ({ filePath: 'x', settings: { meshEnabled: true, theme: 'light', providers: [] } }))
+    expect(await electronStub.handlers.get(IPC.SETTINGS_SET)!({}, { theme: 'dark', meshEnabled: true })).toEqual({ success: true })
+    const patch = daemon.requests.filter((r) => r.method === 'PATCH' && r.path === '/settings').at(-1)
+    expect(patch?.body).toEqual({ meshEnabled: true })
+    await handle.clientSettings.flush()
+    const view = await electronStub.handlers.get(IPC.SETTINGS_GET)!({}) as Record<string, unknown>
+    expect(view.theme).toBe('dark')
+    expect(view.meshEnabled).toBe(true)
+  })
+
+  it('TOOLS_DESCRIPTIONS folds the tools of the open agent into the daemon catalog', async () => {
+    const AGENT = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01'
+    daemon.routes.set('GET /agents', () => [{ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false }])
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0 }))
+    daemon.routes.set(`GET /agents/${AGENT}/identity/password`, () => ({ agentId: AGENT, needsPassword: false, unlocked: false }))
+    daemon.routes.set('GET /runtime/tools/descriptions', () => ({ fs_read: { name: 'fs_read', description: 'built-in', input_schema: {} } }))
+    daemon.routes.set(`GET /agents/${AGENT}/tools`, () => ({ agentId: AGENT, tools: [
+      { name: 'fs_read', description: 'agent copy', schema: { type: 'object' } },
+      { name: 'mcp_acme_search', description: 'Search', schema: { type: 'object', properties: { q: { type: 'string' } } } },
+      { name: 'declared_only', description: '', schema: {} },
+    ] }))
+    expect(await electronStub.handlers.get(IPC.FILE_OPEN)!({}, { filePath: join(dir, 'agent-1.adf') })).toEqual({ success: true, filePath: join(dir, 'agent-1.adf'), agentWasRunning: true })
+    expect(await electronStub.handlers.get(IPC.TOOLS_DESCRIPTIONS)!({})).toEqual({
+      fs_read: { name: 'fs_read', description: 'built-in', input_schema: {} },
+      mcp_acme_search: { name: 'mcp_acme_search', description: 'Search', input_schema: { type: 'object', properties: { q: { type: 'string' } } } },
+    })
+    await electronStub.handlers.get(IPC.FILE_CLOSE)!({})
+  })
 })

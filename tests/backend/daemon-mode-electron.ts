@@ -12,6 +12,10 @@ export interface ElectronStub {
   listeners: Map<string, (...args: unknown[]) => unknown>
   dialogResponse: number
   windows: number
+  /** Whether the window has focus (native toasts are only for an unfocused Studio). */
+  focused: boolean
+  /** Click handlers of the toasts shown, in order. */
+  toastClicks: Array<() => void>
 }
 
 export function createElectronStub(): ElectronStub {
@@ -23,6 +27,8 @@ export function createElectronStub(): ElectronStub {
     listeners: new Map(),
     dialogResponse: 0,
     windows: 1,
+    focused: true,
+    toastClicks: [],
   }
   const call = (api: string, args: unknown[]) => { stub.calls.push({ api, args }) }
   const webContents = {
@@ -43,7 +49,7 @@ export function createElectronStub(): ElectronStub {
   class Notification {
     static isSupported(): boolean { return true }
     constructor(readonly options: unknown) { call('Notification.new', [options]) }
-    on(): this { return this }
+    on(event: string, fn: () => void): this { if (event === 'click') stub.toastClicks.push(fn); return this }
     show(): void { call('Notification.show', [this.options]) }
     close(): void {}
   }
@@ -66,7 +72,7 @@ export function createElectronStub(): ElectronStub {
     },
     BrowserWindow: {
       getAllWindows: () => (stub.windows > 0 ? [window] : []),
-      getFocusedWindow: () => window,
+      getFocusedWindow: () => (stub.focused ? window : null),
     },
     dialog: {
       showOpenDialog: async (opts: unknown) => { call('dialog.showOpenDialog', [opts]); return { canceled: true, filePaths: [] } },
