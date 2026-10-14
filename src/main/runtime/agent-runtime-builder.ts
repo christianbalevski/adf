@@ -1374,7 +1374,12 @@ export class AgentRuntimeBuilder {
     const previous = state.keyRef.current
     state.keyRef.current = derivedKey
     emitAgentDerivedKeyChanged(state.workspace, derivedKey)
-    if (!derivedKey) return { applied: true, adaptersRestarted: [], mcpReconnected: [] }
+    if (!derivedKey) {
+      // Password removed or identity wiped: running adapters were started with
+      // the old key in their context; restart them without it.
+      const adaptersRestarted = previous ? await this.restartAdaptersWithKey(state, null) : []
+      return { applied: true, adaptersRestarted, mcpReconnected: [] }
+    }
 
     const { workspace, label } = state
     // A credential row this unlock opened: unreadable with the old key, readable now.
@@ -1433,6 +1438,37 @@ export class AgentRuntimeBuilder {
     console.log(`[AgentRuntimeBuilder] ${message}`)
     try { workspace.insertLog('info', 'runtime', 'keystore_unlocked', null, message.slice(0, 500)) } catch { /* non-fatal */ }
     return { applied: true, adaptersRestarted, mcpReconnected }
+  }
+
+  /**
+   * Restart every running adapter of the agent with `derivedKey` in its
+   * context (an adapter keeps the key it started with). Logged to the
+   * console and adf_logs. Returns the types restarted.
+   */
+  private async restartAdaptersWithKey(state: BuiltAgentState, derivedKey: Buffer | null): Promise<string[]> {
+    const manager = state.adapterManager
+    if (!manager) return []
+    const { workspace, label } = state
+    const running = manager.getStates().map(s => s.type)
+    if (running.length === 0) return []
+    for (const type of running) {
+      try { await manager.stopAdapter(type) } catch { /* reconcile retries the start */ }
+    }
+    try {
+      await manager.reconcile({
+        registrations: this.getAdapterRegistrations(),
+        adaptersConfig: workspace.getAgentConfig().adapters,
+        workspace,
+        derivedKey,
+        resolveFactory: (type, reg) => this.resolveAdapterFactoryUnlessLocked(type, reg, workspace, derivedKey),
+      })
+    } catch (err) {
+      console.error(`[AgentRuntimeBuilder][Adapter] Restart after the keystore key changed failed for ${label}:`, err)
+    }
+    const message = `Keystore key dropped for ${label}. Restarted adapters without it: ${running.join(', ')}.`
+    console.log(`[AgentRuntimeBuilder] ${message}`)
+    try { workspace.insertLog('info', 'runtime', 'keystore_key_dropped', null, message.slice(0, 500)) } catch { /* non-fatal */ }
+    return running
   }
 
   /** resolveAdapterFactory, but the locked-credentials stub while this adapter's sealed credentials cannot be read. */

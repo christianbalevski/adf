@@ -46,6 +46,19 @@ describe('wireRuntimeToMesh', () => {
     expect(wiring.loaded()).toEqual([])
   })
 
+  it('forgets an agent whose teardown failed (it is unloaded regardless)', async () => {
+    const { filePath, runtime, registered, wiring } = setup()
+    const ref = await runtime.loadAgent(filePath)
+    const agent = runtime.getLoadedAgent(ref.id)!.agent
+    const realDispose = agent.disposeAsync.bind(agent)
+    vi.spyOn(agent, 'disposeAsync').mockRejectedValueOnce(new Error('teardown exploded'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await expect(runtime.unloadAgent(ref.id)).rejects.toThrow('teardown exploded')
+    expect(registered.size).toBe(0)
+    expect(wiring.loaded()).toEqual([])
+    await realDispose({ mode: 'immediate' })
+  })
+
   it('moves the registration when the agent file moves (rekeyAgentPath)', async () => {
     const { dir, filePath, runtime, calls, registered, wiring } = setup()
     vi.spyOn(console, 'log').mockImplementation(() => {})

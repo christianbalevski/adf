@@ -25,6 +25,7 @@ vi.mock('electron', () => {
 import {
   DUPLICATE_AGENT_ID_CODE,
   RuntimeLoopError,
+  RuntimeReviewRequiredError,
   RuntimeService,
   type RuntimeAgentFileRenamedEvent,
   type RuntimeAgentPathChangedEvent,
@@ -174,8 +175,14 @@ describe('agent-lifecycle events', () => {
 
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(agent.executor, 'executeTurn').mockRejectedValueOnce(new Error('turn exploded'))
+    const before = seen.length
     agent.triggerEvaluator.emit('trigger', chat('wake up'))
     await waitFor(() => seen.some((s) => s.kind === 'lifecycle' && s.event.type === 'trigger_error'))
+    // Studio's two hosts: an `error` AGENT_EVENT (foreground), display state `error` (background).
+    expect(seen.slice(before).map((s) => (s.kind === 'agent' ? `agent:${s.type}` : `${s.event.type}:${String(s.event.payload.state ?? '')}`))).toEqual([
+      'agent:error', 'agent_state_changed:error', 'trigger_error:',
+    ])
+    expect(seen.slice(before)[0]).toMatchObject({ kind: 'agent', type: 'error', payload: { error: 'turn exploded' } })
     expect(seen.find((s) => s.kind === 'lifecycle' && s.event.type === 'trigger_error')).toMatchObject({
       event: { agentId: ref.id, payload: { filePath, error: 'turn exploded', eventType: 'chat' } },
     })
@@ -244,6 +251,7 @@ describe('409 duplicate_agent_id', () => {
     })
     expect((err as Error).message).toContain(one.filePath)
     expect((err as Error).message).toContain(realpathSync.native(twoPath))
+    expect((err as Error).message).toContain('POST /files/clone')
     expect(build).toHaveBeenCalledTimes(1)
     expect(runtime.listAgents().map((a) => a.filePath)).toEqual([one.filePath])
     expect(await leases.isHeld(twoPath)).toBe(false)
@@ -256,9 +264,33 @@ describe('config.name follows the file name on load', () => {
     const { filePath } = seedAgent(tempDir(), 'agent-1', { name: 'stale-name' })
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const runtime = runtimeWith()
+    const seen = record(runtime)
     const ref = await runtime.loadAgent(filePath)
     expect(ref.config.name).toBe('agent-1')
-    expect(runtime.getLoadedAgent(ref.id)!.workspace.getAgentConfig().name).toBe('agent-1')
+    const workspace = runtime.getLoadedAgent(ref.id)!.workspace
+    expect(workspace.getAgentConfig().name).toBe('agent-1')
+    // Not silent: an adf_logs row and the agent_started payload say so.
+    expect(workspace.getLogs(20)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: 'name_from_file', message: 'Agent name "stale-name" changed to "agent-1" to match its file name' }),
+    ]))
+    expect(seen.find((s) => s.kind === 'lifecycle' && s.event.type === 'agent_started')).toMatchObject({
+      event: { payload: { nameChangedFrom: 'stale-name' } },
+    })
+  })
+
+  it("a sys_create_adf child ('My Helper' in My_Helper.adf) takes the file name, as Studio's FILE_OPEN and background start do", async () => {
+    // sys_create_adf writes `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.adf` and keeps the name inside.
+    const dir = tempDir()
+    const filePath = join(dir, 'My_Helper.adf')
+    const created = createHeadlessAgent({ filePath, name: 'My Helper', provider: new MockLLMProvider() })
+    expect(created.workspace.getAgentConfig().name).toBe('My Helper')
+    created.dispose()
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const runtime = runtimeWith()
+    const ref = await runtime.loadAgent(realpathSync.native(filePath))
+    expect(ref.config.name).toBe('My_Helper')
+    // No rename back: the name now matches the file.
+    expect(runtime.getPendingRename(filePath)).toBeUndefined()
   })
 })
 
@@ -290,6 +322,34 @@ describe('preflightProvider', () => {
     expect(await runtime.preflightProvider(filePath)).toEqual({ ok: true })
     // Nothing was loaded by the check.
     expect(runtime.listAgents()).toEqual([])
+  })
+
+  it("a locked key of the agent's own provider is never reported as a missing key, and nothing is called", async () => {
+    const { filePath } = seedAgent(tempDir(), 'agent-1', {
+      model: { provider: 'custom:own', model_id: 'm-1' } as AgentConfig['model'],
+      providers: [{ id: 'custom:own', type: 'openai', name: 'Own', baseUrl: 'https://own.example/v1' }] as AgentConfig['providers'],
+    })
+    const workspace = AdfWorkspace.open(filePath)
+    workspace.setIdentity('provider:custom:own:apiKey', 'sk-own')
+    workspace.setPassword('pw')
+    workspace.close()
+    const validate = vi.fn(async () => ({ valid: false, error: 'HTTP 401 from the provider' }))
+    const factory = vi.fn<RuntimeProviderFactory>(() => { const p = new MockLLMProvider(); p.validateConfig = validate; return p })
+    const runtime = runtimeWith({ providerFactory: factory, settings: { get: () => undefined } })
+
+    const result = await runtime.preflightProvider(filePath)
+
+    expect(result).toEqual({ ok: true, credentialsLocked: expect.stringContaining('stored in the file but locked here') })
+    expect(factory).not.toHaveBeenCalled()
+    expect(validate).not.toHaveBeenCalled()
+  })
+
+  it('applies the review gate first: an unreviewed file is refused (403) before its provider is called', async () => {
+    const { filePath } = seedAgent(tempDir(), 'agent-1')
+    const factory = vi.fn<RuntimeProviderFactory>(() => new MockLLMProvider())
+    const runtime = runtimeWith({ enforceReviewGate: true, providerFactory: factory, settings: { get: () => undefined } })
+    await expect(runtime.preflightProvider(filePath)).rejects.toBeInstanceOf(RuntimeReviewRequiredError)
+    expect(factory).not.toHaveBeenCalled()
   })
 })
 
@@ -396,10 +456,18 @@ describe('derived key (password-protected agent)', () => {
     createProviderForModel({ provider: 'mock', model_id: 'other' } as AgentConfig['model'])
     expect(contexts.at(-1)?.equals(key)).toBe(true)
 
+    // The running telegram adapter holds the key in its context: removing
+    // the password restarts it without the key.
+    vi.spyOn(ChannelAdapterManager.prototype, 'getStates').mockReturnValue([{ type: 'telegram', status: 'connected' } as never])
+    const stops = vi.mocked(ChannelAdapterManager.prototype.stopAdapter)
+    stops.mockClear()
     runtime.removeAgentIdentityPassword(ref.id)
-    await waitFor(() => meshKeys.length === 2)
+    await waitFor(() => meshKeys.length === 2 && adapterKeys.length === 3)
     expect(meshKeys[1]).toBeNull()
     expect(runtime.getLoadedAgent(ref.id)!.derivedKey).toBeNull()
+    expect(stops).toHaveBeenCalledWith('telegram')
+    expect(adapterKeys[2]).toBeNull()
+    expect(JSON.stringify(loaded.workspace.getLogs(50))).toContain('keystore_key_dropped')
   })
 
   it('a key held before the start reaches every consumer from the first connect', async () => {
@@ -529,11 +597,106 @@ describe('agent_leased for a holder that recorded no endpoint', () => {
     )
   })
 
+  it('a daemon whose control URL does not answer is not told to delete the lease (it may be busy)', async () => {
+    const work = tempDir()
+    const leaseDirPath = tempDir()
+    const { filePath } = seedAgent(work, 'agent-1')
+    const canonical = await canonicalLeasePath(filePath)
+    const leaseFile = join(leaseDirPath, `${leaseKeyForCanonicalPath(canonical)}.json`)
+    // No endpoint, a control URL nothing listens on: unanswered, not unconfirmed.
+    writeFileSync(leaseFile, JSON.stringify({
+      v: 1, path: canonical, agentId: null, acquiredAt: 1,
+      holder: { kind: 'daemon', pid: process.pid, runtimeId: '0123456789abcdef', hostname: 'h', settingsPath: 's', startedAt: 1, version: null, endpoint: null, controlUrl: 'http://127.0.0.1:1' },
+    }))
+    const leases = new AgentLeaseRegistry({ dir: leaseDirPath, kind: 'daemon', settingsPath: 's' })
+    cleanups.push(() => leases.close())
+
+    const result = await leases.acquire(filePath)
+
+    expect(result.ok).toBe(false)
+    const message = result.ok === false ? result.message : ''
+    expect(message).toBe(
+      `agent-1 is already running in the ADF daemon (pid ${process.pid}, http://127.0.0.1:1). ` +
+      'Stop it there with "adf --url http://127.0.0.1:1 stop agent-1", or stop that daemon with "adf daemon stop", then start it here. ' +
+      'ADF could not confirm it: http://127.0.0.1:1 did not answer the check, which a busy daemon also does. ' +
+      'Wait a moment and try again; "adf daemon status" shows whether that daemon runs.',
+    )
+    expect(message).not.toContain('delete')
+  })
+
+  it('an embedded Studio holder with an endpoint ADF cannot check gets no remedy text', () => {
+    const record = {
+      v: 1 as const, path: 'C:\\agents\\agent-1.adf', agentId: null, acquiredAt: 1,
+      holder: { kind: 'studio-embedded' as const, pid: 77, runtimeId: 'r', hostname: 'h', settingsPath: 's', startedAt: 1, version: null, endpoint: 'elsewhere' },
+    }
+    expect(agentLeasedMessage(record, 's', false, {})).toBe('agent-1 is already running in another ADF Studio (pid 77). Stop the agent there or quit that Studio, then start it here.')
+  })
+
   it('leaves the sentence alone when the holder was confirmed', () => {
     const record = {
       v: 1 as const, path: 'C:\\agents\\agent-1.adf', agentId: null, acquiredAt: 1,
       holder: { kind: 'studio-embedded' as const, pid: 77, runtimeId: 'r', hostname: 'h', settingsPath: 's', startedAt: 1, version: null, endpoint: null },
     }
     expect(agentLeasedMessage(record, 's')).toBe('agent-1 is already running in another ADF Studio (pid 77). Stop the agent there or quit that Studio, then start it here.')
+  })
+})
+
+describe('unload robustness', () => {
+  it('a failed teardown still unloads: maps cleared, lease released, agent_stopped carries the error, the file loads again', async () => {
+    const { filePath } = seedAgent(tempDir(), 'agent-1')
+    const leases = new AgentLeaseRegistry({ dir: tempDir(), kind: 'daemon' })
+    cleanups.push(() => leases.close())
+    const runtime = runtimeWith({ agentLeases: leases })
+    const seen = record(runtime)
+    const unloaded: string[] = []
+    runtime.on('agent-unloaded', ({ agentId }) => unloaded.push(agentId))
+    const ref = await runtime.loadAgent(filePath)
+    const agent = runtime.getLoadedAgent(ref.id)!.agent
+    const realDispose = agent.disposeAsync.bind(agent)
+    vi.spyOn(agent, 'disposeAsync').mockRejectedValueOnce(new Error('teardown exploded'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(runtime.unloadAgent(ref.id)).rejects.toThrow('teardown exploded')
+
+    expect(runtime.getAgent(ref.id)).toBeUndefined()
+    expect(unloaded).toEqual([ref.id])
+    expect(await leases.isHeld(filePath)).toBe(false)
+    expect(seen.at(-1)).toMatchObject({ kind: 'lifecycle', event: { type: 'agent_stopped', payload: { error: 'teardown exploded' } } })
+    await realDispose({ mode: 'immediate' })
+    expect((await runtime.loadAgent(filePath)).id).toBe(ref.id)
+  })
+
+  it('each lifecycle listener runs on its own: one that throws stops neither the others nor the caller', async () => {
+    const { filePath } = seedAgent(tempDir(), 'agent-1')
+    const runtime = runtimeWith()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    runtime.on('agent-lifecycle', () => { throw new Error('listener exploded') })
+    const seen = record(runtime)
+    await runtime.loadAgent(filePath)
+    expect(lifecycleTypes(seen)).toEqual(['agent_starting', 'agent_started'])
+  })
+
+  it('a deferred rename runs while the lease is still held, then the lease is released', async () => {
+    const dir = tempDir()
+    const { filePath } = seedAgent(dir, 'agent-1')
+    const leases = new AgentLeaseRegistry({ dir: tempDir(), kind: 'daemon' })
+    cleanups.push(() => leases.close())
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const runtime = runtimeWith({ agentLeases: leases })
+    const ref = await runtime.loadAgent(filePath)
+    await runtime.setAgentConfig(ref.id, { ...runtime.getAgent(ref.id)!.config, name: 'agent-2' })
+    const order: string[] = []
+    const reconcile = leases.reconcile.bind(leases)
+    vi.spyOn(leases, 'reconcile').mockImplementation(async () => {
+      order.push(`reconcile (renamed: ${existsSync(join(dir, 'agent-2.adf'))}, held: ${await leases.isHeld(filePath)})`)
+      return reconcile()
+    })
+    runtime.on('agent-file-renamed', () => order.push('agent-file-renamed'))
+    runtime.on('agent-lifecycle', (e) => { if (e.type === 'agent_stopped') order.push('agent_stopped') })
+
+    await runtime.unloadAgent(ref.id)
+
+    expect(order).toEqual(['reconcile (renamed: true, held: true)', 'agent_stopped', 'agent-file-renamed'])
+    expect(await leases.isHeld(filePath)).toBe(false)
   })
 })

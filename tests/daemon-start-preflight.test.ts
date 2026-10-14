@@ -13,7 +13,7 @@ const cleanups: Array<() => unknown> = []
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn() })
 
 function setup() {
-  const dir = realpathSync.native(mkdtempSync(join(process.env.ADF_USER_DATA_DIR!, 'start-preflight-')))
+  const dir = realpathSync.native(mkdtempSync(join(process.env.ADF_USER_DATA_DIR!, 'sp-')))
   const filePath = join(dir, 'agent-1.adf')
   const created = createHeadlessAgent({ filePath, name: 'agent-1', provider: new MockLLMProvider() })
   created.workspace.setAgentConfig({ ...created.workspace.getAgentConfig(), model: { provider: 'anthropic', model_id: 'claude-x' } as AgentConfig['model'] })
@@ -61,5 +61,21 @@ describe('POST /agents/:id/start?preflight=1', () => {
     const started = await server.inject({ method: 'POST', url })
     expect(started.statusCode).toBe(200)
     expect(started.json()).toMatchObject({ success: true, loaded: true })
+  })
+})
+
+describe('POST /agents/:id/start?preflight=1 and the review gate', () => {
+  it('answers 403 for an unreviewed file before its provider is called', async () => {
+    const dir = realpathSync.native(mkdtempSync(join(process.env.ADF_USER_DATA_DIR!, 'spr-')))
+    const filePath = join(dir, 'agent-1.adf')
+    createHeadlessAgent({ filePath, name: 'agent-1', provider: new MockLLMProvider() }).dispose()
+    let calls = 0
+    const runtime = new RuntimeService({ providerFactory: () => { calls++; return new MockLLMProvider() }, settings: { get: () => undefined } })
+    const server = createDaemonHttpApi(runtime, {})
+    cleanups.push(() => server.close())
+    const res = await server.inject({ method: 'POST', url: `/agents/${encodeURIComponent(filePath)}/start?preflight=1` })
+    expect(res.statusCode).toBe(403)
+    expect(res.json()).toMatchObject({ code: 'AGENT_REVIEW_REQUIRED' })
+    expect(calls).toBe(0)
   })
 })
