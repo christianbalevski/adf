@@ -1,8 +1,9 @@
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { vi } from 'vitest'
 import type { ParityEnv } from './env'
 import type { FakeElectron } from './electron-fake'
-import { createComputeLog, createFakePodmanServiceClass, guardChildProcess, type ComputeLog } from './fake-compute'
+import { createComputeLog, createFakePodmanServiceClass, type ComputeLog } from './fake-compute'
+import type { NormalizationContext } from './normalize'
 
 /**
  * A backend is whatever registers Studio main's IPC handlers into the fake
@@ -14,9 +15,9 @@ import { createComputeLog, createFakePodmanServiceClass, guardChildProcess, type
  * daemon on port 0 against the same `env`, then registers
  * `registerDaemonModeHandlers` into the same fake.
  *
- * The daemon MUST run in this process (after `installEnvironmentStubs`), or
- * a child process MUST get the same fences: module stubs do not cross a
- * process boundary, and the real PodmanService stops the owner's containers
+ * Module stubs do not cross a process boundary. A child-process daemon
+ * MUST be started with `-r fence.cjs` and a product-level fake compute
+ * seam (see README.md); the real PodmanService stops the owner's containers
  * on shutdown.
  */
 export interface ParityBackend {
@@ -25,12 +26,17 @@ export interface ParityBackend {
 }
 
 export interface BootedBackend {
-  /** Stop agents and release every resource the backend holds. Pushes are no longer recorded. */
+  /**
+   * Stop agents and release every resource the backend holds, the way the
+   * app does on quit. The window is still open: teardown pushes are recorded.
+   */
   shutdown(): Promise<void>
-  /** Safety-fence hits during the run (refused podman/wsl spawns). Non-empty fails the run. */
-  violations(): string[]
+  /** Resources still open after shutdown that should not be. Non-empty fails the run. */
+  leaks(): string[]
   /** Calls the backend made into the fake compute service (safety evidence; not compared). */
   computeCalls(): readonly string[]
+  /** Extra values for the normalizer, e.g. `{ ports: [{ value: '51234', name: 'DAEMON_PORT' }] }`. */
+  normalization?(): Partial<Pick<NormalizationContext, 'ports' | 'named'>>
 }
 
 const REPO = resolve(__dirname, '../../..')
@@ -44,14 +50,16 @@ export const srcPath = (p: string): string => resolve(REPO, 'src', p).replace(/\
 export function installEnvironmentStubs(electron: FakeElectron, resources: RunResources): void {
   vi.doMock('electron', () => electron.module)
 
-  // File watchers are tracked so the run can close them: Studio keeps some
-  // (the templates folder watcher) for the life of the process, and an open
-  // watcher holds the run's directory on Windows after the run is over.
+  // File watchers are tracked so shutdown can check they were closed (see
+  // releaseRunResources).
   vi.doMock('chokidar', async (importOriginal) => {
     const actual = await importOriginal<typeof import('chokidar')>()
     const watch = ((...args: Parameters<typeof actual.watch>) => {
       const watcher = actual.watch(...args)
-      resources.watchers.push(watcher)
+      const close = watcher.close.bind(watcher)
+      const entry: TrackedWatcher = { paths: ([] as unknown[]).concat(args[0]).map(String), closed: false, close }
+      watcher.close = () => { entry.closed = true; return close() }
+      resources.watchers.push(entry)
       return watcher
     }) as typeof actual.watch
     return { ...actual, watch, default: { ...actual, watch } }
@@ -63,10 +71,7 @@ export function installEnvironmentStubs(electron: FakeElectron, resources: RunRe
     const actual = await importOriginal<typeof import('../../../src/main/services/podman.service')>()
     return { ...actual, PodmanService: createFakePodmanServiceClass(resources.compute) }
   })
-  // Second fence: nothing in the run may spawn podman or wsl.
-  for (const id of ['child_process', 'node:child_process']) {
-    vi.doMock(id, async (importOriginal) => guardChildProcess(await importOriginal<Record<string, unknown>>(), resources.compute))
-  }
+  // The second fence (no podman/wsl spawn at all) is fence.cjs, installed by the env.
 
   // No Podman on the harness machine, for code that probes without the
   // service: the real probe spawns `podman`/`wsl`.
@@ -99,9 +104,15 @@ export function installEnvironmentStubs(electron: FakeElectron, resources: RunRe
   })
 }
 
-/** Process-lifetime resources a backend opened that its own shutdown leaves behind. */
+interface TrackedWatcher {
+  paths: string[]
+  closed: boolean
+  close(): Promise<void>
+}
+
+/** Resources a backend opens that the harness checks at shutdown. */
 export interface RunResources {
-  watchers: { close(): Promise<void> }[]
+  watchers: TrackedWatcher[]
   compute: ComputeLog
 }
 
@@ -109,15 +120,29 @@ export function createRunResources(): RunResources {
   return { watchers: [], compute: createComputeLog() }
 }
 
-export async function releaseRunResources(resources: RunResources): Promise<void> {
-  await Promise.all(resources.watchers.splice(0).map((w) => w.close().catch(() => {})))
+/**
+ * After the backend's own shutdown: close the one watcher Studio is known to
+ * leave open (the templates folder; AgentTemplatesService.stopWatcher is
+ * never called by cleanupAllProcesses, an E3 candidate) and report every
+ * other watcher still open as a leak.
+ */
+export async function releaseRunResources(resources: RunResources, env: ParityEnv): Promise<string[]> {
+  const templates = join(env.userDataDir, 'templates')
+  const leaks: string[] = []
+  for (const w of resources.watchers) {
+    if (w.closed) continue
+    if (!(w.paths.length === 1 && w.paths[0] === templates)) leaks.push(`file watcher still open after shutdown: ${w.paths.join(', ')}`)
+  }
+  // Close every open one, so the run root can be deleted; leaks stay reported.
+  await Promise.all(resources.watchers.filter((w) => !w.closed).map((w) => { w.closed = true; return w.close().catch(() => {}) }))
+  return leaks
 }
 
 type IpcModule = typeof import('../../../src/main/ipc/index')
 
 export const embeddedBackend: ParityBackend = {
   name: 'embedded',
-  async boot(_env, electron) {
+  async boot(env, electron) {
     vi.resetModules()
     const resources = createRunResources()
     installEnvironmentStubs(electron, resources)
@@ -131,13 +156,13 @@ export const embeddedBackend: ParityBackend = {
     })
     // Studio creates the window after registering handlers (main/index.ts).
     electron.openWindow()
+    let leaks: string[] = []
     return {
       async shutdown() {
-        electron.closeWindow()
         await ipc.cleanupAllProcesses({ teardownBudgetMs: 10_000 })
-        await releaseRunResources(resources)
+        leaks = await releaseRunResources(resources, env)
       },
-      violations: () => resources.compute.refusedSpawns.map((s) => `refused spawn: ${s}`),
+      leaks: () => leaks,
       computeCalls: () => resources.compute.calls,
     }
   },

@@ -2,16 +2,23 @@ import { join } from 'node:path'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import type { StartInState } from '../../../src/shared/types/adf-v02.types'
 import type { ParityEnv } from './env'
+import identityFixture from './identity.fixture.json'
 import { MOCK_MODEL_ID, type MockLlm } from './mock-llm'
 
 /**
  * Fixture agents and the settings file every run starts from.
  *
- * Fixtures are the owner's own agents, already on disk before the backend
- * boots: fixed UUID ids (so ids need no normalization), the file basename as
- * the name, the mock LLM as provider, and marked reviewed (the owner made
- * them). Identity keys are NOT pre-minted; the backend mints them the way it
- * does for any reviewed file without keys.
+ * Owner and runtime identity are fixed (`identity.fixture.json`: a test-only
+ * owner phrase, runtime key and delegation, generated once with
+ * SettingsService.ensureRuntimeIdentity; `safe:` values use the electron
+ * fake's safeStorage encoding). A backend that adopts the existing identity
+ * prints `<did:owner>`/`<did:runtime>`; one that mints its own prints `<did#n>`.
+ *
+ * Fixture agents are the owner's own agents, already on disk before the
+ * backend boots: fixed UUID ids, the file basename as the name, the mock LLM
+ * as provider, marked reviewed. Their signing keys are NOT pre-minted: the
+ * backend mints them on open (reviewed files get keys), so agent DIDs are
+ * fresh each run and appear as `<did#n>`.
  */
 
 export type FixtureName = 'agent-1' | 'agent-2'
@@ -22,6 +29,9 @@ export const FIXTURE_IDS: Record<FixtureName, string> = {
 }
 
 export const MOCK_PROVIDER_ID = 'parity-llm'
+
+/** The fixed owner/runtime identity seeded into every run's settings. */
+export const IDENTITY: { ownerDid: string; runtimeDid: string; runtimeId: string } & Record<string, unknown> = identityFixture
 
 export interface FixtureSpec {
   name: FixtureName
@@ -62,9 +72,10 @@ export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[
 
 /**
  * The settings file both backends read. Everything Studio would fetch from
- * the network on its own (update checks, remote catalogs, provider probes) is
- * off, the mesh is off unless a scenario turns it on, and native
- * notifications are off. Scenario overrides are merged on top.
+ * the network on its own (update checks, remote catalogs, provider probes)
+ * is off; the mesh is off unless a scenario turns it on; the macOS menu bar
+ * is off so one recording serves every OS. Native notifications keep their
+ * default (on). Scenario overrides are merged on top.
  */
 export function baseSettings(
   env: ParityEnv,
@@ -73,6 +84,7 @@ export function baseSettings(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
+    ...identityFixture,
     providers: [{
       id: MOCK_PROVIDER_ID,
       type: 'openai-compatible',
@@ -91,7 +103,6 @@ export function baseSettings(
     remoteCatalogsEnabled: false,
     providerChecksEnabled: false,
     spellcheckDownloadsEnabled: false,
-    nativeNotificationsEnabled: false,
     menuBarEnabled: false,
     ...overrides,
   }

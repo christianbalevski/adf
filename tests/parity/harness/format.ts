@@ -9,16 +9,23 @@ export function renderRecording(recording: ComparableRecording): string {
   const lines: string[] = [`# parity recording: ${recording.scenario}`, '']
   lines.push('## steps')
   recording.steps.forEach((step, i) => {
-    const head = `${i + 1}. ${step.kind} ${step.channel}`
-    if (step.kind === 'wait') {
-      lines.push(`${head} — ${step.description}`)
+    if (step.kind === 'shutdown') {
+      lines.push(`${i + 1}. shutdown  [pushes ${step.pushes.before}→${step.pushes.after}]`)
       return
     }
-    lines.push(head)
+    if (step.kind === 'wait') {
+      lines.push(`${i + 1}. wait ${step.channel} — ${step.description}  [matched push ${step.pushes.matched}]`)
+      return
+    }
+    const marks = step.kind === 'send' ? `[pushes ${step.pushes.before}]` : `[pushes ${step.pushes.before}→${step.pushes.after}]`
+    lines.push(`${i + 1}. ${step.kind} ${step.channel}  ${marks}`)
     emit(lines, 'args', step.args, 1)
     if (step.kind === 'invoke') emit(lines, 'result', step.result, 1)
     if (step.kind === 'invoke-error') emit(lines, 'error', step.error, 1)
   })
+  for (const [agent, timeline] of Object.entries(recording.timelines)) {
+    lines.push('', `## timeline ${agent}`, ...timeline)
+  }
   for (const [channel, payloads] of Object.entries(recording.pushes)) {
     lines.push('', `## push ${channel} (${payloads.length})`)
     payloads.forEach((payload, i) => emit(lines, `#${i + 1}`, payload, 0))
@@ -27,6 +34,18 @@ export function renderRecording(recording: ComparableRecording): string {
   recording.local.forEach((call, i) => emit(lines, `#${i + 1} ${call.api}`, call.args, 0))
   lines.push('', `## llm requests (${recording.llm.length})`)
   recording.llm.forEach((req, i) => emit(lines, `#${i + 1}`, req, 0))
+  lines.push('', '## state: files')
+  lines.push(...recording.state.tree)
+  for (const [name, json] of Object.entries(recording.state.userDataJson)) {
+    lines.push('', `## state: user-data/${name}`)
+    emit(lines, name, json, 0)
+  }
+  for (const [file, dump] of Object.entries(recording.state.adf)) {
+    for (const [table, { columns, rows }] of Object.entries(dump.tables)) {
+      lines.push('', `## state: ${file} ${table} (${rows.length} rows; ${columns.join(', ')})`)
+      rows.forEach((row, i) => emit(lines, `#${i + 1}`, row, 0))
+    }
+  }
   return lines.join('\n') + '\n'
 }
 

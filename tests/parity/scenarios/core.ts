@@ -26,6 +26,7 @@ export const openAgentScenario: ParityScenario = {
   name: 'open-agent',
   description: 'Open agent-1 from disk without starting it, as the sidebar does.',
   fixtures: [{ name: 'agent-1' }],
+  quietMs: 1000,
   async run(ctx) {
     const agent = ctx.agent('agent-1')
     await openAgent(ctx, agent.filePath)
@@ -39,6 +40,7 @@ export const startAgentScenario: ParityScenario = {
   description:
     'Open agent-1 (start_in_state left at its default, active), start it, let the startup turn finish, then stop it.',
   fixtures: [{ name: 'agent-1', startInState: 'active' }],
+  quietMs: 1000,
   llm: (req) => (req.isPreflight ? { text: 'ok' } : { text: 'Started and ready.' }),
   async run(ctx) {
     const agent = ctx.agent('agent-1')
@@ -58,6 +60,7 @@ export const chatToolCallScenario: ParityScenario = {
   description:
     'Start agent-1 idle, send one chat message; the model calls fs_write, then answers. Read back the chat and the written file.',
   fixtures: [{ name: 'agent-1' }],
+  quietMs: 1000,
   llm: (req) => {
     if (req.isPreflight) return { text: 'ok' }
     if (req.last?.role === 'tool') return { text: 'Wrote note.md.' }

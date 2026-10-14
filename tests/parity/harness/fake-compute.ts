@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events'
-import { promisify } from 'node:util'
 
 /**
  * Container compute for the parity harness: a machine without Podman.
@@ -7,9 +6,8 @@ import { promisify } from 'node:util'
  * Safety, not convenience: the real PodmanService's shutdown path
  * (`stopAll`, reached from Studio's cleanupAllProcesses and the daemon's
  * stop) stops EVERY running adf-* container on the machine, including the
- * owner's. So the harness never constructs it. `FakePodmanService` replaces
- * the class; and as a second fence, `guardChildProcess` refuses to spawn
- * `podman` or `wsl` at all, whoever asks.
+ * owner's. So the harness never constructs it: `FakePodmanService` replaces
+ * the class. The second fence, refusing any podman/wsl spawn, is fence.cjs.
  *
  * Calls are recorded in `ComputeLog.calls` for the safety assertion only.
  * They are not part of the parity comparison: which internal compute calls a
@@ -18,12 +16,10 @@ import { promisify } from 'node:util'
 
 export interface ComputeLog {
   calls: string[]
-  /** podman/wsl spawn attempts that were refused. */
-  refusedSpawns: string[]
 }
 
 export function createComputeLog(): ComputeLog {
-  return { calls: [], refusedSpawns: [] }
+  return { calls: [] }
 }
 
 const NOT_INSTALLED = 'Podman not found on this system.'
@@ -69,40 +65,4 @@ export function createFakePodmanServiceClass(log: ComputeLog): new () => EventEm
     async execInContainer() { throw new Error(NOT_INSTALLED) }
     getExecLog() { return [] }
   }
-}
-
-const FORBIDDEN_BINARIES = /^(podman|wsl)(\.exe|\.cmd)?$/i
-
-type AnyFn = (...args: unknown[]) => unknown
-
-/**
- * `child_process` with podman/wsl refused. Everything else passes through
- * (the sandbox host and MCP servers spawn other binaries legitimately).
- */
-export function guardChildProcess<T extends Record<string, unknown>>(actual: T, log: ComputeLog): T {
-  const wrap = (name: string, original: AnyFn): AnyFn => function guarded(this: unknown, ...args: unknown[]) {
-    const command = typeof args[0] === 'string' ? args[0] : ''
-    // exec/execSync take a shell line (first token, maybe quoted); the others take the file itself.
-    const shellLine = name === 'exec' || name === 'execSync'
-    const m = shellLine ? /^\s*(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(command) : null
-    const first = shellLine ? (m?.[1] ?? m?.[2] ?? m?.[3] ?? '') : command
-    if (FORBIDDEN_BINARIES.test(first.split(/[\\/]/).pop() ?? '')) {
-      log.refusedSpawns.push(`${name} ${command}`)
-      throw new Error(`parity harness: spawning ${first} is forbidden`)
-    }
-    return original.apply(this, args)
-  }
-  const guard = (name: string) => {
-    const original = actual[name] as (AnyFn & { [promisify.custom]?: AnyFn }) | undefined
-    if (typeof original !== 'function') return original
-    const guarded = wrap(name, original) as AnyFn & { [promisify.custom]?: AnyFn }
-    // exec/execFile resolve `{ stdout, stderr }` under promisify only through this symbol.
-    const custom = original[promisify.custom]
-    if (typeof custom === 'function') guarded[promisify.custom] = wrap(name, custom)
-    return guarded
-  }
-  const out: Record<string, unknown> = { ...actual }
-  for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) out[name] = guard(name)
-  out.default = out
-  return out as T
 }

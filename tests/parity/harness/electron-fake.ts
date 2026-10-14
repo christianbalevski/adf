@@ -15,11 +15,18 @@ import type { ParityEnv } from './env'
  * - `safeStorage` is a reversible fake that is "available", so `safe:` secrets
  *   round-trip like on a desktop with a keychain, without touching one.
  *
+ * - Notifications (supported, as on a desktop), the application menu, the
+ *   menu bar tray and the dock badge are recorded as local calls.
+ *
  * Members the code under test uses but this fake lacks throw, naming the
- * member, instead of silently returning undefined.
+ * member, and are recorded in `missing`; the runner fails the run on any.
  */
 
 export interface PushRecord {
+  /** Global send order across all channels, from 1. */
+  seq: number
+  /** Milliseconds since the run began (timing data; never in golden files). */
+  t: number
   channel: string
   args: unknown[]
 }
@@ -92,7 +99,12 @@ export function createFakeElectron(env: ParityEnv): FakeElectron {
       if (this.destroyed) return
       // Structured clone, as Electron's IPC does: a payload object mutated
       // after the send must not change what the renderer received.
-      pushes.push({ channel, args: args.map((a) => (a === undefined ? a : structuredClone(a))) })
+      pushes.push({
+        seq: pushes.length + 1,
+        t: Date.now() - env.startedAt,
+        channel,
+        args: args.map((a) => (a === undefined ? a : structuredClone(a))),
+      })
     }
     isDestroyed(): boolean { return this.destroyed }
     isLoading(): boolean { return false }
@@ -199,11 +211,38 @@ export function createFakeElectron(env: ParityEnv): FakeElectron {
   }
 
   class Notification {
-    static isSupported(): boolean { return false }
-    constructor(readonly options: unknown) { local('Notification', [options]) }
+    static isSupported(): boolean { return true }
+    constructor(readonly options: unknown) { local('Notification.new', [options]) }
     on(): this { return this }
-    show(): void { /* never shown */ }
-    close(): void { /* never shown */ }
+    show(): void { local('Notification.show', [this.options]) }
+    close(): void { local('Notification.close', [this.options]) }
+  }
+
+  /** Menu template without click handlers: what the user sees. */
+  const menuShape = (items: unknown): unknown =>
+    Array.isArray(items)
+      ? items.map((item) => {
+          const i = item as Record<string, unknown>
+          const out: Record<string, unknown> = {}
+          for (const key of ['label', 'role', 'type', 'accelerator', 'enabled', 'checked', 'visible']) {
+            if (i[key] !== undefined) out[key] = i[key]
+          }
+          if (i.submenu !== undefined) out.submenu = menuShape(i.submenu)
+          return out
+        })
+      : items
+
+  class Tray {
+    private destroyed = false
+    constructor(icon: unknown) { local('Tray.new', [String((icon as { path?: string })?.path ?? '')]) }
+    on(): this { return this }
+    setTitle(title: string): void { local('Tray.setTitle', [title]) }
+    setToolTip(tooltip: string): void { local('Tray.setToolTip', [tooltip]) }
+    setImage(): void { local('Tray.setImage', []) }
+    setContextMenu(menu: { items?: unknown } | null): void { local('Tray.setContextMenu', [menuShape(menu?.items ?? null)]) }
+    popUpContextMenu(menu?: { items?: unknown }): void { local('Tray.popUpContextMenu', [menuShape(menu?.items ?? null)]) }
+    isDestroyed(): boolean { return this.destroyed }
+    destroy(): void { this.destroyed = true; local('Tray.destroy', []) }
   }
 
   const nativeImage = {
@@ -213,11 +252,10 @@ export function createFakeElectron(env: ParityEnv): FakeElectron {
 
   const Menu = {
     buildFromTemplate: (template: unknown[]) => ({ items: template, popup: () => {} }),
-    // Rebuilt on every recent-file change; not a user-visible difference worth recording.
-    setApplicationMenu: () => {},
+    setApplicationMenu: (menu: { items?: unknown } | null) => { local('Menu.setApplicationMenu', [menuShape(menu?.items ?? null)]) },
   }
 
-  const module: Record<string, unknown> = {
+  const module = strict('electron', {
     app: strict('app', app, missing),
     ipcMain: strict('ipcMain', ipcMain, missing),
     BrowserWindow,
@@ -225,9 +263,10 @@ export function createFakeElectron(env: ParityEnv): FakeElectron {
     shell: strict('shell', shell, missing),
     safeStorage: strict('safeStorage', safeStorage, missing),
     Notification,
+    Tray,
     nativeImage: strict('nativeImage', nativeImage, missing),
     Menu: strict('Menu', Menu, missing),
-  }
+  } as Record<string, unknown>, missing)
 
   return {
     module,

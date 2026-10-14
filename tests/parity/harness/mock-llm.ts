@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { createHash } from 'node:crypto'
 
 /**
  * Deterministic, scripted LLM: an OpenAI-compatible `/v1/chat/completions`
@@ -11,8 +12,9 @@ import type { AddressInfo } from 'node:net'
  * Replies are chosen by a script from the request content, never from call
  * order, so an extra or missing request on one backend shows up as a
  * difference in the recorded requests instead of shifting every later reply.
- * Responses are written in one `write` so chunk boundaries do not depend on
- * timers.
+ * Streamed text arrives in three slices written `gapMs` apart (default
+ * 200 ms, four times the executor's 50 ms batch window), as a real model
+ * streams; `streams` records when each slice was written.
  */
 
 export interface LlmToolCall {
@@ -74,6 +76,8 @@ export interface MockLlm {
   readonly baseUrl: string
   /** Every request received, in arrival order. */
   readonly requests: LlmRequestView[]
+  /** One entry per streamed reply. */
+  readonly streams: StreamTiming[]
   script: LlmScript
   close(): Promise<void>
 }
@@ -119,9 +123,43 @@ function viewOf(body: Record<string, unknown>): LlmRequestView {
   }
 }
 
-/** Per-request ids are derived from the request number so they stay stable run to run. */
-function respond(res: ServerResponse, view: LlmRequestView, reply: LlmReply, n: number): void {
-  const id = `chatcmpl-parity-${n}`
+/**
+ * Wall-clock text in a request (the runtime stamps chat messages with the
+ * time) is masked before hashing, so ids depend on what was asked, not when.
+ */
+function contentHash(view: LlmRequestView): string {
+  const mask = (t: string) => t
+    .replace(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?( UTC|Z)?/g, '<time>')
+    .replace(/(?<!\d)\d{13}(?!\d)/g, '<ms>')
+  const material = JSON.stringify({
+    model: view.model,
+    tools: view.tools,
+    system: mask(view.system),
+    messages: view.messages.map((m) => ({ ...m, text: mask(m.text) })),
+  })
+  return createHash('sha256').update(material).digest('hex').slice(0, 12)
+}
+
+/** Timing of one streamed reply, for the latency and batching checks. */
+export interface StreamTiming {
+  /** Index into `requests`. */
+  request: number
+  /** Run-relative ms at which each text slice was written. */
+  textWrites: number[]
+}
+
+/**
+ * Ids are derived from a hash of the request content, so an extra or missing
+ * request on one backend does not renumber every later id.
+ */
+async function respond(
+  res: ServerResponse,
+  view: LlmRequestView,
+  reply: LlmReply,
+  opts: { gapMs: number; now: () => number; timing: StreamTiming },
+): Promise<void> {
+  const hash = contentHash(view)
+  const id = `chatcmpl-${hash}`
   const created = 1_700_000_000
   const usage = {
     prompt_tokens: reply.usage?.prompt ?? 100,
@@ -129,7 +167,7 @@ function respond(res: ServerResponse, view: LlmRequestView, reply: LlmReply, n: 
     total_tokens: (reply.usage?.prompt ?? 100) + (reply.usage?.completion ?? 10),
   }
   const toolCalls = (reply.toolCalls ?? []).map((call, i) => ({
-    id: `call_parity_${n}_${i + 1}`,
+    id: `call_${hash}_${i + 1}`,
     type: 'function' as const,
     function: { name: call.name, arguments: JSON.stringify(call.arguments) },
   }))
@@ -151,21 +189,31 @@ function respond(res: ServerResponse, view: LlmRequestView, reply: LlmReply, n: 
 
   const chunk = (delta: Record<string, unknown>, finishReason: string | null = null) =>
     `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: view.model, choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`
-  let out = chunk({ role: 'assistant', content: '' })
   const text = reply.text ?? ''
-  // Three fixed slices: exercises delta streaming without timer-dependent boundaries.
+  const slices: string[] = []
+  // Three slices, written gapMs apart: longer than the executor's 50 ms delta
+  // batch window, so each slice is its own text_delta_batch (real streaming).
   if (text) {
     const step = Math.max(1, Math.ceil(text.length / 3))
-    for (let i = 0; i < text.length; i += step) out += chunk({ content: text.slice(i, i + step) })
+    for (let i = 0; i < text.length; i += step) slices.push(text.slice(i, i + step))
   }
-  toolCalls.forEach((call, index) => {
-    out += chunk({ tool_calls: [{ index, id: call.id, type: 'function', function: { name: call.function.name, arguments: call.function.arguments } }] })
-  })
-  out += chunk({}, finish)
-  out += `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: view.model, choices: [], usage })}\n\n`
-  out += 'data: [DONE]\n\n'
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
-  res.end(out)
+  let head = chunk({ role: 'assistant', content: '' })
+  for (let i = 0; i < slices.length; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, opts.gapMs))
+    res.write((i === 0 ? head : '') + chunk({ content: slices[i] }))
+    opts.timing.textWrites.push(opts.now())
+    head = ''
+  }
+  let tail = head
+  toolCalls.forEach((call, index) => {
+    tail += chunk({ tool_calls: [{ index, id: call.id, type: 'function', function: { name: call.function.name, arguments: call.function.arguments } }] })
+  })
+  if (slices.length) await new Promise((r) => setTimeout(r, opts.gapMs))
+  tail += chunk({}, finish)
+  tail += `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: view.model, choices: [], usage })}\n\n`
+  tail += 'data: [DONE]\n\n'
+  res.end(tail)
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -174,8 +222,14 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(parts).toString('utf-8')
 }
 
-export async function startMockLlm(script: LlmScript = defaultScript): Promise<MockLlm> {
+export async function startMockLlm(
+  script: LlmScript = defaultScript,
+  opts: { gapMs?: number; now?: () => number } = {},
+): Promise<MockLlm> {
   const requests: LlmRequestView[] = []
+  const streams: StreamTiming[] = []
+  const gapMs = opts.gapMs ?? 200
+  const now = opts.now ?? Date.now
   const state = { script }
   const server: Server = createServer((req, res) => {
     void (async () => {
@@ -189,7 +243,9 @@ export async function startMockLlm(script: LlmScript = defaultScript): Promise<M
         if (req.method === 'POST' && url.endsWith('/chat/completions')) {
           const view = viewOf(JSON.parse(await readBody(req)) as Record<string, unknown>)
           requests.push(view)
-          respond(res, view, state.script(view), requests.length)
+          const timing: StreamTiming = { request: requests.length - 1, textWrites: [] }
+          if (view.stream) streams.push(timing)
+          await respond(res, view, state.script(view), { gapMs, now, timing })
           return
         }
         res.writeHead(404, { 'content-type': 'application/json' })
@@ -205,6 +261,7 @@ export async function startMockLlm(script: LlmScript = defaultScript): Promise<M
   return {
     baseUrl: `http://127.0.0.1:${port}/v1`,
     requests,
+    streams,
     get script() { return state.script },
     set script(next: LlmScript) { state.script = next },
     close: () => new Promise<void>((resolve) => {

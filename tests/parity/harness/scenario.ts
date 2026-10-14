@@ -1,13 +1,13 @@
-import type { ParityBackend } from './backend'
-import { createFakeElectron, type DialogScript } from './electron-fake'
+import { IPC } from '../../../src/shared/constants/ipc-channels'
+import type { BootedBackend, ParityBackend } from './backend'
+import { createFakeElectron, type DialogScript, type PushRecord } from './electron-fake'
 import { createParityEnv, writeSettingsFile, type ParityEnv } from './env'
-import { baseSettings, createFixtureAgents, type FixtureAgent, type FixtureName, type FixtureSpec } from './fixtures'
+import { baseSettings, createFixtureAgents, IDENTITY, type FixtureAgent, type FixtureName, type FixtureSpec } from './fixtures'
+import { diffRendered, renderRecording } from './format'
 import { defaultScript, recordedRequest, startMockLlm, type LlmScript, type MockLlm } from './mock-llm'
 import { normalizeRecording, type NormalizationContext } from './normalize'
 import { toComparable, type ComparableRecording, type RawRecording, type StepRecord } from './recording'
-import { diffRendered, renderRecording } from './format'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dumpPersistedState } from './state-dump'
 
 /**
  * A parity scenario: a renderer-side call sequence written once and run
@@ -22,6 +22,12 @@ export interface ParityScenario {
   /** Merged over `baseSettings`. */
   settings?: Record<string, unknown>
   llm?: LlmScript
+  /**
+   * After `run` returns the scenario is done: the backend must then stay
+   * silent (no push, no LLM request) for this long, or the run fails. A
+   * scenario waits explicitly for every push it expects.
+   */
+  quietMs: number
   run(ctx: ScenarioContext): Promise<void>
 }
 
@@ -42,17 +48,10 @@ export interface ScenarioContext {
   setDialogs(script: DialogScript): void
 }
 
-const QUIET_MS = 750
-const SETTLE_LIMIT_MS = 15_000
-
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/**
- * Run one scenario against one backend in a fresh isolated environment and
- * return the raw and normalized recordings.
- */
 export interface ScenarioResult {
   raw: RawRecording
   normalized: ComparableRecording
@@ -60,12 +59,44 @@ export interface ScenarioResult {
   text: string
 }
 
+type HandleList = () => object[]
+const activeHandles: HandleList = () => (process as unknown as { _getActiveHandles(): object[] })._getActiveHandles()
+
+function describeHandle(h: object): string {
+  const name = h.constructor?.name ?? 'handle'
+  const sock = h as { remoteAddress?: string; remotePort?: number; localPort?: number; address?: () => unknown }
+  if (sock.remotePort) return `${name} → ${sock.remoteAddress}:${sock.remotePort}`
+  if (typeof sock.address === 'function') {
+    try { return `${name} listening ${JSON.stringify(sock.address())}` } catch { /* closed */ }
+  }
+  return name
+}
+
+/** Handles opened during the run that are still open: give closing sockets a moment, then report. */
+async function leakedHandles(before: Set<object>): Promise<string[]> {
+  let left: object[] = []
+  for (let i = 0; i < 20; i++) {
+    left = activeHandles().filter((h) => !before.has(h))
+    if (left.length === 0) return []
+    await sleep(25)
+  }
+  return left.map((h) => `active handle after shutdown: ${describeHandle(h)}`)
+}
+
+/**
+ * Run one scenario against one backend in a fresh isolated environment and
+ * return the raw and normalized recordings.
+ */
 export async function runScenario(scenario: ParityScenario, backend: ParityBackend): Promise<ScenarioResult> {
   const env = await createParityEnv(scenario.name)
-  const llm = await startMockLlm(scenario.llm ?? defaultScript)
+  const handlesBefore = new Set(activeHandles())
+  const llm = await startMockLlm(scenario.llm ?? defaultScript, { now: () => Date.now() - env.startedAt })
+  env.allowPort(Number(new URL(llm.baseUrl).port))
+  let llmOpen = true
   const electron = createFakeElectron(env)
   const steps: StepRecord[] = []
-  let booted: Awaited<ReturnType<ParityBackend['boot']>> | null = null
+  const problems: string[] = []
+  let booted: BootedBackend | null = null
   try {
     const agents = createFixtureAgents(env, scenario.fixtures)
     writeSettingsFile(env, baseSettings(env, llm, agents, scenario.settings))
@@ -83,23 +114,32 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
       async invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
         const handler = electron.handlers.get(channel)
         if (!handler) throw new Error(`no handler registered for ${channel}`)
+        const before = electron.pushes.length
         try {
           const result = await handler(electron.ipcEvent(), ...args)
-          steps.push({ kind: 'invoke', channel, args, result: result === undefined ? result : structuredClone(result) })
+          steps.push({
+            kind: 'invoke', channel, args,
+            result: result === undefined ? result : structuredClone(result),
+            pushes: { before, after: electron.pushes.length },
+          })
           return result as T
         } catch (err) {
-          steps.push({ kind: 'invoke-error', channel, args, error: err instanceof Error ? err.message : String(err) })
+          const e = err as { name?: unknown; message?: unknown; code?: unknown }
+          steps.push({
+            kind: 'invoke-error', channel, args,
+            error: { name: String(e?.name ?? 'Error'), message: String(e?.message ?? err), ...(e?.code !== undefined ? { code: e.code } : {}) },
+            pushes: { before, after: electron.pushes.length },
+          })
           throw err
         }
       },
       send(channel, ...args) {
         const fns = electron.listeners.get(channel)
         if (!fns?.length) throw new Error(`no listener registered for ${channel}`)
-        steps.push({ kind: 'send', channel, args })
+        steps.push({ kind: 'send', channel, args, pushes: { before: electron.pushes.length } })
         for (const fn of fns) fn(electron.ipcEvent(), ...args)
       },
       async waitForPush(channel, description, match, timeoutMs = 15_000) {
-        steps.push({ kind: 'wait', channel, description })
         const deadline = Date.now() + timeoutMs
         let index = waitCursor.get(channel) ?? 0
         for (;;) {
@@ -107,6 +147,7 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
             const push = electron.pushes[index]
             if (push.channel === channel && match(push.args[0])) {
               waitCursor.set(channel, index + 1)
+              steps.push({ kind: 'wait', channel, description, pushes: { matched: push.seq } })
               return push.args[0]
             }
           }
@@ -118,7 +159,38 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
     }
 
     await scenario.run(ctx)
-    await settle(electron.pushes, llm)
+
+    // Declared done: anything that arrives now was not waited for.
+    const pushesAtDone = electron.pushes.length
+    const requestsAtDone = llm.requests.length
+    await sleep(scenario.quietMs)
+    if (electron.pushes.length > pushesAtDone || llm.requests.length > requestsAtDone) {
+      const late = electron.pushes.slice(pushesAtDone).map((p) => `${p.channel} ${JSON.stringify(p.args[0])?.slice(0, 120)}`)
+      throw new Error([
+        `parity harness: ${scenario.name} was done but the backend kept going within ${scenario.quietMs} ms:`,
+        ...late,
+        ...(llm.requests.length > requestsAtDone ? [`${llm.requests.length - requestsAtDone} LLM request(s)`] : []),
+      ].join('\n'))
+    }
+
+    // Teardown with the window open, as on quit: its pushes are part of the recording.
+    const before = electron.pushes.length
+    const running: BootedBackend = booted
+    booted = null
+    await running.shutdown()
+    steps.push({ kind: 'shutdown', pushes: { before, after: electron.pushes.length } })
+    electron.closeWindow()
+    problems.push(...running.leaks())
+    if (electron.missing.length > 0) {
+      problems.push(`electron members the fake lacks were used: ${[...new Set(electron.missing)].join(', ')}`)
+    }
+    await llm.close()
+    llmOpen = false
+    problems.push(...(await leakedHandles(handlesBefore)))
+
+    const state = dumpPersistedState(env, Object.values(agents).map((a) => a.filePath))
+    env.assertRealStateUntouched()
+    if (problems.length) throw new Error(`parity harness: ${scenario.name}:\n${problems.join('\n')}`)
 
     const raw: RawRecording = {
       scenario: scenario.name,
@@ -127,21 +199,30 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
       pushes: [...electron.pushes],
       local: [...electron.localCalls],
       llm: llm.requests.map(recordedRequest),
+      state,
+      timing: { streams: [...llm.streams] },
     }
-    const running = booted
-    booted = null
-    await running.shutdown()
-    const violations = running.violations()
-    if (violations.length > 0) throw new Error(`parity harness: safety fence hit: ${violations.join('; ')}`)
-    env.assertRealStateUntouched()
-    if (electron.missing.length > 0) {
-      throw new Error(`parity harness: code under test used electron members the fake lacks: ${[...new Set(electron.missing)].join(', ')}`)
+    const extra = running.normalization?.() ?? {}
+    const nctx: NormalizationContext = {
+      rootSpellings: env.rootSpellings,
+      ports: [
+        { value: new URL(llm.baseUrl).port, name: 'LLM_PORT' },
+        { value: String(env.meshPort), name: 'MESH_PORT' },
+        ...(extra.ports ?? []),
+      ],
+      named: [
+        { value: IDENTITY.ownerDid, name: 'did:owner' },
+        { value: IDENTITY.runtimeDid, name: 'did:runtime' },
+        ...(extra.named ?? []),
+      ],
+      fixtureIds: Object.values(agents).map((a) => a.id),
+      window: { from: env.startedAt, to: Date.now() },
     }
-    const normalized = normalizeRecording(toComparable(raw), normalizationContext(env, llm, agents))
+    const normalized = normalizeRecording(toComparable(raw), nctx)
     return { raw, normalized, text: renderRecording(normalized) }
   } finally {
     if (booted) await booted.shutdown().catch(() => {})
-    await llm.close()
+    if (llmOpen) await llm.close().catch(() => {})
     env.dispose()
   }
 }
@@ -157,38 +238,33 @@ export async function diffBackends(scenario: ParityScenario, baseline: ParityBac
   return diffRendered(a.text, b.text, { expected: baseline.name, actual: candidate.name })
 }
 
-/** Wait until neither the window nor the mock LLM has seen anything for QUIET_MS. */
-async function settle(pushes: readonly unknown[], llm: MockLlm): Promise<void> {
-  const deadline = Date.now() + SETTLE_LIMIT_MS
-  let seen = pushes.length + llm.requests.length
-  let quietSince = Date.now()
-  while (Date.now() - quietSince < QUIET_MS) {
-    if (Date.now() > deadline) throw new Error('parity harness: backend never went quiet')
-    await sleep(25)
-    const now = pushes.length + llm.requests.length
-    if (now !== seen) {
-      seen = now
-      quietSince = Date.now()
-    }
-  }
+/**
+ * Streaming check data: how the mock LLM's text slices (written 200 ms
+ * apart, past the executor's 50 ms batch window) arrived as
+ * `text_delta_batch` pushes. Timing data; never part of a golden file.
+ */
+export interface StreamingReport {
+  /** Text slices written by the mock LLM. */
+  slices: number
+  /** text_delta_batch pushes on AGENT_EVENT. */
+  batches: number
+  /** Per streamed reply: ms from its first slice write to the first batch push after it. */
+  firstDeltaLatencyMs: number[]
 }
 
-/** Values the normalizer replaces by name; read from the run's own files after the run. */
-function normalizationContext(env: ParityEnv, llm: MockLlm, agents: Record<string, FixtureAgent>): NormalizationContext {
-  let settings: Record<string, unknown> = {}
-  try { settings = JSON.parse(readFileSync(join(env.userDataDir, 'adf-settings.json'), 'utf-8')) } catch { /* none */ }
-  const str = (k: string) => (typeof settings[k] === 'string' ? (settings[k] as string) : undefined)
+export function streamingReport(raw: RawRecording): StreamingReport {
+  const batches = raw.pushes.filter((p: PushRecord) =>
+    p.channel === IPC.AGENT_EVENT && (p.args[0] as { type?: string })?.type === 'text_delta_batch')
+  const firstDeltaLatencyMs: number[] = []
+  for (const stream of raw.timing.streams) {
+    const first = stream.textWrites[0]
+    if (first === undefined) continue
+    const batch = batches.find((b) => b.t >= first)
+    firstDeltaLatencyMs.push(batch ? batch.t - first : Number.POSITIVE_INFINITY)
+  }
   return {
-    roots: env.rootAliases,
-    ports: [
-      { value: new URL(llm.baseUrl).port, name: 'LLM_PORT' },
-      { value: String(env.meshPort), name: 'MESH_PORT' },
-    ],
-    named: [
-      { value: str('ownerDid'), name: 'did:owner' },
-      { value: str('runtimeDid'), name: 'did:runtime' },
-      { value: str('runtimeId'), name: 'runtime-id' },
-    ],
-    fixtureIds: Object.values(agents).map((a) => a.id),
+    slices: raw.timing.streams.reduce((n, s) => n + s.textWrites.length, 0),
+    batches: batches.length,
+    firstDeltaLatencyMs,
   }
 }
