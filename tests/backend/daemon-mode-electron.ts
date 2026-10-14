@@ -45,6 +45,7 @@ export function createElectronStub(): ElectronStub {
     restore: () => {},
     show: () => {},
     focus: () => {},
+    setProgressBar: (value: number) => { call('window.setProgressBar', [value]) },
   }
   class Notification {
     static isSupported(): boolean { return true }

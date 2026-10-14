@@ -58,7 +58,7 @@ export function createFakeClientSession(resolveHold: (filePath: string) => strin
     reconnects: 0,
     ended: false,
     holdsAvailable: false,
-    start(listener) { s.listener = listener },
+    start(listener) { s.listener = listener; listener.onConnection({ state: 'open' }) },
     async setFocus(agentId) { s.focus.push(agentId) },
     async holdDocument(filePath) {
       if (!s.holdsAvailable) {

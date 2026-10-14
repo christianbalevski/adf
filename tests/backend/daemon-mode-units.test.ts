@@ -13,10 +13,10 @@ vi.mock('electron', async () => (await import('./daemon-mode-electron')).electro
 import { electronStub, helpLabels } from './daemon-mode-electron'
 import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 import { DaemonModeSession } from '../../src/main/backend/daemon-mode/session'
-import { ClientSettingsStore, clientSettingsPath, mergeSettingsViews, splitSettingsPatch } from '../../src/main/backend/daemon-mode/settings'
+import { ClientSettingsStore, clientSettingsDefaults, clientSettingsPath, mergeSettingsViews, splitSettingsPatch } from '../../src/main/backend/daemon-mode/settings'
 import { createStudioDaemonClient } from '../../src/main/backend/daemon-mode/credentials'
 import { DaemonConnection } from '../../src/main/backend/daemon-mode/connection'
-import { ConnectionStatusUi } from '../../src/main/backend/daemon-mode/status-ui'
+import { ConnectionStatusUi, DISCONNECT_DIALOG_COOLDOWN_MS, connectionProblem } from '../../src/main/backend/daemon-mode/status-ui'
 import { createAdfFileHandler } from '../../src/main/backend/daemon-mode/adf-file'
 import { initApplicationMenu } from '../../src/main/menu'
 import { ApprovalsUi } from '../../src/main/backend/daemon-mode/approvals-ui'
@@ -137,6 +137,7 @@ describe('backend not connected (visible state, reconnect)', () => {
       initApplicationMenu({ get: () => undefined, set: () => {} }, {
         logFile: () => connection.logFile,
         problem: () => (connection.state.state === 'disconnected' ? 'ADF daemon: not connected, retrying' : null),
+        canReconnect: () => connection.state.state === 'disconnected',
         openLog: () => { opened.push('log') },
         reconnect: () => { reconnects++ },
       })
@@ -204,11 +205,12 @@ describe('adf-file:// (daemon mode)', () => {
     expect((await handler(new Request('adf-file://../etc/passwd'))).status).toBe(400)
   })
 
-  it('says W1-E while the raw route does not exist, not "file not found"', async () => {
-    const { handler } = await setup()
+  it('answers the daemon\'s 404 as "File not found"', async () => {
+    const { daemon, handler } = await setup()
+    daemon.routes.set('GET /agents/id-1/files/raw', () => ({ status: 404, body: { error: 'Unknown file "img1.png"' } }))
     const res = await handler(new Request('adf-file://img1.png'))
-    expect(res.status).toBe(501)
-    expect(await res.text()).toContain('not available in daemon mode yet: W1-E')
+    expect(res.status).toBe(404)
+    expect(await res.text()).toBe('File not found')
   })
 })
 
@@ -248,5 +250,104 @@ describe('native notifier and approvals reveal fed from the stream', () => {
     expect(ui.takePendingReveal()).toBeNull()
     electronStub.focused = true
     ui.dispose()
+  })
+})
+
+describe('reattach, seeding, defaults (review fixes)', () => {
+  it('reattach re-holds the open and the unlocked documents and re-sends the focus', async () => {
+    const ids: Record<string, string> = { 'C:/a/agent-1.adf': 'id-1', 'C:/a/agent-2.adf': 'id-2' }
+    const client = createFakeClientSession((p) => ids[p] ?? (p.toLowerCase().includes('agent-1') ? 'id-1' : p.toLowerCase().includes('agent-2') ? 'id-2' : null))
+    client.holdsAvailable = true
+    const session = new DaemonModeSession(client, quiet)
+    await session.openFile('C:/a/agent-1.adf', async () => null)
+    session.noteUnlocked('C:/a/agent-1.adf', 'id-1')
+    await session.openFile('C:/a/agent-2.adf', async () => null)
+    client.held.length = 0
+    client.focus.length = 0
+    await session.reattach()
+    expect(client.held.sort()).toEqual(['id-1', 'id-2'])
+    expect(client.focus).toEqual(['id-2'])
+  })
+
+  it('seeds studio-client-settings.json once from the client keys of adf-settings.json', () => {
+    const settingsPath = join(dir, 'adf-settings.json')
+    const clientPath = clientSettingsPath(dir)
+    writeFileSync(settingsPath, JSON.stringify({ theme: 'dark', recentFiles: ['C:/a/x.adf'], providers: [{ id: 'p' }] }))
+    const logs: string[] = []
+    const log = { log: (m: string) => { logs.push(m) }, warn: () => {}, error: () => {} }
+    ClientSettingsStore.seedOnce(clientPath, settingsPath, log)
+    expect(JSON.parse(readFileSync(clientPath, 'utf8'))).toEqual({ theme: 'dark', recentFiles: ['C:/a/x.adf'] })
+    expect(logs.join('\n')).toContain('First daemon-mode boot')
+    writeFileSync(settingsPath, JSON.stringify({ theme: 'light' }))
+    ClientSettingsStore.seedOnce(clientPath, settingsPath, log)
+    expect(JSON.parse(readFileSync(clientPath, 'utf8')).theme).toBe('dark')
+    expect(logs).toHaveLength(1)
+  })
+
+  it('computes the client defaults once', () => {
+    expect(clientSettingsDefaults()).toBe(clientSettingsDefaults())
+  })
+})
+
+describe('connection dialogs and boot progress (review fixes)', () => {
+  it('never shows two disconnect dialogs at once, and not again within the cooldown', async () => {
+    vi.useFakeTimers()
+    try {
+      const connection = new DaemonConnection(async () => ({ baseUrl: BASE, logFile: null, description: 'fake', source: { token: () => 't' } }), quiet)
+      await connection.client()
+      initApplicationMenu({ get: () => undefined, set: () => {} }, { logFile: () => null, problem: () => null, canReconnect: () => false, openLog: () => {}, reconnect: () => {} })
+      const ui = new ConnectionStatusUi(connection, { reconnect: () => {}, openLog: () => {}, recoveryHint: 'hint' }, quiet)
+      connection.markConnected()
+      electronStub.calls.length = 0
+      const dialogs = () => electronStub.calls.filter((c) => c.api === 'dialog.showMessageBox').length
+      connection.markDisconnected()
+      await vi.advanceTimersByTimeAsync(3_100)
+      expect(dialogs()).toBe(1)
+      connection.markConnected()
+      connection.markDisconnected()
+      await vi.advanceTimersByTimeAsync(3_100)
+      expect(dialogs()).toBe(1)
+      connection.markConnected()
+      await vi.advanceTimersByTimeAsync(DISCONNECT_DIALOG_COOLDOWN_MS)
+      connection.markDisconnected()
+      await vi.advanceTimersByTimeAsync(3_100)
+      expect(dialogs()).toBe(2)
+      ui.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows a status line and an indeterminate taskbar progress while Studio waits for the daemon at boot', async () => {
+    vi.useFakeTimers()
+    try {
+      let release: (() => void) | null = null
+      const connection = new DaemonConnection((progress) => new Promise((resolve) => {
+        progress('Starting the ADF daemon…')
+        release = () => resolve({ baseUrl: BASE, logFile: null, description: 'fake', source: { token: () => 't' } })
+      }), quiet)
+      initApplicationMenu({ get: () => undefined, set: () => {} }, {
+        logFile: () => null, problem: () => connectionProblem(connection.state, null), canReconnect: () => false, openLog: () => {}, reconnect: () => {},
+      })
+      electronStub.calls.length = 0
+      const ui = new ConnectionStatusUi(connection, { reconnect: () => {}, openLog: () => {}, recoveryHint: 'hint' }, quiet)
+      await vi.advanceTimersByTimeAsync(1_100)
+      expect(electronStub.calls.filter((c) => c.api === 'window.setProgressBar').map((c) => c.args[0])).toEqual([2])
+      expect(connectionProblem(connection.state, null)).toBe('ADF daemon: Starting the ADF daemon…')
+      release!()
+      await connection.client()
+      connection.markConnected()
+      expect(electronStub.calls.filter((c) => c.api === 'window.setProgressBar').map((c) => c.args[0])).toEqual([2, -1])
+      ui.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a failed start can still open the daemon log (the connector knows it before it runs)', async () => {
+    const connector = Object.assign(async () => { throw new Error('exited during startup') }, { logFile: 'C:/data/logs/adf-daemon.log' })
+    const connection = new DaemonConnection(connector, quiet)
+    await expect(connection.client()).rejects.toThrow()
+    expect(connection.logFile).toBe('C:/data/logs/adf-daemon.log')
   })
 })

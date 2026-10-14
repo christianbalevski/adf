@@ -1,4 +1,4 @@
-import { dialog, Notification, shell } from 'electron'
+import { BrowserWindow, dialog, Notification, shell } from 'electron'
 import { buildApplicationMenu } from '../../menu'
 import type { ConnectionState, DaemonConnection } from './connection'
 
@@ -6,11 +6,15 @@ import type { ConnectionState, DaemonConnection } from './connection'
  * The visible "backend not connected" state (tracker W2-C). The renderer
  * does not know which backend it talks to, so Studio main shows it:
  *
- * - every transition is logged;
+ * - every transition is logged, and the menu is rebuilt on every one;
+ * - while Studio waits for the daemon at boot (§8.2 step 5) the Help menu
+ *   names what it waits for and, past a moment, the taskbar shows an
+ *   indeterminate progress bar;
  * - the Help menu gains a status line and "Reconnect to the ADF Daemon"
  *   while the connection is down (menu.ts DaemonMenuOptions);
- * - a disconnect that lasts past a short grace period raises one dialog per
- *   episode, with Reconnect now / Open daemon log;
+ * - a disconnect that lasts past a short grace period raises a dialog, with
+ *   Reconnect now / Open daemon log: never two at once, and not again within
+ *   a cooldown;
  * - after such a dialog, the reconnect raises an OS notification so the user
  *   learns it is back;
  * - a connector that failed (no daemon, refused attach) raises one dialog
@@ -21,15 +25,20 @@ import type { ConnectionState, DaemonConnection } from './connection'
  */
 
 const DISCONNECT_GRACE_MS = 3_000
+/** No second disconnect dialog within this long of the last one. */
+export const DISCONNECT_DIALOG_COOLDOWN_MS = 60_000
+/** Boot waits shorter than this show no progress bar. */
+const BOOT_PROGRESS_DELAY_MS = 1_000
 
 type Log = Pick<Console, 'log' | 'warn' | 'error'>
 
-/** The Help menu's status line; null while connected or still connecting at boot. */
+/** The Help menu's status line; null while connected. */
 export function connectionProblem(state: ConnectionState, baseUrl: string | null): string | null {
   switch (state.state) {
     case 'connected':
-    case 'connecting':
       return null
+    case 'connecting':
+      return `ADF daemon: ${state.progress ?? 'connecting…'}`
     case 'disconnected':
       return `ADF daemon: not connected${baseUrl ? ` (${baseUrl})` : ''}, retrying`
     case 'failed':
@@ -40,10 +49,13 @@ export function connectionProblem(state: ConnectionState, baseUrl: string | null
 export class ConnectionStatusUi {
   private graceTimer: ReturnType<typeof setTimeout> | null = null
   private dialogShownThisEpisode = false
+  private dialogOpen = false
+  private lastDialogAt = 0
   private failureShown = false
   private wasDisconnected = false
   private disposed = false
-  private lastProblem: string | null = null
+  private progressTimer: ReturnType<typeof setTimeout> | null = null
+  private progressShown = false
   private readonly unsubscribe: () => void
 
   constructor(
@@ -52,6 +64,7 @@ export class ConnectionStatusUi {
     private readonly log: Log = console,
   ) {
     this.unsubscribe = connection.onState((state) => this.onState(state))
+    if (connection.state.state === 'connecting') this.startBootProgress()
   }
 
   dispose(): void {
@@ -59,22 +72,50 @@ export class ConnectionStatusUi {
     this.unsubscribe()
     if (this.graceTimer) clearTimeout(this.graceTimer)
     this.graceTimer = null
+    this.stopBootProgress()
+  }
+
+  private startBootProgress(): void {
+    if (this.progressTimer || this.progressShown) return
+    this.progressTimer = setTimeout(() => {
+      this.progressTimer = null
+      if (this.connection.state.state !== 'connecting') return
+      this.progressShown = true
+      this.setProgress(2)
+    }, BOOT_PROGRESS_DELAY_MS)
+    this.progressTimer.unref?.()
+  }
+
+  private stopBootProgress(): void {
+    if (this.progressTimer) { clearTimeout(this.progressTimer); this.progressTimer = null }
+    if (this.progressShown) { this.progressShown = false; this.setProgress(-1) }
+  }
+
+  /** 2 = indeterminate, -1 = none (BrowserWindow.setProgressBar). */
+  private setProgress(value: number): void {
+    for (const win of BrowserWindow.getAllWindows()) {
+      try { if (!win.isDestroyed()) win.setProgressBar(value) } catch { /* window going away */ }
+    }
   }
 
   private onState(state: ConnectionState): void {
     if (this.disposed) return
-    const problem = connectionProblem(state, this.connection.baseUrl)
-    if (problem !== this.lastProblem) {
-      this.lastProblem = problem
-      buildApplicationMenu()
+    buildApplicationMenu()
+    if (state.state === 'connecting') {
+      this.startBootProgress()
+      return
     }
+    this.stopBootProgress()
     if (state.state === 'disconnected') {
       this.wasDisconnected = true
       this.log.warn(`[Backend] Lost the connection to the ADF daemon${state.error ? `: ${state.error}` : ''}; reconnecting`)
       if (!this.graceTimer && !this.dialogShownThisEpisode) {
         this.graceTimer = setTimeout(() => {
           this.graceTimer = null
-          if (this.connection.state.state === 'disconnected') void this.showDisconnectedDialog()
+          if (this.connection.state.state !== 'disconnected') return
+          // One dialog at a time, and not again right after the last one (a flapping daemon).
+          if (this.dialogOpen || Date.now() - this.lastDialogAt < DISCONNECT_DIALOG_COOLDOWN_MS) return
+          void this.showDisconnectedDialog()
         }, DISCONNECT_GRACE_MS)
         this.graceTimer.unref?.()
       }
@@ -98,6 +139,8 @@ export class ConnectionStatusUi {
 
   private async showDisconnectedDialog(): Promise<void> {
     this.dialogShownThisEpisode = true
+    this.dialogOpen = true
+    this.lastDialogAt = Date.now()
     const url = this.connection.baseUrl
     const logFile = this.connection.logFile
     const buttons = ['Reconnect Now', ...(logFile ? ['Open Daemon Log'] : []), 'Dismiss']
@@ -116,6 +159,8 @@ export class ConnectionStatusUi {
       else if (buttons[response] === 'Open Daemon Log') this.actions.openLog()
     } catch (err) {
       this.log.warn('[Backend] Could not show the disconnected dialog:', err)
+    } finally {
+      this.dialogOpen = false
     }
   }
 

@@ -17,8 +17,10 @@ export interface MenuSettings {
 export interface DaemonMenuOptions {
   /** The daemon's log file; null when the daemon runs on another machine. */
   logFile: () => string | null
-  /** A one-line connection problem, or null while connected. */
+  /** A one-line connection status, or null while connected. */
   problem: () => string | null
+  /** Whether "Reconnect to the ADF Daemon" makes sense now (the connection dropped). */
+  canReconnect: () => boolean
   openLog: () => void
   reconnect: () => void
 }
@@ -221,11 +223,7 @@ function daemonHelpItems(): Electron.MenuItemConstructorOptions[] {
   return [
     { type: 'separator' },
     { label: 'Open Daemon Log', enabled: logFile !== null, click: () => options.openLog() },
-    ...(problem
-      ? [
-          { label: problem, enabled: false },
-          { label: 'Reconnect to the ADF Daemon', click: () => options.reconnect() }
-        ]
-      : [])
+    ...(problem ? [{ label: problem, enabled: false }] : []),
+    ...(problem && options.canReconnect() ? [{ label: 'Reconnect to the ADF Daemon', click: () => options.reconnect() }] : [])
   ]
 }

@@ -1,11 +1,12 @@
 import { dialog } from 'electron'
 import { IPC } from '../../../../shared/constants/ipc-channels'
-import type { AgentRef, AgentStatus, ChatHistory, ContentResult, FileContent, MetaResult } from '../../../../shared/daemon-client'
+import type { AgentStatus, ChatHistory, ContentResult, MetaResult } from '../../../../shared/daemon-client'
 import { resolveStartInState, type AgentConfig } from '../../../../shared/types/adf-v02.types'
 import { MAX_INLINE_BINARY_BYTES } from '../../../../shared/utils/image-files'
 import { DaemonModeUnavailableError } from '../errors'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { samePath } from '../session'
+import { TURN_WAIT_TIMEOUT_MS } from '../event-bridge'
 
 /**
  * The daemon-mode handlers of the core flow: open a file, read it, start the
@@ -159,13 +160,18 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     })
   },
 
+  /**
+   * W1-E's metadata and raw routes: a binary file the caller only flags as
+   * binary is never downloaded, and an inline binary is capped by the daemon
+   * (maxBytes) rather than downloaded to be thrown away.
+   */
   [IPC.DOC_READ_INTERNAL_FILE]: async (ctx, _event, args: { path: string; binaryContent?: boolean }) => {
     if (!ctx.session.filePath) return { content: null, binary: false }
     const client = await ctx.ready()
     const agentId = requireOpenAgent(ctx, 'Reading a file of the open agent')
-    let file: FileContent
+    let meta: { mime_type: string | null; size: number }
     try {
-      file = await client.request<FileContent>('GET', `/agents/${enc(agentId)}/files/content`, { query: { path: args.path } })
+      meta = await client.request<{ mime_type: string | null; size: number }>('GET', `/agents/${enc(agentId)}/files/meta`, { query: { path: args.path } })
     } catch (err) {
       if (!isNotFound(err)) throw err
       // Unknown file, or the agent stopped: tell them apart.
@@ -174,12 +180,17 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       }
       return { content: null, binary: false }
     }
-    const buf = file.encoding === 'base64' ? Buffer.from(file.content_base64 ?? '', 'base64') : Buffer.from(file.content ?? '', 'utf-8')
-    const info = { mimeType: file.mime_type, size: buf.length }
     const ext = args.path.split('.').pop()?.toLowerCase() ?? ''
-    if (TEXT_EXTS.has(ext)) return { content: buf.toString('utf-8'), binary: false, ...info }
-    if (!args.binaryContent) return { content: '', binary: true, ...info }
-    if (buf.length > MAX_INLINE_BINARY_BYTES) return { content: '', binary: true, tooLarge: true, ...info }
+    const text = TEXT_EXTS.has(ext)
+    if (!text && !args.binaryContent) return { content: '', binary: true, mimeType: meta.mime_type, size: meta.size }
+    if (!text && meta.size > MAX_INLINE_BINARY_BYTES) return { content: '', binary: true, tooLarge: true, mimeType: meta.mime_type, size: meta.size }
+    const res = await ctx.raw(`/agents/${enc(agentId)}/files/raw`, { path: args.path, ...(text ? {} : { maxBytes: MAX_INLINE_BINARY_BYTES }) })
+    if (res.status === 404) return { content: null, binary: false }
+    if (res.status === 413) return { content: '', binary: true, tooLarge: true, mimeType: meta.mime_type, size: meta.size }
+    if (!res.ok) throw new Error(`The ADF daemon answered ${res.status} for ${args.path}`)
+    const buf = Buffer.from(await res.arrayBuffer())
+    const info = { mimeType: meta.mime_type, size: buf.length }
+    if (text) return { content: buf.toString('utf-8'), binary: false, ...info }
     return { content: buf.toString('base64'), binary: true, ...info }
   },
 
@@ -205,12 +216,20 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       ])
       return { success: true, agentState: running.runtimeState, pendingApprovals: tasks.tasks, pendingAsks: asks.asks }
     }
-    // Fresh start. Interim until W2-A (start on the open document): load the
-    // file, which starts it; `hasUserMessage` has no route parameter yet.
+    // Fresh start: W1-A's start route on the file, with Studio's provider
+    // gate (`preflight`: provider_missing / provider_unconfigured) and the
+    // startup turn. Until W2-A's start on the open document, the route has
+    // no `hasUserMessage`; a file whose own key is locked starts unchecked
+    // (`preflight.code: credentials_locked`), and the prompt-before-start of
+    // design §6.1 row 27 is W3-A's.
     try {
-      const ref = await client.request<AgentRef>('POST', '/agents/load', { body: { filePath, requireReview: true }, timeoutMs: 120_000 })
-      ctx.session.noteAgent(filePath, ref.id)
-      return { success: true, agentState: resolveStartInState(ref.config) }
+      const started = await client.request<{ agent?: AgentStatus & { id: string }; preflight?: { code: string; message: string } }>(
+        'POST', `/agents/${enc(filePath)}/start`, { query: { preflight: 1 }, timeoutMs: 120_000 })
+      const agentId = started.agent?.id ?? await ctx.runningAgentAt(filePath)
+      if (agentId) ctx.session.noteAgent(filePath, agentId)
+      if (started.preflight) ctx.log.warn(`[Backend] AGENT_START: ${started.preflight.message}`)
+      const config = agentId ? (await client.request<{ config: AgentConfig }>('GET', `/agents/${enc(agentId)}/config`)).config : null
+      return { success: true, agentState: config ? resolveStartInState(config) : started.agent?.runtimeState }
     } catch (err) {
       const body = (err as { body?: { code?: unknown } }).body
       return { success: false, error: err instanceof Error ? err.message : String(err), ...(typeof body?.code === 'string' ? { code: body.code } : {}) }
@@ -221,10 +240,16 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     const agentId = ctx.session.agentId
     if (!agentId) return { success: true }
     const client = await ctx.ready()
+    // Embedded detaches the foreground host before it disposes the agent:
+    // the renderer sees none of the teardown's events.
+    ctx.bridge.detach(agentId)
     try {
       await client.request('POST', `/agents/${enc(agentId)}/stop`, { timeoutMs: 60_000 })
     } catch (err) {
-      if (!isNotFound(err)) throw err
+      if (!isNotFound(err)) {
+        ctx.bridge.attach(agentId)
+        throw err
+      }
     }
     return { success: true }
   },
@@ -243,7 +268,9 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     try {
       const { turnId } = await client.request<{ turnId: string }>('POST', `/agents/${enc(agentId)}/chat`, { body: { text, ...(args?.loop ? { loop: args.loop } : {}) } })
       // Embedded resolves once the dispatched turn has run; so does this.
-      await ctx.bridge.waitForTurn(agentId, turnId, args?.loop ?? 'main')
+      const outcome = await ctx.bridge.waitForTurn(agentId, turnId, args?.loop ?? 'main')
+      if (outcome === 'disconnected') return { success: false, error: 'The connection to the ADF daemon was lost while the message waited for its turn; the chat shows what arrived.' }
+      if (outcome === 'timeout') return { success: false, error: `No end of the turn arrived from the ADF daemon within ${TURN_WAIT_TIMEOUT_MS / 60_000} minutes.` }
       return { success: true }
     } catch (error) {
       return { success: false, error: String(error) }

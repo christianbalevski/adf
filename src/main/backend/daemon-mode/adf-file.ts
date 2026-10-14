@@ -11,9 +11,6 @@ import type { DaemonConnection } from './connection'
  * (main/index.ts): the path is the URL after the scheme, `..` and absolute
  * paths are refused, and a MIME type outside the safe prefixes is served as
  * application/octet-stream with `nosniff`.
- *
- * Until W1-E ships the raw route the daemon answers 404 for the route itself;
- * that is reported as 501 with the workstream, never as "file not found".
  */
 
 const SAFE_MIME_PREFIXES = ['image/', 'text/', 'audio/', 'video/', 'application/pdf', 'application/json', 'application/octet-stream', 'font/']
@@ -25,26 +22,13 @@ export function adfFilePathFromUrl(url: string): string {
   return decodeURIComponent(url.replace('adf-file://', '').split('?')[0].split('#')[0].replace(/\/+$/, ''))
 }
 
-/** Fastify's answer for a route that does not exist (as opposed to the route's own 404). */
-function isMissingRoute(status: number, body: string): boolean {
-  if (status !== 404) return false
-  try {
-    const parsed = JSON.parse(body) as { message?: unknown }
-    return typeof parsed.message === 'string' && /^Route .* not found$/.test(parsed.message)
-  } catch {
-    return false
-  }
-}
-
 export function createAdfFileHandler(deps: {
   session: DaemonModeSession
   connection: DaemonConnection
   fetch?: typeof fetch
   log?: Log
 }): (request: Request) => Promise<Response> {
-  const log = deps.log ?? console
   const fetchImpl = deps.fetch ?? fetch
-  let missingRouteLogged = false
 
   return async (request) => {
     const agentId = deps.session.agentId
@@ -64,14 +48,7 @@ export function createAdfFileHandler(deps: {
       return new Response(`ADF daemon not reachable: ${err instanceof Error ? err.message : String(err)}`, { status: 502 })
     }
     if (!upstream.ok) {
-      const text = await upstream.text().catch(() => '')
-      if (isMissingRoute(upstream.status, text)) {
-        if (!missingRouteLogged) {
-          missingRouteLogged = true
-          log.warn('[Backend] adf-file:// is not available in daemon mode yet: W1-E (GET /agents/:id/files/raw)')
-        }
-        return new Response('adf-file:// is not available in daemon mode yet: W1-E (GET /agents/:id/files/raw)', { status: 501 })
-      }
+      void upstream.body?.cancel().catch(() => {})
       return new Response(upstream.status === 404 ? 'File not found' : `ADF daemon answered ${upstream.status}`, { status: upstream.status === 404 ? 404 : 502 })
     }
     const rawType = (upstream.headers.get('content-type') ?? 'application/octet-stream').split(';')[0].trim()

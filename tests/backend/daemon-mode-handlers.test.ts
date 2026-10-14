@@ -159,6 +159,7 @@ describe('daemon-mode handler registration (D2)', () => {
     const AGENT = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01'
     daemon.routes.set('GET /agents', () => [{ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false }])
     daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0 }))
+    daemon.routes.set('GET /files/agent', () => ({ filePath: join(dir, 'agent-1.adf'), agentId: AGENT, loaded: true, tracked: false }))
     daemon.routes.set(`GET /agents/${AGENT}/identity/password`, () => ({ agentId: AGENT, needsPassword: false, unlocked: false }))
     daemon.routes.set('GET /runtime/tools/descriptions', () => ({ fs_read: { name: 'fs_read', description: 'built-in', input_schema: {} } }))
     daemon.routes.set(`GET /agents/${AGENT}/tools`, () => ({ agentId: AGENT, tools: [
@@ -172,5 +173,35 @@ describe('daemon-mode handler registration (D2)', () => {
       mcp_acme_search: { name: 'mcp_acme_search', description: 'Search', input_schema: { type: 'object', properties: { q: { type: 'string' } } } },
     })
     await electronStub.handlers.get(IPC.FILE_CLOSE)!({})
+  })
+})
+
+describe('daemon-mode handlers: review fixes', () => {
+  const AGENT = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01'
+
+  it('AGENT_INVOKE ends with a visible error when the daemon does not come back', async () => {
+    daemon.routes.set('GET /files/agent', () => ({ filePath: join(dir, 'agent-1.adf'), agentId: AGENT, loaded: true, tracked: false }))
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0 }))
+    daemon.routes.set(`GET /agents/${AGENT}/identity/password`, () => ({ agentId: AGENT, needsPassword: false, unlocked: false }))
+    daemon.routes.set(`POST /agents/${AGENT}/chat`, () => ({ status: 202, body: { accepted: true, turnId: 'turn_lost' } }))
+    await electronStub.handlers.get(IPC.FILE_OPEN)!({}, { filePath: join(dir, 'agent-1.adf') })
+    const result = Promise.resolve(electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { userMessage: 'hi' }))
+    await new Promise((r) => setTimeout(r, 20))
+    handle.bridge.failTurns('disconnected')
+    expect(await result).toEqual({ success: false, error: expect.stringContaining('connection to the ADF daemon was lost') })
+    await electronStub.handlers.get(IPC.FILE_CLOSE)!({})
+  })
+
+  it('a pending channel warns once, and BACKGROUND_AGENT_STATUS announces the running agents', async () => {
+    logs.length = 0
+    const fn = electronStub.handlers.get(IPC.MESH_STATUS)!
+    for (let i = 0; i < 3; i++) await expect(Promise.resolve().then(() => fn({}))).rejects.toThrow('not available in daemon mode yet')
+    expect(logs.filter((l) => l.includes('MESH_STATUS was called'))).toHaveLength(1)
+    handle.bridge.seed([{ id: 'id-9', filePath: join(dir, 'agent-9.adf'), handle: 'agent-9', runtimeState: 'idle' as never }])
+    electronStub.pushes.length = 0
+    await expect(Promise.resolve().then(() => electronStub.handlers.get(IPC.BACKGROUND_AGENT_STATUS)!({}))).rejects.toThrow('W3-A')
+    await new Promise((r) => setTimeout(r, 10))
+    const batch = electronStub.pushes.find((p) => p.channel === IPC.BACKGROUND_AGENT_EVENT_BATCH)
+    expect(batch?.args[0]).toEqual([{ type: 'agent_started', payload: { filePath: join(dir, 'agent-9.adf'), state: 'idle', handle: 'agent-9' }, timestamp: expect.any(Number) }])
   })
 })

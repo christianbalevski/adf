@@ -16,7 +16,12 @@ export interface DaemonEndpoint {
   description: string
 }
 
-export type DaemonConnector = (progress: (text: string) => void) => Promise<DaemonEndpoint>
+/**
+ * Finds or starts the daemon. `logFile` is known before the connector runs
+ * (local mode: the controller's log path), so a failed start can still offer
+ * "Open daemon log".
+ */
+export type DaemonConnector = ((progress: (text: string) => void) => Promise<DaemonEndpoint>) & { logFile?: string | null }
 
 export type ConnectionState =
   | { state: 'connecting'; progress?: string }
@@ -45,7 +50,10 @@ export class DaemonConnection {
   private readonly listeners = new Set<(state: ConnectionState) => void>()
   private readonly ready: Promise<DaemonClient>
 
+  private readonly connectorLogFile: string | null
+
   constructor(connector: DaemonConnector, private readonly log: Log = console, fetchImpl?: typeof fetch) {
+    this.connectorLogFile = connector.logFile ?? null
     this.ready = (async () => {
       try {
         const endpoint = await connector((progress) => {
@@ -82,7 +90,7 @@ export class DaemonConnection {
   }
 
   get logFile(): string | null {
-    return this.endpoint?.logFile ?? null
+    return this.endpoint ? this.endpoint.logFile : this.connectorLogFile
   }
 
   get baseUrl(): string | null {

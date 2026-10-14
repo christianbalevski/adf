@@ -1,8 +1,9 @@
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { CLIENT_SETTINGS_KEYS, settingsKeyClass, type ClientSettingsKey } from '../../../shared/constants/client-settings-keys'
 import { createSettingsDefaults } from '../../../shared/constants/settings-defaults'
 import { applyClientSettingsMigrations } from '../../../shared/utils/settings-migrations'
-import { readJsonOrQuarantine, writeJsonAtomicAsync } from '../../utils/atomic-json'
+import { readJsonOrQuarantine, writeJsonAtomic, writeJsonAtomicAsync } from '../../utils/atomic-json'
 
 /**
  * Settings in daemon mode (design §4.1, §4.2).
@@ -28,12 +29,17 @@ type Log = Pick<Console, 'log' | 'warn' | 'error'>
 
 const CLIENT_KEY_SET: ReadonlySet<string> = new Set(CLIENT_SETTINGS_KEYS)
 
-/** The shipped default of every client key that has one. */
-export function clientSettingsDefaults(): Partial<Record<ClientSettingsKey, unknown>> {
-  const all = createSettingsDefaults()
-  const out: Partial<Record<ClientSettingsKey, unknown>> = {}
-  for (const key of CLIENT_SETTINGS_KEYS) if (key in all) out[key] = all[key]
-  return out
+let cachedDefaults: Readonly<Partial<Record<ClientSettingsKey, unknown>>> | null = null
+
+/** The shipped default of every client key that has one (computed once). */
+export function clientSettingsDefaults(): Readonly<Partial<Record<ClientSettingsKey, unknown>>> {
+  if (!cachedDefaults) {
+    const all = createSettingsDefaults()
+    const out: Partial<Record<ClientSettingsKey, unknown>> = {}
+    for (const key of CLIENT_SETTINGS_KEYS) if (key in all) out[key] = all[key]
+    cachedDefaults = Object.freeze(out)
+  }
+  return cachedDefaults
 }
 
 /**
@@ -43,6 +49,28 @@ export function clientSettingsDefaults(): Partial<Record<ClientSettingsKey, unkn
  * write is not.
  */
 export class ClientSettingsStore {
+  /**
+   * INTERIM until W4-A's mode switch moves the client keys (§4.3): on the
+   * first daemon-mode boot, with no client file yet, copy the client keys of
+   * adf-settings.json into it, so a switch through ADF_STUDIO_BACKEND or
+   * studio-backend.json does not reset theme, recents and the other client
+   * keys to defaults. adf-settings.json is only read (the daemon writes it).
+   * Logged; a no-op once the client file exists.
+   */
+  static seedOnce(clientPath: string, settingsPath: string, log: Log = console): void {
+    if (existsSync(clientPath) || !existsSync(settingsPath)) return
+    const { data } = readJsonOrQuarantine<Record<string, unknown>>(settingsPath)
+    if (!data || typeof data !== 'object') return
+    const seed: Record<string, unknown> = {}
+    for (const key of CLIENT_SETTINGS_KEYS) if (key in data) seed[key] = data[key]
+    try {
+      writeJsonAtomic(clientPath, seed)
+      log.log(`[Settings] First daemon-mode boot: copied ${Object.keys(seed).length} client keys from ${settingsPath} into ${clientPath} (interim; the mode switch, W4-A, moves them)`)
+    } catch (err) {
+      log.error(`[Settings] Could not seed ${clientPath}:`, err)
+    }
+  }
+
   private data: Record<string, unknown>
   private writeBlocked: boolean
   private pending: Promise<void> = Promise.resolve()

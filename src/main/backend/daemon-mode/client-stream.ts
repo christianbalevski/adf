@@ -35,6 +35,11 @@ export interface ExecutorFrame {
   filePath: string | null
   /** The turn that produced it (`turnId` of POST /agents/:id/chat), when the daemon knows. */
   turnId?: string
+  /**
+   * On `turn_complete` and `error`: chats answered inside this turn instead of
+   * their own (`absorbed_turn_ids`). Their AGENT_INVOKE waits end here too.
+   */
+  absorbedTurnIds?: string[]
   /** The executor event as AGENT_EVENT carries it; `event.loop` names a side loop. */
   event: AgentExecutionEvent
 }
@@ -76,7 +81,21 @@ export interface PushFrame {
   payload: unknown
 }
 
-export type ClientFrame = ExecutorFrame | HostFrame | PushFrame
+/**
+ * Turn bookkeeping with no executor event: a stop dropped queued chats
+ * (`turnIds`, never delivered) and cut off the running ones
+ * (`unansweredTurnIds`). Their AGENT_INVOKE waits end.
+ */
+export interface TurnFrame {
+  kind: 'turn'
+  agentId: string
+  filePath: string | null
+  outcome: 'discarded'
+  turnIds: string[]
+  unansweredTurnIds: string[]
+}
+
+export type ClientFrame = ExecutorFrame | HostFrame | PushFrame | TurnFrame
 
 export interface StreamGap {
   /** `evicted`: frames past the session ring were lost; `epoch_changed`: the daemon restarted. */
@@ -94,6 +113,13 @@ export interface ClientStreamListener {
   /** Frames were lost: the bridge resyncs (D6). */
   onGap(gap: StreamGap): void
   onConnection(connection: StreamConnection): void
+  /**
+   * The stream is open again after a drop. The client re-establishes what the
+   * session held: it re-sends the focus and re-holds its documents (the
+   * daemon may have expired the session, or restarted: `epochChanged`).
+   * Called before any frame of the new connection is delivered.
+   */
+  onReattached?(info: { epochChanged: boolean }): void
 }
 
 export interface ClientSession {
@@ -131,6 +157,10 @@ export const EVENTS_ADAPTER_LIMITATIONS: readonly string[] = [
 /** Keys the executor adds to a payload on its way onto the umbilical (agent-executor.ts emitEvent). */
 const UMBILICAL_ADDED_KEYS = ['filePath', 'absorbed_turn_ids']
 
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []
+}
+
 function withoutKeys(payload: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(payload)) if (!keys.includes(k)) out[k] = v
@@ -150,11 +180,13 @@ export function translateUmbilicalEnvelope(envelope: DaemonEventFrame): ClientFr
   if (!agentId) return null
   const payload = (e.payload ?? {}) as Record<string, unknown>
   const filePath = typeof payload.filePath === 'string' ? payload.filePath : null
+  const absorbed = stringList(payload.absorbed_turn_ids)
   const executor = (event: AgentExecutionEvent): ExecutorFrame => ({
     kind: 'executor',
     agentId,
     filePath,
     ...(e.turn_id ? { turnId: e.turn_id } : {}),
+    ...(absorbed.length ? { absorbedTurnIds: absorbed } : {}),
     event: e.loop ? { ...event, loop: e.loop } : event,
   })
   switch (e.event_type) {
@@ -174,6 +206,8 @@ export function translateUmbilicalEnvelope(envelope: DaemonEventFrame): ClientFr
       }
     case 'agent.unloaded':
       return { kind: 'host', agentId, filePath, type: 'agent_stopped', timestamp: e.timestamp, payload: {} }
+    case 'chat.discarded':
+      return { kind: 'turn', agentId, filePath, outcome: 'discarded', turnIds: stringList(payload.turn_ids), unansweredTurnIds: stringList(payload.unanswered_turn_ids) }
     default:
       return null
   }
@@ -198,6 +232,9 @@ export function createEventsAdapterSession(client: DaemonClient, opts: { idleTim
           listener.onConnection({ state: info.state === 'idle' ? 'connecting' : info.state, ...(info.error ? { error: info.error } : {}) })
         },
         onResume: (info) => {
+          // GET /events holds no session state; the hook still runs so the
+          // client re-sends what a real session would have lost.
+          listener.onReattached?.({ epochChanged: info.reason === 'epoch_changed' })
           if (!info.exact) listener.onGap({ reason: info.reason === 'epoch_changed' ? 'epoch_changed' : 'evicted', epoch: info.epoch })
         },
       }).start()

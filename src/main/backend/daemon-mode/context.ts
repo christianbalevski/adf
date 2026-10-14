@@ -1,13 +1,12 @@
 import type { IpcMainInvokeEvent } from 'electron'
 import type { StudioBackendMode } from '../../../shared/types/backend.types'
-import type { AgentSummary, DaemonClient } from '../../../shared/daemon-client'
+import type { DaemonClient } from '../../../shared/daemon-client'
 import { DaemonError } from '../../../shared/daemon-client'
 import type { MappedChannel } from '../channel-map'
 import type { ApprovalsUi } from './approvals-ui'
 import type { DaemonConnection } from './connection'
 import type { EventBridge } from './event-bridge'
 import type { DaemonModeSession } from './session'
-import { samePath } from './session'
 import type { ClientSettingsStore } from './settings'
 
 /**
@@ -24,8 +23,10 @@ export interface DaemonModeContext {
   approvals: ApprovalsUi
   /** The client once connected and the session started; rejects when there is no daemon. */
   ready(): Promise<DaemonClient>
-  /** The running agent at `filePath` (GET /agents), or null. */
+  /** The running agent at `filePath` (GET /files/agent), or null. */
   runningAgentAt(filePath: string): Promise<string | null>
+  /** A raw (non-JSON) request to the daemon: the token is added for its origin only. */
+  raw(path: string, query?: Record<string, string | number | undefined>): Promise<Response>
   /** Records a recent file (menu Open Recent + OS list), in the client settings. */
   recordRecentFile(filePath: string): void
   hooks: { showMainWindow?: () => Electron.BrowserWindow | null; openFile?: (filePath: string) => void }
@@ -41,10 +42,15 @@ export function isNotFound(err: unknown): boolean {
   return err instanceof DaemonError && err.status === 404
 }
 
-/** GET /agents, then the agent whose file is `filePath`. */
+/** The agent running at `filePath`: GET /files/agent (W1-E, the daemon's own path → id rule), else null. */
 export async function findRunningAgent(client: DaemonClient, filePath: string): Promise<string | null> {
-  const agents = await client.request<AgentSummary[]>('GET', '/agents')
-  return agents.find((a) => samePath(a.filePath, filePath))?.id ?? null
+  try {
+    const info = await client.request<{ agentId: string | null; loaded: boolean }>('GET', '/files/agent', { query: { path: filePath } })
+    return info.loaded ? info.agentId : null
+  } catch (err) {
+    if (err instanceof DaemonError && (err.status === 404 || err.status === 400)) return null
+    throw err
+  }
 }
 
 export const enc = encodeURIComponent

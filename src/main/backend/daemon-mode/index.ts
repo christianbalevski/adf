@@ -62,6 +62,9 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
 
 export const RECOVERY_HINT = `To use embedded mode for this session, start Studio with ${BACKEND_ENV_OVERRIDE}=embedded.`
 
+/** How long a lost daemon connection may last before waiting chats are ended. */
+export const TURN_DISCONNECT_GRACE_MS = 15_000
+
 export interface DaemonModeDeps {
   mode: Exclude<StudioBackendMode, 'embedded'>
   /** Finds or starts the daemon (local: daemon-process.ts; remote: URL + token). */
@@ -111,6 +114,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     version: app.getVersion(),
   })
 
+  // Before W4-A's switch moves them: seed the client file once from adf-settings.json.
+  ClientSettingsStore.seedOnce(clientSettingsPath(deps.userDataDir), join(deps.userDataDir, 'adf-settings.json'), log)
   const clientSettings = new ClientSettingsStore(clientSettingsPath(deps.userDataDir), log)
   const connection = new DaemonConnection(deps.connect, log, deps.fetch)
   const session = new DaemonModeSession(null, log)
@@ -196,6 +201,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   initApplicationMenu(clientSettings, {
     logFile: () => connection.logFile,
     problem: () => connectionProblem(connection.state, connection.baseUrl),
+    canReconnect: () => connection.state.state === 'disconnected',
     openLog: () => { void openDaemonLog(connection.logFile, log) },
     reconnect,
   })
@@ -229,10 +235,33 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         if (c.state === 'open') connection.markConnected()
         else if (c.state === 'reconnecting') connection.markDisconnected(c.error)
       },
+      onReattached: (info) => {
+        log.log(`[Backend] Client stream reattached${info.epochChanged ? ' to a restarted daemon' : ''}: re-sending the focus and the held documents`)
+        void session.reattach()
+      },
     })
     return client
   })
   started.catch(() => {})
+
+  // AGENT_INVOKE waits must not outlive the daemon: a failed connector ends
+  // them at once, a disconnect that lasts past the grace period too (the
+  // handler reports it).
+  let turnGrace: ReturnType<typeof setTimeout> | null = null
+  connection.onState((state) => {
+    if (state.state === 'failed') bridge.failTurns('disconnected')
+    if (state.state === 'disconnected' && !turnGrace) {
+      turnGrace = setTimeout(() => {
+        turnGrace = null
+        if (connection.state.state === 'disconnected') {
+          log.warn(`[Backend] The ADF daemon has been away for ${TURN_DISCONNECT_GRACE_MS / 1000}s; ending the chats that wait for their turn`)
+          bridge.failTurns('disconnected')
+        }
+      }, TURN_DISCONNECT_GRACE_MS)
+      turnGrace.unref?.()
+    }
+    if (state.state === 'connected' && turnGrace) { clearTimeout(turnGrace); turnGrace = null }
+  })
 
   const ctx: DaemonModeContext = {
     mode: deps.mode,
@@ -243,6 +272,11 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     approvals,
     ready: () => started,
     runningAgentAt: async (filePath) => findRunningAgent(await started, filePath),
+    raw: async (path, query) => {
+      const client = await started
+      const url = client.url(path, query)
+      return (deps.fetch ?? fetch)(url, { headers: client.headers({ Accept: '*/*' }), redirect: 'manual' })
+    },
     recordRecentFile,
     hooks,
     log,
@@ -267,7 +301,18 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       ipc.handle(channel, (event, ...args) => handler(ctx, event, ...args))
     } else {
       const workstream = pendingWorkstream(channel)
+      let warned = false
       ipc.handle(channel, () => {
+        // Once per channel: renderer call sites that swallow the rejection
+        // (docs/design/daemon-backend-gaps.md) leave only this line.
+        if (!warned) {
+          warned = true
+          log.warn(`[Backend] ${channelKey(channel)} was called; it is not available in daemon mode yet: ${workstream}`)
+        }
+        // Until W3-A's BACKGROUND_AGENT_STATUS: a fresh renderer still learns
+        // what already runs, as agent_started events (its listener is
+        // registered by the time this call arrives).
+        if (channel === IPC.BACKGROUND_AGENT_STATUS) setImmediate(() => bridge.announceRunning())
         throw new DaemonModeUnavailableError(channelKey(channel), workstream)
       })
       pending.push({ channel, workstream })

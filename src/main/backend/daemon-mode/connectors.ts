@@ -37,15 +37,16 @@ export function localDaemonConnector(opts: {
   env?: NodeJS.ProcessEnv
   log?: (line: string) => void
 }): DaemonConnector {
-  return async (progress) => {
-    const env = opts.env ?? process.env
-    const controller = new DaemonProcessController({
-      settingsPath: join(opts.userDataDir, 'adf-settings.json'),
-      userDataDir: opts.userDataDir,
-      daemonEntry: opts.daemonEntry,
-      execPath: opts.execPath,
-      env,
-    }, opts.log ? { log: opts.log } : {})
+  const env = opts.env ?? process.env
+  // Built before it runs: the log path is known even when the start fails.
+  const controller = new DaemonProcessController({
+    settingsPath: join(opts.userDataDir, 'adf-settings.json'),
+    userDataDir: opts.userDataDir,
+    daemonEntry: opts.daemonEntry,
+    execPath: opts.execPath,
+    env,
+  }, opts.log ? { log: opts.log } : {})
+  const connect = async (progress: (text: string) => void) => {
     const result = await controller.ensure(progress)
     if (result.kind === 'refused') {
       // Version mismatch: the restart-or-embedded choice of §8.2 ships with the mode switch (W4-A).
@@ -73,10 +74,11 @@ export function localDaemonConnector(opts: {
       },
     }
   }
+  return Object.assign(connect, { logFile: controller.paths.logFile })
 }
 
 export function remoteDaemonConnector(config: StudioBackendConfig, codec: SecretCodec): DaemonConnector {
-  return async () => {
+  return Object.assign(async () => {
     const url = config.remote.url
     if (!url) throw new Error('Remote mode has no daemon URL (Settings → Backend).')
     const token = readRemoteToken(config, codec)
@@ -87,5 +89,5 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
       description: `the remote ADF daemon at ${url}`,
       source: { token: () => token },
     }
-  }
+  }, { logFile: null })
 }

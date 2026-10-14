@@ -154,6 +154,37 @@ export class DaemonModeSession {
     return this.unlocked.has(pathKey(filePath))
   }
 
+  /**
+   * The client stream reconnected (ClientStreamListener.onReattached): the
+   * daemon may have expired the session or restarted, so the focus is sent
+   * again and every document this session holds is held again. A document
+   * whose hold now refuses is left as it is (logged).
+   */
+  async reattach(): Promise<void> {
+    const client = this.client
+    if (!client) return
+    if (this.file?.held) {
+      try {
+        const { agentId } = await client.holdDocument(this.file.filePath)
+        if (agentId !== this.file.agentId) {
+          this.file = { ...this.file, agentId }
+          this.setFocus(agentId)
+        }
+      } catch (err) {
+        this.log.warn(`[Backend] Could not hold ${this.file.filePath} again after the reconnect: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    for (const [key, id] of [...this.unlocked]) {
+      if (this.file?.held && pathKey(this.file.filePath) === key) continue
+      try {
+        await client.holdDocument(key)
+      } catch (err) {
+        this.log.warn(`[Backend] Could not hold the unlocked document ${id} again after the reconnect: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    await this.pushFocus()
+  }
+
   /** Session end: release every document still held, kept ones included. */
   async releaseAll(): Promise<void> {
     const ids = new Set<string>(this.unlocked.values())
