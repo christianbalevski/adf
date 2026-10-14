@@ -57,7 +57,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W1-E | File-level ops, raw file routes, tracked-dir watcher | 1 | W0-D, W0-C | MERGED |
 | W1-F | E1 extraction: background event mapping | 1 | W0-F | MERGED (squashed) |
 | W1-G | Compute ownership: a runtime stops only containers it started | 1 | none | MERGED |
-| W2-A | Open documents | 2 | W1-A, W1-E | TODO |
+| W2-A | Open documents | 2 | W1-A, W1-E | MERGED |
 | W2-B | Client sessions and client event stream | 2 | W1-A, W0-B | TODO |
 | W2-C | Daemon-mode core in Studio main | 2 | W0-A, W0-B, W0-E, W1-F | TODO |
 | W3-A | Proxy: files, documents, agent runtime, review, templates | 3 | W2-A, W2-B, W2-C | TODO |
@@ -299,7 +299,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-D | If the race-winning daemon is still booting 3 s after our child exits, Studio shows "exited during startup"; keep waiting while a pid file appears or retry `ensure` once | W4-A |
 | W0-D | "Waiting for the ADF daemon (pid N)…" progress is not shown in the UI yet | W4-A |
 | W0-D | Packaged build not verified with a real `node_modules` (junction drops transitive deps); lead verifies `npm run package` in a real checkout | Lead, W5-B |
-| W0-A | `TEMPLATE_CHECK_REVIEW`: daemon reports provider status `unchecked` where Studio runs `autoProviderCheck`, and returns 409 when owner identity is not ready where embedded returns `needsReview:false` | W2-A |
+| W0-A | `TEMPLATE_CHECK_REVIEW`: daemon reports provider status `unchecked` where Studio runs `autoProviderCheck`, and returns 409 when owner identity is not ready where embedded returns `needsReview:false` | W2-A (done: provider check through ProviderChecks; 200 `needsReview:false, identityReady:false`) |
 | W0-A | `DOC_READ_INTERNAL_FILE` needs a metadata-only / size-capped read so Studio does not download whole binaries to discard them | W1-E |
 | W0-A | `TEMPLATE_DELETE`: templates-trash vs OS trash semantics differ | W3-A |
 | W0-A | `fleetGroups`, `fleetStewards`, `fleetMapState` missing from `AppSettings` (`ipc.types.ts`) | W2-C |
@@ -321,7 +321,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W1-C | Wire `identity.mcpOAuth` (DaemonAppOAuthStore) into the builder's MCP OAuth path | W1-B / W3-C |
 | W0-C | `agent_leased` message for an endpoint-less stale lease (failed `listen` + reused pid) names an unfindable pid; add the lease file path and remedy | W4-C / W1-A |
 | W0-C | POSIX: "socket missing = dead" also applies to the `tmpdir()` fallback socket (hosts path > 100 chars), which tmp cleaners may delete under a live holder; treat missing as dead only for the 0700 hosts-dir socket | W5-B |
-| W1-D | Unknown/expired identity draft id on create silently mints a fresh DID (console.warn only); report it in the create response | W2-A |
+| W1-D | Unknown/expired identity draft id on create silently mints a fresh DID (console.warn only); report it in the create response | W2-A (done: `identityDraft`, `warnings`) |
 | W1-D | Job cancel only abandons work: OAuth loopback listener lives to its 5 min timeout; an in-flight stdio connect may outlive `disconnectAll` (orphan server process); running jobs unbounded, Python install not deduped | W3-C |
 | W1-D | Peer fetch: DNS rebinding between guard lookup and fetch (pre-existing); daemon port blocked only on loopback | W4-B |
 | W1-D | SSRF guard: map NAT64 `64:ff9b::/96` and 6to4 `2002::/16` back to IPv4 before checks (pre-existing gap, all callers); extend always-blocked metadata list (EKS `169.254.170.23`/`fd00:ec2::23`, Alibaba `100.100.100.200`, Azure `168.63.129.16`, OCI `192.0.0.192`); DNS-lookup failure currently passes through | W4-B |
@@ -332,9 +332,15 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W2-C | Daemon-mode quit behaviour (R4) and version-mismatch choice | W4-A |
 | W2-C | CI job: build `out/main/daemon.js`, run `tests/parity` with `PARITY_REQUIRE_DAEMON=1` (the suite fails on a missing or stale bundle) | W5-B |
 | W2-C | Interim first-boot seed of `studio-client-settings.json` from `adf-settings.json` (`ClientSettingsStore.seedOnce`): replace with the switch's move | W4-A |
+| Lead | MERGE GATE at W2-B merge: a test in the real daemon wiring proving a document held by a live session survives past the 60 s holder TTL (W2-B `setDocumentHolderCheck` wired to W2-A's sweep) | Lead (W2-B merge) |
+| W2-A | Read-only open of a file leased elsewhere still runs `AdfWorkspace.open` maintenance writes; a true read-only open needs an `AdfDatabase` change | W3-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
+| W2-A | Start window: path-agent-ops `writeClosed` on a file that is loading (no open document) writes a config the start does not adopt (§6.1 row 24) | W3-A |
+| W2-A | Start window: `agent-runtime-builder.ts:1067` writes the start-time config back to the file, over a write made during the build (§6.1 row 24) | W3-A |
+| W2-A | An open document of a file leased elsewhere still gets AdfWorkspace.open's maintenance writes (migration, clean-close marker, skills registry); a read-only AdfDatabase open would remove them | Lead |
+| W2-A | Wire `setDocumentHolderCheck` and the hold/release/expiry calls to W2-B's `setDocumentHost` | W2-B merge |
 
 ## 7. Parity triage (filled in W5-A)
 

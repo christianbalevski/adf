@@ -23,7 +23,8 @@ import { RuntimeLoopError } from '../runtime/runtime-service'
 
 /** Structural subset of RuntimeService these routes use. */
 export interface ContextRouteRuntime {
-  getAgent(agentId: string): unknown
+  /** A running agent or an open document (D4): a document reads as not available (no executor). */
+  getAgentOrDocument(agentId: string): unknown
   getAgentContextBreakdown(agentId: string, loop?: string): { agentId: string; loop: string; config: AgentConfig; breakdown: ContextBreakdown | null }
 }
 
@@ -78,7 +79,7 @@ export function buildAgentContext(
 
 export function registerContextRoutes(server: FastifyInstance, runtime: ContextRouteRuntime): void {
   server.get<{ Params: { id: string }; Querystring: { loop?: string; items?: string } }>('/agents/:id/context', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return reply.code(404).send({ error: `Unknown agent "${request.params.id}"`, code: 'not_found' })
+    if (!runtime.getAgentOrDocument(request.params.id)) return reply.code(404).send({ error: `Unknown agent "${request.params.id}"`, code: 'not_found' })
     let items = DEFAULT_ITEMS
     if (request.query.items !== undefined) {
       const n = Number(request.query.items)

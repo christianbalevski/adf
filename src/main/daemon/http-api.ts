@@ -4,6 +4,8 @@ import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify'
 import { nanoid } from 'nanoid'
 import { z } from 'zod'
 import {
+  AGENT_NOT_RUNNING_CODE,
+  DOCUMENT_HOLDER_FORMAT,
   RuntimeLoopError,
   RuntimeReviewRequiredError,
   type AdfDisplayState,
@@ -30,6 +32,7 @@ import type { ComputeEnvInfo } from '../services/podman.service'
 import type { DaemonEventBus, DaemonEventEnvelope } from './event-bus'
 import type { AgentConfig, AdfProviderConfig, CodeExecutionPackage, FileProtectionLevel, McpInstalledPackage, McpServerConfig, MetaProtectionLevel, TaskStatus, WsConnectionInfo } from '../../shared/types/adf-v02.types'
 import type { McpServerRegistration, ProviderConfig } from '../../shared/types/ipc.types'
+import type { ContentBlock } from '../../shared/types/provider.types'
 import type { AdapterInstanceConfig, AdapterRegistration } from '../../shared/types/channel-adapter.types'
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { getLanAddresses } from '../utils/network'
@@ -45,6 +48,10 @@ import type { ProviderKeyVault } from './provider-key-vault'
 import { listFolderAgents, listTrackedAgents, listTrackedDirs, noteAutostartReport, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
 import { registerDaemonRoutes, type DaemonRouteDeps } from './routes'
 import { RuntimeGate } from '../runtime/runtime-gate'
+import { AGENT_LEASED_CODE } from '../runtime/agent-lease'
+import { FileOpError, leaseHolderElsewhere, requireAdfPath } from './file-ops'
+import { readFileProviderConfig } from './path-agent-ops'
+import { acceptAgentReview, checkAgentReview, ReviewError } from './review-ops'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
@@ -141,7 +148,8 @@ export interface DaemonNetworkService {
   stopServer?(): Promise<Record<string, unknown>> | Record<string, unknown>
   restartServer?(): Promise<Record<string, unknown>> | Record<string, unknown>
   getLanAddresses?(): unknown
-  getDiscoveredRuntimes?(): Promise<unknown[]> | unknown[]
+  /** `force` (the refresh button) waits for a full scan. */
+  getDiscoveredRuntimes?(args?: { force?: boolean }): Promise<unknown[]> | unknown[]
 }
 
 export interface DaemonPackageService {
@@ -336,6 +344,8 @@ interface EventsQuery {
 interface ModelsQuery {
   provider?: string
   agentId?: string
+  /** An agent file (open, running or closed) whose own provider entry to use (Studio's MODELS_LIST filePath). */
+  filePath?: string
 }
 
 interface IdentityListQuery {
@@ -363,8 +373,35 @@ interface AutostartBody {
 
 interface ChatBody {
   text?: string
+  /**
+   * The message as content blocks (Studio's AGENT_INVOKE `content`): text,
+   * images (`image_url` data URIs), audio, video. Used instead of `text`.
+   */
+  content?: ContentBlock[]
   /** Cognition loop to talk to. Absent = main (docs/design/agent-loops-mvp.md §6.2). */
   loop?: string
+}
+
+/** POST /agents/:id/chat body limit: content blocks carry images and audio as data URIs. */
+const CHAT_BODY_LIMIT = 32 * 1024 * 1024
+
+/** Block types a user message may carry (the rest are model output). */
+const USER_CONTENT_TYPES = new Set(['text', 'image_url', 'input_audio', 'video_url'])
+
+/** Why `content` is not a list of user content blocks, or null. */
+function invalidChatContent(content: unknown): string | null {
+  if (!Array.isArray(content)) return 'content must be an array of content blocks'
+  for (const [i, block] of content.entries()) {
+    if (!isRecord(block) || typeof block.type !== 'string') return `content[${i}] must be an object with a type`
+    if (!USER_CONTENT_TYPES.has(block.type)) return `content[${i}].type must be one of: ${[...USER_CONTENT_TYPES].join(', ')}`
+    if (block.type === 'text' && typeof block.text !== 'string') return `content[${i}].text must be a string`
+    if (block.type === 'image_url' && (!isRecord(block.image_url) || typeof block.image_url.url !== 'string')) return `content[${i}].image_url.url must be a string`
+    if (block.type === 'video_url' && (!isRecord(block.video_url) || typeof block.video_url.url !== 'string')) return `content[${i}].video_url.url must be a string`
+    if (block.type === 'input_audio' && (!isRecord(block.input_audio) || typeof block.input_audio.data !== 'string' || typeof block.input_audio.format !== 'string')) {
+      return `content[${i}].input_audio needs data and format strings`
+    }
+  }
+  return null
 }
 
 interface AgentStateBody {
@@ -521,6 +558,10 @@ interface ReviewQuery {
 
 interface ReviewAcceptBody {
   filePath?: string
+  /** Claim & Open: a fresh identity under this owner (Studio's FILE_REVIEW_ACCEPT claim). */
+  claim?: boolean
+  /** The model chosen in the review dialog: { provider, model_id }. */
+  model?: { provider?: unknown; model_id?: unknown }
 }
 
 function getOpenApiSpec(): unknown {
@@ -668,6 +709,8 @@ export function createDaemonHttpApi(
   server.addHook('onSend', (_request, reply, payload, done) => {
     done(null, withDefaultErrorCode(reply.statusCode, reply.getHeader('content-type'), payload))
   })
+
+  registerOpenDocumentGuards(server, runtime, opts)
 
   server.get('/openapi.json', async () => getOpenApiSpec())
 
@@ -1164,9 +1207,11 @@ export function createDaemonHttpApi(
     return { addresses: opts.networkService.getLanAddresses?.() ?? getLanAddresses() }
   })
 
-  server.get('/network/mesh/discovered-runtimes', async (request, reply) => {
+  server.get<{ Querystring: { force?: string } }>('/network/mesh/discovered-runtimes', async (request, reply) => {
     if (!opts.networkService) return unavailable(reply, 'Network service is not configured.')
-    return { runtimes: await opts.networkService.getDiscoveredRuntimes?.() ?? [] }
+    const force = request.query.force
+    if (force !== undefined && !['1', '0', 'true', 'false'].includes(force)) return badRequest(reply, 'force must be 1, 0, true or false')
+    return { runtimes: await opts.networkService.getDiscoveredRuntimes?.({ force: force === '1' || force === 'true' }) ?? [] }
   })
 
   server.get('/network/server', async (request, reply) => {
@@ -1209,7 +1254,17 @@ export function createDaemonHttpApi(
 
   server.get<{ Querystring: ModelsQuery }>('/runtime/models', async (request, reply) => {
     if (!request.query.provider) return badRequest(reply, 'provider is required')
-    return listProviderModels(runtime, opts.settingsStore, request.query.provider, request.query.agentId)
+    let filePath: string | undefined
+    if (request.query.filePath !== undefined) {
+      // The path rules of W1-E's path-addressed routes: an absolute .adf, no link.
+      try {
+        filePath = await requireAdfPath(request.query.filePath, { field: 'filePath' })
+      } catch (err) {
+        if (err instanceof FileOpError) return reply.code(err.statusCode).send({ error: err.message, code: err.code })
+        throw err
+      }
+    }
+    return listProviderModels(runtime, opts.settingsStore, request.query.provider, request.query.agentId, filePath)
   })
 
   server.post<{ Body: TokenCountBody }>('/runtime/token-count', async (request, reply) => {
@@ -1392,20 +1447,26 @@ export function createDaemonHttpApi(
 
   server.get('/agents', async () => runtime.listAgents())
 
+  // The /agents/:id resource routes reach running agents and open documents
+  // (design D4): an .adf a client session holds open without running it.
+  // Runtime actions on a document that is not running (a turn, an approval,
+  // a loop change) answer 409 agent_not_running. A write through a document
+  // is refused while another runtime runs its file (the lease hook below).
+
   server.get<{ Params: AgentIdParams }>('/agents/:id', async (request, reply) => {
-    const agent = runtime.getAgent(request.params.id)
+    const agent = runtime.getAgentOrDocument(request.params.id)
     if (!agent) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return agent
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/status', async (request, reply) => {
-    const status = runtime.getAgentStatus(request.params.id)
+    const status = runtime.getAgentOrDocumentStatus(request.params.id)
     if (!status) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return status
   })
 
   server.get<{ Params: AgentIdParams; Querystring: LoopQuery }>('/agents/:id/loop', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const limit = parseOptionalInteger(request.query.limit)
     const offset = parseOptionalInteger(request.query.offset)
     if (request.query.limit !== undefined && limit === undefined) return badRequest(reply, 'limit must be an integer')
@@ -1421,7 +1482,7 @@ export function createDaemonHttpApi(
   // Mutations go through the agent's LoopPool — validation, attenuation,
   // persistence and archive-on-delete are the pool's contract, not this route's.
   server.get<{ Params: AgentIdParams }>('/agents/:id/loops', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return runtime.listAgentLoops(request.params.id)
     } catch (err) {
@@ -1430,7 +1491,7 @@ export function createDaemonHttpApi(
   })
 
   server.post<{ Params: AgentIdParams; Body: RuntimeLoopCreateInput }>('/agents/:id/loops', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!isRecord(request.body)) return badRequest(reply, 'Request body must be a loop object.')
     try {
       return reply.code(201).send(await runtime.createAgentLoop(request.params.id, request.body as RuntimeLoopCreateInput))
@@ -1440,7 +1501,7 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: LoopNameParams }>('/agents/:id/loops/:name', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return { agentId: request.params.id, loop: runtime.getAgentLoopInfo(request.params.id, request.params.name) }
     } catch (err) {
@@ -1449,7 +1510,7 @@ export function createDaemonHttpApi(
   })
 
   server.patch<{ Params: LoopNameParams; Body: RuntimeLoopPatch }>('/agents/:id/loops/:name', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!isRecord(request.body)) return badRequest(reply, 'Request body must be a loop patch object.')
     try {
       return await runtime.updateAgentLoop(request.params.id, request.params.name, request.body as RuntimeLoopPatch)
@@ -1459,7 +1520,7 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: LoopNameParams }>('/agents/:id/loops/:name', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return await runtime.deleteAgentLoop(request.params.id, request.params.name)
     } catch (err) {
@@ -1468,7 +1529,7 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams; Querystring: LogsQuery }>('/agents/:id/logs', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const limit = parseOptionalInteger(request.query.limit)
     if (request.query.limit !== undefined && limit === undefined) return badRequest(reply, 'limit must be an integer')
     return {
@@ -1482,14 +1543,14 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams; Querystring: { afterId?: string } }>('/agents/:id/logs/after', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const afterId = parseOptionalInteger(request.query.afterId)
     if (afterId === undefined) return badRequest(reply, 'afterId must be an integer')
     return runtime.getAgentLogsAfterId(request.params.id, afterId)
   })
 
   server.delete<{ Params: AgentIdParams }>('/agents/:id/logs', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return runtime.clearAgentLogs(request.params.id)
     } catch (err) {
@@ -1498,12 +1559,12 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/tables', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.listAgentLocalTables(request.params.id)
   })
 
   server.get<{ Params: TableParams; Querystring: TableQuery }>('/agents/:id/tables/:table', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const limit = parseOptionalInteger(request.query.limit)
     const offset = parseOptionalInteger(request.query.offset)
     if (request.query.limit !== undefined && limit === undefined) return badRequest(reply, 'limit must be an integer')
@@ -1516,7 +1577,7 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: TableParams }>('/agents/:id/tables/:table', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return runtime.dropAgentLocalTable(request.params.id, request.params.table)
     } catch (err) {
@@ -1533,7 +1594,7 @@ export function createDaemonHttpApi(
   // it fell off the back: `since_seq < oldest_seq - 1` means the tail is
   // incomplete and the client must re-snapshot instead of assuming continuity.
   server.get<{ Params: AgentIdParams; Querystring: UmbilicalEventsQuery }>('/agents/:id/umbilical/events', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const sinceSeq = parseOptionalInteger(request.query.since_seq)
     const limit = parseOptionalInteger(request.query.limit)
     if (request.query.since_seq !== undefined && sinceSeq === undefined) return badRequest(reply, 'since_seq must be an integer')
@@ -1546,12 +1607,12 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/config', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentConfig(request.params.id)
   })
 
   server.put<{ Params: AgentIdParams; Body: AgentConfig }>('/agents/:id/config', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!isRecord(request.body)) return badRequest(reply, 'Request body must be an agent config object.')
     try {
       return await runtime.setAgentConfig(request.params.id, request.body as AgentConfig)
@@ -1563,7 +1624,7 @@ export function createDaemonHttpApi(
   // The tool catalog (built-in + MCP + declared) with each tool's declared
   // state and description. Read-only: tools change through PUT /config.
   server.get<{ Params: AgentIdParams }>('/agents/:id/tools', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return runtime.getAgentTools(request.params.id)
     } catch (err) {
@@ -1574,7 +1635,7 @@ export function createDaemonHttpApi(
   // Live display state (fleet-map semantics). Config edits do not move the
   // running agent's state; this is the dedicated surface for that.
   server.post<{ Params: AgentIdParams; Body: AgentStateBody }>('/agents/:id/state', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const state = request.body?.state
     if (typeof state !== 'string' || !isAdfDisplayState(state)) {
       return badRequest(reply, 'state must be one of: active, idle, hibernate, suspended, off')
@@ -1587,12 +1648,12 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/document', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentDocument(request.params.id)
   })
 
   server.put<{ Params: AgentIdParams; Body: ContentBody }>('/agents/:id/document', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.content !== 'string') return badRequest(reply, 'content is required')
     try {
       return runtime.setAgentDocument(request.params.id, request.body.content)
@@ -1602,12 +1663,12 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/mind', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentMind(request.params.id)
   })
 
   server.put<{ Params: AgentIdParams; Body: ContentBody }>('/agents/:id/mind', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.content !== 'string') return badRequest(reply, 'content is required')
     try {
       return runtime.setAgentMind(request.params.id, request.body.content)
@@ -1616,11 +1677,15 @@ export function createDaemonHttpApi(
     }
   })
 
-  server.get<{ Params: AgentIdParams; Querystring: LoopQuery }>('/agents/:id/chat', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+  server.get<{ Params: AgentIdParams; Querystring: LoopQuery & { before?: string } }>('/agents/:id/chat', async (request, reply) => {
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const limit = parseOptionalInteger(request.query.limit)
     if (request.query.limit !== undefined && limit === undefined) return badRequest(reply, 'limit must be an integer')
+    const before = parseOptionalInteger(request.query.before)
+    if (request.query.before !== undefined && before === undefined) return badRequest(reply, 'before must be an integer seq')
     try {
+      // Keyset scroll-back (Studio's DOC_GET_CHAT_OLDER): the page before a seq.
+      if (before !== undefined) return runtime.getAgentChatBefore(request.params.id, before, { limit, loop: request.query.loop })
       return runtime.getAgentChat(request.params.id, limit, request.query.loop)
     } catch (err) {
       return handleRuntimeError(reply, err)
@@ -1628,7 +1693,7 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: AgentIdParams; Querystring: ChatClearQuery }>('/agents/:id/chat', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return await runtime.clearAgentChat(request.params.id, request.query.loop)
     } catch (err) {
@@ -1637,12 +1702,12 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/files', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentFiles(request.params.id)
   })
 
   server.get<{ Params: AgentIdParams; Querystring: FileContentQuery }>('/agents/:id/files/content', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const path = request.query.path
     if (!path) return badRequest(reply, 'path is required')
     const file = runtime.getAgentFile(request.params.id, path)
@@ -1651,7 +1716,7 @@ export function createDaemonHttpApi(
   })
 
   server.put<{ Params: AgentIdParams; Querystring: FileContentQuery; Body: FileWriteBody }>('/agents/:id/files/content', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const path = request.query.path
     if (!path) return badRequest(reply, 'path is required')
     const contentBase64 = request.body?.content_base64 ?? request.body?.contentBase64
@@ -1671,7 +1736,7 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: AgentIdParams; Querystring: FileContentQuery }>('/agents/:id/files/content', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const path = request.query.path
     if (!path) return badRequest(reply, 'path is required')
     try {
@@ -1682,7 +1747,7 @@ export function createDaemonHttpApi(
   })
 
   server.post<{ Params: AgentIdParams; Body: FileRenameBody }>('/agents/:id/files/rename', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!request.body?.oldPath || !request.body?.newPath) return badRequest(reply, 'oldPath and newPath are required')
     try {
       return runtime.renameAgentFile(request.params.id, request.body.oldPath, request.body.newPath)
@@ -1692,7 +1757,7 @@ export function createDaemonHttpApi(
   })
 
   server.post<{ Params: AgentIdParams; Body: FolderRenameBody }>('/agents/:id/files/rename-folder', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!request.body?.oldPrefix || !request.body?.newPrefix) return badRequest(reply, 'oldPrefix and newPrefix are required')
     try {
       return runtime.renameAgentFolder(request.params.id, request.body.oldPrefix, request.body.newPrefix)
@@ -1702,7 +1767,7 @@ export function createDaemonHttpApi(
   })
 
   server.patch<{ Params: AgentIdParams; Body: FileProtectionBody }>('/agents/:id/files/protection', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!request.body?.path || !isFileProtection(request.body.protection)) return badRequest(reply, 'path and valid protection are required')
     try {
       return runtime.setAgentFileProtection(request.params.id, request.body.path, request.body.protection)
@@ -1712,7 +1777,7 @@ export function createDaemonHttpApi(
   })
 
   server.patch<{ Params: AgentIdParams; Body: FileAuthorizedBody }>('/agents/:id/files/authorized', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!request.body?.path || typeof request.body.authorized !== 'boolean') return badRequest(reply, 'path and authorized are required')
     try {
       return runtime.setAgentFileAuthorized(request.params.id, request.body.path, request.body.authorized)
@@ -1722,7 +1787,7 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams; Querystring: ResourceStatusQuery }>('/agents/:id/inbox', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const status = request.query.status
     if (status !== undefined && !isInboxStatus(status)) {
       return badRequest(reply, 'status must be one of: unread, read, archived')
@@ -1731,7 +1796,7 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: AgentIdParams }>('/agents/:id/inbox', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return runtime.clearAgentInbox(request.params.id)
     } catch (err) {
@@ -1740,7 +1805,7 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams; Querystring: ResourceStatusQuery }>('/agents/:id/outbox', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const status = request.query.status
     if (status !== undefined && !isOutboxStatus(status)) {
       return badRequest(reply, 'status must be one of: pending, sent, delivered, failed')
@@ -1749,12 +1814,12 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/timers', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentTimers(request.params.id)
   })
 
   server.post<{ Params: AgentIdParams; Body: TimerMutationBody }>('/agents/:id/timers', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!request.body?.mode) return badRequest(reply, 'mode is required')
     try {
       return await runtime.addAgentTimer(request.params.id, request.body as TimerMutationBody & { mode: NonNullable<TimerMutationBody['mode']> })
@@ -1764,7 +1829,7 @@ export function createDaemonHttpApi(
   })
 
   server.put<{ Params: TimerIdParams; Body: TimerMutationBody }>('/agents/:id/timers/:timerId', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const id = parseOptionalInteger(request.params.timerId)
     if (id === undefined) return badRequest(reply, 'timerId must be an integer')
     if (!request.body?.mode) return badRequest(reply, 'mode is required')
@@ -1776,7 +1841,7 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: TimerIdParams }>('/agents/:id/timers/:timerId', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const id = parseOptionalInteger(request.params.timerId)
     if (id === undefined) return badRequest(reply, 'timerId must be an integer')
     try {
@@ -1787,12 +1852,12 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/meta', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentMeta(request.params.id)
   })
 
   server.put<{ Params: MetaKeyParams; Body: MetaSetBody }>('/agents/:id/meta/:key', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.value !== 'string') return badRequest(reply, 'value is required')
     if (request.body.protection !== undefined && !isMetaProtection(request.body.protection)) return badRequest(reply, 'Invalid protection')
     try {
@@ -1803,7 +1868,7 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: MetaKeyParams }>('/agents/:id/meta/:key', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return runtime.deleteAgentMeta(request.params.id, request.params.key)
     } catch (err) {
@@ -1812,7 +1877,7 @@ export function createDaemonHttpApi(
   })
 
   server.patch<{ Params: MetaKeyParams; Body: MetaProtectionBody }>('/agents/:id/meta/:key/protection', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!isMetaProtection(request.body?.protection)) return badRequest(reply, 'Valid protection is required')
     try {
       return runtime.setAgentMetaProtection(request.params.id, request.params.key, request.body.protection)
@@ -1822,12 +1887,12 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/usage', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentUsage(request.params.id)
   })
 
   server.get<{ Params: AgentIdParams; Querystring: TasksQuery }>('/agents/:id/tasks', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const status = request.query.status
     if (status !== undefined && !isTaskStatus(status)) {
       return badRequest(reply, 'status must be one of: pending, pending_approval, running, completed, failed, denied, cancelled')
@@ -1838,14 +1903,14 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: TaskIdParams }>('/agents/:id/tasks/:taskId', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const task = runtime.getAgentTask(request.params.id, request.params.taskId)
     if (!task) return notFound(reply, `Unknown task "${request.params.taskId}"`)
     return task
   })
 
   server.post<{ Params: TaskIdParams; Body: TaskResolveBody }>('/agents/:id/tasks/:taskId/resolve', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const action = request.body?.action
     if (!action || !isTaskResolveAction(action)) {
       return badRequest(reply, 'action must be one of: approve, deny, pending_approval')
@@ -1874,7 +1939,7 @@ export function createDaemonHttpApi(
   // never the body; protection overrides, one-shot approvals and locked
   // declarations are refused with 409 + the blocked reason.
   server.post<{ Params: TaskIdParams }>('/agents/:id/tasks/:taskId/always-approve', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return await runtime.alwaysApproveAgentTask(request.params.id, request.params.taskId)
     } catch (err) {
@@ -1885,7 +1950,7 @@ export function createDaemonHttpApi(
   // Studio's "Approve all": gated approvals only — protection overrides are
   // skipped by the executor and counted in skippedProtection.
   server.post<{ Params: AgentIdParams; Body: TaskApproveAllBody; Querystring: { loop?: string } }>('/agents/:id/tasks/approve-all', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const loop = request.body?.loop ?? request.query?.loop
     if (loop !== undefined && (typeof loop !== 'string' || !loop)) return badRequest(reply, 'loop must be a non-empty string')
     try {
@@ -1896,12 +1961,12 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/asks', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentAsks(request.params.id)
   })
 
   server.post<{ Params: AskIdParams; Body: AskRespondBody }>('/agents/:id/asks/:requestId/respond', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const answer = request.body?.answer
     if (typeof answer !== 'string') return badRequest(reply, 'answer is required')
     const loop = request.body?.loop
@@ -1914,7 +1979,7 @@ export function createDaemonHttpApi(
   })
 
   server.post<{ Params: AgentIdParams; Body: SuspendRespondBody }>('/agents/:id/suspend/respond', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.resume !== 'boolean') return badRequest(reply, 'resume boolean is required')
     try {
       return runtime.resolveAgentSuspend(request.params.id, request.body.resume)
@@ -1924,37 +1989,37 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/identities', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentIdentities(request.params.id)
   })
 
   server.get<{ Params: AgentIdParams; Querystring: IdentityListQuery }>('/agents/:id/identity', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentIdentityPurposes(request.params.id, request.query.prefix)
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/identity/entries', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentIdentities(request.params.id)
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/identity/password', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentIdentityPassword(request.params.id)
   })
 
   server.post<{ Params: AgentIdParams; Body: IdentityPasswordBody }>('/agents/:id/identity/password/unlock', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.password !== 'string') return badRequest(reply, 'password is required')
     try {
-      return runtime.unlockAgentIdentityPassword(request.params.id, request.body.password)
+      return runtime.unlockAgentIdentityPassword(request.params.id, request.body.password, clientSessionOf(request))
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
   })
 
   server.put<{ Params: AgentIdParams; Body: IdentityPasswordBody }>('/agents/:id/identity/password', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.password !== 'string') return badRequest(reply, 'password is required')
     try {
       return runtime.setAgentIdentityPassword(request.params.id, request.body.password)
@@ -1964,7 +2029,7 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: AgentIdParams }>('/agents/:id/identity/password', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return runtime.removeAgentIdentityPassword(request.params.id)
     } catch (err) {
@@ -1973,7 +2038,7 @@ export function createDaemonHttpApi(
   })
 
   server.post<{ Params: AgentIdParams; Body: IdentityChangePasswordBody }>('/agents/:id/identity/password/change', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const newPassword = request.body?.newPassword ?? request.body?.new_password
     if (typeof newPassword !== 'string') return badRequest(reply, 'newPassword is required')
     try {
@@ -1984,17 +2049,17 @@ export function createDaemonHttpApi(
   })
 
   server.post<{ Params: AgentIdParams }>('/agents/:id/identity/wipe', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.wipeAgentIdentity(request.params.id)
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/identity/did', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentDid(request.params.id)
   })
 
   server.post<{ Params: AgentIdParams }>('/agents/:id/identity/generate-keys', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return runtime.generateAgentIdentityKeys(request.params.id)
     } catch (err) {
@@ -2003,18 +2068,18 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: AgentIdParams; Querystring: IdentityListQuery }>('/agents/:id/identity-prefix', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!request.query.prefix) return badRequest(reply, 'prefix is required')
     return runtime.deleteAgentIdentityByPrefix(request.params.id, request.query.prefix)
   })
 
   server.get<{ Params: IdentityPurposeParams }>('/agents/:id/identity/:purpose', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentIdentity(request.params.id, request.params.purpose)
   })
 
   server.put<{ Params: IdentityPurposeParams; Body: IdentityValueBody }>('/agents/:id/identity/:purpose', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.value !== 'string') return badRequest(reply, 'value is required')
     try {
       return runtime.setAgentIdentity(request.params.id, request.params.purpose, request.body.value, { replace: request.body.replace === true })
@@ -2024,19 +2089,19 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: IdentityPurposeParams }>('/agents/:id/identity/:purpose', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.deleteAgentIdentity(request.params.id, request.params.purpose)
   })
 
   server.patch<{ Params: IdentityPurposeParams; Body: IdentityCodeAccessBody }>('/agents/:id/identity/:purpose/code-access', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const codeAccess = request.body?.codeAccess ?? request.body?.code_access
     if (typeof codeAccess !== 'boolean') return badRequest(reply, 'codeAccess boolean is required')
     return runtime.setAgentIdentityCodeAccess(request.params.id, request.params.purpose, codeAccess)
   })
 
   server.put<{ Params: ProviderParams; Body: IdentityValueBody }>('/agents/:id/providers/:providerId/credential', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.value !== 'string') return badRequest(reply, 'value is required')
     try {
       return runtime.setAgentProviderCredential(request.params.id, request.params.providerId, request.body.value, { replace: request.body.replace === true })
@@ -2046,12 +2111,12 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: ProviderParams }>('/agents/:id/providers/:providerId/credentials', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentProviderCredentials(request.params.id, request.params.providerId)
   })
 
   server.post<{ Params: AgentIdParams; Body: ProviderAttachBody }>('/agents/:id/providers', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!isRecord(request.body?.provider) || typeof request.body.provider.id !== 'string') {
       return badRequest(reply, 'provider with id is required')
     }
@@ -2063,7 +2128,7 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: ProviderParams }>('/agents/:id/providers/:providerId', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return await runtime.detachAgentProvider(request.params.id, request.params.providerId)
     } catch (err) {
@@ -2072,7 +2137,7 @@ export function createDaemonHttpApi(
   })
 
   server.put<{ Params: AgentIdParams; Body: McpCredentialBody }>('/agents/:id/mcp/credentials', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const { npmPackage, envKey, value, replace } = request.body ?? {}
     if (typeof npmPackage !== 'string') return badRequest(reply, 'npmPackage is required')
     if (typeof envKey !== 'string') return badRequest(reply, 'envKey is required')
@@ -2085,13 +2150,13 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams; Querystring: McpCredentialQuery }>('/agents/:id/mcp/credentials', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!request.query.npmPackage) return badRequest(reply, 'npmPackage is required')
     return runtime.getAgentMcpCredentials(request.params.id, request.query.npmPackage)
   })
 
   server.post<{ Params: AgentIdParams; Body: McpAttachBody }>('/agents/:id/mcp/servers', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const serverConfig = request.body?.server ?? request.body?.serverConfig
     if (!isRecord(serverConfig) || typeof serverConfig.name !== 'string' || (serverConfig.transport !== 'stdio' && serverConfig.transport !== 'http')) {
       return badRequest(reply, 'server with name and transport is required')
@@ -2104,7 +2169,7 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: McpServerParams; Querystring: McpDetachQuery }>('/agents/:id/mcp/servers/:serverName', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return await runtime.detachAgentMcpServer(request.params.id, request.params.serverName, request.query.credentialNamespace)
     } catch (err) {
@@ -2113,7 +2178,7 @@ export function createDaemonHttpApi(
   })
 
   server.post<{ Params: McpServerParams }>('/agents/:id/mcp/servers/:serverName/restart', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return await runtime.restartAgentMcpServer(request.params.id, request.params.serverName)
     } catch (err) {
@@ -2122,7 +2187,7 @@ export function createDaemonHttpApi(
   })
 
   server.put<{ Params: AgentIdParams; Body: AdapterCredentialBody }>('/agents/:id/adapters/credentials', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const { adapterType, envKey, value, replace } = request.body ?? {}
     if (typeof adapterType !== 'string') return badRequest(reply, 'adapterType is required')
     if (typeof envKey !== 'string') return badRequest(reply, 'envKey is required')
@@ -2135,13 +2200,13 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams; Querystring: { adapterType?: string } }>('/agents/:id/adapters/credentials', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!request.query.adapterType) return badRequest(reply, 'adapterType is required')
     return runtime.getAgentAdapterCredentials(request.params.id, request.query.adapterType)
   })
 
   server.post<{ Params: AgentIdParams; Body: AdapterAttachBody }>('/agents/:id/adapters', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const parsed = AdapterAttachRequestSchema.safeParse(request.body)
     if (!parsed.success) return badRequest(reply, parsed.error.issues.map((issue) => issue.message).join(', '))
     try {
@@ -2152,7 +2217,7 @@ export function createDaemonHttpApi(
   })
 
   server.delete<{ Params: AdapterParams }>('/agents/:id/adapters/:adapterType', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return await runtime.detachAgentAdapter(request.params.id, request.params.adapterType)
     } catch (err) {
@@ -2161,11 +2226,11 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/runtime', async (request, reply) => {
-    const agent = runtime.getAgent(request.params.id)
+    const agent = runtime.getAgentOrDocument(request.params.id)
     if (!agent) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return {
       agentId: agent.id,
-      status: runtime.getAgentStatus(request.params.id),
+      status: runtime.getAgentOrDocumentStatus(request.params.id),
       adapters: runtime.getAgentAdaptersDiagnostics(request.params.id),
       mcp: runtime.getAgentMcpDiagnostics(request.params.id),
       triggers: runtime.getAgentTriggersDiagnostics(request.params.id),
@@ -2179,22 +2244,22 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/runtime/adapters', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentAdaptersDiagnostics(request.params.id)
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/runtime/mcp', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentMcpDiagnostics(request.params.id)
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/runtime/triggers', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentTriggersDiagnostics(request.params.id)
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/runtime/ws', async (request, reply) => {
-    const agent = runtime.getAgent(request.params.id)
+    const agent = runtime.getAgentOrDocument(request.params.id)
     if (!agent) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const active = agent.filePath && opts.wsService
       ? opts.wsService.getConnections(agent.filePath)
@@ -2208,22 +2273,22 @@ export function createDaemonHttpApi(
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/adapters', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentAdaptersDiagnostics(request.params.id)
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/mcp', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentMcpDiagnostics(request.params.id)
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/triggers', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentTriggersDiagnostics(request.params.id)
   })
 
   server.get<{ Params: AgentIdParams }>('/agents/:id/ws', async (request, reply) => {
-    const agent = runtime.getAgent(request.params.id)
+    const agent = runtime.getAgentOrDocument(request.params.id)
     if (!agent) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const active = agent.filePath && opts.wsService
       ? opts.wsService.getConnections(agent.filePath)
@@ -2249,23 +2314,37 @@ export function createDaemonHttpApi(
     }
   })
 
+  // Studio's FILE_CHECK_REVIEW / FILE_REVIEW_ACCEPT (review-ops.ts): the
+  // summary with identity scenario, provider usability and willRelocate;
+  // accept with claim, model override, auto-locked fields and provisioning.
+  const reviewDeps = { settings: opts.settingsStore ?? runtime.getSettingsStore(), identity: opts.identity }
+
   server.get<{ Querystring: ReviewQuery }>('/agents/review', async (request, reply) => {
     const filePath = request.query.filePath
     if (!filePath) return badRequest(reply, 'filePath is required')
     try {
-      return runtime.getReviewInfo(filePath)
+      return await checkAgentReview(runtime, filePath, reviewDeps)
     } catch (err) {
-      return handleRuntimeError(reply, err)
+      return reviewError(reply, err)
     }
   })
 
   server.post<{ Body: ReviewAcceptBody }>('/agents/review/accept', async (request, reply) => {
     const filePath = request.body?.filePath
     if (!filePath) return badRequest(reply, 'filePath is required')
+    if (request.body.claim !== undefined && typeof request.body.claim !== 'boolean') return badRequest(reply, 'claim must be a boolean')
+    const model = request.body.model
+    if (model !== undefined && (!isRecord(model) || typeof model.provider !== 'string' || typeof model.model_id !== 'string')) {
+      return badRequest(reply, 'model needs provider and model_id strings')
+    }
     try {
-      return runtime.acceptReview(filePath)
+      const accepted = await acceptAgentReview(runtime, filePath, {
+        claim: request.body.claim === true,
+        ...(model ? { model: { provider: model.provider as string, model_id: model.model_id as string } } : {}),
+      }, reviewDeps)
+      return { ...accepted, summary: (await checkAgentReview(runtime, accepted.filePath, reviewDeps)).summary }
     } catch (err) {
-      return handleRuntimeError(reply, err)
+      return reviewError(reply, err)
     }
   })
 
@@ -2368,7 +2447,7 @@ export function createDaemonHttpApi(
   })
 
   server.post<{ Params: AgentIdParams }>('/agents/:id/stop', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       await runtime.stopAgent(request.params.id)
       return { success: true }
@@ -2378,7 +2457,7 @@ export function createDaemonHttpApi(
   })
 
   server.post<{ Params: AgentIdParams }>('/agents/:id/unload', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       await runtime.stopAgent(request.params.id)
       return { success: true }
@@ -2388,7 +2467,7 @@ export function createDaemonHttpApi(
   })
 
   server.post<{ Params: AgentIdParams; Querystring: ChatClearQuery; Body: { loop?: string } | undefined }>('/agents/:id/abort', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       const loop = request.query.loop ?? (isRecord(request.body) && typeof request.body.loop === 'string' ? request.body.loop : undefined)
       await runtime.abortAgent(request.params.id, loop)
@@ -2400,7 +2479,7 @@ export function createDaemonHttpApi(
 
   // End one loop's running turn and leave it idle (the executor keeps running).
   server.post<{ Params: AgentIdParams; Querystring: ChatClearQuery; Body: { loop?: string } | undefined }>('/agents/:id/interrupt', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       const loop = request.query.loop ?? (isRecord(request.body) && typeof request.body.loop === 'string' ? request.body.loop : undefined)
       const result = runtime.interruptAgent(request.params.id, loop)
@@ -2412,7 +2491,7 @@ export function createDaemonHttpApi(
 
   // Compact one loop's history now (Studio's /compact). 409 while that loop is mid-turn.
   server.post<{ Params: AgentIdParams; Querystring: ChatClearQuery; Body: { loop?: string } | undefined }>('/agents/:id/compact', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       const loop = request.query.loop ?? (isRecord(request.body) && typeof request.body.loop === 'string' ? request.body.loop : undefined)
       return await runtime.compactAgentLoop(request.params.id, loop)
@@ -2421,10 +2500,18 @@ export function createDaemonHttpApi(
     }
   })
 
-  server.post<{ Params: AgentIdParams; Body: ChatBody }>('/agents/:id/chat', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
-    const text = request.body?.text
-    if (!text) return badRequest(reply, 'text is required')
+  server.post<{ Params: AgentIdParams; Body: ChatBody }>('/agents/:id/chat', { bodyLimit: CHAT_BODY_LIMIT }, async (request, reply) => {
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    // The turn runs after the 202: an open document that is not running is refused now.
+    if (!runtime.getAgent(request.params.id)) return notRunning(reply, request.params.id)
+    const content = request.body?.content
+    if (content !== undefined) {
+      const invalid = invalidChatContent(content)
+      if (invalid) return badRequest(reply, invalid)
+    }
+    const text = request.body?.text ?? ''
+    if (typeof text !== 'string') return badRequest(reply, 'text must be a string')
+    if (!text && !(content && content.length > 0)) return badRequest(reply, 'text or content is required')
     const loop = request.body?.loop
     if (loop !== undefined) {
       if (typeof loop !== 'string' || !loop) return badRequest(reply, 'loop must be a non-empty string')
@@ -2439,12 +2526,13 @@ export function createDaemonHttpApi(
     }
 
     const turnId = `turn_${nanoid(12)}`
-    queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop, { turnId }))
+    queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop, { turnId, ...(content?.length ? { content } : {}) }))
     return reply.code(202).send({ accepted: true, turnId })
   })
 
   server.post<{ Params: AgentIdParams; Body: TriggerBody }>('/agents/:id/trigger', async (request, reply) => {
-    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    if (!runtime.getAgent(request.params.id)) return notRunning(reply, request.params.id)
     const normalized = normalizeTriggerDispatch(request.body)
     if (!normalized.ok) return badRequest(reply, normalized.error)
 
@@ -2454,6 +2542,76 @@ export function createDaemonHttpApi(
   })
 
   return server
+}
+
+/**
+ * The client session a request comes from (W2-B's X-ADF-Client-Session):
+ * an unlock is remembered for that session only (D4).
+ */
+function clientSessionOf(request: { headers: Record<string, string | string[] | undefined> }): { holder?: string } {
+  const value = request.headers['x-adf-client-session']
+  const holder = Array.isArray(value) ? value[0] : value
+  return holder && DOCUMENT_HOLDER_FORMAT.test(holder) ? { holder } : {}
+}
+
+/** Routes a document write never blocks: start takes the lease itself; stop and unlock write nothing of the file's. */
+const LEASE_CHECK_EXEMPT = new Set(['/agents/:id/start', '/agents/:id/stop', '/agents/:id/unload', '/agents/:id/identity/password/unlock'])
+
+/**
+ * Open documents (design D4) in the HTTP layer:
+ *
+ * - Studio's FILE_OPEN identity steps run for each newly opened document:
+ *   the lazy legacy-DID restamp and ensureWorkspaceIdentity, keys minted only
+ *   for a reviewed file (unlock-only while the owner identity is not ready).
+ * - A write through an open document that is not running is refused (409
+ *   agent_leased, naming the holder) while another live runtime holds the
+ *   file's agent lease: an open document takes no lease (opening is not
+ *   running, as in embedded Studio), so this keeps one runtime from editing
+ *   a file another one runs, as W1-E's writes to closed files do.
+ */
+function registerOpenDocumentGuards(server: FastifyInstance, runtime: RuntimeService, opts: DaemonHttpApiOptions): void {
+  const identity = opts.identity
+  runtime.setDocumentOpenHooks({
+    ...(identity ? {
+      onOpen: (workspace, { filePath, reviewed }) => {
+        if (!identity.isReady()) return // the open already ran the envelope unlock
+        const { restamped } = identity.service.restampAndAttest(workspace)
+        if (restamped) console.log(`[ADF Daemon] Restamped the legacy owner DID of ${filePath} on open`)
+        identity.service.ensureWorkspaceIdentity(workspace, { mintKeys: reviewed })
+      },
+    } : {}),
+    // A file another runtime runs opens read-only (no open step writes it).
+    leasedElsewhere: (filePath) => leaseHolderElsewhere(runtime.agentLeaseRegistry, filePath),
+  })
+  server.addHook('preHandler', async (request, reply) => {
+    const url = request.routeOptions.url ?? ''
+    if (url !== '/agents/:id' && !url.startsWith('/agents/:id/')) return
+    const id = (request.params as { id?: unknown } | undefined)?.id
+    if (typeof id !== 'string') return
+    // A document whose file is being moved has no open workspace until it reopens.
+    // A session using its document keeps the hold alive (the holder sweep's idle clock).
+    const session = clientSessionOf(request).holder
+    if (session) runtime.touchDocumentHolder(session, id)
+    if (runtime.isFileMoving(id)) {
+      const body = request.body as { resume?: () => void } | undefined
+      if (typeof body?.resume === 'function') body.resume()
+      return reply.code(409).send({ error: `${id}'s file is being moved; try again in a moment.`, code: 'file_moving' })
+    }
+    if (request.method === 'GET' || request.method === 'HEAD' || LEASE_CHECK_EXEMPT.has(url)) return
+    const target = runtime.getAgentWorkspace(id)
+    if (!target || target.running || !target.filePath) return
+    const holder = await leaseHolderElsewhere(runtime.agentLeaseRegistry, target.filePath)
+    if (!holder) return
+    // A streamed upload (PUT …/files/raw) is drained so the connection does not stall.
+    const body = request.body as { resume?: () => void } | undefined
+    if (typeof body?.resume === 'function') body.resume()
+    return reply.code(409).send({ error: `${holder} Its file is open here for reading only.`, code: AGENT_LEASED_CODE })
+  })
+}
+
+function reviewError(reply: FastifyReply, err: unknown) {
+  if (err instanceof ReviewError) return reply.code(err.statusCode).send({ error: err.message, code: err.code })
+  return handleRuntimeError(reply, err)
 }
 
 function queueTurn(turnId: string, run: () => Promise<void>): void {
@@ -2622,6 +2780,11 @@ function conflict(reply: FastifyReply, error: string, code = 'conflict') {
   return reply.code(409).send({ error, code })
 }
 
+/** 409 agent_not_running: a runtime action on an open document that is not running (D4). */
+function notRunning(reply: FastifyReply, id: string) {
+  return reply.code(409).send({ error: `${id} is open but not running. Start it first (POST /agents/${id}/start).`, code: AGENT_NOT_RUNNING_CODE })
+}
+
 function unavailable(reply: FastifyReply, error: string) {
   return reply.code(503).send({ error, code: 'unavailable' })
 }
@@ -2697,8 +2860,9 @@ async function listProviderModels(
   settingsStore: DaemonSettingsStore | undefined,
   providerId: string,
   agentId?: string,
+  filePath?: string,
 ): Promise<{ provider: string; models: string[]; error?: string }> {
-  const cfg = resolveModelListProviderConfig(runtime, settingsStore, providerId, agentId)
+  const cfg = resolveModelListProviderConfig(runtime, settingsStore, providerId, agentId, filePath)
   if (!cfg) return { provider: providerId, models: [], error: `Provider "${providerId}" not found.` }
 
   if (cfg.type === 'chatgpt-subscription') {
@@ -2763,13 +2927,24 @@ function resolveModelListProviderConfig(
   settingsStore: DaemonSettingsStore | undefined,
   providerId: string,
   agentId?: string,
+  filePath?: string,
 ): { type: string; baseUrl: string; apiKey?: string } | null {
   const appProvider = getProviderRegistrations(settingsStore).find(provider => provider.id === providerId)
   if (appProvider) return appProvider
 
+  // An agent file's own provider (Studio's MODELS_LIST filePath): through the
+  // open document or running agent when it is open here (its unlocked key),
+  // else read from the closed file (W1-E readFileProviderConfig).
+  if (!agentId && filePath) {
+    const open = runtime.getAgentWorkspaceByPath(filePath)
+    if (!open) {
+      try { return readFileProviderConfig(filePath, providerId) ?? null } catch { return null }
+    }
+    agentId = open.agentId
+  }
   if (!agentId) return null
   try {
-    const agentProvider = runtime.getAgent(agentId)?.config.providers?.find(provider => provider.id === providerId)
+    const agentProvider = runtime.getAgentOrDocument(agentId)?.config.providers?.find(provider => provider.id === providerId)
     if (!agentProvider) return null
     return {
       ...agentProvider,
