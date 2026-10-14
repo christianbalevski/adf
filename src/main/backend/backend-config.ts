@@ -35,6 +35,9 @@ export const BACKEND_ENV_OVERRIDE = 'ADF_STUDIO_BACKEND'
 /** Switching backends from Settings ships with the handover (tracker W4-A). */
 export const MODE_SWITCH_AVAILABLE = false
 
+/** Switching to a remote daemon moves nothing (design §5.5, §9), so it ships with remote mode (W4-B). */
+export const REMOTE_SWITCH_AVAILABLE = true
+
 const SAFE_PREFIX = 'safe:'
 const MAX_TOKEN_LENGTH = 4096
 /** Header-safe: printable ASCII without spaces, as `ADF_DAEMON_TOKEN` values are. */
@@ -77,6 +80,14 @@ export interface BootBackend {
    * not be moved aside. Its bytes may be the only copy, so saves are refused.
    */
   writeBlocked: string | null
+  /**
+   * What the user should know about this launch's backend, token-free: the
+   * configured mode could not be used (Studio started embedded), or fields
+   * of the file were ignored. Shown in Settings → Backend.
+   */
+  notices?: string[]
+  /** File fields normalization ignored; the next save writes the file without them (that save says so). */
+  dropped?: string[]
 }
 
 type Log = Pick<Console, 'log' | 'warn'>
@@ -94,20 +105,43 @@ function isMode(value: unknown): value is StudioBackendMode {
 }
 
 /**
- * Normalize parsed file contents. Unknown or malformed fields fall back to
- * their defaults with a warning; warnings never contain the token.
+ * Why Studio must not use the saved remote URL and token (design §9.2), or
+ * null when it may: an unconfirmed plain-http address to a host that is not
+ * loopback or tailnet. Checked wherever the token could be sent (boot,
+ * `readRemoteToken`), so a stored but unconfirmed URL is shown in Settings
+ * and kept in the file, yet never used.
  */
-export function normalizeBackendConfig(raw: unknown): { config: StudioBackendConfig; warnings: string[] } {
+export function remoteTransportRefusal(config: StudioBackendConfig): string | null {
+  const url = config.remote.url
+  if (!url) return null
+  const check = checkRemoteDaemonUrl(url)
+  if (!check.url) return `The remote daemon URL is not valid: ${check.reason ?? url}`
+  if (check.kind === 'insecure-http' && !config.remote.allowInsecureHttp) {
+    return `${check.url} is plain http to an address that is not loopback or a tailnet address, and sending the token over it is not confirmed. Confirm it in Settings → Backend, or use https:// or an SSH tunnel.`
+  }
+  return null
+}
+
+/**
+ * Normalize parsed file contents. Unknown or malformed fields fall back to
+ * their defaults with a warning; warnings never contain the token. `dropped`
+ * names, for the user, the fields a later save will not write back.
+ */
+export function normalizeBackendConfig(raw: unknown): { config: StudioBackendConfig; warnings: string[]; dropped: string[] } {
   const config = defaultBackendConfig()
   const warnings: string[] = []
+  const dropped: string[] = []
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     if (raw !== null && raw !== undefined) warnings.push('the file is not a JSON object; using embedded')
-    return { config, warnings }
+    return { config, warnings, dropped }
   }
   const obj = raw as Record<string, unknown>
   if (obj.mode !== undefined) {
     if (isMode(obj.mode)) config.mode = obj.mode
-    else warnings.push(`unknown mode ${JSON.stringify(obj.mode)}; using embedded`)
+    else {
+      warnings.push(`unknown mode ${JSON.stringify(obj.mode)}; using embedded`)
+      dropped.push(`the unknown mode ${JSON.stringify(obj.mode)}`)
+    }
   }
   if (obj.keepDaemonRunning !== undefined) config.keepDaemonRunning = obj.keepDaemonRunning === true
   const remote = obj.remote
@@ -116,25 +150,32 @@ export function normalizeBackendConfig(raw: unknown): { config: StudioBackendCon
     if (typeof r.url === 'string' && r.url) {
       const check = checkRemoteDaemonUrl(r.url)
       if (check.url) config.remote.url = check.url
-      else warnings.push('remote.url is not a valid daemon URL; ignored')
+      else {
+        warnings.push('remote.url is not a valid daemon URL; ignored')
+        dropped.push(`the remote daemon URL, which is not valid (${check.reason ?? 'not a URL'})`)
+      }
     }
     config.remote.allowInsecureHttp = config.remote.url !== null && r.allowInsecureHttp === true
-    // An unconfirmed plain-HTTP URL is never used (§9.2): drop it with its
-    // token, so neither boot nor a later client sends the token over it.
+    // An unconfirmed plain-HTTP URL is kept (Settings shows it, a save keeps
+    // it) but never used (§9.2): remoteTransportRefusal answers for it at
+    // boot and in readRemoteToken, so the token is never sent over it.
     if (config.remote.url && !config.remote.allowInsecureHttp && checkRemoteDaemonUrl(config.remote.url).kind === 'insecure-http') {
-      warnings.push('remote.url is plain http to an address that is not loopback or tailnet, and allowInsecureHttp is not set; ignored with its token')
-      config.remote.url = null
+      warnings.push('remote.url is plain http to an address that is not loopback or tailnet, and allowInsecureHttp is not set; it is not used until confirmed')
     }
     if (r.token !== undefined && r.token !== null && config.remote.url) {
       if (typeof r.token === 'string' && r.token.startsWith(SAFE_PREFIX)) config.remote.token = r.token
-      else warnings.push('remote.token is not an encrypted (safe:) token; ignored')
+      else {
+        warnings.push('remote.token is not an encrypted (safe:) token; ignored')
+        dropped.push('the remote token, which was not stored encrypted')
+      }
     }
   }
   if (config.mode === 'remote' && !config.remote.url) {
     warnings.push('mode is remote but there is no usable remote.url; using embedded')
     config.mode = 'embedded'
+    dropped.push('the remote mode, which had no usable daemon URL')
   }
-  return { config, warnings }
+  return { config, warnings, dropped }
 }
 
 /**
@@ -183,11 +224,22 @@ function readBootFile(configPath: string): { found: boolean; data: unknown; prob
  */
 export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, log: Log = console): BootBackend {
   const file = readBootFile(configPath)
-  const { config, warnings } = normalizeBackendConfig(file.data)
+  const { config, warnings, dropped } = normalizeBackendConfig(file.data)
   if (file.problem) warnings.push(file.problem)
   for (const w of warnings) log.warn(`[Backend] ${configPath}: ${w}`)
+  const notices: string[] = []
+  if (file.problem) notices.push(`studio-backend.json: ${file.problem}.`)
+  if (dropped.length > 0) notices.push(`studio-backend.json: ignored ${dropped.join('; ')}.`)
 
   let mode = config.mode
+  // The file asks for remote, but its URL may not be used: embedded for this
+  // launch, logged and shown in Settings → Backend (never silent).
+  const refusal = config.mode === 'remote' ? remoteTransportRefusal(config) : null
+  if (refusal) {
+    log.warn(`[Backend] ${configPath}: mode is remote, but ${refusal} Using embedded for this launch.`)
+    notices.push(`Studio started in embedded mode because the remote daemon cannot be used: ${refusal}`)
+    mode = 'embedded'
+  }
   let source: StudioBackendSource = file.found ? 'file' : 'default'
   const override = env[BACKEND_ENV_OVERRIDE]?.trim().toLowerCase()
   if (override) {
@@ -200,17 +252,23 @@ export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, l
   }
   if (source === 'env') log.log(`[Backend] ${mode} (from ${BACKEND_ENV_OVERRIDE}; ${configPath} says ${config.mode})`)
   else if (source === 'file') log.log(`[Backend] ${mode} (from ${configPath})`)
-  return { mode, source, configPath, config, writeBlocked: file.writeBlocked }
+  return { mode, source, configPath, config, writeBlocked: file.writeBlocked, notices, dropped }
 }
 
-/** The saved remote token in plain text, for the daemon client in main only. */
+/**
+ * The saved remote token in plain text, for the daemon client in main only.
+ * Null when the transport rule refuses the saved URL (remoteTransportRefusal):
+ * the token is never handed out for an address it may not be sent to.
+ */
 export function readRemoteToken(config: StudioBackendConfig, codec: SecretCodec): string | null {
+  if (remoteTransportRefusal(config)) return null
   return config.remote.token ? codec.decrypt(config.remote.token) : null
 }
 
-export function toBackendSettingsView(config: StudioBackendConfig, boot: Pick<BootBackend, 'mode' | 'source'>, codec: SecretCodec): BackendSettingsView {
+export function toBackendSettingsView(config: StudioBackendConfig, boot: Pick<BootBackend, 'mode' | 'source' | 'notices'>, codec: SecretCodec): BackendSettingsView {
   return {
-    active: { mode: boot.mode, source: boot.source },
+    active: { mode: boot.mode, source: boot.source, notices: boot.notices ?? [] },
+    remoteUrlProblem: remoteTransportRefusal(config),
     configured: {
       mode: config.mode,
       keepDaemonRunning: config.keepDaemonRunning,
@@ -219,6 +277,7 @@ export function toBackendSettingsView(config: StudioBackendConfig, boot: Pick<Bo
       allowInsecureHttp: config.remote.allowInsecureHttp,
     },
     modeSwitchAvailable: MODE_SWITCH_AVAILABLE,
+    remoteSwitchAvailable: REMOTE_SWITCH_AVAILABLE,
     encryptionAvailable: codec.available(),
     encryptionUnavailableReason: codec.available() ? null : (codec.unavailableReason?.() ?? null),
   }
@@ -270,8 +329,11 @@ export function applyBackendPatch(
     if (!isMode(patch.mode)) return fail('invalid_mode', 'Unknown backend mode.')
     if (patch.mode !== current.mode) {
       // Back to embedded is always allowed: it is the recovery path from a
-      // hand-edited file, and embedded needs no handover.
-      if (!opts.allowModeChange && patch.mode !== 'embedded') return fail('mode_switch_unavailable', 'Switching the backend is available in a later build.')
+      // hand-edited file, and embedded needs no handover. Remote needs no
+      // handover either (nothing moves to another machine, §5.5); it is
+      // allowed once its URL and token are saved (checked below).
+      const remoteOk = patch.mode === 'remote' && REMOTE_SWITCH_AVAILABLE
+      if (!opts.allowModeChange && patch.mode !== 'embedded' && !remoteOk) return fail('mode_switch_unavailable', 'Switching the backend is available in a later build.')
       next.mode = patch.mode
       changes.push(`mode=${patch.mode}`)
     }
@@ -347,8 +409,23 @@ export function applyBackendPatch(
   // Only a save that touches the remote fields is checked, so an unrelated
   // save (mode, keepDaemonRunning) is never blocked by the stored URL.
   const touchesRemote = patch.remoteUrl !== undefined || patch.remoteToken !== undefined || patch.allowInsecureHttp !== undefined
-  if (touchesRemote && next.remote.url && !next.remote.allowInsecureHttp && checkRemoteDaemonUrl(next.remote.url).kind === 'insecure-http') {
+  const unconfirmedHttp = !!next.remote.url && !next.remote.allowInsecureHttp && checkRemoteDaemonUrl(next.remote.url).kind === 'insecure-http'
+  // Withdrawing the confirmation of the saved address is allowed (W0-E
+  // follow-up): the URL and token stay saved but are not used until the
+  // user confirms again or changes the address.
+  const withdrawn = unconfirmedHttp && current.remote.allowInsecureHttp && next.remote.url === current.remote.url
+    && patch.allowInsecureHttp === false && patch.remoteToken === undefined
+  if (withdrawn) {
+    notices.push(`Studio will not send the token to ${next.remote.url} until you confirm plain http for it again.`)
+  } else if (touchesRemote && unconfirmedHttp) {
     return fail('insecure_url_unconfirmed', 'This http:// address is not loopback or a tailnet address. Confirm that you trust this network, or use https://.')
+  }
+  // A switch to remote needs a daemon Studio may talk to.
+  if (patch.mode === 'remote' && patch.mode !== current.mode) {
+    if (!next.remote.url) return fail('remote_not_configured', 'Save the remote daemon URL and token before switching to it.')
+    const refusal = remoteTransportRefusal(next)
+    if (refusal) return fail('insecure_url_unconfirmed', refusal)
+    if (!next.remote.token) return fail('remote_not_configured', `Save the token for ${next.remote.url} before switching to it.`)
   }
 
   return { ok: true, config: next, notices, changes }
@@ -375,12 +452,18 @@ export function createBackendSettingsStore(deps: {
   const log = deps.log ?? console
   let current = deps.boot.config
   let queue: Promise<unknown> = Promise.resolve()
+  /** Fields the boot read ignored: the first write leaves them out of the file, and that save says so. */
+  let droppedUnwritten = [...(deps.boot.dropped ?? [])]
 
   const save = async (patch: BackendSettingsPatch): Promise<BackendSettingsSaveResult> => {
     if (deps.boot.writeBlocked) return { ok: false, code: 'file_unreadable', error: deps.boot.writeBlocked }
     const result = applyBackendPatch(current, patch, { codec: deps.codec, allowModeChange: deps.allowModeChange ?? MODE_SWITCH_AVAILABLE })
     if (!result.ok) return result
     if (result.changes.length > 0) {
+      if (droppedUnwritten.length > 0) {
+        result.notices.push(`studio-backend.json no longer holds ${droppedUnwritten.join('; ')}.`)
+        log.log(`[Backend] This save leaves out what the boot read ignored: ${droppedUnwritten.join('; ')}`)
+      }
       try {
         await mkdir(dirname(deps.boot.configPath), { recursive: true })
         await writeJsonAtomicAsync(deps.boot.configPath, result.config)
@@ -389,6 +472,7 @@ export function createBackendSettingsStore(deps: {
         return { ok: false, code: 'write_failed', error: `Could not save ${deps.boot.configPath}.` }
       }
       current = result.config
+      droppedUnwritten = []
       log.log(`[Backend] Settings → Backend saved: ${result.changes.join(', ')} (applies at next launch)`)
     }
     return { ok: true, view: toBackendSettingsView(current, deps.boot, deps.codec), notices: result.notices }

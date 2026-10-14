@@ -19,7 +19,18 @@ export type StudioBackendSource =
 
 export interface BackendSettingsView {
   /** The backend this Studio process booted with. Fixed until restart. */
-  active: { mode: StudioBackendMode; source: StudioBackendSource }
+  active: {
+    mode: StudioBackendMode
+    source: StudioBackendSource
+    /**
+     * What this launch could not do as configured, token-free: Studio started
+     * embedded because the remote daemon may not be used, or fields of
+     * studio-backend.json were ignored.
+     */
+    notices: string[]
+  }
+  /** Why the saved remote URL is not used (an unconfirmed plain-http address), or null. */
+  remoteUrlProblem: string | null
   /** What `studio-backend.json` holds now (what the next launch uses, unless overridden). */
   configured: {
     mode: StudioBackendMode
@@ -32,6 +43,8 @@ export interface BackendSettingsView {
   }
   /** False until mode switching ships; the renderer disables mode choices. */
   modeSwitchAvailable: boolean
+  /** Switching to Remote daemon is available (it moves nothing, design §5.5). */
+  remoteSwitchAvailable: boolean
   /** OS keychain encryption (safeStorage) works; a token cannot be saved without it. */
   encryptionAvailable: boolean
   /** Why encryption is unavailable, when main knows (e.g. Linux without a keyring). */
@@ -65,6 +78,7 @@ export type BackendSettingsErrorCode =
   | 'invalid_patch'
   | 'file_unreadable'
   | 'write_failed'
+  | 'remote_not_configured'
 
 export type BackendSettingsSaveResult =
   | { ok: true; view: BackendSettingsView; notices: string[] }

@@ -50,7 +50,7 @@ describe('resolveBootBackend', () => {
     const path = tempConfigPath()
     const { lines, log } = recordingLog()
     const boot = resolveBootBackend(path, {}, log)
-    expect(boot).toEqual({ mode: 'embedded', source: 'default', configPath: path, config: defaultBackendConfig(), writeBlocked: null })
+    expect(boot).toEqual({ mode: 'embedded', source: 'default', configPath: path, config: defaultBackendConfig(), writeBlocked: null, notices: [], dropped: [] })
     expect(lines).toEqual([])
     expect(existsSync(path)).toBe(false)
   })
@@ -257,15 +257,71 @@ describe('review fixes', () => {
     expect(samePath.ok && samePath.config.remote.allowInsecureHttp).toBe(true)
   })
 
-  it('never boots or keeps a token for an unconfirmed plain-http URL from the file', () => {
+  it('never boots remote or hands out the token for an unconfirmed plain-http URL from the file, and says so', () => {
     const path = tempConfigPath()
     writeFileSync(path, JSON.stringify({ v: 1, mode: 'remote', remote: { url: 'http://192.168.1.5:7385', token: 'safe:abc' } }))
     const { lines, log } = recordingLog()
     const boot = resolveBootBackend(path, {}, log)
     expect(boot.mode).toBe('embedded')
-    expect(boot.config.remote).toEqual({ url: null, token: null, allowInsecureHttp: false })
-    expect(lines.some((l) => l.includes('ignored with its token'))).toBe(true)
+    // Kept (Settings shows it, a save keeps it), never used.
+    expect(boot.config.remote).toEqual({ url: 'http://192.168.1.5:7385', token: 'safe:abc', allowInsecureHttp: false })
+    expect(readRemoteToken(boot.config, fakeCodec())).toBeNull()
+    expect(lines.some((l) => l.includes('not used until confirmed'))).toBe(true)
     expect(lines.some((l) => l.includes('mode is remote'))).toBe(true)
+    // W0-E follow-up: the fallback is visible in Settings → Backend.
+    const view = createBackendSettingsStore({ boot, codec: fakeCodec(), log: recordingLog().log }).get()
+    expect(view.active.notices.join(' ')).toMatch(/started in embedded mode.*192\.168\.1\.5/)
+    expect(view.remoteUrlProblem).toMatch(/not confirmed/)
+    expect(view.configured).toMatchObject({ mode: 'remote', remoteUrl: 'http://192.168.1.5:7385', remoteTokenSaved: true, allowInsecureHttp: false })
+  })
+
+  it('an unrelated save keeps the unconfirmed URL and the mode in the file', async () => {
+    const path = tempConfigPath()
+    writeFileSync(path, JSON.stringify({ v: 1, mode: 'remote', remote: { url: 'http://192.168.1.5:7385', token: 'safe:abc' } }))
+    const boot = resolveBootBackend(path, {}, recordingLog().log)
+    const s = createBackendSettingsStore({ boot, codec: fakeCodec(), log: recordingLog().log })
+    expect((await s.set({ keepDaemonRunning: true })).ok).toBe(true)
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({ mode: 'remote', keepDaemonRunning: true, remote: { url: 'http://192.168.1.5:7385', token: 'safe:abc', allowInsecureHttp: false } })
+  })
+
+  it('the save that leaves out fields the boot read ignored says so, once', async () => {
+    const path = tempConfigPath()
+    writeFileSync(path, JSON.stringify({ v: 1, mode: 'remote', remote: { url: 'ftp://adf.example.com' } }))
+    const boot = resolveBootBackend(path, {}, recordingLog().log)
+    expect(boot.mode).toBe('embedded')
+    const s = createBackendSettingsStore({ boot, codec: fakeCodec(), log: recordingLog().log })
+    expect(s.get().active.notices.join(' ')).toMatch(/ignored the remote daemon URL/)
+    const first = await s.set({ keepDaemonRunning: true })
+    expect(first.ok && first.notices.join(' ')).toMatch(/no longer holds the remote daemon URL/)
+    const second = await s.set({ keepDaemonRunning: false })
+    expect(second.ok && second.notices).toEqual([])
+  })
+
+  it('a confirmed plain-http URL can be un-confirmed without changing it (W0-E follow-up)', () => {
+    const current: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: 'http://192.168.1.5:7385', token: 'safe:abc', allowInsecureHttp: true } }
+    const result = applyBackendPatch(current, { remoteUrl: 'http://192.168.1.5:7385', allowInsecureHttp: false }, opts)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.config.remote).toEqual({ url: 'http://192.168.1.5:7385', token: 'safe:abc', allowInsecureHttp: false })
+    expect(result.notices.join(' ')).toMatch(/will not send the token/)
+    expect(readRemoteToken(result.config, fakeCodec())).toBeNull()
+    // Re-confirming takes the origin again.
+    const again = applyBackendPatch(result.config, { allowInsecureHttp: true, insecureHttpOrigin: 'http://192.168.1.5:7385' }, opts)
+    expect(again.ok && again.config.remote.allowInsecureHttp).toBe(true)
+  })
+
+  it('switches to remote without the handover, once a usable URL and its token are saved', () => {
+    const none = defaultBackendConfig()
+    expect(applyBackendPatch(none, { mode: 'remote' }, opts)).toMatchObject({ ok: false, code: 'remote_not_configured' })
+    const urlOnly: StudioBackendConfig = { ...none, remote: { url: 'https://adf.example.com', token: null, allowInsecureHttp: false } }
+    expect(applyBackendPatch(urlOnly, { mode: 'remote' }, opts)).toMatchObject({ ok: false, code: 'remote_not_configured' })
+    const unconfirmed: StudioBackendConfig = { ...none, remote: { url: 'http://192.168.1.5:7385', token: 'safe:abc', allowInsecureHttp: false } }
+    expect(applyBackendPatch(unconfirmed, { mode: 'remote' }, opts)).toMatchObject({ ok: false, code: 'insecure_url_unconfirmed' })
+    const ready: StudioBackendConfig = { ...none, remote: { url: 'https://adf.example.com', token: 'safe:abc', allowInsecureHttp: false } }
+    const switched = applyBackendPatch(ready, { mode: 'remote' }, opts)
+    expect(switched.ok && switched.config.mode).toBe('remote')
+    // Local still waits for the handover (W4-A).
+    expect(applyBackendPatch(ready, { mode: 'local' }, opts)).toMatchObject({ ok: false, code: 'mode_switch_unavailable' })
   })
 
   it('does not block unrelated saves on a stored unconfirmed URL', () => {
