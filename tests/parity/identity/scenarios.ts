@@ -1,5 +1,6 @@
 import { IPC } from '../../../src/shared/constants/ipc-channels'
 import type { ParityScenario } from '../harness/scenario'
+import identityFixture from '../harness/identity.fixture.json'
 
 /**
  * Identity parity scenarios (tracker W3-B). Each is the renderer's own call
@@ -95,6 +96,53 @@ export const legacyPasswordUnlockScenario: ParityScenario = {
   },
 }
 
-export const IDENTITY_SCENARIOS: readonly ParityScenario[] = [ownerIdentityScenario, agentKeystoreScenario]
 /** Run against embedded Studio only, each with the reason (above). */
 export const IDENTITY_EMBEDDED_ONLY: readonly ParityScenario[] = [legacyPasswordUnlockScenario]
+
+/** The fixture owner's phrase (the identity fixture's `safe:` encoding, harness/electron-fake.ts). */
+function fixturePhrase(): string {
+  const raw = Buffer.from(String((identityFixture as Record<string, unknown>).ownerMnemonic).replace(/^safe:/, ''), 'base64').toString('utf-8')
+  return raw.slice('parity-safe:'.length)
+}
+
+/**
+ * Settings → Identity → Restore identity with the phrase of the owner on
+ * record (`expectedOwnerDid`), then a phrase of another owner in restore
+ * mode (refused before anything changes), then status.
+ */
+export const ownerImportScenario: ParityScenario = {
+  name: 'owner-import',
+  description: 'Restore the owner identity with its own phrase; a restore with another phrase is refused; status.',
+  fixtures: [],
+  quietMs: 500,
+  async run(ctx) {
+    const status = await ctx.invoke<{ ownerDid: string }>(IPC.IDENTITY_OWNER_STATUS)
+    await ctx.invoke(IPC.IDENTITY_OWNER_IMPORT, fixturePhrase(), status.ownerDid)
+    await ctx.invoke(IPC.IDENTITY_OWNER_IMPORT, 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about', status.ownerDid)
+    await ctx.invoke(IPC.IDENTITY_OWNER_IMPORT, 'not a phrase')
+    await ctx.invoke(IPC.IDENTITY_OWNER_STATUS)
+  },
+}
+
+/**
+ * Claim a running agent under the local owner (fresh identity), then store
+ * and read back a value: the write survives the claim.
+ */
+export const agentClaimScenario: ParityScenario = {
+  name: 'agent-claim',
+  description: 'Open and start agent-1; claim it; store app:token and reveal it; DID and attestations.',
+  fixtures: [{ name: 'agent-1' }],
+  quietMs: 1000,
+  async run(ctx) {
+    const agent = ctx.agent('agent-1')
+    await ctx.invoke(IPC.FILE_OPEN, { filePath: agent.filePath })
+    await ctx.invoke(IPC.AGENT_START, { filePath: agent.filePath, hasUserMessage: false })
+    await ctx.invoke(IPC.IDENTITY_CLAIM)
+    await ctx.invoke(IPC.IDENTITY_SET, { purpose: 'app:token', value: 'after-claim' })
+    await ctx.invoke(IPC.IDENTITY_REVEAL, { purpose: 'app:token' })
+    await ctx.invoke(IPC.IDENTITY_GET_DID)
+    await ctx.invoke(IPC.IDENTITY_ATTESTATIONS_GET)
+  },
+}
+
+export const IDENTITY_SCENARIOS: readonly ParityScenario[] = [ownerIdentityScenario, agentKeystoreScenario, ownerImportScenario, agentClaimScenario]

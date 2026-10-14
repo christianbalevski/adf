@@ -37,9 +37,9 @@ export interface GapEntry {
 
 const CORE = ['open-agent', 'start-agent', 'chat-tool-call'] as const
 /** W3-B scenarios (tests/parity/settings, tests/parity/identity) that run no agent. */
-const W3B_NO_AGENT = ['provider-round-trip', 'agent-provider-key', 'subscription-status', 'owner-identity', 'locked-credentials'] as const
-/** The W3-B scenario that starts agent-1 and leaves it running (as chat-tool-call). */
-const W3B_RUNNING = ['agent-keystore'] as const
+const W3B_NO_AGENT = ['provider-round-trip', 'agent-provider-key', 'subscription-status', 'owner-identity', 'locked-credentials', 'owner-import'] as const
+/** The W3-B scenarios that start agent-1 and leave it running (as chat-tool-call). */
+const W3B_RUNNING = ['agent-keystore', 'agent-claim'] as const
 const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING] as const
 const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING] as const
 /** Scenarios whose agent file nobody holds open when the state is dumped (chat-tool-call's still runs). */
@@ -212,7 +212,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2b:identity-on-open',
     ws: 'W2-B',
-    scenarios: [...CORE, ...W3B_RUNNING],
+    scenarios: [...CORE, 'agent-keystore'],
     path: 'state: adf_identity and adf_attestations rows',
     what: 'The daemon runs its open steps (ensureWorkspaceIdentity on open, W2-A) only for a document a client session holds: no keys, no owner and operator attestations.',
     apply(d, e) {
@@ -229,7 +229,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2b:identity-meta',
     ws: 'W2-B',
-    scenarios: [...CORE, ...W3B_RUNNING],
+    scenarios: [...CORE, 'agent-keystore'],
     path: 'state: adf_meta rows adf_did, adf_owner_did, adf_runtime_did',
     what: 'Same cause as w2b:identity-on-open: the identity stamps are written on open.',
     apply(d, e) {
@@ -244,6 +244,75 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
         }
         rows.sort((a, b) => String(a.key).localeCompare(String(b.key)))
       }
+      return n
+    },
+  },
+  {
+    id: 'w2b:claim-previous-did',
+    ws: 'W2-B',
+    scenarios: ['agent-claim'],
+    path: 'the claim\'s clone attestation (IDENTITY_ATTESTATIONS_GET result, adf_attestations) and adf_meta adf_did_history',
+    what: 'Same cause as w2b:identity-on-open: the daemon minted no DID on open, so its claim has no previous DID to record (no clone attestation, no DID history).',
+    apply(d, e) {
+      let n = 0
+      const isClone = (a: unknown) => (a as { role?: unknown })?.role === 'clone'
+      // The attestations the panel reads after the claim.
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== IPC.IDENTITY_ATTESTATIONS_GET) return
+        const mine = (step.result as { attestations?: unknown[] })?.attestations
+        const theirs = (base.result as { attestations?: unknown[] })?.attestations
+        if (!mine || !theirs || mine.some(isClone)) return
+        if (!same(mine, theirs.filter((a) => !isClone(a)))) return
+        step.result = clone(base.result)
+        n++
+      })
+      for (const { file, rows } of table(d, 'adf_attestations')) {
+        const base = (e.state.adf[file]?.tables.adf_attestations?.rows ?? []) as Row[]
+        const withoutIds = (r: Row[]) => r.map(({ id: _id, ...rest }) => rest)
+        if (rows.some(isClone) || !base.some(isClone)) continue
+        if (!same(withoutIds(rows), withoutIds(base.filter((r) => !isClone(r))))) continue
+        setRows(d, file, 'adf_attestations', clone(base))
+        n++
+      }
+      for (const { rows } of table(d, 'adf_meta')) {
+        const want = Object.values(e.state.adf).flatMap((dump) => (dump.tables.adf_meta?.rows ?? []) as Row[]).find((r) => r.key === 'adf_did_history')
+        if (!want || rows.some((r) => r.key === 'adf_did_history')) continue
+        rows.push(clone(want))
+        rows.sort((a, b) => String(a.key).localeCompare(String(b.key)))
+        n++
+      }
+      return n
+    },
+  },
+  {
+    id: 'mode:restore-keeps-adopted-delegation',
+    ws: 'mode',
+    scenarios: ['owner-import'],
+    path: 'runtimeDelegation: IDENTITY_OWNER_STATUS results after the restore, and adf-settings.json',
+    what: 'Restoring the same owner re-signs Studio\'s runtime delegation in embedded mode; the daemon keeps the one it adopted from Studio (§5.3: only Studio writes its runtime identity), which stays valid.',
+    apply(d, e) {
+      let n = 0
+      const ORIGINAL = '<sig:runtime-delegation>'
+      type Delegation = { issuer?: unknown; subject?: unknown; role?: unknown; signature?: unknown; issued_at?: unknown }
+      const swap = (mine: Delegation | undefined, theirs: Delegation | undefined): Delegation | undefined => {
+        if (!mine || !theirs || mine.signature !== ORIGINAL || theirs.signature === ORIGINAL) return undefined
+        if (mine.issuer !== theirs.issuer || mine.subject !== theirs.subject || mine.role !== theirs.role) return undefined
+        if (!/^<sig:valid#\d+>$/.test(String(theirs.signature))) return undefined
+        n++
+        return clone(theirs)
+      }
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== IPC.IDENTITY_OWNER_STATUS) return
+        const r = step.result as { runtimeDelegation?: Delegation }
+        const next = swap(r?.runtimeDelegation, (base.result as { runtimeDelegation?: Delegation })?.runtimeDelegation)
+        if (next) r.runtimeDelegation = next
+      })
+      const settings = d.state.userDataJson['adf-settings.json'] as { runtimeDelegation?: Delegation } | undefined
+      const baseSettings = e.state.userDataJson['adf-settings.json'] as { runtimeDelegation?: Delegation } | undefined
+      const next = swap(settings?.runtimeDelegation, baseSettings?.runtimeDelegation)
+      if (next && settings) settings.runtimeDelegation = next
       return n
     },
   },
