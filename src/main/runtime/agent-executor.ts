@@ -621,7 +621,7 @@ export class AgentExecutor extends EventEmitter {
   })
 
   // HIL (human-in-the-loop) tool approval — task-native
-  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }) => void; name: string; input: unknown; meta: ApprovalMeta }>()
+  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }) => void; name: string; input: unknown; meta: ApprovalMeta }>()
 
   // Protection denials rejected by the authorizer this turn — a retried call
   // returns the denial directly instead of re-prompting. Cleared each turn.
@@ -957,7 +957,7 @@ export class AgentExecutor extends EventEmitter {
   private trackPendingHilTask(
     taskId: string,
     entry: {
-      resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }) => void
+      resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }) => void
       name: string
       input: unknown
       meta: ApprovalMeta
@@ -1260,7 +1260,7 @@ export class AgentExecutor extends EventEmitter {
     input: unknown,
     meta?: ApprovalMeta,
     opts?: { umbilicalReason?: string }
-  ): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
+  ): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }> {
     const taskId = `task_${nanoid(12)}`
     const argsStr = JSON.stringify(input ?? {})
     const originLabel = this.config.id
@@ -1300,7 +1300,7 @@ export class AgentExecutor extends EventEmitter {
       ...alwaysApproveEventFields(approvalMeta),
     })
 
-    return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }>((resolve) => {
+    return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }>((resolve) => {
       this.trackPendingHilTask(taskId, {
         resolve: (r) => resolve({ ...r, taskId }),
         name, input, meta: approvalMeta
@@ -1377,11 +1377,13 @@ export class AgentExecutor extends EventEmitter {
     const meta: ApprovalMeta | undefined = opts?.canAlwaysApprove === false
       ? { reason: 'restricted', canAlwaysApprove: false, alwaysApproveBlockedReason: 'One-time approval only for this request' }
       : undefined
-    const { approved, taskId, feedback } = await this.requestHilApproval(
+    const { approved, taskId, feedback, settled } = await this.requestHilApproval(
       name, input, meta, { umbilicalReason: 'shell_gate' }
     )
     const workspace = this.session.getWorkspace()
-    if (approved) {
+    if (settled) {
+      // settleHilTask already wrote the task: nobody decided.
+    } else if (approved) {
       workspace.updateTaskStatus(taskId, 'completed', 'approved')
     } else {
       workspace.updateTaskStatus(taskId, 'denied', undefined, feedback?.trim() || 'Rejected')
@@ -1432,6 +1434,35 @@ export class AgentExecutor extends EventEmitter {
       })
       pending.resolve({ approved, modifiedArgs, feedback })
     }
+  }
+
+  /**
+   * End a pending HIL request that the RUNTIME settles, with no human
+   * decision: the request informed the human (the daemon's
+   * `mcp_oauth_authorize`, which carries an OAuth page to open) and the work
+   * it waited on has finished. The task becomes `completed` with `note` as its
+   * result, the approvals menu records `completed`, the card is dismissed, and
+   * the waiter resolves with `{ approved: false, settled: true }`. It never
+   * reads as an approval. Returns false when the request is already gone.
+   */
+  settleHilTask(taskId: string, note: string): boolean {
+    const pending = this.pendingHilTasks.get(taskId)
+    if (!pending) return false
+    this.pendingHilTasks.delete(taskId)
+    const workspace = this.session.getWorkspace()
+    const task = workspace.getTask(taskId)
+    if (task && (task.status === 'pending' || task.status === 'pending_approval')) {
+      workspace.updateTaskStatus(taskId, 'completed', note)
+    }
+    approvalHub.unregister(this.notificationKeyFor(taskId), 'completed')
+    this.emitEvent({
+      type: 'tool_approval_resolved',
+      payload: { requestId: taskId, approved: false, settled: true },
+      timestamp: Date.now()
+    })
+    this.emitRuntimeEvent('hil.resolved', { request_id: taskId, task_id: taskId, approved: false, settled: true, feedback: note })
+    pending.resolve({ approved: false, settled: true })
+    return true
   }
 
   /**

@@ -149,6 +149,23 @@ interface BuiltAgentState {
   connectMcpServer: (serverName: string, reason: string) => Promise<McpConnectOutcome>
 }
 
+/** Input of an `mcp_oauth_authorize` request. */
+interface AuthorizeInput {
+  server: string
+  url: string
+  authorize_url: string
+}
+
+interface PrepareHttpOAuthParams {
+  serverCfg: McpServerConfig
+  url: string
+  registration: McpServerRegistration | undefined
+  workspace: AdfWorkspace
+  keyRef: DerivedKeyRef
+  executor: AgentExecutor | null
+  signIns: Set<AbortController>
+}
+
 /** The agent's MCP wiring, as registerMcpTools returns it. */
 interface McpRuntime {
   manager: McpClientManager | null
@@ -589,8 +606,9 @@ export class AgentRuntimeBuilder {
       resolveOAuthStoreForConnect({ agentStore: new AgentKeystoreOAuthStore(workspace, cfg.name, keyRef.current) }),
     )
     const manager = new McpClientManager(scratchDir, oauthProviderFactory)
-    // Interactive sign-ins in flight, aborted at teardown.
+    // Interactive sign-ins in flight, aborted at teardown; one per server.
     const signIns = new Set<AbortController>()
+    const signInsByServer = new Map<string, Promise<void>>()
 
     manager.on('log', (serverName, entry) => {
       const level = entry.stream === 'stderr' ? 'warn' : 'info'
@@ -674,6 +692,7 @@ export class AgentRuntimeBuilder {
             keyRef,
             executor: connectOpts.interactive ? getAssembled()?.executor ?? null : null,
             signIns,
+            inFlight: signInsByServer,
           })
         }
       } else if (this.podmanService && willContainerize) {
@@ -795,7 +814,11 @@ export class AgentRuntimeBuilder {
         const live = manager.getServerState(name)?.status
         if (live === 'connected' || live === 'connecting') continue
         try {
-          const result = await connectOneServer(nextConfig, name, 'Attached', { interactive: true })
+          // Interactive only while a turn runs (the agent's own
+          // sys_update_config). A daemon config write to an idle or off agent
+          // must not leave it in awaiting_approval with no turn to resume.
+          const interactive = getAssembled()?.executor.isTurnActive() ?? false
+          const result = await connectOneServer(nextConfig, name, 'Attached', { interactive })
           if (result.toolsDiscovered > 0) {
             console.log(`[AgentRuntimeBuilder][MCP] Reconcile: connected "${name}" — ${result.toolsDiscovered} tools now available to agent`)
           } else if (result.error) {
@@ -988,21 +1011,26 @@ export class AgentRuntimeBuilder {
    * 3. On approval the flow runs here, with this process's loopback callback.
    *    Where Studio opens the browser itself, the daemon raises a second HIL
    *    request, `mcp_oauth_authorize`, whose input carries the authorize URL;
-   *    the client opens it. The request settles itself when the callback lands
-   *    or the flow fails, and denying it cancels the flow.
+   *    the client opens it. It stays pending until the callback lands or the
+   *    flow ends: approving means "opened" and re-raises it, denying cancels
+   *    the flow, and the runtime ends it with settleHilTask (`completed`,
+   *    never an approval).
    *
    * No executor (initial connect, owner restart): never prompts. Never throws:
    * every failure leaves the connect to fail plainly with the sign-in status.
+   * One sign-in per server at a time: a concurrent call for the same server
+   * waits for the one in flight, then connects with whatever it stored.
    */
-  private async prepareHttpOAuth(params: {
-    serverCfg: McpServerConfig
-    url: string
-    registration: McpServerRegistration | undefined
-    workspace: AdfWorkspace
-    keyRef: DerivedKeyRef
-    executor: AgentExecutor | null
-    signIns: Set<AbortController>
-  }): Promise<void> {
+  private async prepareHttpOAuth(params: PrepareHttpOAuthParams & { inFlight: Map<string, Promise<void>> }): Promise<void> {
+    const key = `${params.serverCfg.name} ${canonicalizeServerUrl(params.url)}`
+    const pending = params.inFlight.get(key)
+    if (pending) return pending
+    const run = this.prepareHttpOAuthOnce(params).finally(() => { params.inFlight.delete(key) })
+    params.inFlight.set(key, run)
+    return run
+  }
+
+  private async prepareHttpOAuthOnce(params: PrepareHttpOAuthParams): Promise<void> {
     const { serverCfg, url, workspace, executor } = params
     const serverName = serverCfg.name
     const agentStore = new AgentKeystoreOAuthStore(workspace, serverName, params.keyRef.current)
@@ -1058,20 +1086,36 @@ export class AgentRuntimeBuilder {
     const { serverName, url, executor, agentStore, appStore, log } = params
     const controller = new AbortController()
     params.signIns.add(controller)
-    let authorizeInput: { server: string; url: string; authorize_url: string } | null = null
+    // The pending authorize request, if any. Its input object is the
+    // identity the settle looks it up by.
+    let authorizeInput: AuthorizeInput | null = null
+    let finished = false
+    const raise = (input: AuthorizeInput): void => {
+      authorizeInput = input
+      void executor.requestApproval(MCP_OAUTH_AUTHORIZE_APPROVAL, input, { canAlwaysApprove: false })
+        .then((approved) => {
+          // Settled by the runtime (callback landed, flow ended, superseded):
+          // a newer request or nothing is pending now.
+          if (finished || authorizeInput !== input) return
+          if (approved) {
+            // "Opened": the page is open, the flow still waits for its
+            // callback, so the URL stays on screen.
+            log('info', `OAuth authorization page for "${serverName}" opened — waiting for the callback.`)
+            raise({ ...input })
+          } else if (!controller.signal.aborted) {
+            // Denied, or drained by agent teardown: stop waiting.
+            controller.abort()
+          }
+        }, () => { if (!finished && authorizeInput === input && !controller.signal.aborted) controller.abort() })
+    }
     const io: McpHttpOAuthIO = {
       openUrl: (authorizeUrl) => {
         // One authorize request per flow: a repeated redirect replaces it.
         const previous = authorizeInput
-        const input = { server: serverName, url, authorize_url: authorizeUrl }
-        authorizeInput = input
-        if (previous) settlePendingApproval(executor, previous, false, 'Superseded by a new authorization URL')
+        authorizeInput = null
+        if (previous) settlePendingApproval(executor, previous, 'Superseded by a new authorization URL')
         log('info', `OAuth sign-in for "${serverName}" approved — authorization URL raised as a "${MCP_OAUTH_AUTHORIZE_APPROVAL}" request; open it to continue.`)
-        // Denied, or drained by agent teardown: stop waiting for the callback.
-        // Only the current request cancels; a superseded one is settled above.
-        const cancel = (): void => { if (authorizeInput === input && !controller.signal.aborted) controller.abort() }
-        void executor.requestApproval(MCP_OAUTH_AUTHORIZE_APPROVAL, input, { canAlwaysApprove: false })
-          .then((approved) => { if (!approved) cancel() }, cancel)
+        raise({ server: serverName, url, authorize_url: authorizeUrl })
       },
       log: (message) => console.log(message),
     }
@@ -1087,9 +1131,10 @@ export class AgentRuntimeBuilder {
     } finally {
       params.signIns.delete(controller)
     }
-    // The authorize request outlives nothing: the callback landed (approve) or
-    // the flow ended without it (deny). A request already decided is gone.
-    if (authorizeInput) settlePendingApproval(executor, authorizeInput, flow.authorized, flow.authorized ? 'Authorization completed' : `Authorization did not complete: ${flow.error ?? 'unknown'}`)
+    // The authorize request ends with the flow: the callback landed, or the
+    // flow stopped without it. A request someone denied is already gone.
+    finished = true
+    if (authorizeInput) settlePendingApproval(executor, authorizeInput, flow.authorized ? 'Authorization completed' : `Authorization did not complete: ${flow.error ?? 'unknown'}`)
     if (!flow.authorized) {
       log('warn', `OAuth sign-in for "${serverName}" did not complete: ${flow.error ?? 'unknown'}`)
       return false
@@ -1444,10 +1489,10 @@ async function copyOAuthRecord(appStore: McpOAuthStore, agentStore: AgentKeystor
   return true
 }
 
-/** Resolve the still-pending HIL request whose input is `input` (no-op when already decided). */
-function settlePendingApproval(executor: AgentExecutor, input: unknown, approved: boolean, feedback: string): void {
+/** Settle the still-pending HIL request whose input is `input` (no human decision; no-op when gone). */
+function settlePendingApproval(executor: AgentExecutor, input: unknown, note: string): void {
   try {
     const pending = executor.getPendingApprovals().find(request => request.input === input)
-    if (pending) executor.resolveHilTask(pending.requestId, approved, undefined, feedback)
+    if (pending) executor.settleHilTask(pending.requestId, note)
   } catch { /* executor already torn down */ }
 }

@@ -193,6 +193,8 @@ const OUTCOME_APPEARANCE: Record<NotificationOutcome, { label: string; tone: str
   // No one decided — the agent stopped, the turn was interrupted, or the
   // auto-deny timer fired. Reading that as "rejected" would be a lie.
   expired: { label: 'expired', tone: 'text-neutral-400 dark:text-neutral-500' },
+  // The runtime ended it: the work the request waited on finished.
+  completed: { label: 'completed', tone: 'text-[var(--status-info)]' },
 }
 
 /**

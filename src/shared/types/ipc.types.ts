@@ -600,7 +600,8 @@ export interface PendingNotification {
  * because "you never answered this" and "you said no" are different facts and
  * the history greys them differently.
  */
-export type NotificationOutcome = 'approved' | 'rejected' | 'answered' | 'expired'
+/** `completed`: the runtime settled the request itself (no human decision; AgentExecutor.settleHilTask). */
+export type NotificationOutcome = 'approved' | 'rejected' | 'answered' | 'expired' | 'completed'
 
 /**
  * A notification that has left the pending list, kept for the menu's recent
