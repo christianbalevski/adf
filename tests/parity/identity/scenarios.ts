@@ -73,10 +73,9 @@ export const agentKeystoreScenario: ParityScenario = {
  * removed, keys and envelopes are minted, and the same password becomes the
  * credentials envelope's share password.
  *
- * Embedded only for now: in daemon mode the unlock reaches a file that is
- * not running only through the client session's hold, which Studio main
- * gets with W2-C2. The daemon's conversion is covered by
- * tests/daemon-owner-envelope-api.test.ts.
+ * In daemon mode the unlock reaches the file, which is not running, through
+ * the client session's hold (W2-C2). The daemon's conversion is also
+ * covered by tests/daemon-owner-envelope-api.test.ts.
  */
 export const legacyPasswordUnlockScenario: ParityScenario = {
   name: 'legacy-password-unlock',
@@ -97,7 +96,7 @@ export const legacyPasswordUnlockScenario: ParityScenario = {
 }
 
 /** Run against embedded Studio only, each with the reason (above). */
-export const IDENTITY_EMBEDDED_ONLY: readonly ParityScenario[] = [legacyPasswordUnlockScenario]
+export const IDENTITY_EMBEDDED_ONLY: readonly ParityScenario[] = []
 
 /** The fixture owner's phrase (the identity fixture's `safe:` encoding, harness/electron-fake.ts). */
 function fixturePhrase(): string {
@@ -145,4 +144,4 @@ export const agentClaimScenario: ParityScenario = {
   },
 }
 
-export const IDENTITY_SCENARIOS: readonly ParityScenario[] = [ownerIdentityScenario, agentKeystoreScenario, ownerImportScenario, agentClaimScenario]
+export const IDENTITY_SCENARIOS: readonly ParityScenario[] = [ownerIdentityScenario, agentKeystoreScenario, ownerImportScenario, agentClaimScenario, legacyPasswordUnlockScenario]

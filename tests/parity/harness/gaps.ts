@@ -43,10 +43,10 @@ const W3B_NO_AGENT = ['provider-round-trip', 'agent-provider-key', 'subscription
 const W3B_RUNNING = ['agent-keystore', 'agent-claim'] as const
 /** W3-C scenarios (tests/parity/mcp): no agent runs, the fixture files are edited closed. */
 const W3C = ['w3c-install-progress', 'w3c-mcp-attach-credentials', 'w3c-adapter-telegram', 'w3c-mcp-connect-test', 'w3c-mcp-oauth-connect'] as const
-const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C] as const
+/** Scenarios that open a file that is not running, held by the client session (W2-C2). */
+const HELD_ONLY = ['legacy-password-unlock'] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY] as const
 const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING] as const
-/** Scenarios whose agent file nobody holds open when the state is dumped (chat-tool-call's still runs). */
-const NOT_RUNNING_AT_DUMP = ['open-agent', 'start-agent'] as const
 /** The mesh scenarios (tests/parity/mesh, W3-D). */
 const MESH = ['fleet-map', 'emergency-stop'] as const
 /** The mesh-status channels whose results carry fleet rows (MESH_STATUS, MESH_FLEET_STATUS, MESH_MAP_POLL). */
@@ -67,20 +67,10 @@ type Row = Record<string, unknown>
 function table(rec: ComparableRecording, name: string): Array<{ file: string; rows: Row[] }> {
   return Object.entries(rec.state.adf).flatMap(([file, dump]) => (dump.tables[name] ? [{ file, rows: dump.tables[name].rows as Row[] }] : []))
 }
-function setRows(rec: ComparableRecording, file: string, name: string, rows: Row[]): void {
-  rec.state.adf[file].tables[name].rows = rows
-}
+const leaseFiles = (rec: ComparableRecording) => Object.keys(rec.state.leases)
 function withoutPushes(step: StepRecord): unknown {
   const { pushes: _p, ...rest } = step as StepRecord & { pushes: unknown }
   return rest
-}
-const leaseFiles = (rec: ComparableRecording) => Object.keys(rec.state.leases)
-
-/** AGENT_EVENT types the interim GET /events adapter carries (client-stream.ts). */
-const ADAPTER_EVENT_TYPES = new Set(['state_changed', 'turn_complete', 'error'])
-const eventLineType = (line: string): string | null => {
-  const m = /^ {2}(?:\[app\] )?adf:agent:event ([a-z_]+)/.exec(line)
-  return m ? m[1] : null
 }
 
 /**
@@ -174,36 +164,6 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2c2:open-document-reads',
-    ws: 'W2-C2',
-    scenarios: CORE,
-    path: 'steps: every DOC_GET_BATCH and DOC_READ_INTERNAL_FILE before the first AGENT_START (and their `(threw)` timeline markers), no other step',
-    what: 'Reading a file that is not running throws "not available in daemon mode yet: W2-B": the daemon serves open documents (W2-A), but Studio holds one only through its client session.',
-    apply(d, e) {
-      const reads = new Set<string>([IPC.DOC_GET_BATCH, IPC.DOC_READ_INTERNAL_FILE])
-      const start = e.steps.findIndex((s) => s.kind === 'invoke' && s.channel === IPC.AGENT_START)
-      const before = start < 0 ? e.steps : e.steps.slice(0, start)
-      const want = before.filter((s) => s.kind === 'invoke' && reads.has(s.channel)).length
-      const hits: number[] = []
-      for (const [i, step] of d.steps.entries()) {
-        const base = e.steps[i]
-        if (step.kind !== 'invoke-error' || base?.kind !== 'invoke' || base.channel !== step.channel) continue
-        if (!reads.has(step.channel) || (start >= 0 && i >= start)) return 0
-        if ((step.error as { code?: unknown }).code !== 'daemon_mode_unavailable' || !/: W2-B\b/.test(step.error.message)) return 0
-        hits.push(i)
-      }
-      if (hits.length !== want) return 0
-      for (const i of hits) {
-        d.steps[i] = clone(e.steps[i])
-        for (const lines of Object.values(d.timelines)) {
-          const at = lines.indexOf(`< ${i + 1} (threw)`)
-          if (at >= 0) lines[at] = `< ${i + 1}`
-        }
-      }
-      return hits.length
-    },
-  },
-  {
     id: 'w3a:start-session-id',
     ws: 'W3-A',
     scenarios: [...RUNNING, ...MESH],
@@ -249,113 +209,64 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2c2:agent-event-stream',
-    ws: 'W2-C2',
-    scenarios: ['start-agent', 'chat-tool-call'],
-    path: 'AGENT_EVENT: the pushes, their timeline lines and the step push watermarks they shift',
-    what: 'The interim GET /events adapter carries only state_changed, turn_complete and error; deltas, tool calls, context, metadata, file updates and loop_seq come with the client stream.',
+    id: 'w3a:chat-echo',
+    ws: 'W3-A',
+    scenarios: ['chat-tool-call'],
+    path: 'AGENT_EVENT: one `trigger_message` (triggerType chat, the AGENT_INVOKE text) per AGENT_INVOKE, its timeline line and the step push watermarks it shifts',
+    what: 'The chat route has no `echoed`: the daemon announces Studio\'s own chat as a trigger_message, which the renderer shows as a second user bubble (embedded dispatches it with echoed: true).',
     apply(d, e) {
       const ch = IPC.AGENT_EVENT
-      const full = e.pushes[ch] ?? []
-      const kept = full.filter((p) => ADAPTER_EVENT_TYPES.has((p as { type?: string }).type ?? ''))
-      if (full.length === kept.length || !same(kept, d.pushes[ch] ?? [])) return 0
-      for (const [agent, lines] of Object.entries(e.timelines)) {
-        const filtered = lines.filter((l) => { const t = eventLineType(l); return t === null || ADAPTER_EVENT_TYPES.has(t) })
-        if (!same(filtered, d.timelines[agent])) return 0
+      const sent = d.steps.flatMap((st) => (st.kind === 'invoke' && st.channel === IPC.AGENT_INVOKE ? [String((st.args[0] as { userMessage?: unknown })?.userMessage)] : []))
+      const echo = (p: unknown, text: string) => {
+        const ev = p as { type?: string; payload?: { triggerType?: unknown; content?: unknown } }
+        return ev?.type === 'trigger_message' && ev.payload?.triggerType === 'chat' && ev.payload.content === text
       }
-      if (d.steps.length !== e.steps.length || d.steps.some((s, i) => !same(withoutPushes(s), withoutPushes(e.steps[i])))) return 0
-      d.pushes[ch] = clone(full)
-      d.timelines = clone(e.timelines)
-      d.steps = d.steps.map((s, i) => ({ ...s, pushes: clone(e.steps[i].pushes) }) as StepRecord)
-      return 1
+      if (sent.length === 0 || (e.pushes[ch] ?? []).some((p) => sent.some((t) => echo(p, t)))) return 0
+      const pushes = [...(d.pushes[ch] ?? [])]
+      for (const text of sent) {
+        const at = pushes.findIndex((p) => echo(p, text))
+        if (at < 0) return 0
+        pushes.splice(at, 1)
+      }
+      if (!same(pushes, e.pushes[ch] ?? [])) return 0
+      const line = /^ {2}(?:\[app\] )?adf:agent:event trigger_message$/
+      const timelines: Record<string, string[]> = {}
+      let lines = 0
+      for (const [agent, list] of Object.entries(d.timelines)) {
+        timelines[agent] = list.filter((l) => !(line.test(l) && ++lines))
+      }
+      if (lines !== sent.length || !same(timelines, e.timelines)) return 0
+      const bare = (st: StepRecord) => { const { pushes: _p, ...rest } = st as StepRecord & { pushes: unknown }; return rest }
+      if (d.steps.length !== e.steps.length || d.steps.some((st, i) => !same(bare(st), bare(e.steps[i])))) return 0
+      d.pushes[ch] = pushes
+      d.timelines = timelines
+      d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
+      return sent.length
     },
   },
   {
-    id: 'w2c2:streaming-check',
-    ws: 'W2-C2',
-    scenarios: ['start-agent', 'chat-tool-call'],
-    path: 'problems: the streaming check',
-    what: 'No text_delta_batch reaches the window (same cause as w2c2:agent-event-stream).',
-    apply(d) {
-      const before = d.problems?.length ?? 0
-      d.problems = (d.problems ?? []).filter((p) => !/^streaming: \d+ text slice\(s\) arrived as 0 text_delta_batch push\(es\)$/.test(p))
-      const n = before - d.problems.length
-      if (d.problems.length === 0) delete d.problems
-      return n
-    },
-  },
-  {
-    id: 'w2c2:identity-on-open',
-    ws: 'W2-C2',
-    scenarios: [...CORE, 'agent-keystore', ...MESH],
-    path: 'state: adf_identity and adf_attestations rows',
-    what: 'The daemon runs its open steps (ensureWorkspaceIdentity on open, W2-A) only for a document a client session holds: no keys, no owner and operator attestations.',
+    id: 'mode:wire-undefined-keys',
+    ws: 'mode',
+    scenarios: ['chat-tool-call'],
+    path: 'pushes: payload keys whose embedded value is `undefined` (e.g. file_updated `previousContent`)',
+    what: 'The client stream is JSON: a key whose value is undefined is omitted (D5.1 wire serialization), where embedded IPC keeps the key with undefined. The renderer reads both the same.',
     apply(d, e) {
       let n = 0
-      for (const name of ['adf_identity', 'adf_attestations']) {
-        for (const { file, rows } of table(d, name)) {
-          const base = e.state.adf[file]?.tables[name]?.rows as Row[] | undefined
-          if (rows.length === 0 && base && base.length > 0) { setRows(d, file, name, clone(base)); n++ }
+      const restore = (dv: unknown, ev: unknown): void => {
+        if (!dv || !ev || typeof dv !== 'object' || typeof ev !== 'object') return
+        if (Array.isArray(ev)) {
+          if (Array.isArray(dv)) ev.forEach((item, i) => restore(dv[i], item))
+          return
+        }
+        const dObj = dv as Record<string, unknown>
+        for (const [k, v] of Object.entries(ev as Record<string, unknown>)) {
+          if (v === undefined && !(k in dObj)) { dObj[k] = undefined; n++ } else restore(dObj[k], v)
         }
       }
-      return n
-    },
-  },
-  {
-    id: 'w2c2:identity-meta',
-    ws: 'W2-C2',
-    scenarios: [...CORE, 'agent-keystore', ...MESH],
-    path: 'state: adf_meta rows adf_did, adf_owner_did, adf_runtime_did',
-    what: 'Same cause as w2c2:identity-on-open: the identity stamps are written on open.',
-    apply(d, e) {
-      let n = 0
-      for (const { file, rows } of table(d, 'adf_meta')) {
-        const base = (e.state.adf[file]?.tables.adf_meta?.rows ?? []) as Row[]
-        for (const key of ['adf_did', 'adf_owner_did', 'adf_runtime_did']) {
-          const want = base.find((r) => r.key === key)
-          if (!want || rows.some((r) => r.key === key)) continue
-          rows.push(clone(want))
-          n++
-        }
-        rows.sort((a, b) => String(a.key).localeCompare(String(b.key)))
-      }
-      return n
-    },
-  },
-  {
-    id: 'w2c2:claim-previous-did',
-    ws: 'W2-C2',
-    scenarios: ['agent-claim'],
-    path: 'the claim\'s clone attestation (IDENTITY_ATTESTATIONS_GET result, adf_attestations) and adf_meta adf_did_history',
-    what: 'Same cause as w2c2:identity-on-open: the daemon minted no DID on open, so its claim has no previous DID to record (no clone attestation, no DID history).',
-    apply(d, e) {
-      let n = 0
-      const isClone = (a: unknown) => (a as { role?: unknown })?.role === 'clone'
-      // The attestations the panel reads after the claim.
-      d.steps.forEach((step, i) => {
-        const base = e.steps[i]
-        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== IPC.IDENTITY_ATTESTATIONS_GET) return
-        const mine = (step.result as { attestations?: unknown[] })?.attestations
-        const theirs = (base.result as { attestations?: unknown[] })?.attestations
-        if (!mine || !theirs || mine.some(isClone)) return
-        if (!same(mine, theirs.filter((a) => !isClone(a)))) return
-        step.result = clone(base.result)
-        n++
-      })
-      for (const { file, rows } of table(d, 'adf_attestations')) {
-        const base = (e.state.adf[file]?.tables.adf_attestations?.rows ?? []) as Row[]
-        const withoutIds = (r: Row[]) => r.map(({ id: _id, ...rest }) => rest)
-        if (rows.some(isClone) || !base.some(isClone)) continue
-        if (!same(withoutIds(rows), withoutIds(base.filter((r) => !isClone(r))))) continue
-        setRows(d, file, 'adf_attestations', clone(base))
-        n++
-      }
-      for (const { rows } of table(d, 'adf_meta')) {
-        const want = Object.values(e.state.adf).flatMap((dump) => (dump.tables.adf_meta?.rows ?? []) as Row[]).find((r) => r.key === 'adf_did_history')
-        if (!want || rows.some((r) => r.key === 'adf_did_history')) continue
-        rows.push(clone(want))
-        rows.sort((a, b) => String(a.key).localeCompare(String(b.key)))
-        n++
+      for (const [ch, list] of Object.entries(e.pushes)) {
+        const mine = d.pushes[ch]
+        if (!mine || mine.length !== list.length) continue
+        list.forEach((ev, i) => { if (same(mine[i], ev)) restore(mine[i], ev) })
       }
       return n
     },
@@ -392,37 +303,40 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2c2:open-document-handle',
-    ws: 'W2-C2',
-    scenarios: [...NOT_RUNNING_AT_DUMP, 'emergency-stop'],
-    path: 'state: adf_meta row adf_clean_close',
-    what: 'Nothing holds the file open (no client session to hold it), so the fixture\'s clean-close marker stays set.',
+    id: 'w3a:settings-tracked-root-push',
+    ws: 'W3-A',
+    scenarios: ['w3c-mcp-attach-credentials', 'w3c-adapter-telegram'],
+    path: 'TRACKED_DIRS_CHANGED: one push per folder a SETTINGS_SET adds to trackedDirectories, its timeline line and the step push watermarks it shifts',
+    what: 'A PATCH /settings that adds a tracked folder re-syncs the daemon\'s watcher, which announces each newly tracked root (tracked_dirs, as for notifyAdfFileCreated); embedded SETTINGS_SET restarts its watcher and pushes nothing. The renderer rescans the folder once more.',
     apply(d, e) {
-      let n = 0
-      for (const { file, rows } of table(d, 'adf_meta')) {
-        const base = (e.state.adf[file]?.tables.adf_meta?.rows ?? []) as Row[]
-        if (base.some((r) => r.key === 'adf_clean_close')) continue
-        const at = rows.findIndex((r) => r.key === 'adf_clean_close')
-        if (at >= 0) { rows.splice(at, 1); n++ }
+      const ch = IPC.TRACKED_DIRS_CHANGED
+      const roots = d.steps.flatMap((st) => (st.kind === 'invoke' && st.channel === IPC.SETTINGS_SET
+        ? ((st.args[0] as { trackedDirectories?: unknown })?.trackedDirectories as unknown[] | undefined ?? []).filter((r): r is string => typeof r === 'string')
+        : []))
+      if (roots.length === 0) return 0
+      const mine = [...(d.pushes[ch] ?? [])]
+      for (const root of roots) {
+        const at = mine.findIndex((p) => same(p, { dirPath: root }))
+        if (at < 0) return 0
+        mine.splice(at, 1)
       }
-      return n
-    },
-  },
-  {
-    id: 'w2c2:open-document-wal',
-    ws: 'W2-C2',
-    scenarios: [...NOT_RUNNING_AT_DUMP, 'emergency-stop'],
-    path: 'state.tree: the -wal and -shm files of an open agent file',
-    what: 'Same cause as w2c2:open-document-handle: the file is not held open, so no -wal/-shm beside it.',
-    apply(d, e) {
-      let n = 0
-      for (const line of e.state.tree) {
-        if (!/\.adf-(wal|shm)$/.test(line) || d.state.tree.includes(line)) continue
-        d.state.tree.push(line)
-        n++
+      if (!same(mine, e.pushes[ch] ?? [])) return 0
+      const line = /^ {2}(?:\[app\] )?adf:tracked-dirs:changed$/
+      const timelines: Record<string, string[]> = {}
+      let lines = 0
+      for (const [key, list] of Object.entries(d.timelines)) {
+        const kept = list.filter((l) => !(line.test(l) && ++lines))
+        // A timeline of step markers only exists because of that push (embedded has none).
+        if (!(key in e.timelines) && kept.every((l) => l.startsWith('> ') || l.startsWith('< '))) continue
+        timelines[key] = kept
       }
-      if (n) d.state.tree.sort((a, b) => (a.slice(2) < b.slice(2) ? -1 : a.slice(2) > b.slice(2) ? 1 : 0))
-      return n
+      if (lines === 0) return 0
+      if (d.steps.length !== e.steps.length || d.steps.some((st, i) => !same(withoutPushes(st), withoutPushes(e.steps[i])))) return 0
+      if (mine.length) d.pushes[ch] = mine
+      else delete d.pushes[ch]
+      d.timelines = timelines
+      d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
+      return roots.length
     },
   },
   {
@@ -547,7 +461,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-host-record-lazy',
     ws: 'W0-C',
-    scenarios: ['open-agent', ...W3B_NO_AGENT, ...W3C],
+    scenarios: ['open-agent', ...W3B_NO_AGENT, ...W3C, ...HELD_ONLY],
     path: 'state.leases: the daemon\'s hosts/<pid>.json while it holds no lease',
     what: 'Bug: the daemon writes its runtime host record only once it holds an agent lease; §10.3 has every runtime host register (embedded Studio does at boot).',
     apply(d, e) {
@@ -673,24 +587,6 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2c2:fleet-row-did',
-    ws: 'W2-C2',
-    scenarios: MESH,
-    path: 'steps: `did` of the fleet rows in MESH_STATUS, MESH_FLEET_STATUS and MESH_MAP_POLL results',
-    what: 'Same cause as w2c2:identity-on-open: an agent the daemon never held open has no DID, so its rows carry none.',
-    apply(d, e) {
-      let n = 0
-      for (const [dv, ev] of fleetResults(d, e)) {
-        n += walkPair(dv, ev, (dr, er) => {
-          if (typeof er.filePath !== 'string' || typeof er.did !== 'string' || 'did' in dr) return 0
-          dr.did = er.did
-          return 1
-        })
-      }
-      return n
-    },
-  },
-  {
     id: 'mode:json-undefined-keys',
     ws: 'mode',
     scenarios: MESH,
@@ -714,28 +610,31 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     id: 'mode:emergency-stop-teardown-pushes',
     ws: 'mode',
     scenarios: ['emergency-stop'],
-    path: 'EMERGENCY_STOP: its BACKGROUND_AGENT_EVENT_BATCH pushes and their timeline lines',
-    what: 'The daemon reports the background agent\'s stop (agent_state_changed off, agent_stopped); embedded tears down without it. The renderer resets its stores after the call in both modes.',
+    path: 'EMERGENCY_STOP: the BACKGROUND_AGENT_EVENT_BATCH pushes after embedded\'s and their timeline lines in the step',
+    what: 'The daemon reports the background agent\'s stop as host events (agent_stopping, agent_stopped); embedded tears down without them. The renderer resets its stores after the call in both modes.',
     apply(d, e) {
       const batch = IPC.BACKGROUND_AGENT_EVENT_BATCH
       const step = e.steps.findIndex((s) => s.kind === 'invoke' && s.channel === IPC.EMERGENCY_STOP)
       if (step < 0) return 0
       const dBatches = d.pushes[batch] ?? []
       const eBatches = e.pushes[batch] ?? []
-      const teardown = dBatches.at(-1) as Array<{ type?: string }> | undefined
-      if (dBatches.length !== eBatches.length + 1 || !same(dBatches.slice(0, -1), eBatches)) return 0
-      if (!Array.isArray(teardown) || teardown.map((ev) => ev.type).join() !== 'agent_state_changed,agent_stopped') return 0
-      const teardownLines = '  [app] adf:background-agent:event-batch agent_state_changed:off\n  [app] adf:background-agent:event-batch agent_stopped'
+      if (dBatches.length <= eBatches.length || !same(dBatches.slice(0, eBatches.length), eBatches)) return 0
+      const extra = dBatches.slice(eBatches.length).flatMap((b) => (Array.isArray(b) ? b : [b])) as Array<{ type?: string; payload?: { state?: string } }>
+      const teardown = new Set(['agent_stopping', 'agent_stopped', 'agent_state_changed'])
+      if (!extra.every((ev) => teardown.has(ev.type ?? '') && (ev.type !== 'agent_state_changed' || ev.payload?.state === 'off')) || !extra.some((ev) => ev.type === 'agent_stopped')) return 0
+      const line = /^ {2}\[app\] adf:background-agent:event-batch (agent_stopping|agent_stopped|agent_state_changed:off)$/
       let n = 0
       for (const lines of Object.values(d.timelines)) {
         const db = stepBlock(lines, step + 1)
-        if (!db || lines.slice(db.from, db.to).join('\n') !== teardownLines) return 0
-        lines.splice(db.from, db.to - db.from)
-        n++
+        if (!db) return 0
+        const block = lines.slice(db.from, db.to)
+        const kept = block.filter((l) => !line.test(l))
+        if (block.length - kept.length !== extra.length) return 0
+        lines.splice(db.from, db.to - db.from, ...kept)
+        n += extra.length
       }
       d.pushes[batch] = clone(eBatches)
-      if (d.pushSeq) d.pushSeq[batch] = clone(e.pushSeq?.[batch] ?? [])
-      return n + 1
+      return n
     },
   },
   {
@@ -761,33 +660,68 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       }
       if (n !== 1) return 0
       d.pushes[IPC.AGENT_EVENT] = clone(e.pushes[IPC.AGENT_EVENT])
+      // Channels in name order, as the recording keeps them.
+      d.pushes = Object.fromEntries(Object.keys(d.pushes).sort().map((c) => [c, d.pushes[c]]))
       if (d.pushSeq) d.pushSeq[IPC.AGENT_EVENT] = clone(e.pushSeq?.[IPC.AGENT_EVENT] ?? [])
       return n
     },
   },
   {
-    id: 'w2c2:mesh-event-stream',
-    ws: 'W2-C2',
+    id: 'mode:mesh-foreground-handover',
+    ws: 'mode',
     scenarios: MESH,
-    path: 'MESH_EVENT: the pushes, their timeline lines and the step push watermarks they shift',
-    what: 'The interim GET /events adapter carries no mesh topic: agent_joined, agent_left and message_routed come with the client stream.',
+    path: 'MESH_EVENT: agent_left + agent_joined of the agent a FILE_OPEN moves to the background, agent_left at shutdown; their timeline lines and the step push watermarks they shift',
+    what: 'Embedded unregisters the open agent from the mesh when another file opens and registers it again as a background agent (agent_left, agent_joined), and unregisters every agent on quit. In the daemon an agent has one registration whatever window shows it, and quitting Studio does not stop it (§8.3).',
     apply(d, e) {
       const ch = IPC.MESH_EVENT
-      const full = e.pushes[ch] ?? []
-      if (full.length === 0 || (d.pushes[ch] ?? []).length !== 0) return 0
-      const others = (rec: ComparableRecording) => Object.fromEntries(Object.entries(rec.pushes).filter(([c]) => c !== ch))
-      if (!same(others(d), others(e))) return 0
+      const list = e.pushes[ch] ?? []
+      const timeline = Object.values(e.timelines)[0]
+      if (list.length === 0 || !timeline) return 0
+      // Steps whose mesh events are Studio's own: a FILE_OPEN that switches files, and the shutdown.
+      const opens = e.steps.flatMap((st, i) => (st.kind === 'invoke' && st.channel === IPC.FILE_OPEN ? [i] : []))
+      const windows = [
+        ...opens.slice(1).map((i) => ({ step: i + 1, types: ['agent_left', 'agent_joined'] })),
+        ...e.steps.flatMap((st, i) => (st.kind === 'shutdown' ? [{ step: i + 1, types: ['agent_left'] }] : [])),
+      ]
+      // Mesh events are app pushes, in every timeline in send order: the k-th mesh line is list[k].
+      const meshLine = /^ {2}(?:\[app\] )?adf:mesh:event ([a-z_]+)/
+      const typeOf = (p: unknown) => (p as { type?: string })?.type ?? ''
+      const dropped = new Set<number>()
+      let k = -1
+      timeline.forEach((l, at) => {
+        const m = meshLine.exec(l)
+        if (!m) return
+        k++
+        const inWindow = windows.some((w) => {
+          const block = stepBlock(timeline, w.step)
+          return !!block && at >= block.from && at < block.to && w.types.includes(m[1])
+        })
+        if (inWindow && typeOf(list[k]) === m[1]) dropped.add(k)
+      })
+      if (k + 1 !== list.length) return 0
+      if (dropped.size === 0) return 0
+      if (!same(list.filter((_p, i) => !dropped.has(i)), d.pushes[ch] ?? [])) return 0
+      // The same lines out of each embedded timeline's step blocks must give the daemon's.
+      const line = /^ {2}(?:\[app\] )?adf:mesh:event (agent_left|agent_joined)\b/
       for (const [agent, lines] of Object.entries(e.timelines)) {
-        if (!same(lines.filter((l) => !isMeshEventLine(l)), d.timelines[agent])) return 0
+        const filtered = [...lines]
+        for (const w of windows) {
+          const block = stepBlock(filtered, w.step)
+          if (!block) return 0
+          const kept = filtered.slice(block.from, block.to).filter((l) => { const m = line.exec(l); return !m || !w.types.includes(m[1]) })
+          filtered.splice(block.from, block.to - block.from, ...kept)
+        }
+        if (!same(filtered, d.timelines[agent])) return 0
       }
-      if (d.steps.length !== e.steps.length || d.steps.some((s, i) => !same(withoutPushes(s), withoutPushes(e.steps[i])))) return 0
-      d.pushes = clone(e.pushes)
-      if (e.pushSeq) d.pushSeq = clone(e.pushSeq)
+      if (d.steps.length !== e.steps.length || d.steps.some((st, i) => !same(withoutPushes(st), withoutPushes(e.steps[i])))) return 0
+      d.pushes[ch] = clone(list)
+      if (d.pushSeq && e.pushSeq) d.pushSeq[ch] = clone(e.pushSeq[ch])
       d.timelines = clone(e.timelines)
-      d.steps = d.steps.map((s, i) => ({ ...s, pushes: clone(e.steps[i].pushes) }) as StepRecord)
-      return 1
+      d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
+      return dropped.size
     },
   },
+
 ]
 
 /** Apply every entry for `scenario`; the ids of entries that matched nothing are returned. */

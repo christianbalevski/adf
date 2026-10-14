@@ -1,7 +1,7 @@
 import { DaemonError, type DaemonClient } from '../../../../shared/daemon-client'
 import type { DaemonModeContext } from '../context'
 import type { InstallChannel, InstallEnd } from './install-progress'
-import { awaitDaemonJob, startDaemonJob, type DaemonJobView } from './jobs'
+import { awaitDaemonJob, startDaemonJob } from './jobs'
 
 /**
  * Pieces the W3-C handlers share: error text in the embedded handlers'
@@ -97,9 +97,10 @@ export interface InstallJobSpec<R> {
 
 /**
  * Start the install job, follow it to its end and answer its result (the
- * embedded handler's answer). The progress pushes the client stream cannot
- * deliver come from the relay; a wait that ends without the job's end
- * reports the reason as the install's error and its end push.
+ * embedded handler's answer). The progress pushes come from the client
+ * stream's install topics; the relay sends only an end the stream lost. A
+ * wait that ends without the job's end reports the reason as the install's
+ * error and its end push.
  */
 export async function runInstallJob<R>(ctx: DaemonModeContext, spec: InstallJobSpec<R>): Promise<R> {
   const watch = ctx.installs.begin(spec.channel, spec.packages)
@@ -112,7 +113,6 @@ export async function runInstallJob<R>(ctx: DaemonModeContext, spec: InstallJobS
       what: spec.what,
       deadlineMs: INSTALL_DEADLINE_MS,
       log: ctx.log,
-      onPoll: (view: DaemonJobView) => watch.progress(view),
     })
     if (outcome.kind === 'lost') {
       // Nothing on the stream will end this install: its end comes from here.

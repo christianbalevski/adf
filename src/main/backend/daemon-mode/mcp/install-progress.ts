@@ -1,6 +1,5 @@
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import type { ClientFrame, PushTopic } from '../client-stream'
-import type { DaemonJobView } from './jobs'
 
 /**
  * MCP_INSTALL_PROGRESS, ADAPTER_INSTALL_PROGRESS and SANDBOX_INSTALL_PROGRESS
@@ -10,15 +9,10 @@ import type { DaemonJobView } from './jobs'
  * the client stream's install topics (`mcp_install`, `adapter_install`,
  * `sandbox_install`, W2-B); the event bridge sends them, as embedded sends
  * them from its install handlers. The renderer's install UI waits for the
- * end push (the sandbox dialog finishes on it), so this relay covers the two
- * cases where the stream cannot deliver it:
- *
- * - the client stream carries no push topics (the interim GET /events
- *   adapter): the relay sends each progress line from the job's
- *   `progressLog` as it polls, and the end from the job's result;
- * - frames were lost while the install ran (`stream.gap`): once the job has
- *   ended, an end push that has not arrived within END_GRACE_MS is sent from
- *   the job's result, and logged.
+ * end push (the sandbox dialog finishes on it), so this relay covers the one
+ * case where the stream cannot deliver it: frames were lost while the
+ * install ran (`stream.gap`). Once the job has ended, an end push that has
+ * not arrived within END_GRACE_MS is sent from the job's result, and logged.
  *
  * Otherwise it sends nothing: the stream's own pushes are the record.
  */
@@ -43,19 +37,9 @@ export interface InstallEnd {
 type Send = (channel: string, payload: unknown) => void
 
 export class InstallProgressRelay {
-  private carriesPushes = false
   private readonly watches = new Set<InstallWatch>()
 
   constructor(private readonly send: Send, private readonly log: Pick<Console, 'log' | 'warn'> = console, private readonly graceMs = END_GRACE_MS) {}
-
-  /** Whether the client stream delivers push topics (a real client session does; the interim adapter does not). */
-  setStreamCarriesPushes(carries: boolean): void {
-    this.carriesPushes = carries
-  }
-
-  get streamCarriesPushes(): boolean {
-    return this.carriesPushes
-  }
 
   /** Every frame of the client stream, before the event bridge maps it. */
   observe(frame: ClientFrame): void {
@@ -101,7 +85,6 @@ export class InstallProgressRelay {
 export class InstallWatch {
   /** Frames were lost while this install ran. */
   gapped = false
-  private lastSeq = 0
   private readonly ended = new Set<string>()
   private readonly waiters = new Set<() => void>()
   private readonly topic: PushTopic
@@ -117,25 +100,9 @@ export class InstallWatch {
     for (const wake of this.waiters) wake()
   }
 
-  /** A poll of the install's job: progress lines the stream cannot deliver are sent from it. */
-  progress(job: DaemonJobView): void {
-    if (this.relay.streamCarriesPushes) return
-    for (const entry of job.progressLog ?? []) {
-      if (entry.seq <= this.lastSeq) continue
-      this.lastSeq = entry.seq
-      const pkg = typeof entry.detail?.package === 'string' ? entry.detail.package : this.packages[0]
-      if (pkg === undefined) continue
-      this.relay.relay(this.channel, { package: pkg, status: 'installing', progress: entry.text })
-    }
-  }
-
   /** The install ended (or Studio stopped waiting on it): each package's end push, where the stream cannot deliver it. */
   async finish(ends: readonly InstallEnd[]): Promise<void> {
     try {
-      if (!this.relay.streamCarriesPushes) {
-        for (const end of ends) this.relay.relay(this.channel, endPayload(end))
-        return
-      }
       if (!this.gapped) return
       const missing = () => ends.filter((end) => !this.ended.has(end.package))
       if (missing().length > 0) {

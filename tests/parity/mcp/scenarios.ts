@@ -140,6 +140,51 @@ export function oauthConnectScenario(serverUrl: () => string): ParityScenario {
   }
 }
 
+/**
+ * An agent's own MCP OAuth sign-in (design §6.1, W1-B): agent-1 has an
+ * OAuth MCP server whose first connect (at start, no executor) fails
+ * signed out; it calls mcp_restart, the runtime asks for `mcp_oauth_signin`
+ * (approved from the approvals panel), and the authorization page opens in
+ * the browser without a click. Embedded Studio opens it from its OAuth IO;
+ * daemon mode from the `mcp_oauth_authorize` request on the client
+ * session's approvals (W2-C2, mcp/oauth-authorize.ts). The browser is
+ * with-fake-server.ts's (completeFakeAuthorization); the server then
+ * connects. agent-oauth.test.ts compares the outcome of both backends; the
+ * full recording is not compared: the approvals hub's coalesced snapshot
+ * lands at a different point of the turn from run to run, in either mode.
+ */
+export function agentOAuthSignInScenario(serverUrl: () => string): ParityScenario {
+  return {
+    name: 'w2c2-agent-mcp-oauth',
+    description: 'agent-1 reconnects its OAuth MCP server (mcp_restart): the owner approves the sign-in, the authorization page opens without a click, the server connects.',
+    // Read when the run starts: the fake server's URL is known by then.
+    get fixtures() {
+      return [{ name: 'agent-1' as const, enableTools: ['mcp_restart'], mcpServers: [{ name: 'docs', transport: 'http', url: serverUrl(), oauth: true }] }]
+    },
+    llm: (req) => {
+      if (req.isPreflight) return { text: 'ok' }
+      if (req.last?.role === 'tool') return { text: 'Reconnected.' }
+      if (req.messages.some((m) => m.text.includes('Reconnect docs.'))) return { toolCalls: [{ name: 'mcp_restart', arguments: { name: 'docs' } }] }
+      return { text: 'Parity reply.' }
+    },
+    quietMs: 1000,
+    async run(ctx) {
+      const agent = ctx.agent('agent-1')
+      await ctx.invoke(IPC.FILE_OPEN, { filePath: agent.filePath })
+      await ctx.invoke(IPC.AGENT_START, { filePath: agent.filePath, hasUserMessage: true })
+      const turn = ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'Reconnect docs.', filePath: agent.filePath })
+      type Snapshot = { pending?: Array<{ id: string; filePath: string; toolName?: string }> }
+      const signIn = (p: unknown) => (p as Snapshot)?.pending?.find((e) => e.toolName === 'mcp_oauth_signin')
+      const snapshot = await ctx.waitForPush(IPC.APPROVALS_CHANGED, 'the sign-in asks for approval', (p) => !!signIn(p))
+      const entry = signIn(snapshot)!
+      await ctx.invoke(IPC.APPROVALS_RESOLVE, { filePath: entry.filePath, approvalId: entry.id, approved: true })
+      await turn
+      // The app-level copy of the sign-in goes (its record carries the time it was written).
+      await ctx.invoke(IPC.MCP_OAUTH_SIGNOUT, { url: serverUrl() })
+    },
+  }
+}
+
 /** Every W3-C scenario name (the connect scenarios are built per run with the fake server's URL). */
 export const W3C_SCENARIO_NAMES: readonly string[] = [
   installProgressScenario.name,

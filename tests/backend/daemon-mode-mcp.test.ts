@@ -5,10 +5,10 @@
  * kept in the daemon, the connect test's interactive steps, and the
  * mcp_oauth_authorize opener.
  *
- * The client session here is the interim GET /events adapter's kind: it
- * carries no push topics, so the install pushes come from the relay
- * (mcp/install-progress.ts). The relay's client-session behaviour has its
- * own unit tests below.
+ * The install progress pushes come from the client stream's install
+ * topics, as the daemon publishes them (the tests play the daemon's frames
+ * while its job runs); the relay (mcp/install-progress.ts) only sends an end
+ * the stream lost, with its own unit tests below.
  */
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -34,7 +34,7 @@ const FILE = 'C:/agents/agent-2.adf'
 let dir: string
 let handle: DaemonModeHandle
 const daemon = createFakeDaemon(BASE)
-const session = Object.assign(createFakeClientSession(), { kind: 'events-adapter' as const })
+const session = createFakeClientSession()
 const logs: string[] = []
 const log = { log: (m: string) => { logs.push(m) }, warn: (m: string) => { logs.push(m) }, error: (m: string) => { logs.push(m) } }
 const openExternal = vi.fn(async (_url: string) => {})
@@ -45,12 +45,19 @@ function invoke<T = any>(channel: string, ...args: unknown[]): Promise<T> {
   return Promise.resolve(fn({}, ...args)) as Promise<T>
 }
 
-/** A job route: answers 202, then `views` one poll at a time (the last one repeats). */
-function scriptJob(startRoute: string, jobId: string, views: Array<Record<string, unknown>>): Array<unknown> {
+/**
+ * A job route: answers 202, then `views` one poll at a time (the last one
+ * repeats). `frames[i]` are the install pushes the daemon publishes on the
+ * client stream before poll i answers.
+ */
+function scriptJob(startRoute: string, jobId: string, views: Array<Record<string, unknown>>, frames: Array<Array<{ topic: string; payload: unknown }>> = []): Array<unknown> {
   const bodies: unknown[] = []
   daemon.routes.set(startRoute, ({ body }) => { bodies.push(body); return { status: 202, body: { jobId, job: { id: jobId, kind: 'k', state: 'running', createdAt: 1 } } } })
   let i = 0
-  daemon.routes.set(`GET /jobs/${jobId}`, () => ({ id: jobId, kind: 'k', createdAt: 1, ...views[Math.min(i++, views.length - 1)] }))
+  daemon.routes.set(`GET /jobs/${jobId}`, () => {
+    for (const f of frames[i] ?? []) session.listener!.onFrame({ kind: 'push', topic: f.topic as never, agentId: null, filePath: null, payload: f.payload })
+    return { id: jobId, kind: 'k', createdAt: 1, ...views[Math.min(i++, views.length - 1)] }
+  })
   return bodies
 }
 
@@ -95,8 +102,14 @@ describe('installs run as daemon jobs, with embedded progress pushes', () => {
   it('MCP_INSTALL_PACKAGE: progress lines, then installed, then the answer', async () => {
     const installed = { package: '@acme/server', version: '1.0.0', command: '/x', installPath: '/x', installedAt: 1 }
     const bodies = scriptJob('POST /admin/mcp/packages/npm/jobs', 'job-npm', [
-      { state: 'running', progressLog: [{ seq: 1, text: 'Installing @acme/server...', detail: { package: '@acme/server' } }] },
-      { state: 'succeeded', result: { success: true, installed }, progressLog: [{ seq: 1, text: 'Installing @acme/server...', detail: { package: '@acme/server' } }, { seq: 2, text: 'Installed @acme/server@1.0.0', detail: { package: '@acme/server' } }] },
+      { state: 'running' },
+      { state: 'succeeded', result: { success: true, installed } },
+    ], [
+      [{ topic: 'mcp_install', payload: { package: '@acme/server', status: 'installing', progress: 'Installing @acme/server...' } }],
+      [
+        { topic: 'mcp_install', payload: { package: '@acme/server', status: 'installing', progress: 'Installed @acme/server@1.0.0' } },
+        { topic: 'mcp_install', payload: { package: '@acme/server', status: 'installed' } },
+      ],
     ])
     expect(await invoke(IPC.MCP_INSTALL_PACKAGE, { package: '@acme/server', name: 'acme' })).toEqual({ success: true, installed })
     expect(bodies).toEqual([{ package: '@acme/server' }])
@@ -108,7 +121,8 @@ describe('installs run as daemon jobs, with embedded progress pushes', () => {
   })
 
   it('a failed install answers String(error) and pushes the error', async () => {
-    scriptJob('POST /admin/adapters/packages/jobs', 'job-adapter', [{ state: 'succeeded', result: { success: false, error: 'Error: Invalid npm package name: x y' } }])
+    scriptJob('POST /admin/adapters/packages/jobs', 'job-adapter', [{ state: 'succeeded', result: { success: false, error: 'Error: Invalid npm package name: x y' } }],
+      [[{ topic: 'adapter_install', payload: { package: 'x y', status: 'error', error: 'Error: Invalid npm package name: x y' } }]])
     expect(await invoke(IPC.ADAPTER_INSTALL_PACKAGE, { package: 'x y' })).toEqual({ success: false, error: 'Error: Invalid npm package name: x y' })
     expect(pushesOf(IPC.ADAPTER_INSTALL_PROGRESS)).toEqual([{ package: 'x y', status: 'error', error: 'Error: Invalid npm package name: x y' }])
   })
@@ -121,7 +135,10 @@ describe('installs run as daemon jobs, with embedded progress pushes', () => {
 
   it('SANDBOX_INSTALL_PACKAGES: one end push per package, in order', async () => {
     const results = { 'left-pad': { success: true, version: '1.3.0' }, 'bad!': { success: false, error: 'Error: Invalid npm package name: bad!' } }
-    const bodies = scriptJob('POST /admin/sandbox/packages/jobs', 'job-sandbox', [{ state: 'succeeded', result: { success: true, results } }])
+    const bodies = scriptJob('POST /admin/sandbox/packages/jobs', 'job-sandbox', [{ state: 'succeeded', result: { success: true, results } }], [[
+      { topic: 'sandbox_install', payload: { package: 'left-pad', status: 'installed' } },
+      { topic: 'sandbox_install', payload: { package: 'bad!', status: 'error', error: 'Error: Invalid npm package name: bad!' } },
+    ]])
     const packages = [{ name: 'left-pad', version: '1.3.0' }, { name: 'bad!', version: '1.0.0' }]
     expect(await invoke(IPC.SANDBOX_INSTALL_PACKAGES, packages)).toEqual({ success: true, results })
     expect(bodies).toEqual([{ packages }])
@@ -343,13 +360,11 @@ describe('MCP_REGISTRATION_TEST interactive steps', () => {
   })
 })
 
-describe('InstallProgressRelay with a client session that carries push topics', () => {
+describe('InstallProgressRelay', () => {
   it('sends nothing while the stream delivers; after a gap, the end the stream lost (after the grace)', async () => {
     const sent: unknown[] = []
     const relay = new InstallProgressRelay((_c, p) => { sent.push(p) }, { log: () => {}, warn: () => {} }, 20)
-    relay.setStreamCarriesPushes(true)
     const quiet = relay.begin(IPC.MCP_INSTALL_PROGRESS, ['a'])
-    quiet.progress({ id: 'j', kind: 'k', state: 'running', progressLog: [{ seq: 1, text: 'x', detail: { package: 'a' } }] })
     await quiet.finish([{ package: 'a', status: 'installed' }])
     expect(sent).toEqual([])
 

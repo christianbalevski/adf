@@ -13,7 +13,7 @@ import { BackgroundEventBatcher } from '../../ipc/background-event-batch'
 import { initApplicationMenu, recordRecentFile } from '../../menu'
 import { createAdfFileHandler } from './adf-file'
 import { ApprovalsUi } from './approvals-ui'
-import { createEventsAdapterSession, type ClientSession } from './client-stream'
+import { createDaemonClientSession, type ClientSession } from './client-stream'
 import { DaemonConnection, type DaemonConnector } from './connection'
 import { findRunningAgent, type DaemonModeContext } from './context'
 import { DaemonModeUnavailableError } from './errors'
@@ -81,8 +81,15 @@ export interface DaemonModeDeps {
   leases?: Pick<AgentLeaseRegistry, 'registerClient'>
   ipcMain?: Pick<IpcMain, 'handle' | 'on'>
   fetch?: typeof fetch
-  /** The client session implementation. Default: the GET /events adapter until W2-B. */
+  /** The client session implementation. Default: the daemon's client sessions (W2-B). */
   createSession?: (client: DaemonClient) => ClientSession
+  /**
+   * studio-backend.json `keepDaemonRunning` (§8.3). Off in local mode, the
+   * session is opened with `exitDaemonWhenClosed`, so a crashed Studio's
+   * daemon stops once its session expires and no other client is open. The
+   * quit path itself is W4-A's.
+   */
+  keepDaemonRunning?: boolean
   /** The shared owner-phrase keychain entry (tests: a stand-in). Default: the OS keychain's. */
   sharedMnemonic?: () => SharedMnemonicStore | null
 }
@@ -150,7 +157,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     { logFile: deps.connect.logFile },
   )
   const connection = new DaemonConnection(connect, log, deps.fetch)
-  const session = new DaemonModeSession(null, log)
+  // A re-hold that failed after a reconnect is a notice (statusUi exists by the time a reconnect happens).
+  const session = new DaemonModeSession(null, log, (text) => { log.warn(`[Backend] ${text}`); statusUi.notice(text) })
 
   const firstWindow = (): BrowserWindow | null => {
     const windows = BrowserWindow.getAllWindows()
@@ -218,6 +226,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     onApprovals: (snapshot) => { approvals.apply(snapshot); void mcpOAuth.apply(snapshot) },
     onAgentsChanged: () => { approvals.refresh(); refreshTokens() },
     onFileRenamed: (oldPath, newPath) => session.rekey(oldPath, newPath),
+    onNotice: (text) => statusUi.notice(text),
     log,
   })
 
@@ -247,13 +256,10 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   })
   const statusUi = new ConnectionStatusUi(connection, { reconnect, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: RECOVERY_HINT }, log)
 
+  const exitDaemonWhenClosed = deps.mode === 'local' && deps.keepDaemonRunning !== true
   const started: Promise<DaemonClient> = connection.client().then(async (client) => {
-    clientSession = (deps.createSession ?? ((c) => createEventsAdapterSession(c)))(client)
+    clientSession = (deps.createSession ?? ((c) => createDaemonClientSession(c, { version: app.getVersion(), exitDaemonWhenClosed, log })))(client)
     session.attach(clientSession)
-    installs.setStreamCarriesPushes(clientSession.kind === 'client-session')
-    if (clientSession.limitations.length) {
-      log.warn(`[Backend] The client stream is the interim ${clientSession.kind}; not delivered yet:\n  - ${clientSession.limitations.join('\n  - ')}`)
-    }
     // Learn what already runs and what is pending, without pushing: the
     // renderer pulls its initial state itself.
     try {
@@ -281,12 +287,21 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         else if (c.state === 'reconnecting') connection.markDisconnected(c.error)
       },
       onReattached: (info) => {
-        log.log(`[Backend] Client stream reattached${info.epochChanged ? ' to a restarted daemon' : ''}: re-sending the focus and the held documents`)
-        void session.reattach()
+        log.log(`[Backend] Client stream reattached${info.epochChanged ? ' (new session)' : ''}: re-sending the focus and the held documents`)
+        return session.reattach()
+      },
+      onFatal: (message) => {
+        connection.markFailed(message)
+        bridge.failTurns('disconnected')
       },
     })
     return client
   })
+  /** Requests name the client session (X-ADF-Client-Session): the daemon does not echo this window's own writes (D5.1). */
+  const sessionClient = (client: DaemonClient): DaemonClient => {
+    const id = clientSession?.sessionId
+    return id ? client.withClientSession(id) : client
+  }
   started.catch(() => {})
 
   // AGENT_INVOKE waits must not outlive the daemon: a failed connector ends
@@ -316,10 +331,10 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     clientSettings,
     approvals,
     installs,
-    ready: () => started,
+    ready: () => started.then(sessionClient),
     runningAgentAt: async (filePath) => findRunningAgent(await started, filePath),
     raw: async (path, query) => {
-      const client = await started
+      const client = sessionClient(await started)
       const url = client.url(path, query)
       return (deps.fetch ?? fetch)(url, { headers: client.headers({ Accept: '*/*' }), redirect: 'manual' })
     },

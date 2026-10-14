@@ -49,6 +49,10 @@ export interface FixtureSpec {
   lockedCredentials?: { sharePassword: string }
   /** Envelopes sealed to the fixture owner and runtime (this machine's), with the mock provider's key sealed in the credentials one. */
   ownerSealedKey?: string
+  /** Built-in tools turned on (enabled and visible), e.g. `mcp_restart`. */
+  enableTools?: readonly string[]
+  /** MCP servers in the agent's config (`mcp.servers`), e.g. an OAuth remote attach cannot express. */
+  mcpServers?: ReadonlyArray<Record<string, unknown>>
 }
 
 export interface FixtureAgent {
@@ -73,6 +77,12 @@ export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[
     try {
       const config = workspace.getAgentConfig()
       config.id = FIXTURE_IDS[spec.name]
+      for (const name of spec.enableTools ?? []) {
+        const tool = config.tools.find((t) => t.name === name)
+        if (tool) Object.assign(tool, { enabled: true, visible: true })
+        else config.tools.push({ name, enabled: true, visible: true })
+      }
+      if (spec.mcpServers) config.mcp = { ...config.mcp, servers: spec.mcpServers.map((server) => ({ ...server })) } as typeof config.mcp
       workspace.setAgentConfig(config)
       if (spec.ownerSealedKey) {
         workspace.provisionEnvelopes({

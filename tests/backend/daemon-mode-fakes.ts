@@ -50,7 +50,7 @@ export interface FakeClientSession extends ClientSession {
 export function createFakeClientSession(resolveHold: (filePath: string) => string | null = () => null): FakeClientSession {
   const s: FakeClientSession = {
     kind: 'client-session',
-    limitations: [],
+    sessionId: null,
     listener: null,
     focus: [],
     held: [],

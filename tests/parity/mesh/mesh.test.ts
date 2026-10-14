@@ -60,17 +60,18 @@ describe.skipIf(!existsSync(DAEMON_BUNDLE))('parity: mesh scenarios, daemon back
     }, 120_000 + RUNS * 120_000)
   }
 
-  // Embedded shows an incoming mesh message on AGENT_EVENT (inter_agent_message,
-  // ipc/index.ts foreground_incoming); the daemon publishes it on the client
-  // stream (W2-B), which Studio reads once W2-C2 replaces the interim adapter.
-  it.todo('inter-agent-message: a message agent-1 sends agent-2 over the mesh renders the same in the open agent-2 (W2-C2)')
+  // Studio reads the client stream's inter_agent_message (W2-C2) and shows it
+  // for the open agent. A live comparison is not possible yet: embedded never
+  // shows a message one of its own agents delivers locally (MeshManager emits
+  // foreground_incoming only on ingress, an E3 candidate), and a background
+  // AGENT_INVOKE resolves in the middle of the turn in embedded but at its end
+  // in daemon mode, so the step boundaries differ. Unit-tested in
+  // tests/backend/daemon-mode-bridge.test.ts.
+  it.todo('inter-agent-message: a message agent-1 sends agent-2 over the mesh renders the same in the open agent-2 (E3: local delivery)')
 
-  // Embedded forwards PodmanService 'container-phase' unchanged on
-  // COMPUTE_CONTAINER_PHASE; daemon mode maps the compute_phase push topic to
-  // it unchanged (tests/backend/daemon-mode-fleet.test.ts). The daemon
-  // publishes the topic (W2-B), Studio reads it once W2-C2 replaces the
-  // interim adapter, and neither compute fake (a machine without Podman)
-  // goes through a phase, so the live comparison waits for W2-C2 and a
-  // phase-emitting fake.
-  it.todo('compute-phase: the phase pushes of an agent container match (W2-C2)')
+  // Studio maps the compute_phase push topic to COMPUTE_CONTAINER_PHASE
+  // unchanged on client sessions (W2-C2; tests/backend/daemon-mode-fleet.test.ts).
+  // Neither compute fake (a machine without Podman) goes through a phase, so
+  // the live comparison waits for a phase-emitting fake.
+  it.todo('compute-phase: the phase pushes of an agent container match (needs a phase-emitting compute fake)')
 })
