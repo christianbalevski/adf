@@ -5,6 +5,7 @@ import { nanoid } from 'nanoid'
 import { z } from 'zod'
 import {
   AGENT_NOT_RUNNING_CODE,
+  DOCUMENT_HOLDER_FORMAT,
   RuntimeLoopError,
   RuntimeReviewRequiredError,
   type AdfDisplayState,
@@ -2011,7 +2012,7 @@ export function createDaemonHttpApi(
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.password !== 'string') return badRequest(reply, 'password is required')
     try {
-      return runtime.unlockAgentIdentityPassword(request.params.id, request.body.password)
+      return runtime.unlockAgentIdentityPassword(request.params.id, request.body.password, clientSessionOf(request))
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -2543,6 +2544,16 @@ export function createDaemonHttpApi(
   return server
 }
 
+/**
+ * The client session a request comes from (W2-B's X-ADF-Client-Session):
+ * an unlock is remembered for that session only (D4).
+ */
+function clientSessionOf(request: { headers: Record<string, string | string[] | undefined> }): { holder?: string } {
+  const value = request.headers['x-adf-client-session']
+  const holder = Array.isArray(value) ? value[0] : value
+  return holder && DOCUMENT_HOLDER_FORMAT.test(holder) ? { holder } : {}
+}
+
 /** Routes a document write never blocks: start takes the lease itself; stop and unlock write nothing of the file's. */
 const LEASE_CHECK_EXEMPT = new Set(['/agents/:id/start', '/agents/:id/stop', '/agents/:id/unload', '/agents/:id/identity/password/unlock'])
 
@@ -2560,22 +2571,30 @@ const LEASE_CHECK_EXEMPT = new Set(['/agents/:id/start', '/agents/:id/stop', '/a
  */
 function registerOpenDocumentGuards(server: FastifyInstance, runtime: RuntimeService, opts: DaemonHttpApiOptions): void {
   const identity = opts.identity
-  if (identity) {
-    runtime.setDocumentOpenHooks({
+  runtime.setDocumentOpenHooks({
+    ...(identity ? {
       onOpen: (workspace, { filePath, reviewed }) => {
         if (!identity.isReady()) return // the open already ran the envelope unlock
         const { restamped } = identity.service.restampAndAttest(workspace)
         if (restamped) console.log(`[ADF Daemon] Restamped the legacy owner DID of ${filePath} on open`)
         identity.service.ensureWorkspaceIdentity(workspace, { mintKeys: reviewed })
       },
-    })
-  }
+    } : {}),
+    // A file another runtime runs opens read-only (no open step writes it).
+    leasedElsewhere: (filePath) => leaseHolderElsewhere(runtime.agentLeaseRegistry, filePath),
+  })
   server.addHook('preHandler', async (request, reply) => {
-    if (request.method === 'GET' || request.method === 'HEAD') return
     const url = request.routeOptions.url ?? ''
-    if (!url.startsWith('/agents/:id/') || LEASE_CHECK_EXEMPT.has(url)) return
+    if (url !== '/agents/:id' && !url.startsWith('/agents/:id/')) return
     const id = (request.params as { id?: unknown } | undefined)?.id
     if (typeof id !== 'string') return
+    // A document whose file is being moved has no open workspace until it reopens.
+    if (runtime.isFileMoving(id)) {
+      const body = request.body as { resume?: () => void } | undefined
+      if (typeof body?.resume === 'function') body.resume()
+      return reply.code(409).send({ error: `${id}'s file is being moved; try again in a moment.`, code: 'file_moving' })
+    }
+    if (request.method === 'GET' || request.method === 'HEAD' || LEASE_CHECK_EXEMPT.has(url)) return
     const target = runtime.getAgentWorkspace(id)
     if (!target || target.running || !target.filePath) return
     const holder = await leaseHolderElsewhere(runtime.agentLeaseRegistry, target.filePath)

@@ -31,6 +31,11 @@ import { RuntimeService, type RuntimeDocumentEvent, type RuntimeServiceOptions }
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
 import { AgentLeaseRegistry, processAgentLeases } from '../src/main/runtime/agent-lease'
 import { RuntimeGate } from '../src/main/runtime/runtime-gate'
+
+/** Client session ids (W2-B mints UUIDs; holders must be one). */
+const S1 = '00000000-0000-4000-8000-000000000001'
+const S2 = '00000000-0000-4000-8000-000000000002'
+const S3 = '00000000-0000-4000-8000-000000000003'
 import { AdfWorkspace } from '../src/main/adf/adf-workspace'
 import type { AgentConfig } from '../src/shared/types/adf-v02.types'
 import type { LLMProvider } from '../src/main/providers/provider.interface'
@@ -301,7 +306,7 @@ describe('open documents: every /agents/:id route on an open, not-running docume
     const loaded: string[] = []
     runtime.on('agent-loaded', e => loaded.push(e.agentId))
 
-    const info = await runtime.openDocument(filePath, { holder: 'session-1' })
+    const info = await runtime.openDocument(filePath, { holder: S1 })
     expect(info).toMatchObject({ agentId, filePath, running: false, needsPassword: false, holders: 1 })
     docConfig = runtime.getAgentConfig(agentId).config
 
@@ -346,7 +351,7 @@ describe('open documents: every /agents/:id route on an open, not-running docume
     const seqs = seed.getLoop().map(e => e.seq)
     seed.close()
     const { runtime, server } = setup()
-    await runtime.openDocument(filePath, { holder: 'session-1' })
+    await runtime.openDocument(filePath, { holder: S1 })
     expect(total).toBe(5)
     const res = await server.inject({ method: 'GET', url: `/agents/${agentId}/chat?before=${seqs[seqs.length - 1]}&limit=2` })
     expect(res.statusCode).toBe(200)
@@ -363,7 +368,7 @@ describe('open documents: lifecycle', () => {
     const { runtime, server } = setup()
     const events: RuntimeDocumentEvent[] = []
     runtime.on('document-closed', e => events.push(e))
-    await runtime.openDocument(filePath, { holder: 'session-1' })
+    await runtime.openDocument(filePath, { holder: S1 })
     const workspace = runtime.getAgentWorkspace(agentId)!.workspace
 
     const started = await server.inject({ method: 'POST', url: `/agents/${agentId}/start` })
@@ -386,7 +391,7 @@ describe('open documents: lifecycle', () => {
     // Start again on the same document, then release while it runs: the runtime keeps the workspace.
     await runtime.startOrLoadAgent(agentId)
     expect(runtime.getLoadedAgent(agentId)!.workspace).toBe(workspace)
-    const released = await runtime.releaseDocument(agentId, 'session-1')
+    const released = await runtime.releaseDocument(agentId, S1)
     expect(released).toMatchObject({ released: true, closed: false })
     expect(runtime.getOpenDocument(agentId)).toBeUndefined()
     expect(runtime.getAgent(agentId)).toBeDefined()
@@ -403,12 +408,12 @@ describe('open documents: lifecycle', () => {
     const { runtime } = setup()
     await runtime.loadAgent(filePath)
     const workspace = runtime.getLoadedAgent(agentId)!.workspace
-    const info = await runtime.openDocument(filePath, { holder: 'session-1' })
+    const info = await runtime.openDocument(filePath, { holder: S1 })
     expect(info).toMatchObject({ running: true, holders: 1 })
     expect(runtime.getAgentWorkspace(agentId)!.workspace).toBe(workspace)
     await runtime.stopAgent(agentId)
     expect(workspace.readDocument()).toEqual(expect.any(String)) // kept open for the holder
-    expect((await runtime.releaseDocument(agentId, 'session-1')).closed).toBe(true)
+    expect((await runtime.releaseDocument(agentId, S1)).closed).toBe(true)
     expect(() => workspace.readDocument()).toThrow()
   })
 
@@ -418,21 +423,21 @@ describe('open documents: lifecycle', () => {
     const two = seedAgent(dir, 'agent-2')
     const { runtime, server } = setup()
     const sessions = new FakeClientSessions(runtime)
-    await sessions.hold('session-1', one.filePath)
-    await sessions.hold('session-1', two.filePath)
-    await sessions.hold('session-2', two.filePath)
-    expect(runtime.documentHolders(two.agentId).sort()).toEqual(['session-1', 'session-2'])
+    await sessions.hold(S1, one.filePath)
+    await sessions.hold(S1, two.filePath)
+    await sessions.hold(S2, two.filePath)
+    expect(runtime.documentHolders(two.agentId).sort()).toEqual([S1, S2])
 
-    expect((await sessions.expire('session-1')).sort()).toEqual([one.agentId, two.agentId].sort())
+    expect((await sessions.expire(S1)).sort()).toEqual([one.agentId, two.agentId].sort())
     expect(runtime.getOpenDocument(one.agentId)).toBeUndefined()
     expect(runtime.getOpenDocument(two.agentId)).toMatchObject({ holders: 1 })
     expect((await server.inject({ method: 'GET', url: `/agents/${one.agentId}/config` })).statusCode).toBe(404)
     expect((await server.inject({ method: 'GET', url: `/agents/${two.agentId}/config` })).statusCode).toBe(200)
 
-    await sessions.expire('session-2')
+    await sessions.expire(S2)
     expect(runtime.listOpenDocuments()).toEqual([])
     // Expiring an unknown session is a no-op.
-    expect(await sessions.expire('session-3')).toEqual([])
+    expect(await sessions.expire(S3)).toEqual([])
   })
 
   it('refuses a second file with an open document\'s config id (409 duplicate_agent_id, both paths)', async () => {
@@ -445,8 +450,8 @@ describe('open documents: lifecycle', () => {
     const { copyFileSync } = await import('node:fs')
     copyFileSync(one.filePath, copy)
     const { runtime } = setup()
-    await runtime.openDocument(one.filePath, { holder: 'session-1' })
-    await expect(runtime.openDocument(copy, { holder: 'session-1' })).rejects.toMatchObject({ statusCode: 409, code: 'duplicate_agent_id', details: { filePath: realpathSync.native(copy), loadedFilePath: one.filePath } })
+    await runtime.openDocument(one.filePath, { holder: S1 })
+    await expect(runtime.openDocument(copy, { holder: S1 })).rejects.toMatchObject({ statusCode: 409, code: 'duplicate_agent_id', details: { filePath: realpathSync.native(copy), loadedFilePath: one.filePath } })
     await expect(runtime.loadAgent(copy)).rejects.toMatchObject({ code: 'duplicate_agent_id' })
   })
 })
@@ -460,7 +465,7 @@ describe('open documents: invisible to mesh, timers and autostart', () => {
     const agentEvents: string[] = []
     runtime.on('agent-loaded', e => loaded.push(e.agentId))
     runtime.on('agent-event', e => agentEvents.push(e.event.type))
-    await runtime.openDocument(filePath, { holder: 'session-1' })
+    await runtime.openDocument(filePath, { holder: S1 })
     const before = runtime.getAgentWorkspace(agentId)!.workspace.getLoopCount()
     const timer = await server.inject({ method: 'POST', url: `/agents/${agentId}/timers`, payload: { mode: 'once_delay', delay_ms: 30 } })
     expect(timer.statusCode).toBe(200)
@@ -482,7 +487,7 @@ describe('open documents: invisible to mesh, timers and autostart', () => {
     ws.setAgentConfig({ ...ws.getAgentConfig(), autostart: true })
     ws.close()
     const { runtime } = setup({ settings: { reviewedAgents: { [agentId]: 'accepted' } } })
-    await runtime.openDocument(filePath, { holder: 'session-1' })
+    await runtime.openDocument(filePath, { holder: S1 })
     const workspace = runtime.getAgentWorkspace(agentId)!.workspace
     const report = await runtime.autostartFromDirectories([dir])
     expect(report.skipped).toEqual([])
@@ -497,7 +502,7 @@ describe('open documents: leases', () => {
     const { filePath, agentId } = seedAgent(dir, 'agent-1')
     const { runtime } = setup()
     const leases = processAgentLeases()
-    await runtime.openDocument(filePath, { holder: 'session-1' })
+    await runtime.openDocument(filePath, { holder: S1 })
     expect(await leases.isHeld(filePath)).toBe(false)
     await runtime.startOrLoadAgent(agentId)
     expect(await leases.isHeld(filePath)).toBe(true)
@@ -514,7 +519,7 @@ describe('open documents: leases', () => {
     cleanups.push(() => other.close())
     const { runtime, server } = setup()
     // Opening is not running: it is not refused (embedded Studio opens such a file too).
-    await runtime.openDocument(filePath, { holder: 'session-1' })
+    await runtime.openDocument(filePath, { holder: S1 })
     expect((await server.inject({ method: 'GET', url: `/agents/${agentId}/document` })).statusCode).toBe(200)
     const put = await server.inject({ method: 'PUT', url: `/agents/${agentId}/document`, payload: { content: 'x' } })
     expect(put.statusCode).toBe(409)
@@ -545,7 +550,7 @@ describe('open documents: config written while the agent starts (pickFresherConf
         },
       },
     })
-    await runtime.openDocument(filePath, { holder: 'session-1' })
+    await runtime.openDocument(filePath, { holder: S1 })
     const starting = server.inject({ method: 'POST', url: `/agents/${agentId}/start` })
     await waitFor(() => calls >= 1)
     // The start is building: the route reaches the document, and the write lands in the file.
@@ -569,20 +574,21 @@ describe('open documents: password-protected files (D3 derived-key cache)', () =
     ws.close()
     return seeded
   }
+  const unlockAs = (server: ReturnType<typeof setup>['server'], agentId: string, password: string, session?: string) =>
+    server.inject({ method: 'POST', url: `/agents/${agentId}/identity/password/unlock`, payload: { password }, ...(session ? { headers: { 'x-adf-client-session': session } } : {}) })
 
-  it('opens locked, unlocks once, and keeps the key across stop and start; the same session reopens without a prompt', async () => {
+  it('opens locked, unlocks once, and keeps the key across stop and start', async () => {
     const dir = tempDir()
     const { filePath, agentId } = protectedAgent(dir, 'agent-1')
     const { runtime, server } = setup()
-    expect(await runtime.openDocument(filePath, { holder: 'session-1' })).toMatchObject({ needsPassword: true })
+    expect(await runtime.openDocument(filePath, { holder: S1 })).toMatchObject({ needsPassword: true })
     expect((await server.inject({ method: 'GET', url: `/agents/${agentId}/identity/password` })).json()).toMatchObject({ needsPassword: true, unlocked: false })
     expect((await server.inject({ method: 'GET', url: `/agents/${agentId}/identity/custom:secret` })).json()).toMatchObject({ storage: 'password', locked: true })
-    const wrong = await server.inject({ method: 'POST', url: `/agents/${agentId}/identity/password/unlock`, payload: { password: 'nope' } })
-    expect(wrong.statusCode).toBe(400)
+    const wrong = await unlockAs(server, agentId, 'nope', S1)
+    expect(wrong.statusCode).toBe(403)
     expect(wrong.json().code).toBe('wrong_password')
 
-    const unlock = await server.inject({ method: 'POST', url: `/agents/${agentId}/identity/password/unlock`, payload: { password: 'pw-1' } })
-    expect(unlock.statusCode).toBe(200)
+    expect((await unlockAs(server, agentId, 'pw-1', S1)).statusCode).toBe(200)
     expect((await server.inject({ method: 'GET', url: `/agents/${agentId}/identity/custom:secret` })).json()).toMatchObject({ locked: false, length: 7 })
 
     // Start: the runtime gets the key the document holds (Studio's captured key).
@@ -591,27 +597,161 @@ describe('open documents: password-protected files (D3 derived-key cache)', () =
     await runtime.stopAgent(agentId)
     // Stop keeps it: no prompt for the next start.
     expect(runtime.getOpenDocument(agentId)).toMatchObject({ needsPassword: false })
+  })
 
-    // Close and reopen in the same session: the remembered key opens it.
-    await runtime.releaseDocument(agentId, 'session-1')
+  it('only the session that typed the password remembers the key; a session that joined does not', async () => {
+    const dir = tempDir()
+    const { filePath, agentId } = protectedAgent(dir, 'agent-1')
+    const { runtime, server } = setup()
+    await runtime.openDocument(filePath, { holder: S1 })
+    expect((await unlockAs(server, agentId, 'pw-1', S1)).statusCode).toBe(200)
+    // S2 joins the unlocked document: one owner, the open document's key is shared while it is open.
+    expect(await runtime.openDocument(filePath, { holder: S2 })).toMatchObject({ needsPassword: false })
+    await runtime.releaseDocument(agentId, S1)
+    await runtime.releaseDocument(agentId, S2)
     expect(runtime.getOpenDocument(agentId)).toBeUndefined()
-    expect(await runtime.openDocument(filePath, { holder: 'session-1' })).toMatchObject({ needsPassword: false })
-    // Another session never unlocked it... but the document is open and unlocked: it shares it.
-    expect(await runtime.openDocument(filePath, { holder: 'session-2' })).toMatchObject({ needsPassword: false })
-    await runtime.releaseDocumentHolder('session-1')
-    await runtime.releaseDocumentHolder('session-2')
-    // Session 2 held it when it was unlocked: it remembers the key; a new session 3 is prompted.
-    expect(await runtime.openDocument(filePath, { holder: 'session-3' })).toMatchObject({ needsPassword: true })
+    // S2 never typed it: prompted. S1 typed it: no prompt.
+    expect(await runtime.openDocument(filePath, { holder: S2 })).toMatchObject({ needsPassword: true })
+    await runtime.releaseDocument(agentId, S2)
+    expect(await runtime.openDocument(filePath, { holder: S1 })).toMatchObject({ needsPassword: false })
+    await runtime.releaseDocument(agentId, S1)
+    // An unlock without a session header is remembered by nobody.
+    await runtime.openDocument(filePath, { holder: S3 })
+    expect((await unlockAs(server, agentId, 'pw-1')).statusCode).toBe(200)
+    await runtime.releaseDocument(agentId, S3)
+    expect(await runtime.openDocument(filePath, { holder: S3 })).toMatchObject({ needsPassword: true })
   })
 
   it('session expiry forgets the keys it unlocked', async () => {
     const dir = tempDir()
     const { filePath, agentId } = protectedAgent(dir, 'agent-1')
     const { runtime } = setup()
-    await runtime.openDocument(filePath, { holder: 'session-1' })
-    runtime.unlockAgentIdentityPassword(agentId, 'pw-1')
-    await runtime.releaseDocumentHolder('session-1')
-    expect(await runtime.openDocument(filePath, { holder: 'session-1' })).toMatchObject({ needsPassword: true })
+    await runtime.openDocument(filePath, { holder: S1 })
+    runtime.unlockAgentIdentityPassword(agentId, 'pw-1', { holder: S1 })
+    await runtime.releaseDocumentHolder(S1)
+    expect(await runtime.openDocument(filePath, { holder: S1 })).toMatchObject({ needsPassword: true })
+  })
+})
+
+describe('open documents: review fixes', () => {
+  it('review accept is refused (409 agent_leased) while another runtime runs the file, and writes nothing', async () => {
+    const dir = tempDir()
+    const { filePath, agentId } = seedAgent(dir, 'agent-1')
+    const other = new AgentLeaseRegistry({ dir: processAgentLeases().dir, kind: 'studio-embedded', settingsPath: join(dir, 'other-settings.json') })
+    expect((await other.acquire(filePath, { agentId })).ok).toBe(true)
+    cleanups.push(() => other.close())
+    const { server, settings } = setup()
+    const before = AdfWorkspace.open(filePath)
+    const lockedBefore = before.getAgentConfig().locked_fields
+    before.close()
+    const res = await server.inject({ method: 'POST', url: '/agents/review/accept', payload: { filePath } })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('agent_leased')
+    const after = AdfWorkspace.open(filePath)
+    expect(after.getAgentConfig().locked_fields).toEqual(lockedBefore)
+    after.close()
+    expect(settings.data.reviewedAgents).toBeUndefined()
+  })
+
+  it('a document of a file leased elsewhere opens read-only: no open step writes it', async () => {
+    const dir = tempDir()
+    const { filePath, agentId } = seedAgent(dir, 'agent-1', { name: 'not-the-file-name' } as Partial<AgentConfig>)
+    const other = new AgentLeaseRegistry({ dir: processAgentLeases().dir, kind: 'studio-embedded', settingsPath: join(dir, 'other-settings.json') })
+    expect((await other.acquire(filePath, { agentId })).ok).toBe(true)
+    cleanups.push(() => other.close())
+    const { runtime } = setup()
+    const info = await runtime.openDocument(filePath, { holder: S1 })
+    expect(info.readOnly).toMatch(/running/i)
+    expect(info.nameChangedFrom).toBeUndefined()
+    expect(runtime.getAgentConfig(agentId).config.name).toBe('not-the-file-name') // the name was not adopted from the file
+  })
+
+  it('accept answers the fields it locked', async () => {
+    const dir = tempDir()
+    const { filePath } = seedAgent(dir, 'agent-1')
+    const { server } = setup()
+    const res = await server.inject({ method: 'POST', url: '/agents/review/accept', payload: { filePath } })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().lockedFields).toEqual(expect.any(Array))
+    expect(res.json().config.locked_fields).toEqual(expect.arrayContaining(res.json().lockedFields))
+  })
+})
+
+describe('open documents: moving files', () => {
+  it('while its file moves, routes, starts and opens of the document answer 409 file_moving; nothing creates a file at the old path', async () => {
+    const dir = tempDir()
+    const { filePath, agentId } = seedAgent(dir, 'agent-1')
+    const { runtime, server } = setup()
+    await runtime.openDocument(filePath, { holder: S1 })
+    const dest = join(dir, 'moved', 'agent-1.adf')
+    let release!: () => void
+    const gate = new Promise<void>(r => { release = r })
+    const { mkdirSync, renameSync } = await import('node:fs')
+    mkdirSync(join(dir, 'moved'))
+    const moving = runtime.withDocumentMoved(filePath, async () => {
+      renameSync(filePath, dest)
+      await gate
+      return { value: 'moved', movedTo: dest }
+    })
+    await waitFor(() => runtime.isFileMoving(agentId))
+    for (const [method, url] of [['POST', `/agents/${agentId}/start`], ['GET', `/agents/${agentId}/document`], ['GET', `/agents/${agentId}`], ['PUT', `/agents/${agentId}/document`]] as const) {
+      const res = await server.inject({ method, url, ...(method === 'PUT' ? { payload: { content: 'x' } } : {}) })
+      expect(res.statusCode, `${method} ${url}`).toBe(409)
+      expect(res.json().code).toBe('file_moving')
+    }
+    await expect(runtime.startOrLoadAgent(agentId)).rejects.toMatchObject({ code: 'file_moving' })
+    await expect(runtime.openDocument(filePath, { holder: S2 })).rejects.toMatchObject({ code: 'file_moving' })
+    expect(runtime.listOpenDocuments()).toHaveLength(1) // listing does not touch the closed workspace
+    expect(existsSync(filePath)).toBe(false)
+    release()
+    expect(await moving).toBe('moved')
+    expect(existsSync(filePath)).toBe(false) // no ghost file
+    expect(runtime.getOpenDocument(agentId)).toMatchObject({ filePath: realpathSync.native(dest) })
+    expect((await server.inject({ method: 'GET', url: `/agents/${agentId}/document` })).statusCode).toBe(200)
+  })
+
+  it('a load of a missing file never creates it', async () => {
+    const dir = tempDir()
+    const { runtime } = setup()
+    const missing = join(dir, 'agent-9.adf')
+    await expect(runtime.loadAgent(missing)).rejects.toMatchObject({ code: 'not_found' })
+    expect(existsSync(missing)).toBe(false)
+    await expect(runtime.openDocument(missing, { holder: S1 })).rejects.toMatchObject({ code: 'not_found' })
+    expect(existsSync(missing)).toBe(false)
+  })
+})
+
+describe('open documents: holders', () => {
+  it('a holder must be a session id; holders that are no longer live are swept', async () => {
+    const dir = tempDir()
+    const one = seedAgent(dir, 'agent-1')
+    const two = seedAgent(dir, 'agent-2')
+    const { runtime } = setup({ runtime: { documentHoldTtlMs: 1000 } })
+    await expect(runtime.openDocument(one.filePath, { holder: 'session-1' })).rejects.toMatchObject({ statusCode: 400 })
+    await runtime.openDocument(one.filePath, { holder: S1 })
+    // No session check (before W2-B): a holder idle past the TTL expires.
+    expect(await runtime.sweepDocumentHolders(Date.now())).toEqual([])
+    expect(await runtime.sweepDocumentHolders(Date.now() + 1000)).toEqual([S1])
+    expect(runtime.getOpenDocument(one.agentId)).toBeUndefined()
+    // With W2-B's check: a holder it does not know is released, a live one kept.
+    runtime.setDocumentHolderCheck(holder => holder === S2)
+    await runtime.openDocument(one.filePath, { holder: S1 })
+    await runtime.openDocument(two.filePath, { holder: S2 })
+    expect(await runtime.sweepDocumentHolders()).toEqual([S1])
+    expect(runtime.getOpenDocument(one.agentId)).toBeUndefined()
+    expect(runtime.getOpenDocument(two.agentId)).toMatchObject({ holders: 1 })
+  })
+
+  it('surfaces a rename the document could not follow', async () => {
+    const dir = tempDir()
+    const { filePath, agentId } = seedAgent(dir, 'agent-1')
+    const { runtime, server } = setup()
+    await runtime.openDocument(filePath, { holder: S1 })
+    const config = runtime.getAgentConfig(agentId).config
+    const res = await server.inject({ method: 'PUT', url: `/agents/${agentId}/config`, payload: { ...config, name: 'bad:name' } })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().renameError).toMatch(/not a valid file name/)
+    expect(existsSync(filePath)).toBe(true)
   })
 })
 
@@ -620,7 +760,7 @@ describe('open documents: file operations keep one handle', () => {
     const dir = tempDir()
     const { filePath, agentId } = seedAgent(dir, 'agent-1')
     const { runtime, server } = setup({ settings: { trackedDirectories: [dir] } })
-    await runtime.openDocument(filePath, { holder: 'session-1' })
+    await runtime.openDocument(filePath, { holder: S1 })
     const config = runtime.getAgentConfig(agentId).config
     const res = await server.inject({ method: 'PUT', url: `/agents/${agentId}/config`, payload: { ...config, name: 'agent-2' } })
     expect(res.statusCode).toBe(200)
@@ -635,7 +775,7 @@ describe('open documents: file operations keep one handle', () => {
     const dir = tempDir()
     const { filePath, agentId } = seedAgent(dir, 'agent-1')
     const { runtime, server } = setup({ settings: { trackedDirectories: [dir] } })
-    await runtime.openDocument(filePath, { holder: 'session-1' })
+    await runtime.openDocument(filePath, { holder: S1 })
     const res = await server.inject({ method: 'DELETE', url: `/files?path=${encodeURIComponent(filePath)}` })
     expect(res.statusCode).toBe(200)
     expect(existsSync(filePath)).toBe(false)
@@ -646,7 +786,7 @@ describe('open documents: file operations keep one handle', () => {
     const dir = tempDir()
     const { filePath, agentId } = seedAgent(dir, 'agent-1')
     const { runtime, server } = setup({ settings: { trackedDirectories: [dir] } })
-    await runtime.openDocument(filePath, { holder: 'session-1' })
+    await runtime.openDocument(filePath, { holder: S1 })
     const res = await server.inject({
       method: 'PUT',
       url: `/files/agent/providers/custom:ab12/credential?path=${encodeURIComponent(filePath)}`,

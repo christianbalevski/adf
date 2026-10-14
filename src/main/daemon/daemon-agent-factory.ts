@@ -161,16 +161,16 @@ export class DaemonAgentFactory {
    * identity_not_ready.
    */
   async templateReview(id: string): Promise<{ needsReview: boolean; reviewed: boolean; summary?: AgentConfigSummary; identityReady?: false; message?: string }> {
+    if (!this.identityReady()) {
+      // No file is opened or generated: shipped templates need the identity to exist.
+      const identity = this.deps.identity.status()
+      console.warn(`[ADF Daemon] Template ${id}: review not built, the owner identity is not ready (${identity.status})`)
+      return { needsReview: false, reviewed: false, identityReady: false, message: `Set up the owner identity first. ${identity.message}` }
+    }
     const file = this.existingTemplateFile(id)
     const workspace = AdfWorkspace.open(file)
     try {
-      const config = workspace.getAgentConfig()
-      const reviewed = isConfigReviewed(this.deps.settings.get('reviewedAgents'), config)
-      if (!this.identityReady()) {
-        const identity = this.deps.identity.status()
-        console.warn(`[ADF Daemon] Template ${id}: review not built, the owner identity is not ready (${identity.status})`)
-        return { needsReview: false, reviewed, identityReady: false, message: `Set up the owner identity first. ${identity.message}` }
-      }
+      const reviewed = isConfigReviewed(this.deps.settings.get('reviewedAgents'), workspace.getAgentConfig())
       const summary = await reviewSummaryFor(workspace, file, { settings: this.deps.settings, identity: this.deps.identity }, { relocatable: false })
       return { needsReview: !reviewed, reviewed, summary }
     } finally {

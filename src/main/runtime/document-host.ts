@@ -14,10 +14,11 @@
 //
 // Derived keys (D3): Studio caches a password-protected file's derived key
 // per path for its process lifetime, so reopening a file never prompts again
-// (ipc/index.ts derivedKeyCache). Here the cache is per holder: a document's
-// key is remembered for each session that held it when it was unlocked or
-// released, and dropped with the session. A session that never unlocked the
-// file is prompted, as a second Studio would be.
+// (ipc/index.ts derivedKeyCache). Here the cache is per holder: only the
+// session that typed the password remembers the key for its next open, and
+// forgets it when it ends. While a document is open its key is shared by
+// every holder (one owner, several windows: the single-owner trust model of
+// D4); a key is never remembered by a session that did not type it.
 
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
@@ -41,6 +42,8 @@ export interface OpenDocument {
   openedAt: number
   /** Config writes made through the document; a start compares it before and after its build. */
   configWrites: number
+  /** Opened while another runtime runs the file: the sentence naming it (writes are refused). */
+  readOnly?: string
 }
 
 export class DocumentHost {

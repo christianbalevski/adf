@@ -704,7 +704,7 @@
             "$ref": "#/components/responses/ServerError"
           }
         },
-        "description": "Studio's FILE_REVIEW_ACCEPT: optional model override, claim (or the identity provisioning deferred at open), auto-locked security fields, the reviewed mark. Move an untracked file into the agents folder afterwards with POST /files/relocate."
+        "description": "Studio's FILE_REVIEW_ACCEPT: optional model override, claim (or the identity provisioning deferred at open), auto-locked security fields, the reviewed mark. Move an untracked file into the agents folder afterwards with POST /files/relocate. Refused with 409 `agent_leased` while another runtime runs the file."
       }
     },
     "/agents/{id}": {
@@ -740,7 +740,7 @@
             "$ref": "#/components/responses/NotFound"
           }
         },
-        "description": "Every /agents/{id} resource route (config, document, files, chat, inbox, outbox, timers, logs, tables, identity, meta, tasks) also reaches an open document: a file a client session holds open without running it (design D4). Runtime actions on one that is not running (chat, trigger, abort, interrupt, compact, loop changes, display state, approvals, asks, suspend) answer 409 `agent_not_running`. Writes through it are refused with 409 `agent_leased` while another runtime runs its file."
+        "description": "Every /agents/{id} resource route (config, document, files, chat, inbox, outbox, timers, logs, tables, identity, meta, tasks) also reaches an open document: a file a client session holds open without running it (design D4). Runtime actions on one that is not running (chat, trigger, abort, interrupt, compact, loop changes, display state, approvals, asks, suspend) answer 409 `agent_not_running`. Writes through it are refused with 409 `agent_leased` while another runtime runs its file. While an open document's file is being moved (accept-relocate) every /agents/{id} route answers 409 `file_moving`."
       }
     },
     "/agents/{id}/status": {
@@ -3418,15 +3418,41 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
-            "$ref": "#/components/responses/Forbidden"
+            "description": "Wrong password (`wrong_password`), or a cross-site request (`forbidden`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Wrong password",
+                  "code": "wrong_password"
+                }
+              }
+            }
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "409": {
+            "description": "The file has no file password (`not_password_protected`), or its file is being moved (`file_moving`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "agent-1 has no file password to unlock.",
+                  "code": "not_password_protected"
+                }
+              }
+            }
+          },
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
-        }
+        },
+        "description": "With the X-ADF-Client-Session header, that client session remembers the key and reopens the file without a prompt; no other session does."
       }
     },
     "/agents/{id}/identity/password/change": {
@@ -6981,9 +7007,6 @@
                 }
               }
             }
-          },
-          "409": {
-            "$ref": "#/components/responses/IdentityNotReady"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -14682,6 +14705,18 @@
           },
           "config": {
             "$ref": "#/components/schemas/AgentConfig"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "Open document only: the file followed a name change to this path"
+          },
+          "renameDeferred": {
+            "type": "boolean",
+            "description": "Open document only: a start is building; the file is renamed when it stops"
+          },
+          "renameError": {
+            "type": "string",
+            "description": "Open document only: why the file did not follow the name change (saved anyway)"
           }
         }
       },
@@ -16399,7 +16434,7 @@
           },
           "holder": {
             "type": "string",
-            "description": "With load: false: the client session that holds the new file open (not running)."
+            "description": "With load: false: the client session (its id, a UUID) that holds the new file open, not running. A holder that is not a live session is released."
           }
         },
         "example": {
@@ -20138,6 +20173,13 @@
           },
           "config": {
             "$ref": "#/components/schemas/AgentConfig"
+          },
+          "lockedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Accept only: the security-sensitive fields this accept locked against the agent's own edits"
           }
         }
       },
@@ -25773,6 +25815,10 @@
           },
           "nameChangedFrom": {
             "type": "string"
+          },
+          "readOnly": {
+            "type": "string",
+            "description": "Another runtime runs the file: it opened read-only (no open step wrote it), writes are refused; the sentence names the holder"
           }
         }
       }

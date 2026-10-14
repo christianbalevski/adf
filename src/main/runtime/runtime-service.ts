@@ -170,6 +170,8 @@ export interface RuntimeServiceOptions {
   enforceReviewGate?: boolean
   /** Cross-process agent lease (agent-lease.ts). Defaults to the process registry; null disables it. */
   agentLeases?: AgentLeaseRegistry | null
+  /** Open documents: the holder TTL used while no session check is set (default DOCUMENT_HOLD_TTL_MS). */
+  documentHoldTtlMs?: number
 }
 
 export interface RuntimeLoadAgentOptions {
@@ -209,6 +211,8 @@ export interface RuntimeOpenDocumentInfo {
   holders: number
   /** This open renamed the agent after its file (Studio's FILE_OPEN does the same). */
   nameChangedFrom?: string
+  /** Another runtime runs the file: it opened read-only (no open step wrote it) and writes are refused. The sentence names the holder. */
+  readOnly?: string
 }
 
 /** 'document-opened' / 'document-closed': an open document came or went. */
@@ -228,7 +232,18 @@ export interface RuntimeDocumentEvent {
  */
 export interface RuntimeDocumentOpenHooks {
   onOpen?(workspace: AdfWorkspace, ctx: { filePath: string; reviewed: boolean }): void
+  /**
+   * The sentence naming another live runtime that holds the file's agent
+   * lease, or null. Such a file opens read-only: no open step writes it.
+   */
+  leasedElsewhere?(filePath: string): Promise<string | null>
 }
+
+/** Holders are client session ids (W2-B mints them with randomUUID). */
+export const DOCUMENT_HOLDER_FORMAT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Without a session check, a holder that has not held anything for this long is released (D5's 60 s session expiry). */
+export const DOCUMENT_HOLD_TTL_MS = 60_000
 
 /** A running agent or an open document, by id, handle or name (the /agents/:id resource routes). */
 export interface RuntimeAgentTargetRef extends RuntimeAgentRef {
@@ -419,7 +434,7 @@ export interface RuntimeAgentLoopPage {
 /** A caller-visible loop API failure; `statusCode` is the HTTP status to answer with. */
 export class RuntimeLoopError extends Error {
   /** `details`: extra fields for the HTTP error body (e.g. `candidates`). */
-  constructor(message: string, readonly statusCode: 400 | 404 | 409 | 502, readonly code?: string, readonly details?: Record<string, unknown>) {
+  constructor(message: string, readonly statusCode: 400 | 403 | 404 | 409 | 502, readonly code?: string, readonly details?: Record<string, unknown>) {
     super(message)
     this.name = 'RuntimeLoopError'
   }
@@ -636,6 +651,8 @@ export interface RuntimeReviewInfo {
   filePath: string
   reviewed: boolean
   summary: AgentConfigSummary
+  /** POST /agents/review/accept: the fields the accept locked against the agent's own edits. */
+  lockedFields?: string[]
 }
 
 export interface RuntimeAutostartOptions {
@@ -752,6 +769,13 @@ export class RuntimeService extends EventEmitter {
   /** Opens in progress, by canonical path, so concurrent opens of one file share one workspace. */
   private readonly inFlightOpens = new Map<string, Promise<OpenDocument>>()
   private documentOpenHooks: RuntimeDocumentOpenHooks = {}
+  private holderCheck: ((holder: string) => boolean) | null = null
+  /** Documents whose workspace is closed for a move (withDocumentMoved): every use answers 409 file_moving. */
+  private readonly movingDocs = new Set<OpenDocument>()
+  /** holder → when it last held a document (the TTL of holders without a session check). */
+  private readonly holderSeen = new Map<string, number>()
+  private holderSweep: ReturnType<typeof setInterval> | null = null
+  private readonly documentHoldTtlMs: number
 
   constructor(opts: RuntimeServiceOptions = {}) {
     super()
@@ -763,6 +787,7 @@ export class RuntimeService extends EventEmitter {
     this.agentRuntimeBuilder = opts.agentRuntimeBuilder
     this.enforceReviewGate = opts.enforceReviewGate ?? true
     this.agentLeases = opts.agentLeases === undefined ? processAgentLeases() : opts.agentLeases
+    this.documentHoldTtlMs = opts.documentHoldTtlMs ?? DOCUMENT_HOLD_TTL_MS
     this.agentLeases?.addHostedPathsProbe(() => [...this.filePathToAgentId.keys(), ...this.inFlightLoads.keys()])
   }
 
@@ -810,6 +835,10 @@ export class RuntimeService extends EventEmitter {
   }
 
   private async openAndRegister(canonicalPath: string, opts: RuntimeLoadAgentOptions, progress: { agentId: string | null }): Promise<RuntimeAgentRef> {
+    const moving = this.documents.get(canonicalPath)
+    if (moving) this.assertNotMoving(moving)
+    // AdfWorkspace.open creates a missing database: a load never makes a file.
+    else if (!existsSync(canonicalPath)) throw new RuntimeLoopError(`No agent file at ${canonicalPath}`, 404, 'not_found')
     const lease = await this.agentLeases?.acquire(canonicalPath)
     if (lease && !lease.ok) {
       throw new RuntimeLoopError(lease.message, 409, AGENT_LEASED_CODE, { holder: lease.record.holder })
@@ -1111,6 +1140,7 @@ export class RuntimeService extends EventEmitter {
     )
     await Promise.allSettled(Array.from(this.inFlightOpens.values()))
     for (const doc of this.documents.list()) this.closeOpenDocument(doc, 'shutdown')
+    if (this.holderSweep) { clearInterval(this.holderSweep); this.holderSweep = null }
   }
 
   /**
@@ -1492,6 +1522,7 @@ export class RuntimeService extends EventEmitter {
     const canonicalPath = this.canonicalFilePath(filePath)
     const open = this.targetAtPath(canonicalPath)
     if (open) return fn(open.workspace, canonicalPath, open.keyCell)
+    if (!existsSync(canonicalPath)) throw new RuntimeLoopError(`No agent file at ${canonicalPath}`, 404, 'not_found')
     const workspace = AdfWorkspace.open(canonicalPath)
     try {
       unlockWorkspaceEnvelopes(workspace)
@@ -1522,6 +1553,15 @@ export class RuntimeService extends EventEmitter {
     this.documentOpenHooks = hooks
   }
 
+  /**
+   * W2-B: whether a holder is still a live client session. The holder sweep
+   * then releases every holder it does not know; without it a holder expires
+   * DOCUMENT_HOLD_TTL_MS after its last hold.
+   */
+  setDocumentHolderCheck(isLive: ((holder: string) => boolean) | null): void {
+    this.holderCheck = isLive
+  }
+
   /** The settings store the runtime reads (review routes fall back to it when the HTTP API has none). */
   getSettingsStore(): RuntimeSettingsStore | undefined {
     return this.settings
@@ -1548,6 +1588,7 @@ export class RuntimeService extends EventEmitter {
     if (loading) await loading.catch(() => {})
     let nameChangedFrom: string | null = null
     let doc = this.documents.get(canonicalPath)
+    if (doc) this.assertNotMoving(doc)
     if (!doc) {
       const pending = this.inFlightOpens.get(canonicalPath)
       if (pending) {
@@ -1568,6 +1609,8 @@ export class RuntimeService extends EventEmitter {
     }
     const first = doc.holders.size === 0
     doc.holders.add(holder)
+    this.holderSeen.set(holder, Date.now())
+    this.ensureHolderSweep()
     if (doc.workspace.isPasswordProtected() && !doc.keyCell.current) this.restoreCachedKey(doc, holder)
     console.log(`[RuntimeService] ${first ? 'Opened' : 'Holding'} document ${canonicalPath} for ${holder}`)
     if (first) this.emitSafely('document-opened', { agentId: doc.agentId, filePath: doc.filePath, holder } satisfies RuntimeDocumentEvent)
@@ -1594,21 +1637,32 @@ export class RuntimeService extends EventEmitter {
       return { doc, nameChangedFrom: null }
     }
     if (!existsSync(canonicalPath)) throw new RuntimeLoopError(`No agent file at ${canonicalPath}`, 404, 'not_found')
+    const leasedBy = (await this.documentOpenHooks.leasedElsewhere?.(canonicalPath)) ?? null
     const workspace = AdfWorkspace.open(canonicalPath)
     try {
-      unlockWorkspaceEnvelopes(workspace)
-      const config = workspace.getAgentConfig() as AgentConfig
-      this.assertNoDuplicateId(config.id, canonicalPath)
-      const reviewed = isConfigReviewed(this.settings?.get('reviewedAgents'), config)
-      try {
-        this.documentOpenHooks.onOpen?.(workspace, { filePath: canonicalPath, reviewed })
-      } catch (err) {
-        console.warn(`[RuntimeService] Identity steps on open failed for ${canonicalPath}:`, err)
+      let fresh: AgentConfig
+      let nameChangedFrom: string | null = null
+      if (leasedBy) {
+        // Another runtime runs it: none of the open steps below runs (they
+        // write the file: envelope re-wraps, restamp, keys, the name).
+        console.log(`[RuntimeService] Opened ${canonicalPath} read-only: ${leasedBy}`)
+        fresh = workspace.getAgentConfig() as AgentConfig
+        this.assertNoDuplicateId(fresh.id, canonicalPath)
+      } else {
+        unlockWorkspaceEnvelopes(workspace)
+        const config = workspace.getAgentConfig() as AgentConfig
+        this.assertNoDuplicateId(config.id, canonicalPath)
+        const reviewed = isConfigReviewed(this.settings?.get('reviewedAgents'), config)
+        try {
+          this.documentOpenHooks.onOpen?.(workspace, { filePath: canonicalPath, reviewed })
+        } catch (err) {
+          console.warn(`[RuntimeService] Identity steps on open failed for ${canonicalPath}:`, err)
+        }
+        fresh = workspace.getAgentConfig() as AgentConfig
+        nameChangedFrom = this.adoptFileName(workspace, fresh, canonicalPath)
+        this.surfaceFileProviders(fresh)
+        this.sweepOrphanedWal(dirname(canonicalPath))
       }
-      const fresh = workspace.getAgentConfig() as AgentConfig
-      const nameChangedFrom = this.adoptFileName(workspace, fresh, canonicalPath)
-      this.surfaceFileProviders(fresh)
-      this.sweepOrphanedWal(dirname(canonicalPath))
       const doc: OpenDocument = {
         agentId: fresh.id,
         filePath: canonicalPath,
@@ -1618,6 +1672,7 @@ export class RuntimeService extends EventEmitter {
         holders: new Set(),
         openedAt: Date.now(),
         configWrites: 0,
+        ...(leasedBy ? { readOnly: leasedBy } : {}),
       }
       this.documents.add(doc)
       return { doc, nameChangedFrom }
@@ -1677,7 +1732,6 @@ export class RuntimeService extends EventEmitter {
     const doc = this.documentFor(identifier)
     if (!doc) throw new RuntimeLoopError(`No open document "${identifier}"`, 404, 'not_found')
     const released = doc.holders.delete(holder)
-    if (released && doc.keyCell.current) this.documents.rememberKey(holder, doc.filePath, doc.keyCell.current)
     let closed = false
     if (doc.holders.size === 0) closed = this.closeOpenDocument(doc, 'released')
     if (released) console.log(`[RuntimeService] ${holder} released ${doc.filePath}${closed ? ' (closed)' : ''}`)
@@ -1696,8 +1750,36 @@ export class RuntimeService extends EventEmitter {
       if (doc.holders.size === 0) this.closeOpenDocument(doc, 'released')
     }
     this.documents.dropHolder(holder)
+    this.holderSeen.delete(holder)
     if (held.length > 0) console.log(`[RuntimeService] ${holder} ended; released ${held.map(d => d.filePath).join(', ')}`)
     return held.map(d => d.agentId)
+  }
+
+  /**
+   * Release holders that are gone: with a session check (W2-B's
+   * setDocumentHolderCheck), every holder it does not know; without one, holders that
+   * held nothing for documentHoldTtlMs. A document pinned by a client that
+   * never releases it closes this way. Returns the released holders.
+   */
+  async sweepDocumentHolders(now = Date.now()): Promise<string[]> {
+    const holders = new Set(this.documents.list().flatMap(doc => [...doc.holders]))
+    const check = this.holderCheck
+    const gone = [...holders].filter(holder => check ? !check(holder) : now - (this.holderSeen.get(holder) ?? 0) >= this.documentHoldTtlMs)
+    for (const holder of gone) {
+      console.log(`[RuntimeService] Holder ${holder} is no longer a live session; releasing its documents`)
+      await this.releaseDocumentHolder(holder)
+    }
+    if (this.documents.list().length === 0 && this.holderSweep) {
+      clearInterval(this.holderSweep)
+      this.holderSweep = null
+    }
+    return gone
+  }
+
+  private ensureHolderSweep(): void {
+    if (this.holderSweep) return
+    this.holderSweep = setInterval(() => { void this.sweepDocumentHolders() }, Math.max(1000, Math.min(15_000, this.documentHoldTtlMs / 4)))
+    this.holderSweep.unref?.()
   }
 
   /**
@@ -1724,6 +1806,9 @@ export class RuntimeService extends EventEmitter {
     if (this.managedAt(doc.filePath) || this.inFlightLoads.has(doc.filePath)) {
       throw new RuntimeLoopError(`${doc.config.name} is running; its file cannot move now.`, 409, 'agent_running')
     }
+    // Until it reopens, every route, start or open of it answers 409 file_moving
+    // (its workspace is closed; the file is at neither path for a while).
+    this.movingDocs.add(doc)
     try { doc.workspace.checkpoint() } catch { /* the close checkpoints too */ }
     try { doc.workspace.close() } catch (err) { console.warn(`[RuntimeService] Closing ${doc.filePath} for its move failed:`, err) }
     let movedTo: string | null = null
@@ -1732,9 +1817,12 @@ export class RuntimeService extends EventEmitter {
       movedTo = result.movedTo
       return result.value
     } finally {
+      this.movingDocs.delete(doc)
       const at = movedTo ? this.canonicalFilePath(movedTo) : doc.filePath
-      if (at !== doc.filePath) this.documents.rekey(doc.filePath, at)
-      try {
+      const stillOpen = this.documents.get(doc.filePath) === doc
+      if (stillOpen && at !== doc.filePath) this.documents.rekey(doc.filePath, at)
+      if (stillOpen) try {
+        if (!existsSync(at)) throw new Error(`no file at ${at}`) // never create one by reopening
         doc.workspace = AdfWorkspace.open(at)
         unlockWorkspaceEnvelopes(doc.workspace)
         doc.config = doc.workspace.getAgentConfig() as AgentConfig
@@ -1752,7 +1840,10 @@ export class RuntimeService extends EventEmitter {
     if (this.inFlightLoads.has(doc.filePath)) return false // settleDocumentAfterStart closes or hands it over
     this.documents.remove(doc)
     const managed = this.managedAt(doc.filePath)
-    if (managed) {
+    if (this.movingDocs.has(doc)) {
+      // Its workspace is closed for the move; withDocumentMoved does not reopen a removed document.
+      console.log(`[RuntimeService] ${doc.filePath} was released while it moved; it stays closed`)
+    } else if (managed) {
       managed.agent.setWorkspaceOwnership(true)
       console.log(`[RuntimeService] ${doc.filePath} is no longer open; ${managed.config.name} keeps running`)
     } else {
@@ -1779,6 +1870,17 @@ export class RuntimeService extends EventEmitter {
     return this.documents.list().map(doc => this.documentInfo(doc))
   }
 
+  /** True while the file of this open document (id, handle, name or path) is being moved. */
+  isFileMoving(identifier: string): boolean {
+    const doc = this.documentFor(identifier)
+    return !!doc && this.movingDocs.has(doc)
+  }
+
+  private assertNotMoving(doc: OpenDocument): void {
+    if (!this.movingDocs.has(doc)) return
+    throw new RuntimeLoopError(`${doc.config.name}'s file is being moved; try again in a moment.`, 409, 'file_moving', { agentId: doc.agentId, filePath: doc.filePath })
+  }
+
   /** The holders of a document (W2-B lists a session's documents from its own side). */
   documentHolders(identifier: string): string[] {
     return [...(this.documentFor(identifier)?.holders ?? [])]
@@ -1790,8 +1892,9 @@ export class RuntimeService extends EventEmitter {
       filePath: doc.filePath,
       name: this.managedAt(doc.filePath)?.config.name ?? doc.config.name,
       running: this.managedAt(doc.filePath) !== undefined,
-      needsPassword: doc.workspace.isPasswordProtected() && !doc.keyCell.current,
+      needsPassword: !this.movingDocs.has(doc) && doc.workspace.isPasswordProtected() && !doc.keyCell.current,
       holders: doc.holders.size,
+      ...(doc.readOnly ? { readOnly: doc.readOnly } : {}),
     }
   }
 
@@ -2128,7 +2231,7 @@ export class RuntimeService extends EventEmitter {
    * syncAgentFileToName; `filePath` is the new path). A write that lands
    * while a start on the document is building is adopted by that start.
    */
-  async setAgentConfig(agentId: string, config: AgentConfig): Promise<{ agentId: string; success: true; config: AgentConfig; filePath?: string; renameDeferred?: boolean }> {
+  async setAgentConfig(agentId: string, config: AgentConfig): Promise<{ agentId: string; success: true; config: AgentConfig; filePath?: string; renameDeferred?: boolean; renameError?: string }> {
     const target = this.requireTarget(agentId)
     if (!target.managed) {
       const doc = target.doc!
@@ -2143,6 +2246,7 @@ export class RuntimeService extends EventEmitter {
         config,
         ...(rename.filePath ? { filePath: rename.filePath } : {}),
         ...(rename.deferred ? { renameDeferred: true } : {}),
+        ...(rename.error ? { renameError: rename.error } : {}),
       }
     }
     const managed = target.managed
@@ -2791,20 +2895,21 @@ export class RuntimeService extends EventEmitter {
    * foreground key survives stop and start while the file stays open), and
    * every session holding the document remembers it for its next open.
    */
-  unlockAgentIdentityPassword(agentId: string, password: string): { agentId: string; success: true } {
+  unlockAgentIdentityPassword(agentId: string, password: string, opts: { holder?: string } = {}): { agentId: string; success: true } {
     const target = this.requireTarget(agentId)
     if (!target.workspace.isPasswordProtected()) {
       throw new RuntimeLoopError(`${target.config.name} has no file password to unlock.`, 409, 'not_password_protected')
     }
     try {
       target.keyCell.current = target.workspace.unlockWithPassword(password)
-    } catch {
-      throw new RuntimeLoopError('Wrong password', 400, 'wrong_password')
+    } catch (err) {
+      // Only a failed authentication of the decrypt is a wrong password; anything else is a real error.
+      if (isAuthFailure(err)) throw new RuntimeLoopError('Wrong password', 403, 'wrong_password')
+      throw err
     }
     console.log(`[RuntimeService] Keystore of ${target.config.name} unlocked with its file password`)
-    if (target.doc && target.filePath) {
-      for (const holder of target.doc.holders) this.documents.rememberKey(holder, target.filePath, target.keyCell.current)
-    }
+    // Only the session that typed the password remembers the key for its next open (D4).
+    if (opts.holder && target.filePath) this.documents.rememberKey(opts.holder, target.filePath, target.keyCell.current)
     const managed = target.managed
     if (managed) {
       // The provider was built while the agent's own key was unreadable (and so
@@ -3734,6 +3839,7 @@ export class RuntimeService extends EventEmitter {
   }
 
   private documentTarget(doc: OpenDocument): AgentTarget {
+    this.assertNotMoving(doc)
     return {
       id: doc.agentId,
       filePath: doc.filePath,
@@ -4226,8 +4332,16 @@ function summarizeMainGoal(instructions: string): string {
 const CHAT_DISPLAY_LIMIT = 200
 
 function requireHolder(holder: unknown): string {
-  if (typeof holder !== 'string' || holder.length === 0) throw new RuntimeLoopError('holder is required', 400, 'bad_request')
+  if (typeof holder !== 'string' || !DOCUMENT_HOLDER_FORMAT.test(holder)) {
+    throw new RuntimeLoopError('holder must be a client session id (a UUID)', 400, 'bad_request')
+  }
   return holder
+}
+
+/** AES-GCM refused the key: the password does not open the file. */
+function isAuthFailure(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return /unable to authenticate|unsupported state|bad decrypt/i.test(message)
 }
 
 /** False once the workspace's database connection is closed (a failed build disposes it). */

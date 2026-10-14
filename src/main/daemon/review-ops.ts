@@ -28,7 +28,8 @@ import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { AgentConfigSummary, ProviderConfig } from '../../shared/types/ipc.types'
 import { canonicalizePath, isSameOrSubPath } from '../utils/tracked-paths'
 import type { DaemonIdentity } from './daemon-identity'
-import { resolveAgentsFolderSync } from './file-ops'
+import { leaseHolderElsewhere, resolveAgentsFolderSync } from './file-ops'
+import { AGENT_LEASED_CODE } from '../runtime/agent-lease'
 
 export interface ReviewSettings {
   get(key: string): unknown
@@ -183,6 +184,8 @@ export interface AgentReviewAccepted {
   /** The agent DID after the accept (a claim mints a new one). */
   did: string | null
   config: AgentConfig
+  /** Security-sensitive fields this accept locked against the agent's own edits (Studio's autoLockFields); the client says which. */
+  lockedFields: string[]
 }
 
 /** POST /agents/review/accept: Studio's FILE_REVIEW_ACCEPT, without the relocate (POST /files/relocate). */
@@ -197,6 +200,12 @@ export async function acceptAgentReview(runtime: RuntimeService, filePath: strin
   }
   const open = runtime.getAgentWorkspaceByPath(filePath)
   if (input.claim && open?.running) throw new ReviewError('Stop the agent before claiming it: a claim gives it a new identity.', 409, 'agent_running')
+  // Accept writes the file (identity, model, locked fields; a claim re-keys
+  // it): never while another runtime runs it.
+  if (!open?.running) {
+    const holder = await leaseHolderElsewhere(runtime.agentLeaseRegistry, filePath)
+    if (holder) throw new ReviewError(`${holder} Accept its review there, or stop it there first.`, 409, AGENT_LEASED_CODE)
+  }
   const identity = deps.identity
 
   const result = runtime.withAgentFile(filePath, (workspace, canonicalPath, keyCell) => {
@@ -231,15 +240,16 @@ export async function acceptAgentReview(runtime: RuntimeService, filePath: strin
       config.model.params = chosenProvider.params?.length ? chosenProvider.params.map((p) => ({ ...p })) : undefined
     }
     const locked = new Set(config.locked_fields ?? [])
-    for (const field of autoLockFields(config)) locked.add(field)
+    const newlyLocked = autoLockFields(config).filter((field) => !locked.has(field))
+    for (const field of newlyLocked) locked.add(field)
     config.locked_fields = [...locked]
     // A closed file is written here; an open one through the runtime below (fan-out).
     if (!open) workspace.setAgentConfig(config)
-    return { canonicalPath, config, claimed, did: workspace.getDid() }
+    return { canonicalPath, config, claimed, did: workspace.getDid(), newlyLocked }
   })
   let config = result.config
   if (open) config = (await runtime.setAgentConfig(open.agentId, config)).config
   settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), config))
-  console.log(`[ADF Daemon] Review accepted for ${result.canonicalPath}${result.claimed ? ' (claimed)' : ''}`)
-  return { agentId: config.id, filePath: result.canonicalPath, reviewed: true, claimed: result.claimed, did: result.did, config }
+  console.log(`[ADF Daemon] Review accepted for ${result.canonicalPath}${result.claimed ? ' (claimed)' : ''}${result.newlyLocked.length ? `; locked against agent edits: ${result.newlyLocked.join(', ')}` : ''}`)
+  return { agentId: config.id, filePath: result.canonicalPath, reviewed: true, claimed: result.claimed, did: result.did, config, lockedFields: result.newlyLocked }
 }

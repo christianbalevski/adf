@@ -35,6 +35,11 @@ import { AdfWorkspace } from '../src/main/adf/adf-workspace'
 import { KeychainSecretBackend } from '../src/main/services/owner-secret-store'
 import { RuntimeGate } from '../src/main/runtime/runtime-gate'
 
+/** Client session ids (W2-B mints UUIDs; holders must be one). */
+const S1 = '00000000-0000-4000-8000-000000000001'
+const S2 = '00000000-0000-4000-8000-000000000002'
+const S3 = '00000000-0000-4000-8000-000000000003'
+
 function fakeKeychain() {
   const store = new Map<string, string>()
   class Entry {
@@ -109,7 +114,7 @@ describe('POST /agents/create without load (FILE_CREATE, FILE_CREATE_QUICK, MESH
     expect(runtime.listOpenDocuments()).toEqual([])
     expect(existsSync(closed.body.filePath)).toBe(true)
 
-    const held = await call(server, 'POST', '/agents/create', { name: 'agent-2', directory: dir, load: false, holder: 'session-1' })
+    const held = await call(server, 'POST', '/agents/create', { name: 'agent-2', directory: dir, load: false, holder: S1 })
     expect(held.status).toBe(201)
     expect(held.body).toMatchObject({ name: 'agent-2', loaded: false, started: false, document: { running: false, holders: 1, needsPassword: false } })
     expect(runtime.listAgents()).toEqual([])
@@ -122,7 +127,7 @@ describe('POST /agents/create without load (FILE_CREATE, FILE_CREATE_QUICK, MESH
     expect(runtime.getAgent(loaded.body.agentId)).toBeDefined()
 
     expect((await call(server, 'POST', '/agents/create', { name: 'agent-4', directory: dir, load: false, start: true })).status).toBe(400)
-    expect((await call(server, 'POST', '/agents/create', { name: 'agent-4', directory: dir, holder: 'session-1' })).status).toBe(400)
+    expect((await call(server, 'POST', '/agents/create', { name: 'agent-4', directory: dir, holder: S1 })).status).toBe(400)
     expect((await call(server, 'POST', '/agents/create', { name: 'agent-4', directory: dir, load: 'no' })).status).toBe(400)
   })
 
@@ -167,7 +172,7 @@ describe('review parity (FILE_CHECK_REVIEW, FILE_REVIEW_ACCEPT, TEMPLATE_CHECK_R
     expect(review.body.summary.relocateTo).toEqual(expect.any(String))
 
     // An open document is reviewed through its own workspace.
-    await runtime.openDocument(agent.filePath, { holder: 'session-1' })
+    await runtime.openDocument(agent.filePath, { holder: S1 })
     const unknownModel = await call(server, 'POST', '/agents/review/accept', { filePath: agent.filePath, model: { provider: 'nope', model_id: 'm' } })
     expect(unknownModel).toMatchObject({ status: 400, body: { code: 'provider_unknown' } })
     const accepted = await call(server, 'POST', '/agents/review/accept', { filePath: agent.filePath, claim: true, model: { provider: 'local', model_id: 'm-1' } })
@@ -192,7 +197,7 @@ describe('review parity (FILE_CHECK_REVIEW, FILE_REVIEW_ACCEPT, TEMPLATE_CHECK_R
     ws.setIdentity('custom:secret', 'hunter2')
     ws.setPassword('pw-1')
     ws.close()
-    await runtime.openDocument(agent.filePath, { holder: 'session-1' })
+    await runtime.openDocument(agent.filePath, { holder: S1 })
     expect((await call(server, 'POST', '/agents/review/accept', { filePath: agent.filePath, claim: true })).body.code).toBe('password_required')
     expect((await call(server, 'POST', `/agents/${agent.id}/identity/password/unlock`, { password: 'pw-1' })).status).toBe(200)
     expect((await call(server, 'POST', '/agents/review/accept', { filePath: agent.filePath, claim: true })).status).toBe(200)
@@ -236,7 +241,7 @@ describe('MODELS_LIST for a file, discovery force', () => {
     expect(closed.status).toBe(200)
     expect(closed.body.error).toBeUndefined()
     expect(closed.body.models.length).toBeGreaterThan(0)
-    await runtime.openDocument(filePath, { holder: 'session-1' })
+    await runtime.openDocument(filePath, { holder: S1 })
     expect((await call(server, 'GET', `/runtime/models?provider=own&filePath=${q}`)).body.models.length).toBeGreaterThan(0)
     expect((await call(server, 'GET', '/runtime/models?provider=own&filePath=relative.adf')).status).toBe(400)
     // Opening it surfaced its own provider in settings (Studio's FILE_OPEN), keyless, stored in the agent.
