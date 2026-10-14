@@ -2339,14 +2339,25 @@ export function createDaemonHttpApi(
     }
   })
 
-  server.post<{ Params: AgentIdParams }>('/agents/:id/start', async (request, reply) => {
+  server.post<{ Params: AgentIdParams; Querystring: { preflight?: string } }>('/agents/:id/start', async (request, reply) => {
     try {
+      // Client-initiated starts ask for Studio's AGENT_START provider gate;
+      // autostart never does (Studio's background starts skip it too).
+      const preflight = request.query?.preflight === '1' || request.query?.preflight === 'true'
+      let credentialsLocked: string | undefined
+      if (preflight && !runtime.getAgent(request.params.id)) {
+        const check = await runtime.preflightProvider(request.params.id)
+        if (!check.ok) return reply.code(409).send({ error: check.error, code: check.code ?? 'provider_check_failed' })
+        credentialsLocked = check.credentialsLocked
+      }
       const result = await runtime.startOrLoadAgent(request.params.id)
       return {
         success: true,
         loaded: result.loaded,
         startupTriggered: result.startupTriggered,
         agent: runtime.getAgentStatus(result.ref.id),
+        // The provider key is stored but locked: the start went on, unchecked.
+        ...(credentialsLocked ? { preflight: { code: 'credentials_locked', message: credentialsLocked } } : {}),
       }
     } catch (err) {
       if (err instanceof Error && err.message.includes('unknown agent')) {
