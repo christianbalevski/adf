@@ -34,6 +34,7 @@ import { AgentFileOps, FileOpError, browse, readCapped, resolveAgentsFolder, sna
 import { PathAgentOps } from '../path-agent-ops'
 import { forgetTrackedFile, scanTrackedTree, TrackedDirError, type TrackedDirsSettings } from '../tracked-dirs'
 import type { DaemonRouteContext } from './index'
+import { resolveAgentWorkspace } from './agent-resolver'
 
 const MIB = 1024 * 1024
 /** PUT /agents/:id/files/raw default cap (ADF_DAEMON_RAW_BODY_LIMIT_MB overrides). */
@@ -213,11 +214,12 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
 
   // --- Internal files of an agent: metadata and raw bytes ---------------------------
 
+  // A running agent or an open document (D4, agent-resolver.ts); an in-memory agent has no workspace here.
   const agentFiles = (id: string) => {
-    const ref = runtime.getAgent(id)
+    const ref = runtime.getAgentOrDocument(id)
     if (!ref) return null
-    const live = runtime.listLiveAgents().find(a => a.agentId === ref.id)
-    return { ref, workspace: live?.workspace ?? null }
+    const resolved = resolveAgentWorkspace(runtime, id)
+    return { ref, workspace: resolved.ok ? resolved.agent.workspace : null }
   }
 
   const fileMeta = (id: string, path: string) => {

@@ -207,6 +207,12 @@ export function TemplatesDialog({ overlay, close: closeOverlay, width, height }:
   const openReview = async (id: string, back: Step) => {
     const r = await act('Review', back, () => store.client.templateReview(id))
     if (!r) return
+    // No owner identity yet: the daemon builds no review (Studio's answer); set the identity up first.
+    if (r.identityReady === false) {
+      close()
+      openIdentity(store, { mode: 'status', then: TEMPLATES_OVERLAY, thenProps: { id }, reason: `Review: ${r.message ?? 'Set up the owner identity first.'}` })
+      return
+    }
     if (!r.needsReview) { await refresh(); done(`${label(id)} is already reviewed`, back); return }
     setStep({ kind: 'review', id, review: r })
   }
@@ -408,7 +414,7 @@ export function TemplatesDialog({ overlay, close: closeOverlay, width, height }:
   if (step.kind === 'review') {
     return (
       <Modal title={`Review ${theme.glyph.sep} ${label(step.id)} template`} width={dialogWidth} hints={[{ keys: 'y enter', label: 'claim + accept' }, { keys: 'up down', label: 'scroll' }, { keys: 'n esc', label: 'cancel' }]}>
-        {step.review ? <LinesView lines={reviewLines(step.review.summary, inner)} width={inner} height={fitLines(reviewLines(step.review.summary, inner).length)} keyLayer="overlay" /> : <Spinner label="reading the template…" />}
+        {step.review?.summary ? <LinesView lines={reviewLines(step.review.summary, inner)} width={inner} height={fitLines(reviewLines(step.review.summary, inner).length)} keyLayer="overlay" /> : <Spinner label="reading the template…" />}
         {errorLine}
       </Modal>
     )

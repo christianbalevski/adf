@@ -501,7 +501,7 @@
         },
         "responses": {
           "201": {
-            "description": "Created (and loaded; started when `start`)",
+            "description": "Created: loaded (started when `start`), left closed (load: false), or held open (load: false + holder)",
             "content": {
               "application/json": {
                 "schema": {
@@ -656,7 +656,8 @@
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
-        }
+        },
+        "description": "Studio's FILE_CHECK_REVIEW: identity scenario, provider usability (the automatic provider check, honouring providerChecksEnabled), willRelocate and relocateTo. An open or running file is read through its own workspace."
       }
     },
     "/agents/review/accept": {
@@ -696,10 +697,14 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
-        }
+        },
+        "description": "Studio's FILE_REVIEW_ACCEPT: optional model override, claim (or the identity provisioning deferred at open), auto-locked security fields, the reviewed mark. Move an untracked file into the agents folder afterwards with POST /files/relocate. Refused with 409 `agent_leased` while another runtime runs the file."
       }
     },
     "/agents/{id}": {
@@ -707,7 +712,7 @@
         "tags": [
           "Agents"
         ],
-        "summary": "A loaded agent's reference (id, file, config)",
+        "summary": "A running agent's or open document's reference (id, file, config)",
         "operationId": "getAgent",
         "parameters": [
           {
@@ -734,7 +739,8 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           }
-        }
+        },
+        "description": "Every /agents/{id} resource route (config, document, files, chat, inbox, outbox, timers, logs, tables, identity, meta, tasks) also reaches an open document: a file a client session holds open without running it (design D4). Runtime actions on one that is not running (chat, trigger, abort, interrupt, compact, loop changes, display state, approvals, asks, suspend) answer 409 `agent_not_running`. Writes through it are refused with 409 `agent_leased` while another runtime runs its file. While an open document's file is being moved (accept-relocate) every /agents/{id} route answers 409 `file_moving`."
       }
     },
     "/agents/{id}/status": {
@@ -2241,7 +2247,7 @@
           "Chat"
         ],
         "summary": "Queue a user chat turn",
-        "description": "The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped, and a working turn is never cut off: in a tool loop they join the running turn after the current tool results (`chat.delivered` with `delivery: 'next_step'`); otherwise the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). A chat to a loop waiting on the owner (approval, ask, suspend) ends that wait and restarts the turn; /interrupt is the hard stop. Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`.",
+        "description": "The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped, and a working turn is never cut off: in a tool loop they join the running turn after the current tool results (`chat.delivered` with `delivery: 'next_step'`); otherwise the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). A chat to a loop waiting on the owner (approval, ask, suspend) ends that wait and restarts the turn; /interrupt is the hard stop. Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`. An open document that is not running answers 409 `agent_not_running`.",
         "operationId": "chatAgent",
         "parameters": [
           {
@@ -2305,15 +2311,31 @@
           },
           {
             "$ref": "#/components/parameters/LoopQuery"
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "Keyset scroll-back: the display entries older than this loop seq (answers a ChatPageResponse)",
+            "schema": {
+              "type": "integer"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Chat history (null when none)",
+            "description": "Chat history (null when none), or with `before` the page before that seq",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ChatHistoryResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ChatHistoryResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatPageResponse"
+                    }
+                  ]
                 }
               }
             }
@@ -2424,6 +2446,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           }
         }
       }
@@ -3393,15 +3418,41 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
-            "$ref": "#/components/responses/Forbidden"
+            "description": "Wrong password (`wrong_password`), or a cross-site request (`forbidden`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Wrong password",
+                  "code": "wrong_password"
+                }
+              }
+            }
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "409": {
+            "description": "The file has no file password (`not_password_protected`), or its file is being moved (`file_moving`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "agent-1 has no file password to unlock.",
+                  "code": "not_password_protected"
+                }
+              }
+            }
+          },
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
-        }
+        },
+        "description": "With the X-ADF-Client-Session header, that client session remembers the key and reopens the file without a prompt; no other session does."
       }
     },
     "/agents/{id}/identity/password/change": {
@@ -5264,6 +5315,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "filePath",
+            "in": "query",
+            "required": false,
+            "description": "An agent file (absolute .adf) whose own provider entry to use when the provider is not in settings: through the open document or running agent, else read from the closed file",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -6896,7 +6956,7 @@
           "Templates"
         ],
         "summary": "The review summary of a template",
-        "description": "The agent review summary (identity scenario, tools, MCP, triggers, network, …). Provider status is `unchecked` or `missing`: credentials are not probed. Someone else's template (foreign or identity-less) shows `reviewed: false`, and POST /agents/create refuses it (422 `template_unreviewed`) until accepted.",
+        "description": "Studio's TEMPLATE_CHECK_REVIEW. While the owner identity is not ready: needsReview false, identityReady false, no summary.",
         "operationId": "getTemplateReview",
         "parameters": [
           {
@@ -6947,9 +7007,6 @@
                 }
               }
             }
-          },
-          "409": {
-            "$ref": "#/components/responses/IdentityNotReady"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -8220,6 +8277,9 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
@@ -8229,7 +8289,24 @@
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "description": "Wait for a full scan (the refresh button): 1/true",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ]
       }
     },
     "/network/server": {
@@ -13236,6 +13313,117 @@
           }
         }
       }
+    },
+    "/agents/{id}/header": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Header read: document, config, status text",
+        "description": "Studio's DOC_GET_HEADER in one call, for a running agent or an open document.",
+        "operationId": "getAgentHeader",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentHeaderResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/agents/{id}/batch": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Batch read: header, token figures and the last 200 chat entries",
+        "description": "Studio's DOC_GET_BATCH in one call (a file switch), for a running agent or an open document.",
+        "operationId": "getAgentBatch",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentBatchResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/agents/{id}/checkpoint": {
+      "post": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Fold the WAL into the .adf (save)",
+        "description": "Studio's FILE_SAVE. SQLite persists every write; this folds the write-ahead log into the file.",
+        "operationId": "checkpointAgent",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Checkpointed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -14517,6 +14705,18 @@
           },
           "config": {
             "$ref": "#/components/schemas/AgentConfig"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "Open document only: the file followed a name change to this path"
+          },
+          "renameDeferred": {
+            "type": "boolean",
+            "description": "Open document only: a start is building; the file is renamed when it stops"
+          },
+          "renameError": {
+            "type": "string",
+            "description": "Open document only: why the file did not follow the name change (saved anyway)"
           }
         }
       },
@@ -14867,6 +15067,10 @@
           },
           "config": {
             "$ref": "#/components/schemas/AgentConfig"
+          },
+          "running": {
+            "type": "boolean",
+            "description": "GET /agents/{id} only: false for an open document (a file a client holds open without running it; design D4)."
           }
         }
       },
@@ -14951,6 +15155,10 @@
               "degraded": {
                 "type": "string",
                 "description": "Set when the agent loaded but cannot fully function (CREDENTIALS_LOCKED: its credentials envelope is locked); cleared once the owner identity unlocks it"
+              },
+              "running": {
+                "type": "boolean",
+                "description": "GET /agents/{id}/status: false for an open document that is not running (runtimeState `stopped`)."
               }
             }
           }
@@ -15528,12 +15736,32 @@
       },
       "ChatBody": {
         "type": "object",
-        "required": [
-          "text"
-        ],
+        "description": "`text`, or `content` (content blocks, which win when both are given).",
         "properties": {
           "text": {
             "type": "string"
+          },
+          "content": {
+            "type": "array",
+            "description": "The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 32 MiB.",
+            "items": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "image_url",
+                    "input_audio",
+                    "video_url"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
           },
           "loop": {
             "type": "string",
@@ -16197,7 +16425,16 @@
           },
           "identityDraftId": {
             "type": "string",
-            "description": "An identity draft (POST /identity/drafts): the new agent gets its DID. Consumed; an unknown or expired draft falls back to a fresh identity."
+            "description": "An identity draft (POST /identity/drafts): the new agent gets its DID. Consumed; an unknown or expired draft falls back to a fresh identity, reported in `identityDraft` and `warnings`."
+          },
+          "load": {
+            "type": "boolean",
+            "default": true,
+            "description": "false: create the file and load nothing (Studio's FILE_CREATE, MESH_FOUND_AGENT). With `holder`, the file is held as an open document."
+          },
+          "holder": {
+            "type": "string",
+            "description": "With load: false: the client session (its id, a UUID) that holds the new file open, not running. A holder that is not a live session is released."
           }
         },
         "example": {
@@ -16213,6 +16450,7 @@
           "name",
           "filePath",
           "did",
+          "loaded",
           "started"
         ],
         "properties": {
@@ -16230,6 +16468,29 @@
           },
           "started": {
             "type": "boolean"
+          },
+          "loaded": {
+            "type": "boolean",
+            "description": "Loaded in the runtime (false with load: false)"
+          },
+          "document": {
+            "$ref": "#/components/schemas/OpenDocument"
+          },
+          "identityDraft": {
+            "type": "string",
+            "enum": [
+              "adopted",
+              "unknown",
+              "adopt_failed"
+            ],
+            "description": "What became of identityDraftId; unknown and adopt_failed mint a fresh DID"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sentences to show (a draft identity that was not used)"
           }
         },
         "example": {
@@ -19848,6 +20109,26 @@
         "properties": {
           "filePath": {
             "type": "string"
+          },
+          "claim": {
+            "type": "boolean",
+            "description": "Claim & Open: a fresh identity under this owner. A legacy file password must be unlocked first (409 password_required)."
+          },
+          "model": {
+            "type": "object",
+            "required": [
+              "provider",
+              "model_id"
+            ],
+            "properties": {
+              "provider": {
+                "type": "string"
+              },
+              "model_id": {
+                "type": "string"
+              }
+            },
+            "description": "The model chosen in the review dialog (provider must be configured; 400 provider_unknown)"
           }
         },
         "example": {
@@ -19874,6 +20155,31 @@
           },
           "summary": {
             "$ref": "#/components/schemas/ReviewSummary"
+          },
+          "needsReview": {
+            "type": "boolean",
+            "description": "Studio's FILE_CHECK_REVIEW: not reviewed yet"
+          },
+          "claimed": {
+            "type": "boolean",
+            "description": "Accept only: the file was claimed (a fresh identity under this owner)"
+          },
+          "did": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Accept only: the agent DID afterwards"
+          },
+          "config": {
+            "$ref": "#/components/schemas/AgentConfig"
+          },
+          "lockedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Accept only: the security-sensitive fields this accept locked against the agent's own edits"
           }
         }
       },
@@ -21283,8 +21589,7 @@
         "required": [
           "id",
           "needsReview",
-          "reviewed",
-          "summary"
+          "reviewed"
         ],
         "properties": {
           "id": {
@@ -21298,6 +21603,16 @@
           },
           "summary": {
             "$ref": "#/components/schemas/ReviewSummary"
+          },
+          "identityReady": {
+            "type": "boolean",
+            "enum": [
+              false
+            ],
+            "description": "Present (false) when the owner identity is not ready: no summary, needsReview false (Studio parity)"
+          },
+          "message": {
+            "type": "string"
           }
         }
       },
@@ -25350,6 +25665,160 @@
             "items": {
               "$ref": "#/components/schemas/TrackedTreeEntry"
             }
+          }
+        }
+      },
+      "ChatPageResponse": {
+        "type": "object",
+        "description": "GET /agents/{id}/chat with `before`: a keyset page of display entries older than that seq (Studio's DOC_GET_CHAT_OLDER).",
+        "required": [
+          "agentId",
+          "loop",
+          "uiLog",
+          "earlierCount"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "loop": {
+            "type": "string"
+          },
+          "uiLog": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DisplayEntry"
+            }
+          },
+          "earlierCount": {
+            "type": "integer",
+            "description": "Rows of this loop before the page"
+          }
+        }
+      },
+      "AgentHeaderResponse": {
+        "type": "object",
+        "description": "Studio's DOC_GET_HEADER: what the header shows, in one read.",
+        "required": [
+          "agentId",
+          "document",
+          "agentConfig",
+          "statusText"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "document": {
+            "type": "string",
+            "description": "The primary document"
+          },
+          "agentConfig": {
+            "$ref": "#/components/schemas/AgentConfig"
+          },
+          "statusText": {
+            "type": "string",
+            "description": "adf_meta `status` (empty when unset)"
+          }
+        }
+      },
+      "AgentBatchResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AgentHeaderResponse"
+          },
+          {
+            "type": "object",
+            "required": [
+              "chat"
+            ],
+            "properties": {
+              "lastTokens": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "The newest assistant row's token breakdown (absent when none)"
+              },
+              "contextBaseline": {
+                "description": "What the context gauge shows (null when none); after a compaction it differs from lastTokens and wins",
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": true
+              },
+              "chat": {
+                "type": "object",
+                "required": [
+                  "version",
+                  "uiLog",
+                  "llmMessages",
+                  "earlierCount",
+                  "total"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "integer"
+                  },
+                  "uiLog": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/DisplayEntry"
+                    }
+                  },
+                  "llmMessages": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "earlierCount": {
+                    "type": "integer"
+                  },
+                  "total": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "description": "Studio's DOC_GET_BATCH: the header, the token figures and main's last 200 display entries."
+      },
+      "OpenDocument": {
+        "type": "object",
+        "description": "An open document (design D4): an .adf held open by client sessions, with or without a runtime on it.",
+        "required": [
+          "agentId",
+          "filePath",
+          "name",
+          "running",
+          "needsPassword",
+          "holders"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "needsPassword": {
+            "type": "boolean",
+            "description": "Legacy whole-file password, not unlocked: prompt, then POST /agents/{id}/identity/password/unlock"
+          },
+          "holders": {
+            "type": "integer"
+          },
+          "nameChangedFrom": {
+            "type": "string"
+          },
+          "readOnly": {
+            "type": "string",
+            "description": "Another runtime runs the file: it opened read-only (no open step wrote it), writes are refused; the sentence names the holder"
           }
         }
       }

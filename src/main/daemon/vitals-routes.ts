@@ -27,6 +27,8 @@ export interface DaemonVitalsMesh {
 /** Structural subset of RuntimeService vitals uses. */
 export interface VitalsRuntime {
   getAgent(agentId: string): RuntimeAgentRef | undefined
+  /** A running agent or an open document (D4); vitals read either from its file. */
+  getAgentOrDocument?(agentId: string): RuntimeAgentRef | undefined
   listLiveAgents(): RuntimeLiveAgent[]
   scanAdfFiles(dirs: string[], maxDepth?: number): string[]
 }
@@ -67,8 +69,8 @@ export function createDaemonVitalsDeps(src: DaemonVitalsSources): AgentVitalsDep
 }
 
 /**
- * The .adf file `id` names: a loaded agent (id, handle or name, as every
- * /agents/:id route), else a tracked agent that is not loaded (agent id or
+ * The .adf file `id` names: a loaded agent or open document (id, handle or
+ * name, as every /agents/:id route), else a tracked agent that is not loaded (agent id or
  * handle from its file). `null` file: loaded without one.
  */
 function resolveVitalsFile(
@@ -77,7 +79,7 @@ function resolveVitalsFile(
   vitals: AgentVitalsService,
   settings: TrackedDirsSettings | undefined,
 ): { filePath: string | null } | undefined {
-  const loaded = runtime.getAgent(id)
+  const loaded = runtime.getAgentOrDocument?.(id) ?? runtime.getAgent(id)
   if (loaded) return { filePath: loaded.filePath }
   if (!settings) return undefined
   const files = runtime.scanAdfFiles(storedDirs(settings), maxDepthOf(settings))

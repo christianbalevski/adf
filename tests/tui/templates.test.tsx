@@ -155,6 +155,59 @@ describe('/templates', () => {
     expect(tpl.calls).toContain('POST /templates/shared-find/review/accept')
   }, 15000)
 
+  it('review with no owner identity yet routes to identity setup (the real daemon answer: needsReview false, identityReady false)', async () => {
+    // GET /templates/:id/review is answered by a real daemon whose owner identity does not exist yet.
+    const { mkdtempSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { FileSettingsStore } = await import('../../src/main/daemon/file-settings-store')
+    const { ensureDaemonEncKey } = await import('../../src/main/daemon/daemon-enc-key')
+    const { DaemonIdentity } = await import('../../src/main/daemon/daemon-identity')
+    const { DaemonAgentFactory } = await import('../../src/main/daemon/daemon-agent-factory')
+    const { createDaemonHttpApi } = await import('../../src/main/daemon/http-api')
+    const { RuntimeService } = await import('../../src/main/runtime/runtime-service')
+    const { KeychainSecretBackend } = await import('../../src/main/services/owner-secret-store')
+    const secrets = new Map<string, string>()
+    class Entry {
+      constructor(private service: string, private account: string) {}
+      getPassword() { return secrets.get(`${this.service}/${this.account}`) ?? null }
+      setPassword(v: string) { secrets.set(`${this.service}/${this.account}`, v) }
+      deleteCredential() { return secrets.delete(`${this.service}/${this.account}`) }
+    }
+    const dir = mkdtempSync(join(process.env.ADF_USER_DATA_DIR!, 'tpl-real-'))
+    const settingsPath = join(dir, 'adf-settings.json')
+    const settings = new FileSettingsStore(settingsPath)
+    const identity = new DaemonIdentity({ settings, settingsPath, encKey: ensureDaemonEncKey(dir), backend: new KeychainSecretBackend(Entry) })
+    const runtime = new RuntimeService({ settings, agentLeases: null })
+    const daemon = createDaemonHttpApi(runtime, { settingsStore: settings, identity, agentFactory: new DaemonAgentFactory({ settings, identity, runtime }) })
+    try {
+      const real = await daemon.inject({ method: 'GET', url: '/templates/shared-find/review' })
+      expect(real.statusCode).toBe(200)
+      expect(real.json()).toMatchObject({ needsReview: false, identityReady: false })
+
+      mock = await startMockDaemon({ stepMs: 5 })
+      const tpl = createTemplatesFetch({}, createIdentityFetch(mock, {}).fetch)
+      const viaDaemon: typeof fetch = async (input, init) => {
+        const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+        if ((init?.method ?? 'GET') === 'GET' && /^\/templates\/[^/]+\/review$/.test(url.pathname)) {
+          const res = await daemon.inject({ method: 'GET', url: url.pathname })
+          return new Response(res.body, { status: res.statusCode, headers: { 'content-type': 'application/json' } })
+        }
+        return tpl.fetch(input, init)
+      }
+      store = createTuiStore({ client: new DaemonClient({ baseUrl: mock.url, fetch: viaDaemon }) })
+      ui = renderTui(<App store={store} theme={createTheme({ mono: true })} />, { columns: 120, rows: 34 })
+      await store.start()
+      await slash(ui, '/templates shared-find')
+      await ui.waitFor('Shared find template')
+      await ui.press('a')
+      const frame = await ui.waitFor('Set up the owner identity first')
+      expect(frame).not.toContain('already reviewed')
+      expect(store.getState().overlays.at(-1)?.kind).toBe('identity')
+    } finally {
+      await daemon.close()
+    }
+  }, 20000)
+
   it('a password-protected template asks for its password', async () => {
     const { tui, tpl } = await mount({ templates: { passwordProtected: ['shared-find'] } })
     await slash(tui, '/templates shared-find')

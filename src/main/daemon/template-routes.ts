@@ -7,7 +7,9 @@
  * contents (config, seed files, extra files) and the per-template review.
  *
  * GET /templates (the list) lives in identity-routes.ts. Every route needs the
- * owner identity (409 identity_not_ready otherwise), like the list.
+ * owner identity (409 identity_not_ready otherwise), like the list, except
+ * GET /templates/:id/review, which answers needsReview: false with
+ * identityReady: false (Studio parity).
  */
 
 import type { FastifyInstance, FastifyReply } from 'fastify'
@@ -168,7 +170,7 @@ export function registerTemplateRoutes(server: FastifyInstance, deps: TemplateRo
     const f = factory(reply)
     if (!f) return reply
     try {
-      return { id: request.params.id, ...f.templateReview(request.params.id) }
+      return { id: request.params.id, ...(await f.templateReview(request.params.id)) }
     } catch (err) {
       return sendError(reply, err)
     }

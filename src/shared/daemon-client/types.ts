@@ -427,7 +427,11 @@ export interface TemplateReview {
   id: string
   needsReview: boolean
   reviewed: boolean
-  summary: AgentConfigSummary
+  /** Absent while the owner identity is not ready. */
+  summary?: AgentConfigSummary
+  /** false: the owner identity is not ready, so there is no review yet (set it up first). */
+  identityReady?: false
+  message?: string
 }
 
 export type AgentCreateInput = CreateAgentInput
