@@ -15,16 +15,22 @@
  * each other. This is meant to fold into that module's runtime host
  * registry (`hosts/<pid>.json`) as a `containers` field once it is merged.
  *
- * Crash safety. A marker counts only while its pid is alive. A crashed
- * runtime's marker is ignored (and removed) by the next reader, so it can
- * neither pin the shared container forever nor protect its orphans: the next
- * shutdown stops them, as before this registry. PID reuse can make a dead
- * runtime look alive; that only leaves containers running (never stops a
- * live runtime's), and ends when the reusing process exits. Markers from
- * another host (roaming profiles) are ignored: containers are per machine.
+ * Liveness (markerLiveness, the one function to swap for agent-lease.ts's
+ * holderLiveness). A marker counts while its pid is alive AND the marker was
+ * touched within STALE_MS: its runtime touches it every HEARTBEAT_MS. The
+ * heartbeat is what rejects a reused pid (a runtime killed by a crash or by
+ * Defender, its pid later given to another process): the reused pid looks
+ * alive, but nobody touches the marker any more.
  *
- * Failure policy. A marker that cannot be written is logged and compute goes
- * on unprotected (today's behaviour). A live runtime's marker that cannot be
+ * Crash safety. A dead marker is ignored and removed by the next reader, so
+ * a crashed runtime can neither pin the shared container nor protect its
+ * orphans: the next shutdown stops them, as before this registry. Markers
+ * from another host (roaming profiles) are ignored: containers are per
+ * machine.
+ *
+ * Failure policy. A marker that cannot be written is logged and retried
+ * (next claim/release/read, and a backoff timer); until then compute goes on
+ * unprotected (today's behaviour). A live runtime's marker that cannot be
  * read makes the reader stop only its own containers.
  */
 
@@ -63,6 +69,13 @@ export interface ComputeUsers {
   others(): Promise<OtherComputeUsers>
 }
 
+/** A runtime touches its marker this often while it holds claims. */
+export const HEARTBEAT_MS = 30_000
+/** A marker not touched for this long is dead, whatever its pid says. */
+export const STALE_MS = 120_000
+const RETRY_BASE_MS = 5_000
+const RETRY_MAX_MS = 60_000
+
 /** `<per-user config dir>/adf/leases`, or ADF_LEASE_DIR (same as runtime/agent-lease.ts). */
 export function leaseDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.ADF_LEASE_DIR) return resolve(env.ADF_LEASE_DIR)
@@ -88,6 +101,35 @@ export async function pidAlive(pid: number): Promise<boolean> {
     } catch { /* no /proc entry: fall through */ }
   }
   return true
+}
+
+/** What a reader knows about another runtime's marker before reading it. */
+export interface ComputeUserMarker {
+  pid: number
+  /** Last heartbeat (marker mtime). */
+  mtimeMs: number
+}
+
+export type ComputeUserLiveness = (marker: ComputeUserMarker) => Promise<{ alive: boolean; reason: string }>
+
+/**
+ * Interim liveness until W0-C's holderLiveness (agent-lease.ts) replaces it:
+ * the pid runs and the marker had a heartbeat within `staleMs`.
+ */
+export function markerLiveness(opts: {
+  isAlive?: (pid: number) => Promise<boolean>
+  staleMs?: number
+  now?: () => number
+} = {}): ComputeUserLiveness {
+  const isAlive = opts.isAlive ?? pidAlive
+  const staleMs = opts.staleMs ?? STALE_MS
+  const now = opts.now ?? Date.now
+  return async ({ pid, mtimeMs }) => {
+    if (!await isAlive(pid)) return { alive: false, reason: 'pid not running' }
+    const age = now() - mtimeMs
+    if (age > staleMs) return { alive: false, reason: `no heartbeat for ${Math.round(age / 1000)}s (pid reused)` }
+    return { alive: true, reason: 'pid running, heartbeat fresh' }
+  }
 }
 
 function inferKind(): ComputeUserKind {
@@ -118,8 +160,11 @@ export interface ComputeUserRegistryOptions {
   pid?: number
   host?: string
   kind?: ComputeUserKind
-  /** Injectable for tests. */
-  isAlive?: (pid: number) => Promise<boolean>
+  /** Injectable for tests; defaults to markerLiveness(). */
+  liveness?: ComputeUserLiveness
+  heartbeatMs?: number
+  /** First retry delay after a failed marker write (doubles up to 60 s). */
+  retryMs?: number
   /** Remove the marker on process exit (default true). */
   exitHook?: boolean
 }
@@ -130,12 +175,18 @@ export class ComputeUserRegistry implements ComputeUsers {
   private readonly pid: number
   private readonly host: string
   private readonly kind: ComputeUserKind
-  private readonly isAlive: (pid: number) => Promise<boolean>
+  private readonly liveness: ComputeUserLiveness
+  private readonly heartbeatMs: number
+  private readonly retryMs: number
   private readonly startedAt = new Date().toISOString()
   private readonly claimed = new Set<string>()
   /** Serializes marker writes so the file always reflects the latest set. */
   private writeChain: Promise<void> = Promise.resolve()
-  private warned = false
+  /** The marker on disk does not match `claimed` (last write failed). */
+  private dirty = false
+  private failures = 0
+  private retryTimer: ReturnType<typeof setTimeout> | null = null
+  private heartbeat: ReturnType<typeof setInterval> | null = null
   private exitHook: boolean
   private exitHookInstalled = false
 
@@ -144,7 +195,9 @@ export class ComputeUserRegistry implements ComputeUsers {
     this.pid = opts.pid ?? process.pid
     this.host = opts.host ?? osHostname()
     this.kind = opts.kind ?? inferKind()
-    this.isAlive = opts.isAlive ?? pidAlive
+    this.liveness = opts.liveness ?? markerLiveness()
+    this.heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS
+    this.retryMs = opts.retryMs ?? RETRY_BASE_MS
     this.exitHook = opts.exitHook ?? true
     this.file = join(this.dir, `${safeHost(this.host)}-${this.pid}.json`)
   }
@@ -154,7 +207,7 @@ export class ComputeUserRegistry implements ComputeUsers {
   }
 
   claim(name: string): Promise<void> {
-    if (this.claimed.has(name)) return this.writeChain
+    if (this.claimed.has(name) && !this.dirty) return this.writeChain
     this.claimed.add(name)
     return this.persist()
   }
@@ -162,10 +215,11 @@ export class ComputeUserRegistry implements ComputeUsers {
   release(names: string[]): Promise<void> {
     let changed = false
     for (const n of names) changed = this.claimed.delete(n) || changed
-    return changed ? this.persist() : this.writeChain
+    return changed || this.dirty ? this.persist() : this.writeChain
   }
 
   async others(): Promise<OtherComputeUsers> {
+    if (this.dirty) await this.persist()
     const result: OtherComputeUsers = { claims: new Map(), unreadable: [] }
     let names: string[]
     try {
@@ -180,14 +234,18 @@ export class ComputeUserRegistry implements ComputeUsers {
       const pid = Number(m[2])
       if (m[1] !== safeHost(this.host) || pid === this.pid) return
       const file = join(this.dir, name)
-      if (!await this.isAlive(pid)) {
-        // Crashed or killed runtime: its claims are void. Best-effort sweep.
+      let mtimeMs: number
+      try { mtimeMs = (await fsp.stat(file)).mtimeMs } catch { return } // released meanwhile
+      const live = await this.liveness({ pid, mtimeMs })
+      if (!live.alive) {
+        // Crashed, killed or reused-pid runtime: its claims are void.
+        console.log(`[Compute] Ignoring container claims of pid ${pid}: ${live.reason}`)
         await fsp.rm(file, { force: true }).catch(() => {})
         return
       }
       let rec: ComputeUserRecord | null = null
       try { rec = parseRecord(await fsp.readFile(file, 'utf-8')) } catch (err) {
-        if (errCode(err) === 'ENOENT') return // released between readdir and read
+        if (errCode(err) === 'ENOENT') return // released between stat and read
       }
       if (!rec || rec.pid !== pid) {
         result.unreadable.push(`pid ${pid}`)
@@ -204,17 +262,40 @@ export class ComputeUserRegistry implements ComputeUsers {
   }
 
   private persist(): Promise<void> {
-    this.writeChain = this.writeChain.then(() => this.writeMarker()).catch((err) => {
-      if (!this.warned) {
-        this.warned = true
-        console.warn(`[Compute] Could not record container use in ${this.dir}; another runtime's shutdown may stop this runtime's containers:`, err instanceof Error ? err.message : err)
+    this.writeChain = this.writeChain.then(() => this.writeMarker()).then(() => {
+      if (this.failures > 0) console.log(`[Compute] Container use is recorded in ${this.dir} again`)
+      this.dirty = false
+      this.failures = 0
+      this.clearRetry()
+    }, (err) => {
+      this.dirty = true
+      if (this.failures === 0) {
+        console.warn(`[Compute] Could not record container use in ${this.dir} (will retry); until then another runtime's shutdown may stop this runtime's containers:`, err instanceof Error ? err.message : err)
       }
+      this.failures++
+      this.scheduleRetry()
     })
     return this.writeChain
   }
 
+  private scheduleRetry(): void {
+    if (this.retryTimer) return
+    const delay = Math.min(this.retryMs * 2 ** (this.failures - 1), RETRY_MAX_MS)
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null
+      if (this.dirty) void this.persist()
+    }, delay)
+    this.retryTimer.unref?.()
+  }
+
+  private clearRetry(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer)
+    this.retryTimer = null
+  }
+
   private async writeMarker(): Promise<void> {
     if (this.claimed.size === 0) {
+      this.stopHeartbeat()
       await fsp.rm(this.file, { force: true })
       return
     }
@@ -231,7 +312,28 @@ export class ComputeUserRegistry implements ComputeUsers {
       await fsp.rm(tmp, { force: true }).catch(() => {})
       throw err
     }
+    this.startHeartbeat()
     this.installExitHook()
+  }
+
+  /** Touch the marker so readers can tell this runtime from a reused pid. */
+  private startHeartbeat(): void {
+    if (this.heartbeat) return
+    this.heartbeat = setInterval(() => {
+      const now = new Date()
+      fsp.utimes(this.file, now, now).catch(() => {
+        // Removed by a reader that judged it stale (e.g. after a long
+        // suspend), or unwritable: write it again.
+        this.dirty = true
+        void this.persist()
+      })
+    }, this.heartbeatMs)
+    this.heartbeat.unref?.()
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeat) clearInterval(this.heartbeat)
+    this.heartbeat = null
   }
 
   private installExitHook(): void {

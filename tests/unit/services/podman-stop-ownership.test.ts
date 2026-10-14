@@ -84,10 +84,10 @@ describe('PodmanService shutdown, single runtime (characterization)', () => {
 // Two runtimes on one machine (W1-G)
 // ---------------------------------------------------------------------------
 
-const { mkdtempSync, existsSync, writeFileSync, readdirSync } = await import('node:fs')
+const { mkdtempSync, existsSync, writeFileSync, readdirSync, utimesSync, statSync, rmSync } = await import('node:fs')
 const { tmpdir } = await import('node:os')
 const { join } = await import('node:path')
-const { ComputeUserRegistry } = await import('../../../src/main/services/compute-users')
+const { ComputeUserRegistry, markerLiveness } = await import('../../../src/main/services/compute-users')
 const { isolatedContainerName, planContainerShutdown } = await import('../../../src/main/services/podman.service')
 
 const ID_1 = '0b6a3c58-1111-4a40-9c55-3f0e0c3d1111'
@@ -108,7 +108,7 @@ function machine() {
   // One podman, one container table, shared by every runtime on the machine.
   const podman = new FakePodman()
   const runtime = (pid: number, kind: 'studio-embedded' | 'daemon'): Runtime => {
-    const users = new ComputeUserRegistry({ dir, pid, kind, host: 'test-host', isAlive: async (p) => alive.has(p), exitHook: false })
+    const users = new ComputeUserRegistry({ dir, pid, kind, host: 'test-host', liveness: markerLiveness({ isAlive: async (p) => alive.has(p) }), exitHook: false })
     const svc = new PodmanService({ computeUsers: users })
     installFakePodman(svc, podman)
     // Provisioning is out of scope here: "create" just means running.
@@ -150,7 +150,7 @@ describe('PodmanService shutdown with two runtimes', () => {
     expect(podman.running()).toEqual([])
   })
 
-  it('stop() (agent teardown) leaves the shared container to the other runtime', async () => {
+  it('stop() (BackgroundAgentManager.stopAll, Settings → Stop) leaves the shared container to the other runtime', async () => {
     const { podman, a, b } = machine()
     await a.svc.ensureRunning()
     await b.svc.ensureRunning()
@@ -159,7 +159,72 @@ describe('PodmanService shutdown with two runtimes', () => {
 
     expect(podman.running()).toEqual(['adf-mcp'])
     expect(logs).toContain(`[Compute] Leaving adf-mcp running (used by daemon pid ${PID_B})`)
-    expect(a.svc.getStatus().status).toBe('stopped')
+    expect(a.svc.getStatus()).toMatchObject({
+      status: 'stopped',
+      leftRunning: [{ name: 'adf-mcp', holders: [`daemon pid ${PID_B}`], reason: `used by daemon pid ${PID_B}` }],
+    })
+
+    // The next start clears it.
+    await a.svc.ensureRunning()
+    expect(a.svc.getStatus().leftRunning).toBeUndefined()
+  })
+
+  it('concurrent shutdowns of both runtimes stop the shared container', async () => {
+    const { podman, a, b } = machine()
+    await a.svc.ensureRunning()
+    await b.svc.ensureRunning()
+
+    await Promise.all([a.svc.stopAll(), b.svc.stopAll()])
+
+    expect(podman.running()).toEqual([])
+  })
+
+  it('concurrent stop() calls of both runtimes stop the shared container', async () => {
+    const { podman, a, b } = machine()
+    await a.svc.ensureRunning()
+    await b.svc.ensureRunning()
+
+    await Promise.all([a.svc.stop(), b.svc.stop()])
+
+    expect(podman.running()).toEqual([])
+  })
+
+  it('first run after the upgrade: containers running, no markers, everything stops', async () => {
+    const { dir, a } = machine()
+    const podman = installFakePodman(a.svc, sharedAndAgents())
+
+    await a.svc.stopAll()
+
+    expect(readdirSync(dir)).toEqual([])
+    expect(podman.stopped().sort()).toEqual(['adf-agent-1-11111111', 'adf-mcp'])
+  })
+
+  it('a reused pid without a heartbeat pins nothing', async () => {
+    const { dir, podman, a, b } = machine()
+    await b.svc.ensureRunning()
+    await b.svc.ensureIsolatedRunning('agent-2', ID_2)
+    // B was killed; its pid now belongs to another process (still "alive"),
+    // and its marker has not been touched for 10 minutes.
+    const old = new Date(Date.now() - 10 * 60_000)
+    utimesSync(b.users.file, old, old)
+
+    await a.svc.stopAll()
+
+    expect(podman.running()).toEqual([])
+    expect(readdirSync(dir)).toEqual([])
+    expect(logs).toContain(`[Compute] Ignoring container claims of pid ${PID_B}: no heartbeat for 600s (pid reused)`)
+  })
+
+  it('destroy() warns about the runtimes it takes the shared container from', async () => {
+    const { a, b } = machine()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await b.svc.ensureRunning()
+    ;(a.svc as unknown as { exec0: unknown }).exec0 = async () => ({ code: 0, stdout: '', stderr: '' })
+
+    expect(await a.svc.containerUsers()).toEqual([`daemon pid ${PID_B}`])
+    await a.svc.destroy()
+
+    expect(warn).toHaveBeenCalledWith(`[Compute] Removing adf-mcp although daemon pid ${PID_B} uses it (explicit reset); it is recreated on its next use`)
   })
 
   it('logs one line naming what was stopped and what was left, with the reason', async () => {
@@ -218,7 +283,7 @@ describe('PodmanService shutdown with two runtimes', () => {
 
   it('ignores markers from another host (roaming profile)', async () => {
     const { dir, podman, a } = machine()
-    const elsewhere = new ComputeUserRegistry({ dir, pid: PID_B, host: 'other-host', isAlive: async () => true, exitHook: false })
+    const elsewhere = new ComputeUserRegistry({ dir, pid: PID_B, host: 'other-host', liveness: async () => ({ alive: true, reason: 'test' }), exitHook: false })
     podman.add({ name: BOX_2, agentId: ID_2, agentName: 'agent-2' })
     await elsewhere.claim(BOX_2)
 
@@ -251,6 +316,53 @@ describe('PodmanService shutdown with two runtimes', () => {
   })
 })
 
+describe('ComputeUserRegistry', () => {
+  it('heartbeats its marker while it holds claims', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-w1g-hb-'))
+    const users = new ComputeUserRegistry({ dir, pid: PID_A, host: 'test-host', heartbeatMs: 20, exitHook: false })
+    await users.claim('adf-mcp')
+    const old = new Date(Date.now() - 10 * 60_000)
+    utimesSync(users.file, old, old)
+
+    await vi.waitFor(() => expect(statSync(users.file).mtimeMs).toBeGreaterThan(Date.now() - 60_000), { timeout: 2000 })
+    await users.release(['adf-mcp'])
+  })
+
+  it('retries a failed marker write on the next call and on a timer', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-w1g-retry-'))
+    const blocker = join(dir, 'blocker')
+    writeFileSync(blocker, '') // a file where the registry wants a directory
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const users = new ComputeUserRegistry({ dir: join(blocker, 'compute'), pid: PID_A, host: 'test-host', retryMs: 20, exitHook: false })
+
+    await users.claim('adf-mcp')
+    expect(existsSync(users.file)).toBe(false)
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('Could not record container use'))).toHaveLength(1)
+
+    rmSync(blocker) // plain file, no links
+    await vi.waitFor(() => expect(existsSync(users.file)).toBe(true), { timeout: 2000 })
+    await users.release(['adf-mcp'])
+    expect(existsSync(users.file)).toBe(false)
+  })
+
+  it('a dirty registry rewrites its marker before reading the others', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-w1g-dirty-'))
+    const blocker = join(dir, 'blocker')
+    writeFileSync(blocker, '')
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const users = new ComputeUserRegistry({ dir: join(blocker, 'compute'), pid: PID_A, host: 'test-host', retryMs: 60_000, exitHook: false })
+    await users.claim('adf-mcp')
+    rmSync(blocker)
+
+    await users.others()
+
+    expect(existsSync(users.file)).toBe(true)
+    await users.release(['adf-mcp'])
+  })
+})
+
 describe('planContainerShutdown', () => {
   const none = { claims: new Map<string, string[]>(), unreadable: [] as string[] }
 
@@ -262,7 +374,7 @@ describe('planContainerShutdown', () => {
     const others = { claims: new Map([['adf-mcp', ['daemon pid 7']]]), unreadable: [] }
     expect(planContainerShutdown(['adf-mcp', BOX_1], new Set(['adf-mcp', BOX_1]), others)).toEqual({
       stop: [BOX_1],
-      keep: [{ name: 'adf-mcp', reason: 'used by daemon pid 7' }],
+      keep: [{ name: 'adf-mcp', holders: ['daemon pid 7'], reason: 'used by daemon pid 7' }],
     })
   })
 })
