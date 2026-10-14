@@ -152,6 +152,7 @@ Deliberate embedded deviations (security fixes in code both modes share, accepte
 | 67d208a0 | Peer health and shared-file reads go through the egress guard: cloud metadata addresses and the daemon port refused on every redirect hop, 2 MB cap enforced while streaming. LAN, link-local and http stay allowed. | A peer URL comes from a remote directory card, so it is attacker-influenced; an unguarded fetch could reach cloud credentials or the local daemon API. |
 | 49e7f043 | MCP stdio servers and auth preflights no longer inherit `ADF_DAEMON_TOKEN` or `ADF_OWNER_PASSPHRASE*`. | An MCP server is third-party code; the daemon token drives every route and the passphrase unlocks the owner identity. |
 | 324378a2 | The MCP registration test takes an optional cancel signal (Studio passes none, so its runs are unchanged). | Lets the daemon run the test as a cancellable job instead of holding a request open for minutes. |
+| e6ed9b06 | `AdfDatabase` identity prefix matches (`deleteIdentityByPrefix`, `listIdentityPurposes(prefix)`, `peekIdentityPurposes`) compare the exact, case-sensitive prefix instead of `LIKE`. Test: `tests/daemon-file-routes.test.ts` "the /agents/:id detach routes delete credentials by exact prefix too". | With `LIKE`, `_` and `%` in a server or adapter name were wildcards and case was ignored, so detaching one MCP server or adapter deleted another's credentials. |
 
 ## 4. Settings model
 
