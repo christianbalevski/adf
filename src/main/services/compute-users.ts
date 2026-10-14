@@ -268,9 +268,13 @@ export class ComputeUserRegistry implements ComputeUsers {
       const r = reads[i]
       if (!live || !r) return
       if (!live.alive) {
-        // Crashed, killed or reused-pid runtime: its claims are void. Remove
-        // the record only if it is still the one judged.
+        // Crashed, killed or reused-pid runtime: its claims are void. The
+        // record is removed only when its pid is gone or its endpoint says so;
+        // a running pid judged by heartbeat alone keeps it (it is also that
+        // runtime's host record, which other checks read).
         console.log(`[Compute] Ignoring container claims of pid ${pid}: ${live.reason}`)
+        const endpointVerdict = !!r.record && !!trustedEndpoint(r.record, this.dir)
+        if (!endpointVerdict && await pidAlive(pid)) return
         try {
           if ((await fsp.readFile(file, 'utf-8')) === r.raw) await fsp.rm(file, { force: true })
         } catch { /* gone */ }

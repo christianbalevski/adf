@@ -25,7 +25,7 @@
  * pipe on Windows, a Unix socket elsewhere) the holder listens on for its
  * whole life. The OS closes the endpoint when the process dies, so:
  *   - pid not running                        → stale (crash, kill)
- *   - pid running, endpoint refuses/absent   → stale (the pid was reused)
+ *   - pid running, endpoint refuses/missing  → stale (the pid was reused)
  *   - endpoint connects                      → live, even if its event loop is
  *                                              blocked (the OS accepts the
  *                                              connection)
@@ -35,10 +35,11 @@
  * (`<lease>.takeover`, created exclusively): the taker re-reads the lease,
  * removes it only if it still holds the bytes judged stale, and writes its
  * own exclusively. Any number of takers racing on one stale lease leave
- * exactly one holder. The lock itself is never broken while its holder's
- * pid runs and its endpoint answers (a stalled but live taker keeps it);
- * only a dead holder's lock, or an inconclusive one past its TTL, is
- * removed, and only if it still holds the bytes judged. Endpoints are probed
+ * exactly one holder. The lock is broken only when its holder's pid is gone
+ * or its endpoint is missing or refuses; a timeout is a live holder (a
+ * blocked event loop stops answering but keeps the lock), and only a lock
+ * without a readable pid expires by TTL. A lock is removed only if it still
+ * holds the bytes judged. Endpoints are probed
  * only in the exact local form this module creates (never a UNC/SMB path).
  *
  * Machines. Records carry a machine id (Linux /etc/machine-id, macOS
@@ -295,7 +296,9 @@ async function readMachineId(): Promise<string | null> {
     return /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(await run('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice']))?.[1] ?? null
   }
   if (process.platform === 'win32') {
-    return /MachineGuid\s+REG_SZ\s+(\S+)/i.exec(await run('reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid']))?.[1] ?? null
+    // By full path: never a reg.exe found first on PATH.
+    const reg = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'reg.exe')
+    return /MachineGuid\s+REG_SZ\s+(\S+)/i.exec(await run(reg, ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid']))?.[1] ?? null
   }
   return null
 }
@@ -391,9 +394,9 @@ export async function holderLiveness(
     const probe = await probeEndpoint(endpoint)
     if (probe === 'connected') return { alive: true, reason: 'endpoint answered' }
     // A named pipe disappears with its process; a Unix socket file stays
-    // behind and refuses. A missing socket file was deleted by someone else
-    // and proves nothing.
-    if (probe === 'refused' || (probe === 'missing' && process.platform === 'win32')) {
+    // behind and refuses (it lives in the 0700 hosts dir, so missing means
+    // gone too). A timeout is a live holder whose event loop is busy.
+    if (probe === 'refused' || probe === 'missing') {
       return { alive: false, reason: `pid ${holder.pid} now belongs to another program` }
     }
     return { alive: true, reason: `pid ${holder.pid} is running (endpoint ${probe})` }
@@ -922,8 +925,8 @@ export class AgentLeaseRegistry {
         if (age > TAKEOVER_LOCK_SUSPECT_MS) {
           const raw = await fsp.readFile(lock, 'utf-8')
           const state = await this.lockHolderState(raw)
-          // A live holder (pid running, endpoint answering) keeps its lock
-          // however long it stalls; the TTL is for inconclusive holders.
+          // A live holder keeps its lock however long it stalls or blocks;
+          // the TTL is only for a lock without a readable pid.
           if (state === 'dead' || (state === 'unknown' && age > this.takeoverLockTtlMs)) {
             // Several takers may judge one crashed lock: remove it only if it
             // still holds the bytes judged (another taker's fresh lock stays).
@@ -940,7 +943,12 @@ export class AgentLeaseRegistry {
     return false
   }
 
-  /** Who holds a takeover lock: 'live' never expires, 'dead' is removed, 'unknown' waits for the TTL. */
+  /**
+   * Who holds a takeover lock: 'dead' (pid gone, endpoint missing or
+   * refusing) is removed; 'live' (anything else while the pid runs,
+   * including a probe timeout) never expires; 'unknown' (no readable pid,
+   * e.g. a crash between create and write) waits for the TTL.
+   */
   private async lockHolderState(raw: string): Promise<'live' | 'dead' | 'unknown'> {
     let holder: { pid?: unknown; runtimeId?: unknown; endpoint?: unknown; machineId?: unknown }
     try { holder = JSON.parse(raw) } catch { return 'unknown' }
@@ -955,11 +963,9 @@ export class AgentLeaseRegistry {
     if (await fromOtherMachine(rec)) return 'live'
     if (!(await pidAlive(pid))) return 'dead'
     const endpoint = trustedEndpoint(rec, this.dir)
-    if (!endpoint) return 'unknown'
+    if (!endpoint) return 'live'
     const probe = await probeEndpoint(endpoint)
-    if (probe === 'connected') return 'live'
-    if (probe === 'refused' || (probe === 'missing' && process.platform === 'win32')) return 'dead'
-    return 'unknown'
+    return probe === 'refused' || probe === 'missing' ? 'dead' : 'live'
   }
 
   private async releaseLocked(key: string): Promise<void> {

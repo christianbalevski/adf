@@ -44,6 +44,7 @@ import { createHeadlessAgent, MockLLMProvider } from '../../src/main/runtime/hea
 import { markConfigReviewed } from '../../src/main/services/agent-review'
 import { daemonPaths, studioConflict } from '../../src/main/cli/daemon-control'
 import { registerDaemonModeHandlers } from '../../src/main/backend/daemon-mode'
+import { ComputeUserRegistry } from '../../src/main/services/compute-users'
 import type { AssembledAgent } from '../../src/main/runtime/assemble-agent'
 import type { SettingsService } from '../../src/main/services/settings.service'
 import type { AgentConfig } from '../../src/shared/types/adf-v02.types'
@@ -368,7 +369,7 @@ describe('agent lease across processes', () => {
     expect(readOnlyLease(leases).holder.runtimeId).toBe(a.runtimeId)
   }, 30_000)
 
-  it('an inconclusive takeover lock (no endpoint) expires after its TTL', async () => {
+  it('a takeover lock without a readable pid expires after its TTL; a live pid\'s lock never does', async () => {
     const leases = tempDir('adf-lease-lock-ttl-')
     const work = tempDir('adf-lease-lock-ttl-work-')
     const { filePath } = seedAgent(work, 'agent-1', false)
@@ -381,16 +382,63 @@ describe('agent lease across processes', () => {
       v: 1, path: canonical, agentId: null, acquiredAt: 1,
       holder: { kind: 'daemon', pid: sleeper.pid, runtimeId: 'gone', hostname: 'x', settingsPath: 's', startedAt: 1, version: null, endpoint: null },
     }))
-    // Left by a live pid (this one) without an endpoint: inconclusive.
-    writeFileSync(`${file}.takeover`, JSON.stringify({ pid: process.pid, runtimeId: 'unknown', endpoint: null, at: 1 }))
     const old = new Date(Date.now() - 60_000)
-    utimesSync(`${file}.takeover`, old, old)
     vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    // A live pid (this one) without an endpoint: never broken, however old.
+    // The taker gives up and says which file to look at.
+    writeFileSync(`${file}.takeover`, JSON.stringify({ pid: process.pid, runtimeId: 'unknown', endpoint: null, at: 1 }))
+    utimesSync(`${file}.takeover`, old, old)
+    const refused = await registry(leases, { takeoverLockTtlMs: 1000 }).acquire(filePath)
+    expect(refused.ok).toBe(false)
+    expect(existsSync(`${file}.takeover`)).toBe(true)
+
+    // Left half-written by a crash (no pid): expires after the TTL.
+    writeFileSync(`${file}.takeover`, '')
+    utimesSync(`${file}.takeover`, old, old)
     const result = await registry(leases, { takeoverLockTtlMs: 1000 }).acquire(filePath)
     vi.restoreAllMocks()
     expect(result.ok).toBe(true)
     expect(existsSync(`${file}.takeover`)).toBe(false)
-  })
+  }, 30_000)
+
+  it('a taker whose event loop is blocked (not awaiting) keeps its takeover lock: one holder', async () => {
+    const leases = tempDir('adf-lease-blocked-')
+    const work = tempDir('adf-lease-blocked-work-')
+    const { filePath } = seedAgent(work, 'agent-1', false)
+    const sleeper = spawnSleeper()
+    killTree(sleeper.pid!)
+    await waitForExit(sleeper)
+    const dead = await deadEndpoint(leases)
+    const canonical = await canonicalLeasePath(filePath)
+    const file = join(leases, `${leaseKeyForCanonicalPath(canonical)}.json`)
+    writeFileSync(file, JSON.stringify({
+      v: 1, path: canonical, agentId: null, acquiredAt: 1,
+      holder: { kind: 'daemon', pid: sleeper.pid, runtimeId: dead.runtimeId, hostname: 'x', settingsPath: 's', startedAt: 1, version: null, endpoint: dead.endpoint },
+    }))
+    const proc = spawn(process.execPath, [takerBundle, filePath], {
+      cwd: repoRoot, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ADF_LEASE_DIR: leases }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    })
+    const a = new Child(proc)
+    const aRuntimeId = (await a.next('READY ')).slice('READY '.length)
+    a.send('block-next 6000')
+    a.send('take 1')
+    await a.next('BLOCKING') // A holds the lock and its event loop is blocked for 6 s
+
+    // B: probes of A's pipe time out (or are accepted unanswered); with a
+    // 200 ms TTL the old rule broke A's lock here.
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const b = registry(leases, { takeoverLockTtlMs: 200 })
+    const rb = await b.acquire(filePath)
+    vi.restoreAllMocks()
+    const ra = await a.next('TOOK 1 ', 30_000)
+
+    expect(ra).toBe('TOOK 1 ok')
+    expect(rb.ok).toBe(false)
+    expect(readOnlyLease(leases).holder.runtimeId).toBe(aRuntimeId)
+  }, 60_000)
 
   it('replaces a lease whose pid now belongs to another program (pid reuse)', async () => {
     const leases = tempDir('adf-lease-reuse-')
@@ -826,6 +874,26 @@ describe('Studio hosts (BackgroundAgentManager and the foreground) share one lea
 })
 
 describe('runtime host registry and the adf daemon start check', () => {
+  it('a compute reader never deletes the host record of a running pid judged by heartbeat alone', async () => {
+    const leases = tempDir('adf-lease-heartbeat-')
+    const sleeper = spawnSleeper() // a live runtime that could not listen (no endpoint) and has no containers
+    mkdirSync(join(leases, 'hosts'), { recursive: true })
+    const entry = join(leases, 'hosts', `${sleeper.pid}.json`)
+    writeFileSync(entry, JSON.stringify({
+      v: 1, kind: 'studio-embedded', mode: 'embedded', pid: sleeper.pid, runtimeId: 'a1b2c3d4e5f60718', hostname: 'h',
+      settingsPath: join(leases, 's.json'), startedAt: 1, version: null, endpoint: null, containers: ['adf-mcp'],
+    }))
+    const old = new Date(Date.now() - 10 * 60_000)
+    utimesSync(entry, old, old)
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const reader = new ComputeUserRegistry({ dir: leases, pid: 41_001, recheckMs: 10 })
+    const others = await reader.others()
+    vi.restoreAllMocks()
+    expect(others.claims.size).toBe(0) // its claims are void without a heartbeat...
+    expect(existsSync(entry)).toBe(true) // ...but the record stays
+    expect((await listRuntimeHosts(leases)).find((h) => h.pid === sleeper.pid)).toMatchObject({ alive: true })
+  })
+
   it('an embedded Studio on the same settings refuses; on other settings, or in local mode, it does not', async () => {
     const leases = tempDir('adf-lease-hosts-')
     const data = tempDir('adf-lease-hosts-data-')
