@@ -57,7 +57,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W1-E | File-level ops, raw file routes, tracked-dir watcher | 1 | W0-D, W0-C | MERGED |
 | W1-F | E1 extraction: background event mapping | 1 | W0-F | MERGED (squashed) |
 | W1-G | Compute ownership: a runtime stops only containers it started | 1 | none | MERGED |
-| W2-A | Open documents | 2 | W1-A, W1-E | TODO |
+| W2-A | Open documents | 2 | W1-A, W1-E | MERGED |
 | W2-B | Client sessions and client event stream | 2 | W1-A, W0-B | TODO |
 | W2-C | Daemon-mode core in Studio main | 2 | W0-A, W0-B, W0-E, W1-F | TODO |
 | W3-A | Proxy: files, documents, agent runtime, review, templates | 3 | W2-A, W2-B, W2-C | TODO |
@@ -330,6 +330,8 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | Lead | Regenerate `docs/daemon/api-reference.md`/`.html` once after Wave 1 merges (`npm run docs:api`) | Lead |
 | W2-C | Lease client record `controlUrl` is always port 7385; daemon host record carries `version: null` | W4-A |
 | W2-C | Daemon-mode quit behaviour (R4) and version-mismatch choice | W4-A |
+| Lead | MERGE GATE at W2-B merge: a test in the real daemon wiring proving a document held by a live session survives past the 60 s holder TTL (W2-B `setDocumentHolderCheck` wired to W2-A's sweep) | Lead (W2-B merge) |
+| W2-A | Read-only open of a file leased elsewhere still runs `AdfWorkspace.open` maintenance writes; a true read-only open needs an `AdfDatabase` change | W3-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
