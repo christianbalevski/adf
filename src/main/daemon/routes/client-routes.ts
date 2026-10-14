@@ -173,9 +173,17 @@ function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext,
     done()
   })
 
-  server.addHook('onResponse', (request, _reply, done) => {
+  const endOrigin = (request: object) => {
     origins.get(request)?.()
     origins.delete(request)
+  }
+  server.addHook('onResponse', (request, _reply, done) => {
+    endOrigin(request)
+    done()
+  })
+  // A client that hangs up mid-request gets no onResponse: end its write window here.
+  server.addHook('onRequestAbort', (request, done) => {
+    endOrigin(request)
     done()
   })
 

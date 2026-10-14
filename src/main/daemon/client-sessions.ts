@@ -766,6 +766,10 @@ export class ClientSessionRegistry {
     this.sessions.delete(session.id)
     if (session.expiryTimer) clearTimeout(session.expiryTimer)
     this.closeConnection(session)
+    for (const [agentId, bySession] of this.origins) {
+      bySession.delete(session.id)
+      if (bySession.size === 0) this.origins.delete(agentId)
+    }
     const documents = [...session.documents.keys()]
     session.documents.clear()
     for (const agentId of documents) await this.releaseQuietly(session.id, agentId)
