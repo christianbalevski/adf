@@ -1,5 +1,5 @@
 import { app, dialog, nativeImage, shell } from 'electron'
-import { createWriteStream } from 'node:fs'
+import { createWriteStream, rmSync } from 'node:fs'
 import { mkdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -109,11 +109,20 @@ const MAX_LIVE_SHARE_SNAPSHOTS = 8
 const shareSnapshots = new Map<string, { path: string; dir: string; icon: Electron.NativeImage; timer: NodeJS.Timeout; used: boolean }>()
 let quitHookArmed = false
 
-function discardShareSnapshot(token: string): void {
+/**
+ * Delete a snapshot's private dir (it holds the one snapshot file Studio
+ * wrote, no links). Asynchronous while Studio runs; synchronous at quit, as
+ * embedded's rmSync, because the process may exit before an async delete runs.
+ */
+function discardShareSnapshot(token: string, opts: { sync?: boolean } = {}): void {
   const snap = shareSnapshots.get(token)
   if (!snap) return
   shareSnapshots.delete(token)
   clearTimeout(snap.timer)
+  if (opts.sync) {
+    try { rmSync(snap.dir, { recursive: true, force: true }) } catch { /* best-effort */ }
+    return
+  }
   void rm(snap.dir, { recursive: true, force: true }).catch(() => { /* best-effort */ })
 }
 
@@ -121,7 +130,7 @@ function armQuitCleanup(): void {
   if (quitHookArmed) return
   quitHookArmed = true
   app.once?.('will-quit', () => {
-    for (const token of [...shareSnapshots.keys()]) discardShareSnapshot(token)
+    for (const token of [...shareSnapshots.keys()]) discardShareSnapshot(token, { sync: true })
   })
 }
 

@@ -12,6 +12,7 @@ const native = vi.hoisted(() => ({
   calls: [] as Array<{ api: string; args: unknown[] }>,
   saveDialog: { canceled: true, filePath: undefined as string | undefined },
   openDialog: { canceled: true, filePaths: [] as string[] },
+  willQuit: [] as Array<() => void>,
 }))
 
 vi.mock('electron', async () => {
@@ -25,7 +26,7 @@ vi.mock('electron', async () => {
       getPath: () => tmpdir(),
       getAppPath: () => process.cwd(),
       getFileIcon: async () => ({ icon: true }),
-      once: () => {},
+      once: (event: string, fn: () => void) => { if (event === 'will-quit') native.willQuit.push(fn) },
     },
     shell: { ...m.shell, showItemInFolder: (p: string) => call('shell.showItemInFolder', [p]) },
     dialog: {
@@ -276,6 +277,21 @@ describe('share by drag and save a copy', () => {
     expect(_shareSnapshotCount()).toBe(0)
     await vi.waitFor(() => expect(existsSync(file)).toBe(false))
     expect(await call(IPC.FILE_SHARE_PREPARE, { filePath: join(dir, 'missing.adf') })).toEqual({ success: false, error: 'Not an .adf file' })
+  })
+
+  it('at quit every snapshot left is deleted synchronously, before the process can exit (embedded rmSync)', async () => {
+    const source = join(dir, 'agent-1.adf')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(source, 'x')
+    daemon.routes.set('GET /files/snapshot', () => ({ status: 200, raw: 'SNAPSHOT', headers: { 'Content-Type': 'application/octet-stream' } }))
+    const prepared = await call(IPC.FILE_SHARE_PREPARE, { filePath: source }) as { token: string }
+    const drags: Array<{ file: string }> = []
+    FILE_SEND_HANDLERS[IPC.FILE_SHARE_DRAG_START]!(ctx, { sender: { startDrag: (d: { file: string }) => drags.push(d) } } as never, { token: prepared.token })
+    expect(native.willQuit.length).toBeGreaterThan(0)
+    for (const fn of native.willQuit) fn()
+    // No await: gone as soon as the will-quit listener returned.
+    expect(existsSync(drags[0].file)).toBe(false)
+    expect(_shareSnapshotCount()).toBe(0)
   })
 
   it('SAVE_AS writes the snapshot where the user picked; refuses the agent itself', async () => {
