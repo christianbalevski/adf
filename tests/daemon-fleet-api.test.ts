@@ -4,7 +4,7 @@
 // recent-tools, peer-fetch) returns for the same daemon state. The compute
 // service is a fake; no PodmanService is constructed.
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -18,6 +18,10 @@ import { AgentVitalsService } from '../src/main/services/agent-vitals'
 import { getFleetBurnService } from '../src/main/services/fleet-burn.service'
 import { buildMeshStatus } from '../src/main/services/mesh-status'
 import { readRecentToolsFromWorkspace } from '../src/main/services/recent-tools'
+import { CodeSandboxService } from '../src/main/runtime/code-sandbox'
+import { MeshServer } from '../src/main/services/mesh-server'
+import { UvManager } from '../src/main/services/uv-manager'
+import { daemonGapRouteDeps } from '../src/main/daemon/routes/gap-deps'
 import type { MeshAgentStatus } from '../src/shared/types/ipc.types'
 
 const cleanups: Array<() => Promise<unknown> | unknown> = []
@@ -226,5 +230,64 @@ describe('POST /runtime/emergency-stop', () => {
     expect(sandbox.destroyAll).toHaveBeenCalled()
     expect(compute.pendingStarts).toHaveBeenCalled()
     expect(compute.stopAll).toHaveBeenCalled()
+  })
+})
+
+describe('POST /runtime/emergency-stop: partial stops and the daemon wiring', () => {
+  const compute = () => ({
+    getStatus: () => ({ status: 'running' }) as never,
+    listContainers: async () => [],
+    ensureRunning: async () => {},
+    stop: async () => {},
+    pendingStarts: vi.fn(async () => {}),
+    stopAll: vi.fn(async () => {}),
+  })
+
+  it('answers success: false naming what it could not stop', async () => {
+    const { server } = setup({ mesh: fakeMesh([]), computeService: compute() })
+    const res = await server.inject({ method: 'POST', url: '/runtime/emergency-stop' })
+    expect(res.json()).toMatchObject({ success: false, skipped: ['mesh server', 'sandbox workers'] })
+    expect(res.json().error).toMatch(/partial/)
+    expect(RuntimeGate.stopped).toBe(true)
+  })
+
+  it('a failing part is reported as failed', async () => {
+    const meshServer = { stop: vi.fn(async () => { throw new Error('port stuck') }) }
+    const { server } = setup({ mesh: fakeMesh([]), computeService: compute(), routes: { gaps: { codeSandboxService: { destroyAll: () => {} } as never, meshServer } } })
+    expect((await server.inject({ method: 'POST', url: '/runtime/emergency-stop' })).json()).toMatchObject({ success: false, failed: ['mesh server'] })
+  })
+
+  it('with the gap deps daemon/index.ts builds (real sandbox, mesh server, uv) the stop is complete', async () => {
+    const sandbox = new CodeSandboxService()
+    const destroyAll = vi.spyOn(sandbox, 'destroyAll')
+    const meshServer = new MeshServer(sandbox, { get: () => undefined } as never)
+    const stop = vi.spyOn(meshServer, 'stop')
+    const gaps = daemonGapRouteDeps({ codeSandboxService: sandbox, meshServer, uvManager: new UvManager() })
+    const { dir, runtime, server } = setup({ mesh: fakeMesh([]), computeService: compute(), routes: { gaps } })
+    await runtime.loadAgent(seedAgent(dir, 1).filePath)
+    expect((await server.inject({ method: 'POST', url: '/runtime/emergency-stop' })).json()).toEqual({ success: true })
+    expect(destroyAll).toHaveBeenCalled()
+    expect(stop).toHaveBeenCalled()
+    expect(runtime.listAgents()).toEqual([])
+  })
+
+  it('daemon/index.ts passes those deps as routes.gaps', () => {
+    const source = readFileSync(join(__dirname, '../src/main/daemon/index.ts'), 'utf-8')
+    expect(source).toMatch(/routes: \{ startedBy, gaps: daemonGapRouteDeps\(\{ codeSandboxService, meshServer, uvManager \}\) \}/)
+  })
+})
+
+describe('POST /agents/load after an emergency stop', () => {
+  it('reopens the runtime gate, so the loaded agent runs turns', async () => {
+    const { dir, runtime, server } = setup({ routes: { gaps: { codeSandboxService: { destroyAll: () => {} } as never, meshServer: { stop: async () => {} } } } })
+    await server.inject({ method: 'POST', url: '/runtime/emergency-stop' })
+    expect(RuntimeGate.stopped).toBe(true)
+    const agent = seedAgent(dir, 1)
+    const res = await server.inject({ method: 'POST', url: '/agents/load', payload: { filePath: agent.filePath } })
+    expect(res.statusCode).toBe(200)
+    expect(RuntimeGate.stopped).toBe(false)
+    await runtime.sendChat(res.json().id, 'hello')
+    const chat = runtime.getAgentChat(res.json().id)
+    expect(chat.chatHistory?.uiLog.length ?? 0).toBeGreaterThan(1)
   })
 })

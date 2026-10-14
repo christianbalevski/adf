@@ -248,33 +248,62 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
   // reopens it), mesh off (not persisted), every agent unloaded at once,
   // WS connections, mesh server, tracked children, host execs and sandbox
   // workers stopped, then the compute containers. Files stay reopenable.
+  // A part this daemon could not stop (not wired) or failed to stop makes
+  // the answer `success: false` naming it: a partial stop never reads as a
+  // full one.
   server.post('/runtime/emergency-stop', async () => {
     console.log('[EmergencyStop] Shutting down everything...')
     const deps = gapDeps(ctx)
     const skipped: string[] = []
+    const failed: string[] = []
+    const step = async (name: string, run: () => unknown): Promise<void> => {
+      try {
+        await run()
+      } catch (e) {
+        failed.push(name)
+        console.error(`[EmergencyStop] ${name} error:`, e)
+      }
+    }
     RuntimeGate.stop()
-    try {
-      if (mesh?.isEnabled() && mesh.disableMesh) mesh.disableMesh()
-      else if (mesh?.isEnabled()) skipped.push('mesh')
-    } catch (e) { console.error('[EmergencyStop] mesh disable error:', e) }
-    await Promise.all(runtime.listAgents().map(async (agent) => {
-      try { await runtime.unloadAgent(agent.id, { mode: 'immediate' }) }
-      catch (e) { console.error(`[EmergencyStop] unload ${agent.id} error:`, e) }
-    }))
-    try { (options.wsService as Stoppable | undefined)?.stopAll?.() } catch (e) { console.error('[EmergencyStop] WS stop error:', e) }
-    try {
+    await step('mesh', () => {
+      if (!mesh?.isEnabled()) return
+      if (mesh.disableMesh) mesh.disableMesh()
+      else skipped.push('mesh')
+    })
+    await Promise.all(runtime.listAgents().map((agent) =>
+      step(`agent ${agent.id}`, () => runtime.unloadAgent(agent.id, { mode: 'immediate' }))))
+    await step('ws connections', () => (options.wsService as Stoppable | undefined)?.stopAll?.())
+    await step('mesh server', async () => {
       if (deps.meshServer) await deps.meshServer.stop()
       else skipped.push('mesh server')
-    } catch (e) { console.error('[EmergencyStop] mesh server stop error:', e) }
-    try { await killAllTracked() } catch (e) { console.error('[EmergencyStop] tracked child kill error:', e) }
-    try { await killAllHostExecs() } catch (e) { console.error('[EmergencyStop] host exec kill error:', e) }
-    try {
+    })
+    await step('child processes', () => killAllTracked())
+    await step('host execs', () => killAllHostExecs())
+    await step('sandbox workers', () => {
       if (deps.codeSandboxService) deps.codeSandboxService.destroyAll()
       else skipped.push('sandbox workers')
-    } catch (e) { console.error('[EmergencyStop] sandbox destroy error:', e) }
-    try { await options.computeService?.pendingStarts?.() } catch (e) { console.error('[EmergencyStop] compute pendingStarts error:', e) }
-    try { await options.computeService?.stopAll?.() } catch (e) { console.error('[EmergencyStop] compute stop error:', e) }
-    console.log(`[EmergencyStop] All agents stopped, mesh disabled.${skipped.length ? ` Not wired on this daemon, left running: ${skipped.join(', ')}.` : ''}`)
-    return { success: true }
+    })
+    await step('compute', async () => {
+      const compute = options.computeService
+      if (!compute) return
+      await compute.pendingStarts?.()
+      if (compute.stopAll) await compute.stopAll()
+      else skipped.push('compute containers')
+    })
+    if (skipped.length === 0 && failed.length === 0) {
+      console.log('[EmergencyStop] All agents stopped, mesh disabled.')
+      return { success: true }
+    }
+    const parts = [
+      skipped.length ? `not wired on this daemon, left running: ${skipped.join(', ')}` : '',
+      failed.length ? `failed: ${failed.join(', ')}` : '',
+    ].filter(Boolean).join('; ')
+    console.error(`[EmergencyStop] Partial stop — ${parts}`)
+    return {
+      success: false,
+      error: `Emergency stop was partial — ${parts}.`,
+      ...(skipped.length ? { skipped } : {}),
+      ...(failed.length ? { failed } : {}),
+    }
   })
 }

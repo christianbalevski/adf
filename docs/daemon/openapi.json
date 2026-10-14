@@ -425,7 +425,7 @@
           "Agents"
         ],
         "summary": "Load an agent from an .adf file",
-        "description": "Loading an already-loaded file returns its existing reference. Direct loads bypass the review gate unless `requireReview` is true.",
+        "description": "Loading an already-loaded file returns its existing reference. Direct loads bypass the review gate unless `requireReview` is true. A load is a deliberate start: it reopens the runtime gate an emergency stop closed.",
         "operationId": "loadAgent",
         "requestBody": {
           "required": true,
@@ -10060,7 +10060,7 @@
           "Runtime"
         ],
         "summary": "Emergency stop",
-        "description": "Closes the runtime gate (resumable: the next deliberate start reopens it), disables the mesh without persisting it, unloads every agent at once, stops WS connections, the mesh server, tracked child processes, host execs and sandbox workers, then the compute containers. Files stay reopenable.",
+        "description": "Closes the runtime gate (resumable: the next deliberate start reopens it), disables the mesh without persisting it, unloads every agent at once, stops WS connections, the mesh server, tracked child processes, host execs and sandbox workers, then the compute containers. Files stay reopenable. Any part left running or failed makes the answer `success: false` naming it.",
         "operationId": "emergencyStop",
         "responses": {
           "200": {
@@ -10068,7 +10068,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/EmergencyStopResult"
                 }
               }
             }
@@ -14163,6 +14163,10 @@
           "start": {
             "type": "boolean",
             "default": false
+          },
+          "identityDraftId": {
+            "type": "string",
+            "description": "An identity draft (POST /identity/drafts): the new agent gets its DID. Consumed; an unknown or expired draft falls back to a fresh identity."
           }
         },
         "example": {
@@ -22364,6 +22368,42 @@
           "detail": {
             "type": "string"
           }
+        }
+      },
+      "EmergencyStopResult": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "False when any part was not wired on this daemon or failed to stop"
+          },
+          "error": {
+            "type": "string"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Parts this daemon cannot stop (left running)"
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Parts whose stop threw"
+          }
+        },
+        "example": {
+          "success": false,
+          "error": "Emergency stop was partial — not wired on this daemon, left running: mesh server.",
+          "skipped": [
+            "mesh server"
+          ]
         }
       }
     }

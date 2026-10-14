@@ -44,6 +44,7 @@ import { AgentVitalsService } from '../services/agent-vitals'
 import type { ProviderKeyVault } from './provider-key-vault'
 import { listFolderAgents, listTrackedAgents, listTrackedDirs, noteAutostartReport, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
 import { registerDaemonRoutes, type DaemonRouteDeps } from './routes'
+import { RuntimeGate } from '../runtime/runtime-gate'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
@@ -2232,6 +2233,9 @@ export function createDaemonHttpApi(
     const filePath = request.body?.filePath
     if (!filePath) return badRequest(reply, 'filePath is required')
     try {
+      // A load is a deliberate start: reopen the runtime gate an emergency
+      // stop closed, as POST /agents/:id/start does (RuntimeService.startAgent).
+      RuntimeGate.resume()
       return await runtime.loadAgent(filePath, { enforceReviewGate: request.body?.requireReview === true })
     } catch (err) {
       return handleRuntimeError(reply, err)

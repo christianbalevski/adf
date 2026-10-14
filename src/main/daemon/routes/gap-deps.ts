@@ -39,6 +39,25 @@ export interface GapRouteDeps {
   }
 }
 
+/**
+ * The gap deps the daemon composition root passes (daemon/index.ts). One
+ * function so the wiring is testable with the same services the daemon
+ * builds.
+ */
+export function daemonGapRouteDeps(services: {
+  codeSandboxService: CodeSandboxService
+  meshServer: { stop(): Promise<void> }
+  uvManager: PythonRuntimeUv
+  mcpAppOAuthStore?: McpOAuthStore | null
+}): GapRouteDeps {
+  return {
+    codeSandboxService: services.codeSandboxService,
+    meshServer: services.meshServer,
+    uvManager: services.uvManager,
+    ...(services.mcpAppOAuthStore !== undefined ? { mcpAppOAuthStore: services.mcpAppOAuthStore } : {}),
+  }
+}
+
 export function gapDeps(ctx: DaemonRouteContext): GapRouteDeps {
   return ctx.options.routes?.gaps ?? {}
 }

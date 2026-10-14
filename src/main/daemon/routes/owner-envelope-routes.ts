@@ -16,8 +16,9 @@
 // code (services/envelope-actions.ts) and the daemon's owner identity
 // (DaemonIdentity.service, public methods only). No key material, password
 // or derived key appears in a response or a log line. Drafts hold their
-// private key in this process; only { draftId, did } leaves it, and the
-// create path adopts a draft with identityDrafts.take(draftId).
+// private key in this process; only { draftId, did } leaves it.
+// POST /agents/create with identityDraftId adopts one
+// (DaemonAgentFactory.create, as Studio's FILE_CREATE_QUICK).
 
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { AdfWorkspace } from '../../adf/adf-workspace'

@@ -39,6 +39,7 @@ import { withDeadline } from '../utils/concurrency'
 import { AdfDatabase } from '../adf/adf-database'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
 import { takeLaunchEnv } from './routes/meta-routes'
+import { daemonGapRouteDeps } from './routes/gap-deps'
 
 // Defined by the builds that ship the daemon (electron.vite.config.ts for
 // out/main/daemon.js, scripts/build-npm.mjs for the npm package).
@@ -293,7 +294,10 @@ const daemon = new DaemonHost({
   localProof,
   pidFile,
   version: daemonVersion,
-  routes: { startedBy },
+  // Services the W1-D gap routes reach (routes/gap-deps.ts): emergency stop
+  // stops the mesh server and sandbox workers; MCP admin shares the uv
+  // install. mcpAppOAuthStore joins when W1-C ships DaemonAppOAuthStore.
+  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager }) },
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
