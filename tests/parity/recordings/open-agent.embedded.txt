@@ -646,6 +646,8 @@ d home/Desktop/
 d home/Documents/
 d home/Downloads/
 d leases/
+d leases/hosts/
+f leases/hosts/<pid:this-process>.json
 d temp/
 d user-data/
 f user-data/adf-settings.json
@@ -969,6 +971,21 @@ adf-settings.json:
   uiFontSystemDefaultApplied: true
   uiScale: 1
   updateChecksEnabled: false
+
+## state: leases/hosts/<pid:this-process>.json
+hosts/<pid:this-process>.json:
+  containers: []
+  endpoint: "<lease-endpoint:studio-embedded>"
+  hostname: "<hostname>"
+  kind: "studio-embedded"
+  machineId: "<machine-id>"
+  mode: "embedded"
+  pid: "<pid:this-process>"
+  runtimeId: "<lease-runtime-id:studio-embedded>"
+  settingsPath: "<ROOT>/user-data/adf-settings.json"
+  startedAt: "<t>"
+  v: 1
+  version: "0.0.0-parity"
 
 ## state: agents/agent-1.adf adf_attestations (2 rows; id, issuer, subject, role, issued_at, expires_at, scope, signature, raw_json)
 #1:

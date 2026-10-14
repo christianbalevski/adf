@@ -36,7 +36,7 @@ export interface BootedBackend {
   /** Calls the backend made into the fake compute service (safety evidence; not compared). */
   computeCalls(): readonly string[]
   /** Extra values for the normalizer, e.g. `{ ports: [{ value: '51234', name: 'DAEMON_PORT' }] }`. */
-  normalization?(): Partial<Pick<NormalizationContext, 'ports' | 'named'>>
+  normalization?(): Partial<Pick<NormalizationContext, 'ports' | 'named' | 'pids'>>
 }
 
 const REPO = resolve(__dirname, '../../..')
@@ -139,6 +139,7 @@ export async function releaseRunResources(resources: RunResources, env: ParityEn
 }
 
 type IpcModule = typeof import('../../../src/main/ipc/index')
+type LeaseModule = typeof import('../../../src/main/runtime/agent-lease')
 
 export const embeddedBackend: ParityBackend = {
   name: 'embedded',
@@ -147,6 +148,8 @@ export const embeddedBackend: ParityBackend = {
     const resources = createRunResources()
     installEnvironmentStubs(electron, resources)
     const ipc = (await import(/* @vite-ignore */ srcPath('main/ipc/index.ts'))) as IpcModule
+    // This run's instance of the process lease registry (same module graph as ipc).
+    const leases = (await import(/* @vite-ignore */ srcPath('main/runtime/agent-lease.ts'))) as LeaseModule
     ipc.registerAllIpcHandlers({
       showMainWindow: () => {
         electron.openWindow()
@@ -160,6 +163,10 @@ export const embeddedBackend: ParityBackend = {
     return {
       async shutdown() {
         await ipc.cleanupAllProcesses({ teardownBudgetMs: 10_000 })
+        // Process exit: Studio's 'exit' hook releases every lease and the host
+        // record (agent-lease.ts). The harness process does not exit, so the
+        // run does the same through the registry's close().
+        await leases.resetProcessAgentLeases()
         leaks = await releaseRunResources(resources, env)
       },
       leaks: () => leaks,

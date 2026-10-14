@@ -16,6 +16,7 @@ import { canonicalizePath, isSameOrSubPath } from '../utils/tracked-paths'
 import { generateAgentName } from '../../shared/utils/agent-names'
 import type { AgentConfigSummary, AgentTemplateListResult, ProviderConfig } from '../../shared/types/ipc.types'
 import type { RuntimeService } from '../runtime/runtime-service'
+import { identityDrafts } from '../services/identity-drafts'
 import type { DaemonIdentity, DaemonIdentityStatus } from './daemon-identity'
 
 export interface CreateAgentInput {
@@ -25,6 +26,12 @@ export interface CreateAgentInput {
   provider?: string
   model?: string
   start?: boolean
+  /**
+   * An identity draft (POST /identity/drafts): the new agent gets that DID,
+   * the one the create screen showed. Consumed here; an unknown or expired
+   * draft falls back to a fresh identity.
+   */
+  identityDraftId?: string
 }
 
 export interface CreateAgentResult {
@@ -279,6 +286,10 @@ export class DaemonAgentFactory {
       }
     }
     const templateId = typeof input.template === 'string' && input.template.trim() ? input.template.trim() : undefined
+    if (input.identityDraftId !== undefined && typeof input.identityDraftId !== 'string') {
+      throw new AgentCreateError('bad_request', 'identityDraftId must be a string', 400)
+    }
+    const identityDraftId = input.identityDraftId?.trim() || undefined
 
     const name = typedName || generateAgentName({ taken: (n) => existsSync(join(directory, `${n}.adf`)) })
     const filePath = join(directory, `${name}.adf`)
@@ -296,11 +307,23 @@ export class DaemonAgentFactory {
     let config: ReturnType<AdfWorkspace['getAgentConfig']>
     try {
       const workspace = AdfWorkspace.open(filePath)
+      // Taken (and so consumed) only once the file exists, as in Studio's
+      // FILE_CREATE_QUICK (studioCreateDeps).
+      const draft = identityDraftId ? identityDrafts.take(identityDraftId) : null
+      if (identityDraftId && !draft) console.warn('[ADF Daemon] Identity draft unknown or expired — minting a fresh identity for the new agent')
       try {
-        this.deps.identity.service.ensureWorkspaceIdentity(workspace)
+        const service = this.deps.identity.service
+        try {
+          service.ensureWorkspaceIdentity(workspace, draft ? { adoptKeys: draft } : {})
+        } catch (err) {
+          if (!draft) throw err
+          console.warn('[ADF Daemon] Adopting the identity draft failed, minting a fresh identity:', err)
+          service.ensureWorkspaceIdentity(workspace)
+        }
         did = workspace.getDid()
         config = workspace.getAgentConfig()
       } finally {
+        draft?.privateKey.fill(0)
         workspace.close()
       }
       if (!did) throw new Error('identity provisioning produced no DID')

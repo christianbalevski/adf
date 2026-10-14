@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from 'child_process'
+import { inheritableEnv } from '../utils/child-env'
 import type { ChildProcess } from 'child_process'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
@@ -238,7 +239,7 @@ export async function runMcpAuthPreflight(
     preflightArgs = [...preflightArgs, ...opts.authArgs]
   }
 
-  const preflightEnv = { ...process.env, ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
+  const preflightEnv = { ...inheritableEnv(), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
   log(`[MCP] Auth preflight: ${preflightCmd} ${preflightArgs.join(' ')}`)
 
   // No blanket shell:true — on Windows that routes through cmd.exe with
@@ -332,7 +333,7 @@ export async function runMcpAuthPreflight(
     spawnArgs = ['exec', '-i', '--env-file', envFilePath, c.containerName, c.command, ...c.args, ...(opts.authArgs ?? [])]
     // The podman client itself runs host-side and needs the host env (PATH,
     // machine connection); none of it is forwarded into the container.
-    spawnEnv = process.env
+    spawnEnv = inheritableEnv()
     verbatim = false
     log(`[MCP] Auth preflight (container ${c.containerName}): ${c.command} ${[...c.args, ...(opts.authArgs ?? [])].join(' ')}`)
   }

@@ -9,6 +9,8 @@ import type { ParityEnv } from './env'
  * What a run left on disk, read after the backend shut down:
  * - every fixture `.adf` as a canonical table dump,
  * - every top-level JSON file in user data (the settings files),
+ * - every file in the lease dir (agent leases, takeover locks, the runtime
+ *   host and client registry), parsed when it is JSON,
  * - the listing of the whole run root.
  *
  * Read-only: `.adf` files are opened with `readonly: true`, after the
@@ -17,6 +19,8 @@ import type { ParityEnv } from './env'
 export interface PersistedState {
   adf: Record<string, AdfDump>
   userDataJson: Record<string, unknown>
+  /** Lease dir contents by path relative to it (`hosts/<pid>.json`, `<sha256>.json`, …). */
+  leases: Record<string, unknown>
   tree: string[]
 }
 
@@ -78,7 +82,10 @@ export function listTree(root: string, skip: (rel: string) => boolean = () => fa
       const s = lstatSync(p)
       if (s.isSymbolicLink()) out.push(`l ${rel}`)
       else if (s.isDirectory()) { out.push(`d ${rel}/`); walk(p) }
-      else out.push(`f ${rel}`)
+      else if (s.isFile()) out.push(`f ${rel}`)
+      // Sockets/FIFOs: the lease endpoint is a Unix socket file on macOS/Linux
+      // (a named pipe, outside the tree, on Windows). Golden form drops these (G1).
+      else out.push(`s ${rel}`)
     }
   }
   walk(root)
@@ -97,5 +104,12 @@ export function dumpPersistedState(env: ParityEnv, adfFiles: readonly string[]):
     try { userDataJson[name] = JSON.parse(readFileSync(join(env.userDataDir, name), 'utf-8')) }
     catch (err) { userDataJson[name] = `<unparsable: ${(err as Error).message}>` }
   }
-  return { adf, userDataJson, tree }
+  const leases: Record<string, unknown> = {}
+  for (const line of listTree(env.leaseDir)) {
+    if (!line.startsWith('f ')) continue
+    const rel = line.slice(2)
+    const text = readFileSync(join(env.leaseDir, rel), 'utf-8')
+    try { leases[rel] = JSON.parse(text) } catch { leases[rel] = text }
+  }
+  return { adf, userDataJson, leases, tree }
 }
