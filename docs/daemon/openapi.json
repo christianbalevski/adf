@@ -3219,6 +3219,90 @@
         }
       }
     },
+    "/agents/{id}/identity/reveal": {
+      "post": {
+        "tags": [
+          "Identity (agent)"
+        ],
+        "summary": "Read stored values of an agent (local callers only)",
+        "description": "Local callers only (as the owner phrase routes): Studio on this machine shows these values in its own window (Identity panel Reveal, provider override key field). The one exception to \"values never leave the daemon\": key material (`crypto:*`) is never returned, and a value sealed in a locked envelope, or encrypted with a file password the daemon does not hold, is left out. `Cache-Control: no-store`; values are never logged.",
+        "operationId": "revealAgentIdentityValues",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Which values: an explicit list of purposes, every purpose under an exact prefix, or both. At least one.",
+                "properties": {
+                  "purposes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "provider:anthropic:apiKey"
+                    ]
+                  },
+                  "prefix": {
+                    "type": "string",
+                    "example": "provider:anthropic:"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "agentId",
+                    "values"
+                  ],
+                  "properties": {
+                    "agentId": {
+                      "type": "string"
+                    },
+                    "values": {
+                      "type": "object",
+                      "description": "purpose → value. Absent, locked and key-material (`crypto:*`) purposes are left out.",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/LoopbackOnly"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/agents/{id}/identity/entries": {
       "get": {
         "tags": [
@@ -12585,6 +12669,178 @@
           },
           "409": {
             "$ref": "#/components/responses/CredentialsLocked"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/providers/{providerId}/credential/copy-app-key": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Store the app provider's key as an agent file's provider key",
+        "description": "Studio's \"Copy app key\": the app provider with this id (Settings → Providers) gives its API key, which a client only ever sees as `__redacted__`, and the daemon stores it as `provider:{providerId}:apiKey` in the file. Same locked-envelope rules as PUT /files/agent/providers/{providerId}/credential (409 `credentials_locked`, `replace: true`); a file that is not loaded is refused with 409 `agent_leased` while another runtime runs it. 409 `no_app_key` when the app provider is unknown or has no key.",
+        "operationId": "copyAppProviderKeyToAgentFile",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          },
+          {
+            "$ref": "#/components/parameters/ProviderIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "replace": {
+                    "type": "boolean",
+                    "description": "Store it although the credentials envelope is locked here (a locked sealed value is discarded)."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderCredentialWriteResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/CredentialsLocked"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/identity/reveal": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Read stored values of an agent file (local callers only)",
+        "description": "POST /agents/{id}/identity/reveal by file path; works on a file that is not loaded (opened for the read with this runtime's envelope keys, then closed). Local callers only (as the owner phrase routes): Studio on this machine shows these values in its own window (Identity panel Reveal, provider override key field). The one exception to \"values never leave the daemon\": key material (`crypto:*`) is never returned, and a value sealed in a locked envelope, or encrypted with a file password the daemon does not hold, is left out. `Cache-Control: no-store`; values are never logged.",
+        "operationId": "revealAgentFileIdentityValues",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Which values: an explicit list of purposes, every purpose under an exact prefix, or both. At least one.",
+                "properties": {
+                  "purposes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "provider:anthropic:apiKey"
+                    ]
+                  },
+                  "prefix": {
+                    "type": "string",
+                    "example": "provider:anthropic:"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "values"
+                      ],
+                      "properties": {
+                        "values": {
+                          "type": "object",
+                          "description": "purpose → value. Absent, locked and key-material (`crypto:*`) purposes are left out.",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/LoopbackOnly"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
