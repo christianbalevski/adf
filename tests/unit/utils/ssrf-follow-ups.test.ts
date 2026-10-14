@@ -45,12 +45,17 @@ describe('NAT64 64:ff9b::/96 and 6to4 2002::/16 carry an IPv4 address', () => {
 })
 
 describe('cloud metadata endpoints beyond AWS/GCP 169.254.169.254', () => {
-  it('before: EKS pod identity, Alibaba, Azure WireServer and OCI are not in the always-blocked list', async () => {
+  it('after: EKS pod identity, Alibaba, Azure WireServer and OCI are always blocked, whatever the options', async () => {
     const open = { allowLocal: true, allowLinkLocal: true }
-    for (const ip of ['169.254.170.23', 'fd00:ec2::23', '100.100.100.200', '168.63.129.16', '192.0.0.192']) expect(isCloudMetadataIp(ip), ip).toBe(false)
-    expect(await checkFetchTarget('http://169.254.170.23/v1/credentials', open)).toBeNull()
-    expect(await checkFetchTarget('http://100.100.100.200/latest/meta-data', open)).toBeNull()
-    expect(await checkFetchTarget('http://168.63.129.16/machine')).toBeNull()
+    for (const ip of ['169.254.170.23', 'fd00:ec2::23', '100.100.100.200', '168.63.129.16', '192.0.0.192', '::ffff:168.63.129.16']) expect(isCloudMetadataIp(ip), ip).toBe(true)
+    expect(await checkFetchTarget('http://169.254.170.23/v1/credentials', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://[fd00:ec2::23]/v1/credentials', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://100.100.100.200/latest/meta-data', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://168.63.129.16/machine')).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://192.0.0.192/opc/v2/instance', open)).toMatch(/cloud-metadata/)
+    // Neighbours are not metadata: tailnet peers live in 100.64.0.0/10, Azure's other public range is public.
+    expect(isCloudMetadataIp('100.100.100.201')).toBe(false)
+    expect(isCloudMetadataIp('168.63.129.17')).toBe(false)
   })
 })
 

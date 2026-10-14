@@ -79,21 +79,31 @@ export interface FetchGuardOptions {
   allowLinkLocal?: boolean
 }
 
+/** IPv4 instance-metadata and credential endpoints (see isCloudMetadataIp). */
+const METADATA_IPV4 = new Set([
+  '169.254.169.254', // AWS, GCP, Azure IMDS, OCI, DigitalOcean, …
+  '169.254.170.2', // AWS ECS task credentials
+  '169.254.170.23', // AWS EKS Pod Identity agent
+  '100.100.100.200', // Alibaba Cloud metadata
+  '168.63.129.16', // Azure WireServer (host agent, platform keys)
+  '192.0.0.192', // Oracle Cloud (OCI) metadata
+])
+/** IPv6 ones, expanded: AWS IMDS and the EKS Pod Identity agent. */
+const METADATA_IPV6 = new Set(['fd00:0ec2:0000:0000:0000:0000:0000:0254', 'fd00:0ec2:0000:0000:0000:0000:0000:0023'])
+
 /**
- * Cloud instance-metadata and credential endpoints: AWS/GCP/Azure/OCI
- * 169.254.169.254, AWS ECS task credentials 169.254.170.2, AWS IPv6 IMDS
- * fd00:ec2::254 (incl. IPv4-mapped forms). Never fetchable, whatever the
- * options.
+ * Cloud instance-metadata and credential endpoints (METADATA_IPV4,
+ * METADATA_IPV6; incl. IPv4-mapped, NAT64 and 6to4 forms). Never
+ * fetchable, whatever the options.
  */
 export function isCloudMetadataIp(ip: string): boolean {
   const bare = ip.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase()
   const version = isIP(bare)
-  const v4 = (addr: string) => addr === '169.254.169.254' || addr === '169.254.170.2'
-  if (version === 4) return v4(bare)
+  if (version === 4) return METADATA_IPV4.has(bare)
   if (version === 6) {
     const mapped = mappedIPv4Match(bare)
-    if (mapped) return v4(mapped[1])
-    return expandIPv6(bare) === 'fd00:0ec2:0000:0000:0000:0000:0000:0254'
+    if (mapped) return METADATA_IPV4.has(mapped[1])
+    return METADATA_IPV6.has(expandIPv6(bare))
   }
   return false
 }
