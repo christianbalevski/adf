@@ -108,7 +108,8 @@ export interface HilItem extends ItemBase {
   tool: string
   input: unknown
   reason?: string
-  status: 'pending' | 'approved' | 'denied'
+  /** `completed`: the runtime settled it with no human decision (`hil.resolved` with `settled`). */
+  status: 'pending' | 'approved' | 'denied' | 'completed'
   feedback?: string
 }
 

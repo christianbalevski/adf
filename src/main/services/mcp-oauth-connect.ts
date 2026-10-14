@@ -74,6 +74,16 @@ export const SILENT_OAUTH_REDIRECT_PLACEHOLDER = 'http://127.0.0.1/adf-oauth-sil
  */
 export const MCP_OAUTH_SIGNIN_APPROVAL = 'mcp_oauth_signin'
 
+/**
+ * Synthetic approval a runtime without a browser of its own (the daemon)
+ * raises after `mcp_oauth_signin` was approved: its input carries
+ * `authorize_url`, the page the client opens (Studio does it without a
+ * click, as embedded Studio opens the browser itself). The runtime settles
+ * it when the loopback callback lands or the flow fails; denying it cancels
+ * the sign-in. Maps to no declared tool, so "Always approve" is suppressed.
+ */
+export const MCP_OAUTH_AUTHORIZE_APPROVAL = 'mcp_oauth_authorize'
+
 /** Minimal executor surface the OAuth sign-in gate needs (Electron/executor-free). */
 export interface OAuthApprovalGate {
   requestApproval(name: string, input: unknown, opts?: { canAlwaysApprove?: boolean }): Promise<boolean>

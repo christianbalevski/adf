@@ -59,6 +59,7 @@ import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
 import { toDisplayState } from './display-state'
 import { AGENT_LEASED_CODE, processAgentLeases } from './agent-lease'
+import { applyBackgroundEvent, countActiveLoops, type BackgroundMappedEvent } from './background-event-mapping'
 
 /** Max agents starting concurrently during the boot autostart scan. */
 const AUTOSTART_CONCURRENCY = 5
@@ -73,12 +74,8 @@ const MCP_CONNECT_BUDGET_MS = 25_000
 // Shared with the daemon (agent vitals); re-exported for existing importers.
 export { toDisplayState }
 
-/** How many inner loops are mid-turn. The sidebar's count badge reads this. */
-export function countActiveLoops(loopStates: Map<string, AgentState>): number {
-  let count = 0
-  for (const state of loopStates.values()) if (state === 'active') count++
-  return count
-}
+// Moved to the pure mapping module; re-exported for existing importers.
+export { countActiveLoops }
 
 export interface BackgroundManagedAgent {
   assembledAgent: AssembledAgent<AgentProfileName>
@@ -1052,39 +1049,8 @@ export class BackgroundAgentManager extends EventEmitter {
       onEvent: (event) => {
         if (!this.agents.has(filePath)) return
         // Side-loop events never move the agent's display state or its
-        // accumulated text: `AgentState` is MAIN's (§6.3), and a backgrounded
-        // agent has no loop tabs to route them to. Their states are tracked
-        // apart, in `loopStates`, so the sidebar can still say how many inner
-        // loops are mid-turn without main's dot ever lying.
-        this.recordLoopState(managed, filePath, event)
-        if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
-        if (event.type === 'state_changed') {
-          managed.state = toDisplayState((event.payload as { state: string }).state)
-          this.emitEvent({
-            type: 'agent_state_changed',
-            payload: { filePath, state: managed.state },
-            timestamp: Date.now(),
-          })
-        }
-        if (event.type === 'text_delta') managed.accumulatedText += (event.payload as { delta: string }).delta
-        if (event.type === 'tool_call_start') this.flushAccumulatedText(managed)
-        if (event.type === 'tool_call_start' || event.type === 'tool_call_result' ||
-            event.type === 'ask_request' || event.type === 'tool_approval_request' ||
-            event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
-          this.emitEvent({
-            type: event.type,
-            payload: { filePath, ...(event.payload as Record<string, unknown>) },
-            timestamp: event.timestamp,
-          })
-        }
-        if (event.type === 'adf_file_created') {
-          this.emitEvent({
-            type: 'adf_file_created',
-            payload: { agentFilePath: filePath, filePath: (event.payload as Record<string, unknown>).filePath },
-            timestamp: event.timestamp,
-          })
-        }
-        if (event.type === 'turn_complete') this.flushAccumulatedText(managed)
+        // accumulated text (see background-event-mapping.ts).
+        applyBackgroundEvent(managed, filePath, event, (mapped) => this.emitBackgroundMappedEvent(mapped))
       },
     })
     this.agents.set(filePath, managed)
@@ -1928,47 +1894,8 @@ export class BackgroundAgentManager extends EventEmitter {
       },
       onEvent: (event) => {
         if (!this.agents.has(filePath)) return
-        // See the adopt path above: side-loop events are MAIN-state-inert, and
-        // their states are tracked apart for the inner-loop count.
-        this.recordLoopState(managed, filePath, event)
-        if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
-        if (event.type === 'state_changed') {
-          const payload = event.payload as { state: string }
-          managed.state = toDisplayState(payload.state)
-          this.emitEvent({
-            type: 'agent_state_changed',
-            payload: { filePath, state: managed.state },
-            timestamp: Date.now()
-          })
-        }
-        if (event.type === 'text_delta') {
-          managed.accumulatedText += (event.payload as { delta: string }).delta
-        }
-        if (event.type === 'tool_call_start') {
-          this.flushAccumulatedText(managed)
-          this.emitEvent({
-            type: 'tool_call_start',
-            payload: { filePath, ...(event.payload as Record<string, unknown>) },
-            timestamp: event.timestamp
-          })
-        }
-        if (event.type === 'tool_call_result' || event.type === 'ask_request' || event.type === 'tool_approval_request' ||
-            event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
-          this.emitEvent({
-            type: event.type,
-            payload: { filePath, ...(event.payload as Record<string, unknown>) },
-            timestamp: event.timestamp
-          })
-        }
-        if (event.type === 'adf_file_created') {
-          const payload = event.payload as Record<string, unknown>
-          this.emitEvent({
-            type: 'adf_file_created',
-            payload: { agentFilePath: filePath, filePath: payload.filePath },
-            timestamp: event.timestamp
-          })
-        }
-        if (event.type === 'turn_complete') this.flushAccumulatedText(managed)
+        // Same mapping as the adopt path above.
+        applyBackgroundEvent(managed, filePath, event, (mapped) => this.emitBackgroundMappedEvent(mapped))
       },
     })
 
@@ -2007,38 +1934,6 @@ export class BackgroundAgentManager extends EventEmitter {
       throw error
     }
     return managed
-  }
-
-  /**
-   * Fold a SIDE loop's `state_changed` into `loopStates` and broadcast the new
-   * inner-loop count when it moved; main's own `state_changed` only matters
-   * here when it goes off, which empties the map. Every other event passes
-   * through untouched — the caller still runs its own main-loop handling.
-   */
-  private recordLoopState(
-    managed: BackgroundManagedAgent,
-    filePath: string,
-    event: { type: string; payload: unknown; loop?: string }
-  ): void {
-    if (event.type !== 'state_changed') return
-    const loop = event.loop ?? MAIN_LOOP
-    const state = toDisplayState((event.payload as { state: string }).state)
-    if (loop === MAIN_LOOP) {
-      // Main going off takes its inner loops with it — they stop with the
-      // executor pool and will never report their own way back to idle.
-      if (state !== 'off' || managed.loopStates.size === 0) return
-      managed.loopStates.clear()
-    } else {
-      managed.loopStates.set(loop, state)
-    }
-    const activeLoops = countActiveLoops(managed.loopStates)
-    if (activeLoops === managed.activeLoops) return
-    managed.activeLoops = activeLoops
-    this.emitEvent({
-      type: 'agent_loops_changed',
-      payload: { filePath, activeLoops },
-      timestamp: Date.now()
-    })
   }
 
   private flushAccumulatedText(managed: BackgroundManagedAgent): void {
@@ -2149,6 +2044,15 @@ export class BackgroundAgentManager extends EventEmitter {
     const loop = managed.workspace.getLoop()
     if (loop.length === 0) return
     managed.session.restoreMessages(loop.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at, seq: e.seq })))
+  }
+
+  /**
+   * Emit a mapped executor/host event. `adf_file_created` is not in
+   * `BackgroundAgentEvent['type']` but has always gone out on this channel
+   * (ipc/index.ts refreshes tracked directories from it).
+   */
+  private emitBackgroundMappedEvent(event: BackgroundMappedEvent): void {
+    this.emitEvent(event as BackgroundAgentEvent)
   }
 
   private emitEvent(event: BackgroundAgentEvent): void {

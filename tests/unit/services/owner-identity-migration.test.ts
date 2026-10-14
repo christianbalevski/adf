@@ -24,8 +24,10 @@ vi.mock('electron', () => ({
 }))
 
 import { SettingsService } from '../../../src/main/services/settings.service'
+import { ownerMnemonicSupersededKey } from '../../../src/main/services/owner-identity.service'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
-import { readAdfAttestations, verifyAttestation } from '../../../src/main/services/attestation.service'
+import { appendAdfAttestation, createAttestation, readAdfAttestations, verifyAttestation } from '../../../src/main/services/attestation.service'
+import { extractRawPublicKey, generateEd25519KeyPair, publicKeyToDid } from '../../../src/main/crypto/identity-crypto'
 import { deriveOwnerIdentity, generateMnemonic } from '../../../src/main/crypto/mnemonic-identity'
 
 const LEGACY_OWNER = 'did:key:zLegacyOwner111'
@@ -318,5 +320,111 @@ describe('secret redaction', () => {
     // But they are persisted on disk (plaintext fallback in this mock)
     const raw = JSON.parse(readFileSync(join(h.userDataDir, 'adf-settings.json'), 'utf-8'))
     expect(raw.ownerMnemonic).toBeDefined()
+  })
+})
+
+// Rule E3 (daemon-backend W1-C review): the owner switched outside Studio
+// (`adf identity import` rewrites ownerDid and the shared keychain phrase).
+describe('owner switched outside Studio', () => {
+  function switchedOutside(keychainPhrase: string, opts: { recordSwitch?: boolean } = {}) {
+    h.encryptionAvailable = true
+    const old = generateMnemonic()
+    const next = generateMnemonic()
+    const first = new SettingsService().getOwnerIdentity()
+    first.importMnemonic(old)
+    first.ensureIdentity()
+    const runtimeDid = first.getRuntimeDid()
+    // What the daemon's import writes into the shared settings file.
+    const path = join(h.userDataDir, 'adf-settings.json')
+    const disk = JSON.parse(readFileSync(path, 'utf-8'))
+    disk.ownerDid = deriveOwnerIdentity(next).did
+    // A genuine switch records the previous owner (importMnemonic); a hand edit does not.
+    if (opts.recordSwitch !== false) disk.legacyOwnerDids = [deriveOwnerIdentity(old).did]
+    writeFileSync(path, JSON.stringify(disk), 'utf-8')
+    let keychain = keychainPhrase === 'next' ? next : keychainPhrase
+    const shared = { read: () => keychain, write: (m: string) => { keychain = m } }
+    const svc = new SettingsService().getOwnerIdentity()
+    svc.setSharedMnemonicStore(shared)
+    return { svc, old, next, runtimeDid, keychain: () => keychain }
+  }
+
+  it('takes the keychain phrase of the owner on record over its own stale copy, keeps the stale one, re-signs its delegation', () => {
+    const { svc, old, next, runtimeDid, keychain } = switchedOutside('next')
+    svc.ensureIdentity()
+    expect(svc.revealMnemonic()).toBe(next)
+    expect(keychain()).toBe(next)
+    // The previous owner's phrase is kept, encrypted like ownerMnemonic, and never shown.
+    const key = ownerMnemonicSupersededKey(deriveOwnerIdentity(old).did)
+    const settings = new SettingsService()
+    expect(settings.getSecret(key)).toBe(old)
+    const raw = JSON.parse(readFileSync(join(h.userDataDir, 'adf-settings.json'), 'utf-8'))[key] as string
+    expect(raw.startsWith('safe:')).toBe(true)
+    expect(raw).not.toContain(old)
+    expect(settings.getAll()).not.toHaveProperty(key)
+    expect(svc.getRuntimeDid()).toBe(runtimeDid)
+    const status = svc.getStatus()
+    expect(status.runtimeDelegation?.issuer).toBe(deriveOwnerIdentity(next).did)
+    expect(status.runtimeDelegationValid).toBe(true)
+  })
+
+  it('a wrong ownerDid (hand edit, copied settings) with that owner phrase in the keychain: keeps its own phrase', () => {
+    const { svc, old, next, keychain } = switchedOutside('next', { recordSwitch: false })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    svc.ensureIdentity()
+    expect(svc.revealMnemonic()).toBe(old)
+    expect(keychain()).toBe(next) // and its own phrase is not mirrored over it either
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('no owner switch from it is recorded'))).toBe(true)
+    warn.mockRestore()
+  })
+
+  it('restamp: a file with no runtime stamp still gets an operator attestation from this runtime', () => {
+    h.encryptionAvailable = true
+    const settings = new SettingsService()
+    const svc = settings.getOwnerIdentity()
+    svc.ensureIdentity()
+    settings.set('legacyOwnerDids', [LEGACY_OWNER])
+    const filePath = makeAdf('agent-2', { ownerDid: LEGACY_OWNER, withKeys: true })
+    const ws = AdfWorkspace.open(filePath)
+    try {
+      expect(svc.restampAndAttest(ws)).toMatchObject({ restamped: true, attested: true })
+      const operators = readAdfAttestations(ws).filter((a) => a.role === 'operator')
+      expect(operators.map((a) => a.issuer)).toEqual([svc.getRuntimeDid()])
+      expect(verifyAttestation(operators[0], { expectedSubject: ws.getDid()! })).toBe(true)
+    } finally {
+      ws.close()
+    }
+  })
+
+  it('without a matching keychain phrase: never mirrors the stale copy and never signs with it', () => {
+    const third = generateMnemonic()
+    const { svc, old, keychain } = switchedOutside(third)
+    svc.ensureIdentity()
+    expect(svc.revealMnemonic()).toBe(old)
+    expect(keychain()).toBe(third) // not overwritten with the previous owner's phrase
+    expect(svc.getOwnerSigningKey()).toBeNull()
+  })
+
+  it('a restamp keeps the operator attestations of a file stamped by another runtime', () => {
+    h.encryptionAvailable = true
+    const settings = new SettingsService()
+    const svc = settings.getOwnerIdentity()
+    svc.ensureIdentity()
+    settings.set('legacyOwnerDids', [LEGACY_OWNER])
+    const other = generateEd25519KeyPair()
+    const otherDid = publicKeyToDid(extractRawPublicKey(other.publicKey))
+    const filePath = makeAdf('agent-1', { ownerDid: LEGACY_OWNER, runtimeDid: otherDid, withKeys: true })
+    const ws = AdfWorkspace.open(filePath)
+    try {
+      const subject = ws.getDid()!
+      const operator = createAttestation({ issuer: otherDid, subject, role: 'operator', issued_at: new Date().toISOString() }, other.privateKey)
+      appendAdfAttestation(ws, operator)
+      expect(svc.restampAndAttest(ws)).toMatchObject({ restamped: true, attested: true })
+      const atts = readAdfAttestations(ws)
+      expect(atts.filter((a) => a.role === 'owner').map((a) => a.issuer)).toEqual([svc.getOwnerDid()])
+      expect(atts.filter((a) => a.role === 'operator')).toEqual([operator])
+      expect(verifyAttestation(operator, { expectedSubject: subject })).toBe(true)
+    } finally {
+      ws.close()
+    }
   })
 })

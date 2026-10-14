@@ -84,13 +84,14 @@ export function resolveDaemonToken(explicit?: string, env: NodeJS.ProcessEnv = p
 /** Routes the daemon answers for local callers only (local-access.ts). */
 export function isLocalOnlyRoute(path: string): boolean {
   const p = path.split('?')[0]
-  return p === '/daemon/shutdown' || /^\/identity\/(create|restore|unlock|lock|confirm-backup)$/.test(p)
+  return p === '/daemon/shutdown' || /^\/identity\/(create|restore|import|unlock|lock|confirm-backup)$/.test(p)
 }
 
 /**
  * X-ADF-Local-Proof for a local-only route of this machine's daemon
  * (isLocalDaemonUrl): a daemon in proxy mode (ADF_DAEMON_BEHIND_PROXY) requires
- * it there. Never sent to another host or for any other route.
+ * it there, and POST /identity/import requires it in every mode. Never sent to
+ * another host or for any other route.
  */
 export function localProofHeaders(url: string, path: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   if (!isLocalOnlyRoute(path) || !isLocalDaemonUrl(url, env)) return {}

@@ -605,7 +605,7 @@ Grouped by area, then category.
 ### Capability Profiles (Runtime Subsystem Gating)
 - **11 capability flags** — timers, codeSystemScope, compute, mcp, mcpManagementTools, adapters, npmTools, shell, streamBindings, umbilicalTaps, meshWebSocket.
 - **studioForeground / studioBackground profiles** — All 11 capabilities enabled.
-- **daemon profile** — All enabled except `umbilicalTaps`.
+- **daemon profile** — All enabled.
 - **headlessLive profile** — Only `timers` enabled; everything else off.
 - **benchmark profile** — All capabilities disabled.
 - **Async teardown tracking** — `ASYNC_TEARDOWN_CAPABILITIES` set flags which subsystems can't use the sync `dispose()` contract (compute, mcp, adapters, streamBindings, umbilicalTaps, meshWebSocket).
@@ -1609,7 +1609,7 @@ Grouped by area, then category.
 - **Scope resolver** — classifies remote socket addresses into `directory`/`localhost`/`lan`/`public` tiers (RFC1918, CGNAT-as-tailnet-lan, link-local, IPv6 ULA); `permits()`/`denialReason()` enforce agent `Visibility` settings.
 - **Ancestor-directory scope** — same-runtime message delivery scoped by `.adf` file directory ancestry, degrading to `localhost` for untracked senders.
 - **Execution-context provenance** — `AsyncLocalStorage`-backed `withSource()`/`currentSource()` tags every umbilical event with `agent:<turn_id>`/`lambda:<file>:<fn>`/`system:<subsystem>`; dev-mode throws on missing wrap.
-- **Lifecycle characterization ledger** — closed migration ledger (9 findings: 6 `fixed`, 3 `declaredByProfile`, 0 `pending`), no `pending` status type member; CI independently verifies terminal counts.
+- **Lifecycle characterization ledger** — closed migration ledger (9 findings: 7 `fixed`, 2 `declaredByProfile`, 0 `pending`), no `pending` status type member; CI independently verifies terminal counts.
 - **Architecture fence in CI** — production-source scan fails if removed ownership-bridge identifiers or the raw-adoption helper reappear; enforces single `AgentExecutor` construction site and single evaluator dispatch path.
 
 ### Packaging & Release

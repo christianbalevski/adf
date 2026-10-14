@@ -65,7 +65,7 @@ Core startup failures reject and roll back acquired resources. Optional MCP, ada
 
 Checkpoint recovery is a permanent conformance fence, not a temporary test for a known bug. Every construction profile must pass seeded stale-checkpoint recovery, and CI must retain a real child-process crash/reopen test regardless of whether the current implementation is believed to have fixed the underlying issue.
 
-Characterization differences are recorded in a ledger and must terminate as either `fixed` or `declaredByProfile`. The completed migration ledger is closed with **9 findings: 6 `fixed`, 3 `declaredByProfile`, and 0 `pending`**. The production status type intentionally has no `pending` member, and a verbose CI assertion independently verifies those terminal counts. This makes both source-level additions and runtime data drift fail before migration observations can become undocumented behavior.
+Characterization differences are recorded in a ledger and must terminate as either `fixed` or `declaredByProfile`. The completed migration ledger is closed with **9 findings: 7 `fixed`, 2 `declaredByProfile`, and 0 `pending`**. The production status type intentionally has no `pending` member, and a verbose CI assertion independently verifies those terminal counts. This makes both source-level additions and runtime data drift fail before migration observations can become undocumented behavior.
 
 ## Ownership Bridge Removal
 
