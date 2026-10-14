@@ -461,6 +461,16 @@
           "403": {
             "$ref": "#/components/responses/ReviewRequired"
           },
+          "409": {
+            "description": "Not loaded: another process runs the agent (`agent_leased`, with `holder`), or another loaded file has the same agent id (`duplicate_agent_id`, with `agentId`, `filePath` and `loadedFilePath`; stop that agent, or clone this file with POST /files/clone and load the clone)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
@@ -906,7 +916,7 @@
           "Agents"
         ],
         "summary": "Start an agent, loading it from a tracked folder when needed",
-        "description": "`id` may also name an agent that is not loaded: an .adf path, or an id / handle / name found in the tracked folders. The daemon loads it (review gate applies: 403) and starts it; `loaded` says whether it did. `startupTriggered` is true when the agent's start state fired its startup event. An identifier that matches several files answers 409 `ambiguous_agent` with the `candidates`: start one by its file path. No body. With `preflight=1` (a client-initiated start, as Studio's AGENT_START; autostart never asks for it) an agent that is not loaded yet has its provider checked first: a provider this daemon does not have answers 409 `provider_missing`, a failing check of a provider that needs a key it does not have 409 `provider_unconfigured`, any other failing check 409 `provider_check_failed`. Nothing is loaded then.",
+        "description": "`id` may also name an agent that is not loaded: an .adf path, or an id / handle / name found in the tracked folders. The daemon loads it (review gate applies: 403) and starts it; `loaded` says whether it did. `startupTriggered` is true when the agent's start state fired its startup event. An identifier that matches several files answers 409 `ambiguous_agent` with the `candidates`: start one by its file path. No body. With `preflight=1` (a client-initiated start, as Studio's AGENT_START; autostart never asks for it) an agent that is not loaded yet has its provider checked first: a provider this daemon does not have answers 409 `provider_missing`, a failing check of a provider that needs a key it does not have 409 `provider_unconfigured`, any other failing check 409 `provider_check_failed`. Nothing is loaded then. When the agent's own provider key is stored but locked here (password or envelope), the check is skipped, the start goes on and the answer carries `preflight: {code: credentials_locked, message}`. A file with the same agent id as a loaded agent answers 409 `duplicate_agent_id` (see POST /agents/load).",
         "operationId": "startAgent",
         "parameters": [
           {
@@ -949,7 +959,7 @@
             "$ref": "#/components/responses/NotFound"
           },
           "409": {
-            "description": "The identifier matches several agent files (`ambiguous_agent`), or the `preflight` provider check failed (`provider_missing`, `provider_unconfigured`, `provider_check_failed`)",
+            "description": "The identifier matches several agent files (`ambiguous_agent`), the `preflight` provider check failed (`provider_missing`, `provider_unconfigured`, `provider_check_failed`), another process runs the agent (`agent_leased`) or another loaded file has the same agent id (`duplicate_agent_id`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1167,7 +1177,7 @@
           "Agents"
         ],
         "summary": "Move the running agent's display state",
-        "description": "Fleet-map semantics, not persisted to the .adf: a `config.state` change via PUT …/config does not move the running agent; this does.",
+        "description": "Fleet-map semantics, not persisted to the .adf: a `config.state` change via PUT …/config does not move the running agent; this does. `off` stops and unloads the agent, as Studio does (also when the agent switches itself off): the answer is 200, the unload follows within moments, and from then on its `/agents/{id}/*` routes answer 404 until it is started again (POST /agents/{id}/start or /agents/load).",
         "operationId": "setAgentDisplayState",
         "parameters": [
           {
