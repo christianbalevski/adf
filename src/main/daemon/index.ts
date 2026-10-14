@@ -37,7 +37,7 @@ import { killAllTracked } from '../utils/child-registry'
 import { withDeadline } from '../utils/concurrency'
 import { AdfDatabase } from '../adf/adf-database'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
-import { DAEMON_STARTED_BY_ENV, parseStartedBy } from './routes/meta-routes'
+import { takeLaunchEnv } from './routes/meta-routes'
 
 // Defined by the builds that ship the daemon (electron.vite.config.ts for
 // out/main/daemon.js, scripts/build-npm.mjs for the npm package).
@@ -95,7 +95,8 @@ const host = process.env.ADF_DAEMON_HOST ?? '127.0.0.1'
 const pidFile = process.env.ADF_DAEMON_PIDFILE
 const settingsPath = process.env.ADF_DAEMON_SETTINGS ?? defaultSettingsPath()
 const daemonVersion = typeof __ADF_VERSION__ === 'string' ? __ADF_VERSION__ : process.env.ADF_VERSION ?? process.env.npm_package_version ?? 'dev'
-const startedBy = parseStartedBy(process.env[DAEMON_STARTED_BY_ENV])
+// Also strips ELECTRON_RUN_AS_NODE and ADF_DAEMON_STARTED_BY from process.env (see takeLaunchEnv).
+const startedBy = takeLaunchEnv()
 console.log(`[ADF Daemon] Version ${daemonVersion} (pid ${process.pid}, started by ${startedBy})`)
 
 const settings = new FileSettingsStore(settingsPath)

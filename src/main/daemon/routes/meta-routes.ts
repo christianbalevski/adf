@@ -28,6 +28,21 @@ export function parseStartedBy(raw: string | undefined): DaemonStartedBy {
   return raw === 'studio' || raw === 'service' ? raw : 'cli'
 }
 
+/**
+ * Who launched this daemon, read once at boot. Also removes the launch-only
+ * variables from `env` so processes the daemon spawns (agent shells, host
+ * exec, MCP servers) do not inherit them: an Electron CLI started from an
+ * agent shell would run as Node, and `adf daemon start` from one would label
+ * its daemon `studio`. Children that need Node mode set ELECTRON_RUN_AS_NODE
+ * explicitly (sandbox host, uv, sandbox packages, MCP package installs).
+ */
+export function takeLaunchEnv(env: NodeJS.ProcessEnv = process.env): DaemonStartedBy {
+  const startedBy = parseStartedBy(env[DAEMON_STARTED_BY_ENV])
+  delete env[DAEMON_STARTED_BY_ENV]
+  delete env.ELECTRON_RUN_AS_NODE
+  return startedBy
+}
+
 export interface DaemonVersionInfo {
   version: string
   clientApiVersion: number

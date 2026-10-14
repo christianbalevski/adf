@@ -21,7 +21,7 @@ vi.mock('electron', () => {
 import Ajv2020 from 'ajv/dist/2020'
 import spec from '../docs/daemon/openapi.json'
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
-import { CLIENT_API_VERSION, parseStartedBy } from '../src/main/daemon/routes/meta-routes'
+import { CLIENT_API_VERSION, parseStartedBy, takeLaunchEnv } from '../src/main/daemon/routes/meta-routes'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 
 const TOKEN = 't'.repeat(43)
@@ -95,5 +95,16 @@ describe('parseStartedBy', () => {
     expect(parseStartedBy('service')).toBe('service')
     expect(parseStartedBy(undefined)).toBe('cli')
     expect(parseStartedBy('Studio')).toBe('cli')
+  })
+})
+
+describe('takeLaunchEnv', () => {
+  it('returns who launched the daemon and strips the launch-only variables', () => {
+    const env: NodeJS.ProcessEnv = { ELECTRON_RUN_AS_NODE: '1', ADF_DAEMON_STARTED_BY: 'studio', PATH: '/usr/bin' }
+    expect(takeLaunchEnv(env)).toBe('studio')
+    expect(env).toEqual({ PATH: '/usr/bin' })
+  })
+  it('defaults to the CLI', () => {
+    expect(takeLaunchEnv({})).toBe('cli')
   })
 })
