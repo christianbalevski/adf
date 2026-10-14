@@ -212,7 +212,7 @@ describe('daemon-mode handlers: review fixes', () => {
     const content = [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }]
     const result = Promise.resolve(electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { content, userMessage: 'ignored' }))
     await new Promise((r) => setTimeout(r, 20))
-    expect(daemon.requests.filter((r) => r.path === `/agents/${AGENT}/chat` && r.method === 'POST').at(-1)?.body).toEqual({ content })
+    expect(daemon.requests.filter((r) => r.path === `/agents/${AGENT}/chat` && r.method === 'POST').at(-1)?.body).toEqual({ content, echoed: true })
     handle.bridge.failTurns('disconnected')
     await result
     await electronStub.handlers.get(IPC.FILE_CLOSE)!({})

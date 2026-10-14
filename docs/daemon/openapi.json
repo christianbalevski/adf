@@ -16359,6 +16359,10 @@
           "loop": {
             "type": "string",
             "description": "Cognition loop to talk to; absent = main. Unknown loop: 404; disabled loop: 409."
+          },
+          "echoed": {
+            "type": "boolean",
+            "description": "`true`: the sending client already shows the message (Studio's AGENT_INVOKE), so the chat log does not add it again."
           }
         },
         "example": {

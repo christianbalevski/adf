@@ -284,7 +284,8 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     const blocks = Array.isArray(args?.content) && args.content.length > 0 ? args.content : null
     const body = blocks ? { content: blocks } : { text: args?.userMessage ?? '' }
     try {
-      const { turnId } = await client.request<{ turnId: string }>('POST', `/agents/${enc(agentId)}/chat`, { body: { ...body, ...(args?.loop ? { loop: args.loop } : {}) } })
+      // `echoed`: the renderer already shows the message, as embedded's dispatch marks it.
+      const { turnId } = await client.request<{ turnId: string }>('POST', `/agents/${enc(agentId)}/chat`, { body: { ...body, ...(args?.loop ? { loop: args.loop } : {}), echoed: true } })
       // Embedded resolves once the dispatched turn has run; so does this.
       const outcome = await ctx.bridge.waitForTurn(agentId, turnId, args?.loop ?? 'main')
       if (outcome === 'disconnected') return { success: false, error: 'The connection to the ADF daemon was lost while the message waited for its turn; the chat shows what arrived.' }

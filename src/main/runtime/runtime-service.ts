@@ -1282,9 +1282,11 @@ export class RuntimeService extends EventEmitter {
    * `opts.turnId`: correlation id stamped as `turn_id` on the turn's events
    * (AdfEventDispatch.turnId). `opts.content`: the message's content blocks
    * (text, images, audio, video; Studio's AGENT_INVOKE `content`), used
-   * instead of `text` when given.
+   * instead of `text` when given. `opts.echoed`: the sending UI already shows
+   * the message (Studio's AGENT_INVOKE), so the executor does not add it to
+   * the UI log a second time.
    */
-  async sendChat(agentId: string, text: string, loop = 'main', opts: { turnId?: string; content?: ContentBlock[] } = {}): Promise<void> {
+  async sendChat(agentId: string, text: string, loop = 'main', opts: { turnId?: string; content?: ContentBlock[]; echoed?: boolean } = {}): Promise<void> {
     const contentJson: ContentBlock[] = opts.content && opts.content.length > 0 ? opts.content : [{ type: 'text', text }]
     const dispatch = createDispatch(
       createEvent({
@@ -1297,6 +1299,7 @@ export class RuntimeService extends EventEmitter {
             content_json: contentJson,
             created_at: Date.now(),
           },
+          ...(opts.echoed ? { echoed: true } : {}),
         },
       }),
       { scope: 'agent' },

@@ -381,6 +381,8 @@ interface ChatBody {
   content?: ContentBlock[]
   /** Cognition loop to talk to. Absent = main (docs/design/agent-loops-mvp.md §6.2). */
   loop?: string
+  /** The sending client already shows the message (Studio's AGENT_INVOKE): the chat log does not echo it again. */
+  echoed?: boolean
 }
 
 /** POST /agents/:id/chat body limit: content blocks carry images and audio as data URIs. */
@@ -2516,6 +2518,8 @@ export function createDaemonHttpApi(
     const text = request.body?.text ?? ''
     if (typeof text !== 'string') return badRequest(reply, 'text must be a string')
     if (!text && !(content && content.length > 0)) return badRequest(reply, 'text or content is required')
+    const echoed = request.body?.echoed
+    if (echoed !== undefined && typeof echoed !== 'boolean') return badRequest(reply, 'echoed must be a boolean')
     const loop = request.body?.loop
     if (loop !== undefined) {
       if (typeof loop !== 'string' || !loop) return badRequest(reply, 'loop must be a non-empty string')
@@ -2530,7 +2534,7 @@ export function createDaemonHttpApi(
     }
 
     const turnId = `turn_${nanoid(12)}`
-    queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop, { turnId, ...(content?.length ? { content } : {}) }))
+    queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop, { turnId, ...(content?.length ? { content } : {}), ...(echoed ? { echoed: true } : {}) }))
     return reply.code(202).send({ accepted: true, turnId })
   })
 

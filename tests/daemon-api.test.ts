@@ -577,6 +577,24 @@ describe('daemon HTTP API', () => {
     })
   })
 
+  it('POST /agents/:id/chat with echoed marks the chat dispatch echoed (Studio AGENT_INVOKE); a non-boolean is refused', async () => {
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    const ref = runtime.createAgent({ name: 'agent-1', provider: new MockLLMProvider() })
+    const trigger = vi.spyOn(runtime, 'trigger').mockResolvedValue(undefined as never)
+    const server = createDaemonHttpApi(runtime)
+    servers.push(server)
+    const bad = await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, payload: { text: 'hi', echoed: 'yes' } })
+    expect(bad.statusCode).toBe(400)
+    const ok = await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, payload: { text: 'hi', echoed: true } })
+    expect(ok.statusCode).toBe(202)
+    await vi.waitFor(() => expect(trigger).toHaveBeenCalled())
+    const dispatch = trigger.mock.calls[0][1] as { event: { data: { echoed?: boolean } } }
+    expect(dispatch.event.data.echoed).toBe(true)
+    await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, payload: { text: 'plain' } })
+    await vi.waitFor(() => expect(trigger).toHaveBeenCalledTimes(2))
+    expect((trigger.mock.calls[1][1] as { event: { data: { echoed?: boolean } } }).event.data.echoed).toBeUndefined()
+  })
+
   it('exposes health, agent listing, and async chat acknowledgement', async () => {
     const provider = new MockLLMProvider({ tokensPerResponse: 120 })
     const runtime = new RuntimeService({ enforceReviewGate: false })
