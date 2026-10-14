@@ -54,7 +54,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W1-B | AgentRuntimeBuilder and mesh parity | 1 | W0-D | MERGED |
 | W1-C | Daemon identity: runtime adoption, unlock cascade, app OAuth store, owner import | 1 | W0-D | MERGED |
 | W1-D | Gap routes: approvals, fleet, dashboard, registries, MCP probes | 1 | W0-D | MERGED |
-| W1-E | File-level ops, raw file routes, tracked-dir watcher | 1 | W0-D, W0-C | TODO |
+| W1-E | File-level ops, raw file routes, tracked-dir watcher | 1 | W0-D, W0-C | MERGED |
 | W1-F | E1 extraction: background event mapping | 1 | W0-F | MERGED (squashed) |
 | W1-G | Compute ownership: a runtime stops only containers it started | 1 | none | MERGED |
 | W2-A | Open documents | 2 | W1-A, W1-E | TODO |
