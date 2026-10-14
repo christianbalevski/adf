@@ -233,11 +233,19 @@ function samePath(a: string, b: string): boolean {
  * The sentence a refused start shows: which process holds the agent and what
  * to do about it. `ownSettingsPath` adds the holder's settings file when it
  * differs from the caller's (two hosts on different data). `unconfirmedLeaseFile`
- * is set when only the pid could be checked (holderLiveness `unconfirmed`):
- * the pid may belong to another program by now, so the sentence names the
- * lease file and how to clear it.
+ * is set when the holder left nothing to check but its pid (holderLiveness
+ * `unconfirmed`: no endpoint, no control URL): the pid may belong to another
+ * program by now, so the sentence names the lease file and how to clear it.
+ * `noAnswerFrom` is set when a daemon holder's control URL gave no usable
+ * answer (holderLiveness `noAnswer`): it may just be busy, so the sentence
+ * never advises deleting the lease.
  */
-export function agentLeasedMessage(record: AgentLeaseRecord, ownSettingsPath?: string, otherMachine = false, unconfirmedLeaseFile?: string): string {
+export function agentLeasedMessage(
+  record: AgentLeaseRecord,
+  ownSettingsPath?: string,
+  otherMachine = false,
+  check: { unconfirmedLeaseFile?: string; noAnswerFrom?: string } = {},
+): string {
   const name = agentNameOf(record.path)
   const h = record.holder
   let text: string
@@ -254,9 +262,13 @@ export function agentLeasedMessage(record: AgentLeaseRecord, ownSettingsPath?: s
   if (ownSettingsPath && h.settingsPath && !samePath(ownSettingsPath, h.settingsPath)) {
     text += ` That process uses the settings file ${h.settingsPath}.`
   }
-  if (unconfirmedLeaseFile && !otherMachine) {
+  if (otherMachine) return text
+  if (check.unconfirmedLeaseFile) {
     text += ` ADF cannot confirm that pid ${h.pid} is still that process: it recorded no endpoint to check. ` +
-      `If no ADF Studio or daemon runs ${name}, delete the lease file ${unconfirmedLeaseFile} and start it again.`
+      `If no ADF Studio or daemon runs ${name}, delete the lease file ${check.unconfirmedLeaseFile} and start it again.`
+  } else if (check.noAnswerFrom) {
+    text += ` ADF could not confirm it: ${check.noAnswerFrom} did not answer the check, which a busy daemon also does. ` +
+      'Wait a moment and try again; "adf daemon status" shows whether that daemon runs.'
   }
   return text
 }
@@ -392,7 +404,7 @@ async function fetchDaemonPid(controlUrl: string): Promise<number | null> {
 export async function holderLiveness(
   holder: Pick<LeaseHolder, 'pid' | 'runtimeId' | 'endpoint'> & { machineId?: string | null; kind?: string; controlUrl?: string },
   dir: string = leaseDir(),
-): Promise<{ alive: boolean; reason: string; otherMachine?: boolean; unconfirmed?: boolean }> {
+): Promise<{ alive: boolean; reason: string; otherMachine?: boolean; unconfirmed?: boolean; noAnswer?: boolean }> {
   // Another machine's pids mean nothing here: never stale.
   if (await fromOtherMachine(holder)) return { alive: true, otherMachine: true, reason: 'held on another machine' }
   if (!(await pidAlive(holder.pid))) return { alive: false, reason: `pid ${holder.pid} is not running` }
@@ -414,10 +426,13 @@ export async function holderLiveness(
       return { alive: false, reason: `${holder.controlUrl} is served by pid ${pid}, not ${holder.pid}` }
     }
     if (pid === holder.pid) return { alive: true, reason: `${holder.controlUrl} is served by pid ${pid}` }
+    // A busy (or token-guarded) daemon answers like this too: alive.
+    return { alive: true, noAnswer: true, reason: `pid ${holder.pid} is running; ${holder.controlUrl} did not answer` }
   }
-  // No endpoint to ask (the holder could not listen): a running pid is all
-  // there is, and a reused pid looks the same.
-  return { alive: true, unconfirmed: true, reason: `pid ${holder.pid} is running` }
+  // Nothing to ask (the holder could not listen and has no control URL): a
+  // running pid is all there is, and a reused pid looks the same.
+  if (!holder.endpoint && !holder.controlUrl) return { alive: true, unconfirmed: true, reason: `pid ${holder.pid} is running` }
+  return { alive: true, reason: `pid ${holder.pid} is running` }
 }
 
 function parseRecord(raw: string): AgentLeaseRecord | null {
@@ -801,7 +816,10 @@ export class AgentLeaseRegistry {
           code: AGENT_LEASED_CODE,
           leaseFile: target.file,
           record: existing.record,
-          message: agentLeasedMessage(existing.record, this.info.settingsPath, liveness.otherMachine, liveness.unconfirmed ? target.file : undefined),
+          message: agentLeasedMessage(existing.record, this.info.settingsPath, liveness.otherMachine, {
+            ...(liveness.unconfirmed ? { unconfirmedLeaseFile: target.file } : {}),
+            ...(liveness.noAnswer && holder.controlUrl ? { noAnswerFrom: holder.controlUrl } : {}),
+          }),
         }
       }
       console.warn(`[AgentLease] ${name}: replacing a stale lease held by ${describeHolder(holder)} (${liveness.reason})`)
