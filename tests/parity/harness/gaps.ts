@@ -148,27 +148,6 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w3a:start-session-id',
-    ws: 'W3-A',
-    scenarios: RUNNING,
-    path: 'steps: AGENT_START result `sessionId`',
-    what: 'The start route answers no runtime session id.',
-    apply(d, e) {
-      let n = 0
-      d.steps.forEach((step, i) => {
-        const base = e.steps[i]
-        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== IPC.AGENT_START) return
-        const r = step.result as Record<string, unknown>
-        const b = base.result as Record<string, unknown>
-        if (!b || b.sessionId === undefined || !r || 'sessionId' in r) return
-        if (!same({ ...r, sessionId: b.sessionId }, b)) return
-        step.result = clone(b)
-        n++
-      })
-      return n
-    },
-  },
-  {
     id: 'w2b:agent-event-stream',
     ws: 'W2-B',
     scenarios: RUNNING,

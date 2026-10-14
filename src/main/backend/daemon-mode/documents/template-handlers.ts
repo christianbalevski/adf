@@ -51,7 +51,18 @@ export const TEMPLATE_HANDLERS: DaemonHandlerTable = {
   // The migration notice shows once: `migrated` is dropped once the client key is set (§4.1).
   [IPC.TEMPLATES_LIST]: async (ctx): Promise<AgentTemplateListResult> => {
     const list = await listTemplates(ctx)
-    const result: AgentTemplateListResult = { templates: list.templates, folder: list.folder, defaultId: list.defaultId }
+    // The service always sets these keys, possibly to undefined; JSON drops
+    // undefined ones on the wire, and the renderer's row comparison counts keys.
+    const templates = list.templates.map((t) => ({
+      ...t,
+      description: t.description,
+      icon: t.icon,
+      templateDescription: t.templateDescription,
+      warning: t.warning,
+      modelProvider: t.modelProvider,
+      modelId: t.modelId,
+    }))
+    const result: AgentTemplateListResult = { templates, folder: list.folder, defaultId: list.defaultId }
     if (list.migrated && ctx.clientSettings.get('templatesMigrationSeen') !== true) result.migrated = list.migrated
     return result
   },

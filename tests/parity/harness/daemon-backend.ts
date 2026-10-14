@@ -187,6 +187,8 @@ async function killTree(child: ChildProcess, exited: () => number | null): Promi
 export interface DaemonBackendOptions {
   /** Default `built` (out/main/daemon.js). `source` runs src/main/daemon/index.ts through tsx: development loop only. */
   entry?: 'built' | 'source'
+  /** Daemon mode's client session (registerDaemonModeHandlers `createSession`); default: its own. */
+  createSession?: import('../../../src/main/backend/daemon-mode/index').DaemonModeDeps['createSession']
 }
 
 /** The daemon backend's booted form: also lets a test kill and restart the daemon child. */
@@ -292,6 +294,7 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
           connect: Object.assign(
             async () => ({ baseUrl: url, logFile, description: `the parity daemon pid ${daemon.child.pid} on ${url}`, source: { token: () => token } }),
             { logFile }),
+          ...(options.createSession ? { createSession: options.createSession } : {}),
           hooks: {
             showMainWindow: () => { electron.openWindow(); return null },
             openFile: (filePath) => { electron.localCalls.push({ api: 'hooks.openFile', args: [filePath] }) },
