@@ -16,6 +16,17 @@ import type { RuntimeService } from '../../runtime/runtime-service'
 import type { DaemonHttpApiOptions } from '../http-api'
 import type { LocalAccessOptions } from '../local-access'
 import { registerMetaRoutes, type DaemonStartedBy } from './meta-routes'
+import { registerApprovalsRoutes } from './approvals-routes'
+import { registerCredentialsRoutes } from './credentials-routes'
+import { registerFleetRoutes } from './fleet-routes'
+import { registerDashboardRoutes } from './dashboard-routes'
+import { registerRegistryRoutes } from './registry-routes'
+import { registerCatalogRoutes } from './catalog-routes'
+import { registerMcpAdminRoutes } from './mcp-admin-routes'
+import { registerOwnerEnvelopeRoutes } from './owner-envelope-routes'
+import { registerComputeAdminRoutes } from './compute-admin-routes'
+import { registerJobRoutes } from './job-routes'
+import type { GapRouteDeps } from './gap-deps'
 import { registerIdentityImportRoutes } from './identity-import-routes'
 import { registerFileRoutes } from './file-routes'
 import type { TrackedDirWatcher } from '../dir-watcher'
@@ -24,6 +35,8 @@ import type { TrackedDirWatcher } from '../dir-watcher'
 export interface DaemonRouteDeps {
   /** GET /version: who launched this daemon run (ADF_DAEMON_STARTED_BY). */
   startedBy?: DaemonStartedBy
+  /** Services the W1-D gap routes use (gap-deps.ts). */
+  gaps?: GapRouteDeps
   /** Tracked-folder watcher (dir-watcher.ts): watches, autostarts new files, push source for tracked_dirs and file_renamed. Started and closed with the server. */
   trackedDirWatcher?: TrackedDirWatcher
   /** PUT /agents/:id/files/raw byte limit (default 64 MiB, ADF_DAEMON_RAW_BODY_LIMIT_MB). */
@@ -44,6 +57,16 @@ export type DaemonRouteModule = (server: FastifyInstance, ctx: DaemonRouteContex
 /** Append new modules at the end. */
 export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerMetaRoutes,
+  registerApprovalsRoutes,
+  registerCredentialsRoutes,
+  registerFleetRoutes,
+  registerDashboardRoutes,
+  registerRegistryRoutes,
+  registerCatalogRoutes,
+  registerMcpAdminRoutes,
+  registerOwnerEnvelopeRoutes,
+  registerComputeAdminRoutes,
+  registerJobRoutes,
   registerIdentityImportRoutes,
   registerFileRoutes,
 ]

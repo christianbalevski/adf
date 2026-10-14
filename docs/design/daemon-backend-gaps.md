@@ -55,61 +55,7 @@ Added beyond that list: the §6 recipe rows for every start path (W1-B: full mes
 | unlock converts the owner's own legacy whole-file password to envelopes, keeps the password as a share slot, and returns converted | `IDENTITY_PASSWORD_UNLOCK` |
 | POST /identity/import (local-only): importMnemonic, restamp, reload loaded agents | `IDENTITY_OWNER_IMPORT` |
 ## W1-D
-| Need | Channels |
-|---|---|
-| adopt an identity draft (identityDraftId) on create | `FILE_CREATE_QUICK` |
-| approvals hub full snapshot across all agents and loops | `APPROVALS_LIST` |
-| resolve an approval by (agent, approvalId) | `APPROVALS_RESOLVE` |
-| approvals hub in the daemon | `APPROVALS_CHANGED` |
-| raw tool input of one pending approval | `APPROVALS_GET_INPUT` |
-| mesh debug view: live agent states, bus registrations, message log with a sinceSeq cursor | `MESH_STATUS` |
-| recent tools of loaded agents that are not mesh-registered, read from their workspaces | `MESH_GET_RECENT_TOOLS` |
-| pending asks and approvals across agents (the approvals hub snapshot covers it) | `MESH_PENDING_INTERACTIONS` |
-| fleet status rows (AgentVitalsService.getFleetStatus exists in the daemon) | `MESH_FLEET_STATUS` |
-| fleet token burn, hydrated from the client key fleetMapState.burnTotals passed as a parameter | `MESH_TOKEN_BURN` |
-| one aggregate fleet-map poll: mesh debug, fleet, burn, adapters, peers | `MESH_MAP_POLL` |
-| owner message to an agent that refuses to start: append it to the agent loop | `MESH_MESSAGE_AGENTS` |
-| POST /agents/load resumes the RuntimeGate after an emergency stop, as the start route does (runtime-service.ts:792) | `MESH_MESSAGE_AGENTS`, `BACKGROUND_AGENT_START`, `DIRECTORY_START_ALL` |
-| tool schema catalog in provider format, including the stubbed runtime tools; GET /agents/:id/tools is per loaded agent and another shape | `TOOLS_DESCRIPTIONS` |
-| clear token usage | `TOKEN_USAGE_CLEAR` |
-| dashboard quick stats | `DASHBOARD_QUICK_STATS` |
-| dashboard provider tests (session-cached); honours providerChecksEnabled | `DASHBOARD_PROVIDER_TESTS` |
-| dashboard agent stats over tracked files | `DASHBOARD_AGENT_STATS` |
-| MCP probe (temporary connect, tool list) | `MCP_PROBE_SERVER` |
-| MCP registration connect test | `MCP_REGISTRATION_TEST` |
-| interactive steps reach Studio: the OAuth authorize URL to open and the stdio auth preflight Continue prompt (embedded opens the browser and a native dialog) | `MCP_REGISTRATION_TEST` |
-| MCP logs of probe and registration-test runs and of stopped agents (embedded mcpLogCache) | `MCP_GET_SERVER_LOGS` |
-| MCP credential-list-files across loaded and tracked agents (metadata only) | `MCP_CREDENTIAL_LIST_FILES` |
-| ensure uv and Python on the daemon host (UvManager) | `MCP_ENSURE_PYTHON_RUNTIME` |
-| MCP registry (remote-first, cached and bundled fallback); honours remoteCatalogsEnabled | `MCP_REGISTRY_GET` |
-| agent registry listing; honours remoteCatalogsEnabled | `AGENT_REGISTRY_GET` |
-| agent registry refresh; honours remoteCatalogsEnabled | `AGENT_REGISTRY_REFRESH` |
-| bring a registry agent home: copy into the agents folder, strip identity, fresh config.id, default provider | `AGENT_REGISTRY_BRING_HOME` |
-| MCP OAuth sign-out (app-level store) | `MCP_OAUTH_SIGNOUT` |
-| MCP OAuth status (signed-in flag only) | `MCP_OAUTH_STATUS` |
-| skills catalog fetch (guardedFetch) | `SKILLS_CATALOG_GET` |
-| skill package fetch (guardedFetch) | `SKILLS_PACKAGE_GET` |
-| rebuild a container | `COMPUTE_REBUILD_CONTAINER` |
-| probe an external execution target | `COMPUTE_TEST_EXECUTION_TARGET` |
-| container phase and noVNC host port for an agent | `COMPUTE_BROWSER_INFO` |
-| claim an agent file under the local owner (claimWorkspace) | `IDENTITY_CLAIM` |
-| attestations of an agent file | `IDENTITY_ATTESTATIONS_GET` |
-| reissue owner and operator attestations | `IDENTITY_ATTESTATIONS_REISSUE` |
-| envelope status (identity, credentials, sharePasswordSet) | `IDENTITY_ENVELOPE_STATUS` |
-| set the credentials share password | `IDENTITY_ENVELOPE_SHARE_SET_PASSWORD` |
-| remove the credentials share password | `IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD` |
-| unlock foreign credentials with the share password, adopt or session-only | `IDENTITY_ENVELOPE_UNLOCK_PASSWORD` |
-| adapter states across all loaded agents, deduped by type, plus perAgent | `ADAPTER_GET_STATUS` |
-| restart one adapter of an agent | `ADAPTER_RESTART` |
-| adapter credential-list-files across loaded and tracked agents (metadata only) | `ADAPTER_CREDENTIAL_LIST_FILES` |
-| provider credential-list-files across loaded and tracked agents (metadata only) | `PROVIDER_CREDENTIAL_LIST_FILES` |
-| where each agent provider copy gets its key (agentProviderKeySource), never the key | `PROVIDER_AGENT_KEY_SOURCES` |
-| provider connection test; force bypasses the session cache, otherwise honours providerChecksEnabled | `PROVIDER_TEST` |
-| fetch a peer agent shared file (2 MB cap) | `MESH_PEER_SHARED_FILE` |
-| peer agent /health probe | `MESH_PEER_AGENT_HEALTH` |
-| emergency stop: every agent and the mesh in the daemon, resumable (teardownRuntime emergency) | `EMERGENCY_STOP` |
-| mint an identity draft; only { draftId, did } leaves the daemon | `IDENTITY_DRAFT_MINT` |
-| discard an identity draft | `IDENTITY_DRAFT_DISCARD` |
+All W1-D gaps are closed. The routes are in the channel map; see "Route notes from W1-D" below.
 ## W1-E
 | Need | Channels |
 |---|---|
@@ -135,7 +81,7 @@ Added beyond that list: the §6 recipe rows for every start path (W1-B: full mes
 ## W2-A
 | Need | Channels |
 |---|---|
-| the route works on an open, not-running document (D4) | `FILE_OPEN`, `FILE_LIST_TABLES`, `DOC_GET_DOCUMENT`, `DOC_SET_DOCUMENT`, `DOC_GET_AGENT_CONFIG`, `DOC_SET_AGENT_CONFIG`, `DOC_GET_CHAT`, `DOC_GET_CHAT_OLDER`, `DOC_CLEAR_CHAT`, `DOC_GET_INBOX`, `DOC_CLEAR_INBOX`, `DOC_GET_OUTBOX`, `DOC_GET_BATCH`, `DOC_GET_HEADER`, `MODELS_LIST`, `DOC_GET_TIMERS`, `DOC_ADD_TIMER`, `DOC_UPDATE_TIMER`, `DOC_DELETE_TIMER`, `DOC_GET_FILES`, `DOC_UPLOAD_FILE`, `DOC_IMPORT_PATHS`, `DOC_PICK_AND_IMPORT`, `DOC_DELETE_INTERNAL_FILE`, `DOC_RENAME_INTERNAL_FILE`, `DOC_RENAME_FOLDER`, `DOC_SET_FILE_PROTECTION`, `DOC_SET_FILE_AUTHORIZED`, `DOC_READ_INTERNAL_FILE`, `DOC_WRITE_INTERNAL_FILE`, `DOC_DOWNLOAD_INTERNAL_FILE`, `DOC_GET_ALL_META`, `DOC_SET_META`, `DOC_DELETE_META`, `DOC_SET_META_PROTECTION`, `DOC_GET_LOGS`, `DOC_GET_LOGS_AFTER`, `DOC_CLEAR_LOGS`, `DOC_GET_TASKS`, `DOC_LIST_LOCAL_TABLES`, `DOC_QUERY_LOCAL_TABLE`, `DOC_DROP_LOCAL_TABLE`, `MCP_CREDENTIAL_SET`, `MCP_CREDENTIAL_GET`, `MCP_ATTACH_SERVER`, `MCP_DETACH_SERVER`, `AGENT_MODEL_SET_FOR_FILE`, `IDENTITY_SET`, `IDENTITY_GET`, `IDENTITY_DELETE`, `IDENTITY_DELETE_PREFIX`, `IDENTITY_LIST`, `IDENTITY_PASSWORD_CHECK`, `IDENTITY_PASSWORD_UNLOCK`, `IDENTITY_PASSWORD_REMOVE`, `IDENTITY_LIST_ENTRIES`, `IDENTITY_REVEAL`, `IDENTITY_WIPE_ALL`, `IDENTITY_GET_DID`, `IDENTITY_GENERATE_KEYS`, `IDENTITY_SET_CODE_ACCESS`, `ADAPTER_CREDENTIAL_SET`, `ADAPTER_CREDENTIAL_GET`, `ADAPTER_ATTACH`, `ADAPTER_DETACH`, `PROVIDER_CREDENTIAL_SET`, `PROVIDER_CREDENTIAL_GET`, `PROVIDER_ATTACH`, `PROVIDER_DETACH` |
+| the route works on an open, not-running document (D4) | `FILE_OPEN`, `FILE_LIST_TABLES`, `DOC_GET_DOCUMENT`, `DOC_SET_DOCUMENT`, `DOC_GET_AGENT_CONFIG`, `DOC_SET_AGENT_CONFIG`, `DOC_GET_CHAT`, `DOC_GET_CHAT_OLDER`, `DOC_CLEAR_CHAT`, `DOC_GET_INBOX`, `DOC_CLEAR_INBOX`, `DOC_GET_OUTBOX`, `DOC_GET_BATCH`, `DOC_GET_HEADER`, `MODELS_LIST`, `DOC_GET_TIMERS`, `DOC_ADD_TIMER`, `DOC_UPDATE_TIMER`, `DOC_DELETE_TIMER`, `DOC_GET_FILES`, `DOC_UPLOAD_FILE`, `DOC_IMPORT_PATHS`, `DOC_PICK_AND_IMPORT`, `DOC_DELETE_INTERNAL_FILE`, `DOC_RENAME_INTERNAL_FILE`, `DOC_RENAME_FOLDER`, `DOC_SET_FILE_PROTECTION`, `DOC_SET_FILE_AUTHORIZED`, `DOC_READ_INTERNAL_FILE`, `DOC_WRITE_INTERNAL_FILE`, `DOC_DOWNLOAD_INTERNAL_FILE`, `DOC_GET_ALL_META`, `DOC_SET_META`, `DOC_DELETE_META`, `DOC_SET_META_PROTECTION`, `DOC_GET_LOGS`, `DOC_GET_LOGS_AFTER`, `DOC_CLEAR_LOGS`, `DOC_GET_TASKS`, `DOC_LIST_LOCAL_TABLES`, `DOC_QUERY_LOCAL_TABLE`, `DOC_DROP_LOCAL_TABLE`, `MCP_CREDENTIAL_SET`, `MCP_CREDENTIAL_GET`, `MCP_ATTACH_SERVER`, `MCP_DETACH_SERVER`, `AGENT_MODEL_SET_FOR_FILE`, `IDENTITY_SET`, `IDENTITY_GET`, `IDENTITY_DELETE`, `IDENTITY_DELETE_PREFIX`, `IDENTITY_LIST`, `IDENTITY_PASSWORD_CHECK`, `IDENTITY_PASSWORD_UNLOCK`, `IDENTITY_PASSWORD_REMOVE`, `IDENTITY_LIST_ENTRIES`, `IDENTITY_REVEAL`, `IDENTITY_WIPE_ALL`, `IDENTITY_GET_DID`, `IDENTITY_GENERATE_KEYS`, `IDENTITY_CLAIM`, `IDENTITY_SET_CODE_ACCESS`, `IDENTITY_ATTESTATIONS_GET`, `IDENTITY_ATTESTATIONS_REISSUE`, `IDENTITY_ENVELOPE_STATUS`, `IDENTITY_ENVELOPE_SHARE_SET_PASSWORD`, `IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD`, `IDENTITY_ENVELOPE_UNLOCK_PASSWORD`, `ADAPTER_CREDENTIAL_SET`, `ADAPTER_CREDENTIAL_GET`, `ADAPTER_ATTACH`, `ADAPTER_DETACH`, `PROVIDER_CREDENTIAL_SET`, `PROVIDER_CREDENTIAL_GET`, `PROVIDER_ATTACH`, `PROVIDER_DETACH` |
 | on open: lazy legacy-DID restamp (restampAndAttest), ensureWorkspaceIdentity (keys minted only when reviewed), ADF-stored providers copied into settings.providers, orphan WAL sweep of the folder | `FILE_OPEN` |
 | checkpoint the WAL of an open document | `FILE_SAVE` |
 | create without load (load: false) and hold the new file as an open document; POST /agents/create loads and starts it (daemon-agent-factory.ts:328) | `FILE_CREATE`, `FILE_CREATE_QUICK` |
@@ -170,6 +116,7 @@ Added beyond that list: the §6 recipe rows for every start path (W1-B: full mes
 | client-stream push topic `workspace_data` | `WORKSPACE_DATA_CHANGED` |
 | client-stream push topic `mcp_install`, fed by progress callbacks in the install routes | `MCP_INSTALL_PROGRESS` |
 | client-stream push topic `mcp_status` | `MCP_SERVER_STATUS_CHANGED` |
+| push adf_file_created for the brought-home file | `AGENT_REGISTRY_BRING_HOME` |
 | client-stream push topic `browser_session` | `COMPUTE_BROWSER_SESSION` |
 | client-stream push topic `compute_phase` | `COMPUTE_CONTAINER_PHASE` |
 | client-stream push topic `sandbox_install`, fed by progress callbacks in the install route | `SANDBOX_INSTALL_PROGRESS` |
@@ -179,3 +126,17 @@ Added beyond that list: the §6 recipe rows for every start path (W1-B: full mes
 | Need | Channels |
 |---|---|
 | run the client-key migrations (migrateUiFontSystemDefault, settings-migrations.ts:101-117) on studio-client-settings.json; the daemon file never sees them | `SETTINGS_GET` |
+| fold the open agent's own tools (its MCP and adapter tools) into the catalog in provider format; the route returns built-in and stubbed runtime tools only | `TOOLS_DESCRIPTIONS` |
+
+## Route notes from W1-D
+
+What the daemon-mode handlers (W2-C, W3) need to know about the W1-D routes. Each channel's routes are in the channel map.
+
+- **Wrapped answers.** Two IPC handlers answer a value JSON cannot carry as a body: `APPROVALS_GET_INPUT` (the raw input, or undefined) and `IDENTITY_DRAFT_DISCARD` (a boolean). Their routes answer `{ input }` (`{}` for undefined) and `{ discarded }`; the handlers unwrap them.
+- **Addressing.** The approvals and fleet routes take file paths, as the IPC arguments and the approvals hub do. The per-agent identity routes (`/agents/:id/claim`, `/attestations`, `/envelope*`) take an agent id and reach loaded agents only; open documents come with W2-A (`routes/agent-resolver.ts` is the one place to extend). They have no derived key until W1-A exposes one, so a whole-file-password file reads its password rows as locked and claim refuses it.
+- **`MCP_GET_SERVER_LOGS`** needs the open agent's id (`agentId`) for live logs; without it the daemon answers the logs it kept from probe, test and agent runs.
+- **`TOOLS_DESCRIPTIONS`** returns the built-in and stubbed runtime tools. The open agent's own tools are not in it (a W2-C gap above).
+- **Client duties.** The fleet-burn totals are a client key: the handler calls `POST /fleet/burn/hydrate` once per session with `fleetMapState.burnTotals`. The registration test's interactive steps are polled: while its job runs, the handler polls `GET /admin/mcp/interactions?jobId=`, opens `open_url` steps with `shell.openExternal`, shows the native Continue dialog for `confirm` steps and answers `POST /admin/mcp/interactions/:interactionId/continue`. A confirm nobody answers in 5 minutes reads `timed_out` and is named in the result's notes.
+- **Jobs.** Work that can take minutes answers `202 { jobId, job }`: `POST /admin/mcp/registration-test` and `POST /admin/mcp/python-runtime`. Poll `GET /jobs/:jobId` until `state` leaves `running`; the job's `result` is the IPC result. `POST /jobs/:jobId/cancel` stops it. Finished jobs are kept 10 minutes. New long-running routes use the same registry (`src/main/daemon/jobs.ts`).
+- **Recent tools.** `MESH_GET_RECENT_TOOLS` uses `GET /fleet/recent-tools`, which adds loaded agents the mesh does not track. `GET /network/mesh/recent-tools` (mesh-registered agents only) stays: it is part of the published API the CLI and the terminal app use.
+- **Emergency stop** answers `success: false` with `skipped` and `failed` when any part was left running; the handler shows them.

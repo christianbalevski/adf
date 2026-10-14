@@ -1,5 +1,6 @@
 import { dirname, join } from 'path'
 import { homedir } from 'os'
+import { inheritableEnv } from '../utils/child-env'
 import { createRequire } from 'module'
 import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client'
@@ -295,7 +296,8 @@ export class McpClientManager extends EventEmitter {
         transport = new StdioClientTransport({
           command,
           args,
-          env: { ...process.env, ...filterBlockedEnv(managed.config.env ?? {}) } as Record<string, string>,
+          // Never the runtime's own secrets (daemon token, owner passphrase): utils/child-env.ts.
+          env: { ...inheritableEnv(), ...filterBlockedEnv(managed.config.env ?? {}) } as Record<string, string>,
           stderr: 'pipe',
           cwd: this.scratchDir
         })
