@@ -9,8 +9,44 @@ import { awaitDaemonJob, startDaemonJob, type DaemonJobView } from './jobs'
  * jobs with their progress pushes.
  */
 
-/** What the daemon answers for a stored credential value in place of the value (as for provider keys, design §5). */
+/**
+ * What a remote daemon's MCP credential read answers in place of a stored
+ * value (as for provider keys, design §5): the value stays on the daemon's
+ * machine. In local mode Studio reads the values themselves (revealValues).
+ */
 export const REDACTED_VALUE = '__redacted__'
+
+/**
+ * The stored values under `prefix` of an agent file, for Studio's own window
+ * on the daemon's machine: POST /files/agent/identity/reveal (W3-B), which
+ * answers local callers that present the local proof only (the client sends
+ * it). Key material never comes back; a value the daemon cannot read here
+ * is left out. Keyed by the part after the prefix.
+ */
+export async function revealValues(client: DaemonClient, filePath: string, prefix: string): Promise<Record<string, string>> {
+  const { values } = await client.request<{ values: Record<string, string> }>('POST', '/files/agent/identity/reveal', { query: atPath(filePath), body: { prefix } })
+  const out: Record<string, string> = {}
+  for (const [purpose, value] of Object.entries(values ?? {})) if (purpose.startsWith(prefix)) out[purpose.slice(prefix.length)] = value
+  return out
+}
+
+/**
+ * Remote mode: a credential write whose value is or starts with the
+ * placeholder. The untouched placeholder of a key the file stores keeps the
+ * stored value (`keep`); anything else built from it cannot be saved, and
+ * says so instead of storing the placeholder as the secret: an edited
+ * placeholder (`__redacted__abc`), or the placeholder under a key the file
+ * does not store (a renamed key). Null for an ordinary value.
+ */
+export function placeholderWrite(value: string, stored: boolean, envKey: string): { keep: true } | { error: string } | null {
+  if (!value.startsWith(REDACTED_VALUE)) return null
+  if (value === REDACTED_VALUE && stored) return { keep: true }
+  return {
+    error: value === REDACTED_VALUE
+      ? `${envKey} has no stored value to keep: a remote ADF daemon never sends stored values, so its field showed a placeholder. Type the value for ${envKey}.`
+      : `The value of ${envKey} was shown as a placeholder (a remote ADF daemon never sends stored values), so an edit of it cannot be saved. Clear the field and type the whole value.`,
+  }
+}
 
 /**
  * Embedded handlers answer `String(error)` for a failure ("Error: <message>").

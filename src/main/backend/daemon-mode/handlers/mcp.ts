@@ -6,7 +6,7 @@ import { buildMcpServerConfigFromRegistration } from '../../../../shared/utils/m
 import type { McpServerRegistration } from '../../../../shared/types/ipc.types'
 import { enc, isNotFound, type DaemonHandlerTable } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
-import { atPath, errorText, refusalText, REDACTED_VALUE, runInstallJob, singleInstallEnds, type CredentialMeta, type InstallAnswer } from '../mcp/common'
+import { atPath, errorText, placeholderWrite, refusalText, REDACTED_VALUE, revealValues, runInstallJob, singleInstallEnds, type CredentialMeta, type InstallAnswer } from '../mcp/common'
 import { awaitDaemonJob, startDaemonJob } from '../mcp/jobs'
 import { runRegistrationTest } from '../mcp/registration-test'
 import {
@@ -31,10 +31,11 @@ import {
  * or an open document the way its /agents/:id route does, and opens any
  * other file for the call, as embedded opens a temporary workspace.
  *
- * Credential values never leave the daemon. MCP_CREDENTIAL_GET answers
- * REDACTED_VALUE for each value the daemon can read (the password fields
- * show it as dots, as the provider form shows a redacted key), and
- * MCP_CREDENTIAL_SET of that placeholder keeps the stored value.
+ * Credential values: in local mode Studio reads them through the daemon's
+ * reveal route (local callers with the local proof only), as embedded reads
+ * them from the file. A remote daemon never sends them: MCP_CREDENTIAL_GET
+ * answers REDACTED_VALUE, and MCP_CREDENTIAL_SET keeps the stored value for
+ * the untouched placeholder and refuses anything else made from it.
  *
  * Installs, the Python runtime and the connect test can take minutes: they
  * run as daemon jobs (mcp/jobs.ts), never as one long request.
@@ -183,23 +184,37 @@ export const MCP_HANDLERS: DaemonHandlerTable = {
     const v = validateMcpArgs(McpCredentialSetArgs, rawArgs)
     if ('error' in v) return { success: false, error: v.error }
     const { filePath, npmPackage, envKey, value } = v.data
-    // The placeholder MCP_CREDENTIAL_GET answered, saved back unchanged: the stored value stays.
-    if (value === REDACTED_VALUE) return { success: true }
     try {
-      await (await ctx.ready()).request('PUT', '/files/agent/mcp/credentials', { query: atPath(filePath), body: { npmPackage, envKey, value } })
+      const client = await ctx.ready()
+      // Remote mode read placeholders, not values: see placeholderWrite.
+      if (ctx.mode === 'remote' && value.startsWith(REDACTED_VALUE)) {
+        const meta = await client.request<{ credentials: Record<string, CredentialMeta> }>('GET', '/files/agent/mcp/credentials', { query: atPath(filePath, { npmPackage }) })
+        const outcome = placeholderWrite(value, meta.credentials?.[envKey]?.present === true, envKey)
+        if (outcome && 'keep' in outcome) return { success: true }
+        if (outcome) return { success: false, error: outcome.error }
+      }
+      await client.request('PUT', '/files/agent/mcp/credentials', { query: atPath(filePath), body: { npmPackage, envKey, value } })
       return { success: true }
     } catch (error) {
       return { success: false, error: refusalText(error) }
     }
   },
 
+  /**
+   * Local mode: the values themselves, as embedded reads them (Studio's own
+   * window on the daemon's machine, through the reveal route). Remote mode:
+   * REDACTED_VALUE for each value the daemon can read; the password fields
+   * show it as dots and MCP_CREDENTIAL_SET keeps the stored value for it.
+   */
   [IPC.MCP_CREDENTIAL_GET]: async (ctx, _event, rawArgs: unknown) => {
     const v = validateMcpArgs(McpCredentialGetArgs, rawArgs)
     if ('error' in v) return { credentials: {} }
+    const prefix = `mcp:${v.data.npmPackage}:`
     try {
-      const answer = await (await ctx.ready()).request<{ credentials: Record<string, CredentialMeta> }>(
+      const client = await ctx.ready()
+      if (ctx.mode === 'local') return { credentials: await revealValues(client, v.data.filePath, prefix) }
+      const answer = await client.request<{ credentials: Record<string, CredentialMeta> }>(
         'GET', '/files/agent/mcp/credentials', { query: atPath(v.data.filePath, { npmPackage: v.data.npmPackage }) })
-      // Embedded lists the values it can decrypt; the daemon names them and keeps the values.
       const credentials: Record<string, string> = {}
       for (const [envKey, meta] of Object.entries(answer.credentials ?? {})) {
         if (meta.present && !meta.locked) credentials[envKey] = REDACTED_VALUE

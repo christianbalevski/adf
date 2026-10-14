@@ -2,7 +2,7 @@ import { IPC } from '../../../../shared/constants/ipc-channels'
 import type { AdapterInstanceConfig, AdapterRegistration } from '../../../../shared/types/channel-adapter.types'
 import type { AgentConfig } from '../../../../shared/types/adf-v02.types'
 import { enc, isNotFound, type DaemonHandlerTable } from '../context'
-import { atPath, errorText, refusalText, runInstallJob, singleInstallEnds, type CredentialMeta, type InstallAnswer } from '../mcp/common'
+import { atPath, errorText, refusalText, revealValues, runInstallJob, singleInstallEnds, type CredentialMeta, type InstallAnswer } from '../mcp/common'
 import {
   AdapterAttachArgs,
   AdapterCredentialGetArgs,
@@ -21,9 +21,9 @@ import {
  * arguments are parsed as embedded parses them, so a bad argument rejects
  * the invoke the same way.
  *
- * ADAPTER_CREDENTIAL_GET names the stored keys (`storedKeys`) and returns no
- * values: credential values never leave the daemon. The channel setup dialog
- * shows such a key as "stored", as it does for a key embedded cannot
+ * ADAPTER_CREDENTIAL_GET reads the values through the daemon's reveal route
+ * in local mode; a remote daemon sends none, and the channel setup dialog
+ * shows each stored key as "stored", as it does for a key embedded cannot
  * decrypt.
  */
 
@@ -103,12 +103,24 @@ export const ADAPTER_HANDLERS: DaemonHandlerTable = {
     }
   },
 
+  /**
+   * `storedKeys` names every stored key, readable or not (embedded lists the
+   * rows). `credentials`: in local mode the readable values (reveal route,
+   * as MCP_CREDENTIAL_GET); a remote daemon sends none, and the channel
+   * dialog shows each stored key as "stored".
+   */
   [IPC.ADAPTER_CREDENTIAL_GET]: async (ctx, _event, rawArgs: unknown) => {
     const args = AdapterCredentialGetArgs.parse(rawArgs)
     try {
-      const answer = await (await ctx.ready()).request<{ credentials: Record<string, CredentialMeta> }>(
-        'GET', '/files/agent/adapters/credentials', { query: atPath(args.filePath, { adapterType: args.adapterType }) })
-      return { credentials: {}, storedKeys: Object.entries(answer.credentials ?? {}).filter(([, meta]) => meta.present).map(([key]) => key) }
+      const client = await ctx.ready()
+      const noValues: Record<string, string> = {}
+      const [answer, values] = await Promise.all([
+        client.request<{ credentials: Record<string, CredentialMeta> }>('GET', '/files/agent/adapters/credentials', { query: atPath(args.filePath, { adapterType: args.adapterType }) }),
+        ctx.mode === 'local' ? revealValues(client, args.filePath, `adapter:${args.adapterType}:`) : Promise.resolve(noValues),
+      ])
+      const credentials: Record<string, string> = {}
+      for (const [key, value] of Object.entries(values)) if (value) credentials[key] = value
+      return { credentials, storedKeys: Object.entries(answer.credentials ?? {}).filter(([, meta]) => meta.present).map(([key]) => key) }
     } catch (error) {
       return { credentials: {}, storedKeys: [], error: errorText(error) }
     }

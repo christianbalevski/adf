@@ -138,32 +138,83 @@ describe('installs run as daemon jobs, with embedded progress pushes', () => {
   })
 })
 
-describe('credentials stay in the daemon', () => {
-  it('MCP_CREDENTIAL_GET: readable values answer as __redacted__; locked ones are left out, as embedded leaves out what it cannot decrypt', async () => {
-    daemon.routes.set('GET /files/agent/mcp/credentials', ({ query }) => {
-      expect(query).toEqual({ path: FILE, npmPackage: '@acme/server' })
-      return { credentials: { API_KEY: { present: true, locked: false }, SEALED: { present: true, locked: true } } }
+describe('credential values: local mode reads them, a remote daemon never sends them', () => {
+  it('local MCP_CREDENTIAL_GET: the values through the reveal route, as embedded reads them', async () => {
+    daemon.routes.set('POST /files/agent/identity/reveal', ({ query, body }) => {
+      expect(query).toEqual({ path: FILE })
+      expect(body).toEqual({ prefix: 'mcp:@acme/server:' })
+      return { values: { 'mcp:@acme/server:API_KEY': 'k-1', 'mcp:@acme/server:EMPTY': '' } }
     })
-    expect(await invoke(IPC.MCP_CREDENTIAL_GET, { filePath: FILE, npmPackage: '@acme/server' })).toEqual({ credentials: { API_KEY: '__redacted__' } })
+    expect(await invoke(IPC.MCP_CREDENTIAL_GET, { filePath: FILE, npmPackage: '@acme/server' })).toEqual({ credentials: { API_KEY: 'k-1', EMPTY: '' } })
     expect(await invoke(IPC.MCP_CREDENTIAL_GET, { filePath: FILE })).toEqual({ credentials: {} })
+    daemon.routes.set('POST /files/agent/identity/reveal', () => ({ status: 403, body: { error: 'this request lacks the local proof', code: 'forbidden' } }))
+    expect(await invoke(IPC.MCP_CREDENTIAL_GET, { filePath: FILE, npmPackage: '@acme/server' })).toEqual({ credentials: {}, error: 'Error: this request lacks the local proof' })
   })
 
-  it('MCP_CREDENTIAL_SET: the placeholder keeps the stored value; a refusal reads without a prefix', async () => {
-    expect(await invoke(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: '__redacted__' })).toEqual({ success: true })
-    expect(daemon.requests).toEqual([])
+  it('local MCP_CREDENTIAL_SET writes what it is given, a literal placeholder too (as embedded); a refusal reads without a prefix', async () => {
     const bodies: unknown[] = []
     daemon.routes.set('PUT /files/agent/mcp/credentials', ({ body }) => { bodies.push(body); return { success: true } })
     expect(await invoke(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-1' })).toEqual({ success: true })
-    expect(bodies).toEqual([{ npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-1' }])
+    expect(await invoke(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: '__redacted__' })).toEqual({ success: true })
+    expect(bodies).toEqual([
+      { npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-1' },
+      { npmPackage: '@acme/server', envKey: 'API_KEY', value: '__redacted__' },
+    ])
     daemon.routes.set('PUT /files/agent/mcp/credentials', () => ({ status: 409, body: { error: 'The credentials envelope of this agent is locked on this daemon.', code: 'credentials_locked' } }))
     expect(await invoke(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-1' }))
       .toEqual({ success: false, error: 'The credentials envelope of this agent is locked on this daemon.' })
   })
 
-  it('ADAPTER_CREDENTIAL_GET: every stored key named, no value', async () => {
+  it('local ADAPTER_CREDENTIAL_GET: the readable values, and every stored key', async () => {
     daemon.routes.set('GET /files/agent/adapters/credentials', () => ({ credentials: { BOT_TOKEN: { present: true, locked: false }, OLD: { present: true, locked: true } } }))
-    expect(await invoke(IPC.ADAPTER_CREDENTIAL_GET, { filePath: FILE, adapterType: 'telegram' })).toEqual({ credentials: {}, storedKeys: ['BOT_TOKEN', 'OLD'] })
+    daemon.routes.set('POST /files/agent/identity/reveal', ({ body }) => {
+      expect(body).toEqual({ prefix: 'adapter:telegram:' })
+      return { values: { 'adapter:telegram:BOT_TOKEN': '123:abc' } }
+    })
+    expect(await invoke(IPC.ADAPTER_CREDENTIAL_GET, { filePath: FILE, adapterType: 'telegram' })).toEqual({ credentials: { BOT_TOKEN: '123:abc' }, storedKeys: ['BOT_TOKEN', 'OLD'] })
     await expect(invoke(IPC.ADAPTER_CREDENTIAL_GET, { filePath: FILE })).rejects.toThrow()
+  })
+
+  describe('remote mode', () => {
+    /** The W3-C handlers with a remote-mode context on the scripted daemon (no second registration). */
+    const remote = async (handler: string, args: unknown) => {
+      const { MCP_HANDLERS } = await import('../../src/main/backend/daemon-mode/handlers/mcp')
+      const { ADAPTER_HANDLERS } = await import('../../src/main/backend/daemon-mode/handlers/adapters')
+      const client = new DaemonClient({ baseUrl: BASE, fetch: daemon.fetch })
+      const ctx = { mode: 'remote', ready: async () => client, log } as unknown as Parameters<NonNullable<typeof MCP_HANDLERS[typeof IPC.MCP_CREDENTIAL_GET]>>[0]
+      const fn = (MCP_HANDLERS as Record<string, unknown>)[handler] ?? (ADAPTER_HANDLERS as Record<string, unknown>)[handler]
+      return (fn as (c: unknown, e: unknown, a: unknown) => Promise<unknown>)(ctx, {}, args)
+    }
+    const stored = () => daemon.routes.set('GET /files/agent/mcp/credentials', () => ({ credentials: { API_KEY: { present: true, locked: false }, SEALED: { present: true, locked: true } } }))
+
+    it('MCP_CREDENTIAL_GET answers __redacted__ for each readable value and never asks for values', async () => {
+      stored()
+      expect(await remote(IPC.MCP_CREDENTIAL_GET, { filePath: FILE, npmPackage: '@acme/server' })).toEqual({ credentials: { API_KEY: '__redacted__' } })
+      expect(daemon.requests.some((r) => r.path === '/files/agent/identity/reveal')).toBe(false)
+    })
+
+    it('MCP_CREDENTIAL_SET: the untouched placeholder of a stored key keeps it; an edited one, or one under an unstored (renamed) key, is refused', async () => {
+      stored()
+      const bodies: unknown[] = []
+      daemon.routes.set('PUT /files/agent/mcp/credentials', ({ body }) => { bodies.push(body); return { success: true } })
+      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: '__redacted__' })).toEqual({ success: true })
+      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: '__redacted__abc' })).toEqual({
+        success: false,
+        error: 'The value of API_KEY was shown as a placeholder (a remote ADF daemon never sends stored values), so an edit of it cannot be saved. Clear the field and type the whole value.',
+      })
+      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'RENAMED_KEY', value: '__redacted__' })).toEqual({
+        success: false,
+        error: 'RENAMED_KEY has no stored value to keep: a remote ADF daemon never sends stored values, so its field showed a placeholder. Type the value for RENAMED_KEY.',
+      })
+      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-2' })).toEqual({ success: true })
+      expect(bodies).toEqual([{ npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-2' }])
+    })
+
+    it('ADAPTER_CREDENTIAL_GET names the stored keys and sends no values', async () => {
+      daemon.routes.set('GET /files/agent/adapters/credentials', () => ({ credentials: { BOT_TOKEN: { present: true, locked: false } } }))
+      expect(await remote(IPC.ADAPTER_CREDENTIAL_GET, { filePath: FILE, adapterType: 'telegram' })).toEqual({ credentials: {}, storedKeys: ['BOT_TOKEN'] })
+      expect(daemon.requests.some((r) => r.path === '/files/agent/identity/reveal')).toBe(false)
+    })
   })
 })
 
