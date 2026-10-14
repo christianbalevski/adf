@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ClientSessionRegistry,
-  clientWriteSource,
+  runAsClientWrite,
   wireApprovalsToClientSessions,
   wireComputeToClientSessions,
   wireMeshToClientSessions,
@@ -21,7 +21,6 @@ import {
   type ClientStreamSink,
 } from '../src/main/daemon/client-sessions'
 import { emitAgentConfigChanged } from '../src/main/runtime/agent-runtime-signals'
-import { withSource } from '../src/main/runtime/execution-context'
 import type { RuntimeAgentEvent } from '../src/main/runtime/runtime-service'
 import type { AgentExecutionEvent } from '../src/shared/types/ipc.types'
 
@@ -365,7 +364,7 @@ describe('client sessions: origin dedup', () => {
     const sessions = registry()
     const writer = open(sessions, { focus: AGENT_1 })
     const reader = open(sessions, { focus: AGENT_1 })
-    withSource(clientWriteSource(writer.sessionId), () => {
+    runAsClientWrite(writer.sessionId, () => {
       sessions.publishPush('config_changed', { filePath: FILE_1, config: { name: 'agent-1' } as never }, { agentId: AGENT_1 })
       sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'notes.md', content: 'x' }))
       sessions.publishExecutor(exec(AGENT_1, 'document_updated', { content: 'doc' }))
@@ -378,17 +377,19 @@ describe('client sessions: origin dedup', () => {
     expect(kinds(reader.sink)).toEqual(['config_changed', 'file_updated', 'document_updated', 'tool_call_start', 'config_changed'])
   })
 
-  it('suppression is per event: an agent write raised during a client write still reaches that client', async () => {
+  it('only the write itself is stamped: work the request queues (a turn, a timer) reaches the requester', async () => {
     const sessions = registry()
     const writer = open(sessions, { focus: AGENT_1 })
-    withSource(clientWriteSource(writer.sessionId), () => {
+    runAsClientWrite(writer.sessionId, () => {
       sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'from-client.md', content: 'x' }))
-      // The agent's own turn writes another file while the client's request runs.
-      withSource('agent:turn-1', AGENT_1, () => sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'from-agent.md', content: 'y' })))
-      sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'from-client-2.md', content: 'z' }))
+      // A turn the request queued, as POST /chat does (process.nextTick), and a timer.
+      process.nextTick(() => sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'from-turn.md', content: 'y' })))
+      setTimeout(() => sessions.publishPush('config_changed', { filePath: FILE_1, config: { name: 'from-timer' } as never }, { agentId: AGENT_1 }), 5)
+      void Promise.resolve().then(() => sessions.publishExecutor(exec(AGENT_1, 'document_updated', { content: 'from-continuation' })))
     })
-    await tick()
-    expect(writer.sink.frames().map(f => f.kind === 'executor' && (f.event.payload as { path: string }).path)).toEqual(['from-agent.md'])
+    await new Promise(r => setTimeout(r, 30))
+    const seen = writer.sink.frames().map(f => f.kind === 'executor' ? f.event.type + ':' + String((f.event.payload as { path?: string; content?: string }).path ?? (f.event.payload as { content?: string }).content) : f.kind === 'push' ? f.topic : '')
+    expect(seen).toEqual(['document_updated:from-continuation', 'file_updated:from-turn.md', 'config_changed'])
   })
 })
 
@@ -552,24 +553,52 @@ describe('client sessions: producers', () => {
 })
 
 describe('client sessions: daemon wiring', () => {
-  it('daemon/index.ts registers the registry and wires every producer', async () => {
-    const { readFileSync } = await import('node:fs')
-    const { join } = await import('node:path')
-    const source = readFileSync(join(__dirname, '../src/main/daemon/index.ts'), 'utf-8')
-    for (const line of [
-      'wireRuntimeToClientSessions(clientSessions, runtime)',
-      'wireMeshToClientSessions(clientSessions, meshManager)',
-      'wireComputeToClientSessions(clientSessions, podmanService)',
-      'wireApprovalsToClientSessions(clientSessions, approvalHub)',
-      'wireTrackedDirWatcherToClientSessions(clientSessions, trackedDirWatcher)',
-      'wireEventBusToClientSessions(clientSessions, eventBus)',
-      'registerDaemonClientSessions(clientSessions)',
-      'wireDocumentsToClientSessions(clientSessions, runtime)',
-      "withInstallProgress(mcpPackageResolver, 'mcp_install', 1, clientSessions)",
-      "withInstallProgress(uvxPackageResolver, 'mcp_install', 2, clientSessions)",
-      "withInstallProgress(adapterPackageResolver, 'adapter_install', 1, clientSessions)",
-      "withInstallProgress(sandboxPackagesService, 'sandbox_install', 2, clientSessions)",
-    ]) expect(source).toContain(line)
+  it('createDaemonClientSessions (what daemon/index.ts calls) wires every producer, registers the registry and wraps the installers', async () => {
+    const { createDaemonClientSessions } = await import('../src/main/daemon/client-wiring')
+    const { daemonClientSessions } = await import('../src/main/daemon/client-sessions')
+    const runtime = Object.assign(new EventEmitter(), {
+      listAgents: () => [], getAgentOrDocument: () => undefined,
+      openDocument: async () => ({}), releaseDocument: async () => ({}), releaseDocumentHolder: async () => [], setDocumentHolderCheck: vi.fn(),
+    })
+    const mesh = new EventEmitter()
+    const compute = new EventEmitter()
+    const watcher = new EventEmitter()
+    const approvals: Array<(s: unknown) => void> = []
+    const bus: Array<(e: { event: unknown }) => void> = []
+    const installer = { async install(_name: string, ...rest: unknown[]) { for (const arg of rest) if (typeof arg === 'function') (arg as (m: string) => void)('step'); return {} } }
+    const built = createDaemonClientSessions({
+      runtime: runtime as never, mesh, compute, trackedDirWatcher: watcher,
+      approvals: { subscribe: (l) => { approvals.push(l as never); return () => {} } },
+      eventBus: { subscribe: (l) => { bus.push(l as never); return () => {} } },
+      packages: { mcp: installer, python: installer, adapters: installer, sandbox: installer },
+      options: { log: quiet },
+    })
+    registries.push(built.sessions)
+    try {
+      expect(daemonClientSessions()).toBe(built.sessions)
+      expect(runtime.setDocumentHolderCheck).toHaveBeenCalledWith(expect.any(Function))
+      const { sessionId } = built.sessions.create({ client: 'tui', version: '1', umbilical: true })
+      const sink = new FakeSink()
+      built.sessions.attach(sessionId, sink)
+      runtime.emit('agent-event', exec(AGENT_1, 'state_changed', { state: 'idle' }))
+      mesh.emit('mesh_event', { type: 'agent_joined', payload: { filePath: FILE_1 }, timestamp: 1 })
+      compute.emit('container-phase', { containerName: 'c', phase: 'ready', timestamp: 1 })
+      watcher.emit('tracked_dirs', { dirPath: '/agents' })
+      approvals[0]({ pending: [], history: [] })
+      bus[0]({ event: { seq: 1, event_type: 'turn.completed', timestamp: 1, source: 'x', agent_id: AGENT_1, payload: {} } })
+      await built.packages.mcp.install('pkg')
+      await built.packages.python.install('pkg')
+      await built.packages.adapters.install('pkg')
+      await built.packages.sandbox.install('pkg')
+      await tick()
+      expect(sink.frames().map(f => f.kind === 'push' ? f.topic : f.kind)).toEqual([
+        'executor', 'mesh', 'compute_phase', 'tracked_dirs', 'approvals', 'umbilical',
+        'mcp_install', 'mcp_install', 'mcp_install', 'mcp_install', 'adapter_install', 'adapter_install', 'sandbox_install', 'sandbox_install',
+      ])
+    } finally {
+      built.unwire()
+    }
+    expect(daemonClientSessions()).toBeNull()
   })
 })
 
@@ -601,12 +630,19 @@ describe('client sessions: review fixes', () => {
     expect(JSON.stringify(focused.sink.frames()).length).toBeGreaterThan(200_000)
     const stubs = other.sink.frames()
     expect(stubs.map(f => f.kind === 'executor' && [f.event.type, f.stripped ?? 'full'])).toEqual([
-      ['file_updated', 'stub'], ['chat_updated', 'stub'], ['context_injected', 'stub'], ['tool_call_start', 'stub'], ['state_changed', 'full'],
+      ['file_updated', 'stub'], ['chat_updated', 'stub'], ['context_injected', 'stub'], ['tool_call_start', 'tool_input'], ['state_changed', 'full'],
     ])
     expect(stubs[0]).toMatchObject({ event: { payload: { path: 'notes.md', size: expect.any(Number) } } })
     expect(stubs[1]).toMatchObject({ event: { payload: { contextBaseline: 12 } } })
-    expect(stubs[3]).toMatchObject({ event: { payload: { name: 'fs_write', id: 'tu1' } } })
-    expect(JSON.stringify(stubs).length).toBeLessThan(2_000)
+    // tool_call_start keeps its input (the mesh graph's args and msg_send pulse), each field cut to 2048 characters.
+    expect(stubs[3]).toMatchObject({ event: { payload: { name: 'fs_write', id: 'tu1', inputTruncated: true } } })
+    expect(((stubs[3] as { event: { payload: { input: { content: string } } } }).event.payload.input.content)).toHaveLength(2049)
+    expect(JSON.stringify(stubs).length).toBeLessThan(4_000)
+    // A small input arrives untouched.
+    sessions.publishExecutor(exec(AGENT_1, 'tool_call_start', { name: 'msg_send', id: 'tu2', input: { recipient: 'agent-2', content: 'hi' } }))
+    await tick()
+    expect(other.sink.frames().at(-1)).toEqual(expect.objectContaining({ event: expect.objectContaining({ payload: { name: 'msg_send', id: 'tu2', input: { recipient: 'agent-2', content: 'hi' } } }) }))
+    expect(other.sink.frames().at(-1)).not.toHaveProperty('stripped')
   })
 
   it('one large write does not gap other sessions: only the focused reader gets an oversized gap', async () => {

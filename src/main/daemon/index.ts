@@ -44,18 +44,7 @@ import { daemonGapRouteDeps } from './routes/gap-deps'
 import { RuntimeDiscovery } from '../services/runtime-discovery'
 import { applySettingLive } from './live-setting'
 import { approvalHub } from '../runtime/approval-hub'
-import {
-  ClientSessionRegistry,
-  registerDaemonClientSessions,
-  wireApprovalsToClientSessions,
-  wireComputeToClientSessions,
-  wireDocumentsToClientSessions,
-  wireEventBusToClientSessions,
-  wireMeshToClientSessions,
-  wireRuntimeToClientSessions,
-  wireTrackedDirWatcherToClientSessions,
-  withInstallProgress,
-} from './client-sessions'
+import { createDaemonClientSessions } from './client-wiring'
 import { wireRuntimeToMesh } from './runtime-mesh-wiring'
 
 // Defined by the builds that ship the daemon (electron.vite.config.ts for
@@ -349,29 +338,26 @@ const trackedDirWatcher = new TrackedDirWatcher({
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
 })
 // Client sessions and the client event stream (design daemon-backend.md D5):
-// every push Studio's window gets in embedded mode, as frames. Producers are
-// wired here; the HTTP side is routes/client-routes.ts.
-const clientSessions = new ClientSessionRegistry({
-  startedBy,
-  // §8.3 orphan rule: the session of a Studio that crashed expired.
-  requestShutdown: () => {
-    console.log('[ADF Daemon] The last client session that owned this daemon run expired — shutting down...')
-    void boundedShutdown(0)
+// every push Studio's window gets in embedded mode, as frames, and session
+// documents as W2-A's open documents. Built by client-wiring.ts (the gate
+// test builds the same); the HTTP side is routes/client-routes.ts.
+const client = createDaemonClientSessions({
+  runtime,
+  mesh: meshManager,
+  compute: podmanService,
+  approvals: approvalHub,
+  trackedDirWatcher,
+  eventBus,
+  packages: { mcp: mcpPackageResolver, python: uvxPackageResolver, adapters: adapterPackageResolver, sandbox: sandboxPackagesService },
+  options: {
+    startedBy,
+    // §8.3 orphan rule: the session of a Studio that crashed expired.
+    requestShutdown: () => {
+      console.log('[ADF Daemon] The last client session that owned this daemon run expired — shutting down...')
+      void boundedShutdown(0)
+    },
   },
-  resolveAgentId: (identifier) => runtime.getAgentOrDocument(identifier)?.id ?? null,
 })
-wireRuntimeToClientSessions(clientSessions, runtime)
-// Session documents are W2-A's open documents, held by the session id; the
-// holder sweep asks the registry, so a live session's documents stay open.
-wireDocumentsToClientSessions(clientSessions, runtime)
-wireMeshToClientSessions(clientSessions, meshManager)
-wireComputeToClientSessions(clientSessions, podmanService)
-wireApprovalsToClientSessions(clientSessions, approvalHub)
-wireTrackedDirWatcherToClientSessions(clientSessions, trackedDirWatcher)
-// Sessions opened with `umbilical: true` (the terminal app) get the /events envelopes too.
-wireEventBusToClientSessions(clientSessions, eventBus)
-// The /client/* routes serve this registry (routes/client-routes.ts), as the event bus is registered above.
-registerDaemonClientSessions(clientSessions)
 const daemon = new DaemonHost({
   runtime,
   identity: ownerIdentity,
@@ -454,12 +440,11 @@ const daemon = new DaemonHost({
     getDiscoveredRuntimes: (args?: { force?: boolean }) => runtimeDiscovery.getDiscoveredRuntimes(args),
   },
   // The admin install routes report progress on the client stream, as
-  // Studio's install handlers push *_INSTALL_PROGRESS. Agent-driven installs
-  // (the builder's resolvers) do not, as in Studio.
-  mcpPackageService: withInstallProgress(mcpPackageResolver, 'mcp_install', 1, clientSessions),
-  mcpPythonPackageService: withInstallProgress(uvxPackageResolver, 'mcp_install', 2, clientSessions),
-  adapterPackageService: withInstallProgress(adapterPackageResolver, 'adapter_install', 1, clientSessions),
-  sandboxPackageService: withInstallProgress(sandboxPackagesService, 'sandbox_install', 2, clientSessions),
+  // Studio's install handlers push *_INSTALL_PROGRESS (client-wiring.ts).
+  mcpPackageService: client.packages.mcp,
+  mcpPythonPackageService: client.packages.python,
+  adapterPackageService: client.packages.adapters,
+  sandboxPackageService: client.packages.sandbox,
   // Runs FIRST in DaemonHost.stop(), before server close and agent unload —
   // debounced token usage is the most losable data, and a hang anywhere later
   // in shutdown must not cost it (Studio's cleanupAllProcesses phase-1 parity).

@@ -1,10 +1,13 @@
 /**
  * MERGE GATE (W2-A × W2-B): open documents held by client sessions, in the
- * daemon's own wiring (wireRuntimeToClientSessions + wireDocumentsToClientSessions,
- * as daemon/index.ts calls them). A live session's document outlives the
- * holder TTL; a holder that is not a session is swept; the session's expiry
- * releases its documents.
+ * daemon's own composition: createDaemonClientSessions (client-wiring.ts,
+ * what daemon/index.ts calls; asserted below) and the HTTP API serving the
+ * registry it registers. A live session's document outlives the holder TTL;
+ * a holder that is not a session is swept; the session's expiry releases its
+ * documents. Removing the documents wiring fails this test.
  */
+import { EventEmitter } from 'node:events'
+import { readFileSync } from 'node:fs'
 import { mkdtempSync } from 'node:fs'
 import type { AddressInfo } from 'node:net'
 import { randomUUID } from 'node:crypto'
@@ -25,7 +28,7 @@ vi.mock('electron', () => {
 })
 
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
-import { ClientSessionRegistry, wireDocumentsToClientSessions, wireRuntimeToClientSessions } from '../src/main/daemon/client-sessions'
+import { createDaemonClientSessions } from '../src/main/daemon/client-wiring'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { AgentRuntimeBuilder } from '../src/main/runtime/agent-runtime-builder'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
@@ -66,9 +69,21 @@ describe('MERGE GATE: session-held documents in the daemon wiring', () => {
       agentRuntimeBuilder: new AgentRuntimeBuilder(),
       documentHoldTtlMs: ttlMs,
     })
-    const sessions = new ClientSessionRegistry({ expiryMs: 500, log: () => {} })
-    cleanups.push(wireRuntimeToClientSessions(sessions, runtime), wireDocumentsToClientSessions(sessions, runtime))
-    const server = createDaemonHttpApi(runtime, { routes: { clientSessions: sessions } })
+    const installer = { async install() { return {} } }
+    const built = createDaemonClientSessions({
+      runtime,
+      mesh: new EventEmitter(),
+      compute: new EventEmitter(),
+      approvals: { subscribe: () => () => {} },
+      trackedDirWatcher: new EventEmitter(),
+      eventBus: { subscribe: () => () => {} },
+      packages: { mcp: installer, python: installer, adapters: installer, sandbox: installer },
+      options: { expiryMs: 500, log: () => {} },
+    })
+    cleanups.push(() => built.unwire())
+    const sessions = built.sessions
+    // No routes.clientSessions: the routes serve the registry the composition registered, as in the daemon.
+    const server = createDaemonHttpApi(runtime)
     await server.listen({ host: '127.0.0.1', port: 0 })
     cleanups.push(() => server.close())
     const client = new DaemonClient({ baseUrl: `http://127.0.0.1:${(server.server.address() as AddressInfo).port}` })
@@ -92,5 +107,13 @@ describe('MERGE GATE: session-held documents in the daemon wiring', () => {
     stream.close()
     await waitFor(() => !sessions.has(sessionId), 5000, 'session expiry')
     expect(runtime.getAgentOrDocument(one.agentId)).toBeUndefined()
+  })
+
+  it('daemon/index.ts builds its client sessions with createDaemonClientSessions and serves its package services', () => {
+    const source = readFileSync(join(__dirname, '../src/main/daemon/index.ts'), 'utf-8')
+    expect(source).toMatch(/const client = createDaemonClientSessions\(\{\s*runtime,\s*mesh: meshManager,\s*compute: podmanService,\s*approvals: approvalHub,\s*trackedDirWatcher,\s*eventBus,/)
+    for (const line of ['mcpPackageService: client.packages.mcp', 'mcpPythonPackageService: client.packages.python', 'adapterPackageService: client.packages.adapters', 'sandboxPackageService: client.packages.sandbox']) {
+      expect(source).toContain(line)
+    }
   })
 })
