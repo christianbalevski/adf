@@ -122,7 +122,7 @@ const REMOTE_FILE_PICKER = 'Daemon-side .adf picker over tracked directories and
 
 export const CHANNEL_MAP = {
   // --- File operations -------------------------------------------------------
-  [IPC.FILE_OPEN]: variant('invoke', ['GET /agents/:id/identity/password', 'PATCH /settings'], `${REMOTE_FILE_PICKER} A dropped or OS-opened laptop file is uploaded first (POST /files/import).`, {
+  [IPC.FILE_OPEN]: variant('invoke', ['GET /agents/:id/identity/password', 'GET /agents/:id/status', 'PATCH /settings'], `${REMOTE_FILE_PICKER} A dropped or OS-opened laptop file is uploaded first (POST /files/import).`, {
     gaps: [
       HOLD_DOC,
       gap('W2-B', 'self-heal on open: the hold relocates a reviewed file stranded in the daemon host\'s OS temp dir into the agents folder (POST /files/relocate exists; nothing reports the temp location)'),
@@ -158,13 +158,12 @@ export const CHANNEL_MAP = {
   [IPC.DOC_GET_DOCUMENT]: proxied('invoke', ['GET /agents/:id/document']),
   [IPC.DOC_SET_DOCUMENT]: proxied('invoke', ['PUT /agents/:id/document']),
   [IPC.DOC_GET_AGENT_CONFIG]: proxied('invoke', ['GET /agents/:id/config']),
-  [IPC.DOC_SET_AGENT_CONFIG]: proxied('invoke', ['PUT /agents/:id/config'], {
+  [IPC.DOC_SET_AGENT_CONFIG]: proxied('invoke', ['GET /agents/:id/config', 'PUT /agents/:id/config', 'GET /files/agent'], {
     gaps: [
-      gap('W3-A', 'a running agent\'s name change: renameDeferred from GET /files/agent pendingName (PUT /agents/:id/config reports filePath / renameDeferred for open documents only)'),
       gap('W1-B', 'MCP reconcile on config change'),
       gap('W1-B', 'mesh config update on config change (meshManager.updateAgentConfig)'),
     ],
-    note: 'The handler refuses a config whose id differs from the open file (session check).',
+    note: 'The handler refuses a config whose id differs from the open file (session check). A running agent\'s deferred rename is read back from GET /files/agent pendingName.',
   }),
   [IPC.DOC_AGENT_CONFIG_CHANGED]: proxied('push', [], {
     frame: 'push:config_changed',
@@ -182,13 +181,12 @@ export const CHANNEL_MAP = {
   [IPC.DOC_GET_HEADER]: proxied('invoke', ['GET /agents/:id/header']),
 
   // --- Agent runtime ---------------------------------------------------------
-  [IPC.AGENT_START]: proxied('invoke', ['POST /agents/:id/start', 'GET /agents/:id/status', 'GET /agents/:id/tasks', 'GET /agents/:id/asks'], {
+  [IPC.AGENT_START]: proxied('invoke', ['POST /agents/:id/start', 'GET /agents/:id/status', 'GET /agents/:id/triggers', 'GET /approvals/interactions', 'GET /agents/:id/identity/password', 'POST /agents/:id/stop', 'GET /agents/:id/config'], {
     gaps: [
-      gap('W3-A', 'start with hasUserMessage (skip the startup turn\'s greeting when a message is queued); the answer carries the runtime sessionId'),
       gap('W2-B', 'set the session focus to the started agent'),
       ...RECIPE,
     ],
-    note: 'The reuse path (agent already running) returns sessionId, agentState, pendingApprovals and pendingAsks.',
+    note: 'The reuse path (agent already running) returns sessionId, the display state (GET /agents/:id/triggers), and main\'s pending approvals and asks (GET /approvals/interactions). A held document whose key is locked answers code credentials_locked without starting (design §6.1 row 27).',
   }),
   [IPC.AGENT_STOP]: proxied('invoke', ['POST /agents/:id/stop']),
   [IPC.AGENT_STATUS]: proxied('invoke', ['GET /agents/:id/status']),
@@ -233,7 +231,7 @@ export const CHANNEL_MAP = {
   [IPC.TEMPLATES_CHANGED]: proxied('push', [], { frame: 'push:templates', gaps: [streamTopic('templates')] }),
   [IPC.TEMPLATES_MIGRATION_SEEN]: local('invoke', 'Writes the client key templatesMigrationSeen.'),
   [IPC.TEMPLATE_CREATE]: proxied('invoke', ['POST /templates']),
-  [IPC.TEMPLATE_DELETE]: proxied('invoke', ['DELETE /templates/:id'], { note: 'Deleted templates land in <userData>/templates-trash, not the OS trash: a visible difference for W5-A triage, or the local-mode handler trashes the file itself.' }),
+  [IPC.TEMPLATE_DELETE]: proxied('invoke', ['GET /templates', 'DELETE /templates/:id', 'PATCH /settings'], { note: 'Local mode: the handler moves the template file to the OS trash itself (shell.trashItem on the path GET /templates names) and resets defaultTemplateId through PATCH /settings. Remote mode: DELETE /templates/:id (the server\'s templates-trash).' }),
   [IPC.TEMPLATE_RESET_SHIPPED]: proxied('invoke', ['POST /templates/:id/reset']),
   [IPC.TEMPLATE_REVEAL]: unsupported('invoke', ['GET /templates'], 'Disabled; the templates folder path is shown as text.', { note: 'Local mode: shell on the daemon templates folder (folder from GET /templates).' }),
   [IPC.TEMPLATE_SET_DEFAULT]: proxied('invoke', ['POST /templates/:id/default']),
@@ -242,9 +240,8 @@ export const CHANNEL_MAP = {
   [IPC.TEMPLATE_GET_CONTENTS]: proxied('invoke', ['GET /templates/:id']),
   [IPC.TEMPLATE_SET_CONFIG]: proxied('invoke', ['PUT /templates/:id/config']),
   [IPC.TEMPLATE_SET_FILE]: proxied('invoke', ['PUT /templates/:id/files']),
-  [IPC.TEMPLATE_ADD_FILES]: proxied('invoke', ['PUT /templates/:id/files'], {
-    gaps: [gap('W3-A', 'binary template extra files up to 25 MiB; PUT /templates/:id/files takes text content in a 1 MiB JSON body')],
-    note: 'Native multi-select dialog in Studio main; Studio reads the picked files locally.',
+  [IPC.TEMPLATE_ADD_FILES]: proxied('invoke', ['PUT /templates/:id/files/raw'], {
+    note: 'Native multi-select dialog in Studio main; Studio reads the picked files locally and uploads each (octet-stream, up to 25 MiB).',
   }),
   [IPC.TEMPLATE_REMOVE_FILE]: proxied('invoke', ['DELETE /templates/:id/files']),
   [IPC.TEMPLATE_CHECK_REVIEW]: proxied('invoke', ['GET /templates/:id/review']),
@@ -278,16 +275,16 @@ export const CHANNEL_MAP = {
   }),
 
   // --- Background agents -----------------------------------------------------
-  [IPC.BACKGROUND_AGENT_START]: proxied('invoke', ['POST /agents/load'], {
+  [IPC.BACKGROUND_AGENT_START]: proxied('invoke', ['GET /files/agent', 'POST /agents/load', 'POST /agents/:id/start'], {
     gaps: [...RECIPE],
-    note: 'requireReview: true. The password gate needs the derived key in the daemon.',
+    note: 'Foreground, review and password gates from GET /files/agent (reviewed, passwordProtected), then load with requireReview: true and start (the startup turn). A file this session unlocked passes the password gate: its key stays in the daemon while the session holds it.',
   }),
   [IPC.BACKGROUND_AGENT_EVENT_BATCH]: proxied('push', [], {
     frame: 'executor',
     gaps: [gap('W2-B', 'executor and host frames for every agent')],
     note: 'Non-focused agents: frames go through background-event-mapping.ts (W1-F) and BackgroundEventBatcher (W2-C). Also fed by host frames.',
   }),
-  [IPC.BACKGROUND_AGENT_STATUS]: proxied('invoke', ['GET /agents'], { gaps: [gap('W2-B', 'in-flight starts (embedded `starting`): host frames agent_starting / agent_start_failed (GET /agents lists loaded agents only)')] }),
+  [IPC.BACKGROUND_AGENT_STATUS]: proxied('invoke', ['GET /agents', 'GET /agents/:id/status'], { gaps: [gap('W2-B', 'in-flight starts (embedded `starting`): host frames agent_starting / agent_start_failed (GET /agents lists loaded agents only)')] }),
   [IPC.BACKGROUND_AGENT_STOP]: proxied('invoke', ['POST /agents/:id/stop']),
   [IPC.BACKGROUND_AGENT_ASK_RESPOND]: proxied('invoke', ['POST /agents/:id/asks/:requestId/respond']),
   [IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND]: proxied('invoke', ['POST /agents/:id/tasks/:taskId/resolve']),

@@ -85,11 +85,7 @@ All W2-A gaps are closed: every `/agents/:id/*` route reaches an open document (
 All W2-C gaps are closed: Studio main runs the client-key migrations on `studio-client-settings.json`, and the `TOOLS_DESCRIPTIONS` handler folds in the open agent's own tools. See "Daemon-mode handlers after W2-C" below.
 
 ## W3-A
-| Need | Channels |
-|---|---|
-| a running agent's name change: renameDeferred from GET /files/agent pendingName (PUT /agents/:id/config reports filePath / renameDeferred for open documents only) | `DOC_SET_AGENT_CONFIG` |
-| start with hasUserMessage (skip the startup turn's greeting when a message is queued); the answer carries the runtime sessionId | `AGENT_START` |
-| binary template extra files up to 25 MiB; PUT /templates/:id/files takes text content in a 1 MiB JSON body | `TEMPLATE_ADD_FILES` |
+All W3-A gaps are closed: the start takes `hasUserMessage` and answers the session id (`POST /agents/:id/start`, `GET /agents/:id/status`), a running agent's deferred rename is read from `GET /files/agent` `pendingName`, and binary template files go through `PUT /templates/:id/files/raw`. See "Daemon-mode handlers after W3-A" below.
 
 ## Route notes from W1-D
 
