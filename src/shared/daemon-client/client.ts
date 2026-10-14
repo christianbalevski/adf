@@ -10,7 +10,7 @@
 // timers. Where the token comes from is injected (DaemonCredentials); the
 // Node implementation (env, token file, local proof) is cli/daemon-url.ts.
 
-import { EventStream, isRedirect, redirectMessage, type EventStreamOptions, type StreamFrame } from './sse'
+import { EventStream, clientFrameDedupeKey, isClientFrame, isRedirect, redirectMessage, type EventStreamOptions, type StreamFrame } from './sse'
 import { normalizeRuntime } from './normalize'
 import {
   DaemonError,
@@ -110,6 +110,13 @@ import {
   type TemplateDetail,
   type TemplateReview,
   type TemplateWriteResult,
+  type ClientDocumentReleased,
+  type ClientFrame,
+  type ClientHeldDocument,
+  type ClientSessionCreated,
+  type ClientSessionEndedResult,
+  type ClientSessionFocus,
+  type ClientSessionInput,
 } from './types'
 
 /**
@@ -145,6 +152,12 @@ export interface DaemonClientOptions {
   fetch?: typeof fetch
   /** Per-request timeout for non-streaming calls. Default 15s. */
   timeoutMs?: number
+  /**
+   * Client session the requests come from (X-ADF-Client-Session, own origin
+   * only): a config write it makes is not echoed back on its stream as
+   * `config_changed`. Set with `withClientSession`.
+   */
+  clientSession?: string
 }
 
 /** A fixed bearer token (`--token`, Studio's stored remote token). */
@@ -215,6 +228,11 @@ export class DaemonClient {
     return this.derive({ ...this.options, timeoutMs })
   }
 
+  /** Same daemon and credentials; every request names this client session (null: none). */
+  withClientSession(sessionId: string | null): this {
+    return this.derive({ ...this.options, clientSession: sessionId ?? undefined })
+  }
+
   /**
    * A client like this one with other options; `withBaseUrl` and
    * `withTimeout` build through it. A subclass whose constructor takes other
@@ -249,9 +267,11 @@ export class DaemonClient {
   private headersFor(url: string, extra: Record<string, string> = {}, path?: string): Record<string, string> {
     const own = this.ownsUrl(url)
     const token = own ? this.credentials?.token() : undefined
+    const session = own ? this.options.clientSession : undefined
     return {
       Accept: 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(session ? { 'X-ADF-Client-Session': session } : {}),
       ...(own && path !== undefined ? this.credentials?.localProof?.(path) ?? {} : {}),
       ...extra,
     }
@@ -332,6 +352,54 @@ export class DaemonClient {
   events<F extends StreamFrame = DaemonEventFrame>(options: Omit<EventStreamOptions<F>, 'baseUrl' | 'headers' | 'fetch'>): EventStream<F> {
     // A function: a reconnect sends the current token (refreshed after a 401), and only to this origin.
     return new EventStream<F>({ ...options, baseUrl: this.baseUrl, headers: url => this.headersFor(url, { Accept: 'text/event-stream' }), fetch: this.fetchImpl })
+  }
+
+  // --- client sessions (design D5; internal) ---------------------------------
+
+  /** POST /client/sessions: open a session. Its stream starts at the first frame after this call. */
+  createClientSession(input: ClientSessionInput): Promise<ClientSessionCreated> {
+    return this.post('/client/sessions', input)
+  }
+
+  /**
+   * GET /client/sessions/:id/events: the session's frames (executor, host,
+   * push). Replays from the session's first frame unless `since` is given;
+   * reconnects resume with `?since=&epoch=`. `onGap` / `onResume` report lost
+   * frames (resync then, design D6). A 404 means the session is gone (it
+   * expired or the daemon restarted): close the stream and open a new
+   * session. Call `.start()` on the result.
+   */
+  clientSessionEvents(
+    sessionId: string,
+    options: Omit<EventStreamOptions<ClientFrame>, 'baseUrl' | 'headers' | 'fetch' | 'path' | 'isFrame' | 'agentId'>,
+  ): EventStream<ClientFrame> {
+    return this.events<ClientFrame>({
+      replay: true,
+      dedupeKey: clientFrameDedupeKey,
+      ...options,
+      path: `/client/sessions/${enc(sessionId)}/events`,
+      isFrame: (value): value is ClientFrame => isClientFrame(value),
+    })
+  }
+
+  /** PUT /client/sessions/:id/focus: the agent whose deltas and full tool results this session gets (null: none). */
+  setClientSessionFocus(sessionId: string, agentId: string | null): Promise<ClientSessionFocus> {
+    return this.put(`/client/sessions/${enc(sessionId)}/focus`, { agentId })
+  }
+
+  /** POST /client/sessions/:id/documents: hold an agent file open for this session. */
+  holdClientSessionDocument(sessionId: string, document: { filePath: string } | { agentId: string }): Promise<ClientHeldDocument> {
+    return this.post(`/client/sessions/${enc(sessionId)}/documents`, document)
+  }
+
+  /** DELETE /client/sessions/:id/documents/:agentId. */
+  releaseClientSessionDocument(sessionId: string, agentId: string): Promise<ClientDocumentReleased> {
+    return this.del(`/client/sessions/${enc(sessionId)}/documents/${enc(agentId)}`)
+  }
+
+  /** DELETE /client/sessions/:id: end the session now; its documents are released. */
+  endClientSession(sessionId: string): Promise<ClientSessionEndedResult> {
+    return this.del(`/client/sessions/${enc(sessionId)}`)
   }
 
   // --- daemon ---------------------------------------------------------------

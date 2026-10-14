@@ -587,3 +587,47 @@ export type AgentVitals = import('../types/agent-vitals.types').AgentVitals
 
 /** GET /agents/:id/activity: next wakes, recent events, 14-day turns and cost, skills/tables/files. */
 export type AgentActivity = import('../types/agent-vitals.types').AgentActivity
+
+// --- client sessions (design daemon-backend.md D5; internal, /client/*) ------
+
+export type {
+  ClientExecutorFrame,
+  ClientFrame,
+  ClientHeldDocument,
+  ClientHostFrame,
+  ClientInstallProgress,
+  ClientPushFrame,
+  ClientPushPayloads,
+  ClientPushTopic,
+  ClientStreamGap,
+} from '../../main/daemon/client-sessions'
+
+/** POST /client/sessions. `exitDaemonWhenClosed`: the daemon stops when this session expires and no other is open (§8.3). */
+export interface ClientSessionInput {
+  client: string
+  version: string
+  exitDaemonWhenClosed?: boolean
+}
+
+/** POST /client/sessions answer. `epoch` names the session's cursor space (resume with `?since=&epoch=`). */
+export interface ClientSessionCreated {
+  sessionId: string
+  epoch: string
+}
+
+/** PUT /client/sessions/:id/focus answer: the focused agent's id (resolved from a handle or name), or null. */
+export interface ClientSessionFocus {
+  sessionId: string
+  focus: string | null
+}
+
+export interface ClientDocumentReleased {
+  sessionId: string
+  agentId: string
+  released: true
+}
+
+export interface ClientSessionEndedResult {
+  sessionId: string
+  ended: true
+}

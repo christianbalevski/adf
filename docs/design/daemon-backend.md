@@ -118,6 +118,50 @@ Rules:
 
 Rationale: the existing `/events` stream is lossy for UI purposes (no `chat_updated`, `loop_seq`, `trigger_message`, `adf_file_created`, delta batches, full `tool_call_result`, BAM lifecycle events) and is global. Translating umbilical events back into executor events would be a second, drifting copy of the mapping in `agent-executor.ts:5423-5482`. The raw events already exist (`'agent-event'`), so forwarding them costs little. Domain frames, not IPC payloads, keep the daemon free of Studio's channel names and stay useful for the terminal app (richer chat view).
 
+#### D5.1 Client stream contract (W2-B)
+
+Code: `src/main/daemon/client-sessions.ts` (registry, frames, producers), `src/main/daemon/routes/client-routes.ts` (routes), `src/main/daemon/sse-wire.ts` (serializer); client methods `createClientSession`, `clientSessionEvents`, `setClientSessionFocus`, `holdClientSessionDocument`, `releaseClientSessionDocument`, `endClientSession`, `withClientSession` in `src/shared/daemon-client/client.ts`. Route bodies and answers are in `openapi.json`.
+
+Additions to the table above, all additive: `POST …/documents` takes `{filePath}` or `{agentId}`; `GET …/events` also takes `epoch` and `Last-Event-ID`, and without `since` replays from the session's first frame; the `host` frame also carries the lifecycle `payload` and `timestamp`; `POST /client/sessions` answers 201.
+
+Delivery:
+
+- Fan-out is per session. Each session has its own ring, cursor space (`epoch`), focus, documents and expiry clock; sessions share nothing but the serialized frame text. A slow, absent or expired session MUST NOT delay, drop or reorder frames of another session.
+- One SSE connection per session; a new connect replaces the open one. Frames of one agent arrive in emission order on that connection.
+- The ring holds the newest 4096 frames and at most 32 Mi serialized characters (the newest frame always stays). The stream writes until the socket refuses, then waits for `drain`; frames keep landing in the ring. A frame evicted before it was written MUST be announced: `stream.gap` `{reason: 'evicted', dropped, requestedCursor, oldestCursor, latestCursor, epoch}` precedes the next frame. Memory per session is the ring plus one 64 Ki-character write chunk.
+- The shared client's `EventStream` reports every `stream.gap`, including one in the middle of a live connection, through `onGap`.
+- `tool_call_result`: the focused session gets the full payload, as embedded IPC does (the executor caps tool output). Every other session gets `result: {isError}` plus `resultSize` and the frame field `stripped: 'tool_result'`; that is what `stripForRenderer` (`ipc/background-event-batch.ts`) keeps, so the bridge MUST take `resultSize` from the payload for a stripped frame.
+- Origin dedup: a request to `/agents/:id/*` with header `X-ADF-Client-Session: <id>` (`withClientSession`) does not echo `config_changed`, `file_updated` or `document_updated` back to that session, as embedded Studio never echoes its own edits; every other session gets them. A `PUT /agents/:id/document` raises `document_updated` (the event an agent's own `fs_write` of `document.md` raises), so other clients refresh through the same renderer path.
+- `trigger_error` and `startup_failed` host frames follow an `error` executor frame that RuntimeService already emitted (W1-A). The bridge MUST NOT synthesize a second `error` for them.
+
+Push topics. Each payload is the IPC payload of the named channel; `agentId`/`filePath` on the frame name the agent (null for daemon-wide topics). Pushes embedded Studio sends only for the open file are sent for every agent; the client filters.
+
+| Topic | Channel | Daemon source |
+|---|---|---|
+| `config_changed` | `DOC_AGENT_CONFIG_CHANGED` | `agent-runtime-signals` config change of a loaded agent; mesh-persisted defaults (`setConfigPersistedListener`) |
+| `inbox` | `INBOX_UPDATED` | mesh `inbox_updated`; adapter `inbound`; `DELETE /agents/:id/inbox` (empty inbox) |
+| `workspace_data` | `WORKSPACE_DATA_CHANGED` | workspace data-change callback of a loaded agent, 250 ms per scope |
+| `approvals` | `APPROVALS_CHANGED` | `approvalHub.subscribe`: the full snapshot, not a delta (the hub coalesces; a late or resynced client is correct after one frame) |
+| `mesh` | `MESH_EVENT` | mesh `mesh_event`; `station:<adapter>` `message_routed` on adapter inbound |
+| `inter_agent_message` | `AGENT_EVENT` `inter_agent_message` (focused agent) | mesh `foreground_incoming` |
+| `templates` | `TEMPLATES_CHANGED` | template writes (`/templates*`); the templates folder watcher needs a change in `daemon-agent-factory.ts` (open, see the W2-B report) |
+| `tracked_dirs` | `TRACKED_DIRS_CHANGED` | `TrackedDirWatcher` (W1-E) |
+| `file_renamed` | `FILE_RENAMED` | `TrackedDirWatcher`; RuntimeService `agent-file-renamed` / `agent-path-changed`; the same rename within 500 ms is sent once |
+| `agent_path_changed` | none (session state) | RuntimeService `agent-path-changed` |
+| `autostart`, `autostart_overflow` | none (no Studio push) | `TrackedDirWatcher` |
+| `adf_file_created` | the bridge runs `notifyAdfFileCreated` | `POST /registry/agents/:id/bring-home` success (`sys_create_adf` arrives as an `executor` frame) |
+| `mcp_install`, `adapter_install`, `sandbox_install` | `*_INSTALL_PROGRESS` | the admin install routes' package services (`withInstallProgress`); agent-driven installs push nothing, as in Studio |
+| `mcp_status` | `MCP_SERVER_STATUS_CHANGED` | loaded agent's `McpClientManager` `status-changed`, with `toolCount` |
+| `adapter_status` | `ADAPTER_STATUS_CHANGED` | loaded agent's `ChannelAdapterManager` `status-changed` |
+| `compute_phase`, `browser_session` | `COMPUTE_CONTAINER_PHASE`, `COMPUTE_BROWSER_SESSION` | compute service events |
+
+Sessions and documents:
+
+- A session expires 60 s after its stream disconnects, or after creation if it never connects. Expiry and `DELETE /client/sessions/:id` release every held document through `ClientDocumentHost.release(sessionId, agentId)`, then call each `onSessionEnded` listener with `{sessionId, client, reason: 'ended' | 'expired' | 'shutdown', documents}`. W2-A supplies the host with `ClientSessionRegistry.setDocumentHost` (or the `documents` option); `hold` MUST be idempotent per session and agent. Until then the default host holds running agents only (409 `document_unavailable` otherwise).
+- Orphan rule (§8.3): when an `exitDaemonWhenClosed` session expires, the daemon shuts down only if no other session is open and GET /version `startedBy` is `studio`; each decision is logged with its reason. `DELETE` of the session never stops the daemon: a quitting Studio decides that itself (§8.3).
+
+Wire serialization (`sse-wire.ts`, also used by `GET /events`): plain JSON values are preserved exactly. A key whose value is `undefined` (or a function or symbol) is omitted; consumers and the parity normalizer MUST treat a missing key as equal to `undefined`. `undefined` in an array becomes `null`; `NaN` and `±Infinity` become `null`; a BigInt becomes its decimal string; a reference cycle becomes the string `"[Circular]"`; `toJSON` applies (Date → ISO string, Buffer → `{type, data}`); Map, Set, other typed arrays, class instances and Errors become their own enumerable properties. The serializer never throws. For serializable input `GET /events` output is byte-identical to before.
+
 **D6. Studio maps frames to IPC pushes.** The event bridge in Studio main:
 
 - focused agent: `executor` frames → `AGENT_EVENT` unchanged; `host` trigger/startup errors → synthetic `error` on `AGENT_EVENT` (as `ipc/index.ts:3729, 4834, 4997`);

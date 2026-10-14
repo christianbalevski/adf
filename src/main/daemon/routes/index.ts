@@ -30,6 +30,8 @@ import type { GapRouteDeps } from './gap-deps'
 import { registerIdentityImportRoutes } from './identity-import-routes'
 import { registerFileRoutes } from './file-routes'
 import type { TrackedDirWatcher } from '../dir-watcher'
+import { registerClientRoutes } from './client-routes'
+import type { ClientSessionRegistry } from '../client-sessions'
 
 /** Dependencies of route modules that DaemonHttpApiOptions does not carry. Every field is optional. */
 export interface DaemonRouteDeps {
@@ -43,6 +45,8 @@ export interface DaemonRouteDeps {
   rawFileBodyLimit?: number
   /** POST /files/import byte limit (default 1 GiB, ADF_DAEMON_IMPORT_BODY_LIMIT_MB). */
   importBodyLimit?: number
+  /** Client sessions and their event stream (client-sessions.ts), fed by the composition root. Absent: one fed by the runtime and the approvals hub. */
+  clientSessions?: ClientSessionRegistry
 }
 
 export interface DaemonRouteContext {
@@ -69,6 +73,7 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerJobRoutes,
   registerIdentityImportRoutes,
   registerFileRoutes,
+  registerClientRoutes,
 ]
 
 export function registerDaemonRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
