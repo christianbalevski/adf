@@ -173,11 +173,14 @@ describe('mesh server and peers', () => {
     daemon.routes.set('GET /network/server', () => ({ running: false, port: 7295, host: '127.0.0.1' }))
     daemon.routes.set('POST /network/server/start', () => ({ success: false, running: false, port: 7295, host: '127.0.0.1' }))
     expect(await invoke(IPC.MESH_SERVER_START)).toEqual({ success: false, running: false, port: 7295, host: '127.0.0.1', error: 'Failed to start server' })
+    expect(requests('POST', '/network/server/start').map((r) => r.query)).toEqual([{ persist: '0' }])
   })
 
   it('MESH_SERVER_STOP and _RESTART answer the embedded shape; no mesh server reads as embedded with none', async () => {
     daemon.routes.set('POST /network/server/stop', () => ({ success: true, running: false, port: 7295, host: '127.0.0.1' }))
     expect(await invoke(IPC.MESH_SERVER_STOP)).toEqual({ success: true, running: false, port: 7295, host: '127.0.0.1' })
+    // Studio's start/stop leave meshServerEnabled alone, as embedded (the CLI's persist).
+    expect(requests('POST', '/network/server/stop').map((r) => r.query)).toEqual([{ persist: '0' }])
     daemon.routes.set('POST /network/server/restart', () => ({ success: true, running: true, port: 7295, host: '127.0.0.1' }))
     expect(await invoke(IPC.MESH_SERVER_RESTART)).toEqual({ success: true, running: true, port: 7295, host: '127.0.0.1' })
     daemon.routes.set('GET /network/server', () => ({ status: 503, body: { error: 'Network service is not configured.', code: 'unavailable' } }))

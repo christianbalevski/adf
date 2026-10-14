@@ -8377,8 +8377,20 @@
           "Network"
         ],
         "summary": "Start the mesh HTTP server (persisted)",
-        "description": "The mesh server (port 7295 by default, separate from this API) serves agent cards, health, ALF inbox delivery and agent web/API routes under /agents/{handle}/*. It is on by default; this persists meshServerEnabled: true. No body.",
+        "description": "The mesh server (port 7295 by default, separate from this API) serves agent cards, health, ALF inbox delivery and agent web/API routes under /agents/{handle}/*. It is on by default; this persists meshServerEnabled: true. No body. With `persist=0` the setting is left as it is.",
         "operationId": "startMeshServer",
+        "parameters": [
+          {
+            "name": "persist",
+            "in": "query",
+            "required": false,
+            "description": "`0` or `false`: change the running server only and leave meshServerEnabled as it is (Studio's start/stop, as embedded Studio). Default `1`.",
+            "schema": {
+              "type": "string",
+              "enum": ["1", "0", "true", "false"]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Started",
@@ -8414,8 +8426,20 @@
           "Network"
         ],
         "summary": "Stop the mesh HTTP server (persisted)",
-        "description": "Persists meshServerEnabled: false, so it stays off across restarts until started again. No body.",
+        "description": "Persists meshServerEnabled: false, so it stays off across restarts until started again. No body. With `persist=0` only the running server stops; the setting is left as it is.",
         "operationId": "stopMeshServer",
+        "parameters": [
+          {
+            "name": "persist",
+            "in": "query",
+            "required": false,
+            "description": "`0` or `false`: change the running server only and leave meshServerEnabled as it is (Studio's start/stop, as embedded Studio). Default `1`.",
+            "schema": {
+              "type": "string",
+              "enum": ["1", "0", "true", "false"]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Stopped",

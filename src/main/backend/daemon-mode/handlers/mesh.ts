@@ -277,6 +277,9 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
   },
 
   // --- mesh HTTP server ----------------------------------------------------------------
+  // Start/stop change the running server only (persist=0): embedded Studio
+  // does not write meshServerEnabled, so the next daemon start brings the
+  // server back as before. The CLI's start/stop persist (the route default).
   [IPC.MESH_SERVER_STATUS]: async (ctx) =>
     (await serverStatus(ctx)) ?? { running: false, port: DEFAULT_MESH_PORT, host: DEFAULT_MESH_HOST },
 
@@ -299,7 +302,7 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
     if (current.running) return { success: true, running: true, port: current.port, host: current.host }
     const client = await ctx.ready()
     try {
-      const s = await client.request<ServerStatus>('POST', '/network/server/start', { timeoutMs: 60_000 })
+      const s = await client.request<ServerStatus>('POST', '/network/server/start', { query: { persist: 0 }, timeoutMs: 60_000 })
       return {
         success: s.running,
         running: s.running,
@@ -318,7 +321,7 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
   [IPC.MESH_SERVER_STOP]: async (ctx) => {
     const client = await ctx.ready()
     try {
-      const s = await client.request<ServerStatus>('POST', '/network/server/stop', { timeoutMs: 60_000 })
+      const s = await client.request<ServerStatus>('POST', '/network/server/stop', { query: { persist: 0 }, timeoutMs: 60_000 })
       return { success: true, running: false, port: s.port, host: s.host }
     } catch (err) {
       if (noServer(err)) return { success: false, error: 'No mesh server' }

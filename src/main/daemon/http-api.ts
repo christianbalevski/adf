@@ -145,8 +145,9 @@ export interface DaemonNetworkService {
   disableMesh?(): Promise<Record<string, unknown>> | Record<string, unknown>
   getRecentTools?(limit?: number): Record<string, unknown>
   getServerStatus?(): Record<string, unknown>
-  startServer?(): Promise<Record<string, unknown>> | Record<string, unknown>
-  stopServer?(): Promise<Record<string, unknown>> | Record<string, unknown>
+  /** `persist: false` (Studio's MESH_SERVER_START/STOP) leaves meshServerEnabled as it is. */
+  startServer?(opts?: { persist?: boolean }): Promise<Record<string, unknown>> | Record<string, unknown>
+  stopServer?(opts?: { persist?: boolean }): Promise<Record<string, unknown>> | Record<string, unknown>
   restartServer?(): Promise<Record<string, unknown>> | Record<string, unknown>
   getLanAddresses?(): unknown
   /** `force` (the refresh button) waits for a full scan. */
@@ -1221,21 +1222,25 @@ export function createDaemonHttpApi(
     return opts.networkService.getServerStatus()
   })
 
-  server.post('/network/server/start', async (request, reply) => {
+  server.post<{ Querystring: { persist?: string } }>('/network/server/start', async (request, reply) => {
     if (!opts.networkService) return unavailable(reply, 'Network service is not configured.')
     if (!opts.networkService.startServer) return methodNotAllowed(reply, 'Mesh server start is not configured.')
+    const persist = request.query.persist
+    if (persist !== undefined && !['1', '0', 'true', 'false'].includes(persist)) return badRequest(reply, 'persist must be 1, 0, true or false')
     try {
-      return await opts.networkService.startServer()
+      return await opts.networkService.startServer({ persist: persist !== '0' && persist !== 'false' })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
   })
 
-  server.post('/network/server/stop', async (request, reply) => {
+  server.post<{ Querystring: { persist?: string } }>('/network/server/stop', async (request, reply) => {
     if (!opts.networkService) return unavailable(reply, 'Network service is not configured.')
     if (!opts.networkService.stopServer) return methodNotAllowed(reply, 'Mesh server stop is not configured.')
+    const persist = request.query.persist
+    if (persist !== undefined && !['1', '0', 'true', 'false'].includes(persist)) return badRequest(reply, 'persist must be 1, 0, true or false')
     try {
-      return await opts.networkService.stopServer()
+      return await opts.networkService.stopServer({ persist: persist !== '0' && persist !== 'false' })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
