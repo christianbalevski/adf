@@ -1278,7 +1278,14 @@ export class AgentTemplatesService {
       ignored: (path: string, stats?: import('fs').Stats) =>
         !!stats?.isFile() && !path.endsWith('.adf')
     })
-    const bump = (): void => this.pushChanged()
+    // The service's own writes already notified (pushChanged): the watcher's
+    // event for the same file, which lands after awaitWriteFinish, would be a
+    // second refresh for one change, or none, depending on when the watcher
+    // became ready. Events within OWN_WRITE_QUIET_MS of an own write are that echo.
+    const bump = (): void => {
+      if (Date.now() - this.lastOwnWriteAt < OWN_WRITE_QUIET_MS) return
+      this.schedulePush()
+    }
     this.watcher.on('add', bump)
     this.watcher.on('change', bump)
     this.watcher.on('unlink', bump)
@@ -1293,8 +1300,15 @@ export class AgentTemplatesService {
     this.watcher = null
   }
 
-  /** Debounced TEMPLATES_CHANGED. Called by the watcher and after our own writes. */
+  /** Debounced TEMPLATES_CHANGED after the service's own writes (and the template review accept). */
   pushChanged(): void {
+    this.lastOwnWriteAt = Date.now()
+    this.schedulePush()
+  }
+
+  private lastOwnWriteAt = 0
+
+  private schedulePush(): void {
     if (this.notifyTimer) clearTimeout(this.notifyTimer)
     this.notifyTimer = setTimeout(() => {
       this.notifyTimer = null
@@ -1379,6 +1393,9 @@ function safeMtime(filePath: string): number {
 function validateExtraPath(path: string): string | null {
   return validateTemplateFilePath(path)
 }
+
+/** How long after its own write the service takes a folder event for that write's echo (awaitWriteFinish 500 ms plus polling). */
+const OWN_WRITE_QUIET_MS = 2_000
 
 /** One picked file for stageTemplateAddFiles: its base name and stat, or why it could not be read. */
 export type TemplateAddFileItem = { name: string; isFile: boolean; size: number } | { name: string; statError: string }
