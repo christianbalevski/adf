@@ -45,7 +45,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | ID | Workstream | Wave | Depends on | Status |
 |---|---|---|---|---|
 | W0-A | Channel map and settings-key classes | 0 | none | TODO |
-| W0-B | Shared daemon client | 0 | none | TODO |
+| W0-B | Shared daemon client | 0 | none | MERGED e23ec054 |
 | W0-C | Agent lease and runtime host registry | 0 | none | TODO |
 | W0-D | Daemon packaging, process control, `/version`, route hook | 0 | none | TODO |
 | W0-E | Backend selection at boot, Settings → Backend | 0 | W0-A (merge order) | MERGED c0305508 |
