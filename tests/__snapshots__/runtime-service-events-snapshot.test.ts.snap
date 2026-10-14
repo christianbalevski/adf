@@ -1,5 +1,19 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`RuntimeService umbilical /events output > a failed load 1`] = `""`;
+
+exports[`RuntimeService umbilical /events output > a second file with a loaded agent's id (W1-A changes it: refused before it is built) 1`] = `"agent.loaded source=system:lifecycle {autostart,filePath,handle,name}"`;
+
+exports[`RuntimeService umbilical /events output > a trigger error 1`] = `"agent.loaded source=system:lifecycle {autostart,filePath,handle,name}"`;
+
+exports[`RuntimeService umbilical /events output > agent off (W1-A changes it: the agent is unloaded, as in Studio) 1`] = `
+"agent.loaded source=system:lifecycle {autostart,filePath,handle,name}
+agent.state.changed source=system:unknown state=stopped {filePath,state}
+agent.state.changed source=system:unknown state=off {filePath,state}
+agent.state.changed source=system:unknown state=stopped {filePath,state}
+agent.unloaded source=system:lifecycle {filePath}"
+`;
+
 exports[`RuntimeService umbilical /events output > is unchanged for load, startup turn, chat turn, state change and unload 1`] = `
 "agent.loaded source=system:lifecycle {autostart,filePath,handle,name}
 context.injected source=agent:<id> {bytes,category,filePath}

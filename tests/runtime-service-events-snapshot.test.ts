@@ -4,7 +4,7 @@
  * daemon builder. W1-A adds host lifecycle events beside this stream; this
  * snapshot pins that the stream itself does not change.
  */
-import { mkdtempSync } from 'node:fs'
+import { copyFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
@@ -31,6 +31,7 @@ import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { AgentRuntimeBuilder } from '../src/main/runtime/agent-runtime-builder'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
 import { clearAllUmbilicalBuses } from '../src/main/runtime/umbilical-bus'
+import { createDispatch, createEvent } from '../src/shared/types/adf-event.types'
 
 afterAll(() => clearAllUmbilicalBuses())
 
@@ -77,6 +78,79 @@ describe('RuntimeService umbilical /events output', () => {
     runtime.setAgentDisplayState(ref.id, 'hibernate')
     await runtime.unloadAgent(ref.id)
 
+    expect(events.join('\n')).toMatchSnapshot()
+  })
+
+  // W1-A cases. Each was recorded on the pre-W1-A RuntimeService first; the
+  // snapshot of a case whose output W1-A changes says so in its name.
+
+  /** One agent-1 file, a runtime with the daemon builder and a recorder for its id. */
+  function scene(opts: { providerFactory?: () => MockLLMProvider } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-events-snapshot-'))
+    const filePath = join(dir, 'agent-1.adf')
+    const created = createHeadlessAgent({ filePath, name: 'agent-1', provider: new MockLLMProvider() })
+    const agentId = created.workspace.getAgentConfig().id
+    created.dispose()
+    const bus = new DaemonEventBus(5000)
+    registerDaemonEventBus(bus)
+    const events: string[] = []
+    let recording = true
+    bus.subscribe(envelope => { if (recording && envelope.event.agent_id === agentId) events.push(normalize(envelope.event)) })
+    const runtime = new RuntimeService({
+      settings: { get: (key: string) => (key === 'reviewedAgents' ? [agentId] : undefined) },
+      providerFactory: opts.providerFactory ?? (() => new MockLLMProvider({ tokensPerResponse: 10 })),
+      agentRuntimeBuilder: new AgentRuntimeBuilder(),
+    })
+    const stop = async () => {
+      recording = false
+      for (const a of runtime.listAgents()) await runtime.unloadAgent(a.id, { mode: 'immediate' }).catch(() => {})
+    }
+    return { dir, filePath, agentId, runtime, events, stop }
+  }
+
+  it('agent off (W1-A changes it: the agent is unloaded, as in Studio)', async () => {
+    const { filePath, runtime, events, stop } = scene()
+    const ref = await runtime.loadAgent(filePath)
+    runtime.setAgentDisplayState(ref.id, 'off')
+    await waitFor(() => events.some(e => e.includes('state=off')))
+    await new Promise(r => setTimeout(r, 300))
+    await stop()
+    expect(events.join('\n')).toMatchSnapshot()
+  })
+
+  it('a failed load', async () => {
+    const { filePath, runtime, events, stop } = scene({ providerFactory: () => { throw new Error('no provider here') } })
+    await expect(runtime.loadAgent(filePath)).rejects.toThrow('no provider here')
+    await stop()
+    expect(events.join('\n')).toMatchSnapshot()
+  })
+
+  it('a trigger error', async () => {
+    const { filePath, runtime, events, stop } = scene()
+    const ref = await runtime.loadAgent(filePath)
+    const agent = (runtime as unknown as { requireAgent(id: string): { agent: { executor: { executeTurn: unknown }; triggerEvaluator: { emit(e: string, d: unknown): void } } } }).requireAgent(ref.id).agent
+    const errors: unknown[] = []
+    const origError = console.error
+    console.error = (...args: unknown[]) => { errors.push(args) }
+    try {
+      agent.executor.executeTurn = async () => { throw new Error('turn exploded') }
+      agent.triggerEvaluator.emit('trigger', createDispatch(createEvent({ type: 'chat', source: 'test', data: { message: { seq: 0, role: 'user', content_json: [{ type: 'text', text: 'wake' }], created_at: 1 } } }), { scope: 'agent' }))
+      await new Promise(r => setTimeout(r, 200))
+    } finally {
+      console.error = origError
+    }
+    await stop()
+    expect(events.join('\n')).toMatchSnapshot()
+  })
+
+  it("a second file with a loaded agent's id (W1-A changes it: refused before it is built)", async () => {
+    const { dir, filePath, runtime, events, stop } = scene()
+    await runtime.loadAgent(filePath)
+    const copy = join(dir, 'agent-2.adf')
+    copyFileSync(filePath, copy)
+    await runtime.loadAgent(copy).catch(() => {})
+    await new Promise(r => setTimeout(r, 200))
+    await stop()
     expect(events.join('\n')).toMatchSnapshot()
   })
 })
