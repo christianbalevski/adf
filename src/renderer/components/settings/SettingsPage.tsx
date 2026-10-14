@@ -12,6 +12,7 @@ import { ProvidersPanel } from '../providers/ProvidersPanel'
 import { AboutTab } from './AboutTab'
 import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
+import { BackendSettings } from './BackendSettings'
 import { ContainerDestroyDialog, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
@@ -19,7 +20,7 @@ import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentAvatarMode } from '../orbital/agent-avatar'
 import { DocsLink, InfoHint } from '../common/DocsLink'
-import { DOCS } from '../../../shared/constants/docs-links'
+import { DOCS, guideUrl } from '../../../shared/constants/docs-links'
 import { useMeshStore } from '../../stores/mesh.store'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
 import type { ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget } from '../../../shared/types/compute.types'
@@ -44,8 +45,11 @@ const MESH_STATUS_EVENTS = new Set<MeshEvent['type']>([
   'lan_peer_expired',
 ])
 
+/** Sections plus Settings → Backend, which no dashboard tile deep-links to. */
+type SettingsTab = SettingsSection | 'backend'
+
 type SettingsNavItem = {
-  id: SettingsSection
+  id: SettingsTab
   label: string
   description: string
   keywords: string
@@ -88,6 +92,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
   {
     label: 'ADF Studio',
     items: [
+      { id: 'backend', label: 'Backend', description: 'Where agents run: in Studio or in an ADF daemon', keywords: 'daemon embedded local remote server url token', docs: guideUrl('settings', 'backend') },
       { id: 'about', label: 'About', description: 'Version, concepts, and links', keywords: 'help docs github format', docs: DOCS.index },
     ],
   },
@@ -95,8 +100,8 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
 
 const SETTINGS_NAV_ITEMS = SETTINGS_NAV_GROUPS.flatMap((group) => group.items)
 
-function SettingsNavIcon({ section }: { section: SettingsSection }) {
-  const paths: Record<SettingsSection, React.ReactNode> = {
+function SettingsNavIcon({ section }: { section: SettingsTab }) {
+  const paths: Record<SettingsTab, React.ReactNode> = {
     general: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-1.5-1H2.5V10h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 4.2l.06.06A1.7 1.7 0 0 0 8.5 4.6a1.7 1.7 0 0 0 1-1.5V3h4.05v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.6 9a1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.7 1Z" /></>,
     identity: <><circle cx="12" cy="8" r="4" /><path d="M4.5 21a7.5 7.5 0 0 1 15 0" /></>,
     agents: <><path d="M4 17V7l4 3 4-3v10" /><path d="M15 8h5M15 12h5M15 16h5" /></>,
@@ -108,6 +113,7 @@ function SettingsNavIcon({ section }: { section: SettingsSection }) {
     channels: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" /><path d="M8 9h8M8 13h5" /></>,
     networking: <><circle cx="12" cy="12" r="2" /><path d="M5.6 8.5a7.5 7.5 0 0 1 12.8 0M2.6 5.5a11.5 11.5 0 0 1 18.8 0M8.6 15.5a4 4 0 0 1 6.8 0" /></>,
     compute: <><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></>,
+    backend: <><rect x="4" y="4" width="16" height="6" rx="1.5" /><rect x="4" y="14" width="16" height="6" rx="1.5" /><path d="M8 7h.01M8 17h.01" /></>,
     about: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></>,
   }
 
@@ -1327,7 +1333,7 @@ export function SettingsPage() {
   const [autoApplyPromptUpdates, setAutoApplyPromptUpdates] = useState(false)
   const [mcpServers, setMcpServers] = useState<McpServerRegistration[]>([])
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
-  const [activeTab, setActiveTab] = useState<SettingsSection>('general')
+  const [activeTab, setActiveTab] = useState<SettingsTab>('general')
   const [settingsSearch, setSettingsSearch] = useState('')
   // '' = default (Documents/adf-agents); saved directly, not via the debounced bundle
   const [agentsFolder, setAgentsFolder] = useState('')
@@ -2218,6 +2224,9 @@ export function SettingsPage() {
 
           {/* About tab */}
           {activeTab === 'about' && <AboutTab />}
+
+          {/* Backend tab */}
+          {activeTab === 'backend' && <BackendSettings />}
 
           {/* Packages tab */}
           {activeTab === 'packages' && <PackagesTab

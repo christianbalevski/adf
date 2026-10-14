@@ -4,6 +4,7 @@ import type { AppUpdateState, FleetSettableState, NotificationsSnapshot } from '
 import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { AdfApi } from './api'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
+import type { BackendSettingsPatch } from '../shared/types/backend.types'
 
 const api: AdfApi = {
   // App
@@ -706,6 +707,10 @@ const api: AdfApi = {
 
   // Emergency stop
   emergencyStop: () => ipcRenderer.invoke(IPC.EMERGENCY_STOP),
+
+  // Settings → Backend
+  getBackendSettings: () => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_GET),
+  setBackendSettings: (patch: BackendSettingsPatch) => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_SET, patch),
 
   // Platform identifier ('darwin' | 'win32' | 'linux' | ...)
   platform: process.platform

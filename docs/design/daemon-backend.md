@@ -294,7 +294,7 @@ Latency: on loopback, a delta frame SHOULD reach `webContents.send` within 50 ms
 
 ### 8.2 Attach, version and conflicts
 
-New public route `GET /version` → `{version, clientApiVersion, settingsPath, dataDir, runtimeId, pid, startedBy: 'studio' | 'cli' | 'service'}`. `DaemonHost` passes the version.
+New authenticated route `GET /version` (it requires the daemon token like every other route; lead decision 2026-10-14, because `settingsPath`, `dataDir` and `pid` are not for unauthenticated callers. A daemon Studio cannot authenticate to is reported as "a daemon is running on port N but Studio cannot authenticate to it") → `{version, clientApiVersion, settingsPath, dataDir, runtimeId, pid, startedBy: 'studio' | 'cli' | 'service'}`. `DaemonHost` passes the version.
 
 Studio boot in `local` mode:
 

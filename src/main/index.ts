@@ -12,6 +12,10 @@ import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 import { initSpellcheckDictionaries } from './services/spellcheck-dictionaries.service'
 import { shutdownSandboxHosts } from './runtime/sandbox-host'
+import { getUserDataPath } from './utils/user-data-path'
+import { backendConfigPath, resolveBootBackend } from './backend/backend-config'
+import { registerBackendSettingsHandlers } from './backend/backend-settings-ipc'
+import { registerDaemonModeHandlers } from './backend/daemon-mode'
 
 // A console.log after the parent's stdout pipe is gone (app quitting, or the
 // dev harness restarting the main process underneath us) emits EIO/EPIPE on
@@ -496,7 +500,15 @@ app.whenReady().then(() => {
     app.once('before-quit', () => stopStallMonitor())
   }
 
-  registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
+  // Backend selection (design D9): decided once, before any handler exists.
+  // No studio-backend.json and no ADF_STUDIO_BACKEND means embedded, as before.
+  const backend = resolveBootBackend(backendConfigPath(getUserDataPath()), process.env)
+  if (backend.mode === 'embedded') {
+    registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
+  } else {
+    registerDaemonModeHandlers({ mode: backend.mode, ipcMain, app })
+  }
+  registerBackendSettingsHandlers(backend)
   registerOrbitalCacheHandlers(app.getPath('userData'))
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
   ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {

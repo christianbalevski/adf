@@ -419,7 +419,12 @@ export const IPC = {
   // Identity drafts: a keypair minted before the agent exists, so the home
   // composer can show its DID. Only { draftId, did } crosses IPC.
   IDENTITY_DRAFT_MINT: 'adf:identity:draft-mint',
-  IDENTITY_DRAFT_DISCARD: 'adf:identity:draft-discard'
+  IDENTITY_DRAFT_DISCARD: 'adf:identity:draft-discard',
+
+  // Settings → Backend (studio-backend.json). Registered in every backend
+  // mode. GET never returns the remote token; SET may carry a new one.
+  BACKEND_SETTINGS_GET: 'adf:backend:settings-get',
+  BACKEND_SETTINGS_SET: 'adf:backend:settings-set'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
