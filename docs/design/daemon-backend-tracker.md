@@ -49,7 +49,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W0-C | Agent lease and runtime host registry | 0 | none | TODO |
 | W0-D | Daemon packaging, process control, `/version`, route hook | 0 | none | MERGED |
 | W0-E | Backend selection at boot, Settings → Backend | 0 | W0-A (merge order) | MERGED c0305508 |
-| W0-F | Parity harness, embedded side | 0 | none | TODO |
+| W0-F | Parity harness, embedded side | 0 | none | MERGED |
 | W1-A | RuntimeService parity hooks | 1 | W0-C, W0-D | TODO |
 | W1-B | AgentRuntimeBuilder and mesh parity | 1 | W0-D | TODO |
 | W1-C | Daemon identity: runtime adoption, unlock cascade, app OAuth store, owner import | 1 | W0-D | TODO |
@@ -302,6 +302,10 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-A | `TEMPLATE_DELETE`: templates-trash vs OS trash semantics differ | W3-A |
 | W0-A | `fleetGroups`, `fleetStewards`, `fleetMapState` missing from `AppSettings` (`ipc.types.ts`) | W2-C |
 | W0-D | Pre-existing: the daemon's podman probe writes a stray `NUL` file in its working directory | W1-G (fixed) |
+| W0-F | Streaming bound (300 ms/slice) MAY be too tight on loaded CI; make it configurable | W2-C |
+| W0-F | Upserted tables (adf_meta/config/files/identity) exempt from row-order check; sort them by primary key before daemon diffs | W2-C |
+| W0-F | A child spawned with a clean env (no `NODE_OPTIONS`) is unfenced | W2-C |
+| W0-F | E3 candidate: `cleanupAllProcesses` never calls `AgentTemplatesService.stopWatcher` | W3-A |
 | W1-G | Liveness is pid + 120 s heartbeat (interim); replace with W0-C `holderLiveness` and fold markers into the host record | W0-C fold, after W0-C merges |
 | W1-G | Studio's 6 s teardown budget can expire during the 6 s stale-marker re-check, leaving containers running (safe direction) | W4-A |
 | W1-G | `leftRunning` and `containerUsers()` need UI in Settings → Compute and the reset confirmation | W3-D |
