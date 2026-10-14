@@ -85,16 +85,30 @@ describe('the daemon control port on an address of this host that is not loopbac
 })
 
 describe('DNS rebinding between the guard\'s lookup and the connection', () => {
-  it('before: the guard checks one answer, the connection makes its own lookup', async () => {
-    const server = createServer((_req, res) => { res.end('reached') })
-    servers.push(server)
-    await new Promise<void>((done) => server.listen(0, '127.0.0.1', () => done()))
-    const port = (server.address() as { port: number }).port
-    // The guard is told a public address; the connection does not use that
-    // answer (here it cannot even resolve the made-up name).
+  async function server(): Promise<{ port: number; hits: string[] }> {
+    const hits: string[] = []
+    const s = createServer((req, res) => { hits.push(req.url ?? ''); res.end('reached') })
+    servers.push(s)
+    await new Promise<void>((done) => s.listen(0, '127.0.0.1', () => done()))
+    return { port: (s.address() as { port: number }).port, hits }
+  }
+  afterEach(() => { delete process.env.ADF_DAEMON_PORT; dnsScript.clear() })
+
+  it('after: the connection resolves through the guard: a name only the checked lookup knows is reached', async () => {
+    const { port, hits } = await server()
+    dnsScript.set('pinned.adf-test.invalid', ['127.0.0.1'])
+    const result = await guardedFetch(`http://pinned.adf-test.invalid:${port}/x`, { maxBytes: 1024, timeoutMs: 5000, allowHttp: true })
+    expect(isFetchFailure(result) ? result.error : result.bytes.toString()).toBe('reached')
+    expect(hits).toEqual(['/x'])
+  })
+
+  it('after: an answer that changes to a refused address before the connection is refused, and never reached', async () => {
+    const { port, hits } = await server()
+    process.env.ADF_DAEMON_PORT = String(port)
+    // The guard's lookup sees a public address; the connection's sees loopback on the daemon port.
     dnsScript.set('rebind.adf-test.invalid', ['93.184.216.34', '127.0.0.1'])
-    const result = await guardedFetch(`http://rebind.adf-test.invalid:${port}/`, { maxBytes: 1024, timeoutMs: 5000, allowHttp: true })
-    expect(isFetchFailure(result)).toBe(true)
-    expect(isFetchFailure(result) && result.error).not.toMatch(/Blocked/)
+    const result = await guardedFetch(`http://rebind.adf-test.invalid:${port}/runtime`, { maxBytes: 1024, timeoutMs: 5000, allowHttp: true })
+    expect(isFetchFailure(result) && result.error).toMatch(/daemon control API/)
+    expect(hits).toEqual([])
   })
 })
