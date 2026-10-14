@@ -906,11 +906,26 @@
           "Agents"
         ],
         "summary": "Start an agent, loading it from a tracked folder when needed",
-        "description": "`id` may also name an agent that is not loaded: an .adf path, or an id / handle / name found in the tracked folders. The daemon loads it (review gate applies: 403) and starts it; `loaded` says whether it did. `startupTriggered` is true when the agent's start state fired its startup event. An identifier that matches several files answers 409 `ambiguous_agent` with the `candidates`: start one by its file path. No body.",
+        "description": "`id` may also name an agent that is not loaded: an .adf path, or an id / handle / name found in the tracked folders. The daemon loads it (review gate applies: 403) and starts it; `loaded` says whether it did. `startupTriggered` is true when the agent's start state fired its startup event. An identifier that matches several files answers 409 `ambiguous_agent` with the `candidates`: start one by its file path. No body. With `preflight=1` (a client-initiated start, as Studio's AGENT_START; autostart never asks for it) an agent that is not loaded yet has its provider checked first: a provider this daemon does not have answers 409 `provider_missing`, a failing check of a provider that needs a key it does not have 409 `provider_unconfigured`, any other failing check 409 `provider_check_failed`. Nothing is loaded then.",
         "operationId": "startAgent",
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "name": "preflight",
+            "in": "query",
+            "required": false,
+            "description": "`1` or `true`: check the agent's provider (network) before loading it. Ignored for an agent that is already loaded.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true",
+                "0",
+                "false"
+              ]
+            }
           }
         ],
         "responses": {
@@ -934,11 +949,18 @@
             "$ref": "#/components/responses/NotFound"
           },
           "409": {
-            "description": "The identifier matches several agent files (`ambiguous_agent`)",
+            "description": "The identifier matches several agent files (`ambiguous_agent`), or the `preflight` provider check failed (`provider_missing`, `provider_unconfigured`, `provider_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AmbiguousAgentResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/AmbiguousAgentResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    }
+                  ]
                 }
               }
             }
