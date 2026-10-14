@@ -36,6 +36,13 @@ function makeAgentFile(name: string, patch: Partial<AgentConfig> = {}): { filePa
   return { filePath, workspace }
 }
 
+function chat(text: string) {
+  return createDispatch(
+    createEvent({ type: 'chat', source: 'test', data: { message: { seq: 0, role: 'user', content_json: [{ type: 'text', text }], created_at: Date.now() } } }),
+    { scope: 'agent' },
+  )
+}
+
 function stdioServer(name: string, extra: Partial<McpServerConfig> = {}): McpServerConfig {
   return { name, transport: 'stdio', command: 'node', args: [`${name}.js`], source: 'custom', ...extra }
 }
@@ -360,21 +367,26 @@ describe('AgentRuntimeBuilder parity: interactive MCP OAuth', () => {
       expect(JSON.stringify(workspace.getLogs())).toContain('oauth_signin_pending')
       expect(flow).not.toHaveBeenCalled()
 
-      // The next turn raises the sign-in before it runs.
-      const turn = agent.dispatch(createDispatch(
-        createEvent({ type: 'chat', source: 'test', data: { message: { seq: 0, role: 'user', content_json: [{ type: 'text', text: 'hi' }], created_at: Date.now() } } }),
-        { scope: 'agent' },
-      ))
+      // A system-scope timer never raises it and is never held by it.
+      await agent.dispatch(createDispatch(
+        createEvent({ type: 'timer', source: 'test', data: {} } as never),
+        { scope: 'system', lambda: 'lib/none.ts:tick' },
+      )).catch(() => { /* no sandbox in this test: the lambda itself fails */ })
+      expect(agent.executor.getPendingApprovals()).toEqual([])
+
+      // The next LLM turn raises the sign-in and runs without waiting for it.
+      await agent.dispatch(chat('hi'))
+      await waitFor(() => provider.getCallCount() > 0 && agent.executor.getState() === 'idle')
       await waitFor(() => agent.executor.getPendingApprovals().some(a => a.name === MCP_OAUTH_SIGNIN_APPROVAL))
-      expect(provider.getCallCount()).toBe(0)
+      expect(agent.mcpManager?.getServerState('remote')?.status).toBe('needs_sign_in')
       agent.executor.resolveHilTask(agent.executor.getPendingApprovals()[0].requestId, true)
       await waitFor(() => agent.executor.getPendingApprovals().some(a => a.name === MCP_OAUTH_AUTHORIZE_APPROVAL))
       completeCallback()
-      await turn
-      expect(records.get('https://mcp.example.test/mcp')?.tokens?.access_token).toBe('d')
-      expect(provider.getCallCount()).toBeGreaterThan(0)
       // Write-time connect + the one after the sign-in.
-      expect(connect).toHaveBeenCalledTimes(2)
+      await waitFor(() => connect.mock.calls.length === 2)
+      expect(records.get('https://mcp.example.test/mcp')?.tokens?.access_token).toBe('d')
+      expect(agent.executor.getPendingApprovals()).toEqual([])
+      expect(agent.executor.getState()).toBe('idle')
     } finally {
       await agent.disposeAsync()
     }
@@ -511,5 +523,52 @@ describe('AgentRuntimeBuilder parity: interactive MCP OAuth', () => {
     await agent.disposeAsync()
     await result
     expect(aborted).toBe(true)
+  })
+})
+
+describe('AgentExecutor.requestApproval restoreState', () => {
+  class GatedProvider extends MockLLMProvider {
+    release!: () => void
+    private gate = new Promise<void>(resolve => { this.release = resolve })
+    override async createMessage(...args: Parameters<MockLLMProvider['createMessage']>) {
+      await this.gate
+      return super.createMessage(...args)
+    }
+  }
+
+  it('raised and settled during an active turn, it never changes the state', async () => {
+    const provider = new GatedProvider()
+    const { filePath, workspace } = makeAgentFile('agent-1')
+    const agent = await new AgentRuntimeBuilder().build({ workspace, filePath, config: workspace.getAgentConfig(), provider })
+    try {
+      const turn = agent.dispatch(chat('hi'))
+      await waitFor(() => agent.executor.isTurnActive() && agent.executor.getState() === 'thinking')
+      const decision = agent.executor.requestApproval('mcp_oauth_authorize', { server: 'remote' }, { canAlwaysApprove: false, restoreState: true })
+      expect(agent.executor.getState()).toBe('thinking')
+      const pending = agent.executor.getPendingApprovals()[0]
+      agent.executor.settleHilTask(pending.requestId, 'Authorization completed')
+      expect(await decision).toBe(false)
+      expect(agent.executor.getState()).toBe('thinking')
+      provider.release()
+      await turn
+      await waitFor(() => agent.executor.getState() === 'idle')
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('raised with no turn running, it shows awaiting_approval and restores the prior state', async () => {
+    const { filePath, workspace } = makeAgentFile('agent-1')
+    const agent = await new AgentRuntimeBuilder().build({ workspace, filePath, config: workspace.getAgentConfig(), provider: new MockLLMProvider() })
+    try {
+      const before = agent.executor.getState()
+      const decision = agent.executor.requestApproval('mcp_oauth_signin', { server: 'remote' }, { canAlwaysApprove: false, restoreState: true })
+      expect(agent.executor.getState()).toBe('awaiting_approval')
+      agent.executor.resolveHilTask(agent.executor.getPendingApprovals()[0].requestId, true)
+      expect(await decision).toBe(true)
+      expect(agent.executor.getState()).toBe(before)
+    } finally {
+      await agent.disposeAsync()
+    }
   })
 })

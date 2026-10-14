@@ -1259,7 +1259,7 @@ export class AgentExecutor extends EventEmitter {
     name: string,
     input: unknown,
     meta?: ApprovalMeta,
-    opts?: { umbilicalReason?: string }
+    opts?: { umbilicalReason?: string; setAwaitingState?: boolean }
   ): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }> {
     const taskId = `task_${nanoid(12)}`
     const argsStr = JSON.stringify(input ?? {})
@@ -1285,7 +1285,7 @@ export class AgentExecutor extends EventEmitter {
     const task = workspace.getTask(taskId)
     if (task) this.onTaskCreated?.(task)
 
-    this.setState('awaiting_approval')
+    if (opts?.setAwaitingState !== false) this.setState('awaiting_approval')
     this.emitEvent({
       type: 'tool_approval_request',
       payload: { requestId: taskId, taskId, name, input, ...approvalMeta },
@@ -1369,10 +1369,12 @@ export class AgentExecutor extends EventEmitter {
    * prompts (the gate always re-asks), so only one-shot approve/deny is offered —
    * and the server-side alwaysApproveTool guard refuses it via this meta too.
    *
-   * `opts.restoreState: true` puts the executor back in the state it had
-   * before the request instead of `tool_use`: for a request raised outside a
-   * turn (the daemon's deferred OAuth sign-in before a dispatch), where no
-   * turn would ever move it out of `tool_use`.
+   * `opts.restoreState: true` is for a request raised outside the turn's own
+   * tool flow (the daemon's deferred OAuth sign-in, which runs beside the
+   * turn). It never changes the state while a turn is active: the request
+   * shows `awaiting_approval` only when raised with no turn running, and on
+   * resolution the prior state comes back only if no turn is active and the
+   * state is still the one this request set. Never `tool_use`.
    */
   async requestApproval(
     name: string,
@@ -1380,11 +1382,13 @@ export class AgentExecutor extends EventEmitter {
     opts?: { canAlwaysApprove?: boolean; restoreState?: boolean }
   ): Promise<boolean> {
     const priorState = this.state
+    const besideTurn = opts?.restoreState === true
+    const ownsState = !besideTurn || !this.isTurnActive()
     const meta: ApprovalMeta | undefined = opts?.canAlwaysApprove === false
       ? { reason: 'restricted', canAlwaysApprove: false, alwaysApproveBlockedReason: 'One-time approval only for this request' }
       : undefined
     const { approved, taskId, feedback, settled } = await this.requestHilApproval(
-      name, input, meta, { umbilicalReason: 'shell_gate' }
+      name, input, meta, { umbilicalReason: 'shell_gate', setAwaitingState: ownsState }
     )
     const workspace = this.session.getWorkspace()
     if (settled) {
@@ -1397,7 +1401,10 @@ export class AgentExecutor extends EventEmitter {
     // If the agent was stopped while awaiting approval, don't resurrect it —
     // abort()/teardown resolve pending HIL as denied, and flipping state back
     // to tool_use here would contradict the stopped-agent guarantee.
-    if (this.state !== 'stopped') this.setState(opts?.restoreState ? priorState : 'tool_use')
+    if (this.state !== 'stopped') {
+      if (!besideTurn) this.setState('tool_use')
+      else if (ownsState && !this.isTurnActive() && this.state === 'awaiting_approval') this.setState(priorState)
+    }
     return approved
   }
 

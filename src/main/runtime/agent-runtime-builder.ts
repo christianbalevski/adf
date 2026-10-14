@@ -157,7 +157,7 @@ interface BuiltAgentState {
 interface McpConnectOpts {
   interactive: boolean
   deferSignIn?: boolean
-  /** Interactive outside a turn (before a dispatch): approvals restore the executor state. */
+  /** Interactive beside a turn (deferred sign-in): approvals use restoreState. */
   outsideTurn?: boolean
 }
 
@@ -190,7 +190,7 @@ interface McpRuntime {
   connect: (freshConfig: AgentConfig, serverName: string, reason: string, opts: McpConnectOpts) => Promise<McpConnectOutcome>
   reconcile: (nextConfig: AgentConfig) => Promise<void>
   abortInteractiveSignIns: () => void
-  /** Run the sign-ins deferred to this agent's next turn (host beforeDispatch). */
+  /** Raise the sign-ins deferred to this agent's next LLM turn (host beforeDispatch, not awaited). */
   runDeferredSignIns: () => Promise<void>
 }
 
@@ -382,8 +382,12 @@ export class AgentRuntimeBuilder {
         ],
         host: {
           // A sign-in deferred from a config write while no turn ran is
-          // raised here, before the agent's next turn.
-          beforeDispatch: () => mcpRuntime.runDeferredSignIns(),
+          // raised with the agent's next LLM turn (agent scope only: timers
+          // and lambdas never raise it). Not awaited: the turn proceeds and
+          // the server stays needs_sign_in until the request resolves.
+          beforeDispatch: (dispatch) => {
+            if (dispatch.scope === 'agent') void mcpRuntime.runDeferredSignIns()
+          },
           onTriggerError: (error, dispatch) => {
             const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
             try {
@@ -800,7 +804,7 @@ export class AgentRuntimeBuilder {
           // agent): it is raised before the agent's next turn. Visible as the
           // server status and in adf_logs until then.
           deferredSignIns.add(serverName)
-          const message = `Sign-in required for "${serverName}": the OAuth sign-in is requested before this agent's next turn, or when the agent calls mcp_restart("${serverName}").`
+          const message = `Sign-in required for "${serverName}": the OAuth sign-in is requested with this agent's next turn, or when the agent calls mcp_restart("${serverName}").`
           manager.markNeedsSignIn(serverCfg, message)
           console.warn(`[AgentRuntimeBuilder][MCP] ${message}`)
           try { workspace.insertLog('warn', 'mcp', 'oauth_signin_pending', serverName, message) } catch { /* non-fatal */ }
@@ -896,14 +900,11 @@ export class AgentRuntimeBuilder {
         signIns.clear()
       },
       runDeferredSignIns: () => {
-        // Single flight: every dispatch arriving meanwhile waits for it, so no
-        // turn starts while its sign-in request is open.
+        // Single flight; nobody waits on it. Its approvals run beside the
+        // turn (restoreState) and never touch the executor state mid-turn.
         if (deferredRun) return deferredRun
         if (deferredSignIns.size === 0) return Promise.resolve()
-        const executor = getAssembled()?.executor
-        // Mid-turn: the turn's own state machine owns the executor; retry
-        // before the next dispatch.
-        if (!executor || executor.isTurnActive()) return Promise.resolve()
+        if (!getAssembled()?.executor) return Promise.resolve()
         const names = [...deferredSignIns]
         deferredSignIns.clear()
         deferredRun = (async () => {
@@ -911,7 +912,7 @@ export class AgentRuntimeBuilder {
             const fresh = workspace.getAgentConfig()
             if (!fresh.mcp?.servers?.some(s => s.name === name)) continue
             try {
-              await connectOneServer(fresh, name, 'Sign-in before turn', { interactive: true, outsideTurn: true })
+              await connectOneServer(fresh, name, 'Sign-in with next turn', { interactive: true, outsideTurn: true })
             } catch (err) {
               console.error(`[AgentRuntimeBuilder][MCP] Deferred sign-in failed for "${name}":`, err instanceof Error ? err.message : err)
             }
