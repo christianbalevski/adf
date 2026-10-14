@@ -2,7 +2,6 @@ import { BrowserWindow, dialog, shell } from 'electron'
 import { DaemonError } from '../../../../shared/daemon-client'
 import type { McpRegistrationTestResult } from '../../../../shared/types/ipc.types'
 import { enc, type DaemonModeContext } from '../context'
-import { DaemonModeUnavailableError } from '../errors'
 import { errorText } from './common'
 import { awaitDaemonJob, startDaemonJob } from './jobs'
 
@@ -71,10 +70,6 @@ async function showContinueDialog(serverName: string, authUrlOpened: boolean): P
 }
 
 export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unknown): Promise<McpRegistrationTestResult> {
-  const oauth = (rawArgs as { registration?: { oauth?: unknown } } | null)?.registration?.oauth === true
-  if (ctx.mode === 'remote' && oauth) {
-    throw new DaemonModeUnavailableError('Signing in to an OAuth MCP server from Studio in remote mode', 'W4-B', 'the loopback callback relay, design §9.3')
-  }
   let jobId: string
   try {
     jobId = (await startDaemonJob(await ctx.ready(), '/admin/mcp/registration-test', rawArgs ?? {})).jobId
@@ -95,6 +90,19 @@ export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unkno
 
   const step = async (entry: McpInteraction): Promise<void> => {
     if (entry.kind === 'open_url') {
+      // Remote mode: the page's loopback callback is on the daemon's machine;
+      // the relay takes it on this computer and hands it over (§9.3, W4-B).
+      if (ctx.mode === 'remote' && ctx.remote) {
+        const label = `Connect test for "${entry.serverName ?? 'server'}"`
+        try {
+          const result = await ctx.remote.oauth.open(entry.url ?? '', label)
+          if (!result.opened) ctx.log.warn(`[MCP] ${label}: the authorization page was not opened: ${result.reason ?? 'refused'}`)
+        } catch (err) {
+          ctx.log.warn(`[MCP] ${label}: could not open the authorization page: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        await answer(entry.id)
+        return
+      }
       if (entry.url && isWebUrl(entry.url)) {
         ctx.log.log(`[MCP] Connect test for "${entry.serverName ?? 'server'}": opening its authorization page in the browser`)
         try { await shell.openExternal(entry.url) } catch (err) {

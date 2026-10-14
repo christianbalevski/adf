@@ -114,16 +114,16 @@ const RECIPE = [
 /** Lifetime burn totals live in the client key fleetMapState.burnTotals (§4.1). */
 const BURN_HYDRATE = 'Once per session, POST /fleet/burn/hydrate with the client key fleetMapState.burnTotals.'
 
-const REMOTE_FOLDER_PICKER = 'Daemon-side folder picker over tracked directories and GET /fs/browse (picker UI: W4-B); the native dialog would pick a path on the laptop.'
-const REMOTE_FILE_PICKER = 'Daemon-side .adf picker over tracked directories and GET /fs/browse (picker UI: W4-B); the native dialog would pick a path on the laptop.'
+const REMOTE_FOLDER_PICKER = 'Daemon-side folder picker (remote/picker.ts: REMOTE_PICKER_REQUEST to the renderer, which lists GET /fs/browse); the native dialog would pick a path on the laptop.'
+const REMOTE_FILE_PICKER = 'Daemon-side .adf picker (remote/picker.ts over GET /fs/browse); the native dialog would pick a path on the laptop.'
 
 export const CHANNEL_MAP = {
   // --- File operations -------------------------------------------------------
-  [IPC.FILE_OPEN]: variant('invoke', ['POST /client/sessions/:id/documents', 'PUT /client/sessions/:id/focus', 'GET /agents/:id/identity/password', 'GET /agents/:id/status', 'GET /files/agent', 'POST /files/relocate', 'PATCH /settings'], `${REMOTE_FILE_PICKER} A dropped or OS-opened laptop file is uploaded first (POST /files/import).`, {
+  [IPC.FILE_OPEN]: variant('invoke', ['POST /client/sessions/:id/documents', 'PUT /client/sessions/:id/focus', 'GET /agents/:id/identity/password', 'GET /agents/:id/status', 'GET /files/agent', 'POST /files/relocate', 'PATCH /settings', 'POST /files/import'], `${REMOTE_FILE_PICKER} A path the daemon does not have but this computer does (OS open, an old recent entry) is offered as an upload of a copy (POST /files/import) into a picked daemon folder; nothing is uploaded without the user's choice.`, {
     note: 'Native open dialog in Studio main; the handler records the client key recentFiles. A running agent is reattached, not reopened. Local mode: a reviewed file in the OS temp dir that is not loaded moves into the agents folder (GET /files/agent, POST /files/relocate).',
   }),
   [IPC.FILE_SAVE]: proxied('invoke', ['POST /agents/:id/checkpoint']),
-  [IPC.FILE_CREATE]: variant('invoke', ['POST /agents/create', 'POST /client/sessions/:id/documents'], 'The save dialog picks a laptop path; remote needs a daemon-side folder picker plus a name (GET /fs/browse; picker UI: W4-B).', {
+  [IPC.FILE_CREATE]: variant('invoke', ['POST /agents/create', 'POST /client/sessions/:id/documents'], 'The save dialog would pick a laptop path: the daemon-side picker picks a folder on the daemon host and a name (remote/picker.ts, kind save-adf), asking before it replaces a file.', {
     note: 'Save dialog in Studio main, then create (directory + name). The created file becomes the open file, not running; the handler records recentFiles.',
   }),
   [IPC.FILE_CREATE_QUICK]: proxied('invoke', ['POST /agents/create', 'POST /client/sessions/:id/documents', 'GET /files/agents-folder'], {
@@ -339,7 +339,7 @@ export const CHANNEL_MAP = {
 
   // --- MCP -------------------------------------------------------------------
   [IPC.MCP_PROBE_SERVER]: proxied('invoke', ['POST /admin/mcp/probe']),
-  [IPC.MCP_REGISTRATION_TEST]: variant('invoke', ['POST /admin/mcp/registration-test', 'GET /jobs/:jobId', 'POST /jobs/:jobId/cancel', 'GET /admin/mcp/interactions', 'POST /admin/mcp/interactions/:interactionId/continue'], 'OAuth remotes: Studio main runs the loopback callback and relays the code (§9.3).', {
+  [IPC.MCP_REGISTRATION_TEST]: variant('invoke', ['POST /admin/mcp/registration-test', 'GET /jobs/:jobId', 'POST /jobs/:jobId/cancel', 'GET /admin/mcp/interactions', 'POST /admin/mcp/interactions/:interactionId/continue', 'POST /oauth/relay'], 'OAuth sign-in: Studio main listens on the authorization URL\'s loopback redirect port on this computer and relays the callback to the daemon (remote/oauth-relay.ts, POST /oauth/relay); only https authorization pages are opened.', {
     note: 'Starts a job and polls GET /jobs/:jobId. Meanwhile polls GET /admin/mcp/interactions?jobId=: opens each open_url step with shell.openExternal, shows the native Continue dialog for each confirm step, and answers with …/continue.',
   }),
   [IPC.MCP_INSTALL_PACKAGE]: proxied('invoke', ['POST /admin/mcp/packages/npm/jobs', 'GET /jobs/:jobId'], { note: 'Starts a job and polls GET /jobs/:jobId. Progress arrives as MCP_INSTALL_PROGRESS (mcp/install-progress.ts sends the ones the client stream cannot deliver).' }),
@@ -532,6 +532,13 @@ export const CHANNEL_MAP = {
   // --- Settings → Backend (W0-E) --------------------------------------------
   [IPC.BACKEND_SETTINGS_GET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; reads studio-backend.json.'),
   [IPC.BACKEND_SETTINGS_SET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; writes studio-backend.json (token as safe:).'),
+  [IPC.BACKEND_REMOTE_CHECK]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: the remote handshake (remote/connector.ts) against a draft URL, with the saved token only for the saved origin. Never returns the token.'),
+  [IPC.BACKEND_RESTART_STUDIO]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: app.relaunch, then the normal quit path.'),
+
+  // --- Remote mode: daemon-side picker (W4-B) -------------------------------
+  [IPC.REMOTE_PICKER_REQUEST]: local('push', 'Studio main asks the renderer for a daemon-side pick (remote/picker.ts); the answer comes back on REMOTE_PICKER_RESPOND.'),
+  [IPC.REMOTE_PICKER_RESPOND]: local('invoke', 'Settles the pick remote/picker.ts is waiting for; reads no daemon state. Outside daemon mode it answers false (backend-settings-ipc.ts).'),
+  [IPC.REMOTE_FS_BROWSE]: proxied('invoke', ['GET /fs/browse'], { note: 'Answers { error, code } instead of rejecting, so the picker shows it. Outside daemon mode it answers an error (backend-settings-ipc.ts).' }),
 
   // --- Overview, emergency stop, identity drafts -----------------------------
   [IPC.AGENT_VITALS]: proxied('invoke', ['GET /fleet/vitals']),

@@ -15096,6 +15096,112 @@
           }
         }
       }
+    },
+    "/oauth/relay": {
+      "post": {
+        "tags": [
+          "Providers & sign-in"
+        ],
+        "summary": "Relay an OAuth sign-in callback from a client on another machine",
+        "description": "For a client whose browser runs on another machine (Studio in remote mode): an OAuth flow the daemon runs (MCP sign-in, the MCP registration test) waits on a loopback callback of the daemon host, but the browser lands on the client's own loopback. The client takes that callback and posts its OAuth parameters here; the daemon delivers them to its own loopback callback with one GET (no redirect followed, the answer body is not returned). `redirectUri` must be http on 127.0.0.1, localhost or [::1] with an explicit port from 1024 to 65535 that is not the daemon's own; `params` may hold only code, state, error, error_description, error_uri and iss (strings of at most 8192 characters), and needs state plus code or error. The callback server checks state against its flow. Values are never logged.",
+        "operationId": "relayOAuthCallback",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "redirectUri",
+                  "params"
+                ],
+                "properties": {
+                  "redirectUri": {
+                    "type": "string",
+                    "description": "The authorization URL's redirect_uri, e.g. http://127.0.0.1:53817/callback"
+                  },
+                  "params": {
+                    "type": "object",
+                    "description": "The callback query's OAuth parameters",
+                    "properties": {
+                      "code": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string"
+                      },
+                      "error": {
+                        "type": "string"
+                      },
+                      "error_description": {
+                        "type": "string"
+                      },
+                      "error_uri": {
+                        "type": "string"
+                      },
+                      "iss": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "example": {
+                "redirectUri": "http://127.0.0.1:53817/callback",
+                "params": {
+                  "code": "c0de",
+                  "state": "s7a7e"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The callback answered; `delivered` is true for a 2xx answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "delivered",
+                    "status"
+                  ],
+                  "properties": {
+                    "delivered": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "example": {
+                  "delivered": true,
+                  "status": 200
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "502": {
+            "description": "Nothing answers at the redirect URI on the daemon host (the sign-in timed out or ended). `code: relay_unreachable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

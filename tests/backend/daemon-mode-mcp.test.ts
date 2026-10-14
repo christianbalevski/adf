@@ -412,19 +412,32 @@ describe('McpOAuthAuthorizeOpener (mcp_oauth_authorize)', () => {
     expect(opened).toEqual(['https://auth.example.test/a?s=1'])
   })
 
-  it('remote mode opens nothing (the callback is on the daemon machine) and says why', async () => {
+  it('remote mode opens the page through the callback relay, never directly (W4-B)', async () => {
     const warnings: string[] = []
     const opened: string[] = []
+    const relayed: string[] = []
     const opener = new McpOAuthAuthorizeOpener({
       mode: 'remote',
       fetchInput: async () => ({ server: 'docs', authorize_url: 'https://auth.example.test/a' }),
       openExternal: (url) => { opened.push(url) },
+      openRemote: async (url) => { relayed.push(url); return { opened: true } },
       log: { log: () => {}, warn: (m) => { warnings.push(m) } },
     })
     await opener.apply({ pending: [], history: [] })
     await opener.apply({ pending: [entry('r')], history: [] })
     expect(opened).toEqual([])
-    expect(warnings[0]).toMatch(/W4-B/)
+    expect(relayed).toEqual(['https://auth.example.test/a'])
+    // Without a relay remote mode opens nothing and says why.
+    const bare = new McpOAuthAuthorizeOpener({
+      mode: 'remote',
+      fetchInput: async () => ({ server: 'docs', authorize_url: 'https://auth.example.test/b' }),
+      openExternal: (url) => { opened.push(url) },
+      log: { log: () => {}, warn: (m) => { warnings.push(m) } },
+    })
+    await bare.apply({ pending: [], history: [] })
+    await bare.apply({ pending: [entry('r2')], history: [] })
+    expect(opened).toEqual([])
+    expect(warnings[0]).toMatch(/no relay is set up/)
   })
 
   it('daemon mode wires it to the approvals snapshots: GET /approvals/input for the URL, shell.openExternal to open it', async () => {

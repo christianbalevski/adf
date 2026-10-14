@@ -421,6 +421,17 @@ export const IPC = {
   IDENTITY_DRAFT_MINT: 'adf:identity:draft-mint',
   IDENTITY_DRAFT_DISCARD: 'adf:identity:draft-discard',
 
+  // Remote mode (W4-B, design §9.3): the daemon-side picker. Main asks the
+  // renderer for a pick (push), the renderer lists the daemon's folders
+  // through GET /fs/browse and answers with the chosen daemon path.
+  REMOTE_PICKER_REQUEST: 'adf:remote:picker-request',
+  REMOTE_PICKER_RESPOND: 'adf:remote:picker-respond',
+  REMOTE_FS_BROWSE: 'adf:remote:fs-browse',
+  // Settings → Backend, remote daemon: test a URL and token (handshake only),
+  // and restart Studio so a saved backend applies. Registered in every mode.
+  BACKEND_REMOTE_CHECK: 'adf:backend:remote-check',
+  BACKEND_RESTART_STUDIO: 'adf:backend:restart-studio',
+
   // Settings → Backend (studio-backend.json). Registered in every backend
   // mode. GET never returns the remote token; SET may carry a new one.
   BACKEND_SETTINGS_GET: 'adf:backend:settings-get',

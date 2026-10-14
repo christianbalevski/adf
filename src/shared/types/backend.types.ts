@@ -83,3 +83,48 @@ export type BackendSettingsErrorCode =
 export type BackendSettingsSaveResult =
   | { ok: true; view: BackendSettingsView; notices: string[] }
   | { ok: false; code: BackendSettingsErrorCode; error: string }
+
+// --- Remote mode (design §9, tracker W4-B) ---------------------------------
+
+/** Settings → Backend "Test connection": a draft URL and token, or the saved ones. */
+export interface RemoteCheckRequest {
+  /** Default: the saved URL. */
+  url?: string
+  /** Default: the saved token, and only while `url` has the saved URL's origin. */
+  token?: string
+  /** The user ticked the plain-http confirmation for `url`'s origin. */
+  allowInsecureHttp?: boolean
+}
+
+export type RemoteCheckResult =
+  | { ok: true; url: string; version: string; startedBy: string }
+  | { ok: false; problem: string; error: string }
+
+/** What the daemon-side picker picks (§9.3): an agent file, a folder, or a folder plus a new file name. */
+export type RemotePickKind = 'open-adf' | 'folder' | 'save-adf'
+
+/** Main asks the renderer for a daemon-side pick. Paths are on the daemon's machine. */
+export interface RemotePickRequest {
+  requestId: string
+  kind: RemotePickKind
+  title: string
+  /** The daemon's host, as the picker names it. */
+  host: string
+  /** save-adf: the proposed file name, without `.adf`. */
+  defaultName?: string
+}
+
+export type RemotePickAnswer =
+  | { path: string }
+  | { directory: string; name: string; replace?: boolean }
+
+/** GET /fs/browse (W1-E): folders and `.adf` files only, inside the daemon's browse roots. */
+export interface RemoteBrowseListing {
+  path: string | null
+  parent: string | null
+  roots: Array<{ path: string; kind: 'home' | 'tracked' | 'agents' | 'configured' }>
+  entries: Array<{ name: string; path: string; kind: 'directory' | 'adf'; size?: number; mtimeMs?: number }>
+  truncated: boolean
+}
+
+export type RemoteBrowseResult = RemoteBrowseListing | { error: string; code?: string }

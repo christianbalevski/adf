@@ -4,7 +4,7 @@ import type { AppUpdateState, FleetSettableState, NotificationsSnapshot } from '
 import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { AdfApi } from './api'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
-import type { BackendSettingsPatch } from '../shared/types/backend.types'
+import type { BackendSettingsPatch, RemoteCheckRequest, RemotePickAnswer, RemotePickRequest } from '../shared/types/backend.types'
 
 const api: AdfApi = {
   // App
@@ -711,6 +711,17 @@ const api: AdfApi = {
   // Settings → Backend
   getBackendSettings: () => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_GET),
   setBackendSettings: (patch: BackendSettingsPatch) => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_SET, patch),
+  checkRemoteBackend: (request: RemoteCheckRequest) => ipcRenderer.invoke(IPC.BACKEND_REMOTE_CHECK, request),
+  restartStudio: () => ipcRenderer.invoke(IPC.BACKEND_RESTART_STUDIO),
+
+  // Remote mode: daemon-side picker
+  onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, request: RemotePickRequest) => callback(request)
+    ipcRenderer.on(IPC.REMOTE_PICKER_REQUEST, handler)
+    return () => ipcRenderer.removeListener(IPC.REMOTE_PICKER_REQUEST, handler)
+  },
+  respondRemotePicker: (requestId: string, answer: RemotePickAnswer | null) => ipcRenderer.invoke(IPC.REMOTE_PICKER_RESPOND, requestId, answer),
+  browseRemoteFolder: (args: { path?: string; showHidden?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_FS_BROWSE, args),
 
   // Platform identifier ('darwin' | 'win32' | 'linux' | ...)
   platform: process.platform

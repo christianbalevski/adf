@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain as electronIpcMain, shell, type IpcMain } from 'electron'
 import { join } from 'node:path'
 import type { StudioBackendMode } from '../../../shared/types/backend.types'
-import type { AgentStatus, AgentSummary, DaemonClient } from '../../../shared/daemon-client'
+import { DaemonError, type AgentStatus, type AgentSummary, type DaemonClient } from '../../../shared/daemon-client'
 import type { NotificationsSnapshot } from '../../../shared/types/ipc.types'
 import { IPC } from '../../../shared/constants/ipc-channels'
 import { BACKEND_ENV_OVERRIDE } from '../backend-config'
@@ -25,6 +25,10 @@ import { ClientSettingsStore, clientSettingsPath } from './settings'
 import { InstallProgressRelay } from './mcp/install-progress'
 import { McpOAuthAuthorizeOpener } from './mcp/oauth-authorize'
 import { ConnectionStatusUi, connectionProblem, openDaemonLog } from './status-ui'
+import { REMOTE_MODE_HANDLERS } from './remote/handlers'
+import { OAuthCallbackRelay } from './remote/oauth-relay'
+import { RemotePicker } from './remote/picker'
+import { uploadFile, type RemoteServices } from './remote/services'
 
 /**
  * Daemon-mode IPC registration (design D1, §3): the alternative to
@@ -62,9 +66,17 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.ORBITAL_CACHE_PUT,
   IPC.BACKEND_SETTINGS_GET,
   IPC.BACKEND_SETTINGS_SET,
+  IPC.BACKEND_REMOTE_CHECK,
+  IPC.BACKEND_RESTART_STUDIO,
 ]
 
 export const RECOVERY_HINT = `To use embedded mode for this session, start Studio with ${BACKEND_ENV_OVERRIDE}=embedded.`
+
+/** Remote mode: Settings → Backend works without a daemon, so the URL, the token or the mode can be fixed there. */
+export const REMOTE_RECOVERY_HINT = `Settings → Backend works without the daemon: fix the remote daemon's URL or token there and use Test connection, or choose Embedded. ${RECOVERY_HINT}`
+
+/** COMPUTE_BROWSER_SESSION in remote mode (§9.3): the viewer is on the server's loopback, never opened here. */
+export const REMOTE_BROWSER_SESSION_SENTENCE = 'opened a browser in its container on the daemon host. Its viewer is on that host\'s loopback, so Studio cannot show it here; use a tunnel to the container\'s noVNC port, or Studio on that host.'
 
 /** How long a lost daemon connection may last before waiting chats are ended. */
 export const TURN_DISCONNECT_GRACE_MS = 15_000
@@ -193,10 +205,43 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   }
 
   const installs = new InstallProgressRelay((channel, payload) => output.send(channel, payload), log)
+
+  // Remote mode (W4-B): the daemon-side picker, the OAuth callback relay and
+  // uploads from this computer. Local mode needs none: the daemon shares
+  // this computer's files, browser and loopback.
+  const remoteServices: RemoteServices | null = deps.mode !== 'remote' ? null : (() => {
+    const host = (): string => {
+      try { return new URL(connection.baseUrl ?? '').host || 'the daemon host' } catch { return 'the daemon host' }
+    }
+    const picker = new RemotePicker({
+      host,
+      log,
+      send: (request) => {
+        const win = BrowserWindow.getFocusedWindow() ?? firstWindow()
+        if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return false
+        win.webContents.send(IPC.REMOTE_PICKER_REQUEST, request)
+        return true
+      },
+    })
+    const oauth = new OAuthCallbackRelay({
+      relay: async (body) => {
+        try {
+          return await (await started).request<{ delivered: boolean; status: number }>('POST', '/oauth/relay', { body })
+        } catch (err) {
+          return { delivered: false, status: err instanceof DaemonError ? err.status : null, error: err instanceof Error ? err.message : String(err) }
+        }
+      },
+      openExternal: (url) => shell.openExternal(url),
+      log,
+    })
+    return { picker, oauth, host, upload: uploadFile(deps.fetch ?? fetch) }
+  })()
+
   const mcpOAuth = new McpOAuthAuthorizeOpener({
     mode: deps.mode,
     fetchInput: async (filePath, approvalId) => (await started).request<{ input?: unknown }>('GET', '/approvals/input', { query: { filePath, approvalId } }).then((r) => r.input),
     openExternal: (url) => shell.openExternal(url),
+    ...(remoteServices ? { openRemote: (url: string, label: string) => remoteServices.oauth.open(url, label) } : {}),
     log,
   })
 
@@ -218,9 +263,25 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     openFile: hooks.openFile,
     log,
   })
+  // Remote mode: a browser session's viewer port is the server's loopback.
+  // Opening it here would load this computer's loopback, so the push is
+  // replaced by a notice (remote-unsupported, design §9.3).
+  const bridgeOutput: typeof output = deps.mode !== 'remote' ? output : {
+    send(channel: string, ...args: unknown[]) {
+      if (channel === IPC.COMPUTE_BROWSER_SESSION) {
+        const name = (args[0] as { agentName?: unknown } | undefined)?.agentName
+        const text = `${typeof name === 'string' && name ? name : 'An agent'} ${REMOTE_BROWSER_SESSION_SENTENCE}`
+        log.warn(`[Remote] ${text}`)
+        statusUi.notice(text)
+        return
+      }
+      output.send(channel, ...args)
+    },
+    sendAll: (channel: string, ...args: unknown[]) => output.sendAll(channel, ...args),
+  }
   bridge = new EventBridge({
     session,
-    output,
+    output: bridgeOutput,
     batcher,
     client: () => connection.current,
     onApprovals: (snapshot) => { approvals.apply(snapshot); void mcpOAuth.apply(snapshot) },
@@ -254,7 +315,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     openLog: () => { void openDaemonLog(connection.logFile, log) },
     reconnect,
   })
-  const statusUi = new ConnectionStatusUi(connection, { reconnect, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: RECOVERY_HINT }, log)
+  const statusUi = new ConnectionStatusUi(connection, { reconnect, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT }, log)
 
   const exitDaemonWhenClosed = deps.mode === 'local' && deps.keepDaemonRunning !== true
   const started: Promise<DaemonClient> = connection.client().then(async (client) => {
@@ -341,6 +402,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     sharedMnemonic: deps.sharedMnemonic ?? openSharedMnemonicStore,
     recordRecentFile,
     hooks,
+    remote: remoteServices,
     log,
   }
 
@@ -364,7 +426,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       continue
     }
     if (!isInvoke(entry)) continue
-    const handler = DAEMON_MODE_HANDLERS[channel]
+    // Remote mode: the remote variant first (remote/handlers.ts), else the shared one.
+    const handler = (deps.mode === 'remote' ? REMOTE_MODE_HANDLERS[channel] : undefined) ?? DAEMON_MODE_HANDLERS[channel]
     if (handler) {
       ipc.handle(channel, (event, ...args) => handler(ctx, event, ...args))
     } else {
@@ -392,6 +455,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     shutdownPromise ??= (async () => {
       statusUi.dispose()
       approvals.dispose()
+      remoteServices?.picker.cancelAll()
+      remoteServices?.oauth.closeAll()
       bridge.dispose()
       batcher.dispose()
       try {

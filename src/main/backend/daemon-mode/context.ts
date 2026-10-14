@@ -10,6 +10,7 @@ import type { SharedMnemonicStore } from '../../services/owner-secret-store'
 import type { DaemonModeSession } from './session'
 import type { ClientSettingsStore } from './settings'
 import type { InstallProgressRelay } from './mcp/install-progress'
+import type { RemoteServices } from './remote/services'
 
 /**
  * What every daemon-mode handler gets. Handlers hold no state of their own:
@@ -36,6 +37,8 @@ export interface DaemonModeContext {
   /** Records a recent file (menu Open Recent + OS list), in the client settings. */
   recordRecentFile(filePath: string): void
   hooks: { showMainWindow?: () => Electron.BrowserWindow | null; openFile?: (filePath: string) => void }
+  /** Remote mode's picker, OAuth relay and upload (remote/, W4-B); null or absent in local mode. */
+  remote?: RemoteServices | null
   log: Pick<Console, 'log' | 'warn' | 'error'>
 }
 
