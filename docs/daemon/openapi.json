@@ -14643,7 +14643,8 @@
               "connecting",
               "connected",
               "error",
-              "installing"
+              "installing",
+              "needs_sign_in"
             ]
           },
           "error": {
