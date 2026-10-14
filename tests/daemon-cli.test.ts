@@ -829,6 +829,18 @@ describe('daemon CLI', () => {
       expect(io.output()).not.toContain('alpha')
     })
 
+    it('identity import --i-have-a-backup states the previous phrase is backed up; unknown options are refused', async () => {
+      const bodies: unknown[] = []
+      const io = withPrompts(fakeIo(async (url, init) => {
+        if (init?.body) bodies.push(JSON.parse(String(init.body)))
+        if (url.endsWith('/identity')) return jsonResponse(ready)
+        return jsonResponse({ identity: ready, ownerDid: 'did:key:zOwner', previousOwnerDid: 'did:key:zOwner', switched: false, restamp: { restamped: 0, attested: 0, failures: [] }, reloaded: [], reloadFailures: [] })
+      }), [WORDS.join(' ')])
+      expect(await runCli(['identity', 'import', '--i-have-a-backup'], io)).toBe(0)
+      expect(bodies).toEqual([{ mnemonic: WORDS.join(' '), previousOwnerBackupConfirmed: true }])
+      expect(await runCli(['identity', 'import', '--yolo'], withPrompts(fakeIo(async () => jsonResponse(ready)), []))).toBe(1)
+    })
+
     it('identity import changes nothing unless "switch" is typed', async () => {
       let posts = 0
       const io = withPrompts(fakeIo(async (url) => {

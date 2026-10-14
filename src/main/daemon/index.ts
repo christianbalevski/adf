@@ -141,12 +141,20 @@ if (process.env.ADF_DAEMON_TOKEN) {
 // Behind a same-host reverse proxy every proxied request arrives from loopback,
 // so identity secrets and shutdown additionally need the per-run local proof
 // that only this machine's adf clients can read.
+// The proof is minted on every run: POST /identity/import (owner switch)
+// requires it in every mode, the other local-only routes only behind a proxy.
 const behindProxy = behindProxyFromEnv()
 let localProof: string | null = null
 if (behindProxy) {
   const minted = mintLocalProof(dirname(settingsPath), port)
   localProof = minted.proof
   console.log(`[ADF Daemon] Proxy mode (${BEHIND_PROXY_ENV}): identity and shutdown routes need the local proof in ${minted.path}; run those adf commands on this host`)
+} else {
+  try {
+    localProof = mintLocalProof(dirname(settingsPath), port).proof
+  } catch (err) {
+    console.error('[ADF Daemon] Could not write the local proof file; owner import (adf identity import) stays unavailable:', err instanceof Error ? err.message : err)
+  }
 }
 
 const ownerIdentity = new DaemonIdentity({

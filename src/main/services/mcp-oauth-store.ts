@@ -25,6 +25,7 @@
  * AdfWorkspace-shaped handle — both injected, so this module is usable from
  * Studio, the daemon builder, and tests.
  */
+import { createHash } from 'crypto'
 import type {
   McpOAuthStore,
   McpOAuthRecord,
@@ -173,21 +174,84 @@ export interface OAuthSecretBackendHandle {
 }
 
 /**
- * Daemon secret-backend account holding the app-level MCP OAuth blob for one
- * settings file. `scope` = settingsScope(settingsPath). The value has the
- * exact shape of Studio's `mcpOauthCredentials` secret, so the mode-switch
- * handover (design daemon-backend.md §11) moves it verbatim.
+ * Daemon secret-backend accounts for the app-level MCP OAuth records of one
+ * settings file (`scope` = settingsScope(settingsPath)):
+ *
+ *  - index  `mcp-oauth-credentials:<scope>`: `{"v":1,"servers":[<serverUrl>…]}`
+ *  - record `mcp-oauth-credentials:<scope>:<serverKey>`: one McpOAuthRecord as
+ *    JSON, `serverKey` = first 16 hex of sha256(serverUrl) (the exact blob key)
+ *
+ * Every value is chunked (`chunkedSecret*`): Windows Credential Manager caps a
+ * credential at 2560 bytes (1280 UTF-16 characters), less than one access +
+ * refresh JWT pair. Handover mapping (design daemon-backend.md §11): Studio's
+ * `mcpOauthCredentials` blob `Record<serverUrl, McpOAuthRecord>` is
+ * `exportBlob()` / `importBlob()`, one record per blob key, verbatim.
  */
 export function daemonAppOAuthAccount(scope: string): string {
   return `mcp-oauth-credentials:${scope}`
 }
 
+/** Record account for one server URL under `indexAccount`. */
+export function daemonAppOAuthRecordAccount(indexAccount: string, serverUrl: string): string {
+  return `${indexAccount}:${createHash('sha256').update(serverUrl).digest('hex').slice(0, 16)}`
+}
+
+/** Characters per keychain value; under the Windows 1280-character cap with room for the account metadata. */
+export const SECRET_CHUNK_CHARS = 1000
+
+/**
+ * Chunked secret value: the head account holds `{"v":1,"n":<chunks>}`, chunk
+ * i is at `<account>#<i>`. Chunks are written before the head, so a reader
+ * never sees a head that points at missing chunks from a complete write;
+ * chunks beyond a shorter new value are deleted afterwards.
+ */
+export function chunkedSecretWrite(backend: OAuthSecretBackendHandle, account: string, value: string): void {
+  const previous = chunkCount(backend, account)
+  const chunks: string[] = []
+  for (let i = 0; i < value.length; i += SECRET_CHUNK_CHARS) chunks.push(value.slice(i, i + SECRET_CHUNK_CHARS))
+  if (chunks.length === 0) chunks.push('')
+  chunks.forEach((chunk, i) => backend.set(`${account}#${i}`, chunk))
+  backend.set(account, JSON.stringify({ v: 1, n: chunks.length }))
+  for (let i = chunks.length; i < previous; i++) backend.delete(`${account}#${i}`)
+}
+
+/** The whole value, or null when absent or incomplete (a missing chunk). */
+export function chunkedSecretRead(backend: OAuthSecretBackendHandle, account: string): string | null {
+  const n = chunkCount(backend, account)
+  if (n === 0) return null
+  const parts: string[] = []
+  for (let i = 0; i < n; i++) {
+    const part = backend.get(`${account}#${i}`)
+    if (part === null) return null
+    parts.push(part)
+  }
+  return parts.join('')
+}
+
+export function chunkedSecretDelete(backend: OAuthSecretBackendHandle, account: string): void {
+  const n = chunkCount(backend, account)
+  backend.delete(account)
+  for (let i = 0; i < n; i++) backend.delete(`${account}#${i}`)
+}
+
+function chunkCount(backend: OAuthSecretBackendHandle, account: string): number {
+  const head = backend.get(account)
+  if (!head) return 0
+  try {
+    const parsed = JSON.parse(head) as { v?: unknown; n?: unknown }
+    return parsed?.v === 1 && typeof parsed.n === 'number' && Number.isInteger(parsed.n) && parsed.n > 0 && parsed.n < 1000 ? parsed.n : 0
+  } catch {
+    return 0
+  }
+}
+
 /**
  * App-level (daemon) store: the daemon's counterpart of AppSettingsOAuthStore,
- * on the daemon secret backend instead of safeStorage. Same blob, same URL
- * binding. Reads return nothing while the backend is locked; writes fail
- * plainly then (FileSecretBackend.set throws), so a token is never stored
- * anywhere unencrypted.
+ * on the daemon secret backend instead of safeStorage. Same records, same URL
+ * binding; one chunked account per server (see daemonAppOAuthAccount). Reads
+ * return nothing while the backend is locked; writes fail plainly then
+ * (FileSecretBackend.set throws), so a token is never stored anywhere
+ * unencrypted.
  */
 export class DaemonAppOAuthStore implements McpOAuthStore {
   constructor(
@@ -200,59 +264,83 @@ export class DaemonAppOAuthStore implements McpOAuthStore {
     return this.backend.isUnlocked()
   }
 
-  private readBlob(): OAuthBlob {
-    if (!this.backend.isUnlocked()) return {}
+  private readJson(account: string): unknown {
+    if (!this.backend.isUnlocked()) return null
     let raw: string | null
     try {
-      raw = this.backend.get(this.account)
+      raw = chunkedSecretRead(this.backend, account)
     } catch (err) {
-      // Keychain read failure: same contract as a corrupt blob (re-sign in).
+      // Keychain read failure: same contract as a corrupt record (re-sign in).
       // The message comes from the keychain binding, never from the value.
       console.warn(`[MCP][oauth] DaemonAppOAuthStore: secret store read failed (${err instanceof Error ? err.message : String(err)})`)
-      return {}
+      return null
     }
-    if (!raw) return {}
+    if (!raw) return null
     try {
-      const parsed = JSON.parse(raw)
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as OAuthBlob) : {}
+      return JSON.parse(raw)
     } catch {
-      return {}
+      return null
     }
-  }
-
-  private writeBlob(blob: OAuthBlob): void {
-    if (Object.keys(blob).length === 0) {
-      this.backend.delete(this.account)
-      return
-    }
-    this.backend.set(this.account, JSON.stringify(blob))
   }
 
   /** Every server URL with a stored record (metadata only, for status listings). */
   listServerUrls(): string[] {
-    return Object.keys(this.readBlob())
+    const index = this.readJson(this.account) as { v?: unknown; servers?: unknown } | null
+    return index?.v === 1 && Array.isArray(index.servers) ? index.servers.filter((s): s is string => typeof s === 'string') : []
+  }
+
+  private writeIndex(servers: string[]): void {
+    if (servers.length === 0) chunkedSecretDelete(this.backend, this.account)
+    else chunkedSecretWrite(this.backend, this.account, JSON.stringify({ v: 1, servers }))
+  }
+
+  private readRecord(serverUrl: string): McpOAuthRecord | undefined {
+    const record = this.readJson(daemonAppOAuthRecordAccount(this.account, serverUrl))
+    return record && typeof record === 'object' && !Array.isArray(record) ? record as McpOAuthRecord : undefined
+  }
+
+  private writeRecord(serverUrl: string, record: McpOAuthRecord | undefined): void {
+    const servers = this.listServerUrls()
+    if (record) {
+      chunkedSecretWrite(this.backend, daemonAppOAuthRecordAccount(this.account, serverUrl), JSON.stringify(record))
+      if (!servers.includes(serverUrl)) this.writeIndex([...servers, serverUrl])
+    } else {
+      chunkedSecretDelete(this.backend, daemonAppOAuthRecordAccount(this.account, serverUrl))
+      if (servers.includes(serverUrl)) this.writeIndex(servers.filter((s) => s !== serverUrl))
+    }
   }
 
   async get(serverUrl: string): Promise<McpOAuthRecord | undefined> {
-    const record = this.readBlob()[serverUrl]
+    const record = this.readRecord(serverUrl)
     if (record) assertRecordUrlBinding(record, serverUrl, 'DaemonAppOAuthStore.get')
     return record
   }
 
   async save(serverUrl: string, record: McpOAuthRecord): Promise<void> {
-    const blob = this.readBlob()
-    blob[serverUrl] = { ...record, updatedAt: record.updatedAt || Date.now() }
-    this.writeBlob(blob)
+    this.writeRecord(serverUrl, { ...record, updatedAt: record.updatedAt || Date.now() })
   }
 
   async invalidate(serverUrl: string, scope: McpOAuthInvalidateScope = 'all'): Promise<void> {
-    const blob = this.readBlob()
-    const existing = blob[serverUrl]
+    const existing = this.readRecord(serverUrl)
     if (!existing) return
-    const next = applyInvalidateScope(existing, scope)
-    if (next) blob[serverUrl] = next
-    else delete blob[serverUrl]
-    this.writeBlob(blob)
+    this.writeRecord(serverUrl, applyInvalidateScope(existing, scope))
+  }
+
+  /** Every record as Studio's `mcpOauthCredentials` blob (handover to embedded mode). */
+  exportBlob(): OAuthBlob {
+    const blob: OAuthBlob = {}
+    for (const url of this.listServerUrls()) {
+      const record = this.readRecord(url)
+      if (record) blob[url] = record
+    }
+    return blob
+  }
+
+  /** Store every record of a Studio `mcpOauthCredentials` blob (handover to local mode). */
+  importBlob(blob: OAuthBlob): void {
+    for (const [url, record] of Object.entries(blob)) {
+      if (record && typeof record === 'object') this.writeRecord(url, record)
+    }
   }
 }
 

@@ -9,10 +9,11 @@
  * every identity refresh (daemon-identity.ts). No HTTP route carries it.
  *
  * Entry: service `ADF` (KEYCHAIN_SERVICE), account
- * `studio-runtime:<settingsScope(settingsPath)>`, value = the JSON of
+ * `studio-runtime:<studioRuntimeScope(settingsPath)>`, value = the JSON of
  * StudioRuntimeEntryV1 (`serializeStudioRuntimeEntry`). The scope ties the
- * entry to one settings file, so a daemon on another settings file never
- * adopts it.
+ * entry to one settings file (canonical path: native realpath, case-folded
+ * on Windows and macOS), so a daemon on another settings file never adopts
+ * it, and two spellings of one path agree.
  *
  * The daemon adopts an entry only when ALL of these hold; otherwise it keeps
  * its own runtime and logs the reason (never key material):
@@ -28,7 +29,9 @@
  * Electron-free; Studio main imports the type and the serializer.
  */
 
-import { createPrivateKey, createPublicKey } from 'crypto'
+import { createHash, createPrivateKey, createPublicKey } from 'crypto'
+import { realpathSync } from 'fs'
+import { resolve } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
 import { extractRawX25519PublicKey } from '../crypto/envelope-crypto'
@@ -37,9 +40,36 @@ import { verifyAttestation } from '../services/attestation.service'
 export const STUDIO_RUNTIME_ACCOUNT_PREFIX = 'studio-runtime:'
 export const STUDIO_RUNTIME_ENTRY_VERSION = 1
 
-/** Keychain account for the settings file with this scope (`settingsScope` in provider-key-store.ts). */
+/** Keychain account for the settings file with this scope (studioRuntimeScope). */
 export function studioRuntimeAccount(scope: string): string {
   return `${STUDIO_RUNTIME_ACCOUNT_PREFIX}${scope}`
+}
+
+/**
+ * Canonical form of a settings path, as the agent lease canonicalizes agent
+ * files (W0-C): native realpath (resolves junctions, 8.3 names and the real
+ * case), long-path prefix stripped, then case-folded on Windows and macOS.
+ * Falls back to path.resolve for a path that does not exist yet.
+ */
+export function canonicalSettingsPath(settingsPath: string, platform: NodeJS.Platform = process.platform): string {
+  let path = resolve(settingsPath)
+  try {
+    path = realpathSync.native(path)
+  } catch { /* not created yet */ }
+  if (path.startsWith('\\\\?\\')) path = path.slice(4)
+  if (platform === 'win32') return path.replace(/\//g, '\\').toLowerCase()
+  if (platform === 'darwin') return path.normalize('NFC').toLowerCase()
+  return path
+}
+
+/**
+ * Scope of the `studio-runtime:` account: sha256 of the canonical settings
+ * path, first 12 hex characters. Studio main (W4-A) and the daemon MUST both
+ * use this function. (Not settingsScope: changing that one would orphan the
+ * provider keys and daemon runtime keys already stored under it.)
+ */
+export function studioRuntimeScope(settingsPath: string, platform: NodeJS.Platform = process.platform): string {
+  return createHash('sha256').update(canonicalSettingsPath(settingsPath, platform)).digest('hex').slice(0, 12)
 }
 
 /**
@@ -89,6 +119,8 @@ export type StudioRuntimeRejectReason =
   | 'bad_delegation'
   | 'runtime_did_mismatch'
   | 'enc_key_mismatch'
+  /** An entry exists only under the uncanonicalized path's scope (written by a Studio build that did not canonicalize). */
+  | 'scope_mismatch'
 
 /** A verified entry, decoded for use. Never log or serialize it. */
 export interface AdoptedStudioRuntime {
@@ -121,6 +153,31 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
 }
 
+/**
+ * The attestation fields only (issuer, subject, role, issued_at, expires_at,
+ * scope, signature), so nothing else in the entry rides along into settings
+ * reads or /ping. Verification runs on this copy.
+ */
+function normalizeDelegation(raw: unknown): AlfAttestation | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const d = raw as Record<string, unknown>
+  for (const field of ['issuer', 'subject', 'role', 'issued_at', 'signature'] as const) {
+    if (!isNonEmptyString(d[field])) return null
+  }
+  for (const field of ['expires_at', 'scope'] as const) {
+    if (d[field] !== undefined && typeof d[field] !== 'string') return null
+  }
+  return {
+    issuer: d.issuer as string,
+    subject: d.subject as string,
+    role: d.role as string,
+    issued_at: d.issued_at as string,
+    ...(d.expires_at !== undefined ? { expires_at: d.expires_at as string } : {}),
+    ...(d.scope !== undefined ? { scope: d.scope as string } : {}),
+    signature: d.signature as string,
+  }
+}
+
 /** Verify a raw keychain value against the settings file (see module doc). */
 export function verifyStudioRuntimeEntry(raw: string, expected: StudioRuntimeExpectations): StudioRuntimeVerification {
   let parsed: unknown
@@ -139,10 +196,8 @@ export function verifyStudioRuntimeEntry(raw: string, expected: StudioRuntimeExp
   for (const field of ['runtimeDid', 'runtimePrivateKey', 'runtimeEncPrivateKey', 'runtimeEncPublicKey'] as const) {
     if (!isNonEmptyString(entry[field])) return reject('malformed', `field ${field} is missing or not a string`)
   }
-  const delegation = entry.runtimeDelegation as AlfAttestation | undefined
-  if (!delegation || typeof delegation !== 'object' || !isNonEmptyString(delegation.issuer) || !isNonEmptyString(delegation.subject)) {
-    return reject('malformed', 'field runtimeDelegation is missing or not an attestation')
-  }
+  const delegation = normalizeDelegation(entry.runtimeDelegation)
+  if (!delegation) return reject('malformed', 'field runtimeDelegation is missing or not an attestation')
   const runtimeDid = entry.runtimeDid as string
 
   if (!isNonEmptyString(expected.ownerDid)) return reject('no_owner', 'the settings file has no owner DID to check the delegation against')

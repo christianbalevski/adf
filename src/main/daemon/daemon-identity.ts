@@ -35,7 +35,6 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
-import { fileURLToPath } from 'url'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import { deriveOwnerIdentity, validateMnemonic } from '../crypto/mnemonic-identity'
@@ -43,6 +42,7 @@ import { OWNER_SEED_DERIVED_KEY, OwnerIdentityService, type OwnerIdentitySetting
 import { DaemonAppOAuthStore, daemonAppOAuthAccount } from '../services/mcp-oauth-store'
 import { settingsScope } from '../services/provider-key-store'
 import type { WorkspaceIdentityHooks } from '../runtime/identity-provisioner'
+import { testSeamsAllowed } from '../utils/test-seams'
 import {
   FileSecretBackend,
   MIN_PASSPHRASE_LENGTH,
@@ -55,7 +55,9 @@ import { SecretBackendProviderKeyVault, type ProviderKeyVault } from './provider
 import type { SecretStatus } from '../services/settings.service'
 import type { DaemonEncKey } from './daemon-enc-key'
 import {
+  canonicalSettingsPath,
   studioRuntimeAccount,
+  studioRuntimeScope,
   verifyStudioRuntimeEntry,
   type AdoptedStudioRuntime,
   type StudioRuntimeRejectReason,
@@ -115,6 +117,7 @@ export type DaemonIdentityErrorCode =
   | 'nothing_to_unlock'
   | 'not_ready'
   | 'switch_unconfirmed'
+  | 'backup_unconfirmed'
 
 export class DaemonIdentityError extends Error {
   constructor(
@@ -130,6 +133,8 @@ export class DaemonIdentityError extends Error {
 interface IdentitySettingsStore {
   get(key: string): unknown
   set(key: string, value: unknown): void
+  /** Remove a key (FileSettingsStore). Used once: Studio's stale owner phrase after an owner switch. */
+  delete?(key: string): void
 }
 
 /** Studio's runtime keys → the daemon's own keys in the shared settings file. */
@@ -189,7 +194,9 @@ export class DaemonIdentitySettings implements OwnerIdentitySettings {
   set(key: string, value: unknown): void {
     if (this.adopted && ADOPTED_SETTINGS_KEYS.has(key)) {
       // Writing these would change embedded Studio's identity. The adopted
-      // entry is already certified by the owner on record.
+      // entry is already certified by the owner on record. During an owner
+      // import the re-sign is expected to be skipped (importOwner says so).
+      if (this.allowOwnerChange) return
       console.warn(`[ADF Daemon] Not writing ${key}: the daemon uses ADF Studio's runtime identity and never changes it`)
       return
     }
@@ -265,6 +272,16 @@ export interface DaemonIdentityOptions {
   bootPassphrase?: string
 }
 
+export interface DaemonOwnerImportOptions {
+  mnemonic: string
+  /** File storage only, when it is not unlocked yet. */
+  passphrase?: string
+  /** Required when the phrase belongs to another owner than this machine's. */
+  switchOwner?: boolean
+  /** The user states they hold the previous owner's phrase although Studio never recorded the backup. */
+  previousOwnerBackupConfirmed?: boolean
+}
+
 export interface DaemonOwnerImportResult {
   identity: DaemonIdentityStatus
   previousOwnerDid: string | null
@@ -287,12 +304,13 @@ export class DaemonIdentity {
   /** Owner DID the service is active for; null when not ready. */
   private readyOwnerDid: string | null = null
   private readonly studioRuntimeAccount: string
+  /** The account a Studio that did not canonicalize the settings path would have used. */
+  private readonly legacyStudioRuntimeAccount: string
+  private readonly canonicalSettingsPath: string
   private adoptedRuntime: AdoptedStudioRuntime | null = null
   private adoption: DaemonRuntimeAdoption
   /** Last logged adoption outcome, so a status poll does not repeat the line. */
   private adoptionLogKey: string | null = null
-  /** importOwner runs on the daemon's own runtime; Studio's entry is re-checked after. */
-  private adoptionSuspended = false
 
   constructor(opts: DaemonIdentityOptions) {
     this.store = opts.settings
@@ -301,7 +319,9 @@ export class DaemonIdentity {
     this.backend = opts.backend ?? selectBackend(opts.settingsPath)
     const scope = settingsScope(opts.settingsPath)
     const runtimeAccount = `daemon-runtime-signing-key:${scope}`
-    this.studioRuntimeAccount = studioRuntimeAccount(scope)
+    this.canonicalSettingsPath = canonicalSettingsPath(opts.settingsPath)
+    this.studioRuntimeAccount = studioRuntimeAccount(studioRuntimeScope(opts.settingsPath))
+    this.legacyStudioRuntimeAccount = studioRuntimeAccount(scope)
     this.providerKeys = new SecretBackendProviderKeyVault(this.backend, scope)
     this.mcpOAuth = new DaemonAppOAuthStore(this.backend, daemonAppOAuthAccount(scope))
     this.identitySettings = new DaemonIdentitySettings(this.store, this.backend, this.encKey, runtimeAccount)
@@ -451,9 +471,7 @@ export class DaemonIdentity {
     let state: DaemonRuntimeAdoptionState
     let reason: StudioRuntimeRejectReason | null = null
     let detail = ''
-    if (this.adoptionSuspended) {
-      state = 'absent'
-    } else if (this.backend.kind !== 'keychain') {
+    if (this.backend.kind !== 'keychain') {
       state = 'unavailable'
     } else {
       let raw: string | null = null
@@ -464,11 +482,23 @@ export class DaemonIdentity {
         // The binding's message, never the value.
         readError = err instanceof Error ? err.message : String(err)
       }
-      if (readError !== null) {
+      if (raw === null && readError === null && this.legacyStudioRuntimeAccount !== this.studioRuntimeAccount) {
+        try {
+          if (this.backend.get(this.legacyStudioRuntimeAccount) !== null) {
+            state = 'rejected'
+            reason = 'scope_mismatch'
+            detail = `it was stored for the settings path as typed, not its canonical form ${this.canonicalSettingsPath} (${this.studioRuntimeAccount}); switch ADF Studio to local mode again to rewrite it`
+          }
+        } catch { /* reported by the main read */ }
+      }
+      if (reason === 'scope_mismatch') {
+        state = 'rejected'
+      } else if (readError !== null) {
         state = 'unavailable'
         detail = `the OS keychain could not be read (${readError})`
       } else if (raw === null) {
         state = 'absent'
+        detail = `the OS keychain has no entry ${this.studioRuntimeAccount} for the settings file ${this.canonicalSettingsPath}`
       } else {
         const verified = verifyStudioRuntimeEntry(raw, {
           ownerDid: this.store.get('ownerDid'),
@@ -499,8 +529,8 @@ export class DaemonIdentity {
       daemonEncPublicKey: this.encKey?.publicKeyB64 ?? null,
       message: adoptionMessage(state, next?.runtimeDid ?? null, detail, this.encKey?.publicKeyB64 ?? null),
     }
-    if (!this.adoptionSuspended) this.logAdoption(adoption, next?.runtimeDid ?? null)
-    if (changed && !this.adoptionSuspended && this.runtimeListeners.length > 0) {
+    this.logAdoption(adoption, next?.runtimeDid ?? null)
+    if (changed && this.runtimeListeners.length > 0) {
       setImmediate(() => {
         for (const listener of this.runtimeListeners) {
           try { listener(adoption) } catch (err) { console.error('[ADF Daemon] Runtime-change listener failed:', err) }
@@ -653,15 +683,18 @@ export class DaemonIdentity {
   }
 
   /**
-   * Check an owner import before anything is unloaded: a valid phrase, and an
-   * explicit `switchOwner` when it belongs to another owner than the one on
-   * record. Returns the DIDs involved (public values).
+   * Check an owner import before anything is unloaded, so a refused import
+   * changes nothing: a valid phrase; for another owner, an explicit
+   * `switchOwner` and a confirmed backup of the previous owner's phrase (the
+   * switch removes it from this machine); a passphrase that opens the file
+   * backend. Returns the DIDs involved (public values).
    */
-  checkImport(opts: { mnemonic: string; switchOwner?: boolean }): { ownerDid: string; previousOwnerDid: string | null } {
+  checkImport(opts: DaemonOwnerImportOptions): { ownerDid: string; previousOwnerDid: string | null } {
     const normalized = normalizeMnemonic(opts.mnemonic)
     const ownerDid = deriveOwnerIdentity(normalized).did
     const previousOwnerDid = stringOrNull(this.store.get('ownerDid'))
-    if (previousOwnerDid && previousOwnerDid !== ownerDid && opts.switchOwner !== true) {
+    const switching = previousOwnerDid !== null && previousOwnerDid !== ownerDid
+    if (switching && opts.switchOwner !== true) {
       throw new DaemonIdentityError(
         'switch_unconfirmed',
         `That phrase belongs to ${ownerDid}, not this machine's owner ${previousOwnerDid}. Importing it makes ${ownerDid} the owner ` +
@@ -669,36 +702,63 @@ export class DaemonIdentity {
         409,
       )
     }
+    if (switching && this.store.get('ownerSeedBackupConfirmed') !== true && opts.previousOwnerBackupConfirmed !== true) {
+      throw new DaemonIdentityError(
+        'backup_unconfirmed',
+        `The seed phrase of ${previousOwnerDid} is not confirmed as written down. The switch deletes it from this machine ` +
+          `(the OS keychain entry and ADF Studio's copy). Without a written copy, ${previousOwnerDid} and every envelope ` +
+          'only its owner key opens (agents copied to other machines, backups) are lost for good. Back it up first ' +
+          '(Settings → Back Up Seed Phrase in ADF Studio), or confirm you have it (previousOwnerBackupConfirmed: true, ' +
+          'adf identity import --i-have-a-backup).',
+        409,
+      )
+    }
+    // Last, so a wrong or missing passphrase is reported before any agent is touched.
+    this.openFileBackend(opts.passphrase)
     return { ownerDid, previousOwnerDid }
   }
 
   /**
    * Import an owner phrase (Studio's Import identity): the same owner acts as
    * a restore; another owner replaces this machine's owner, after
-   * checkImport's confirmation, and restamps local agents
+   * checkImport's confirmations, and restamps local agents
    * (OwnerIdentityService.importMnemonic). The caller unloads and reloads
-   * loaded agents around it. Runs on the daemon's own runtime: Studio's
-   * runtime entry is certified by the previous owner and is re-checked
-   * afterwards (it no longer verifies after a switch until Studio rewrites it).
+   * loaded agents around it.
+   *
+   * An adopted Studio runtime stays in use for the restamp, so operator
+   * attestations are signed by the runtime the files are stamped with. Its
+   * delegation is certified by the previous owner, so it is not re-signed
+   * here (the daemon never writes Studio's runtime keys) and stops verifying
+   * after a switch: the daemon falls back to its own runtime until ADF
+   * Studio re-delegates and rewrites the keychain entry.
+   *
+   * On a switch, ADF Studio's own copy of the previous phrase (`ownerMnemonic`
+   * in the shared settings file) is deleted, so embedded Studio takes the new
+   * phrase from the keychain at its next start instead of mirroring the old
+   * one back over it.
    */
-  importOwner(opts: { mnemonic: string; passphrase?: string; switchOwner?: boolean }): DaemonOwnerImportResult {
+  importOwner(opts: DaemonOwnerImportOptions): DaemonOwnerImportResult {
     const { ownerDid, previousOwnerDid } = this.checkImport(opts)
-    this.openFileBackend(opts.passphrase)
+    const switched = previousOwnerDid !== null && previousOwnerDid !== ownerDid
     this.identitySettings.clearCache()
-    this.adoptionSuspended = true
-    this.adoption = this.refreshAdoption()
     this.identitySettings.allowOwnerChange = true
     let result: { ownerDid: string } & RestampResult
     try {
       result = this.service.importMnemonic(normalizeMnemonic(opts.mnemonic))
     } finally {
       this.identitySettings.allowOwnerChange = false
-      this.adoptionSuspended = false
+    }
+    if (switched && this.store.get('ownerMnemonic') !== undefined) {
+      if (this.store.delete) {
+        this.store.delete('ownerMnemonic')
+        console.log(`[ADF Daemon] Owner switch: removed ADF Studio's stored phrase for ${previousOwnerDid} from the settings file; Studio takes the phrase for ${ownerDid} from the OS keychain at its next start`)
+      } else {
+        console.warn(`[ADF Daemon] Owner switch: ADF Studio's stored phrase for ${previousOwnerDid} is still in the settings file (this store cannot delete keys)`)
+      }
     }
     // Force the ready transition so loaded agents re-check their envelopes.
     this.readyOwnerDid = null
     const identity = this.refresh()
-    const switched = previousOwnerDid !== null && previousOwnerDid !== ownerDid
     console.log(
       `[ADF Daemon] Imported owner identity ${ownerDid}${switched ? ` (replaced ${previousOwnerDid})` : ''}: ` +
         `restamped ${result.restamped} agent file(s), attested ${result.attested}, ${result.failures.length} failure(s)`,
@@ -748,7 +808,7 @@ function adoptionMessage(state: DaemonRuntimeAdoptionState, adoptedDid: string |
     case 'adopted':
       return `Using ADF Studio's runtime identity ${adoptedDid} from the OS keychain, so agents open and unlock as they do in Studio.`
     case 'absent':
-      return `Using the daemon's own runtime identity: ADF Studio has not shared its runtime identity for this settings file. ${fallback}`
+      return `Using the daemon's own runtime identity: ${detail || 'ADF Studio has not shared its runtime identity for this settings file'} (ADF Studio writes it when it switches to local mode on this settings file). ${fallback}`
     case 'rejected':
       return `Using the daemon's own runtime identity: ADF Studio's runtime entry in the OS keychain was not used because ${detail}. ${fallback}`
     case 'unavailable':
@@ -770,25 +830,6 @@ function normalizeMnemonic(mnemonic: unknown): string {
 
 /** Test seam: path of a plaintext JSON file that stands in for the OS keychain. */
 export const TEST_KEYCHAIN_FILE_ENV = 'ADF_TEST_KEYCHAIN_FILE'
-
-/**
- * Test seams are honoured only with ADF_TEST_SEAMS=1 and only when this code
- * does not run from a packaged build (inside app.asar or an installed npm
- * package). Same convention as the compute seam (W1-G).
- */
-export function testSeamsAllowed(env: NodeJS.ProcessEnv = process.env, modulePath: string | null = currentModulePath()): boolean {
-  if (env.ADF_TEST_SEAMS !== '1') return false
-  if (!modulePath) return false
-  return !modulePath.includes('app.asar') && !modulePath.split(/[\\/]/).includes('node_modules')
-}
-
-function currentModulePath(): string | null {
-  try {
-    return fileURLToPath(import.meta.url)
-  } catch {
-    return null
-  }
-}
 
 /**
  * A plaintext JSON file posing as the OS keychain (`{ "<account>": "<value>" }`),

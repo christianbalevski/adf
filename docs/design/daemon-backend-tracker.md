@@ -298,6 +298,10 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-D | "Waiting for the ADF daemon (pid N)…" progress is not shown in the UI yet | W4-A |
 | W0-D | Packaged build not verified with a real `node_modules` (junction drops transitive deps); lead verifies `npm run package` in a real checkout | Lead, W5-B |
 | W0-D | Pre-existing: the daemon's podman probe writes a stray `NUL` file in its working directory | W1-G |
+| W1-C | E3 in `owner-identity.service.ts` (owner switched outside Studio): own phrase not of `ownerDid` → take the keychain phrase; never mirror such a phrase; `getOwnerSigningKey` null for it; restamp keeps operator attestations of files stamped by another runtime. Tests: `tests/daemon-runtime-adoption.test.ts` "owner switch from the CLI…" | Lead (merge note) |
+| W1-C | Write `studio-runtime:<scope>` with `serializeStudioRuntimeEntry` + `studioRuntimeScope`; rewrite it after any delegation change (owner import); delete it on the switch back to embedded; move app MCP OAuth with `DaemonAppOAuthStore.importBlob/exportBlob`; send the local proof for `POST /identity/import` | W4-A |
+| W1-C | Unify `src/main/utils/test-seams.ts` with W1-G's `isPackagedRuntime` | Lead (merge) |
+| W1-C | Wire `identity.mcpOAuth` (DaemonAppOAuthStore) into the builder's MCP OAuth path | W1-B / W3-C |
 
 ## 7. Parity triage (filled in W5-A)
 

@@ -4,10 +4,10 @@
  * writes on the switch to local mode (W4-A). Never touches the real keychain.
  */
 import { KeychainSecretBackend, OWNER_MNEMONIC_ACCOUNT, type SharedMnemonicStore } from '../../src/main/services/owner-secret-store'
-import { settingsScope } from '../../src/main/services/provider-key-store'
 import {
   serializeStudioRuntimeEntry,
   studioRuntimeAccount,
+  studioRuntimeScope,
   type StudioRuntimeEntryInput,
 } from '../../src/main/daemon/studio-runtime-entry'
 import type { AlfAttestation } from '../../src/shared/types/adf-v02.types'
@@ -60,7 +60,7 @@ export function writeStudioRuntimeEntry(
   studio: StudioRuntimeSource,
   overrides: Partial<StudioRuntimeEntryInput> = {},
 ): string {
-  const account = studioRuntimeAccount(settingsScope(settingsPath))
+  const account = studioRuntimeAccount(studioRuntimeScope(settingsPath))
   keychain.set(account, serializeStudioRuntimeEntry({ ...studioRuntimeEntryFrom(studio), ...overrides }))
   return account
 }
