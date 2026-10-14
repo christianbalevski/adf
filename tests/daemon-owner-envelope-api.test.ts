@@ -128,6 +128,36 @@ describe('POST /agents/:id/claim', () => {
     expect(workspace.getMeta('adf_owner_did')).toBe(settings.getOwnerIdentity().getOwnerDid())
     expect(res.body).not.toMatch(/private/i)
   })
+
+  it('a claim that removes the whole-file password drops the file key: a later write survives a restart', async () => {
+    const { runtime, server } = setup()
+    const filePath = join(root, 'agent-5.adf')
+    const ws = AdfWorkspace.create(filePath, { name: 'agent-5' })
+    try {
+      ws.setAgentConfig({ ...ws.getAgentConfig(), id: randomUUID(), handle: 'agent-5' })
+      ws.setIdentity('app:old', 'old-value')
+      ws.setPassword('legacy-pw')
+    } finally {
+      ws.close()
+    }
+    const { id } = await runtime.loadAgent(filePath)
+    expect((await server.inject({ method: 'POST', url: `/agents/${id}/identity/password/unlock`, payload: { password: 'legacy-pw' } })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'POST', url: `/agents/${id}/claim` })).json()).toMatchObject({ success: true })
+    expect((await server.inject({ method: 'GET', url: `/agents/${id}/identity/password` })).json()).toMatchObject({ needsPassword: false, unlocked: false })
+    expect((await server.inject({ method: 'PUT', url: `/agents/${id}/identity/app:new`, payload: { value: 'new-value' } })).statusCode).toBe(200)
+    await runtime.unloadAgent(id)
+
+    // A fresh process opens the file with this owner's keys and no file key.
+    const reopened = AdfWorkspace.open(filePath)
+    try {
+      unlockWorkspaceEnvelopes(reopened)
+      expect(reopened.isPasswordProtected()).toBe(false)
+      expect(reopened.getIdentityDecrypted('app:new', null)).toBe('new-value')
+      expect(reopened.getIdentityDecrypted('app:old', null)).toBe('old-value')
+    } finally {
+      reopened.close()
+    }
+  })
 })
 
 describe('identity drafts', () => {
