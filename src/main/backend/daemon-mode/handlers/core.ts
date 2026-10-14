@@ -15,12 +15,11 @@ import { TURN_WAIT_TIMEOUT_MS } from '../event-bridge'
  * W3-A handlers for the rest of FILE_*, DOC_*, AGENT_* build on the same
  * session.
  *
- * The daemon's /agents/:id routes reach running agents and open documents
- * (W2-A), but a client opens a document only through its client session's
- * hold (W2-B). Until then a file's contents are reachable only while its
- * agent runs in the daemon. Reading a file that is open but not running
- * throws a DaemonModeUnavailableError naming W2-B; it never reads the file
- * another way.
+ * FILE_OPEN holds the file as a document of Studio's client session (W2-A,
+ * W2-B), so the /agents/:id routes reach it whether its agent runs or not.
+ * A file the daemon no longer holds (the hold failed, or the daemon
+ * restarted and the re-hold failed) is refused with "open it again"; it is
+ * never read another way.
  */
 
 /** Same window as embedded DOC_GET_BATCH / DOC_GET_CHAT. */
@@ -29,22 +28,37 @@ const LOOP_DISPLAY_LIMIT = 200
 /** Embedded DOC_READ_INTERNAL_FILE's text extensions (ipc/index.ts). */
 const TEXT_EXTS = new Set(['md', 'txt', 'json', 'js', 'ts', 'py', 'html', 'css', 'csv', 'xml', 'yaml', 'yml', 'toml', 'sh', 'bat', 'log', 'sql', 'env', 'cfg', 'ini', 'jsx', 'tsx'])
 
-/** The open file's agent id, or a visible refusal when its agent does not run in the daemon. */
+/** The daemon no longer has the open file (not held, not running): the user opens it again. */
+function notOpenError(ctx: DaemonModeContext, what: string): Error {
+  return new Error(`${what}: ${ctx.session.filePath} is not open in the ADF daemon any more. Open it again.`)
+}
+
+/** The open file's agent id, or a visible refusal when the daemon does not have the file open. */
 function requireOpenAgent(ctx: DaemonModeContext, what: string): string {
   const id = ctx.session.agentId
   if (id) return id
-  throw new DaemonModeUnavailableError(what, 'W2-B', `${ctx.session.filePath} is not running in the daemon, and holding it open needs a client session`)
+  throw notOpenError(ctx, what)
 }
 
-/** Reads of the open agent; a 404 means it stopped (a session's hold keeps the document open across a stop, W2-B). */
+/** Reads of the open agent; a 404 means the daemon no longer holds it (the hold keeps it open across a stop). */
 async function readOpenAgent<T>(ctx: DaemonModeContext, what: string, read: (agentId: string) => Promise<T>): Promise<T> {
   const agentId = requireOpenAgent(ctx, what)
   try {
     return await read(agentId)
   } catch (err) {
-    if (isNotFound(err)) {
-      throw new DaemonModeUnavailableError(what, 'W2-B', `${ctx.session.filePath} is no longer running in the daemon, and holding it open needs a client session`)
-    }
+    if (isNotFound(err)) throw notOpenError(ctx, what)
+    throw err
+  }
+}
+
+/** The daemon still has the agent: running or an open document (GET /agents/:id/status answers both). */
+async function openInDaemon(ctx: DaemonModeContext, agentId: string): Promise<boolean> {
+  const client = await ctx.ready()
+  try {
+    await client.request('GET', `/agents/${enc(agentId)}/status`)
+    return true
+  } catch (err) {
+    if (isNotFound(err)) return false
     throw err
   }
 }
@@ -173,10 +187,8 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       meta = await client.request<{ mime_type: string | null; size: number }>('GET', `/agents/${enc(agentId)}/files/meta`, { query: { path: args.path } })
     } catch (err) {
       if (!isNotFound(err)) throw err
-      // Unknown file, or the agent stopped: tell them apart.
-      if (!(await agentStatus(ctx, agentId))) {
-        throw new DaemonModeUnavailableError('Reading a file of the open agent', 'W2-B', `${ctx.session.filePath} is no longer running in the daemon, and holding it open needs a client session`)
-      }
+      // Unknown file, or the daemon no longer has the agent: tell them apart.
+      if (!(await openInDaemon(ctx, agentId))) throw notOpenError(ctx, 'Reading a file of the open agent')
       return { content: null, binary: false }
     }
     const ext = args.path.split('.').pop()?.toLowerCase() ?? ''
