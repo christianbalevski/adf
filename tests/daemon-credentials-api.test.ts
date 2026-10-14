@@ -4,7 +4,7 @@
 // agents and tracked directories. Metadata only: a stored secret never
 // appears in any response.
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -118,5 +118,24 @@ describe('POST /credentials/providers/key-sources', () => {
     const missing = await server.inject({ method: 'POST', url: '/credentials/providers/key-sources', payload: { filePath: join(tracked, 'nope.adf'), providers: [] } })
     expect(missing.json()).toEqual({ sources: {}, error: 'Cannot open file' })
     expect((await server.inject({ method: 'POST', url: '/credentials/providers/key-sources', payload: { filePath: closedPath } })).statusCode).toBe(400)
+  })
+})
+
+describe('key-sources on a file nobody has open', () => {
+  it('reads it read-only: no migration, no write, no sidecars left; plain keys read as agent', async () => {
+    const { tracked, server } = setup()
+    const closedPath = agentFile(tracked, 'agent-1', (ws) => ws.setIdentity('provider:custom:own:apiKey', SECRET))
+    const before = statSync(closedPath)
+    const res = await server.inject({ method: 'POST', url: '/credentials/providers/key-sources', payload: {
+      filePath: closedPath,
+      providers: [{ id: 'custom:own', type: 'openai', baseUrl: '' }, { id: 'openai', type: 'openai', baseUrl: '' }],
+    } })
+    expect(res.json()).toEqual({ sources: { 'custom:own': 'agent', openai: 'none' } })
+    expect(res.body).not.toContain(SECRET)
+    const after = statSync(closedPath)
+    expect(after.mtimeMs).toBe(before.mtimeMs)
+    expect(after.size).toBe(before.size)
+    expect(existsSync(`${closedPath}-wal`)).toBe(false)
+    expect(existsSync(`${closedPath}-shm`)).toBe(false)
   })
 })

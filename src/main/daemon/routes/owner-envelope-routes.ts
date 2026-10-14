@@ -21,7 +21,6 @@
 // (DaemonAgentFactory.create, as Studio's FILE_CREATE_QUICK).
 
 import type { FastifyInstance, FastifyReply } from 'fastify'
-import type { AdfWorkspace } from '../../adf/adf-workspace'
 import { unlockWorkspaceEnvelopes } from '../../runtime/identity-provisioner'
 import {
   claimAgentWorkspace,
@@ -34,6 +33,7 @@ import {
 } from '../../services/envelope-actions'
 import { identityDrafts } from '../../services/identity-drafts'
 import type { DaemonRouteContext } from './index'
+import { resolveAgentWorkspace, type ResolvedAgentWorkspace } from './agent-resolver'
 import { notFound, unavailable } from './route-helpers'
 
 const NO_OWNER = 'No owner identity on this host — create or restore it first (`adf identity`).'
@@ -42,15 +42,14 @@ export function registerOwnerEnvelopeRoutes(server: FastifyInstance, ctx: Daemon
   const { runtime } = ctx
   type IdReq = { Params: { id: string } }
 
-  /** The loaded agent's open workspace, or a sent 404 (null). */
-  const workspaceOf = (id: string, reply: FastifyReply): { agentId: string; workspace: AdfWorkspace } | null => {
-    const ref = runtime.getAgent(id)
-    const live = ref ? runtime.listLiveAgents().find((a) => a.agentId === ref.id) : undefined
-    if (!ref || !live) {
-      void notFound(reply, ref ? `Agent "${id}" has no .adf file` : `Unknown agent "${id}"`)
+  /** The agent's workspace (agent-resolver.ts), or a sent 404 (null). */
+  const workspaceOf = (id: string, reply: FastifyReply): ResolvedAgentWorkspace | null => {
+    const found = resolveAgentWorkspace(runtime, id)
+    if (!found.ok) {
+      void notFound(reply, found.message)
       return null
     }
-    return { agentId: ref.id, workspace: live.workspace }
+    return found.agent
   }
 
   /** The owner identity service, or a sent 503 (null). */
@@ -99,8 +98,13 @@ export function registerOwnerEnvelopeRoutes(server: FastifyInstance, ctx: Daemon
   server.delete<IdReq>('/agents/:id/envelope/share-password', async (request, reply) => {
     const target = workspaceOf(request.params.id, reply)
     if (!target) return reply
-    console.log(`[ADF Daemon] Credentials share password removed for ${target.agentId}`)
-    return removeSharePassword(target.workspace)
+    try {
+      const result = removeSharePassword(target.workspace)
+      console.log(`[ADF Daemon] Credentials share password removed for ${target.agentId}`)
+      return result
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
   })
 
   server.post<IdReq & { Body: { password?: unknown; adopt?: unknown } | null }>('/agents/:id/envelope/unlock-password', async (request, reply) => {
@@ -112,16 +116,16 @@ export function registerOwnerEnvelopeRoutes(server: FastifyInstance, ctx: Daemon
     return unlockWithSharePassword(target.workspace, request.body?.password, adopt, identity.service)
   })
 
-  // The derived key of a password-protected file stays with the runtime, so
-  // a whole-file-password file is refused here as Studio refuses it before
-  // the password is entered.
+  // A whole-file-password file needs its derived key (agent-resolver.ts);
+  // without it the claim is refused, as Studio refuses it before the
+  // password is entered.
   server.post<IdReq>('/agents/:id/claim', async (request, reply) => {
     const target = workspaceOf(request.params.id, reply)
     if (!target) return reply
     const identity = ownerService(reply)
     if (!identity) return reply
     const result = claimAgentWorkspace(target.workspace, {
-      derivedKey: null,
+      derivedKey: target.derivedKey,
       svc: identity.service,
       ensureRuntimeIdentity: () => { if (!identity.isReady()) throw new Error(NO_OWNER) },
       onPasswordRemoved: () => {},

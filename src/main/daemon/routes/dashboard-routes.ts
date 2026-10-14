@@ -13,13 +13,13 @@
 // a 5 s timeout; automatic ones honour the owner's providerChecksEnabled
 // opt-out, an explicit Test (force) always probes.
 
-import { readdir } from 'fs/promises'
-import { statSync, type Dirent } from 'fs'
+import { readdir, stat } from 'fs/promises'
+import type { Dirent } from 'fs'
 import { join } from 'path'
 import type { FastifyInstance } from 'fastify'
 import { AdfDatabase } from '../../adf/adf-database'
 import { CodeSandboxService } from '../../runtime/code-sandbox'
-import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById } from '../../services/dashboard-stats'
+import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById, type AgentMetaPeek } from '../../services/dashboard-stats'
 import { ProviderChecks } from '../../services/provider-checks'
 import type { SandboxPackagesService } from '../../services/sandbox-packages.service'
 import { getTokenUsageService } from '../../services/token-usage.service'
@@ -31,7 +31,6 @@ import { gapDeps } from './gap-deps'
 import type { DaemonRouteContext } from './index'
 import { flagParam, badRequest } from './route-helpers'
 
-type AgentMeta = NonNullable<ReturnType<typeof AdfDatabase.peekAgentMeta>>
 
 /** Async walk of one tracked directory for .adf files (dot folders and node_modules skipped), as Studio's listAdfFiles. */
 async function listAdfFiles(root: string, maxDepth: number): Promise<string[]> {
@@ -60,22 +59,25 @@ export function registerDashboardRoutes(server: FastifyInstance, ctx: DaemonRout
   const providers = (): ProviderConfig[] => (settings?.get('providers') as ProviderConfig[] | undefined) ?? []
   const checks = new ProviderChecks({ isEnabled: () => settings?.get('providerChecksEnabled') !== false })
 
-  // mtime-keyed peek cache: an unchanged agent file is never reopened.
-  const metaCache = new Map<string, { mtimeMs: number; size: number; value: AgentMeta }>()
-  const peekMeta = (filePath: string): AgentMeta | null => {
-    let stat: { mtimeMs: number; size: number }
+  // mtime-keyed peek cache: an unchanged agent file is never reopened. The
+  // stat is async and the scan yields after every file, so the first scan of
+  // a large tracked tree does not stall other requests; the readonly SQLite
+  // peek of a changed file is the only synchronous step.
+  const metaCache = new Map<string, { mtimeMs: number; size: number; value: AgentMetaPeek }>()
+  const peekMeta = async (filePath: string): Promise<AgentMetaPeek | null> => {
+    let info: { mtimeMs: number; size: number }
     try {
-      // One stat per tracked agent, as Studio's peek cache does.
-      stat = statSync(filePath)
+      info = await stat(filePath)
     } catch {
       metaCache.delete(filePath)
       return null
     }
     const hit = metaCache.get(filePath)
-    if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.value
+    if (hit && hit.mtimeMs === info.mtimeMs && hit.size === info.size) return hit.value
     const value = AdfDatabase.peekAgentMeta(filePath)
+    await new Promise<void>((resolve) => setImmediate(resolve))
     if (value) {
-      metaCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, value })
+      metaCache.set(filePath, { mtimeMs: info.mtimeMs, size: info.size, value })
       return value
     }
     return hit?.value ?? null

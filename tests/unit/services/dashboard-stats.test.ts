@@ -134,3 +134,12 @@ describe('dashboard slices', () => {
     })
   })
 })
+
+describe('ProviderChecks: openai-compatible without a base URL', () => {
+  it('is unconfigured and sends nothing', async () => {
+    const checks = new ProviderChecks({ isEnabled: () => true })
+    expect(await checks.test({ id: 'custom:x', type: 'openai-compatible', name: 'Local', baseUrl: '' })).toBe('unconfigured')
+    expect(await checks.test({ id: 'custom:y', type: 'openai-compatible', name: 'Local', baseUrl: '', apiKey: 'k' })).toBe('unconfigured')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})

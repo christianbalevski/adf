@@ -13,7 +13,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import {
   listAdapterCredentialFiles,
@@ -124,5 +124,37 @@ describe('listProviderCredentialFiles', () => {
       { filePath: copyOnly, fileName: 'agent-3.adf', hasCredentials: false, populatedKeys: [], providerConfig: copy },
     ])
     expect(JSON.stringify(result)).not.toContain(SECRET)
+  })
+})
+
+describe('unreadable files', () => {
+  it('a file whose peek throws is skipped and the scan goes on (sync and async walks)', async () => {
+    const { AdfDatabase } = await import('../../../src/main/adf/adf-database')
+    const { listMcpCredentialFilesAsync } = await import('../../../src/main/services/credential-list-files')
+    const bad = makeAgent(join(tracked, 'agent-1.adf'), 'agent-1', (ws) => ws.setIdentity('mcp:@acme/server:API_KEY', SECRET))
+    const good = makeAgent(join(tracked, 'agent-2.adf'), 'agent-2', (ws) => ws.setIdentity('mcp:@acme/server:API_KEY', SECRET))
+    const real = AdfDatabase.peekIdentityPurposes.bind(AdfDatabase)
+    const spy = vi.spyOn(AdfDatabase, 'peekIdentityPurposes').mockImplementation((filePath: string, prefix: string) => {
+      if (filePath === bad) throw new Error('SQLITE_CORRUPT')
+      return real(filePath, prefix)
+    })
+    try {
+      const args = { mcpServerName: 'acme', npmPackage: '@acme/server' }
+      const sources = { knownFiles: [bad], trackedDirs: [tracked] }
+      expect(listMcpCredentialFiles(args, sources).files.map((f) => f.filePath)).toEqual([good])
+      expect((await listMcpCredentialFilesAsync(args, sources)).files.map((f) => f.filePath)).toEqual([good])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('the async walk returns what the sync walk returns', async () => {
+    const { listAdapterCredentialFilesAsync, listProviderCredentialFilesAsync } = await import('../../../src/main/services/credential-list-files')
+    makeAgent(join(tracked, 'a', 'agent-1.adf'), 'agent-1', (ws) => ws.setIdentity('adapter:telegram:BOT_TOKEN', SECRET))
+    makeAgent(join(tracked, 'a', 'b', 'agent-2.adf'), 'agent-2', (ws) => ws.setIdentity('provider:p1:apiKey', SECRET))
+    makeAgent(join(outside, 'agent-3.adf'), 'agent-3', (ws) => ws.setIdentity('adapter:telegram:BOT_TOKEN', SECRET))
+    const sources = { knownFiles: [join(outside, 'agent-3.adf')], trackedDirs: [tracked] }
+    expect(await listAdapterCredentialFilesAsync('telegram', sources)).toEqual(listAdapterCredentialFiles('telegram', sources))
+    expect(await listProviderCredentialFilesAsync('p1', sources)).toEqual(listProviderCredentialFiles('p1', sources))
   })
 })

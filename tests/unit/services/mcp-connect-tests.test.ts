@@ -167,3 +167,40 @@ describe('appendMcpLog', () => {
     expect(cache.get('s')[0].message).toBe('5')
   })
 })
+
+describe('runMcpRegistrationTest: host credential files', () => {
+  it('writes a missing file under ~ and never overwrites an existing one', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs')
+    const { tmpdir, homedir } = await import('node:os')
+    const { join } = await import('node:path')
+    const home = mkdtempSync(join(tmpdir(), 'adf-mcp-test-home-'))
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
+    process.env.HOME = home
+    process.env.USERPROFILE = home
+    try {
+      expect(homedir()).toBe(home)
+      mkdirSync(join(home, '.config', 'gh'), { recursive: true })
+      writeFileSync(join(home, '.config', 'gh', 'hosts.yml'), 'old-token')
+      const result = await runMcpRegistrationTest({
+        registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host' },
+        credentialFiles: [
+          { path: '~/.config/gh/hosts.yml', contentB64: Buffer.from('new-token').toString('base64') },
+          { path: '~/.config/gh/config.yml', contentB64: Buffer.from('fresh').toString('base64') },
+        ],
+      }, deps())
+      expect(result.success).toBe(true)
+      expect(readFileSync(join(home, '.config', 'gh', 'hosts.yml'), 'utf-8')).toBe('old-token')
+      expect(readFileSync(join(home, '.config', 'gh', 'config.yml'), 'utf-8')).toBe('fresh')
+      expect(result.notes).toEqual([
+        '~/.config/gh/hosts.yml already exists on the host — kept the existing file.',
+        'Wrote ~/.config/gh/config.yml to the host home.',
+      ])
+    } finally {
+      process.env.HOME = saved.HOME
+      process.env.USERPROFILE = saved.USERPROFILE
+      if (saved.HOME === undefined) delete process.env.HOME
+      if (saved.USERPROFILE === undefined) delete process.env.USERPROFILE
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+})

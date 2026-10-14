@@ -168,3 +168,61 @@ describe('claimAgentWorkspace', () => {
     }
   })
 })
+
+describe('envelope actions: boundaries the review called out', () => {
+  type FakeWs = Parameters<typeof readEnvelopeStatus>[0]
+  const svc = { getOwnerDid: () => 'did:key:zOwner', getRuntimeDid: () => 'did:key:zRuntime' } as unknown as Parameters<typeof readEnvelopeStatus>[1]
+
+  it("a 'foreign' envelope with one of this install's key slots reads 'locked'; with only others' slots it stays 'foreign'", () => {
+    const slots: Record<string, Array<{ type: string; recipient_did?: string }>> = {
+      identity: [{ type: 'owner', recipient_did: 'did:key:zOwner' }],
+      credentials: [{ type: 'password' }, { type: 'owner', recipient_did: 'did:key:zSomeoneElse' }],
+    }
+    const ws = {
+      getEnvelopeState: () => 'foreign',
+      readEnvelopeSlots: (name: string) => slots[name],
+    } as unknown as FakeWs
+    expect(readEnvelopeStatus(ws, svc, () => {})).toEqual({ success: true, identity: 'locked', credentials: 'foreign', sharePasswordSet: true })
+    // A password slot never counts as ours, whatever it names.
+    slots.credentials = [{ type: 'password', recipient_did: 'did:key:zOwner' }]
+    expect(readEnvelopeStatus(ws, svc, () => {}).credentials).toBe('foreign')
+  })
+
+  it('share password: 7 characters refused, 8 accepted', () => {
+    const calls: string[] = []
+    const ws = {
+      removeEnvelopePasswordSlots: () => { calls.push('remove') },
+      addEnvelopePasswordSlot: (_: string, pw: string) => { calls.push(`add:${pw.length}`) },
+    } as unknown as FakeWs
+    expect(setSharePassword(ws, '1234567')).toEqual({ success: false, error: 'Share password must be at least 8 characters' })
+    expect(calls).toEqual([])
+    expect(setSharePassword(ws, '12345678')).toEqual({ success: true })
+    expect(calls).toEqual(['remove', 'add:8'])
+  })
+
+  it('adopting seals rows written plain while the envelope was locked; session-only unlock writes nothing', () => {
+    const calls: string[] = []
+    const ws = {
+      unlockEnvelopeWithPassword: () => true,
+      getEnvelopeState: () => 'unlocked',
+      adoptEnvelope: () => { calls.push('adopt') },
+      sealPlainRowsIntoEnvelopes: () => { calls.push('seal') },
+    } as unknown as FakeWs
+    const owner = {
+      ...svc,
+      getOwnerDid: () => 'did:key:zOwner',
+      getRuntimeDid: () => 'did:key:zRuntime',
+      getOwnerEncPublicKey: () => Buffer.alloc(32, 1),
+      getRuntimeEncPublicKey: () => Buffer.alloc(32, 2),
+    } as unknown as Parameters<typeof unlockWithSharePassword>[3]
+    expect(unlockWithSharePassword(ws, 'pw', false, owner)).toEqual({ success: true, adopted: false, credentials: 'unlocked' })
+    expect(calls).toEqual([])
+    expect(unlockWithSharePassword(ws, 'pw', true, owner)).toEqual({ success: true, adopted: true, credentials: 'unlocked' })
+    expect(calls).toEqual(['adopt', 'seal'])
+    // Without local enc keys: no adopt, still sealed, and a warning.
+    calls.length = 0
+    const noKeys = { ...owner, getOwnerEncPublicKey: () => null } as unknown as typeof owner
+    expect(unlockWithSharePassword(ws, 'pw', undefined, noKeys)).toMatchObject({ success: true, adopted: false, warning: expect.stringMatching(/session only/) })
+    expect(calls).toEqual(['seal'])
+  })
+})

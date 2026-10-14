@@ -67,11 +67,13 @@ export async function testProviderById(providers: ProviderConfig[], providerId: 
   return { status }
 }
 
+export type AgentMetaPeek = { autostart: boolean; autonomous: boolean; hostAccess: boolean }
+
 export interface AgentStatsSource {
   /** Cached async walk of one tracked directory (depth-limited). */
   listAdfFiles(root: string, maxDepth: number): Promise<string[]>
-  /** mtime-cached AdfDatabase.peekAgentMeta. */
-  peekMeta(filePath: string): { autostart: boolean; autonomous: boolean; hostAccess: boolean } | null
+  /** mtime-cached AdfDatabase.peekAgentMeta (the daemon's is async and yields between files). */
+  peekMeta(filePath: string): AgentMetaPeek | null | Promise<AgentMetaPeek | null>
 }
 
 /** Slice 4: readonly peek across tracked .adf files. */
@@ -98,7 +100,7 @@ export async function buildAgentStats(trackedDirs: string[], src: AgentStatsSour
   let hostAccessAgents = 0
   for (const filePath of uniqueFiles) {
     // mtime-keyed — an unchanged agent file is never reopened.
-    const meta = src.peekMeta(filePath)
+    const meta = await src.peekMeta(filePath)
     if (!meta) continue
     if (meta.autostart) autostart++
     if (meta.autonomous) autonomous++
