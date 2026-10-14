@@ -6,7 +6,7 @@ import { z } from 'zod'
  * ADAPTER_* schemas), so a daemon-mode handler refuses exactly what the
  * embedded one refuses, with the same message. Copies: ipc/index.ts keeps
  * them inside registerAllIpcHandlers, and only W3-A may extract from it (E1).
- * tests/backend/daemon-mode-mcp.test.ts pins the messages.
+ * tests/backend/daemon-mode-mcp-schemas.test.ts holds each copy to its original.
  */
 
 export const McpPackageArgs = z.object({ package: z.string().min(1), name: z.string().min(1) })
