@@ -2,7 +2,7 @@
 // shared modules for the daemon's gap routes (rule E1), written against
 // ipc/index.ts before the move:
 //   ADAPTER_GET_STATUS (getAdapterStatus)     -> services/adapter-status.ts
-//   MESH_PEER_AGENT_HEALTH, MESH_PEER_SHARED_FILE -> services/peer-fetch.ts
+//   MESH_PEER_AGENT_HEALTH, MESH_PEER_SHARED_FILE -> services/peer-fetch.ts (peer-fetch.test.ts)
 //   SKILLS_CATALOG_GET, SKILLS_PACKAGE_GET    -> services/skills-catalog-fetch.ts
 //   MCP_ENSURE_PYTHON_RUNTIME, MCP_OAUTH_STATUS, MCP_OAUTH_SIGNOUT
 //                                             -> services/mcp-connect-tests.ts
@@ -13,7 +13,6 @@ const guarded = vi.hoisted(() => ({ fn: vi.fn() }))
 vi.mock('../../../src/main/utils/guarded-fetch', async (orig) => ({ ...(await orig<object>()), guardedFetch: guarded.fn }))
 
 import { mergeAdapterStates } from '../../../src/main/services/adapter-status'
-import { fetchPeerSharedFile, probePeerHealth } from '../../../src/main/services/peer-fetch'
 import { fetchSkillPackage, fetchSkillsCatalog } from '../../../src/main/services/skills-catalog-fetch'
 import { ensurePythonRuntime, mcpOAuthSignOut, mcpOAuthStatus } from '../../../src/main/services/mcp-connect-tests'
 import { getComputeBrowserInfo } from '../../../src/main/services/compute-browser-info'
@@ -38,37 +37,6 @@ describe('mergeAdapterStates', () => {
       { filePath: '/a/agent-1.adf', adapters: [{ type: 'telegram', status: 'error', error: 'x', connectedAt: undefined }, { type: 'email', status: 'stopped', error: undefined, connectedAt: undefined }] },
       { filePath: '/a/agent-2.adf', adapters: [{ type: 'telegram', status: 'connected', error: undefined, connectedAt: 5 }] },
     ])
-  })
-})
-
-describe('peer fetches', () => {
-  it('health: bad URL, HTTP error, ok, fetch failure', async () => {
-    expect(await probePeerHealth('ftp://x')).toEqual({ ok: false, error: 'Bad health URL' })
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 503 })
-    expect(await probePeerHealth('http://peer.test/health')).toEqual({ ok: false, error: 'HTTP 503' })
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ok', state: 'idle' }) })
-    expect(await probePeerHealth('http://peer.test/health')).toEqual({ ok: true, status: 'ok', state: 'idle' })
-    expect(fetchMock.mock.calls[1][1].signal).toBeInstanceOf(AbortSignal)
-    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'))
-    expect(await probePeerHealth('http://peer.test/health')).toEqual({ ok: false, error: 'ECONNREFUSED' })
-  })
-
-  it('shared file: path checks, encoding, 2 MB cap, text vs binary', async () => {
-    expect(await fetchPeerSharedFile('nope', 'a.txt')).toEqual({ ok: false, error: 'Bad base URL' })
-    expect(await fetchPeerSharedFile('http://peer.test/agent-1', '../x')).toEqual({ ok: false, error: 'Bad file path' })
-    expect(await fetchPeerSharedFile('http://peer.test/agent-1', '/x')).toEqual({ ok: false, error: 'Bad file path' })
-    const res = (bytes: Buffer, type = 'text/plain') => ({ ok: true, headers: { get: () => type }, arrayBuffer: async () => bytes })
-    fetchMock.mockResolvedValueOnce(res(Buffer.from('hello')))
-    expect(await fetchPeerSharedFile('http://peer.test/agent-1/', 'docs/a b.txt')).toEqual({ ok: true, mime: 'text/plain', size: 5, binary: false, content: 'hello' })
-    expect(fetchMock.mock.calls[0][0]).toBe('http://peer.test/agent-1/docs/a%20b.txt')
-    fetchMock.mockResolvedValueOnce(res(Buffer.from([1, 0, 2]), 'application/octet-stream'))
-    expect(await fetchPeerSharedFile('http://peer.test/agent-1', 'b.bin')).toEqual({ ok: true, mime: 'application/octet-stream', size: 3, binary: true, content: Buffer.from([1, 0, 2]).toString('base64') })
-    fetchMock.mockResolvedValueOnce(res(Buffer.alloc(2_000_001)))
-    expect(await fetchPeerSharedFile('http://peer.test/agent-1', 'big.txt')).toEqual({ ok: false, error: 'File too large to preview (>2 MB)' })
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 404 })
-    expect(await fetchPeerSharedFile('http://peer.test/agent-1', 'gone.txt')).toEqual({ ok: false, error: 'HTTP 404' })
-    fetchMock.mockRejectedValueOnce(new Error('x'))
-    expect(await fetchPeerSharedFile('http://peer.test/agent-1', 'a.txt')).toEqual({ ok: false, error: 'Peer unreachable' })
   })
 })
 

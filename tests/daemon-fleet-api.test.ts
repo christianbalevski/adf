@@ -187,17 +187,22 @@ describe('adapter routes', () => {
 })
 
 describe('peer reads', () => {
-  it('health and shared file go through the shared peer fetch with its checks', async () => {
+  it('health and shared file go through the guarded peer fetch', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     const { server } = setup()
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ok', state: 'active' }) })
-    expect((await server.inject({ method: 'GET', url: '/network/peers/health?url=http%3A%2F%2Fpeer.test%2Fagent-1%2Fhealth' })).json()).toEqual({ ok: true, status: 'ok', state: 'active' })
+    const lan = encodeURIComponent('http://192.168.1.20:7295/agent-1')
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: 'ok', state: 'active' }), { status: 200 }))
+    expect((await server.inject({ method: 'GET', url: `/network/peers/health?url=${encodeURIComponent('http://192.168.1.20:7295/agent-1/health')}` })).json()).toEqual({ ok: true, status: 'ok', state: 'active' })
     expect((await server.inject({ method: 'GET', url: '/network/peers/health?url=file%3A%2F%2Fx' })).json()).toEqual({ ok: false, error: 'Bad health URL' })
-    fetchMock.mockResolvedValueOnce({ ok: true, headers: { get: () => 'text/markdown' }, arrayBuffer: async () => Buffer.from('# hi') })
-    expect((await server.inject({ method: 'GET', url: '/network/peers/shared-file?baseUrl=http%3A%2F%2Fpeer.test%2Fagent-1&path=README.md' })).json())
+    fetchMock.mockResolvedValueOnce(new Response('# hi', { status: 200, headers: { 'content-type': 'text/markdown' } }))
+    expect((await server.inject({ method: 'GET', url: `/network/peers/shared-file?baseUrl=${lan}&path=README.md` })).json())
       .toEqual({ ok: true, mime: 'text/markdown', size: 4, binary: false, content: '# hi' })
-    expect((await server.inject({ method: 'GET', url: '/network/peers/shared-file?baseUrl=http%3A%2F%2Fpeer.test&path=..%2Fx' })).json()).toEqual({ ok: false, error: 'Bad file path' })
+    expect((await server.inject({ method: 'GET', url: `/network/peers/shared-file?baseUrl=${lan}&path=..%2Fx` })).json()).toEqual({ ok: false, error: 'Bad file path' })
+    // The metadata address is refused before any request.
+    fetchMock.mockClear()
+    expect((await server.inject({ method: 'GET', url: `/network/peers/health?url=${encodeURIComponent('http://169.254.169.254/health')}` })).json().ok).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 
