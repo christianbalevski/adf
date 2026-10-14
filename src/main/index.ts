@@ -1,4 +1,4 @@
-import { app, BrowserWindow, crashReporter, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
 import { join } from 'path'
 // The embedded IPC layer (./ipc) is imported only in embedded mode, at boot:
 // loading it constructs embedded services (a PodmanService, the uvx manifest
@@ -192,6 +192,18 @@ function handleSessionEnd(): void {
     }
   })()
   void shutdownCleanup.finally(() => app.exit(0))
+}
+
+/**
+ * Electron's own dialog for a main script that throws while it loads
+ * ("A JavaScript error occurred in the main process"), then exit: embedded
+ * Studio cannot run without its IPC layer.
+ */
+function failedMainLoad(err: unknown): void {
+  const detail = err instanceof Error ? err.stack ?? err.message : String(err)
+  console.error('[App] The embedded IPC layer failed to load:', detail)
+  dialog.showErrorBox('A JavaScript error occurred in the main process', `Uncaught Exception:\n${detail}`)
+  app.exit(1)
 }
 
 process.on('unhandledRejection', (reason) => {
@@ -515,7 +527,14 @@ app.whenReady().then(async () => {
   // No studio-backend.json and no ADF_STUDIO_BACKEND means embedded, as before.
   const backend = resolveBootBackend(backendConfigPath(getUserDataPath()), process.env)
   if (backend.mode === 'embedded') {
-    embeddedIpc = await import('./ipc')
+    try {
+      embeddedIpc = await import('./ipc')
+    } catch (err) {
+      // A static import that threw here would have failed the main script:
+      // Electron's error dialog, then no app. Same for the lazy one.
+      failedMainLoad(err)
+      return
+    }
     embeddedIpc.registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
   } else {
     const userDataDir = getUserDataPath()

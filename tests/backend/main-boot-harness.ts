@@ -71,7 +71,7 @@ function createBootHarness() {
     },
     session: { defaultSession: { webRequest: { onHeadersReceived: rec('session.onHeadersReceived') } } },
     shell: { openExternal: async () => {}, openPath: async () => '' },
-    dialog: { showMessageBox: async () => ({ response: 0 }), showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+    dialog: { showMessageBox: async () => ({ response: 0 }), showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showErrorBox: rec('dialog.showErrorBox') },
     Notification: class { static isSupported() { return false } on() { return this } show() {} close() {} },
     Menu: { buildFromTemplate: (t: unknown) => ({ items: t }), setApplicationMenu: rec('Menu.setApplicationMenu') },
     Tray: class {},
