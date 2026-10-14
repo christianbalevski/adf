@@ -30,6 +30,8 @@ let handle: DaemonModeHandle
 const daemon = createFakeDaemon(BASE)
 const session = createFakeClientSession()
 const logs: string[] = []
+// Boot records Studio as a lease-registry client (not a runtime host), so `adf daemon start` does not refuse it.
+const clientRegistrations: unknown[][] = []
 const log = { log: (m: string) => { logs.push(m) }, warn: (m: string) => { logs.push(m) }, error: (m: string) => { logs.push(m) } }
 
 beforeAll(async () => {
@@ -40,7 +42,7 @@ beforeAll(async () => {
     mode: 'local',
     userDataDir: dir,
     connect: async () => ({ baseUrl: BASE, logFile: join(dir, 'logs', 'adf-daemon.log'), description: 'the fake daemon', source: { token: () => TOKEN } }),
-    leases: { registerClient: async () => {} },
+    leases: { registerClient: async (...args) => { clientRegistrations.push(args) } },
     fetch: daemon.fetch,
     createSession: () => session,
     log,
@@ -51,6 +53,12 @@ beforeAll(async () => {
 afterAll(async () => {
   await handle.shutdown()
   rmSync(dir, { recursive: true, force: true })
+})
+
+describe('daemon-mode boot', () => {
+  it('registers Studio as a local lease-registry client, not a runtime host', () => {
+    expect(clientRegistrations).toEqual([['local', expect.objectContaining({ settingsPath: join(dir, 'adf-settings.json') })]])
+  })
 })
 
 describe('daemon-mode handler registration (D2)', () => {

@@ -229,6 +229,8 @@ const ROUTES: RouteCase[] = [
   { method: 'DELETE', path: `${A}/identity/password`, url: c => `/agents/${c.id}/identity/password`, expect: { ok: 409 } },
   { method: 'POST', path: `${A}/identity/password/change`, url: c => `/agents/${c.id}/identity/password/change`, body: { newPassword: 'y' }, expect: { ok: 400 } },
   { method: 'GET', path: `${A}/identity/did`, url: c => `/agents/${c.id}/identity/did`, expect: { ok: 200 } },
+  // Local-only (W3-B): refused without X-ADF-Local-Proof; its value path has its own tests.
+  { method: 'POST', path: `${A}/identity/reveal`, url: c => `/agents/${c.id}/identity/reveal`, body: { prefix: 'custom:' }, expect: { ok: 403 } },
   { method: 'PUT', path: `${A}/identity/{purpose}`, url: c => `/agents/${c.id}/identity/custom:token`, body: { value: 'secret' }, expect: { ok: 200 } },
   { method: 'GET', path: `${A}/identity/{purpose}`, url: c => `/agents/${c.id}/identity/custom:token`, expect: { ok: 200 }, after: r => expect(r.json()).toMatchObject({ present: true, length: 6 }) },
   { method: 'PATCH', path: `${A}/identity/{purpose}/code-access`, url: c => `/agents/${c.id}/identity/custom:token/code-access`, body: { codeAccess: true }, expect: { ok: 200 } },
