@@ -1,7 +1,10 @@
 import type { App, IpcMain } from 'electron'
 import { IPC } from '../../../shared/constants/ipc-channels'
 import type { StudioBackendMode } from '../../../shared/types/backend.types'
+import { join } from 'node:path'
 import { BACKEND_ENV_OVERRIDE } from '../backend-config'
+import { processAgentLeases, type AgentLeaseRegistry } from '../../runtime/agent-lease'
+import { getUserDataPath } from '../../utils/user-data-path'
 
 /**
  * Daemon-mode IPC registration (design D1, §3): the alternative to
@@ -25,10 +28,18 @@ export interface DaemonModeDeps {
   ipcMain: Pick<IpcMain, 'handle'>
   app: Pick<App, 'getVersion' | 'setBadgeCount'>
   log?: Pick<Console, 'warn'>
+  /** Agent lease registry (tests); defaults to the process registry. */
+  leases?: Pick<AgentLeaseRegistry, 'registerClient'>
 }
 
 export function registerDaemonModeHandlers(deps: DaemonModeDeps): { registered: string[] } {
   const log = deps.log ?? console
+  // Studio runs no agents in this mode: it records itself as a client, not a
+  // runtime host, so `adf daemon start` does not refuse it (agent-lease.ts).
+  void (deps.leases ?? processAgentLeases()).registerClient(deps.mode, {
+    settingsPath: join(getUserDataPath(), 'adf-settings.json'),
+    version: deps.app.getVersion(),
+  })
   deps.ipcMain.handle(IPC.APP_GET_VERSION, () => deps.app.getVersion())
   deps.ipcMain.handle(IPC.APP_SET_BADGE_COUNT, (_event, count: unknown) => {
     deps.app.setBadgeCount(Number.isInteger(count) && (count as number) > 0 ? (count as number) : 0)
