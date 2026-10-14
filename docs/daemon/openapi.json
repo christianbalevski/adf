@@ -12006,6 +12006,33 @@
           },
           "error": {
             "type": "string"
+          },
+          "leftRunning": {
+            "type": "array",
+            "description": "Containers this runtime's last stop (POST /compute/stop, shutdown) left running because another runtime on the machine uses them. Present only when non-empty. Cleared when this runtime starts a container (shared or per-agent) and by a stop that finds nothing running.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "holders",
+                "reason"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "holders": {
+                  "type": "array",
+                  "description": "Runtimes using it, e.g. \"studio-embedded pid 4242\". Empty when the owner is unknown.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "example": {

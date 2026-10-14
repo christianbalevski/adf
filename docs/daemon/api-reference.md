@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 199 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 200 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -23,7 +23,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 ## Contents
 
 - [Health](#tag-health) (1)
-- [Daemon](#tag-daemon) (2)
+- [Daemon](#tag-daemon) (3)
 - [Events](#tag-events) (2)
 - [Agents](#tag-agents) (30)
 - [Loops](#tag-loops) (8)
@@ -91,6 +91,7 @@ The daemon process itself: this OpenAPI document and graceful shutdown.
 |---|---|---|
 | GET | [`/openapi.json`](#op-getopenapispec) | This OpenAPI document |
 | POST | [`/daemon/shutdown`](#op-shutdowndaemon) | Stop the daemon gracefully (loopback only) |
+| GET | [`/version`](#op-getversion) | Identify this daemon run |
 
 <a id="op-getopenapispec"></a>
 
@@ -145,6 +146,37 @@ Example 202 (`application/json`):
 {
   "accepted": true,
   "pid": 41230
+}
+```
+
+<a id="op-getversion"></a>
+
+### GET `/version`
+
+**Identify this daemon run**
+
+What a client needs before it attaches to a running daemon: the build version, the internal client API version (`clientApiVersion`; a client refuses to attach on a different number), the settings file and data directory it runs on, the mesh `runtimeId`, its pid, and who launched it (`startedBy`: `studio` when ADF Studio spawned it, `cli` for `adf daemon` / `adf daemon start`, `service` for a service manager). ADF Studio stops only a daemon that reports `startedBy: studio`. `startedBy` comes from `ADF_DAEMON_STARTED_BY` at launch; unset means `cli`.
+
+Operation `getVersion` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [DaemonVersionInfo](#schema-daemonversioninfo) | This daemon run |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "version": "0.7.8",
+  "clientApiVersion": 1,
+  "settingsPath": "/Users/me/Library/Application Support/ADF Studio/adf-settings.json",
+  "dataDir": "/Users/me/Library/Application Support/ADF Studio",
+  "runtimeId": "V1StGXR8_Z5jdHi6B-myT",
+  "pid": 41230,
+  "startedBy": "studio"
 }
 ```
 
@@ -11633,6 +11665,10 @@ A provider carried in the agent's own config. Its API key is a credential (PUT �
 | `containerName` | string | yes |  |
 | `activeAgents` | string[] | yes |  |
 | `error` | string |  |  |
+| `leftRunning` | object[] |  | Containers this runtime's last stop (POST /compute/stop, shutdown) left running because another runtime on the machine uses them. Present only when non-empty. Cleared when this runtime starts a container (shared or per-agent) and by a stop that finds nothing running. |
+| `leftRunning[].name` | string | yes |  |
+| `leftRunning[].holders` | string[] | yes | Runtimes using it, e.g. "studio-embedded pid 4242". Empty when the owner is unknown. |
+| `leftRunning[].reason` | string | yes |  |
 
 <a id="schema-contextbreakdown"></a>
 
@@ -11717,6 +11753,20 @@ What the API reveals about one stored identity value: never the value.
 | `locked` | boolean | yes | Stored but not readable in this process |
 | `length` | integer \| null | yes | null for crypto:* purposes and locked values |
 | `code_access` | boolean | yes |  |
+
+<a id="schema-daemonversioninfo"></a>
+
+### DaemonVersionInfo
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `version` | string | yes | Build version (package version; `dev` when run from sources outside npm) |
+| `clientApiVersion` | integer | yes | Version of the internal client API (`/client/*`) |
+| `settingsPath` | string \| null | yes | Settings file this daemon reads and writes; null for an in-memory store |
+| `dataDir` | string \| null | yes | Directory of the settings file: access token, pid file, logs, runtime keys |
+| `runtimeId` | string \| null | yes | Mesh runtime id from settings; null until one was minted |
+| `pid` | integer | yes | Daemon process id |
+| `startedBy` | `"studio"` \| `"cli"` \| `"service"` | yes | Who launched this daemon run (`ADF_DAEMON_STARTED_BY`) |
 
 <a id="schema-diagnosticsresponse"></a>
 
