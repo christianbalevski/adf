@@ -148,6 +148,34 @@ describe('sign-in flows', () => {
       expect(polls).toBe(4)
     })
 
+    it('a failed re-sign-in fails even though the earlier account is still signed in', async () => {
+      let polls = 0
+      const old = { authenticated: true, installed: true, version: '2.1.250', email: 'old@example.test' }
+      const request: AuthRequest = async (_m, path) => {
+        if (path === '/auth/claude/start') return { started: true, url: CLAUDE_URL }
+        polls++
+        if (polls === 1) return old
+        if (polls === 2) return { ...old, flowPending: true, flowUrl: CLAUDE_URL }
+        return { ...old, flowError: 'Claude sign-in failed: denied' }
+      }
+      const outcome = await loginClaude({ request, sleep: async () => {} }, { onStart: () => {} })
+      expect(outcome).toEqual({ ok: false, error: 'Claude sign-in failed: denied' })
+    })
+
+    it('wait: false returns after onStart without polling or cancelling', async () => {
+      const calls: string[] = []
+      const request: AuthRequest = async (method, path) => {
+        calls.push(`${method} ${path}`)
+        if (path === '/auth/claude/start') return { started: true, url: CLAUDE_URL }
+        return { authenticated: false, installed: true, version: '2.1.250' }
+      }
+      const started: string[] = []
+      const outcome = await loginClaude({ request, sleep: async () => {} }, { wait: false, onStart: info => started.push(info.url) })
+      expect(outcome).toMatchObject({ ok: false, detached: true })
+      expect(started).toEqual([CLAUDE_URL])
+      expect(calls).toEqual(['GET /auth/claude/status', 'POST /auth/claude/start'])
+    })
+
     it('cancelling stops polling and cancels the daemon-side flow', async () => {
       const stop = new AbortController()
       const calls: string[] = []

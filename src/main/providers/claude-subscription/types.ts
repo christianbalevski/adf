@@ -30,6 +30,11 @@ export type ClaudeAuthStatus =
       /** A re-sign-in is running; the account below is the one signed in before it. */
       flowPending?: boolean
       flowUrl?: string
+      /**
+       * The last re-sign-in failed (cleared when a new one starts); the
+       * account below is still the one signed in before it.
+       */
+      flowError?: string
       email?: string
       /** Claude plan, e.g. `pro`, `max`, `team`. */
       plan?: string

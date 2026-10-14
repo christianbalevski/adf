@@ -76,9 +76,11 @@ export function describeStatus(status: SubscriptionAuthStatus | null): { text: s
   if (status.updateRequired) return { text: `Claude Code ${status.version ?? ''} is too old · ADF needs ${status.minVersion ?? 'a newer version'} or newer (run \`claude update\`)`, ok: false }
   const cc = status.version ? ` · Claude Code ${status.version}` : ''
   if (status.authenticated) {
-    if (status.plan) return { text: `signed in${status.email ? ` as ${status.email}` : ''} · ${status.plan} plan${cc}`, ok: true }
+    // Claude: a failed re-sign-in leaves the earlier account signed in.
+    const failed = status.flowError && !status.flowPending ? ` · last sign-in failed: ${status.flowError}` : ''
+    if (status.plan) return { text: `signed in${status.email ? ` as ${status.email}` : ''} · ${status.plan} plan${cc}${failed}`, ok: true }
     const expiry = formatExpiry(status.expiresAt)
-    return { text: `signed in${status.email ? ` as ${status.email}` : ''}${expiry ? ` · token ${expiry.startsWith('expired') ? expiry : `renews in ${expiry}`}` : ''}`, ok: true }
+    return { text: `signed in${status.email ? ` as ${status.email}` : ''}${expiry ? ` · token ${expiry.startsWith('expired') ? expiry : `renews in ${expiry}`}` : ''}${failed}`, ok: true }
   }
   if (status.flowPending) return { text: 'sign-in in progress', ok: false }
   if (status.flowError) return { text: `not signed in (last attempt: ${status.flowError})`, ok: false }

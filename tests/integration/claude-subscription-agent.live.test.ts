@@ -105,7 +105,8 @@ describe.skipIf(!live)('claude-subscription agent (live)', () => {
       await new Promise((r) => setTimeout(r, 200))
       expect(sent).toBe(true)
       const loop = JSON.stringify(workspace.getLoop())
-      expect(loop).toMatch(/USER INTERRUPT/)
+      // The chat is its own loop row, once.
+      expect(loop.match(/end your final reply with the word PINEAPPLE/g)?.length).toBe(1)
       expect(loop).toMatch(/PINEAPPLE[^"]*"\}\]/i)
       expect(starts).toHaveBeenCalledTimes(1)
     } finally {

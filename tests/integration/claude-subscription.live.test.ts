@@ -94,6 +94,24 @@ describe.skipIf(!live)('claude-subscription (live)', () => {
     expect(text(second)).toMatch(/red/i)
   }, 150_000)
 
+  it('delivers an owner message with an image that arrives with the tool results', async () => {
+    const red = 'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC'
+    const starts = vi.spyOn(ClaudeCodeSession, 'start')
+    const messages: LLMMessage[] = [{ role: 'user', content: 'What is the weather in Bern?' }]
+    const first = await provider.createMessage({ system, messages, tools: [weatherTool], signal: AbortSignal.timeout(60_000) })
+    expect(first.stop_reason).toBe('tool_use')
+    messages.push({ role: 'assistant', content: first.content })
+    messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUses(first)[0].id!, content: 'Cloudy, 8C' }] })
+    messages.push({ role: 'user', content: [
+      { type: 'text', text: 'Also: what single color fills this image? Answer weather, then the color.' },
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${red}` } },
+    ] })
+    const second = await provider.createMessage({ system, messages, tools: [weatherTool], signal: AbortSignal.timeout(60_000) })
+    expect(text(second)).toMatch(/red/i)
+    expect(starts).toHaveBeenCalledTimes(1)
+    starts.mockRestore()
+  }, 150_000)
+
   it('re-delivers instructions that went away and came back', async () => {
     const di = 'The secret word is TANGERINE. If asked for the secret word, answer with it.'
     const messages: LLMMessage[] = [{ role: 'user', content: 'Say OK.' }]

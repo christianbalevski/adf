@@ -561,10 +561,12 @@ async function loginClaudeCli(io: CliIo, options: CliOptions): Promise<number> {
   const stopInterrupt = (io.onInterrupt ?? defaultOnInterrupt)(() => stop.abort())
   try {
     const outcome = await loginClaude(deps, {
+      // --json hands out the start answer and stops waiting; the daemon's
+      // sign-in keeps running (only Ctrl-C cancels it), like ChatGPT/Grok.
+      wait: !options.json,
       onStart: (info) => {
         if (options.json) {
           io.stdout(`${JSON.stringify(info.raw, null, 2)}\n`)
-          stop.abort()
           return
         }
         io.stdout(`Opening Claude sign-in in your browser…\n${info.url ? `If it does not open, visit:\n\n  ${info.url}\n\n` : '\n'}If the page shows a code, paste it here (or wait): `)
@@ -581,7 +583,7 @@ async function loginClaudeCli(io: CliIo, options: CliOptions): Promise<number> {
       io.stderr(`${outcome.error}\n`)
       return 1
     }
-    if (options.json) return outcome.ok || outcome.cancelled ? 0 : reportAuth(io, 'claude', outcome)
+    if (options.json) return outcome.ok || outcome.detached ? 0 : outcome.cancelled ? 130 : reportAuth(io, 'claude', outcome)
     io.stdout('\n')
     if (outcome.ok) {
       const plan = isRecord(outcome.raw) && typeof outcome.raw.plan === 'string' ? outcome.raw.plan : ''

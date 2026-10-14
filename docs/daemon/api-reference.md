@@ -6279,7 +6279,7 @@ Example 200 (`application/json`):
 
 **Claude subscription sign-in status**
 
-ADF holds no Claude credentials: the daemon asks the Claude Code CLI installed on its host (`claude auth status`). `installed: false` means Claude Code is missing (`installUrl` says where to get it). While a sign-in runs, `flowPending` is true and `flowUrl` is the sign-in URL; a failed sign-in surfaces `flowError`. Signed in only counts with a Claude plan (claude.ai), not a Console API key. The result is cached for about 30 seconds (never while a sign-in is pending); `recheck=1` re-detects Claude Code and reads fresh status.
+ADF holds no Claude credentials: the daemon asks the Claude Code CLI installed on its host (`claude auth status`). `installed: false` means Claude Code is missing (`installUrl` says where to get it). While a sign-in runs, `flowPending` is true and `flowUrl` is the sign-in URL; a failed sign-in surfaces `flowError` (also when still `authenticated` with the earlier account). Signed in only counts with a Claude plan (claude.ai), not a Console API key. The result is cached for about 30 seconds (never while a sign-in is pending); `recheck=1` re-detects Claude Code and reads fresh status.
 
 Operation `getClaudeAuthStatus` · bearer token
 
@@ -6315,7 +6315,7 @@ Example 200 (`application/json`):
 
 **Start a Claude sign-in**
 
-Runs `claude auth login` on the daemon host; Claude Code opens the browser there itself. `url` is the same sign-in page for when it cannot (remote or headless daemon): open it in any browser, and if the page then shows a code, send it with POST /auth/claude/code. Poll GET /auth/claude/status until `authenticated` or `flowError`. A second start while one runs returns the running flow. Afterwards every loaded loop in `error` from a claude-subscription auth failure returns to idle and emits agent.recovered. No body.
+Runs `claude auth login` on the daemon host; Claude Code opens the browser there itself. `url` is the same sign-in page for when it cannot (remote or headless daemon): open it in any browser, and if the page then shows a code, send it with POST /auth/claude/code. Poll GET /auth/claude/status until `flowPending` is false: `flowError` set means the sign-in failed (even if `authenticated` still shows an earlier account), else `authenticated`. A second start while one runs returns the running flow. Afterwards every loaded loop in `error` from a claude-subscription auth failure returns to idle and emits agent.recovered. No body.
 
 Operation `startClaudeAuth` · bearer token
 
@@ -14047,7 +14047,7 @@ Claude sign-in as reported by the Claude Code CLI on the daemon host.
 | `plan` | string |  | Claude plan, e.g. pro, max, team |
 | `flowPending` | boolean |  |  |
 | `flowUrl` | string |  | Sign-in URL of the running flow |
-| `flowError` | string |  |  |
+| `flowError` | string |  | Why Claude is unusable, or why the last sign-in failed. Also set while authenticated when a re-sign-in failed; the account shown is then the one signed in before it. Cleared when a new sign-in starts. |
 
 <a id="schema-claudeauthstartresponse"></a>
 

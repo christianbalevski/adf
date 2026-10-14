@@ -464,10 +464,11 @@ export class ClaudeCodeSession {
   }
 
   /**
-   * Hand ADF's tool results back. `extra` is text that arrived alongside them
-   * (mid-batch user messages, notices); it reaches the model with the batch.
+   * Hand ADF's tool results back. `followUp` is content that arrived alongside
+   * them (owner messages, notices, their images); it reaches the model with
+   * the batch.
    */
-  sendToolResults(results: Map<string, ToolOutcome>, context: string | undefined, extra: string | undefined, callbacks: TurnCallbacks, signal?: AbortSignal): Promise<TurnResult> {
+  sendToolResults(results: Map<string, ToolOutcome>, context: string | undefined, followUp: ApiBlock[], callbacks: TurnCallbacks, signal?: AbortSignal): Promise<TurnResult> {
     if (this.state !== 'awaiting_tools') throw new ClaudeProviderError('Claude Code session is not waiting for tool results.')
     this.setContext(context)
     this.state = 'running'
@@ -475,8 +476,8 @@ export class ClaudeCodeSession {
     this.deliveredToolIds = []
     // Messages that arrived while the tools ran go in as a real user message,
     // which Claude Code folds into the turn right after this tool batch.
-    if (extra) {
-      this.input.push({ type: 'user', message: { role: 'user', content: extra }, parent_tool_use_id: null, priority: 'next' })
+    if (followUp.length > 0) {
+      this.input.push({ type: 'user', message: { role: 'user', content: followUp as never }, parent_tool_use_id: null, priority: 'next' })
     }
     for (const [id, outcome] of results) {
       const result = toCallToolResult(outcome)

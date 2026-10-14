@@ -9,7 +9,7 @@ import { createHeadlessAgent, MockLLMProvider } from '../../../src/main/runtime/
 import { clearAllUmbilicalBuses, ensureUmbilicalBus } from '../../../src/main/runtime/umbilical-bus'
 import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
 import type { CreateMessageOptions, LLMProvider } from '../../../src/main/providers/provider.interface'
-import type { LLMResponse } from '../../../src/shared/types/provider.types'
+import type { ContentBlock, LLMResponse } from '../../../src/shared/types/provider.types'
 
 /**
  * A chat sent while the agent is working is delivered at the next safe step
@@ -17,13 +17,13 @@ import type { LLMResponse } from '../../../src/shared/types/provider.types'
  * model call or the tools in flight.
  */
 
-function chat(text: string, turnId?: string) {
+function chat(text: string, turnId?: string, extra: ContentBlock[] = []) {
   return {
     ...createDispatch(
       createEvent({
         type: 'chat',
         source: 'test',
-        data: { message: { seq: 0, role: 'user', content_json: [{ type: 'text', text }], created_at: Date.now() } },
+        data: { message: { seq: 0, role: 'user', content_json: [{ type: 'text', text }, ...extra], created_at: Date.now() } },
       }),
       { scope: 'agent' },
     ),
@@ -99,7 +99,8 @@ describe('chat while the agent is working', () => {
     const events: Array<{ event_type: string; turn_id?: string; payload: Record<string, unknown> }> = []
     ensureUmbilicalBus(config.id).subscribe((e) => { events.push(e as never) })
 
-    provider.onFirstCall = () => { void agent.executor.executeTurn(chat('also check the logs', 'turn_b')) }
+    const image: ContentBlock = { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }
+    provider.onFirstCall = () => { void agent.executor.executeTurn(chat('also check the logs', 'turn_b', [image])) }
     try {
       await agent.executor.executeTurn(chat('list my files', 'turn_a'))
       await new Promise((r) => setTimeout(r, 50))
@@ -108,10 +109,15 @@ describe('chat while the agent is working', () => {
       // One turn, two model calls; the chat rides the second, after the tool result.
       expect(provider.requests.length).toBe(2)
       // The history array is shared and grows after the call; find the step.
-      const results = provider.requests[1].messages.find((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result'))!
-      const blocks = results.content as Array<{ type: string; text?: string }>
-      expect(blocks[0].type).toBe('tool_result')
-      expect(blocks.slice(1).map((b) => b.text ?? '').join('\n')).toContain('also check the logs')
+      const msgs = provider.requests[1].messages
+      const at = msgs.findIndex((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result'))
+      const results = msgs[at].content as Array<{ type: string }>
+      expect(results.every((b) => b.type === 'tool_result')).toBe(true)
+      // The chat follows the tool results as its own user row, full content.
+      const next = msgs[at + 1]
+      expect(next.role).toBe('user')
+      expect(JSON.stringify(next.content)).toContain('also check the logs')
+      expect(JSON.stringify(next.content)).toContain('image_url')
       const completed = events.filter((e) => e.event_type === 'turn.completed')
       expect(completed.map((e) => e.payload.interrupted === true)).toEqual([false])
       expect(completed[0].payload.absorbed_turn_ids).toEqual(['turn_b'])

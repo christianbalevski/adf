@@ -348,7 +348,7 @@ Grouped by area, then category.
 - **Hibernate backlog drop** — Entering hibernate or off discards the queued agent-scope trigger backlog and emits a `trigger.dropped` event rather than replaying stale wakes.
 - **adf_shell state shorthand** — `state [idle|hibernate|off]` as a chainable shell command (`meta set status "..." && state idle`), no tool call needed to read it.
 - **Daemon live-state endpoint** — `POST /agents/:id/state` is the supported way to move a running agent's display state; editing config's `state` field does not.
-- **Next-step chat delivery** — A message sent while an agent is thinking or running tools does not abort it: it joins the turn after the current tool results (`[USER INTERRUPT — …]`), or runs as the next turn. A message to an agent waiting on the owner (approval, ask, suspend) ends the wait and restarts the turn with placeholders for pending tool calls. Stop is the hard interrupt.
+- **Next-step chat delivery** — A message sent while an agent is thinking or running tools does not abort it: it joins the turn as its own user row (full content) after the current tool results, at the next model boundary, or runs as the next turn. A message to an agent waiting on the owner (approval, ask, suspend) ends the wait and restarts the turn with placeholders for pending tool calls. Stop is the hard interrupt.
 
 ### Background Agents & Runtime
 - **BackgroundAgentManager registry** — Keyed by canonical (realpath) `.adf` path; claims in-flight starts synchronously so concurrent entry points share one build.

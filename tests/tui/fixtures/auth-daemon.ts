@@ -26,6 +26,8 @@ export interface AuthMock {
   calls: string[]
   state: Record<MockSubscription, { authenticated: boolean; pending: boolean; email?: string; flowError?: string; polls: number }>
   approve(provider: MockSubscription): void
+  /** The pending sign-in fails (an earlier account, if any, stays signed in). */
+  fail(provider: MockSubscription, error: string): void
   /** Codes sent to POST /auth/claude/code, in order. */
   claudeCodes: string[]
 }
@@ -54,13 +56,14 @@ export function createAuthFetch(options: AuthMockOptions = {}, next: typeof fetc
   const claudeCodes: string[] = []
   const claudeInstalled = options.claudeInstalled !== false
   const approve = (p: MockSubscription) => { state[p] = { authenticated: true, pending: false, email: 'owner@example.test', polls: 0 } }
+  const fail = (p: MockSubscription, error: string) => { state[p] = { ...state[p], pending: false, flowError: error } }
   const status = (p: MockSubscription) => {
     const s = state[p]
     if (p === 'claude') {
       if (!claudeInstalled) return { authenticated: false, installed: false, installUrl: CLAUDE_INSTALL_URL }
       const pending = s.pending ? { flowPending: true, flowUrl: CLAUDE_URL } : {}
       return s.authenticated
-        ? { authenticated: true, installed: true, version: '2.1.250', ...pending, email: s.email, plan: 'max' }
+        ? { authenticated: true, installed: true, version: '2.1.250', ...pending, email: s.email, plan: 'max', ...(s.flowError ? { flowError: s.flowError } : {}) }
         : { authenticated: false, installed: true, version: '2.1.250', ...pending, ...(s.flowError ? { flowError: s.flowError } : {}) }
     }
     return s.authenticated
@@ -129,5 +132,5 @@ export function createAuthFetch(options: AuthMockOptions = {}, next: typeof fetc
     return next(input instanceof Request ? input : url, init)
   }
 
-  return { fetch: wrapped as typeof fetch, calls, state, approve, claudeCodes }
+  return { fetch: wrapped as typeof fetch, calls, state, approve, fail, claudeCodes }
 }

@@ -63,6 +63,8 @@ describe('auth model', () => {
     expect(formatExpiry(Date.now() + 3 * 86_400_000)).toBe('3d')
     expect(describeStatus({ authenticated: true, email: 'a@b.c' }).text).toBe('signed in as a@b.c')
     expect(describeStatus({ authenticated: false, flowError: 'denied' }).text).toContain('denied')
+    expect(describeStatus({ authenticated: true, installed: true, email: 'a@b.c', plan: 'max', flowError: 'denied' }))
+      .toEqual({ text: 'signed in as a@b.c · max plan · last sign-in failed: denied', ok: true })
     const state = {
       auth: { chatgpt: { authenticated: false }, grok: { authenticated: true }, providers: [{ id: 'chatgpt-sub', type: 'chatgpt-subscription', name: 'ChatGPT', credentialStorage: 'app', hasApiKey: false }] },
       agents: { a: { config: { model: { provider: 'chatgpt-sub' } } }, b: { config: { model: { provider: 'mock' } } } },
@@ -150,6 +152,17 @@ describe('provider sign-in', () => {
     expect(tui.lastFrame()).not.toContain('Signed in to Claude as')
     auth.approve('claude')
     await tui.waitFor('Signed in to Claude as owner@example.test')
+  })
+
+  it('/login claude while signed in: a failed re-sign-in reports the failure, not the old account', async () => {
+    const { tui, auth } = await mount({ signedIn: { claude: true } })
+    await tui.waitFor('agent-1')
+    await slash(tui, '/login claude')
+    await tui.waitFor('If the page shows a code, paste it here')
+    await tui.waitFor(() => auth.state.claude.polls >= 1)
+    auth.fail('claude', 'Claude sign-in was cancelled.')
+    const frame = await tui.waitFor('Sign-in failed: Claude sign-in was cancelled.')
+    expect(frame).not.toContain('Signed in to Claude as')
   })
 
   it('/login claude: Esc cancels the daemon-side sign-in', async () => {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { LLMProvider, CreateMessageOptions } from '../provider.interface'
-import type { LLMMessage, LLMResponse, ReasoningEffort } from '../../../shared/types/provider.types'
+import type { ContentBlock, LLMMessage, LLMResponse, ReasoningEffort } from '../../../shared/types/provider.types'
 import type { ProviderType } from '../../../shared/constants/adf-defaults'
 import { toProviderError } from '../ai-sdk-provider'
 import { logger } from '../../utils/logger'
@@ -117,40 +117,38 @@ function cachedFingerprint(msg: LLMMessage): string {
 }
 
 /**
- * Tool results keyed by call id, with the images ADF attached after each
- * result, plus any text riding along (mid-batch notices).
+ * Tool results keyed by call id, with the images ADF attached right after
+ * each result. Anything else in the message (text, media not following a
+ * result) is returned as content to send alongside the batch.
  */
-function toolOutcomes(msg: LLMMessage): { results: Map<string, ToolOutcome>; text: string[] } {
+function toolOutcomes(msg: LLMMessage): { results: Map<string, ToolOutcome>; rest: ContentBlock[] } {
   const results = new Map<string, ToolOutcome>()
-  const text: string[] = []
+  const rest: ContentBlock[] = []
   let current: ToolOutcome | undefined
   for (const b of Array.isArray(msg.content) ? msg.content : []) {
     if (b.type === 'tool_result' && b.tool_use_id) {
       current = { content: b.content ?? '', isError: b.is_error }
       results.set(b.tool_use_id, current)
-    } else if (b.type === 'image_url' && b.image_url) {
-      const match = b.image_url.url.match(/^data:([^;]+);base64,(.+)$/)
-      if (match && current) (current.images ??= []).push({ mimeType: match[1], data: match[2] })
-      else text.push(`[image: ${b.image_url.url.slice(0, 200)}]`)
-    } else if (b.type === 'input_audio' || b.type === 'video_url') {
-      const note = `[${b.type === 'input_audio' ? 'audio' : 'video'} attachment omitted: not supported by Claude]`
-      if (current) current.content += `\n${note}`
-      else text.push(note)
-    } else if (b.type === 'text' && b.text) {
-      text.push(b.text)
+      continue
     }
+    const match = b.type === 'image_url' ? b.image_url?.url.match(/^data:([^;]+);base64,(.+)$/) : null
+    if (match && current) {
+      (current.images ??= []).push({ mimeType: match[1], data: match[2] })
+      continue
+    }
+    if ((b.type === 'input_audio' || b.type === 'video_url') && current) {
+      current.content += `\n[${b.type === 'input_audio' ? 'audio' : 'video'} attachment omitted: not supported by Claude]`
+      continue
+    }
+    // Text (or media after it) belongs to the user, not to a tool result.
+    if (b.type === 'text') current = undefined
+    rest.push(b)
   }
-  return { results, text }
-}
-
-function userText(messages: LLMMessage[]): string[] {
-  return messages.flatMap((m) => (toApiMessage(m)?.content ?? [])
-    .filter((b): b is Extract<ApiBlock, { type: 'text' }> => b.type === 'text')
-    .map((b) => b.text))
+  return { results, rest }
 }
 
 type Plan =
-  | { kind: 'tools'; session: ClaudeCodeSession; results: Map<string, ToolOutcome>; extra?: string }
+  | { kind: 'tools'; session: ClaudeCodeSession; results: Map<string, ToolOutcome>; followUp: ApiBlock[] }
   | { kind: 'user'; session: ClaudeCodeSession; content: ApiBlock[] }
 
 /** Find a pooled session this call's history continues. */
@@ -167,10 +165,14 @@ function planContinuation(key: string, messages: LLMMessage[], fps: string[]): P
       // the tools ran (chat, injections) — those ride along with the batch.
       const [head, ...rest] = tail
       if (head.role !== 'user' || !hasToolResults(head) || rest.some((m) => m.role !== 'user' || hasToolResults(m))) continue
-      const { results, text } = toolOutcomes(head)
+      const { results, rest: alongside } = toolOutcomes(head)
       if (!session.pendingToolIds.every((id) => results.has(id))) continue
-      const extra = [...text, ...userText(rest)].join('\n\n') || undefined
-      return { kind: 'tools', session, results, extra }
+      // Full content (text, images) of everything that came with the batch.
+      const followUp = [
+        ...(alongside.length > 0 ? toApiMessage({ role: 'user', content: alongside })?.content ?? [] : []),
+        ...rest.flatMap((m) => toApiMessage(m)?.content ?? []),
+      ]
+      return { kind: 'tools', session, results, followUp }
     }
 
     if (tail.every((m) => m.role === 'user' && !hasToolResults(m))) {
@@ -224,7 +226,7 @@ export class ClaudeSubscriptionProvider implements LLMProvider {
         inUse.add(session)
         session.continuations++
         turn = plan.kind === 'tools'
-          ? session.sendToolResults(plan.results, options.dynamicInstructions, plan.extra, callbacks, options.signal)
+          ? session.sendToolResults(plan.results, options.dynamicInstructions, plan.followUp, callbacks, options.signal)
           : session.sendUser(plan.content, options.dynamicInstructions, callbacks, options.signal)
       } else {
         retireSuperseded(key, fps)

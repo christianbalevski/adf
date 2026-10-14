@@ -163,7 +163,7 @@ In autonomous mode, the runtime appends to the system prompt: *"You are in auton
 
 If you send a message while an agent is thinking or running tools (in any mode), nothing is cut off. The runtime delivers your message at the next safe step:
 
-- If the agent is in a tool loop, your message is added after the current tool results, marked `[USER INTERRUPT — …]`, and the agent reads it before its next step
+- If the agent is in a tool loop, your message (with its attachments) is added as its own message after the current tool results, and the agent reads it before its next step
 - If the agent is writing its final reply, your message runs as the next turn as soon as that reply is done
 - Several messages are delivered together, in order
 

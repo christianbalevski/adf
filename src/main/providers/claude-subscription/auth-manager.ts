@@ -138,6 +138,9 @@ class ClaudeAuthManager {
       installed: true,
       ...version,
       ...pending,
+      // A failed re-sign-in (e.g. switching accounts) leaves the old account
+      // signed in; report the failure so callers don't mistake it for success.
+      ...(this.lastFlowError ? { flowError: this.lastFlowError } : {}),
       ...(cli.email ? { email: cli.email } : {}),
       ...(cli.subscriptionType ? { plan: cli.subscriptionType } : {}),
     }

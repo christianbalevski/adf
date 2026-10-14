@@ -108,6 +108,31 @@ describe('Claude sign-in flow', () => {
     await vi.waitFor(() => expect(h.children).toHaveLength(2))
   })
 
+  it('a failed re-sign-in carries flowError next to the earlier account; a new start clears it', async () => {
+    const m = auth.getClaudeAuthManager()
+    const start = m.startAuthFlowDetached()
+    await vi.waitFor(() => expect(h.children).toHaveLength(1))
+    h.children[0].stderr.emit('data', Buffer.from('Error: access denied\n'))
+    h.children[0].emit('exit', 1)
+    await expect((await start).completion).rejects.toThrow('access denied')
+    expect(await m.getAuthStatus()).toMatchObject({
+      authenticated: true,
+      email: 'agent-1@example.test',
+      flowError: 'Claude sign-in failed: Error: access denied',
+    })
+
+    const restart = m.startAuthFlowDetached()
+    await vi.waitFor(() => expect(h.children).toHaveLength(2))
+    const pending = await m.getAuthStatus()
+    expect(pending).toMatchObject({ authenticated: true, flowPending: true })
+    expect('flowError' in pending ? pending.flowError : undefined).toBeUndefined()
+    h.children[1].emit('exit', 0)
+    await (await restart).completion
+    const done = await m.getAuthStatus()
+    expect(done).toMatchObject({ authenticated: true })
+    expect('flowError' in done ? done.flowError : undefined).toBeUndefined()
+  })
+
   it('a spawn error resolves the URL wait instead of hanging', async () => {
     const m = auth.getClaudeAuthManager()
     const start = m.startAuthFlowDetached()

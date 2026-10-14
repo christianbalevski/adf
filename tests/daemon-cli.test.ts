@@ -537,6 +537,49 @@ describe('daemon CLI', () => {
       expect(interrupt).toBeNull()
     })
 
+    it('--json prints the start answer and leaves the daemon-side sign-in running', async () => {
+      const calls: string[] = []
+      const io = {
+        ...fakeIo(async (url, init) => {
+          calls.push(`${init?.method ?? 'GET'} ${url.replace('http://127.0.0.1:7385', '')}`)
+          if (url.endsWith('/auth/claude/start')) return jsonResponse({ started: true, url: CLAUDE_URL })
+          return jsonResponse(signedOut)
+        }),
+        sleep: async () => {},
+        readLines: () => () => {},
+        onInterrupt: () => () => {},
+      }
+
+      const code = await runCli(['auth', 'login', 'claude', '--json'], io)
+
+      expect(code).toBe(0)
+      expect(JSON.parse(io.output())).toEqual({ started: true, url: CLAUDE_URL })
+      expect(calls).toEqual(['GET /auth/claude/status', 'POST /auth/claude/start'])
+    })
+
+    it('a failed re-sign-in reports the failure, not the earlier account', async () => {
+      const old = { authenticated: true, installed: true, version: '2.1.250', email: 'old@example.com', plan: 'max' }
+      let polls = 0
+      const io = {
+        ...fakeIo(async (url) => {
+          if (url.endsWith('/auth/claude/start')) return jsonResponse({ started: true, url: CLAUDE_URL })
+          polls += 1
+          if (polls === 1) return jsonResponse(old)
+          if (polls === 2) return jsonResponse({ ...old, flowPending: true, flowUrl: CLAUDE_URL })
+          return jsonResponse({ ...old, flowError: 'Claude sign-in was cancelled.' })
+        }),
+        sleep: async () => {},
+        readLines: () => () => {},
+        onInterrupt: () => () => {},
+      }
+
+      const code = await runCli(['auth', 'login', 'claude'], io)
+
+      expect(code).toBe(1)
+      expect(io.output()).not.toContain('Signed in to Claude')
+      expect(io.errorOutput()).toContain('Sign-in failed: Claude sign-in was cancelled.')
+    })
+
     it('shows Claude in auth status and signs out', async () => {
       const calls: string[] = []
       const io = fakeIo(async (url, init) => {

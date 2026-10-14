@@ -111,7 +111,7 @@ export interface AuthFlowDeps {
 
 export type AuthOutcome =
   | { ok: true; email?: string; raw?: unknown }
-  | { ok: false; error: string; cancelled?: boolean; timedOut?: boolean; notInstalled?: boolean; installUrl?: string }
+  | { ok: false; error: string; cancelled?: boolean; timedOut?: boolean; notInstalled?: boolean; installUrl?: string; detached?: boolean }
 
 export interface ChatGptStartInfo {
   mode: 'loopback' | 'relay'
@@ -212,9 +212,11 @@ export async function loginGrok(deps: AuthFlowDeps, opts: { onStart: (info: Grok
  * Sign in to Claude through the daemon host's Claude Code. Fails fast (no
  * flow) when Claude Code is not installed there. While this polls, the caller
  * may relay a code the page shows with `submitClaudeCode`. Cancelling (the
- * signal) stops the waiting `claude auth login` on the daemon.
+ * signal) stops the waiting `claude auth login` on the daemon. `wait: false`
+ * returns right after `onStart` (outcome `detached`) and leaves the daemon's
+ * flow running, for callers that only hand out the URL.
  */
-export async function loginClaude(deps: AuthFlowDeps, opts: { onStart: (info: ClaudeStartInfo) => void }): Promise<AuthOutcome> {
+export async function loginClaude(deps: AuthFlowDeps, opts: { onStart: (info: ClaudeStartInfo) => void; wait?: boolean }): Promise<AuthOutcome> {
   const before = await deps.request('GET', '/auth/claude/status')
   if (isRecord(before) && before.installed === false) {
     const installUrl = typeof before.installUrl === 'string' ? before.installUrl : ''
@@ -223,6 +225,7 @@ export async function loginClaude(deps: AuthFlowDeps, opts: { onStart: (info: Cl
   const data = await deps.request('POST', '/auth/claude/start')
   const url = isRecord(data) && typeof data.url === 'string' ? data.url : ''
   opts.onStart({ url, raw: data })
+  if (opts.wait === false && !deps.signal?.aborted) return { ok: false, error: 'Sign-in started; not waiting for it', detached: true }
   const outcome = deps.signal?.aborted ? CANCELLED : await waitForClaude(deps)
   if (!outcome.ok && (outcome.cancelled || outcome.timedOut)) {
     await deps.request('POST', '/auth/claude/cancel').catch(() => {})
@@ -239,6 +242,7 @@ export async function submitClaudeCode(deps: Pick<AuthFlowDeps, 'request'>, code
  * Like waitForAuth, but nothing ends the wait while a flow is pending: Claude's
  * status can carry a standing error (e.g. Claude Code signed in with a Console
  * key) or the previous account's sign-in while the new sign-in still runs.
+ * Once it is not pending, `flowError` wins over `authenticated`.
  */
 async function waitForClaude(deps: AuthFlowDeps): Promise<AuthOutcome> {
   const sleep = deps.sleep ?? ((ms: number) => abortableSleep(ms, deps.signal))
@@ -250,8 +254,11 @@ async function waitForClaude(deps: AuthFlowDeps): Promise<AuthOutcome> {
     if (deps.signal?.aborted) return CANCELLED
     if (!isRecord(status)) continue
     if (status.flowPending === true) continue
-    if (status.authenticated === true) return { ok: true, email: typeof status.email === 'string' ? status.email : undefined, raw: status }
+    // flowError before authenticated: a failed re-sign-in still reports the
+    // earlier account as signed in. The daemon clears flowError on start, so
+    // once the flow is done it belongs to this attempt.
     if (typeof status.flowError === 'string' && status.flowError) return { ok: false, error: status.flowError }
+    if (status.authenticated === true) return { ok: true, email: typeof status.email === 'string' ? status.email : undefined, raw: status }
     if (status.installed === false) return { ok: false, error: 'Claude Code is not installed on the daemon host.' }
   }
   return { ok: false, error: 'Timed out waiting for Claude sign-in', timedOut: true }
