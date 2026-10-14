@@ -40,6 +40,10 @@ export function renderRecording(recording: ComparableRecording): string {
     lines.push('', `## state: user-data/${name}`)
     emit(lines, name, json, 0)
   }
+  for (const [file, content] of Object.entries(recording.state.leases ?? {})) {
+    lines.push('', `## state: leases/${file}`)
+    emit(lines, file, content, 0)
+  }
   for (const [file, dump] of Object.entries(recording.state.adf)) {
     for (const [table, { columns, rows }] of Object.entries(dump.tables)) {
       lines.push('', `## state: ${file} ${table} (${rows.length} rows; ${columns.join(', ')})`)

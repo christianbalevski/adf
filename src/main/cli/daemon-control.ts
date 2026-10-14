@@ -10,12 +10,13 @@
 // never a hard kill by default.
 
 import { spawn, execFileSync } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, readSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, readSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DEFAULT_DAEMON_PORT, DEFAULT_DAEMON_URL, isLocalDaemonUrl, localProofHeaders, resolveDaemonToken } from './daemon-url'
 import { defaultUserDataPath } from '../utils/user-data-path'
+import { leaseDir, listRuntimeHosts, listStudioClients } from '../runtime/agent-lease'
 
 export { DEFAULT_DAEMON_PORT }
 const DEFAULT_MESH_PORT = 7295
@@ -110,14 +111,35 @@ function readJson(file: string): Record<string, unknown> | null {
   try { return JSON.parse(readFileSync(file, 'utf-8')) as Record<string, unknown> } catch { return null }
 }
 
+/** Same file, the way the OS sees it (realpath; case-insensitive on Windows and macOS). */
+function sameFile(a: string, b: string): boolean {
+  const norm = (p: string) => {
+    let out = resolve(p)
+    try { out = realpathSync.native(out) } catch { /* not created yet */ }
+    return process.platform === 'linux' ? out : out.toLowerCase()
+  }
+  return norm(a) === norm(b)
+}
+
 /**
  * ADF Studio (or another runtime on the same settings) is running while the
  * daemon is not: starting a daemon would run the same agents from the same
- * files twice. Detection is deliberately small: the mesh server of a runtime
- * on these settings answers /ping with our runtime_id, or (default settings
- * only) an `ADF Studio` process is running. Returns what to tell the user.
+ * files twice. The runtime host registry (runtime/agent-lease.ts) answers
+ * first: an embedded-mode Studio on these settings is a conflict; a Studio in
+ * local/remote mode is a client of the daemon and is not. For Studio versions
+ * that predate the registry: the mesh server of a runtime on these settings
+ * answers /ping with our runtime_id, or (default settings only, and no Studio
+ * in the registry) an `ADF Studio` process is running. Returns what to tell
+ * the user.
  */
 export async function studioConflict(paths: DaemonPaths, env: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  // The registry is per OS user, not per settings file: `env` only overrides it.
+  const registry = leaseDir({ ...process.env, ...env })
+  const embedded = (await listRuntimeHosts(registry)).filter(h => h.alive && h.kind === 'studio-embedded')
+  const same = embedded.find(h => sameFile(h.settingsPath, paths.settingsFile))
+  if (same) return `ADF Studio (pid ${same.pid}) is running agents from the same settings file (${paths.settingsFile}).`
+  const studioRegistered = embedded.length > 0 || (await listStudioClients(registry)).some(c => c.alive)
+
   const settings = readJson(paths.settingsFile) ?? {}
   const meshPort = Number(env.MESH_PORT) || (typeof settings.meshPort === 'number' ? settings.meshPort : DEFAULT_MESH_PORT)
   const runtimeId = typeof settings.runtimeId === 'string' ? settings.runtimeId : null
@@ -130,7 +152,7 @@ export async function studioConflict(paths: DaemonPaths, env: NodeJS.ProcessEnv 
       }
     } catch { /* nothing on the mesh port */ }
   }
-  if (!paths.custom && studioProcessRunning()) return 'ADF Studio is running.'
+  if (!paths.custom && !studioRegistered && studioProcessRunning()) return 'ADF Studio is running.'
   return null
 }
 
