@@ -168,6 +168,7 @@ import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { encrypt } from '../crypto/identity-crypto'
 import { readRecentToolsFromWorkspace } from '../services/recent-tools'
 import { ProviderChecks } from '../services/provider-checks'
+import { buildToolDescriptions } from '../services/tool-descriptions'
 import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById } from '../services/dashboard-stats'
 import { buildMeshStatus } from '../services/mesh-status'
 
@@ -6421,81 +6422,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.TOOLS_DESCRIPTIONS, async () => {
     const t0 = performance.now()
-    const definitions: Record<string, unknown> = {}
-    for (const tool of toolRegistry.getAll()) {
-      definitions[tool.name] = tool.toProviderFormat()
-    }
-    if (currentAgentToolRegistry) {
-      for (const tool of currentAgentToolRegistry.getAll()) {
-        if (!definitions[tool.name]) {
-          definitions[tool.name] = tool.toProviderFormat()
-        }
-      }
-    }
-    // Always ensure runtime-registered tools have definitions (they may not be in the
-    // global registry since they require per-agent dependencies)
-    if (!definitions['sys_code']) {
-      const sysCodeTool = new SysCodeTool(codeSandboxService, '')
-      definitions['sys_code'] = sysCodeTool.toProviderFormat()
-    }
-    if (!definitions['sys_lambda']) {
-      // Stub SysLambdaTool for schema display — uses null handler (never executed)
-      const sysLambdaTool = new SysLambdaTool(codeSandboxService, null as any, '')
-      definitions['sys_lambda'] = sysLambdaTool.toProviderFormat()
-    }
-    if (!definitions['msg_send']) {
-      const sendMessageTool = new SendMessageTool(
-        async () => { throw new Error('Not available') },
-        () => ({ sendMode: 'respond_only', isMessageTriggered: false })
-      )
-      definitions['msg_send'] = sendMessageTool.toProviderFormat()
-    }
-    if (!definitions['agent_discover']) {
-      const discoverTool = new AgentDiscoverTool(() => [])
-      definitions['agent_discover'] = discoverTool.toProviderFormat()
-    }
-    if (!definitions['npm_install']) {
-      definitions['npm_install'] = new NpmInstallTool(sandboxPackagesService).toProviderFormat()
-    }
-    if (!definitions['npm_uninstall']) {
-      definitions['npm_uninstall'] = new NpmUninstallTool().toProviderFormat()
-    }
-    if (!definitions['fs_transfer']) {
-      const stubCaps = { hasIsolated: false, hasShared: false, hasHost: false, agentId: '' }
-      definitions['fs_transfer'] = new FsTransferTool(null, stubCaps).toProviderFormat()
-    }
-    if (!definitions['mcp_install']) {
-      definitions['mcp_install'] = new McpInstallTool().toProviderFormat()
-    }
-    if (!definitions['mcp_uninstall']) {
-      definitions['mcp_uninstall'] = new McpUninstallTool().toProviderFormat()
-    }
-    if (!definitions['mcp_restart']) {
-      definitions['mcp_restart'] = new McpRestartTool().toProviderFormat()
-    }
-    if (!definitions['compute_exec']) {
-      const stubCaps = { hasIsolated: false, hasShared: false, hasHost: false, agentId: '' }
-      definitions['compute_exec'] = new ComputeExecTool(null, stubCaps).toProviderFormat()
-    }
-    if (!definitions['ws_connect']) {
-      definitions['ws_connect'] = new WsConnectTool(async () => ({ error: 'Not available' })).toProviderFormat()
-    }
-    if (!definitions['ws_disconnect']) {
-      definitions['ws_disconnect'] = new WsDisconnectTool(async () => ({ success: false })).toProviderFormat()
-    }
-    if (!definitions['ws_connections']) {
-      definitions['ws_connections'] = new WsConnectionsTool(() => []).toProviderFormat()
-    }
-    if (!definitions['ws_send']) {
-      definitions['ws_send'] = new WsSendTool(async () => ({ success: false })).toProviderFormat()
-    }
-    // Include code-execution-only method schemas (model_invoke, task_resolve, etc.)
-    const ceSchemas = AdfCallHandler.getCodeExecutionSchemas()
-    for (const [name, schema] of Object.entries(ceSchemas)) {
-      if (!definitions[name]) {
-        definitions[name] = schema
-      }
-    }
+    const definitions = buildToolDescriptions([toolRegistry, currentAgentToolRegistry], { codeSandboxService, sandboxPackagesService })
     perfLog(`[PERF] TOOLS_DESCRIPTIONS: ${(performance.now() - t0).toFixed(1)}ms (tools=${Object.keys(definitions).length})`)
     return definitions
   })
