@@ -131,6 +131,13 @@ export class DaemonAgentFactory {
     settings: FactorySettings
     identity: DaemonIdentity
     runtime: RuntimeService
+    /**
+     * A template changed: a write through the template routes, or a file
+     * added, changed or removed in the templates folder outside them
+     * (startTemplatesWatcher). Studio's TEMPLATES_CHANGED; the daemon
+     * publishes the client-stream `templates` topic.
+     */
+    notifyTemplatesChanged?: () => void
   }) {
     // Resolve the Documents folder now, so defaultDirectory has it by the first request.
     void documentsDir()
@@ -142,13 +149,27 @@ export class DaemonAgentFactory {
       this.templates = new AgentTemplatesService({
         settings: this.deps.settings,
         getOwnerDid: () => this.deps.identity.service.getOwnerDid(),
-        notifyChanged: () => {},
+        notifyChanged: () => { this.deps.notifyTemplatesChanged?.() },
         // No OS trash without Electron: deleted templates go to a folder of
         // their own next to the templates folder. Never a hard delete.
         trashItem: async (filePath) => { moveToTemplatesTrash(filePath) },
       })
     }
     return this.templates
+  }
+
+  /**
+   * Watch the templates folder, as Studio does from boot: a template added,
+   * changed or removed outside the routes (a file copied in, Studio's own
+   * writes in embedded mode) reaches clients as `templates`. Stopped on
+   * shutdown (stopTemplatesWatcher).
+   */
+  startTemplatesWatcher(): void {
+    this.templatesService().startWatcher()
+  }
+
+  stopTemplatesWatcher(): void {
+    this.templates?.stopWatcher()
   }
 
   /**
@@ -183,6 +204,15 @@ export class DaemonAgentFactory {
    * under this owner, auto-lock the security fields, mark it reviewed.
    */
   acceptTemplateReview(id: string, password?: string): { reviewed: true } {
+    // Studio pushes TEMPLATES_CHANGED after every accept, refused or not.
+    try {
+      return this.acceptTemplateReviewOnce(id, password)
+    } finally {
+      this.templatesService().pushChanged()
+    }
+  }
+
+  private acceptTemplateReviewOnce(id: string, password?: string): { reviewed: true } {
     this.requireIdentity()
     const file = this.existingTemplateFile(id)
     const service = this.deps.identity.service

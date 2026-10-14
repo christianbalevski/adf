@@ -172,7 +172,6 @@ const AGENT_ROUTE = /^\/agents\/([^/?]+)\//
 const AGENT_DOCUMENT = /^\/agents\/([^/?]+)\/document(?:\?|$)/
 const AGENT_INBOX = /^\/agents\/([^/?]+)\/inbox(?:\?|$)/
 const BRING_HOME = /^\/registry\/agents\/[^/?]+\/bring-home(?:\?|$)/
-const TEMPLATES = /^\/templates(?:[/?]|$)/
 
 function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext, sessions: ClientSessionRegistry): void {
   // A write to /agents/:id/* that names its client session: the route
@@ -215,9 +214,11 @@ function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext,
       } else if (request.method === 'POST' && BRING_HOME.test(url)) {
         const result = parseJson(payload) as { success?: unknown; filePath?: unknown } | null
         if (result?.success === true && typeof result.filePath === 'string') sessions.publishPush('adf_file_created', { filePath: result.filePath })
-      } else if (TEMPLATES.test(url)) {
-        sessions.publishPush('templates', {})
       }
+      // `templates` comes from the templates service itself (its writes and
+      // the templates-folder watcher; daemon-agent-factory.ts), as Studio's
+      // TEMPLATES_CHANGED does: one debounced push per change, not a second
+      // one per request.
     } catch (err) {
       console.error('[ADF Daemon] Client stream producer failed:', err)
     }

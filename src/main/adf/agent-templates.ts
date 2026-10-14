@@ -1004,6 +1004,40 @@ export class AgentTemplatesService {
     }
   }
 
+  /**
+   * One host file's bytes into the template's VFS, named as `addFiles` names
+   * a picked file: its base name, numbered past a taken one. For a client
+   * that picks the files itself (the daemon's PUT /templates/:id/files/raw,
+   * Studio's TEMPLATE_ADD_FILES in daemon mode); `addFiles` is unchanged.
+   */
+  addFileBuffer(id: string, name: string, data: Buffer): { success: boolean; path?: string; error?: string } {
+    if (!isSafeId(id)) return { success: false, error: 'Unknown template.' }
+    const path = templateFilePath(id)
+    if (!existsSync(path)) return { success: false, error: `${id}.adf is not in the templates folder.` }
+    const base = basename((name ?? '').replace(/\\/g, '/'))
+    if (!base) return { success: false, error: 'A file name is required.' }
+    if (data.length > TEMPLATE_EXTRA_FILE_MAX_BYTES) {
+      const mb = Math.round(TEMPLATE_EXTRA_FILE_MAX_BYTES / (1024 * 1024))
+      return { success: false, error: `${base} is larger than ${mb} MB.` }
+    }
+    try {
+      const workspace = AdfWorkspace.open(path)
+      let dest: string
+      try {
+        dest = availableVfsPath(base, new Set(workspace.listFiles().map((f) => f.path)))
+        const invalid = validateExtraPath(dest)
+        if (invalid) return { success: false, error: `${base}: ${invalid}` }
+        workspace.writeFileBuffer(dest, data, AdfWorkspace.mimeTypeForPath(dest))
+      } finally {
+        workspace.close()
+      }
+      this.pushChanged()
+      return { success: true, path: dest }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
   removeFile(args: { id: string; path: string }): { success: boolean; error?: string } {
     if (!isSafeId(args?.id)) return { success: false, error: 'Unknown template.' }
     const file = (args?.path ?? '').trim()

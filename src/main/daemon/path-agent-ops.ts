@@ -45,6 +45,7 @@ export type PathAgentRuntime = Pick<RuntimeService,
   | 'setAgentProviderCredential' | 'getAgentProviderCredentials' | 'attachAgentProvider' | 'detachAgentProvider'
   | 'setAgentMcpCredential' | 'getAgentMcpCredentials' | 'attachAgentMcpServer' | 'detachAgentMcpServer'
   | 'setAgentAdapterCredential' | 'getAgentAdapterCredentials' | 'attachAgentAdapter' | 'getAgentConfig' | 'setAgentConfig'>
+  & Partial<Pick<RuntimeService, 'waitForLoad'>>
 
 interface Target {
   filePath: string
@@ -231,6 +232,11 @@ export class PathAgentOps {
    */
   private async target(input: unknown, write = false): Promise<Target> {
     const filePath = await this.files.adfPath(input)
+    // A file that is loading is the agent it becomes: a write made under its
+    // build would reach the file but not the start-time config the build
+    // holds (design §6.1 row 24), so it waits for the load and goes through
+    // the runtime.
+    await this.runtime.waitForLoad?.(filePath)
     const running = this.files.loadedAt(filePath)?.id
     if (running) return { filePath, loadedId: running, running: true }
     const open = this.files.openDocumentAt(filePath)

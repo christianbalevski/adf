@@ -262,6 +262,8 @@ export interface RuntimeAgentWorkspace {
 /** Status of a running agent or an open document (`running: false`, runtimeState `stopped`). */
 export interface RuntimeTargetStatus extends RuntimeAgentStatus {
   running: boolean
+  /** A running agent's session id (Studio's AGENT_START answers it, the reuse path included). */
+  sessionId?: string
 }
 
 /** Studio's DOC_GET_HEADER: what the header shows, read in one call. */
@@ -814,6 +816,16 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
+  /**
+   * Resolves once a load of `filePath` in flight has finished (or failed);
+   * at once when none is. A path-addressed write waits for it, so it lands
+   * on the loaded agent instead of under its build (design §6.1 row 24).
+   */
+  async waitForLoad(filePath: string): Promise<void> {
+    const pending = this.inFlightLoads.get(this.canonicalFilePath(filePath))
+    if (pending) await pending.catch(() => {})
+  }
+
   private async doLoadAgent(canonicalPath: string, opts: RuntimeLoadAgentOptions): Promise<RuntimeAgentRef> {
     const shouldEnforceReview = opts.enforceReviewGate ?? this.enforceReviewGate
     this.assertReviewGate(canonicalPath, shouldEnforceReview)
@@ -1292,13 +1304,18 @@ export class RuntimeService extends EventEmitter {
     await this.trigger(agentId, opts.turnId ? { ...dispatch, turnId: opts.turnId } : dispatch, loop)
   }
 
-  async startAgent(agentId: string): Promise<boolean> {
+  /**
+   * `opts.hasUserMessage`: a chat is queued behind this start (Studio's
+   * AGENT_START from the home composer), so the startup turn skips the
+   * active-state greeting, as Studio's foreground start does.
+   */
+  async startAgent(agentId: string, opts: { hasUserMessage?: boolean } = {}): Promise<boolean> {
     RuntimeGate.resume()
     const managed = this.requireAgent(agentId)
     // Studio parity: dispatch the startup turn fire-and-forget instead of
     // blocking the caller on the agent's entire first LLM turn
     // (BackgroundAgentManager fires it via process.nextTick and does not await).
-    const startup = managed.agent.dispatchStartup()
+    const startup = managed.agent.dispatchStartup(opts.hasUserMessage ? { hasUserMessage: true } : undefined)
     startup.catch((err) => {
       console.error(`[RuntimeService] Startup turn error for ${managed.id}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
       if (this.agents.get(managed.id) !== managed) return
@@ -1319,7 +1336,7 @@ export class RuntimeService extends EventEmitter {
     return raced.status === 'resolved' ? raced.dispatched : true
   }
 
-  async startOrLoadAgent(identifier: string): Promise<RuntimeAgentStartResult> {
+  async startOrLoadAgent(identifier: string, opts: { hasUserMessage?: boolean } = {}): Promise<RuntimeAgentStartResult> {
     let managed = this.resolveAgent(identifier)
     let loaded = false
 
@@ -1332,12 +1349,17 @@ export class RuntimeService extends EventEmitter {
       loaded = true
     }
 
-    const startupTriggered = await this.startAgent(managed.id)
+    const startupTriggered = await this.startAgent(managed.id, opts)
     return {
       ref: this.toRef(managed),
       loaded,
       startupTriggered,
     }
+  }
+
+  /** The running agent's session id (Studio's AGENT_START answers it); undefined when it does not run. */
+  getAgentSessionId(agentId: string): string | undefined {
+    return this.resolveAgent(agentId)?.agent.session.getSessionId()
   }
 
   /** Stop and unload; a held document stays open on the same workspace (D4). A document that is not running: no-op. */
@@ -1957,7 +1979,7 @@ export class RuntimeService extends EventEmitter {
   getAgentOrDocumentStatus(identifier: string): RuntimeTargetStatus | undefined {
     const target = this.resolveTarget(identifier)
     if (!target) return undefined
-    if (target.managed) return { ...this.toStatus(target.managed), running: true }
+    if (target.managed) return { ...this.toStatus(target.managed), running: true, sessionId: target.managed.agent.session.getSessionId() }
     const config = target.config
     return {
       id: target.id,

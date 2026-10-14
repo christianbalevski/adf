@@ -129,7 +129,7 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
     if (!deps.agentFactory) return reply.code(503).send({ error: 'Agent creation is not configured on this daemon.' })
     try {
       const list = deps.agentFactory.listTemplates()
-      return { templates: list.templates, defaultId: list.defaultId, folder: list.folder, defaultDirectory: deps.agentFactory.defaultDirectory() }
+      return { templates: list.templates, defaultId: list.defaultId, folder: list.folder, defaultDirectory: deps.agentFactory.defaultDirectory(), ...(list.migrated ? { migrated: list.migrated } : {}) }
     } catch (err) {
       return sendError(reply, err)
     }

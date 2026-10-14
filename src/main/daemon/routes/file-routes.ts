@@ -43,7 +43,7 @@ export const RAW_FILE_BODY_LIMIT = 64 * MIB
 export const IMPORT_BODY_LIMIT = 1024 * MIB
 
 /** Routes that take an application/octet-stream body as a stream. */
-const STREAM_ROUTES = new Set(['/agents/:id/files/raw', '/files/import'])
+const STREAM_ROUTES = new Set(['/agents/:id/files/raw', '/files/import', '/templates/:id/files/raw'])
 
 /** Extensions Studio's file viewer reads as text (DOC_READ_INTERNAL_FILE). */
 const TEXT_EXTENSIONS = new Set(['md', 'txt', 'json', 'js', 'ts', 'py', 'html', 'css', 'csv', 'xml', 'yaml', 'yml', 'toml', 'sh', 'bat', 'log', 'sql', 'env', 'cfg', 'ini', 'jsx', 'tsx'])

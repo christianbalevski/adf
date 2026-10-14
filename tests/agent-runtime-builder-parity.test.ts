@@ -123,6 +123,35 @@ describe('AgentRuntimeBuilder parity: MCP', () => {
   })
 })
 
+describe('AgentRuntimeBuilder parity: start window (design §6.1 row 24)', () => {
+  it('the MCP startup sync lands on a fresh read: a config write made while servers connect is kept', async () => {
+    let release!: (tools: McpToolInfo[]) => void
+    vi.spyOn(McpClientManager.prototype, 'connect').mockImplementation(() => new Promise((resolve) => { release = resolve as never }))
+    const base = makeAgentFile('agent-1')
+    const tools = [...(base.workspace.getAgentConfig().tools ?? []), { name: 'mcp_gone_ping', enabled: true, visible: true }]
+    base.workspace.setAgentConfig({
+      ...base.workspace.getAgentConfig(),
+      tools,
+      // `gone` is neither registered in Settings nor carries a source: skipped, so its tools are disabled.
+      mcp: { servers: [stdioServer('srv'), { name: 'gone', transport: 'stdio', command: 'node' }] },
+    })
+    const { workspace } = base
+    const building = new AgentRuntimeBuilder().build({ workspace, filePath: base.filePath, config: workspace.getAgentConfig(), provider: new MockLLMProvider() })
+    await waitFor(() => typeof release === 'function')
+    // A config write during the build (a client's save through the open document).
+    workspace.setAgentConfig({ ...workspace.getAgentConfig(), description: 'written during the start' })
+    release([PING_TOOL])
+    const agent = await building
+    try {
+      const saved = workspace.getAgentConfig()
+      expect(saved.description).toBe('written during the start')
+      expect(saved.tools.find((t) => t.name === 'mcp_gone_ping')?.enabled).toBe(false)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+})
+
 describe('AgentRuntimeBuilder parity: derived key', () => {
   it('hands an unlock to MCP, adapters and the mesh, and restarts what needed the key', async () => {
     const mcpEnvs: Array<Record<string, string> | undefined> = []

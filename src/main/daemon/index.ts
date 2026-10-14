@@ -328,7 +328,9 @@ setInterval(() => {
   runtime.refreshAgentCredentials('periodic re-check')
     .catch(err => console.error('[ADF Daemon] Credential re-check failed:', err))
 }, CREDENTIAL_RECHECK_MS).unref?.()
-const agentFactory =new DaemonAgentFactory({ settings, identity: ownerIdentity, runtime })
+// Template changes (route writes and the templates-folder watcher) go to
+// every client session as `templates`, Studio's TEMPLATES_CHANGED.
+const agentFactory = new DaemonAgentFactory({ settings, identity: ownerIdentity, runtime, notifyTemplatesChanged: () => client.sessions.publishPush('templates', {}) })
 // Tracked-folder watcher (W1-E): autostarts new agent files and feeds the
 // tracked_dirs / file_renamed pushes. Started when the HTTP server is ready,
 // closed with it, and closed again (idempotent) in the shutdown hooks.
@@ -358,6 +360,7 @@ const client = createDaemonClientSessions({
     },
   },
 })
+agentFactory.startTemplatesWatcher()
 const daemon = new DaemonHost({
   runtime,
   identity: ownerIdentity,
@@ -456,6 +459,7 @@ const daemon = new DaemonHost({
   // independently try-caught by the host.
   onShutdown: [
     () => trackedDirWatcher.close(),
+    () => agentFactory.stopTemplatesWatcher(),
     () => wsConnectionManager.stopAll(),
     () => runtimeDiscovery.stop(),
     () => meshServer.stop(),

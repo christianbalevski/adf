@@ -771,6 +771,10 @@ export interface PathAgentInfo {
   tracked: boolean
   /** A rename waiting for the agent to stop. */
   pendingName?: string
+  /** Not loaded: whether its config id is in reviewedAgents (Studio's background-start review gate). */
+  reviewed?: boolean
+  /** Not loaded: the file has a legacy whole-file password (Studio's background-start password gate). */
+  passwordProtected?: boolean
   error?: string
 }
 
@@ -843,7 +847,9 @@ export class AgentFileOps {
       loaded: false,
       tracked,
       ...(pendingName ? { pendingName } : {}),
-      ...(peek.status ? {} : { error: peek.error ? `Not a readable .adf: ${peek.error}` : 'Not a readable .adf.' }),
+      ...(peek.status
+        ? { reviewed: isConfigReviewed(this.deps.settings?.get('reviewedAgents'), peek.config), passwordProtected: peek.status.hasEncryptedIdentity }
+        : { error: peek.error ? `Not a readable .adf: ${peek.error}` : 'Not a readable .adf.' }),
     }
   }
 
