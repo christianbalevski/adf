@@ -47,6 +47,8 @@ export interface FixtureSpec {
    * this machine until the password is entered.
    */
   lockedCredentials?: { sharePassword: string }
+  /** Envelopes sealed to the fixture owner and runtime (this machine's), with the mock provider's key sealed in the credentials one. */
+  ownerSealedKey?: string
 }
 
 export interface FixtureAgent {
@@ -72,6 +74,15 @@ export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[
       const config = workspace.getAgentConfig()
       config.id = FIXTURE_IDS[spec.name]
       workspace.setAgentConfig(config)
+      if (spec.ownerSealedKey) {
+        workspace.provisionEnvelopes({
+          ownerDid: IDENTITY.ownerDid,
+          ownerEncPublicKey: Buffer.from(String(identityFixture.ownerEncPublicKey), 'base64'),
+          runtimeDid: IDENTITY.runtimeDid,
+          runtimeEncPublicKey: Buffer.from(String(identityFixture.runtimeEncPublicKey), 'base64'),
+        })
+        workspace.setIdentity(`provider:${MOCK_PROVIDER_ID}:apiKey`, spec.ownerSealedKey)
+      }
       if (spec.lockedCredentials) {
         const encKey = () => extractRawX25519PublicKey(generateX25519KeyPair().publicKey)
         workspace.provisionEnvelopes({ ownerDid: 'did:key:z6MkParityForeignOwner', ownerEncPublicKey: encKey(), runtimeDid: 'did:key:z6MkParityForeignRuntime', runtimeEncPublicKey: encKey() })

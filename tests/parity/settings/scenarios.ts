@@ -121,6 +121,25 @@ export const lockedCredentialsScenario: ParityScenario = {
   },
 }
 
+/**
+ * The owner's own agent (credentials sealed to this machine's owner and
+ * runtime keys), not open: the agent overrides form replaces its provider
+ * key. The envelope opens with this machine's keys, so the new key is
+ * sealed like the old one and nothing asks. Every dialog is answered Replace.
+ */
+export const ownerSealedKeyScenario: ParityScenario = {
+  name: 'owner-sealed-key',
+  description: 'agent-1 with its provider key sealed to this owner (not open): replace the key, read it back.',
+  fixtures: [{ name: 'agent-1', ownerSealedKey: 'sk-sealed-old' }],
+  quietMs: 500,
+  async run(ctx) {
+    const filePath = ctx.agent('agent-1').filePath
+    ctx.setDialogs({ showMessageBox: () => ({ response: 0 }) })
+    await ctx.invoke(IPC.PROVIDER_CREDENTIAL_SET, { filePath, providerId: MOCK_PROVIDER_ID, value: 'sk-sealed-new' })
+    await ctx.invoke(IPC.PROVIDER_AGENT_KEY_SOURCES, { filePath, providers: [{ id: MOCK_PROVIDER_ID, type: 'openai-compatible', baseUrl: ctx.llm.baseUrl }] })
+  },
+}
+
 export const SETTINGS_SCENARIOS: readonly ParityScenario[] = [providerRoundTripScenario, agentProviderKeyScenario, subscriptionStatusScenario, lockedCredentialsScenario]
 /** Run against embedded Studio only, each with the reason (above). */
-export const SETTINGS_EMBEDDED_ONLY: readonly ParityScenario[] = []
+export const SETTINGS_EMBEDDED_ONLY: readonly ParityScenario[] = [ownerSealedKeyScenario]
