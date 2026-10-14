@@ -231,6 +231,7 @@ import type { AdapterAgentStatus } from '../../shared/types/channel-adapter.type
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { getTokenUsageService } from '../services/token-usage.service'
 import { getFleetBurnService } from '../services/fleet-burn.service'
+import { listAdapterCredentialFiles, listMcpCredentialFiles, listProviderCredentialFiles, type CredentialFileSources } from '../services/credential-list-files'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
@@ -7839,6 +7840,15 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
   })
 
+  /** The files the credential "list files" scans start from: foreground, background, tracked dirs. */
+  const credentialFileSources = (): CredentialFileSources => ({
+    knownFiles: [
+      ...(currentWorkspace ? [currentWorkspace.getFilePath()] : []),
+      ...(backgroundAgentManager ? backgroundAgentManager.getAllAgentFilePaths() : []),
+    ],
+    trackedDirs: (settings.get('trackedDirectories') as string[]) ?? [],
+  })
+
   /**
    * List all known ADF files (from tracked directories + current foreground)
    * that reference a given MCP server in their agent config.
@@ -7847,86 +7857,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   ipcMain.handle(IPC.MCP_CREDENTIAL_LIST_FILES, async (_event, rawArgs: unknown) => {
     const v = validateMcpArgs(McpCredentialListArgs, rawArgs)
     if ('error' in v) return { files: [] }
-    const args = v.data
-    const prefix = `mcp:${args.npmPackage}:`
-    const results: Array<{
-      filePath: string
-      fileName: string
-      hasCredentials: boolean
-      populatedKeys: string[]
-    }> = []
-    const seen = new Set<string>()
-
-    // Helper: check a single ADF file
-    // Include if it has the MCP server in its config OR has stored credentials for it
-    const checkFile = (filePath: string) => {
-      if (seen.has(filePath)) return
-      seen.add(filePath)
-
-      try {
-        const purposes = AdfDatabase.peekIdentityPurposes(filePath, prefix)
-        const populatedKeys = purposes.map((p) => p.slice(prefix.length))
-
-        // Include if file has stored credentials for this server
-        if (populatedKeys.length > 0) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: true,
-            populatedKeys
-          })
-          return
-        }
-
-        // Also include if the file references this MCP server in its config (even without creds yet)
-        const mcpNames = AdfDatabase.peekMcpServerNames(filePath)
-        if (mcpNames.includes(args.mcpServerName)) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: false,
-            populatedKeys: []
-          })
-        }
-      } catch {
-        // Skip files that can't be read
-      }
-    }
-
-    // Check foreground workspace
-    if (currentWorkspace) {
-      checkFile(currentWorkspace.getFilePath())
-    }
-
-    // Check background agents
-    if (backgroundAgentManager) {
-      for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
-        checkFile(fp)
-      }
-    }
-
-    // Scan tracked directories for ADF files
-    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-    for (const dir of trackedDirs) {
-      try {
-        const scanFiles = (dirPath: string, depth: number) => {
-          if (depth > 3) return
-          const entries = readdirSync(dirPath, { withFileTypes: true })
-          for (const e of entries) {
-            if (e.isFile() && e.name.endsWith('.adf')) {
-              checkFile(join(dirPath, e.name))
-            } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
-              scanFiles(join(dirPath, e.name), depth + 1)
-            }
-          }
-        }
-        scanFiles(dir, 0)
-      } catch {
-        // Skip dirs that can't be read
-      }
-    }
-
-    return { files: results }
+    return listMcpCredentialFiles(v.data, credentialFileSources())
   })
 
   /**
@@ -8275,79 +8206,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.ADAPTER_CREDENTIAL_LIST_FILES, async (_event, rawArgs: unknown) => {
     const args = z.object({ adapterType: z.string() }).parse(rawArgs)
-    const prefix = `adapter:${args.adapterType}:`
-    const results: { filePath: string; fileName: string; hasCredentials: boolean; populatedKeys: string[] }[] = []
-    const seen = new Set<string>()
-
-    // Helper: check a single ADF file
-    const checkFile = (filePath: string) => {
-      if (seen.has(filePath)) return
-      seen.add(filePath)
-
-      try {
-        const purposes = AdfDatabase.peekIdentityPurposes(filePath, prefix)
-        const populatedKeys = purposes.map((p) => p.slice(prefix.length))
-
-        // Include if file has stored credentials for this adapter
-        if (populatedKeys.length > 0) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: true,
-            populatedKeys
-          })
-          return
-        }
-
-        // Also include if the file references this adapter type in its config
-        const adapterTypes = AdfDatabase.peekAdapterTypes(filePath)
-        if (adapterTypes.includes(args.adapterType)) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: false,
-            populatedKeys: []
-          })
-        }
-      } catch {
-        // Skip files that can't be read
-      }
-    }
-
-    // Check foreground workspace
-    if (currentWorkspace) {
-      checkFile(currentWorkspace.getFilePath())
-    }
-
-    // Check background agents
-    if (backgroundAgentManager) {
-      for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
-        checkFile(fp)
-      }
-    }
-
-    // Scan tracked directories for ADF files (recursive, depth 3)
-    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-    for (const dir of trackedDirs) {
-      try {
-        const scanFiles = (dirPath: string, depth: number) => {
-          if (depth > 3) return
-          const entries = readdirSync(dirPath, { withFileTypes: true })
-          for (const e of entries) {
-            if (e.isFile() && e.name.endsWith('.adf')) {
-              checkFile(join(dirPath, e.name))
-            } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
-              scanFiles(join(dirPath, e.name), depth + 1)
-            }
-          }
-        }
-        scanFiles(dir, 0)
-      } catch {
-        // Skip dirs that can't be read
-      }
-    }
-
-    return { files: results }
+    return listAdapterCredentialFiles(args.adapterType, credentialFileSources())
   })
 
   ipcMain.handle(IPC.ADAPTER_ATTACH, async (_event, rawArgs: unknown) => {
@@ -8494,85 +8353,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.PROVIDER_CREDENTIAL_LIST_FILES, async (_event, rawArgs: unknown) => {
     const args = z.object({ providerId: z.string() }).parse(rawArgs)
-    const prefix = `provider:${args.providerId}:`
-    const results: import('../../shared/types/ipc.types').ProviderCredentialFileInfo[] = []
-    const seen = new Set<string>()
-
-    const checkFile = (filePath: string) => {
-      if (seen.has(filePath)) return
-      seen.add(filePath)
-
-      try {
-        const purposes = AdfDatabase.peekIdentityPurposes(filePath, prefix)
-        const populatedKeys = purposes.map((p) => p.slice(prefix.length))
-        // The agent's copy of the provider (no secrets): the renderer compares
-        // it to the app values to tell a real override from Studio's unchanged
-        // copy-on-create.
-        const copy = AdfDatabase.peekProviderConfig(filePath, args.providerId)
-        const providerConfig = copy
-          ? { defaultModel: copy.defaultModel, params: copy.params, requestDelayMs: copy.requestDelayMs }
-          : undefined
-
-        if (populatedKeys.length > 0) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: true,
-            populatedKeys,
-            providerConfig
-          })
-          return
-        }
-
-        // Also include if the file references this provider in its config
-        if (copy) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: false,
-            populatedKeys: [],
-            providerConfig
-          })
-        }
-      } catch {
-        // Skip files that can't be read
-      }
-    }
-
-    // Check foreground workspace
-    if (currentWorkspace) {
-      checkFile(currentWorkspace.getFilePath())
-    }
-
-    // Check background agents
-    if (backgroundAgentManager) {
-      for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
-        checkFile(fp)
-      }
-    }
-
-    // Scan tracked directories for ADF files (recursive, depth 3)
-    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-    for (const dir of trackedDirs) {
-      try {
-        const scanFiles = (dirPath: string, depth: number) => {
-          if (depth > 3) return
-          const entries = readdirSync(dirPath, { withFileTypes: true })
-          for (const e of entries) {
-            if (e.isFile() && e.name.endsWith('.adf')) {
-              checkFile(join(dirPath, e.name))
-            } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
-              scanFiles(join(dirPath, e.name), depth + 1)
-            }
-          }
-        }
-        scanFiles(dir, 0)
-      } catch {
-        // Skip dirs that can't be read
-      }
-    }
-
-    return { files: results }
+    return listProviderCredentialFiles(args.providerId, credentialFileSources())
   })
 
   ipcMain.handle(IPC.PROVIDER_ATTACH, async (_event, rawArgs: unknown) => {
