@@ -134,7 +134,7 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
   // Values come only from the daemon on this machine (local-only reveal
   // routes with the local proof); a remote daemon never sends them.
   [IPC.IDENTITY_GET]: (ctx, _event, args: { purpose: string }) =>
-    onOpenAgent(ctx, 'Reading a value of the open agent', () => null, (client, agentId) => {
+    onOpenAgent(ctx, 'Reading a value of the open agent', () => null, async (client, agentId) => {
       if (isKeyMaterialPurpose(args.purpose)) return null
       if (ctx.mode === 'remote') throw new Error(REMOTE_VALUES_UNSUPPORTED)
       return reveal(client, agentId, args.purpose)
