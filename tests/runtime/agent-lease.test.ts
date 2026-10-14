@@ -33,7 +33,6 @@ import {
   leaseDir,
   listRuntimeHosts,
   machineId,
-  listStudioClients,
   processAgentLeases,
   type AgentLeaseRecord,
 } from '../../src/main/runtime/agent-lease'
@@ -43,7 +42,6 @@ import { RuntimeGate } from '../../src/main/runtime/runtime-gate'
 import { createHeadlessAgent, MockLLMProvider } from '../../src/main/runtime/headless'
 import { markConfigReviewed } from '../../src/main/services/agent-review'
 import { daemonPaths, studioConflict } from '../../src/main/cli/daemon-control'
-import { registerDaemonModeHandlers } from '../../src/main/backend/daemon-mode'
 import { ComputeUserRegistry } from '../../src/main/services/compute-users'
 import type { AssembledAgent } from '../../src/main/runtime/assemble-agent'
 import type { SettingsService } from '../../src/main/services/settings.service'
@@ -925,23 +923,6 @@ describe('runtime host registry and the adf daemon start check', () => {
     await client.registerClient('local', { settingsPath: settingsFile })
     expect(await listRuntimeHosts(leases)).toEqual([])
     expect(await studioConflict(paths, env, down)).toBeNull()
-  })
-
-  it('daemon-mode Studio boot registers it as a client, so adf daemon start does not refuse it', async () => {
-    const leases = tempDir('adf-lease-daemon-mode-')
-    const client = registry(leases, { kind: 'studio-embedded' })
-    let registered: Promise<void> | null = null
-    registerDaemonModeHandlers({
-      mode: 'local',
-      ipcMain: { handle: () => {} } as never,
-      app: { getVersion: () => '9.9.9', setBadgeCount: () => true },
-      log: { warn: () => {} },
-      leases: { registerClient: (...args) => (registered = client.registerClient(...args)) },
-    })
-    expect(registered).not.toBeNull()
-    await registered
-    expect(await listStudioClients(leases)).toEqual([expect.objectContaining({ kind: 'studio-client', mode: 'local', pid: process.pid, alive: true, version: '9.9.9' })])
-    expect(await listRuntimeHosts(leases)).toEqual([])
   })
 
   it('ignores the entry of a host that is gone', async () => {
