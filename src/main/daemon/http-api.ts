@@ -383,6 +383,8 @@ interface ChatBody {
   content?: ContentBlock[]
   /** Cognition loop to talk to. Absent = main (docs/design/agent-loops-mvp.md §6.2). */
   loop?: string
+  /** The sending client session (X-ADF-Client-Session) already shows the message (Studio's AGENT_INVOKE): only that session skips the turn's trigger_message. */
+  echoed?: boolean
 }
 
 /** POST /agents/:id/chat body limit: content blocks carry images and audio as data URIs. */
@@ -2426,23 +2428,26 @@ export function createDaemonHttpApi(
     }
   })
 
-  server.post<{ Params: AgentIdParams; Querystring: { preflight?: string } }>('/agents/:id/start', async (request, reply) => {
+  server.post<{ Params: AgentIdParams; Querystring: { preflight?: string; hasUserMessage?: string } }>('/agents/:id/start', async (request, reply) => {
     try {
       // Client-initiated starts ask for Studio's AGENT_START provider gate;
       // autostart never does (Studio's background starts skip it too).
       const preflight = request.query?.preflight === '1' || request.query?.preflight === 'true'
+      // A chat is queued behind this start: the startup turn skips its greeting (Studio's AGENT_START hasUserMessage).
+      const hasUserMessage = request.query?.hasUserMessage === '1' || request.query?.hasUserMessage === 'true'
       let credentialsLocked: string | undefined
       if (preflight && !runtime.getAgent(request.params.id)) {
         const check = await runtime.preflightProvider(request.params.id)
         if (!check.ok) return reply.code(409).send({ error: check.error, code: check.code ?? 'provider_check_failed' })
         credentialsLocked = check.credentialsLocked
       }
-      const result = await runtime.startOrLoadAgent(request.params.id)
+      const result = await runtime.startOrLoadAgent(request.params.id, { hasUserMessage })
       return {
         success: true,
         loaded: result.loaded,
         startupTriggered: result.startupTriggered,
         agent: runtime.getAgentStatus(result.ref.id),
+        sessionId: runtime.getAgentSessionId(result.ref.id),
         // The provider key is stored but locked: the start went on, unchecked.
         ...(credentialsLocked ? { preflight: { code: 'credentials_locked', message: credentialsLocked } } : {}),
       }
@@ -2520,6 +2525,8 @@ export function createDaemonHttpApi(
     const text = request.body?.text ?? ''
     if (typeof text !== 'string') return badRequest(reply, 'text must be a string')
     if (!text && !(content && content.length > 0)) return badRequest(reply, 'text or content is required')
+    const echoed = request.body?.echoed
+    if (echoed !== undefined && typeof echoed !== 'boolean') return badRequest(reply, 'echoed must be a boolean')
     const loop = request.body?.loop
     if (loop !== undefined) {
       if (typeof loop !== 'string' || !loop) return badRequest(reply, 'loop must be a non-empty string')
@@ -2534,7 +2541,9 @@ export function createDaemonHttpApi(
     }
 
     const turnId = `turn_${nanoid(12)}`
-    queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop, { turnId, ...(content?.length ? { content } : {}) }))
+    // The echo is the sending session's alone: other clients (a second Studio, the terminal app) still get trigger_message.
+    const echoOrigin = echoed ? clientSessionOf(request).holder : undefined
+    queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop, { turnId, ...(content?.length ? { content } : {}), ...(echoOrigin ? { echoOrigin } : {}) }))
     return reply.code(202).send({ accepted: true, turnId })
   })
 

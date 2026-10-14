@@ -975,6 +975,21 @@
                 "false"
               ]
             }
+          },
+          {
+            "name": "hasUserMessage",
+            "in": "query",
+            "required": false,
+            "description": "`1` or `true`: a chat is queued behind this start, so the startup turn skips the active-state greeting (Studio's AGENT_START `hasUserMessage`).",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true",
+                "0",
+                "false"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7292,6 +7307,220 @@
           },
           "409": {
             "$ref": "#/components/responses/IdentityNotReady"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/templates/{id}/files/plan": {
+      "post": {
+        "tags": [
+          "Templates"
+        ],
+        "summary": "Plan the names of a batch of template files",
+        "description": "Studio's TEMPLATE_ADD_FILES is whole batch or nothing: the client sends every picked file (`{name, isFile, size}`, or `{name, statError}` for one it could not read) and gets the path each would get (base name, numbered past a taken one), or the first refusal (not a file, over 25 MiB, a reserved seed name the template lacks), before it uploads any of them with PUT /templates/{id}/files/raw. Writes nothing.",
+        "operationId": "planTemplateFiles",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TemplateIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "files"
+                ],
+                "properties": {
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "name"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "isFile": {
+                          "type": "boolean"
+                        },
+                        "size": {
+                          "type": "integer"
+                        },
+                        "statError": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The plan, or the refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "dests": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/templates/{id}/files/raw": {
+      "put": {
+        "tags": [
+          "Templates"
+        ],
+        "summary": "Add an extra file to a template as raw bytes",
+        "description": "The body is one file's content (`application/octet-stream`, any type, up to 25 MiB). It is stored under `name`'s base name, numbered past a name the template already uses (`report-2.pdf`), as Studio's own file picker does; the answer names the path chosen. 413 `too_large`, 415 for another content type.",
+        "operationId": "putTemplateFileRaw",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TemplateIdPath"
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "description": "The file's name; only its base name is used.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "path",
+                    "size",
+                    "success"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string",
+                      "description": "The path the file got in the template"
+                    },
+                    "size": {
+                      "type": "integer"
+                    },
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No name, or the file was refused (`bad_request`, `template_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "Unknown template (`template_missing`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCreateErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/IdentityNotReady"
+          },
+          "413": {
+            "description": "Larger than 25 MiB (`too_large`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Not application/octet-stream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -16602,6 +16831,10 @@
               "running": {
                 "type": "boolean",
                 "description": "GET /agents/{id}/status: false for an open document that is not running (runtimeState `stopped`)."
+              },
+              "sessionId": {
+                "type": "string",
+                "description": "GET /agents/{id}/status of a running agent: its runtime session id (Studio's AGENT_START answers it)."
               }
             }
           }
@@ -17209,6 +17442,10 @@
           "loop": {
             "type": "string",
             "description": "Cognition loop to talk to; absent = main. Unknown loop: 404; disabled loop: 409."
+          },
+          "echoed": {
+            "type": "boolean",
+            "description": "`true`: the sending client session (`X-ADF-Client-Session`) already shows the message (Studio's AGENT_INVOKE), so that session's stream skips the turn's `trigger_message`. Every other client still gets it. Without the header it has no effect."
           }
         },
         "example": {
@@ -17874,6 +18111,11 @@
             "type": "boolean",
             "default": true,
             "description": "false: create the file and load nothing (Studio's FILE_CREATE, MESH_FOUND_AGENT). With `holder`, the file is held as an open document."
+          },
+          "replace": {
+            "type": "boolean",
+            "default": false,
+            "description": "true: a file of that name exists and the user chose to replace it (Studio's save dialog asked): the new agent is written over it. Refused (409 `name_taken`) while that file runs or is open. Without the owner identity the agent is still made, its identity not sealed to an owner; `warnings` says so."
           }
         },
         "example": {
@@ -22335,6 +22577,10 @@
           "startupTriggered": {
             "type": "boolean"
           },
+          "sessionId": {
+            "type": "string",
+            "description": "The started agent's runtime session id"
+          },
           "agent": {
             "$ref": "#/components/schemas/AgentStatus"
           }
@@ -22977,6 +23223,18 @@
           "defaultDirectory": {
             "type": "string",
             "description": "Where POST /agents/create puts agents without `directory`"
+          },
+          "migrated": {
+            "type": "object",
+            "description": "Present once after the legacy settings snapshot became a template, until `templatesMigrationSeen` is set (Studio shows a one-time notice)",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            }
           }
         }
       },
@@ -26546,6 +26804,14 @@
           "pendingName": {
             "type": "string",
             "description": "A rename waiting for the running agent to stop"
+          },
+          "reviewed": {
+            "type": "boolean",
+            "description": "Not loaded: the agent's id is in reviewedAgents (Studio's background-start review gate)"
+          },
+          "passwordProtected": {
+            "type": "boolean",
+            "description": "Not loaded: the file has a legacy whole-file password (Studio's background-start password gate)"
           },
           "error": {
             "type": "string",

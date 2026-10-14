@@ -275,6 +275,14 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
         seen.push(value)
         return timeToken({ ms: value, precision: 1 }, floor)
       }
+      // Rule R15 — a file's mtime as fs reports it: fractional epoch ms
+      // (`mtimeMs`), under a key named `modifiedAt` (the template list).
+      // Treated as the R8 instant of its whole millisecond. Hides: the
+      // file's write time only.
+      if (key === 'modifiedAt' && !Number.isInteger(value) && inWindow(Math.floor(value))) {
+        seen.push(Math.floor(value))
+        return timeToken({ ms: Math.floor(value), precision: 1 }, floor)
+      }
       // Rule R2 (numeric form) — a port number under a key named like a port.
       if (key && /port$/i.test(key)) {
         const port = ctx.ports.find((p) => p.value === String(value))
@@ -306,9 +314,15 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     // path, so its raw order against `clients/` varies between two correct
     // runs). Hides: nothing; only the order of keys and listing lines.
     // Keys are replaced in raw sorted order, as before R14, so R4/R5 numbering is unchanged.
+    // Rule R17 — `reviewedAgents` keys that are not fixture ids: agent ids
+    // minted at random (nanoid) for the shipped templates seeded during the
+    // run. Numbered as `<agent-id#n>`; fixture ids stay as they are.
+    const reviewedKeys = path.endsWith('.reviewedAgents')
     const entries = Object.keys(obj).sort().map((k) => ({
       k,
-      outKey: path === 'state.leases' ? replaceRegistryPid(replaceString(k, floor, [])) : replaceString(k, floor, []),
+      outKey: reviewedKeys && !fixtureIds.has(k.toLowerCase())
+        ? numbered('agent-id', k)
+        : path === 'state.leases' ? replaceRegistryPid(replaceString(k, floor, [])) : replaceString(k, floor, []),
     })).sort((a, b) => cmp(a.outKey, b.outKey) || cmp(a.k, b.k))
     const out: Record<string, unknown> = {}
     for (const { k, outKey } of entries) {
@@ -349,11 +363,30 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   const walkStream = (ch: string, payloads: unknown[]): unknown[] =>
     payloads.map((p, i) => walk(p, `pushes.${ch}[${i}]`, pushFloor.get(ch)?.[i] ?? -Infinity, []))
 
+  // Rule R16 — a template's icon. The shipped templates are seeded into the
+  // run's templates folder with an icon picked at random, so the template
+  // list and contents carry a different emoji each run. Scoped to `icon`
+  // fields in the answers of the template channels; every one becomes
+  // `<template-icon>` (random icons can also collide, so not even equality
+  // between two of them is stable).
+  const TEMPLATE_CHANNELS = new Set(['adf:templates:list', 'adf:templates:get-contents'])
+  const iconsNumbered = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(iconsNumbered)
+    if (!value || typeof value !== 'object') return value
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value)) out[k] = k === 'icon' && typeof v === 'string' ? '<template-icon>' : iconsNumbered(v)
+    return out
+  }
+  const steps = recording.steps.map((step) => {
+    const st = step as { kind?: string; channel?: string; result?: unknown }
+    return st.kind === 'invoke' && st.channel && TEMPLATE_CHANNELS.has(st.channel) ? { ...step, result: iconsNumbered(st.result) } : step
+  })
+
   // Walk in print order (the formatter's section order) so numbering matches what is read.
   const none: number[] = []
   return {
     scenario: recording.scenario,
-    steps: walk(recording.steps, 'steps', -Infinity, none) as ComparableRecording['steps'],
+    steps: walk(steps, 'steps', -Infinity, none) as ComparableRecording['steps'],
     pushes: Object.fromEntries(Object.keys(recording.pushes).sort()
       .map((ch) => [ch, walkStream(ch, recording.pushes[ch])])),
     timelines: walk(recording.timelines, 'timelines', -Infinity, none) as ComparableRecording['timelines'],

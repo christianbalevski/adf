@@ -47,6 +47,7 @@ import {
   type AgentLeaseRegistry,
 } from '../runtime/agent-lease'
 import type { DaemonIdentity } from './daemon-identity'
+import { runAsClientWrite } from './client-sessions'
 import type { TrackedDirWatcher } from './dir-watcher'
 import { forgetTrackedFile, maxDepthOf, peekBootStatusCached, storedDirs, type TrackedDirsSettings } from './tracked-dirs'
 
@@ -192,7 +193,7 @@ export async function requireAdfPath(input: unknown, opts: AdfPathOptions = {}):
   let linked = false
   try { linked = (await lstat(raw)).isSymbolicLink() } catch { /* missing */ }
   if (opts.destructive && (linked || !samePathSpelling(canonical, resolve(raw)))) {
-    throw new FileOpError(`${field} goes through a link or an alias (it resolves to ${canonical}); name the file by that path`, 400, 'path_not_canonical', { canonical })
+    throw new FileOpError(`${raw} is reached through a link or a short (8.3) name, and the daemon deletes and renames agent files only by their real path. Open ${canonical} instead and try again.`, 400, 'path_not_canonical', { canonical })
   }
   let st: Awaited<ReturnType<typeof stat>> | null = null
   try { st = await stat(canonical) } catch { st = null }
@@ -771,6 +772,10 @@ export interface PathAgentInfo {
   tracked: boolean
   /** A rename waiting for the agent to stop. */
   pendingName?: string
+  /** Not loaded: whether its config id is in reviewedAgents (Studio's background-start review gate). */
+  reviewed?: boolean
+  /** Not loaded: the file has a legacy whole-file password (Studio's background-start password gate). */
+  passwordProtected?: boolean
   error?: string
 }
 
@@ -843,7 +848,9 @@ export class AgentFileOps {
       loaded: false,
       tracked,
       ...(pendingName ? { pendingName } : {}),
-      ...(peek.status ? {} : { error: peek.error ? `Not a readable .adf: ${peek.error}` : 'Not a readable .adf.' }),
+      ...(peek.status
+        ? { reviewed: isConfigReviewed(this.deps.settings?.get('reviewedAgents'), peek.config), passwordProtected: peek.status.hasEncryptedIdentity }
+        : { error: peek.error ? `Not a readable .adf: ${peek.error}` : 'Not a readable .adf.' }),
     }
   }
 
@@ -896,7 +903,13 @@ export class AgentFileOps {
    * agent's file is renamed here, now: after the lease check, by inode (so a
    * case-only rename works on case-insensitive volumes), folded WAL first.
    */
-  async rename(input: unknown, newNameInput: unknown): Promise<RenameResult> {
+  /**
+   * `opts.origin`: the client session asking (X-ADF-Client-Session). A running
+   * agent's live name change is that session's own write: its config_changed
+   * echo skips that session (D5.1), as Studio's rename pushes nothing to the
+   * window that renamed.
+   */
+  async rename(input: unknown, newNameInput: unknown, opts: { origin?: string } = {}): Promise<RenameResult> {
     const filePath = await this.adfPath(input, { destructive: true })
     const newName = typeof newNameInput === 'string' ? newNameInput.trim() : ''
     if (!isValidAgentFileName(newName)) {
@@ -909,7 +922,10 @@ export class AgentFileOps {
     const loaded = this.loadedAt(filePath)
     if (loaded) {
       const { config } = this.runtime.getAgentConfig(loaded.id)
-      if (config.name !== newName) await this.runtime.setAgentConfig(loaded.id, { ...config, name: newName })
+      if (config.name !== newName) {
+        const write = () => this.runtime.setAgentConfig(loaded.id, { ...config, name: newName })
+        await (opts.origin ? runAsClientWrite(opts.origin, write) : write())
+      }
       const sync = this.runtime.syncAgentFileToName(filePath, newName)
       if (sync.error) throw new FileOpError(sync.error, 409, 'conflict')
       if (!sync.deferred) return { success: true, filePath, renameDeferred: false, agentId: loaded.id }
@@ -997,9 +1013,12 @@ export class AgentFileOps {
       throw new FileOpError('selectedTables must be an array of table names', 400, 'bad_request')
     }
     const identity = this.deps.identity
-    if (identity && !identity.isReady()) {
-      throw new FileOpError(`Set up the owner identity first. ${identity.status().message ?? ''}`.trim(), 409, 'identity_not_ready')
-    }
+    // Without the owner identity the clone is still made, as Studio makes it
+    // (keys not sealed to an owner), said in the log and in `warnings`.
+    const identityMissing = identity && !identity.isReady()
+      ? `The owner identity is not set up yet, so the clone's identity is not sealed to an owner. ${identity.status().message ?? ''}`.trim()
+      : null
+    if (identityMissing) console.warn(`[FileOps] ${identityMissing}`)
     const svc = identity?.service
     const ownerDid = svc?.getOwnerDid() ?? (this.deps.settings?.get('ownerDid') as string | undefined) ?? ''
     // A running source: fold its WAL into the file the clone copies.
@@ -1028,7 +1047,7 @@ export class AgentFileOps {
       name: result.name,
       agentId: result.config.id,
       identity: result.fixup.identity,
-      warnings: result.fixup.warnings,
+      warnings: identityMissing ? [...result.fixup.warnings, identityMissing] : result.fixup.warnings,
     }
   }
 

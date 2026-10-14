@@ -5,6 +5,12 @@ import { join, dirname, basename, resolve, relative, sep } from 'path'
 import { networkInterfaces, tmpdir } from 'os'
 import { randomUUID, createHash } from 'crypto'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
+import { prepareFoundAgent } from '../utils/found-agent'
+import {
+  AdapterAttachArgs, AdapterCredentialGetArgs, AdapterCredentialSetArgs, AdapterDetachArgs, AdapterListFilesArgs,
+  AdapterPackageArgs, AdapterTypeArgs, McpAttachArgs, McpCredentialGetArgs, McpCredentialListArgs, McpCredentialSetArgs,
+  McpDetachArgs, McpNameArgs, McpPackageArgs, McpUninstallArgs, validateMcpArgs,
+} from './mcp-adapter-args'
 import { initApplicationMenu, recordRecentFile } from '../menu'
 import { verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
@@ -5913,26 +5919,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // closed — the renderer opens it through the normal FILE_OPEN flow.
   ipcMain.handle(IPC.MESH_FOUND_AGENT, async (_e, args: { dir: string; name: string; newRoot?: boolean }): Promise<{ success: boolean; filePath?: string; error?: string }> => {
     try {
-      const name = (args?.name ?? '').trim()
-      const dir = args?.dir ?? ''
-      if (!name) return { success: false, error: 'Agent name required' }
-
-      const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-      const canonDir = canonicalizePath(dir)
-      const inTracked = trackedDirs.some((d) => containsPath(canonicalizePath(d), canonDir))
-      // New-root founding: the folder may sit OUTSIDE tracked space, but only
-      // as a sibling of an existing tracked root (its parent must be some
-      // tracked root's parent) — never an arbitrary disk location. The
-      // notifyAdfFileCreated call below auto-tracks it as a new terrain root.
-      const allowedAsNewRoot = args?.newRoot === true && trackedDirs.some((d) =>
-        containsPath(dirname(canonicalizePath(d)), canonDir)
-      )
-      if (!inTracked && !allowedAsNewRoot) return { success: false, error: 'Destination is outside tracked directories' }
-
-      mkdirSync(dir, { recursive: true })
-      const fileName = name.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '') || 'agent'
-      const filePath = join(dir, `${fileName}.adf`)
-      if (existsSync(filePath)) return { success: false, error: `${fileName}.adf already exists here` }
+      // The checks, the folder and the file name (utils/found-agent.ts, shared
+      // with the daemon). A new-root folder is auto-tracked as a new terrain
+      // root by the notifyAdfFileCreated call below.
+      const plan = prepareFoundAgent(args, (settings.get('trackedDirectories') as string[]) ?? [])
+      if (!plan.ok) return { success: false, error: plan.error }
+      const { name, filePath } = plan
 
       // User-created from Studio: the default agent template applies (never to
       // agent-spawned children, which go through sys_create_adf's own path).
@@ -6546,61 +6538,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return backgroundAgentManager?.getLoopExecutor(filePath, loop)?.getContextBreakdown() ?? null
   })
 
-  // --- MCP IPC Argument Schemas ---
-
-  const McpPackageArgs = z.object({ package: z.string().min(1), name: z.string().min(1) })
-  const McpUninstallArgs = z.object({ package: z.string().min(1) })
-  const McpNameArgs = z.object({ name: z.string().min(1) })
-  const McpCredentialSetArgs = z.object({
-    filePath: z.string().min(1),
-    npmPackage: z.string().min(1),
-    envKey: z.string().min(1),
-    value: z.string()
-  })
-  const McpCredentialGetArgs = z.object({
-    filePath: z.string().min(1),
-    npmPackage: z.string().min(1)
-  })
-  const McpCredentialListArgs = z.object({
-    mcpServerName: z.string().min(1),
-    npmPackage: z.string().min(1)
-  })
-  const McpAttachArgs = z.object({
-    filePath: z.string().min(1),
-    serverConfig: z.object({
-      name: z.string().min(1),
-      type: z.enum(['npm', 'uvx', 'pip', 'custom', 'http']).optional(),
-      npmPackage: z.string().optional(),
-      pypiPackage: z.string().optional(),
-      command: z.string().optional(),
-      args: z.array(z.string()).optional(),
-      url: z.string().url().optional(),
-      envKeys: z.array(z.string()).optional(),
-      headers: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-      headerEnv: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-      bearerTokenEnvVar: z.string().optional(),
-      credentialStorage: z.enum(['app', 'agent']).optional(),
-      runLocation: z.enum(['host', 'shared']).optional(),
-      // OAuth remote flags — see McpRegistrationTestArgs: Zod strips unlisted
-      // keys, which would drop oauth on agent attach too. Keep in sync with
-      // McpServerRegistration / McpServerConfig.
-      oauth: z.boolean().optional(),
-      oauthClientId: z.string().optional(),
-      oauthScopes: z.array(z.string()).optional()
-    })
-  })
-  const McpDetachArgs = z.object({
-    filePath: z.string().min(1),
-    serverName: z.string().min(1),
-    credentialNamespace: z.string().min(1)
-  })
-
-  /** Validate IPC args against a Zod schema, returning parsed data or an error response. */
-  function validateMcpArgs<T>(schema: z.ZodType<T>, args: unknown): { data: T } | { error: string } {
-    const result = schema.safeParse(args)
-    if (!result.success) return { error: `Invalid arguments: ${result.error.issues.map((i) => i.message).join(', ')}` }
-    return { data: result.data }
-  }
+  // MCP and adapter IPC argument schemas: ipc/mcp-adapter-args.ts (shared with daemon mode).
 
   // --- MCP Server Probe ---
 
@@ -7281,7 +7219,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // --- Channel Adapters ---
 
   ipcMain.handle(IPC.ADAPTER_INSTALL_PACKAGE, async (_event, rawArgs: unknown) => {
-    const args = z.object({ package: z.string() }).parse(rawArgs)
+    const args = AdapterPackageArgs.parse(rawArgs)
     try {
       const win = getMainWindow()
       const installed = await adapterPackageResolver.install(args.package, (msg) => {
@@ -7303,7 +7241,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_UNINSTALL_PACKAGE, async (_event, rawArgs: unknown) => {
-    const args = z.object({ package: z.string() }).parse(rawArgs)
+    const args = AdapterPackageArgs.parse(rawArgs)
     try {
       await adapterPackageResolver.uninstall(args.package)
       // Remove from app settings
@@ -7347,7 +7285,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   }
 
   ipcMain.handle(IPC.ADAPTER_RESTART, async (_event, rawArgs: unknown) => {
-    const args = z.object({ type: z.string(), filePath: z.string().optional() }).parse(rawArgs)
+    const args = AdapterTypeArgs.parse(rawArgs)
     const manager = resolveAdapterManager(args.filePath)
     if (!manager) {
       return {
@@ -7362,19 +7300,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_GET_LOGS, async (_event, rawArgs: unknown) => {
-    const args = z.object({ type: z.string(), filePath: z.string().optional() }).parse(rawArgs)
+    const args = AdapterTypeArgs.parse(rawArgs)
     const manager = resolveAdapterManager(args.filePath)
     if (!manager) return { logs: [], running: false }
     return { logs: manager.getLogs(args.type), running: true }
   })
 
   ipcMain.handle(IPC.ADAPTER_CREDENTIAL_SET, async (_event, rawArgs: unknown) => {
-    const args = z.object({
-      filePath: z.string(),
-      adapterType: z.string(),
-      envKey: z.string(),
-      value: z.string()
-    }).parse(rawArgs)
+    const args = AdapterCredentialSetArgs.parse(rawArgs)
     const purpose = `adapter:${args.adapterType}:${args.envKey}`
 
     // Same shape as MCP_CREDENTIAL_SET: reuse an already-open workspace rather
@@ -7428,10 +7361,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_CREDENTIAL_GET, async (_event, rawArgs: unknown) => {
-    const args = z.object({
-      filePath: z.string(),
-      adapterType: z.string()
-    }).parse(rawArgs)
+    const args = AdapterCredentialGetArgs.parse(rawArgs)
     // Same workspace resolution as ADAPTER_CREDENTIAL_SET: an already-open
     // workspace (foreground or background agent) has its envelopes unlocked;
     // a temp open must run the unlock cascade or every sealed row reads as
@@ -7474,26 +7404,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_CREDENTIAL_LIST_FILES, async (_event, rawArgs: unknown) => {
-    const args = z.object({ adapterType: z.string() }).parse(rawArgs)
+    const args = AdapterListFilesArgs.parse(rawArgs)
     return listAdapterCredentialFiles(args.adapterType, credentialFileSources())
   })
 
   ipcMain.handle(IPC.ADAPTER_ATTACH, async (_event, rawArgs: unknown) => {
-    const args = z.object({
-      filePath: z.string(),
-      adapterType: z.string(),
-      config: z.object({
-        enabled: z.boolean(),
-        policy: z.object({
-          dm: z.enum(['all', 'allowlist', 'none']).optional(),
-          groups: z.enum(['all', 'mention', 'none']).optional(),
-          allow_from: z.array(z.string()).optional()
-        }).optional(),
-        limits: z.object({
-          max_attachment_size: z.number().int().positive().optional()
-        }).optional()
-      })
-    }).parse(rawArgs)
+    const args = AdapterAttachArgs.parse(rawArgs)
 
     try {
       const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)
@@ -7526,10 +7442,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_DETACH, async (_event, rawArgs: unknown) => {
-    const args = z.object({
-      filePath: z.string(),
-      adapterType: z.string()
-    }).parse(rawArgs)
+    const args = AdapterDetachArgs.parse(rawArgs)
 
     try {
       const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)
@@ -8328,6 +8241,11 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
   // points at an agent that no longer exists.
   try { nativeNotifier?.dispose() } catch { /* best effort */ }
   try { menuBar?.dispose() } catch { /* best effort */ }
+  // The templates-folder watcher registerAllIpcHandlers started (and its
+  // pending TEMPLATES_CHANGED): nothing may push to a closing window.
+  try { templatesService?.stopWatcher() } catch { /* best effort */ }
+  // The tracked-folder watcher (startDirWatcher): its autostart must not fire mid-teardown.
+  try { stopDirWatcher() } catch { /* best effort */ }
   // Flush debounced token usage data before anything can go wrong.
   try { getTokenUsageService().flush() }
   catch (e) { console.error('[Cleanup] token usage flush error:', e) }

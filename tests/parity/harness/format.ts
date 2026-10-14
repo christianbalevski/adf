@@ -52,6 +52,7 @@ export function renderRecording(recording: ComparableRecording): string {
     emit(lines, file, content, 0)
   }
   for (const [file, dump] of Object.entries(recording.state.adf)) {
+    if ((dump as { missing?: true }).missing) lines.push('', `## state: ${file} (no such file)`)
     for (const [table, { columns, rows }] of Object.entries(dump.tables)) {
       lines.push('', `## state: ${file} ${table} (${rows.length} rows; ${columns.join(', ')})`)
       rows.forEach((row, i) => emit(lines, `#${i + 1}`, row, 0))

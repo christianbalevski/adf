@@ -549,6 +549,29 @@ export class AgentExecutor extends EventEmitter {
   private absorbedTurnIds: string[] = []
   /** turnId of the dispatch the current (outermost) turn is running. */
   private runningTurnId: string | null = null
+
+  /** The turnId of the dispatch the current (outermost) turn runs; null between turns or for a dispatch without one. */
+  getRunningTurnId(): string | null {
+    return this.runningTurnId
+  }
+
+  /** While a `trigger_message` is being emitted: the turnId of the dispatch it announces (the turn's trigger or a queued chat delivered into it). */
+  private announcingTurnId: string | null = null
+
+  /** The turnId of the dispatch the `trigger_message` now being emitted announces; null outside that emit or for a dispatch without one. */
+  getAnnouncingTurnId(): string | null {
+    return this.announcingTurnId
+  }
+
+  /** Ids absorbed into the current turn so far (interrupted turns, delivered queued chats); they complete with it. */
+  getAbsorbedTurnIds(): readonly string[] {
+    return this.absorbedTurnIds
+  }
+
+  private emitTriggerMessage(turnId: string | undefined, event: AgentExecutionEvent): void {
+    this.announcingTurnId = turnId ?? null
+    try { this.emitEvent(event) } finally { this.announcingTurnId = null }
+  }
   /** Loop notice for chats discarded while a turn still held the slot —
    *  written once that turn has settled, so it never splits a tool batch. */
   private pendingDiscardNotice: string | null = null
@@ -2146,7 +2169,7 @@ export class AgentExecutor extends EventEmitter {
       if (this._skipNextTriggerEvent || skipTriggerMessage) {
         this._skipNextTriggerEvent = false
       } else if (eventType !== 'chat' || !isEchoedChat(dispatch)) {
-        this.emitEvent({
+        this.emitTriggerMessage(dispatch.turnId, {
           type: 'trigger_message',
           payload: {
             content: triggerMessage,
@@ -5937,7 +5960,7 @@ export class AgentExecutor extends EventEmitter {
       this.session.addMessage(message, undefined, { skipLoop: isPreAppendedDispatch(chat), seq: preAppendedLoopSeq(chat) })
       this.session.flushToLoop()
       if (isEchoedChat(chat)) continue
-      this.emitEvent({
+      this.emitTriggerMessage(chat.turnId, {
         type: 'trigger_message',
         payload: {
           content: this.contentBlocksToText(content),

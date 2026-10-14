@@ -1,19 +1,23 @@
 import { dialog } from 'electron'
+import { basename, dirname } from 'node:path'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import type { AgentStatus, ChatHistory } from '../../../../shared/daemon-client'
 import { resolveStartInState, type AgentConfig } from '../../../../shared/types/adf-v02.types'
 import { MAX_INLINE_BINARY_BYTES } from '../../../../shared/utils/image-files'
+import type { FleetPendingInteraction } from '../../../../shared/types/ipc.types'
 import { DaemonModeUnavailableError } from '../errors'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { samePath } from '../session'
 import { TURN_WAIT_TIMEOUT_MS } from '../event-bridge'
+import { isAgentGone, notOpenError, onOpenFile, requireOpenAgent } from '../documents/open-file'
+import { isTempLocation } from '../documents/file-handlers'
 
 /**
  * The daemon-mode handlers of the core flow: open a file, read it, start the
  * agent, chat with it, stop it (the three parity scenarios, tracker W0-F).
- * Results have the embedded handlers' shapes (src/main/ipc/index.ts); the
- * W3-A handlers for the rest of FILE_*, DOC_*, AGENT_* build on the same
- * session.
+ * Results have the embedded handlers' shapes (src/main/ipc/index.ts); W3-A's
+ * handlers for the rest of FILE_*, DOC_*, AGENT_* (documents/) build on the
+ * same session.
  *
  * FILE_OPEN holds the file as a document of Studio's client session (W2-A,
  * W2-B), so the /agents/:id routes reach it whether its agent runs or not.
@@ -28,58 +32,52 @@ const LOOP_DISPLAY_LIMIT = 200
 /** Embedded DOC_READ_INTERNAL_FILE's text extensions (ipc/index.ts). */
 const TEXT_EXTS = new Set(['md', 'txt', 'json', 'js', 'ts', 'py', 'html', 'css', 'csv', 'xml', 'yaml', 'yml', 'toml', 'sh', 'bat', 'log', 'sql', 'env', 'cfg', 'ini', 'jsx', 'tsx'])
 
-/** The daemon no longer has the open file (not held, not running): the user opens it again. */
-function notOpenError(ctx: DaemonModeContext, what: string): Error {
-  return new Error(`${what}: ${ctx.session.filePath} is not open in the ADF daemon any more. Open it again.`)
-}
-
-/** The open file's agent id, or a visible refusal when the daemon does not have the file open. */
-function requireOpenAgent(ctx: DaemonModeContext, what: string): string {
-  const id = ctx.session.agentId
-  if (id) return id
-  throw notOpenError(ctx, what)
-}
-
-/** Reads of the open agent; a 404 means the daemon no longer holds it (the hold keeps it open across a stop). */
-async function readOpenAgent<T>(ctx: DaemonModeContext, what: string, read: (agentId: string) => Promise<T>): Promise<T> {
-  const agentId = requireOpenAgent(ctx, what)
-  try {
-    return await read(agentId)
-  } catch (err) {
-    if (isNotFound(err)) throw notOpenError(ctx, what)
-    throw err
-  }
-}
-
-/** The daemon still has the agent: running or an open document (GET /agents/:id/status answers both). */
-async function openInDaemon(ctx: DaemonModeContext, agentId: string): Promise<boolean> {
-  const client = await ctx.ready()
-  try {
-    await client.request('GET', `/agents/${enc(agentId)}/status`)
-    return true
-  } catch (err) {
-    if (isNotFound(err)) return false
-    throw err
-  }
-}
-
 function mapChat(history: ChatHistory['chatHistory']): { version: number; uiLog: unknown[]; llmMessages: unknown[]; earlierCount: number } {
   // The daemon answers null for an empty loop; embedded answers an empty view.
   if (!history) return { version: 1, uiLog: [], llmMessages: [], earlierCount: 0 }
   return { version: history.version, uiLog: history.uiLog, llmMessages: history.llmMessages, earlierCount: history.earlierCount }
 }
 
-async function agentStatus(ctx: DaemonModeContext, agentId: string | null): Promise<AgentStatus | null> {
+/** GET /agents/:id/status: answers an open document too (`running: false`). */
+type TargetStatus = AgentStatus & { running?: boolean; sessionId?: string }
+
+/** The agent's status while it runs in the daemon; null for an open document that is not running, or an unknown id. */
+async function agentStatus(ctx: DaemonModeContext, agentId: string | null): Promise<TargetStatus | null> {
   if (!agentId) return null
   const client = await ctx.ready()
   try {
-    const status = await client.request<AgentStatus & { running?: boolean }>('GET', `/agents/${enc(agentId)}/status`)
-    // An open document answers too, with running: false (W2-A): not a running agent.
+    const status = await client.request<TargetStatus>('GET', `/agents/${enc(agentId)}/status`)
     return status.running === false ? null : status
   } catch (err) {
     if (isNotFound(err)) return null
     throw err
   }
+}
+
+/** A reviewed file that is not loaded, moved out of the temp dir into the agents folder (POST /files/relocate); its new path, or null. */
+async function healStrandedTempFile(ctx: DaemonModeContext, filePath: string): Promise<string | null> {
+  const client = await ctx.ready()
+  try {
+    const info = await client.request<{ loaded: boolean; reviewed?: boolean }>('GET', '/files/agent', { query: { path: filePath } })
+    if (info.loaded || info.reviewed !== true) return null
+    const moved = await client.request<{ movedTo?: string; moveError?: string }>('POST', '/files/relocate', { body: { path: filePath } })
+    if (moved.moveError) ctx.log.warn(`[Review] ${moved.moveError}`)
+    if (!moved.movedTo) return null
+    ctx.log.log(`[Review] Self-healed stranded temp agent -> ${moved.movedTo}`)
+    ctx.session.rekey(filePath, moved.movedTo)
+    ctx.recordRecentFile(moved.movedTo)
+    return moved.movedTo
+  } catch (err) {
+    ctx.log.warn(`[Review] Could not move ${filePath} out of the temp dir: ${err instanceof Error ? err.message : String(err)}`)
+    return null
+  }
+}
+
+/** The password gate (design §6.1 row 27): the file has a legacy password and the daemon holds no key for it. */
+async function passwordLocked(ctx: DaemonModeContext, agentId: string): Promise<boolean> {
+  const client = await ctx.ready()
+  const pw = await client.request<{ needsPassword: boolean; unlocked: boolean }>('GET', `/agents/${enc(agentId)}/identity/password`)
+  return pw.needsPassword && !pw.unlocked
 }
 
 /** GET /agents/:id/header (document-routes.ts). */
@@ -109,14 +107,20 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       const opened = await ctx.session.openFile(filePath, (p) => ctx.runningAgentAt(p))
       const status = await agentStatus(ctx, opened.agentId)
       const agentWasRunning = status !== null
-      // Running or held open (W2-A): the daemon answers the password state either way, as embedded checks every file.
-      if (opened.agentId) {
-        const client = await ctx.ready()
-        const pw = await client.request<{ needsPassword: boolean; unlocked: boolean }>('GET', `/agents/${enc(opened.agentId)}/identity/password`)
-        if (pw.needsPassword && !pw.unlocked) {
-          ctx.session.forgetUnlocked(filePath)
-          return { success: true, filePath, needsPassword: true }
-        }
+      // Prompt on open, before any start, as embedded (useAdfFile opens the
+      // dialog on needsPassword): the session's hold answers it (W2-A), and an
+      // agent reached only as running is asked directly.
+      const locked = opened.opened ? opened.opened.needsPassword === true : !!opened.agentId && await passwordLocked(ctx, opened.agentId)
+      if (locked) {
+        ctx.session.forgetUnlocked(filePath)
+        return { success: true, filePath, needsPassword: true }
+      }
+      // Self-heal a claimed-but-stranded temp file, as embedded's FILE_OPEN:
+      // reviewed already, but a prior move failed and it still sits in the OS
+      // temp dir. Local mode only: the temp dir is this machine's.
+      if (!agentWasRunning && ctx.mode === 'local' && await isTempLocation(dirname(filePath))) {
+        const moved = await healStrandedTempFile(ctx, filePath)
+        if (moved) return { success: true, filePath: moved, agentWasRunning, movedTo: moved }
       }
       return { success: true, filePath, agentWasRunning }
     } catch (error) {
@@ -141,9 +145,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
 
   // W2-A's one-call reads (document-routes.ts), each the embedded handler's body.
   [IPC.DOC_GET_BATCH]: async (ctx) => {
-    if (!ctx.session.filePath) return { document: '', agentConfig: null, chat: null }
-    const client = await ctx.ready()
-    return readOpenAgent(ctx, 'Reading the open agent', async (id) => {
+    return onOpenFile<unknown>(ctx, 'Reading the open agent', { document: '', agentConfig: null, chat: null }, async (client, id) => {
       const b = await client.request<AgentBatch>('GET', `/agents/${enc(id)}/batch`)
       return {
         document: b.document,
@@ -157,18 +159,14 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
   },
 
   [IPC.DOC_GET_HEADER]: async (ctx) => {
-    if (!ctx.session.filePath) return { document: '', agentConfig: null, statusText: '' }
-    const client = await ctx.ready()
-    return readOpenAgent(ctx, 'Reading the open agent', async (id) => {
+    return onOpenFile<unknown>(ctx, 'Reading the open agent', { document: '', agentConfig: null, statusText: '' }, async (client, id) => {
       const h = await client.request<AgentHeader>('GET', `/agents/${enc(id)}/header`)
       return { document: h.document, agentConfig: h.agentConfig, statusText: h.statusText }
     })
   },
 
   [IPC.DOC_GET_CHAT]: async (ctx, _event, args?: { loop?: string }) => {
-    if (!ctx.session.filePath) return { chatHistory: null }
-    const client = await ctx.ready()
-    return readOpenAgent(ctx, 'Reading the open agent\'s chat', async (id) => {
+    return onOpenFile<unknown>(ctx, 'Reading the open agent\'s chat', { chatHistory: null }, async (client, id) => {
       const chat = await client.request<ChatHistory>('GET', `/agents/${enc(id)}/chat`, { query: { limit: LOOP_DISPLAY_LIMIT, loop: args?.loop } })
       return { chatHistory: mapChat(chat.chatHistory) }
     })
@@ -189,7 +187,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     } catch (err) {
       if (!isNotFound(err)) throw err
       // Unknown file, or the daemon no longer has the agent: tell them apart.
-      if (!(await openInDaemon(ctx, agentId))) throw notOpenError(ctx, 'Reading a file of the open agent')
+      if (isAgentGone(err, agentId)) throw notOpenError(ctx, 'Reading a file of the open agent')
       return { content: null, binary: false }
     }
     const ext = args.path.split('.').pop()?.toLowerCase() ?? ''
@@ -218,31 +216,69 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       return { success: false, error: 'Agent file changed since start was requested' }
     }
     const client = await ctx.ready()
-    const running = await agentStatus(ctx, ctx.session.agentId ?? await ctx.runningAgentAt(filePath))
-    if (running) {
-      // Reuse path: the agent already runs in the daemon.
-      ctx.session.noteAgent(filePath, running.id)
-      const [tasks, asks] = await Promise.all([
-        client.request<{ tasks: unknown[] }>('GET', `/agents/${enc(running.id)}/tasks`, { query: { status: 'pending_approval' } }).catch(() => ({ tasks: [] })),
-        client.request<{ asks: unknown[] }>('GET', `/agents/${enc(running.id)}/asks`).catch(() => ({ asks: [] })),
-      ])
-      return { success: true, agentState: running.runtimeState, pendingApprovals: tasks.tasks, pendingAsks: asks.asks }
+    let running = await agentStatus(ctx, ctx.session.agentId ?? await ctx.runningAgentAt(filePath))
+    if (running && (running.runtimeState === 'stopped' || running.runtimeState === 'error')) {
+      // Embedded rebuilds an executor in error or stopped state instead of
+      // re-attaching it: the daemon's equivalent is a stop and a fresh start.
+      ctx.log.log(`[Backend] AGENT_START: ${filePath} is "${running.runtimeState}" in the daemon; restarting it`)
+      await client.request('POST', `/agents/${enc(running.id)}/stop`, { timeoutMs: 60_000 })
+      running = null
     }
-    // Fresh start: W1-A's start route on the file, with Studio's provider
-    // gate (`preflight`: provider_missing / provider_unconfigured) and the
-    // startup turn (on the open document's workspace when one is held, W2-A).
-    // The route takes no `hasUserMessage` (W3-A); a file whose own key is locked starts unchecked
-    // (`preflight.code: credentials_locked`), and the prompt-before-start of
-    // design §6.1 row 27 is W3-A's.
+    if (running) {
+      // Reuse path, as embedded re-attaches the running executor: its display
+      // state, its session id, and main's pending approvals and asks.
+      ctx.session.noteAgent(filePath, running.id)
+      const agentPath = running.filePath ?? filePath
+      // Side reads: a failed one never fails the re-attach (embedded reads them from the live executor).
+      const sideRead = <T,>(what: string, fallback: T) => (err: unknown): T => {
+        ctx.log.warn(`[Backend] AGENT_START: could not read ${what} of ${filePath}: ${err instanceof Error ? err.message : String(err)}`)
+        return fallback
+      }
+      const [triggers, interactions] = await Promise.all([
+        client.request<{ displayState: string | null }>('GET', `/agents/${enc(running.id)}/triggers`).catch(sideRead('the display state', { displayState: null })),
+        client.request<FleetPendingInteraction[]>('GET', '/approvals/interactions').catch(sideRead('the pending approvals and asks', [] as FleetPendingInteraction[])),
+      ])
+      const mine = interactions.filter((i) => samePath(i.filePath, agentPath))
+      return {
+        success: true,
+        sessionId: running.sessionId,
+        agentState: triggers.displayState ?? running.runtimeState,
+        pendingApprovals: mine.filter((i) => i.type === 'approval').map((i) => ({
+          requestId: i.requestId,
+          name: i.toolName,
+          input: i.input,
+          ...(i.reason !== undefined ? { reason: i.reason } : {}),
+          ...(i.protection !== undefined ? { protection: i.protection } : {}),
+          ...(i.canAlwaysApprove !== undefined ? { canAlwaysApprove: i.canAlwaysApprove } : {}),
+          ...(i.alwaysApproveBlockedReason !== undefined ? { alwaysApproveBlockedReason: i.alwaysApproveBlockedReason } : {}),
+        })),
+        pendingAsks: mine.filter((i) => i.type === 'ask').map((i) => ({ requestId: i.requestId, question: i.question })),
+      }
+    }
+    // Prompt before start (design §6.1 row 27): FILE_OPEN already asked for
+    // the password of a held document; one whose key the daemon still lacks
+    // is not started with a locked provider. The renderer opens the password
+    // dialog on this code (utils/start-agent.ts).
+    const documentId = ctx.session.current?.held ? ctx.session.agentId : null
+    if (documentId && !ctx.session.isUnlocked(filePath) && await passwordLocked(ctx, documentId)) {
+      return { success: false, error: `${basename(filePath, '.adf')} is password-protected. Enter its password to start it.`, code: 'credentials_locked' }
+    }
+    // Fresh start: W1-A's start route, with Studio's provider gate
+    // (`preflight`: provider_missing / provider_unconfigured), the startup
+    // turn (on the held document's workspace, W2-A) and `hasUserMessage`.
     const release = ctx.bridge.holdForeground(filePath)
     try {
-      const started = await client.request<{ agent?: AgentStatus & { id: string }; preflight?: { code: string; message: string } }>(
-        'POST', `/agents/${enc(filePath)}/start`, { query: { preflight: 1 }, timeoutMs: 120_000 })
+      const started = await client.request<{ agent?: AgentStatus & { id: string }; sessionId?: string; preflight?: { code: string; message: string } }>(
+        'POST', `/agents/${enc(documentId ?? filePath)}/start`, { query: { preflight: 1, ...(args?.hasUserMessage ? { hasUserMessage: 1 } : {}) }, timeoutMs: 120_000 })
       const agentId = started.agent?.id ?? await ctx.runningAgentAt(filePath)
       if (agentId) ctx.session.noteAgent(filePath, agentId)
-      if (started.preflight) ctx.log.warn(`[Backend] AGENT_START: ${started.preflight.message}`)
       const config = agentId ? (await client.request<{ config: AgentConfig }>('GET', `/agents/${enc(agentId)}/config`)).config : null
-      return { success: true, agentState: config ? resolveStartInState(config) : started.agent?.runtimeState }
+      const answer = { success: true, sessionId: started.sessionId, agentState: config ? resolveStartInState(config) : started.agent?.runtimeState }
+      if (started.preflight) ctx.log.warn(`[Backend] AGENT_START: ${started.preflight.message}`)
+      // The key was locked after the open (another client, a wipe): the agent
+      // runs with a provider that refuses every call until it is unlocked.
+      if (started.preflight?.code === 'credentials_locked') return { ...answer, code: 'credentials_locked' }
+      return answer
     } catch (err) {
       const body = (err as { body?: { code?: unknown } }).body
       return { success: false, error: err instanceof Error ? err.message : String(err), ...(typeof body?.code === 'string' ? { code: body.code } : {}) }
@@ -259,14 +295,23 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     // Embedded detaches the foreground host before it disposes the agent:
     // the renderer sees none of the teardown's events.
     ctx.bridge.detach(agentId)
+    // A rename deferred while it ran moves the file now; embedded applies it
+    // (and pushes FILE_RENAMED) before it answers, so this waits for the push.
+    const filePath = ctx.session.filePath
+    const pending = filePath
+      ? await client.request<{ pendingName?: string }>('GET', '/files/agent', { query: { path: filePath } }).then((i) => i.pendingName, () => undefined)
+      : undefined
+    const moved = pending && filePath ? ctx.bridge.awaitPush('file_renamed', (p) => samePath((p as { oldPath?: string })?.oldPath, filePath)) : null
     try {
       await client.request('POST', `/agents/${enc(agentId)}/stop`, { timeoutMs: 60_000 })
     } catch (err) {
+      moved?.cancel()
       if (!isNotFound(err)) {
         ctx.bridge.attach(agentId)
         throw err
       }
     }
+    if (moved && !(await moved.done)) ctx.log.warn(`[Backend] AGENT_STOP: ${filePath} was to be renamed to "${pending}" at the stop; no rename arrived from the ADF daemon`)
     return { success: true }
   },
 
@@ -280,7 +325,8 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     const blocks = Array.isArray(args?.content) && args.content.length > 0 ? args.content : null
     const body = blocks ? { content: blocks } : { text: args?.userMessage ?? '' }
     try {
-      const { turnId } = await client.request<{ turnId: string }>('POST', `/agents/${enc(agentId)}/chat`, { body: { ...body, ...(args?.loop ? { loop: args.loop } : {}) } })
+      // `echoed`: the renderer already shows the message, as embedded's dispatch marks it.
+      const { turnId } = await client.request<{ turnId: string }>('POST', `/agents/${enc(agentId)}/chat`, { body: { ...body, ...(args?.loop ? { loop: args.loop } : {}), echoed: true } })
       // Embedded resolves once the dispatched turn has run; so does this.
       const outcome = await ctx.bridge.waitForTurn(agentId, turnId, args?.loop ?? 'main')
       if (outcome === 'disconnected') return { success: false, error: 'The connection to the ADF daemon was lost while the message waited for its turn; the chat shows what arrived.' }

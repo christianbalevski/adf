@@ -91,7 +91,7 @@ function memorySettings(initial: Record<string, unknown> = {}) {
   }
 }
 
-function setup(initial: Record<string, unknown> = {}, opts: { runtime?: RuntimeService; rawFileBodyLimit?: number } = {}) {
+function setup(initial: Record<string, unknown> = {}, opts: { runtime?: RuntimeService; rawFileBodyLimit?: number; identity?: unknown } = {}) {
   const settings = memorySettings(initial)
   const runtime = opts.runtime ?? new RuntimeService({
     settings: settings.store,
@@ -106,6 +106,7 @@ function setup(initial: Record<string, unknown> = {}, opts: { runtime?: RuntimeS
   watcher.on('file_renamed', p => renames.push(p))
   const server = createDaemonHttpApi(runtime, {
     settingsStore: settings.store,
+    ...(opts.identity ? { identity: opts.identity as never } : {}),
     onTrackedDirectoriesChanged: dirs => changes.push(dirs),
     routes: { trackedDirWatcher: watcher, ...(opts.rawFileBodyLimit ? { rawFileBodyLimit: opts.rawFileBodyLimit } : {}) },
   })
@@ -230,6 +231,20 @@ describe('daemon file routes: path → id, delete, rename, clone', () => {
     runtime.emit('agent-path-changed', { agentId: a.id, oldFilePath: moved, filePath: elsewhere })
     expect(renames.at(-1)).toEqual({ oldPath: moved, newPath: elsewhere })
     expect((watcher as unknown as { isExpected(p: string): boolean }).isExpected(elsewhere)).toBe(true)
+  })
+
+  it('clones before the owner identity exists, as Studio does: no identity keys, a warning in the answer (review fix)', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const notReady = { isReady: () => false, status: () => ({ status: 'none', message: 'No owner identity yet.' }), service: undefined }
+    const { server } = setup({ trackedDirectories: [root] }, { identity: notReady })
+    await server.ready()
+    // Without an owner the identity hooks mint plain keys, as Studio's owner service does.
+    setWorkspaceIdentityHooks({ ensureIdentity: ws => { ws.generateIdentityKeys(null) }, unlockEnvelopes: () => {} })
+    const res = await server.inject({ method: 'POST', url: '/files/clone', payload: { path: a.filePath, selectedTables: ['adf_config', 'adf_meta'] } })
+    expect(res.statusCode).toBe(201)
+    expect(res.json().warnings).toContain("The owner identity is not set up yet, so the clone's identity is not sealed to an owner. No owner identity yet.")
+    expect(existsSync(res.json().filePath)).toBe(true)
   })
 
   it('clones with selected tables and clone-fixup: new id, fresh identity, reviewed, folder tracked and pushed', async () => {

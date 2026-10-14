@@ -978,19 +978,17 @@ export class AgentTemplatesService {
       const workspace = AdfWorkspace.open(path)
       try {
         const taken = new Set(workspace.listFiles().map((f) => f.path))
-        for (const host of picked.filePaths) {
-          const stat = statSync(host)
-          if (!stat.isFile()) return { success: false, error: `${basename(host)} is not a file.` }
-          if (stat.size > TEMPLATE_EXTRA_FILE_MAX_BYTES) {
-            const mb = Math.round(TEMPLATE_EXTRA_FILE_MAX_BYTES / (1024 * 1024))
-            return { success: false, error: `${basename(host)} is larger than ${mb} MB.` }
+        // A stat failure refuses the batch at that item, after the earlier items' checks.
+        const plan = stageTemplateAddFiles(taken, picked.filePaths.map((host): TemplateAddFileItem => {
+          try {
+            const stat = statSync(host)
+            return { name: basename(host), isFile: stat.isFile(), size: stat.size }
+          } catch (err) {
+            return { name: basename(host), statError: err instanceof Error ? err.message : String(err) }
           }
-          const dest = availableVfsPath(basename(host), taken)
-          const invalid = validateExtraPath(dest)
-          if (invalid) return { success: false, error: `${basename(host)}: ${invalid}` }
-          taken.add(dest)
-          staged.push({ host, dest })
-        }
+        }))
+        if ('error' in plan) return { success: false, error: plan.error }
+        picked.filePaths.forEach((host, i) => staged.push({ host, dest: plan.dests[i] }))
         for (const { host, dest } of staged) {
           workspace.writeFileBuffer(dest, readFileSync(host), AdfWorkspace.mimeTypeForPath(dest))
         }
@@ -999,6 +997,58 @@ export class AgentTemplatesService {
       }
       this.pushChanged()
       return { success: true, added: staged.map((s) => s.dest) }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /**
+   * One host file's bytes into the template's VFS, named as `addFiles` names
+   * a picked file: its base name, numbered past a taken one. For a client
+   * that picks the files itself (the daemon's PUT /templates/:id/files/raw,
+   * Studio's TEMPLATE_ADD_FILES in daemon mode); `addFiles` is unchanged.
+   */
+  /** The names a batch of picked files would get (stageTemplateAddFiles on this template's files), or the refusal; writes nothing. */
+  planAddFiles(id: string, items: readonly TemplateAddFileItem[]): { success: boolean; dests?: string[]; error?: string } {
+    if (!isSafeId(id)) return { success: false, error: 'Unknown template.' }
+    const path = templateFilePath(id)
+    if (!existsSync(path)) return { success: false, error: `${id}.adf is not in the templates folder.` }
+    try {
+      const workspace = AdfWorkspace.open(path)
+      try {
+        const plan = stageTemplateAddFiles(new Set(workspace.listFiles().map((f) => f.path)), items)
+        return 'error' in plan ? { success: false, error: plan.error } : { success: true, dests: plan.dests }
+      } finally {
+        workspace.close()
+      }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  addFileBuffer(id: string, name: string, data: Buffer): { success: boolean; path?: string; error?: string } {
+    if (!isSafeId(id)) return { success: false, error: 'Unknown template.' }
+    const path = templateFilePath(id)
+    if (!existsSync(path)) return { success: false, error: `${id}.adf is not in the templates folder.` }
+    const base = basename((name ?? '').replace(/\\/g, '/'))
+    if (!base) return { success: false, error: 'A file name is required.' }
+    if (data.length > TEMPLATE_EXTRA_FILE_MAX_BYTES) {
+      const mb = Math.round(TEMPLATE_EXTRA_FILE_MAX_BYTES / (1024 * 1024))
+      return { success: false, error: `${base} is larger than ${mb} MB.` }
+    }
+    try {
+      const workspace = AdfWorkspace.open(path)
+      let dest: string
+      try {
+        dest = availableVfsPath(base, new Set(workspace.listFiles().map((f) => f.path)))
+        const invalid = validateExtraPath(dest)
+        if (invalid) return { success: false, error: `${base}: ${invalid}` }
+        workspace.writeFileBuffer(dest, data, AdfWorkspace.mimeTypeForPath(dest))
+      } finally {
+        workspace.close()
+      }
+      this.pushChanged()
+      return { success: true, path: dest }
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
     }
@@ -1228,7 +1278,14 @@ export class AgentTemplatesService {
       ignored: (path: string, stats?: import('fs').Stats) =>
         !!stats?.isFile() && !path.endsWith('.adf')
     })
-    const bump = (): void => this.pushChanged()
+    // The service's own writes already notified (pushChanged): the watcher's
+    // event for the same file, which lands after awaitWriteFinish, would be a
+    // second refresh for one change, or none, depending on when the watcher
+    // became ready. Events within OWN_WRITE_QUIET_MS of an own write are that echo.
+    const bump = (): void => {
+      if (Date.now() - this.lastOwnWriteAt < OWN_WRITE_QUIET_MS) return
+      this.schedulePush()
+    }
     this.watcher.on('add', bump)
     this.watcher.on('change', bump)
     this.watcher.on('unlink', bump)
@@ -1243,8 +1300,15 @@ export class AgentTemplatesService {
     this.watcher = null
   }
 
-  /** Debounced TEMPLATES_CHANGED. Called by the watcher and after our own writes. */
+  /** Debounced TEMPLATES_CHANGED after the service's own writes (and the template review accept). */
   pushChanged(): void {
+    this.lastOwnWriteAt = Date.now()
+    this.schedulePush()
+  }
+
+  private lastOwnWriteAt = 0
+
+  private schedulePush(): void {
     if (this.notifyTimer) clearTimeout(this.notifyTimer)
     this.notifyTimer = setTimeout(() => {
       this.notifyTimer = null
@@ -1328,6 +1392,38 @@ function safeMtime(filePath: string): number {
 /** Reuse the extra-file path rules, minus the "reserved seed" clause callers check themselves. */
 function validateExtraPath(path: string): string | null {
   return validateTemplateFilePath(path)
+}
+
+/** How long after its own write the service takes a folder event for that write's echo (awaitWriteFinish 500 ms plus polling). */
+const OWN_WRITE_QUIET_MS = 2_000
+
+/** One picked file for stageTemplateAddFiles: its base name and stat, or why it could not be read. */
+export type TemplateAddFileItem = { name: string; isFile: boolean; size: number } | { name: string; statError: string }
+
+/**
+ * TEMPLATE_ADD_FILES' plan for a batch, whole or nothing (addFiles, and the
+ * daemon's POST /templates/:id/files/plan): items in pick order; a stat
+ * failure, a non-file, a file over the size cap or an unusable destination
+ * ends the batch with that item's sentence. Each lands at its base name,
+ * numbered past a path already in `taken` (earlier picks included).
+ */
+export function stageTemplateAddFiles(taken: Set<string>, items: readonly TemplateAddFileItem[]): { dests: string[] } | { error: string } {
+  const used = new Set(taken)
+  const dests: string[] = []
+  for (const item of items) {
+    if ('statError' in item) return { error: item.statError }
+    if (!item.isFile) return { error: `${item.name} is not a file.` }
+    if (item.size > TEMPLATE_EXTRA_FILE_MAX_BYTES) {
+      const mb = Math.round(TEMPLATE_EXTRA_FILE_MAX_BYTES / (1024 * 1024))
+      return { error: `${item.name} is larger than ${mb} MB.` }
+    }
+    const dest = availableVfsPath(item.name, used)
+    const invalid = validateExtraPath(dest)
+    if (invalid) return { error: `${item.name}: ${invalid}` }
+    used.add(dest)
+    dests.push(dest)
+  }
+  return { dests }
 }
 
 /** `report.pdf` → `report-2.pdf` when the basename is already in the VFS. */

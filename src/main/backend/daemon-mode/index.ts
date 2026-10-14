@@ -18,7 +18,7 @@ import { DaemonConnection, type DaemonConnector } from './connection'
 import { findRunningAgent, type DaemonModeContext } from './context'
 import { DaemonModeUnavailableError } from './errors'
 import { EventBridge } from './event-bridge'
-import { DAEMON_MODE_HANDLERS } from './handlers'
+import { DAEMON_MODE_HANDLERS, DAEMON_MODE_SEND_HANDLERS } from './handlers'
 import { channelKey, pendingWorkstream } from './pending'
 import { DaemonModeSession } from './session'
 import { ClientSettingsStore, clientSettingsPath } from './settings'
@@ -349,6 +349,12 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   for (const [channel, entry] of Object.entries(CHANNEL_MAP) as Array<[MappedChannel, ChannelEntry]>) {
     if (REGISTERED_OUTSIDE.includes(channel)) continue
     if (entry.kind === 'send') {
+      const sendHandler = DAEMON_MODE_SEND_HANDLERS[channel]
+      if (sendHandler) {
+        ipc.on(channel, (event, ...args) => sendHandler(ctx, event as Electron.IpcMainEvent, ...args))
+        registered.push(channel)
+        continue
+      }
       const workstream = pendingWorkstream(channel)
       ipc.on(channel, () => {
         log.error(`[Backend] ${channelKey(channel)} is not available in daemon mode yet: ${workstream}`)
@@ -371,10 +377,6 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
           warned = true
           log.warn(`[Backend] ${channelKey(channel)} was called; it is not available in daemon mode yet: ${workstream}`)
         }
-        // Until W3-A's BACKGROUND_AGENT_STATUS: a fresh renderer still learns
-        // what already runs, as agent_started events (its listener is
-        // registered by the time this call arrives).
-        if (channel === IPC.BACKGROUND_AGENT_STATUS) setImmediate(() => bridge.announceRunning())
         throw new DaemonModeUnavailableError(channelKey(channel), workstream)
       })
       pending.push({ channel, workstream })

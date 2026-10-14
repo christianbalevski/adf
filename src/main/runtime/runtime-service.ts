@@ -263,6 +263,8 @@ export interface RuntimeAgentWorkspace {
 /** Status of a running agent or an open document (`running: false`, runtimeState `stopped`). */
 export interface RuntimeTargetStatus extends RuntimeAgentStatus {
   running: boolean
+  /** A running agent's session id (Studio's AGENT_START answers it, the reuse path included). */
+  sessionId?: string
 }
 
 /** Studio's DOC_GET_HEADER: what the header shows, read in one call. */
@@ -649,6 +651,12 @@ export interface RuntimeAgentEvent {
   agentId: string
   filePath: string | null
   event: AgentExecutionEvent
+  /**
+   * `trigger_message` of a chat whose sending client already shows it (POST
+   * /agents/:id/chat `echoed` with X-ADF-Client-Session): that session id.
+   * Every other client still gets the event.
+   */
+  echoOrigin?: string
 }
 
 export interface RuntimeAgentLoadedEvent {
@@ -757,6 +765,9 @@ export class RuntimeReviewRequiredError extends Error {
   }
 }
 
+/** Echo origins kept for chats whose turn has not started yet. */
+const ECHO_ORIGINS_KEPT = 256
+
 export class RuntimeService extends EventEmitter {
   private readonly settings?: RuntimeSettingsStore
   private readonly providerFactory?: RuntimeProviderFactory
@@ -829,6 +840,24 @@ export class RuntimeService extends EventEmitter {
       this.inFlightLoads.delete(canonicalPath)
       // Releases the lease when the load failed (the agent is not registered).
       await this.agentLeases?.reconcile()
+    }
+  }
+
+  /**
+   * Resolves true once a load of `filePath` in flight has finished (or
+   * failed), at once when none is; false when it is still loading after
+   * `timeoutMs`. A path-addressed write waits for it, so it lands on the
+   * loaded agent instead of under its build (design §6.1 row 24).
+   */
+  async waitForLoad(filePath: string, timeoutMs = 30_000): Promise<boolean> {
+    const pending = this.inFlightLoads.get(this.canonicalFilePath(filePath))
+    if (!pending) return true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs) })
+    try {
+      return await Promise.race([pending.then(() => true, () => true), timedOut])
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -1288,9 +1317,12 @@ export class RuntimeService extends EventEmitter {
    * `opts.turnId`: correlation id stamped as `turn_id` on the turn's events
    * (AdfEventDispatch.turnId). `opts.content`: the message's content blocks
    * (text, images, audio, video; Studio's AGENT_INVOKE `content`), used
-   * instead of `text` when given.
+   * instead of `text` when given. `opts.echoOrigin`: the client session that
+   * already shows the message (Studio's AGENT_INVOKE); the turn's
+   * `trigger_message` carries it as `echoOrigin`, so only that session skips
+   * it. Needs `opts.turnId`.
    */
-  async sendChat(agentId: string, text: string, loop = 'main', opts: { turnId?: string; content?: ContentBlock[] } = {}): Promise<void> {
+  async sendChat(agentId: string, text: string, loop = 'main', opts: { turnId?: string; content?: ContentBlock[]; echoOrigin?: string } = {}): Promise<void> {
     const contentJson: ContentBlock[] = opts.content && opts.content.length > 0 ? opts.content : [{ type: 'text', text }]
     const dispatch = createDispatch(
       createEvent({
@@ -1307,16 +1339,64 @@ export class RuntimeService extends EventEmitter {
       }),
       { scope: 'agent' },
     )
+    if (opts.turnId && opts.echoOrigin) this.noteEchoOrigin(opts.turnId, { session: opts.echoOrigin, agentId: this.requireAgent(agentId).id, loop: loop || MAIN_LOOP })
     await this.trigger(agentId, opts.turnId ? { ...dispatch, turnId: opts.turnId } : dispatch, loop)
   }
 
-  async startAgent(agentId: string): Promise<boolean> {
+  /** Chat dispatches whose sender already shows the message: turnId → the client session, and where it runs. Oldest dropped past ECHO_ORIGINS_KEPT. */
+  private readonly echoOrigins = new Map<string, { session: string; agentId: string; loop: string }>()
+
+  private noteEchoOrigin(turnId: string, origin: { session: string; agentId: string; loop: string }): void {
+    this.echoOrigins.set(turnId, origin)
+    while (this.echoOrigins.size > ECHO_ORIGINS_KEPT) this.echoOrigins.delete(this.echoOrigins.keys().next().value!)
+  }
+
+  /**
+   * The session that sent the chat a `trigger_message` announces — keyed by
+   * the turnId of the dispatch that event announces (a queued chat delivered
+   * into a running turn announces its own id, not the running turn's). When a
+   * turn ends, origins of the dispatches it settled (its own and the ones it
+   * absorbed) that were never announced — a skipped trigger on interrupt
+   * restart — are dropped so they cannot mask a later event; a stop or off
+   * drops the loop's rest (queued chats it discards).
+   */
+  private takeEchoOrigin(managed: ManagedRuntimeAgent, event: AgentExecutionEvent): string | undefined {
+    if (this.echoOrigins.size === 0) return undefined
+    const loop = event.loop ?? MAIN_LOOP
+    if (event.type === 'state_changed') {
+      const state = (event.payload as { state?: unknown } | undefined)?.state
+      if (state !== 'stopped' && state !== 'off') return undefined
+      for (const [turnId, origin] of this.echoOrigins) if (origin.agentId === managed.id && origin.loop === loop) this.echoOrigins.delete(turnId)
+      return undefined
+    }
+    if (event.type !== 'trigger_message' && event.type !== 'turn_complete' && event.type !== 'error') return undefined
+    const executor = loop === MAIN_LOOP ? managed.agent.executor : managed.agent.loopPool.getRuntime(loop)?.executor
+    if (!executor) return undefined
+    if (event.type !== 'trigger_message') {
+      const running = executor.getRunningTurnId()
+      if (running) this.echoOrigins.delete(running)
+      for (const id of executor.getAbsorbedTurnIds()) this.echoOrigins.delete(id)
+      return undefined
+    }
+    const turnId = executor.getAnnouncingTurnId()
+    if (!turnId) return undefined
+    const origin = this.echoOrigins.get(turnId)
+    if (origin !== undefined) this.echoOrigins.delete(turnId)
+    return origin?.session
+  }
+
+  /**
+   * `opts.hasUserMessage`: a chat is queued behind this start (Studio's
+   * AGENT_START from the home composer), so the startup turn skips the
+   * active-state greeting, as Studio's foreground start does.
+   */
+  async startAgent(agentId: string, opts: { hasUserMessage?: boolean } = {}): Promise<boolean> {
     RuntimeGate.resume()
     const managed = this.requireAgent(agentId)
     // Studio parity: dispatch the startup turn fire-and-forget instead of
     // blocking the caller on the agent's entire first LLM turn
     // (BackgroundAgentManager fires it via process.nextTick and does not await).
-    const startup = managed.agent.dispatchStartup()
+    const startup = managed.agent.dispatchStartup(opts.hasUserMessage ? { hasUserMessage: true } : undefined)
     startup.catch((err) => {
       console.error(`[RuntimeService] Startup turn error for ${managed.id}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
       if (this.agents.get(managed.id) !== managed) return
@@ -1337,7 +1417,7 @@ export class RuntimeService extends EventEmitter {
     return raced.status === 'resolved' ? raced.dispatched : true
   }
 
-  async startOrLoadAgent(identifier: string): Promise<RuntimeAgentStartResult> {
+  async startOrLoadAgent(identifier: string, opts: { hasUserMessage?: boolean } = {}): Promise<RuntimeAgentStartResult> {
     let managed = this.resolveAgent(identifier)
     let loaded = false
 
@@ -1350,12 +1430,17 @@ export class RuntimeService extends EventEmitter {
       loaded = true
     }
 
-    const startupTriggered = await this.startAgent(managed.id)
+    const startupTriggered = await this.startAgent(managed.id, opts)
     return {
       ref: this.toRef(managed),
       loaded,
       startupTriggered,
     }
+  }
+
+  /** The running agent's session id (Studio's AGENT_START answers it); undefined when it does not run. */
+  getAgentSessionId(agentId: string): string | undefined {
+    return this.resolveAgent(agentId)?.agent.session.getSessionId()
   }
 
   /** Stop and unload; a held document stays open on the same workspace (D4). A document that is not running: no-op. */
@@ -1975,7 +2060,7 @@ export class RuntimeService extends EventEmitter {
   getAgentOrDocumentStatus(identifier: string): RuntimeTargetStatus | undefined {
     const target = this.resolveTarget(identifier)
     if (!target) return undefined
-    if (target.managed) return { ...this.toStatus(target.managed), running: true }
+    if (target.managed) return { ...this.toStatus(target.managed), running: true, sessionId: target.managed.agent.session.getSessionId() }
     const config = target.config
     return {
       id: target.id,
@@ -3731,7 +3816,8 @@ export class RuntimeService extends EventEmitter {
   private hostBindings(managed: ManagedRuntimeAgent): AgentHostBindings {
     return {
       onEvent: (event) => {
-        this.emit('agent-event', { agentId: managed.id, filePath: managed.filePath, event } satisfies RuntimeAgentEvent)
+        const echoOrigin = this.takeEchoOrigin(managed, event)
+        this.emit('agent-event', { agentId: managed.id, filePath: managed.filePath, event, ...(echoOrigin ? { echoOrigin } : {}) } satisfies RuntimeAgentEvent)
         if (event.type === 'state_changed') this.foldDisplayState(managed, event)
       },
       // `trigger_message` and the like: Studio sends them on AGENT_EVENT too.

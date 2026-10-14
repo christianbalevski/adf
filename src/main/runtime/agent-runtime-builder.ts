@@ -34,7 +34,7 @@ import type { SandboxPackagesService } from '../services/sandbox-packages.servic
 import type { LLMProvider } from '../providers/provider.interface'
 import type { AgentExecutor } from './agent-executor'
 import type { AdfWorkspace } from '../adf/adf-workspace'
-import type { AgentConfig, McpServerConfig, ModelConfig } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, McpServerConfig, McpToolInfo, ModelConfig } from '../../shared/types/adf-v02.types'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
 import type { RuntimeSettingsStore } from './runtime-service'
 import { McpClientManager } from '../services/mcp-client-manager'
@@ -676,6 +676,22 @@ export class AgentRuntimeBuilder {
     // are never clobbered by a start-time snapshot. `interactive` is true only
     // for calls an agent loop drives (Studio gates its interactive OAuth on the
     // same thing: a live executor during a hot install/restart/reconcile).
+    /**
+     * Persist one server's tool sync onto a fresh read of the file's config:
+     * the connect awaited, and a config write made meanwhile (a client's save
+     * or a tool toggle during the start window, design §6.1 row 24) must not
+     * be overwritten with the caller's copy. The sync runs again on that read,
+     * so only what the discovery changes moves over.
+     */
+    const persistServerSync = (serverName: string, tools: McpToolInfo[], envSchema: McpServerConfig['env_schema'] | null | undefined): void => {
+      const onDisk = workspace.getAgentConfig()
+      const server = onDisk.mcp?.servers?.find(s => s.name === serverName)
+      if (!server) return
+      syncDiscoveredMcpTools(onDisk, server, tools, registry, manager)
+      if (envSchema) server.env_schema = envSchema
+      workspace.setAgentConfig(onDisk)
+    }
+
     const connectOneServer = async (
       freshConfig: AgentConfig,
       serverName: string,
@@ -831,7 +847,7 @@ export class AgentRuntimeBuilder {
       const changed = syncDiscoveredMcpTools(freshConfig, serverCfg, tools, registry, manager)
       const nextSchema = captureEnvSchema(serverCfg, appEnvKeys, agentEnvKeys)
       if (nextSchema) serverCfg.env_schema = nextSchema
-      if (changed || nextSchema) workspace.setAgentConfig(freshConfig)
+      if (changed || nextSchema) persistServerSync(serverName, tools, nextSchema)
       const assembled = getAssembled()
       // Through the assembled choke point (as the late resync below), so side
       // loops re-derive their MCP declarations too. notifyHost:false — a tool
@@ -1055,16 +1071,25 @@ export class AgentRuntimeBuilder {
         if (result.value.connected) connectedServerNames.add(result.value.name)
       }
 
+      const disabled = new Set<string>()
       for (const declaration of config.tools) {
         if (!declaration.name.startsWith('mcp_')) continue
         const serverName = config.mcp.servers.find(server => declaration.name.startsWith(`mcp_${server.name}_`))?.name
         if (serverName && !connectedServerNames.has(serverName) && !attemptedServerNames.has(serverName) && declaration.enabled) {
           declaration.enabled = false
+          disabled.add(declaration.name)
           configChanged = true
         }
       }
 
-      if (configChanged) workspace.setAgentConfig(config)
+      // Onto a fresh read, as Studio's foreground start syncs MCP tools: the
+      // start-time config must not overwrite a config write made while the
+      // servers connected (the start window, design §6.1 row 24).
+      if (configChanged) {
+        const fresh = workspace.getAgentConfig()
+        for (const declaration of fresh.tools ?? []) if (disabled.has(declaration.name)) declaration.enabled = false
+        workspace.setAgentConfig(fresh)
+      }
     } catch (err) {
       // Setup-level failure (not a single server): keep the manager and its
       // scratch dir — parity with both Studio hosts — so mcp_install can

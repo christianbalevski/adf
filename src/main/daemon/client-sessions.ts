@@ -706,7 +706,8 @@ export class ClientSessionRegistry {
   publishExecutor(event: RuntimeAgentEvent, origin?: string | null): void {
     if (this.sessions.size === 0) return
     const type = event.event.type
-    const echoFrom = ECHO_EXECUTOR_TYPES.has(type) ? origin ?? currentOriginSession() : null
+    // A chat's trigger_message is not sent back to the session that sent the chat and shows it already (RuntimeAgentEvent.echoOrigin).
+    const echoFrom = (ECHO_EXECUTOR_TYPES.has(type) ? origin ?? currentOriginSession() : null) ?? event.echoOrigin ?? null
     const unfocused = DELTA_EVENT_TYPES.has(type)
       ? () => null
       : type === 'tool_call_result'

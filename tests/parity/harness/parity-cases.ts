@@ -1,4 +1,5 @@
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { embeddedBackend as embeddedBase, type ParityBackend } from './backend'
 import { DAEMON_BUNDLE, daemonBackend } from './daemon-backend'
@@ -67,7 +68,10 @@ export function parityCases(domain: string, scenarios: readonly ParityScenario[]
           const { unmatched } = applyGapAllowlist(scenario.name, daemon.normalized, structuredClone(embedded.normalized))
           expect(unmatched, `gap entries that matched nothing in ${scenario.name} (fixed? remove them from harness/gaps.ts)`).toEqual([])
           const actual = renderRecording(toGoldenForm(daemon.normalized))
-          expect(diffRendered(expected, actual, { expected: 'embedded', actual: 'daemon (after gaps)' })).toBe('')
+          const diff = diffRendered(expected, actual, { expected: 'embedded', actual: 'daemon (after gaps)' })
+          // PARITY_DIFF_DIR=<dir>: each scenario's remaining diff, for triage.
+          if (process.env.PARITY_DIFF_DIR) writeFileSync(join(process.env.PARITY_DIFF_DIR, `${scenario.name}.diff`), diff)
+          expect(diff).toBe('')
         }
       }, 120_000 + RUNS * 120_000)
     }

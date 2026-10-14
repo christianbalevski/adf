@@ -31,6 +31,12 @@ export interface ParityScenario {
    * scenario waits explicitly for every push it expects.
    */
   quietMs: number
+  /**
+   * The model's replies stream to an agent that is not the open file's: the
+   * window gets no text deltas for them (in either mode), so the streaming
+   * check has nothing to measure and is skipped.
+   */
+  backgroundStreamsOnly?: boolean
   run(ctx: ScenarioContext): Promise<void>
 }
 
@@ -223,7 +229,8 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
     problems.push(...(await leakedHandles(handlesBefore)))
     const report = streamingReport(electron.pushes, llm.streams)
     // Tolerant runs record the category and counts only: a golden must hold no timing.
-    if (opts.tolerant) behaviour.push(...streamingSummary(report))
+    if (scenario.backgroundStreamsOnly) { /* no foreground stream to measure */ }
+    else if (opts.tolerant) behaviour.push(...streamingSummary(report))
     else problems.push(...streamingProblems(report))
 
     const stateAfterShutdown = dumpPersistedState(env, fixtureFiles)

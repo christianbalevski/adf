@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { lstatSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { brotliDecompressSync } from 'node:zlib'
 import Database from 'better-sqlite3'
@@ -26,6 +26,8 @@ export interface PersistedState {
 
 export interface AdfDump {
   tables: Record<string, { columns: string[]; rows: unknown[] }>
+  /** The fixture file no longer exists at its path. */
+  missing?: true
 }
 
 /**
@@ -109,7 +111,14 @@ export function dumpPersistedState(env: ParityEnv, adfFiles: readonly string[]):
   // The fence log is the harness's own file, checked separately.
   const tree = listTree(env.root, (rel) => rel === 'violations.log')
   const adf: PersistedState['adf'] = {}
-  for (const file of adfFiles) adf[relative(env.root, file).split(sep).join('/')] = dumpAdf(file)
+  // The fixture files, plus every other .adf in the agents folder: a file a
+  // scenario renamed, cloned or created is dumped under its new name; a
+  // fixture file that is gone (deleted, moved) is listed as such.
+  const files = new Set(adfFiles)
+  try {
+    for (const name of readdirSync(env.agentsDir).sort()) if (name.endsWith('.adf')) files.add(join(env.agentsDir, name))
+  } catch { /* no agents folder */ }
+  for (const file of files) adf[relative(env.root, file).split(sep).join('/')] = existsSync(file) ? dumpAdf(file) : { tables: {}, missing: true }
   const userDataJson: Record<string, unknown> = {}
   for (const name of readdirSync(env.userDataDir).sort()) {
     if (!name.endsWith('.json')) continue

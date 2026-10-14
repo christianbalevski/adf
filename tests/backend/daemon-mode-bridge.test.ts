@@ -496,15 +496,12 @@ describe('event bridge: focus and lifecycle', () => {
     expect(pushes.map((p) => (p.args[0] as { type?: string })?.type ?? p.channel)).not.toContain('chat_updated')
   })
 
-  it('announceRunning lists every running agent but the open one, once', async () => {
+  it('an agent marked listed in the background (BACKGROUND_AGENT_STATUS) gets its stop as a background event', async () => {
     const { session, bridge, batched } = setup()
     await focus(session, FILE_1, AGENT_1)
-    bridge.seed([
-      { id: AGENT_1, filePath: FILE_1, handle: 'agent-1', runtimeState: 'idle' as never },
-      { id: AGENT_2, filePath: FILE_2, handle: 'agent-2', runtimeState: 'thinking' as never },
-    ])
-    bridge.announceRunning()
-    bridge.announceRunning()
-    expect(batched).toEqual([{ type: 'agent_started', payload: { filePath: FILE_2, state: 'active', handle: 'agent-2' }, timestamp: expect.any(Number) }])
+    bridge.seed([{ id: AGENT_2, filePath: FILE_2, handle: 'agent-2', runtimeState: 'idle' as never }])
+    bridge.markListedInBackground(AGENT_2)
+    bridge.handleFrame({ kind: 'host', agentId: AGENT_2, filePath: FILE_2, type: 'agent_stopped', payload: {}, timestamp: 1 })
+    expect(batched).toEqual([{ type: 'agent_stopped', payload: { filePath: FILE_2 }, timestamp: 1 }])
   })
 })

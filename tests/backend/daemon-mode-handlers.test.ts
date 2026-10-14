@@ -16,7 +16,7 @@ import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 import { CHANNEL_MAP, type ChannelEntry, type MappedChannel } from '../../src/main/backend/channel-map'
 import { IPC } from '../../src/shared/constants/ipc-channels'
 import { REGISTERED_OUTSIDE, registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
-import { DAEMON_MODE_HANDLERS } from '../../src/main/backend/daemon-mode/handlers'
+import { DAEMON_MODE_HANDLERS, DAEMON_MODE_SEND_HANDLERS } from '../../src/main/backend/daemon-mode/handlers'
 import { FRAME_CHANNELS, PUSH_TOPICS } from '../../src/main/backend/daemon-mode/event-bridge'
 import { DAEMON_MODE_UNAVAILABLE } from '../../src/main/backend/daemon-mode/errors'
 import { channelKey, pendingWorkstream } from '../../src/main/backend/daemon-mode/pending'
@@ -91,7 +91,7 @@ describe('daemon-mode handler registration (D2)', () => {
   it('splits registered channels into implemented and pending, each pending one naming its workstream', () => {
     const pending = new Set(handle.pending.map((p) => p.channel))
     for (const channel of handle.registered) {
-      const implemented = !!DAEMON_MODE_HANDLERS[channel]
+      const implemented = !!DAEMON_MODE_HANDLERS[channel] || !!DAEMON_MODE_SEND_HANDLERS[channel]
       expect(implemented !== pending.has(channel), channel).toBe(true)
     }
     for (const { workstream } of handle.pending) expect(workstream).toMatch(/^W[1-4]-[A-E]$/)
@@ -100,17 +100,14 @@ describe('daemon-mode handler registration (D2)', () => {
       expect(CHANNEL_MAP[channel].kind, channel).toBe('invoke')
       expect(REGISTERED_OUTSIDE.includes(channel), channel).toBe(false)
     }
+    for (const channel of Object.keys(DAEMON_MODE_SEND_HANDLERS) as MappedChannel[]) {
+      expect(CHANNEL_MAP[channel].kind, channel).toBe('send')
+    }
   })
 
-  it('a pending handler throws a visible error naming its workstream, and never reads embedded state', async () => {
-    // Any pending channel will do; the W3 workstreams shrink the list.
-    const pending = handle.pending.find((p) => p.channel !== IPC.BACKGROUND_AGENT_STATUS)!
-    expect(pending.workstream).toBe(pendingWorkstream(pending.channel))
-    const fn = electronStub.handlers.get(pending.channel)!
-    await expect(Promise.resolve().then(() => fn({}))).rejects.toMatchObject({
-      code: DAEMON_MODE_UNAVAILABLE,
-      message: `${channelKey(pending.channel)} is not available in daemon mode yet: ${pending.workstream}`,
-    })
+  it('every Wave 3 channel has its handler: nothing is left pending', () => {
+    // The pending mechanism (pending.ts) stays for a channel added later without a handler.
+    expect(handle.pending).toEqual([])
   })
 
   it('every push channel the map feeds from the client stream has a bridge mapping', () => {
@@ -224,25 +221,23 @@ describe('daemon-mode handlers: review fixes', () => {
     const content = [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }]
     const result = Promise.resolve(electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { content, userMessage: 'ignored' }))
     await new Promise((r) => setTimeout(r, 20))
-    expect(daemon.requests.filter((r) => r.path === `/agents/${AGENT}/chat` && r.method === 'POST').at(-1)?.body).toEqual({ content })
+    expect(daemon.requests.filter((r) => r.path === `/agents/${AGENT}/chat` && r.method === 'POST').at(-1)?.body).toEqual({ content, echoed: true })
     handle.bridge.failTurns('disconnected')
     await result
     await electronStub.handlers.get(IPC.FILE_CLOSE)!({})
   })
 
-  it('a pending channel warns once, and BACKGROUND_AGENT_STATUS announces the running agents', async () => {
-    logs.length = 0
-    // Not the channel the test above already called (it warned then).
-    const called = handle.pending.find((p) => p.channel !== IPC.BACKGROUND_AGENT_STATUS)!.channel
-    const channel = handle.pending.find((p) => p.channel !== IPC.BACKGROUND_AGENT_STATUS && p.channel !== called)!.channel
-    const fn = electronStub.handlers.get(channel)!
-    for (let i = 0; i < 3; i++) await expect(Promise.resolve().then(() => fn({}))).rejects.toThrow('not available in daemon mode yet')
-    expect(logs.filter((l) => l.includes(`${channelKey(channel)} was called`))).toHaveLength(1)
-    handle.bridge.seed([{ id: 'id-9', filePath: join(dir, 'agent-9.adf'), handle: 'agent-9', runtimeState: 'idle' as never }])
+  it('BACKGROUND_AGENT_STATUS lists the running agents but the open one', async () => {
+    const ID9 = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e09'
+    daemon.routes.set('GET /agents', () => [{ id: ID9, filePath: join(dir, 'agent-9.adf'), name: 'agent-9', handle: 'agent-9', autostart: false }])
+    daemon.routes.set(`GET /agents/${ID9}/status`, () => ({ id: ID9, filePath: join(dir, 'agent-9.adf'), name: 'agent-9', handle: 'agent-9', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0, running: true }))
     electronStub.pushes.length = 0
-    await expect(Promise.resolve().then(() => electronStub.handlers.get(IPC.BACKGROUND_AGENT_STATUS)!({}))).rejects.toThrow('W3-A')
+    expect(await electronStub.handlers.get(IPC.BACKGROUND_AGENT_STATUS)!({})).toEqual({
+      agents: [{ filePath: join(dir, 'agent-9.adf'), handle: 'agent-9', state: 'idle', activeLoops: 0 }],
+      starting: [],
+    })
+    // Listed by the answer: no agent_started batch is pushed for it.
     await new Promise((r) => setTimeout(r, 10))
-    const batch = electronStub.pushes.find((p) => p.channel === IPC.BACKGROUND_AGENT_EVENT_BATCH)
-    expect(batch?.args[0]).toEqual([{ type: 'agent_started', payload: { filePath: join(dir, 'agent-9.adf'), state: 'idle', handle: 'agent-9' }, timestamp: expect.any(Number) }])
+    expect(electronStub.pushes.find((p) => p.channel === IPC.BACKGROUND_AGENT_EVENT_BATCH)).toBeUndefined()
   })
 })

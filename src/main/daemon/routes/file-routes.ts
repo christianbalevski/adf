@@ -43,7 +43,7 @@ export const RAW_FILE_BODY_LIMIT = 64 * MIB
 export const IMPORT_BODY_LIMIT = 1024 * MIB
 
 /** Routes that take an application/octet-stream body as a stream. */
-const STREAM_ROUTES = new Set(['/agents/:id/files/raw', '/files/import'])
+const STREAM_ROUTES = new Set(['/agents/:id/files/raw', '/files/import', '/templates/:id/files/raw'])
 
 /** Extensions Studio's file viewer reads as text (DOC_READ_INTERNAL_FILE). */
 const TEXT_EXTENSIONS = new Set(['md', 'txt', 'json', 'js', 'ts', 'py', 'html', 'css', 'csv', 'xml', 'yaml', 'yml', 'toml', 'sh', 'bat', 'log', 'sql', 'env', 'cfg', 'ini', 'jsx', 'tsx'])
@@ -96,7 +96,10 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
   server.addHook('onResponse', (request, _reply, done) => {
     if (settings && request.method !== 'GET' && request.method !== 'HEAD') {
       // POST/DELETE /tracked-dirs tell the daemon themselves (onTrackedDirectoriesChanged).
-      const announce = !(request.routeOptions.url ?? '').startsWith('/tracked-dirs')
+      // A settings write that adds a tracked folder only re-syncs the watcher, as
+      // Studio's SETTINGS_SET restarts its watcher without a TRACKED_DIRS_CHANGED.
+      const url = request.routeOptions.url ?? ''
+      const announce = !url.startsWith('/tracked-dirs') && !url.startsWith('/settings')
       try { watcher.sync({ announce }) } catch (err) { console.warn('[FileRoutes] Tracked-folder re-sync failed:', err) }
     }
     done()
@@ -145,7 +148,9 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
   })
 
   server.post<{ Body: { path?: unknown; newName?: unknown } | undefined }>('/files/rename', async (request, reply) => {
-    try { return await files.rename(request.body?.path, request.body?.newName) } catch (err) { return fail(reply, err) }
+    const header = request.headers['x-adf-client-session']
+    const origin = Array.isArray(header) ? header[0] : header
+    try { return await files.rename(request.body?.path, request.body?.newName, origin ? { origin } : {}) } catch (err) { return fail(reply, err) }
   })
 
   server.post<{ Body: { path?: unknown; selectedTables?: unknown } | undefined }>('/files/clone', async (request, reply) => {
@@ -415,7 +420,7 @@ function unsupported(reply: FastifyReply) {
 }
 
 /** Answer, then drop the connection: the rest of the request body is never read. */
-function closeAfterResponse(request: FastifyRequest, reply: FastifyReply): void {
+export function closeAfterResponse(request: FastifyRequest, reply: FastifyReply): void {
   // No `Connection: close` header: with it Node destroys the socket as soon as
   // the answer is written, and a client still sending gets a reset (ECONNRESET)
   // instead of the 413 body. Instead: half-close once the answer is out (the

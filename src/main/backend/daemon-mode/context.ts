@@ -43,6 +43,11 @@ export type DaemonInvokeHandler = (ctx: DaemonModeContext, event: IpcMainInvokeE
 
 export type DaemonHandlerTable = Partial<Record<MappedChannel, DaemonInvokeHandler>>
 
+/** A `send` channel's handler (renderer `ipcRenderer.send`): no answer. */
+export type DaemonSendHandler = (ctx: DaemonModeContext, event: Electron.IpcMainEvent, ...args: any[]) => void
+
+export type DaemonSendHandlerTable = Partial<Record<MappedChannel, DaemonSendHandler>>
+
 /** True for the daemon's 404 (unknown agent, unknown file). */
 export function isNotFound(err: unknown): boolean {
   return err instanceof DaemonError && err.status === 404

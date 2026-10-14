@@ -14,13 +14,13 @@
 // and the terminal app: it resolves an id, and a file that is neither loaded
 // nor in a tracked folder has none.
 
-import { existsSync, mkdirSync } from 'node:fs'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute } from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { AgentVitalsService } from '../../services/agent-vitals'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import { markConfigReviewed } from '../../services/agent-review'
-import { canonicalizePath, containsPath, isSameOrSubPath } from '../../utils/tracked-paths'
+import { canonicalizePath, isSameOrSubPath } from '../../utils/tracked-paths'
+import { prepareFoundAgent } from '../../utils/found-agent'
 import type { FleetSettableState, FleetStateResult } from '../../../shared/types/ipc.types'
 import { createDaemonVitalsDeps } from '../vitals-routes'
 import type { DaemonRouteContext } from './index'
@@ -41,10 +41,6 @@ function canon(filePath: string): string {
   try { return canonicalizePath(filePath) } catch { return filePath }
 }
 
-/** Studio's MESH_FOUND_AGENT file name: the typed name slugged, `agent` when nothing is left. */
-export function foundAgentFileName(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '') || 'agent'
-}
 
 export function registerFleetClientRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
   const { runtime, options } = ctx
@@ -118,27 +114,20 @@ export function registerFleetClientRoutes(server: FastifyInstance, ctx: DaemonRo
   // failure, such as a locked owner identity, is logged and the file kept),
   // marked reviewed (the owner made it) and left closed; a folder no tracked
   // root covers is tracked, and the watcher tells the mesh and the clients.
-  // W3-A: the checks and the slug are a copy of ipc/index.ts (E1 requested).
+  // The checks, the folder and the slug are Studio's own (utils/found-agent.ts, E1).
   server.post<{ Body: { dir?: unknown; name?: unknown; newRoot?: unknown } }>('/fleet/found', async (request) => {
     const factory = options.agentFactory
     if (!factory) return { success: false, error: 'Agent creation is not configured on this daemon.' }
     try {
-      const name = typeof request.body?.name === 'string' ? request.body.name.trim() : ''
+      const name = typeof request.body?.name === 'string' ? request.body.name : ''
       const dir = typeof request.body?.dir === 'string' ? request.body.dir : ''
-      if (!name) return { success: false, error: 'Agent name required' }
-      if (!isAbsolute(dir)) return { success: false, error: 'Destination must be an absolute folder path' }
-      const tracked = trackedDirs()
-      const canonDir = canonicalizePath(dir)
-      const inTracked = tracked.some((d) => containsPath(canonicalizePath(d), canonDir))
-      const allowedAsNewRoot = request.body?.newRoot === true && tracked.some((d) => containsPath(dirname(canonicalizePath(d)), canonDir))
-      if (!inTracked && !allowedAsNewRoot) return { success: false, error: 'Destination is outside tracked directories' }
+      // An HTTP body may name a relative folder; Studio's dialog never does.
+      if (name.trim() && !isAbsolute(dir)) return { success: false, error: 'Destination must be an absolute folder path' }
+      const plan = prepareFoundAgent({ dir, name, newRoot: request.body?.newRoot === true }, trackedDirs())
+      if (!plan.ok) return { success: false, error: plan.error }
+      const filePath = plan.filePath
 
-      mkdirSync(dir, { recursive: true })
-      const fileName = foundAgentFileName(name)
-      const filePath = join(dir, `${fileName}.adf`)
-      if (existsSync(filePath)) return { success: false, error: `${fileName}.adf already exists here` }
-
-      const made = await factory.templatesService().instantiate({ destPath: filePath, name })
+      const made = await factory.templatesService().instantiate({ destPath: filePath, name: plan.name })
       if (!made.success) return { success: false, error: made.error }
       const workspace = AdfWorkspace.open(filePath)
       try {

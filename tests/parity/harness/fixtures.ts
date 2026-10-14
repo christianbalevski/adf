@@ -53,12 +53,15 @@ export interface FixtureSpec {
   enableTools?: readonly string[]
   /** MCP servers in the agent's config (`mcp.servers`), e.g. an OAuth remote attach cannot express. */
   mcpServers?: ReadonlyArray<Record<string, unknown>>
+  /** Default true. False: not in reviewedAgents, so opening it asks for a review. */
+  reviewed?: boolean
 }
 
 export interface FixtureAgent {
   name: FixtureName
   id: string
   filePath: string
+  reviewed: boolean
 }
 
 export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[]): Record<string, FixtureAgent> {
@@ -106,7 +109,7 @@ export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[
     } finally {
       workspace.close()
     }
-    out[spec.name] = { name: spec.name, id: FIXTURE_IDS[spec.name], filePath }
+    out[spec.name] = { name: spec.name, id: FIXTURE_IDS[spec.name], filePath, reviewed: spec.reviewed !== false }
   }
   return out
 }
@@ -137,7 +140,7 @@ export function baseSettings(
     defaultProviderId: MOCK_PROVIDER_ID,
     agentsFolder: env.agentsDir,
     trackedDirectories: [],
-    reviewedAgents: Object.fromEntries(Object.values(agents).map((a) => [a.id, 'accepted'])),
+    reviewedAgents: Object.fromEntries(Object.values(agents).filter((a) => a.reviewed).map((a) => [a.id, 'accepted'])),
     meshEnabled: false,
     meshLan: false,
     updateChecksEnabled: false,

@@ -45,7 +45,11 @@ const W3B_RUNNING = ['agent-keystore', 'agent-claim'] as const
 const W3C = ['w3c-install-progress', 'w3c-mcp-attach-credentials', 'w3c-adapter-telegram', 'w3c-mcp-connect-test', 'w3c-mcp-oauth-connect'] as const
 /** Scenarios that open a file that is not running, held by the client session (W2-C2). */
 const HELD_ONLY = ['legacy-password-unlock'] as const
-const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY] as const
+/** W3-A scenarios (tests/parity/documents) that start an agent and stop it before the state dump. */
+const W3A_RAN = ['switch-with-background', 'password-unlock', 'config-during-start', 'rename-while-running'] as const
+/** W3-A scenarios that run no agent. */
+const W3A_NO_AGENT = ['review-accept-foreign', 'template-create', 'delete', 'doc-resources'] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT] as const
 const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING] as const
 /** The mesh scenarios (tests/parity/mesh, W3-D). */
 const MESH = ['fleet-map', 'emergency-stop'] as const
@@ -164,87 +168,6 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w3a:start-session-id',
-    ws: 'W3-A',
-    scenarios: [...RUNNING, ...MESH],
-    path: 'steps: AGENT_START result `sessionId`; in MESH_STATUS, MESH_FLEET_STATUS and MESH_MAP_POLL results, the `createdAt` of fixture agents',
-    what: 'The start route answers no runtime session id. Without its instant, a fixture agent\'s creation instant in a later fleet row is no longer before an earlier step\'s (R9): `<t>` where embedded has `<t:earlier>`. Only when the raw `createdAt` is that file\'s own `adf_created_at`.',
-    apply(d, e, raw) {
-      let n = 0
-      d.steps.forEach((step, i) => {
-        const base = e.steps[i]
-        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== IPC.AGENT_START) return
-        const r = step.result as Record<string, unknown>
-        const b = base.result as Record<string, unknown>
-        if (!b || b.sessionId === undefined || !r || 'sessionId' in r) return
-        if (!same({ ...r, sessionId: b.sessionId }, b)) return
-        step.result = clone(b)
-        n++
-      })
-      if (!raw) return n
-      // The fixture files' creation stamps, as the daemon run left them on disk.
-      const created = new Map<string, string>()
-      for (const [file, dump] of Object.entries(raw.daemon.state.adf)) {
-        const row = (dump.tables.adf_meta?.rows as Row[] | undefined)?.find((m) => m.key === 'adf_created_at')
-        if (row && typeof row.value === 'string') created.set(file, row.value)
-      }
-      const stampOf = (filePath: string): string | undefined => {
-        const p = filePath.replace(/\\/g, '/')
-        for (const [file, stamp] of created) if (p.endsWith(`/${file}`)) return stamp
-        return undefined
-      }
-      d.steps.forEach((step, i) => {
-        const base = e.steps[i]
-        const rawStep = raw.daemon.steps[i] as { kind?: string; channel?: string; result?: unknown } | undefined
-        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || !FLEET_ROW_CHANNELS.has(step.channel) || rawStep?.channel !== step.channel) return
-        n += walkRaw(step.result, base.result, rawStep.result, (dr, er, rr) => {
-          if (dr.createdAt !== '<t>' || er.createdAt !== '<t:earlier>' || typeof rr.filePath !== 'string') return 0
-          const stamp = stampOf(rr.filePath)
-          if (!stamp || rr.createdAt !== stamp) return 0
-          dr.createdAt = '<t:earlier>'
-          return 1
-        })
-      })
-      return n
-    },
-  },
-  {
-    id: 'w3a:chat-echo',
-    ws: 'W3-A',
-    scenarios: ['chat-tool-call'],
-    path: 'AGENT_EVENT: one `trigger_message` (triggerType chat, the AGENT_INVOKE text) per AGENT_INVOKE, its timeline line and the step push watermarks it shifts',
-    what: 'The chat route has no `echoed`: the daemon announces Studio\'s own chat as a trigger_message, which the renderer shows as a second user bubble (embedded dispatches it with echoed: true).',
-    apply(d, e) {
-      const ch = IPC.AGENT_EVENT
-      const sent = d.steps.flatMap((st) => (st.kind === 'invoke' && st.channel === IPC.AGENT_INVOKE ? [String((st.args[0] as { userMessage?: unknown })?.userMessage)] : []))
-      const echo = (p: unknown, text: string) => {
-        const ev = p as { type?: string; payload?: { triggerType?: unknown; content?: unknown } }
-        return ev?.type === 'trigger_message' && ev.payload?.triggerType === 'chat' && ev.payload.content === text
-      }
-      if (sent.length === 0 || (e.pushes[ch] ?? []).some((p) => sent.some((t) => echo(p, t)))) return 0
-      const pushes = [...(d.pushes[ch] ?? [])]
-      for (const text of sent) {
-        const at = pushes.findIndex((p) => echo(p, text))
-        if (at < 0) return 0
-        pushes.splice(at, 1)
-      }
-      if (!same(pushes, e.pushes[ch] ?? [])) return 0
-      const line = /^ {2}(?:\[app\] )?adf:agent:event trigger_message$/
-      const timelines: Record<string, string[]> = {}
-      let lines = 0
-      for (const [agent, list] of Object.entries(d.timelines)) {
-        timelines[agent] = list.filter((l) => !(line.test(l) && ++lines))
-      }
-      if (lines !== sent.length || !same(timelines, e.timelines)) return 0
-      const bare = (st: StepRecord) => { const { pushes: _p, ...rest } = st as StepRecord & { pushes: unknown }; return rest }
-      if (d.steps.length !== e.steps.length || d.steps.some((st, i) => !same(bare(st), bare(e.steps[i])))) return 0
-      d.pushes[ch] = pushes
-      d.timelines = timelines
-      d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
-      return sent.length
-    },
-  },
-  {
     id: 'mode:wire-undefined-keys',
     ws: 'mode',
     scenarios: ['chat-tool-call'],
@@ -300,43 +223,6 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       const next = swap(settings?.runtimeDelegation, baseSettings?.runtimeDelegation)
       if (next && settings) settings.runtimeDelegation = next
       return n
-    },
-  },
-  {
-    id: 'w3a:settings-tracked-root-push',
-    ws: 'W3-A',
-    scenarios: ['w3c-mcp-attach-credentials', 'w3c-adapter-telegram'],
-    path: 'TRACKED_DIRS_CHANGED: one push per folder a SETTINGS_SET adds to trackedDirectories, its timeline line and the step push watermarks it shifts',
-    what: 'A PATCH /settings that adds a tracked folder re-syncs the daemon\'s watcher, which announces each newly tracked root (tracked_dirs, as for notifyAdfFileCreated); embedded SETTINGS_SET restarts its watcher and pushes nothing. The renderer rescans the folder once more.',
-    apply(d, e) {
-      const ch = IPC.TRACKED_DIRS_CHANGED
-      const roots = d.steps.flatMap((st) => (st.kind === 'invoke' && st.channel === IPC.SETTINGS_SET
-        ? ((st.args[0] as { trackedDirectories?: unknown })?.trackedDirectories as unknown[] | undefined ?? []).filter((r): r is string => typeof r === 'string')
-        : []))
-      if (roots.length === 0) return 0
-      const mine = [...(d.pushes[ch] ?? [])]
-      for (const root of roots) {
-        const at = mine.findIndex((p) => same(p, { dirPath: root }))
-        if (at < 0) return 0
-        mine.splice(at, 1)
-      }
-      if (!same(mine, e.pushes[ch] ?? [])) return 0
-      const line = /^ {2}(?:\[app\] )?adf:tracked-dirs:changed$/
-      const timelines: Record<string, string[]> = {}
-      let lines = 0
-      for (const [key, list] of Object.entries(d.timelines)) {
-        const kept = list.filter((l) => !(line.test(l) && ++lines))
-        // A timeline of step markers only exists because of that push (embedded has none).
-        if (!(key in e.timelines) && kept.every((l) => l.startsWith('> ') || l.startsWith('< '))) continue
-        timelines[key] = kept
-      }
-      if (lines === 0) return 0
-      if (d.steps.length !== e.steps.length || d.steps.some((st, i) => !same(withoutPushes(st), withoutPushes(e.steps[i])))) return 0
-      if (mine.length) d.pushes[ch] = mine
-      else delete d.pushes[ch]
-      d.timelines = timelines
-      d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
-      return roots.length
     },
   },
   {
@@ -461,7 +347,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-host-record-lazy',
     ws: 'W0-C',
-    scenarios: ['open-agent', ...W3B_NO_AGENT, ...W3C, ...HELD_ONLY],
+    scenarios: ['open-agent', ...W3B_NO_AGENT, ...W3C, ...HELD_ONLY, ...W3A_NO_AGENT],
     path: 'state.leases: the daemon\'s hosts/<pid>.json while it holds no lease',
     what: 'Bug: the daemon writes its runtime host record only once it holds an agent lease; §10.3 has every runtime host register (embedded Studio does at boot).',
     apply(d, e) {
@@ -493,7 +379,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0d:daemon-version-null',
     ws: 'W0-D',
-    scenarios: [...RUNNING, ...MESH],
+    scenarios: [...RUNNING, ...MESH, ...W3A_RAN],
     path: 'state.leases: `version` of the daemon\'s host record and lease holder',
     what: 'Bug: the daemon records version null in its host record and agent leases.',
     apply(d) {
@@ -571,7 +457,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'mode:effective-runtime-host',
     ws: 'mode',
-    scenarios: [...RUNNING, ...MESH],
+    scenarios: [...RUNNING, ...MESH, ...W3A_RAN],
     path: 'state: adf_meta adf_effective_runtime `host` field only',
     what: 'The agent file records which host profile ran it: `daemon`, not `studioForeground`.',
     apply(d) {
@@ -663,6 +549,37 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       // Channels in name order, as the recording keeps them.
       d.pushes = Object.fromEntries(Object.keys(d.pushes).sort().map((c) => [c, d.pushes[c]]))
       if (d.pushSeq) d.pushSeq[IPC.AGENT_EVENT] = clone(e.pushSeq?.[IPC.AGENT_EVENT] ?? [])
+      return n
+    },
+  },
+  {
+    id: 'e3:stop-startup-dispatch-error',
+    ws: 'E3',
+    scenarios: ['password-unlock', 'config-during-start', 'rename-while-running'],
+    path: 'AGENT_STOP: the embedded AGENT_EVENT error push, its timeline line and the step push watermarks it shifts',
+    what: 'Embedded bug (tracker §6, E3 candidate, as e3:emergency-stop-startup-dispatch-error): stopping an agent started idle sends "Cannot dispatch startup while agent lifecycle is disposed" on AGENT_EVENT, which the chat shows as an error. Daemon mode sends no such error.',
+    apply(d, e) {
+      const step = e.steps.findIndex((st) => st.kind === 'invoke' && st.channel === IPC.AGENT_STOP)
+      if (step < 0) return 0
+      const errors = (e.pushes[IPC.AGENT_EVENT] ?? []) as Array<{ type?: string; payload?: { error?: string } }>
+      if ((d.pushes[IPC.AGENT_EVENT] ?? []).length !== 0 || errors.length !== 1 || errors[0].type !== 'error' || !/Cannot dispatch startup while agent lifecycle is disposed/.test(errors[0].payload?.error ?? '')) return 0
+      let n = 0
+      for (const [agent, lines] of Object.entries(d.timelines)) {
+        const eb = stepBlock(e.timelines[agent] ?? [], step + 1)
+        const db = stepBlock(lines, step + 1)
+        if (!eb || !db) continue
+        const block = e.timelines[agent].slice(eb.from, eb.to)
+        const at = block.findIndex((l) => /^ {2}adf:agent:event error$/.test(l))
+        if (at < 0) continue
+        lines.splice(db.from + at, 0, block[at])
+        n++
+      }
+      if (n !== 1) return 0
+      if (d.steps.length !== e.steps.length || d.steps.some((st, i) => !same(withoutPushes(st), withoutPushes(e.steps[i])))) return 0
+      d.pushes[IPC.AGENT_EVENT] = clone(e.pushes[IPC.AGENT_EVENT])
+      d.pushes = Object.fromEntries(Object.keys(d.pushes).sort().map((c) => [c, d.pushes[c]]))
+      if (d.pushSeq) d.pushSeq[IPC.AGENT_EVENT] = clone(e.pushSeq?.[IPC.AGENT_EVENT] ?? [])
+      d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
       return n
     },
   },
