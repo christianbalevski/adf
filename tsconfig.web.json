@@ -17,5 +17,6 @@
       "@shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["src/renderer/**/*", "src/shared/**/*", "src/preload/api.ts"]
+  "include": ["src/renderer/**/*", "src/shared/**/*", "src/preload/api.ts"],
+  "exclude": ["src/shared/daemon-client/**"]
 }
