@@ -282,3 +282,8 @@ export function completePath(input: string, options: PathCompletionOptions = {})
   }
   return { value: dirPart + (common.length > base.length ? common : base), candidates }
 }
+
+/** "; locked against agent edits: tools, code_execution" (empty when the accept locked nothing new). */
+export function lockedNote(fields: string[] | undefined): string {
+  return fields && fields.length > 0 ? `; locked against agent edits: ${fields.join(', ')}` : ''
+}
