@@ -99,4 +99,28 @@ export const subscriptionStatusScenario: ParityScenario = {
   },
 }
 
+/**
+ * An agent whose credentials are locked on this machine (sealed to another
+ * owner, openable with a share password), not open: the agent overrides
+ * form saves its provider key over the sealed one, then a key for a
+ * provider it has no key for yet. Every native dialog is answered with the
+ * first button.
+ */
+export const lockedCredentialsScenario: ParityScenario = {
+  name: 'locked-credentials',
+  description: 'agent-1 with credentials sealed to another owner (not open): replace the sealed provider key, add a key for another provider.',
+  fixtures: [{ name: 'agent-1', lockedCredentials: { sharePassword: 'share-pw-1' } }],
+  quietMs: 500,
+  async run(ctx) {
+    const filePath = ctx.agent('agent-1').filePath
+    ctx.setDialogs({ showMessageBox: () => ({ response: 0 }) })
+    await ctx.invoke(IPC.PROVIDER_CREDENTIAL_SET, { filePath, providerId: MOCK_PROVIDER_ID, value: 'sk-new' })
+    await ctx.invoke(IPC.PROVIDER_CREDENTIAL_SET, { filePath, providerId: 'other-llm', value: 'sk-other' })
+    await ctx.invoke(IPC.PROVIDER_CREDENTIAL_GET, { filePath, providerId: MOCK_PROVIDER_ID })
+    await ctx.invoke(IPC.PROVIDER_CREDENTIAL_GET, { filePath, providerId: 'other-llm' })
+  },
+}
+
 export const SETTINGS_SCENARIOS: readonly ParityScenario[] = [providerRoundTripScenario, agentProviderKeyScenario, subscriptionStatusScenario]
+/** Run against embedded Studio only, each with the reason (above). */
+export const SETTINGS_EMBEDDED_ONLY: readonly ParityScenario[] = [lockedCredentialsScenario]
