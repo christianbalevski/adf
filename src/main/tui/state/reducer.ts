@@ -73,6 +73,10 @@ export type TuiAction =
   | { type: 'transcript/reset'; key: TranscriptKey }
   /** The loop's turn is over (interrupted, stopped): close streaming items, clear `live`. */
   | { type: 'transcript/idle'; key: TranscriptKey }
+  /** The full result of a tool call (client-session executor frame); tool.completed carries a truncated copy. */
+  | { type: 'tool/result'; key: TranscriptKey; toolUseId: string; result: string; isError: boolean }
+  /** A line in the activity log that no event carries (how live events arrive). */
+  | { type: 'activity/note'; text: string; kind: string }
   | { type: 'event'; frame: DaemonEventFrame }
   /** Frames that arrived together (one SSE read): one state change, one render. */
   | { type: 'events'; frames: DaemonEventFrame[] }
@@ -312,10 +316,22 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
       return patchTranscript(state, action.key, () => ({ ...emptyTranscript(), loaded: true }))
     case 'transcript/idle':
       return patchTranscript(state, action.key, endLive)
+    case 'tool/result':
+      return patchTranscript(state, action.key, t => {
+        const index = t.items.findIndex(item => item.kind === 'tool' && item.toolUseId === action.toolUseId)
+        const item = t.items[index]
+        // A backgrounded call's first result is its task reference; the real one comes as tool.completed later.
+        if (!item || item.kind !== 'tool' || item.async || item.result === action.result) return t
+        const items = t.items.slice()
+        items[index] = { ...item, result: action.result, status: action.isError ? 'error' : 'ok', completedAt: item.completedAt ?? Date.now() }
+        return { ...t, items }
+      })
     case 'event':
       return applyEvent(state, action.frame.event)
     case 'events':
       return action.frames.reduce((next, frame) => applyEvent(next, frame.event), state)
+    case 'activity/note':
+      return { ...state, activity: pushBounded(state.activity, { id: localId('a'), at: Date.now(), agentId: null, loop: MAIN_LOOP, type: action.kind, summary: action.text }, MAX_ACTIVITY) }
     case 'viewState/set':
       return { ...state, viewState: { ...state.viewState, [action.view]: action.value } }
     default:
