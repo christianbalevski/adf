@@ -11494,11 +11494,16 @@
                     "already_loaded",
                     "not_autostart",
                     "password_protected",
-                    "unreviewed"
+                    "unreviewed",
+                    "leased_elsewhere"
                   ]
                 },
                 "agentId": {
                   "type": "string"
+                },
+                "message": {
+                  "type": "string",
+                  "description": "leased_elsewhere: which process on this machine runs the agent and what to do."
                 }
               }
             }

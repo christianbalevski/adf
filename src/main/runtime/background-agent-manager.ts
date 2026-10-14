@@ -58,6 +58,7 @@ import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
 import { toDisplayState } from './display-state'
+import { AGENT_LEASED_CODE, processAgentLeases } from './agent-lease'
 
 /** Max agents starting concurrently during the boot autostart scan. */
 const AUTOSTART_CONCURRENCY = 5
@@ -197,9 +198,10 @@ const IDLE_MEMORY_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
  * Coded start failures the renderer can act on, mirroring the foreground
  * AGENT_START gate: 'provider_missing' — the agent names a provider this
  * install does not have; 'provider_unconfigured' — the provider exists but
- * carries no API key and its type needs one.
+ * carries no API key and its type needs one; 'agent_leased' — another ADF
+ * process on this machine runs the agent (agent-lease.ts).
  */
-export type BackgroundStartErrorCode = 'provider_missing' | 'provider_unconfigured'
+export type BackgroundStartErrorCode = 'provider_missing' | 'provider_unconfigured' | typeof AGENT_LEASED_CODE
 
 /** Error carrying a start code, so doStartAgent's catch can classify it. */
 class BackgroundStartError extends Error {
@@ -304,6 +306,10 @@ export class BackgroundAgentManager extends EventEmitter {
   /** Starts announced via agent_starting that haven't completed or failed yet. */
   private pendingStarts: Set<string> = new Set()
 
+  /** Cross-process agent lease: one process runs an agent file (agent-lease.ts). */
+  private readonly agentLeases = processAgentLeases()
+  private readonly unregisterLeaseProbe: () => void
+
   constructor(settings: SettingsService, basePrompt: string, toolPrompts: Record<string, string>, compactionPrompt?: string) {
     super()
     this.settings = settings
@@ -312,6 +318,7 @@ export class BackgroundAgentManager extends EventEmitter {
     this.compactionPrompt = compactionPrompt
     // Periodically check for idle agents when we have many agents running
     this.idleSweepTimer = setInterval(() => this.sweepIdleAgents(), 60_000)
+    this.unregisterLeaseProbe = this.agentLeases.addHostedPathsProbe(() => [...this.agents.keys(), ...this.inFlightStarts.keys()])
   }
 
   setCodeSandboxService(service: CodeSandboxService): void {
@@ -528,6 +535,8 @@ export class BackgroundAgentManager extends EventEmitter {
       return await start
     } finally {
       this.inFlightStarts.delete(canonicalPath)
+      // Releases the lease when the start failed (the agent is not registered).
+      await this.agentLeases.reconcile()
     }
   }
 
@@ -548,6 +557,9 @@ export class BackgroundAgentManager extends EventEmitter {
     })
 
     try {
+      const lease = await this.agentLeases.acquire(filePath)
+      if (!lease.ok) throw new BackgroundStartError(lease.message, AGENT_LEASED_CODE)
+
       const workspace = AdfWorkspace.open(filePath)
       // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
       unlockWorkspaceEnvelopes(workspace)
@@ -785,6 +797,7 @@ export class BackgroundAgentManager extends EventEmitter {
     // this sweeps anything a partial dispose left behind, so the title-bar
     // approvals menu can never list a stopped agent's unanswerable request.
     approvalHub.unregisterAgent(filePath)
+    await this.agentLeases.reconcile()
 
     this.emitEvent({
       type: 'agent_stopped',
@@ -838,6 +851,7 @@ export class BackgroundAgentManager extends EventEmitter {
           console.error(`[BackgroundAgent] dispose error for ${fp}:`, e)
         }
       }
+      await this.agentLeases.reconcile()
       // Stop compute environment container
       try { if (this.podmanService) await this.podmanService.stop() } catch { /* ignore */ }
     } finally {
@@ -2147,6 +2161,7 @@ export class BackgroundAgentManager extends EventEmitter {
 
   /** Clean up the idle sweep timer when the manager is destroyed */
   dispose(): void {
+    this.unregisterLeaseProbe()
     if (this.idleSweepTimer) {
       clearInterval(this.idleSweepTimer)
       this.idleSweepTimer = null
