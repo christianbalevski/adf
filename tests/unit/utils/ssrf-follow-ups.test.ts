@@ -18,7 +18,7 @@ vi.mock('node:dns/promises', async (importOriginal) => {
   }) as typeof real.lookup
   return { ...real, lookup, default: { ...real, lookup } }
 })
-import { checkConnectTarget, checkFetchTarget, isCloudMetadataIp } from '../../../src/main/utils/ssrf-guard'
+import { checkConnectTarget, checkFetchTarget, isCloudMetadataIp, isOwnInterfaceIp } from '../../../src/main/utils/ssrf-guard'
 import { guardedFetch, isFetchFailure } from '../../../src/main/utils/guarded-fetch'
 
 const servers: Server[] = []
@@ -70,8 +70,17 @@ describe('a host name that does not resolve', () => {
 const OWN_ADDRESS = Object.values(networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal)?.address ?? null
 
 describe('the daemon control port on an address of this host that is not loopback', () => {
-  it.skipIf(!OWN_ADDRESS)('before: allowed once private addresses are (allowLocal), so a daemon bound to the network is reachable', async () => {
-    expect(await checkFetchTarget(`http://${OWN_ADDRESS}:7385/runtime`, { allowLocal: true, daemonPort: 7385 })).toBeNull()
+  it.skipIf(!OWN_ADDRESS)('after: refused on every address of this machine, even with allowLocal', async () => {
+    expect(await checkFetchTarget(`http://${OWN_ADDRESS}:7385/runtime`, { allowLocal: true, daemonPort: 7385 })).toMatch(/daemon control API/)
+    expect(await checkConnectTarget(`ws://${OWN_ADDRESS}:7385/`, { allowLocal: true, daemonPort: 7385 })).toMatch(/daemon control API/)
+    // Another port of this machine is a LAN service like any other.
+    expect(await checkFetchTarget(`http://${OWN_ADDRESS}:7386/`, { allowLocal: true, daemonPort: 7385 })).toBeNull()
+  })
+
+  it('an address of another machine on the LAN keeps the allowLocal rule', async () => {
+    expect(isOwnInterfaceIp('127.0.0.1')).toBe(true)
+    expect(isOwnInterfaceIp('203.0.113.250')).toBe(false)
+    expect(await checkFetchTarget('http://203.0.113.250:7385/', { allowLocal: true, daemonPort: 7385 })).toBeNull()
   })
 })
 

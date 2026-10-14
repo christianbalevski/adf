@@ -1,5 +1,6 @@
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
+import { networkInterfaces } from 'node:os'
 
 // =============================================================================
 // SSRF / egress guard (shared)
@@ -264,6 +265,42 @@ function connectBlockedMessage(target: string): string {
   )
 }
 
+/** Normalized form for comparing addresses: IPv4 dotted (also from mapped/NAT64/6to4 IPv6), IPv6 expanded. */
+function comparableIp(ip: string): string | null {
+  const bare = ip.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase()
+  const version = isIP(bare)
+  if (version === 4) return bare
+  if (version !== 6) return null
+  const mapped = mappedIPv4Match(bare)
+  return mapped ? mapped[1] : expandIPv6(bare)
+}
+
+const OWN_ADDRESSES_TTL_MS = 30_000
+let ownAddressCache: { at: number; set: Set<string> } | null = null
+
+/**
+ * The addresses of this machine's network interfaces. A daemon bound to the
+ * network (`adf daemon --host 0.0.0.0`) answers on every one of them, not
+ * only on loopback (W1-D follow-up). Cached briefly: interfaces change
+ * rarely, and the lookup is synchronous.
+ */
+export function isOwnInterfaceIp(ip: string, now = Date.now()): boolean {
+  if (!ownAddressCache || now - ownAddressCache.at > OWN_ADDRESSES_TTL_MS) {
+    const set = new Set<string>()
+    try {
+      for (const list of Object.values(networkInterfaces())) {
+        for (const entry of list ?? []) {
+          const c = comparableIp(entry.address)
+          if (c) set.add(c)
+        }
+      }
+    } catch { /* no interface list: loopback and unspecified still count */ }
+    ownAddressCache = { at: now, set }
+  }
+  const c = comparableIp(ip)
+  return c !== null && ownAddressCache.set.has(c)
+}
+
 function unresolvedMessage(target: string, reason: string): string {
   return `Blocked: the address of "${target}" could not be looked up (${reason}), so the egress guard could not check it. Check the host name and the network.`
 }
@@ -273,6 +310,8 @@ interface HostClass {
   anyLinkLocal: boolean
   anyLoopback: boolean
   anyUnspecified: boolean
+  /** Any candidate is an address of this machine's interfaces (where a network-bound daemon listens). */
+  anyOwnAddress: boolean
   /** Any candidate in a blocked class OTHER than loopback (private, CGNAT, unspecified, …). */
   anyNonLoopbackBlocked: boolean
 }
@@ -311,6 +350,7 @@ async function classifyHost(host: string): Promise<HostClass | { unresolved: str
     anyLinkLocal: candidates.some(isLinkLocalIp),
     anyLoopback: loopbackHost || candidates.some(isLoopbackIp),
     anyUnspecified: candidates.some(isUnspecifiedIp),
+    anyOwnAddress: candidates.some((ip) => isOwnInterfaceIp(ip)),
     // Blocked classes minus loopback (private, CGNAT, unspecified, multicast, …)
     // — loopback itself is allowed by default and only tier-gated per-port.
     anyNonLoopbackBlocked: candidates.some((ip) => isBlockedIpAddress(ip) && !isLoopbackIp(ip))
@@ -341,8 +381,9 @@ function applyPolicy(
   }
   // Tier 2 — the local ADF daemon control API: never reachable, ignores
   // allowLocal. The unspecified address (0.0.0.0 / ::) reaches loopback
-  // listeners on most stacks, so it counts as loopback here.
-  if ((cls.anyLoopback || cls.anyUnspecified) && opts.daemonPort && port === opts.daemonPort) {
+  // listeners on most stacks, so it counts as loopback here; so does every
+  // address of this machine, where a network-bound daemon also answers.
+  if ((cls.anyLoopback || cls.anyUnspecified || cls.anyOwnAddress) && opts.daemonPort && port === opts.daemonPort) {
     return `Blocked: "${target}" (port ${port}) is the local ADF daemon control API, which is never fetchable, even with allow_local_fetch.`
   }
   // Tier 3 — own served origin: allowed unconditionally. Redundant while
