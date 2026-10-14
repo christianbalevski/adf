@@ -217,7 +217,8 @@ import { McpPackageResolver, PackageResolver } from '../services/mcp-package-res
 import { captureEnvSchema, resolveMcpSpawnConfig, resolveMcpEnvVars } from '../services/mcp-spawn-utils'
 import { SandboxStdlibService } from '../services/sandbox-stdlib.service'
 import { SandboxPackagesService } from '../services/sandbox-packages.service'
-import { PodmanService, isolatedContainerName, containerWorkspacePath, containerAgentHome } from '../services/podman.service'
+import { isolatedContainerName, containerWorkspacePath, containerAgentHome } from '../services/podman.service'
+import { createComputeService } from '../services/compute-service-factory'
 import { setManagedBrowserEnsurer } from '../services/managed-browser-hook'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { containerLinkedFileReader } from '../services/mcp-linked-files'
@@ -655,7 +656,8 @@ async function stopMdnsAndCleanup(): Promise<void> {
     try { await svc.stop() } catch (err) { console.error('[mdns] stop failed:', err) }
   }
 }
-const podmanService = new PodmanService()
+// ADF_COMPUTE=fake (test seam, never in a packaged app): no podman/wsl at all.
+const podmanService = createComputeService({ packaged: app.isPackaged })
 // Container MCP servers that attach over CDP ask for the managed browser before spawning.
 setManagedBrowserEnsurer((containerName) => podmanService.ensureManagedBrowserUp(containerName))
 const externalExecutionService = new ExternalExecutionService()

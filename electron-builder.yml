@@ -13,6 +13,10 @@ directories:
   buildResources: resources
   output: dist
 files:
+  # out/main/daemon.js (+ out/main/daemon-chunks) is the headless daemon Studio
+  # runs with ELECTRON_RUN_AS_NODE=1 (src/main/backend/daemon-process.ts). Any
+  # Electron fuses config MUST keep RunAsNode enabled: daemon mode and the
+  # sandbox host (src/main/runtime/sandbox-host.ts) both depend on it.
   - out/**/*
   - resources/**/*
   # better-sqlite3's self-test fixture — never loaded at runtime, and it
