@@ -215,6 +215,31 @@
         ]
       }
     },
+    "/version": {
+      "get": {
+        "tags": [
+          "Daemon"
+        ],
+        "summary": "Identify this daemon run",
+        "description": "What a client needs before it attaches to a running daemon: the build version, the internal client API version (`clientApiVersion`; a client refuses to attach on a different number), the settings file and data directory it runs on, the mesh `runtimeId`, its pid, and who launched it (`startedBy`: `studio` when ADF Studio spawned it, `cli` for `adf daemon` / `adf daemon start`, `service` for a service manager). ADF Studio stops only a daemon that reports `startedBy: studio`. `startedBy` comes from `ADF_DAEMON_STARTED_BY` at launch; unset means `cli`.",
+        "operationId": "getVersion",
+        "responses": {
+          "200": {
+            "description": "This daemon run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DaemonVersionInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
     "/events": {
       "get": {
         "tags": [
@@ -12286,6 +12311,71 @@
           "locked": false,
           "length": 108,
           "code_access": false
+        }
+      },
+      "DaemonVersionInfo": {
+        "type": "object",
+        "required": [
+          "version",
+          "clientApiVersion",
+          "settingsPath",
+          "dataDir",
+          "runtimeId",
+          "pid",
+          "startedBy"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "Build version (package version; `dev` when run from sources outside npm)"
+          },
+          "clientApiVersion": {
+            "type": "integer",
+            "description": "Version of the internal client API (`/client/*`)"
+          },
+          "settingsPath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Settings file this daemon reads and writes; null for an in-memory store"
+          },
+          "dataDir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Directory of the settings file: access token, pid file, logs, runtime keys"
+          },
+          "runtimeId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mesh runtime id from settings; null until one was minted"
+          },
+          "pid": {
+            "type": "integer",
+            "description": "Daemon process id"
+          },
+          "startedBy": {
+            "type": "string",
+            "enum": [
+              "studio",
+              "cli",
+              "service"
+            ],
+            "description": "Who launched this daemon run (`ADF_DAEMON_STARTED_BY`)"
+          }
+        },
+        "example": {
+          "version": "0.7.8",
+          "clientApiVersion": 1,
+          "settingsPath": "/Users/me/Library/Application Support/ADF Studio/adf-settings.json",
+          "dataDir": "/Users/me/Library/Application Support/ADF Studio",
+          "runtimeId": "V1StGXR8_Z5jdHi6B-myT",
+          "pid": 41230,
+          "startedBy": "studio"
         }
       },
       "DiagnosticsResponse": {
