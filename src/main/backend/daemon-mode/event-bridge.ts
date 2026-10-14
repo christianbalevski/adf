@@ -313,7 +313,7 @@ export class EventBridge {
     }
   }
 
-  private sendForeground(agentId: string, filePath: string, event: unknown): void {
+  private sendForeground(agentId: string, filePath: string | null, event: unknown): void {
     for (const hold of this.holds) {
       if (!samePath(hold.filePath, filePath)) continue
       hold.events.push({ agentId, event })
