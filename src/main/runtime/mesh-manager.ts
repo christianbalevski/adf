@@ -660,6 +660,7 @@ export class MeshManager extends EventEmitter {
         content: msgContent
       })
     }
+    this.emitAgentIncoming(filePath, senderHandle, recipientName, msgContent)
 
     // Fire on_inbox trigger with source and message metadata
     reg.triggerEvaluator?.onInbox(senderDid, msgContent, {
@@ -853,6 +854,7 @@ export class MeshManager extends EventEmitter {
       const unread = recipientReg.workspace.getInbox('unread')
       const read = recipientReg.workspace.getInbox('read')
       this.emit('inbox_updated', { filePath: recipientFilePath, inbox: [...unread, ...read] })
+      this.emitAgentIncoming(recipientFilePath, String(senderDid ?? 'unknown'), recipientReg.handle, content)
 
       // Fleet map: draw the incoming trace from the sender's base station.
       // returnPath carries the transport-observed origin; reply_to is the
@@ -1207,6 +1209,7 @@ export class MeshManager extends EventEmitter {
         const unread = recipientLocal.workspace.getInbox('unread')
         const read = recipientLocal.workspace.getInbox('read')
         this.emit('inbox_updated', { filePath: recipientLocal.filePath, inbox: [...unread, ...read] })
+        this.emitAgentIncoming(recipientLocal.filePath, senderHandle, recipientLocal.handle, content)
 
         // Fire on_inbox trigger
         recipientLocal.triggerEvaluator?.onInbox(senderDid, content, {
@@ -2538,6 +2541,21 @@ export class MeshManager extends EventEmitter {
       ogg: 'audio/ogg', wav: 'audio/wav', mp3: 'audio/mpeg', opus: 'audio/opus'
     }
     return types[ext ?? ''] ?? 'application/octet-stream'
+  }
+
+  /**
+   * A message was delivered to a registered agent's inbox (local send, mesh
+   * ingress, message bus). Every agent, foreground or not: the daemon's
+   * client stream (W2-B) turns it into the `inter_agent_message` push that
+   * Studio's chat and mesh graph show; Studio's own foreground path keeps
+   * `foreground_incoming`.
+   */
+  private emitAgentIncoming(filePath: string, fromAgent: string, toAgent: string, content: string): void {
+    try {
+      this.emit('agent_incoming', { filePath, fromAgent, toAgent, content })
+    } catch (err) {
+      console.error('[Mesh] agent_incoming listener failed:', err)
+    }
   }
 
   private emitMeshEvent(event: MeshEvent): void {

@@ -41,6 +41,17 @@ export interface ResumeInfo {
   epoch: string
 }
 
+/** A `stream.gap` control frame, as the daemon sent it. */
+export interface StreamGap {
+  reason: 'evicted' | 'epoch_changed'
+  epoch: string
+  requestedCursor?: number | null
+  oldestCursor?: number | null
+  latestCursor?: number
+  /** Frames lost, when the daemon counted them (client sessions). */
+  dropped?: number
+}
+
 /** What every stream frame may carry: the resume cursor. */
 export interface StreamFrame {
   cursor?: number
@@ -82,6 +93,12 @@ export interface EventStreamOptions<F extends StreamFrame = DaemonEventFrame> {
   onState?: (info: ConnectionInfo) => void
   /** Once per resumed connection, when the daemon says how the resume went (daemons that send `stream.hello`). */
   onResume?: (info: ResumeInfo) => void
+  /**
+   * Every `stream.gap` the daemon sends, including one in the middle of a
+   * live connection (a client session's ring dropped frames a slow reader
+   * had not received yet). Frames were lost: reload state.
+   */
+  onGap?: (gap: StreamGap) => void
   /** Backoff bounds. Defaults 500ms → 10s. */
   minBackoffMs?: number
   maxBackoffMs?: number
@@ -330,6 +347,12 @@ export class EventStream<F extends StreamFrame = DaemonEventFrame> {
     }
     const reason = data.reason === 'epoch_changed' ? 'epoch_changed' : 'evicted'
     if (reason === 'epoch_changed') { this.forgetCursorKeys(); this.lastCursor = -1 }
+    const gap: StreamGap = { reason, epoch }
+    if (typeof data.requestedCursor === 'number' || data.requestedCursor === null) gap.requestedCursor = data.requestedCursor
+    if (typeof data.oldestCursor === 'number' || data.oldestCursor === null) gap.oldestCursor = data.oldestCursor
+    if (typeof data.latestCursor === 'number') gap.latestCursor = data.latestCursor
+    if (typeof data.dropped === 'number') gap.dropped = data.dropped
+    try { this.options.onGap?.(gap) } catch { /* a bad listener must not kill the stream */ }
     // Normally the hello already judged this connection the same way.
     this.reportResume({ exact: false, reason, epoch })
   }
@@ -413,4 +436,16 @@ function errorMessage(err: unknown): string {
     return err.message
   }
   return String(err)
+}
+
+/** A client-session frame (`GET /client/sessions/:id/events`): an object with a `kind` and a cursor. */
+export function isClientFrame(value: unknown): value is StreamFrame & { kind: 'executor' | 'host' | 'push' | 'umbilical' } {
+  if (!value || typeof value !== 'object') return false
+  const { kind, cursor } = value as { kind?: unknown; cursor?: unknown }
+  return (kind === 'executor' || kind === 'host' || kind === 'push' || kind === 'umbilical') && typeof cursor === 'number'
+}
+
+/** Client-session frames dedupe by their cursor alone: one cursor space per session. */
+export function clientFrameDedupeKey(frame: StreamFrame): DedupeKey | null {
+  return typeof frame.cursor === 'number' ? { key: `s:${frame.cursor}`, cursorScoped: true } : null
 }
