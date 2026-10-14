@@ -360,7 +360,7 @@ export const CHANNEL_MAP = {
   [IPC.MCP_REGISTRATION_TEST]: variant('invoke', ['POST /admin/mcp/registration-test', 'GET /jobs/:jobId', 'POST /jobs/:jobId/cancel', 'GET /admin/mcp/interactions', 'POST /admin/mcp/interactions/:interactionId/continue'], 'OAuth remotes: Studio main runs the loopback callback and relays the code (§9.3).', {
     note: 'Starts a job and polls GET /jobs/:jobId. Meanwhile polls GET /admin/mcp/interactions?jobId=: opens each open_url step with shell.openExternal, shows the native Continue dialog for each confirm step, and answers with …/continue.',
   }),
-  [IPC.MCP_INSTALL_PACKAGE]: proxied('invoke', ['POST /admin/mcp/packages/npm'], { note: 'Progress arrives as MCP_INSTALL_PROGRESS.' }),
+  [IPC.MCP_INSTALL_PACKAGE]: proxied('invoke', ['POST /admin/mcp/packages/npm/jobs', 'GET /jobs/:jobId'], { note: 'Starts a job and polls GET /jobs/:jobId. Progress arrives as MCP_INSTALL_PROGRESS (mcp/install-progress.ts sends the ones the client stream cannot deliver).' }),
   [IPC.MCP_UNINSTALL_PACKAGE]: proxied('invoke', ['DELETE /admin/mcp/packages/npm']),
   [IPC.MCP_LIST_INSTALLED]: proxied('invoke', ['GET /admin/mcp/packages']),
   [IPC.MCP_GET_SERVER_STATUS]: proxied('invoke', ['GET /agents/:id/runtime/mcp'], { note: 'Open agent only.' }),
@@ -368,15 +368,15 @@ export const CHANNEL_MAP = {
   [IPC.MCP_GET_SERVER_LOGS]: proxied('invoke', ['GET /admin/mcp/logs/:serverName'], { note: 'Passes the open agent as agentId (session) for its live logs; without one the daemon answers the logs it kept from probe, test and agent runs.' }),
   [IPC.MCP_INSTALL_PROGRESS]: proxied('push', [], { frame: 'push:mcp_install', gaps: [gap('W2-B', 'client-stream push topic `mcp_install`, fed by progress callbacks in the install routes')] }),
   [IPC.MCP_SERVER_STATUS_CHANGED]: proxied('push', [], { frame: 'push:mcp_status', gaps: [streamTopic('mcp_status')], note: 'Open file only.' }),
-  [IPC.MCP_CREDENTIAL_SET]: proxied('invoke', ['PUT /agents/:id/mcp/credentials', 'PUT /files/agent/mcp/credentials'], { note: 'Refuses plaintext when the credentials envelope is locked or foreign.' }),
-  [IPC.MCP_CREDENTIAL_GET]: proxied('invoke', ['GET /agents/:id/mcp/credentials', 'GET /files/agent/mcp/credentials']),
+  [IPC.MCP_CREDENTIAL_SET]: proxied('invoke', ['PUT /files/agent/mcp/credentials'], { note: 'Refuses plaintext when the credentials envelope is locked or foreign. The placeholder MCP_CREDENTIAL_GET answers (__redacted__) keeps the stored value.' }),
+  [IPC.MCP_CREDENTIAL_GET]: proxied('invoke', ['GET /files/agent/mcp/credentials'], { note: 'Values stay in the daemon: each readable value answers as __redacted__.' }),
   [IPC.MCP_CREDENTIAL_LIST_FILES]: proxied('invoke', ['GET /credentials/mcp/files']),
-  [IPC.MCP_ATTACH_SERVER]: proxied('invoke', ['POST /agents/:id/mcp/servers', 'POST /files/agent/mcp/servers']),
-  [IPC.MCP_DETACH_SERVER]: proxied('invoke', ['DELETE /agents/:id/mcp/servers/:serverName', 'DELETE /files/agent/mcp/servers/:serverName']),
+  [IPC.MCP_ATTACH_SERVER]: proxied('invoke', ['POST /files/agent/mcp/servers']),
+  [IPC.MCP_DETACH_SERVER]: proxied('invoke', ['DELETE /files/agent/mcp/servers/:serverName']),
   [IPC.MCP_PICK_ADF_FILE]: variant('invoke', [], REMOTE_FILE_PICKER, { note: 'Native open dialog in Studio main.' }),
-  [IPC.MCP_INSTALL_PYTHON_PACKAGE]: proxied('invoke', ['POST /admin/mcp/packages/python']),
+  [IPC.MCP_INSTALL_PYTHON_PACKAGE]: proxied('invoke', ['POST /admin/mcp/packages/python/jobs', 'GET /jobs/:jobId'], { note: 'Starts a job and polls GET /jobs/:jobId. Progress arrives as MCP_INSTALL_PROGRESS.' }),
   [IPC.MCP_UNINSTALL_PYTHON_PACKAGE]: proxied('invoke', ['DELETE /admin/mcp/packages/python']),
-  [IPC.MCP_ENSURE_PYTHON_RUNTIME]: proxied('invoke', ['POST /admin/mcp/python-runtime', 'GET /jobs/:jobId'], { note: 'Starts a job and polls GET /jobs/:jobId.' }),
+  [IPC.MCP_ENSURE_PYTHON_RUNTIME]: proxied('invoke', ['POST /admin/mcp/python-runtime', 'GET /jobs/:jobId'], { note: 'Starts (or joins) a job and polls GET /jobs/:jobId.' }),
   [IPC.MCP_REGISTRY_GET]: proxied('invoke', ['GET /registry/mcp']),
 
   // --- Agent registry --------------------------------------------------------
@@ -386,9 +386,9 @@ export const CHANNEL_MAP = {
     gaps: [gap('W2-B', 'push adf_file_created for the brought-home file')],
     note: 'The handler records the client key recentFiles.',
   }),
-  [IPC.AGENT_MODEL_SET_FOR_FILE]: proxied('invoke', ['PUT /agents/:id/config', 'PUT /files/agent/model'], { note: 'Refused for the open file and for a running agent.' }),
-  [IPC.MCP_OAUTH_SIGNOUT]: proxied('invoke', ['POST /admin/mcp/oauth/signout'], { gaps: [gap('W1-C', 'DaemonAppOAuthStore')] }),
-  [IPC.MCP_OAUTH_STATUS]: proxied('invoke', ['GET /admin/mcp/oauth/status'], { gaps: [gap('W1-C', 'DaemonAppOAuthStore')] }),
+  [IPC.AGENT_MODEL_SET_FOR_FILE]: proxied('invoke', ['GET /files/agent', 'PUT /files/agent/model'], { note: 'Refused for the open file and for a running agent.' }),
+  [IPC.MCP_OAUTH_SIGNOUT]: proxied('invoke', ['POST /admin/mcp/oauth/signout']),
+  [IPC.MCP_OAUTH_STATUS]: proxied('invoke', ['GET /admin/mcp/oauth/status']),
 
   // --- Skill catalogs --------------------------------------------------------
   [IPC.SKILLS_CATALOG_GET]: proxied('invoke', ['GET /catalog/skills'], {
@@ -419,7 +419,7 @@ export const CHANNEL_MAP = {
 
   // --- Sandbox packages ------------------------------------------------------
   [IPC.SANDBOX_CHECK_MISSING]: proxied('invoke', ['POST /admin/sandbox/packages/check']),
-  [IPC.SANDBOX_INSTALL_PACKAGES]: proxied('invoke', ['POST /admin/sandbox/packages'], { note: 'One route call per package; progress arrives as SANDBOX_INSTALL_PROGRESS.' }),
+  [IPC.SANDBOX_INSTALL_PACKAGES]: proxied('invoke', ['POST /admin/sandbox/packages/jobs', 'GET /jobs/:jobId'], { note: 'One job installs the packages in turn; progress arrives as SANDBOX_INSTALL_PROGRESS.' }),
   [IPC.SANDBOX_INSTALL_PROGRESS]: proxied('push', [], { frame: 'push:sandbox_install', gaps: [gap('W2-B', 'client-stream push topic `sandbox_install`, fed by progress callbacks in the install route')] }),
   [IPC.SANDBOX_LIST_INSTALLED]: proxied('invoke', ['GET /admin/sandbox/packages']),
 
@@ -466,21 +466,21 @@ export const CHANNEL_MAP = {
   [IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD]: proxied('invoke', ['POST /agents/:id/envelope/unlock-password']),
 
   // --- Channel adapters ------------------------------------------------------
-  [IPC.ADAPTER_INSTALL_PACKAGE]: proxied('invoke', ['POST /admin/adapters/packages'], { note: 'Progress arrives as ADAPTER_INSTALL_PROGRESS.' }),
-  [IPC.ADAPTER_UNINSTALL_PACKAGE]: proxied('invoke', ['DELETE /admin/adapters/packages', 'PATCH /settings'], {
+  [IPC.ADAPTER_INSTALL_PACKAGE]: proxied('invoke', ['POST /admin/adapters/packages/jobs', 'GET /jobs/:jobId'], { note: 'Starts a job and polls GET /jobs/:jobId. Progress arrives as ADAPTER_INSTALL_PROGRESS.' }),
+  [IPC.ADAPTER_UNINSTALL_PACKAGE]: proxied('invoke', ['DELETE /admin/adapters/packages', 'GET /settings', 'PATCH /settings'], {
     note: 'The handler then removes the registration from settings.adapters with PATCH /settings; the route does not.',
   }),
   [IPC.ADAPTER_LIST_INSTALLED]: proxied('invoke', ['GET /admin/adapters/packages']),
   [IPC.ADAPTER_GET_STATUS]: proxied('invoke', ['GET /fleet/adapters']),
   [IPC.ADAPTER_RESTART]: proxied('invoke', ['POST /fleet/adapters/restart']),
-  [IPC.ADAPTER_GET_LOGS]: proxied('invoke', ['GET /agents/:id/runtime/adapters'], { note: 'Logs ride in states[].' }),
+  [IPC.ADAPTER_GET_LOGS]: proxied('invoke', ['GET /files/agent', 'GET /agents/:id/runtime/adapters'], { note: 'Logs ride in states[].' }),
   [IPC.ADAPTER_INSTALL_PROGRESS]: proxied('push', [], { frame: 'push:adapter_install', gaps: [gap('W2-B', 'client-stream push topic `adapter_install`, fed by progress callbacks in the install route')] }),
   [IPC.ADAPTER_STATUS_CHANGED]: proxied('push', [], { frame: 'push:adapter_status', gaps: [streamTopic('adapter_status')], note: 'Open file only.' }),
-  [IPC.ADAPTER_CREDENTIAL_SET]: proxied('invoke', ['PUT /agents/:id/adapters/credentials', 'PUT /files/agent/adapters/credentials']),
-  [IPC.ADAPTER_CREDENTIAL_GET]: proxied('invoke', ['GET /agents/:id/adapters/credentials', 'GET /files/agent/adapters/credentials'], { note: 'storedKeys lists rows it cannot decrypt.' }),
+  [IPC.ADAPTER_CREDENTIAL_SET]: proxied('invoke', ['PUT /files/agent/adapters/credentials']),
+  [IPC.ADAPTER_CREDENTIAL_GET]: proxied('invoke', ['GET /files/agent/adapters/credentials'], { note: 'Values stay in the daemon: storedKeys names every stored key, credentials is empty.' }),
   [IPC.ADAPTER_CREDENTIAL_LIST_FILES]: proxied('invoke', ['GET /credentials/adapters/files']),
-  [IPC.ADAPTER_ATTACH]: proxied('invoke', ['POST /agents/:id/adapters', 'POST /files/agent/adapters']),
-  [IPC.ADAPTER_DETACH]: proxied('invoke', ['DELETE /agents/:id/adapters/:adapterType', 'DELETE /files/agent/adapters/:adapterType']),
+  [IPC.ADAPTER_ATTACH]: proxied('invoke', ['GET /files/agent/config', 'POST /files/agent/adapters'], { note: 'Reads the adapters of the file first: one that is on stays as it is, one that is off is turned on with its policy kept.' }),
+  [IPC.ADAPTER_DETACH]: proxied('invoke', ['DELETE /files/agent/adapters/:adapterType']),
 
   // --- Provider credentials (per agent) --------------------------------------
   [IPC.PROVIDER_CREDENTIAL_SET]: proxied('invoke', ['PUT /agents/:id/providers/:providerId/credential', 'PUT /files/agent/providers/:providerId/credential']),
