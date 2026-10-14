@@ -38,14 +38,12 @@ All W1-A gaps are closed.
 | umbilical taps on, or a written reason | `AGENT_START`, `BACKGROUND_AGENT_START` |
 | shared ensureCoreToolDeclarations (delete the private copy, agent-runtime-builder.ts:350) | `AGENT_START`, `BACKGROUND_AGENT_START` |
 | interactive MCP OAuth as a HIL request carrying the authorize URL; keep the MCP manager on setup failure | `AGENT_START`, `BACKGROUND_AGENT_START` |
-| the derived key reaches provider, MCP, adapters and AdfCallHandler; restart after unlock | `IDENTITY_PASSWORD_UNLOCK` |
 | mDNS and tailnet discovery in the daemon (the route returns [], daemon/index.ts:343), with directory cards, /ping meta and trust decoration | `MESH_DISCOVERED_RUNTIMES` |
 ## W1-C
 | Need | Channels |
 |---|---|
 | DaemonAppOAuthStore | `MCP_OAUTH_SIGNOUT`, `MCP_OAUTH_STATUS` |
 | unlock converts the owner's own legacy whole-file password to envelopes, keeps the password as a share slot, and returns converted | `IDENTITY_PASSWORD_UNLOCK` |
-| POST /identity/import (local-only): importMnemonic, restamp, reload loaded agents | `IDENTITY_OWNER_IMPORT` |
 ## W1-D
 All W1-D gaps are closed. The routes are in the channel map; see "Route notes from W1-D" below.
 ## W1-E
@@ -112,7 +110,7 @@ Implemented by W2-C (24): `FILE_OPEN`, `FILE_CLOSE`, `FILE_GET_CURRENT`, `DOC_GE
 
 They use the merged W1-A and W1-E routes: a fresh start is `POST /agents/:id/start?preflight=1` on the file (provider codes, startup turn); the path of a file maps to its running agent through `GET /files/agent`; `DOC_READ_INTERNAL_FILE` reads `/agents/:id/files/meta` and `/agents/:id/files/raw` (a binary it only flags is never downloaded; an inline one is capped by `maxBytes`); `adf-file://` streams `/agents/:id/files/raw`.
 
-Every other channel (218) is registered with a handler that throws `<CHANNEL> is not available in daemon mode yet: <workstream>` (`pending.ts`) and logs one warning per channel the first time it is called: W3-A 86 (files, documents, agent runtime, review, templates, tracked and bulk directories, identity drafts, the share drag), W3-B 44 (models, providers, subscription auth, identity), W3-C 40 (MCP, adapters, sandbox packages, skills, registries), W3-D 48 (mesh, fleet, dashboard, token usage, compute, firewall, vitals, emergency stop). Until W3-A, a call of `BACKGROUND_AGENT_STATUS` also announces the running agents as `agent_started` events, so a fresh sidebar is not empty. A W3 workstream adds its table to `handlers/index.ts`; the channel then leaves the pending list.
+Every other channel (218 after W2-C, 174 after W3-B) is registered with a handler that throws `<CHANNEL> is not available in daemon mode yet: <workstream>` (`pending.ts`) and logs one warning per channel the first time it is called: W3-A 86 (files, documents, agent runtime, review, templates, tracked and bulk directories, identity drafts, the share drag), W3-C 40 (MCP, adapters, sandbox packages, skills, registries), W3-D 48 (mesh, fleet, dashboard, token usage, compute, firewall, vitals, emergency stop). Until W3-A, a call of `BACKGROUND_AGENT_STATUS` also announces the running agents as `agent_started` events, so a fresh sidebar is not empty. A W3 workstream adds its table to `handlers/index.ts`; the channel then leaves the pending list.
 
 Renderer call sites that swallow the rejection of a pending channel (`.catch(() => {})` or an empty handler), so only the main log's once-per-channel warning shows it:
 
@@ -125,7 +123,6 @@ Renderer call sites that swallow the rejection of a pending channel (`.catch(() 
 | `FILE_REVEAL` | W3-A | `layout/Sidebar.tsx:471`, `layout/Sidebar.tsx:501` |
 | `FILE_SHARE_PREPARE`, `FILE_SHARE_DISCARD` | W3-A | `hooks/useShareDrag.ts:48`, `hooks/useShareDrag.ts:63` |
 | `IDENTITY_DRAFT_DISCARD` | W3-A | `home/NextAgentIdentity.tsx:8` |
-| `CHATGPT_AUTH_STATUS`, `GROK_AUTH_STATUS`, `CLAUDE_AUTH_STATUS` | W3-B | `providers/useProviderManager.ts:103`, `:104`, `:109`, `:210` |
 | `DASHBOARD_QUICK_STATS`, `DASHBOARD_PROVIDER_TESTS`, `DASHBOARD_AGENT_STATS` | W3-D | `home/useDashboardData.ts:40`, `:45`, `:50` |
 
 Paths are under `src/renderer/components/` (hooks under `src/renderer/`).
@@ -151,6 +148,16 @@ Follow-ups for other workstreams:
 - W4-A: the quit path ends the client session and leaves the daemon running; the R4 behaviour (stop a Studio-started daemon unless `keepDaemonRunning`) and the version-mismatch choice of §8.2 (shown today as the connection-failure dialog) are W4-A's.
 - W5-B: the CI job that runs `tests/parity` with the daemon bundle built and `PARITY_REQUIRE_DAEMON=1`.
 - W3-A (renderer, additive): `chat_updated` handling (`useAgent.ts:495`) calls `setLog(uiLog, 0, loop)` and ignores `earlierCount`. Embedded is unaffected: its `chat_updated` carries the whole loop and no `earlierCount` (`ipc/index.ts` `pushForegroundLoop`, `agent-executor.ts` after a compaction). Daemon mode's `stream.gap` resync repaints the last 200 entries (`GET /agents/:id/chat` caps at 500) with `earlierCount`, so after a resync the older entries cannot be paged until the file is reopened. The fix is the renderer honouring `payload.earlierCount` when present.
+
+## Daemon-mode handlers after W3-B
+
+W3-B implemented its 44 channels (`handlers/providers.ts`, `handlers/identity.ts`): `MODELS_LIST`, `PROVIDER_*`, `CHATGPT_*`, `GROK_*`, `CLAUDE_*` and `IDENTITY_*` except the drafts. `SETTINGS_GET` and `SETTINGS_SET` are W2-C's.
+
+- Secrets. App provider keys reach Studio as `__redacted__` only. "Copy app key" (`PROVIDER_CREDENTIAL_SET` with that value) never writes the placeholder: the daemon copies the key it holds (`POST /files/agent/providers/:providerId/credential/copy-app-key`). Stored values the renderer shows (Identity panel Reveal, `IDENTITY_GET`, the provider override key field) come from the local-only reveal routes (`POST /agents/:id/identity/reveal`, `POST /files/agent/identity/reveal`); key material (`crypto:*`) never leaves the daemon, so Reveal on a `crypto:*` row shows nothing in daemon mode. The owner phrase is read from the shared keychain entry in Studio main (§5.4); with the daemon's passphrase file there is none, and "Back up seed phrase" is disabled (`hasMnemonic` false).
+- Locked credentials. A credential write the daemon refuses with 409 `credentials_locked` opens a native dialog (Replace / Cancel), as the terminal app asks. Embedded Studio writes the value unsealed without asking, or fails on a sealed one.
+- Sign-in. ChatGPT runs the relay flow in both modes (callback server in Studio main, code exchanged and tokens kept by the daemon). Grok's approval page and ChatGPT's sign-in page open in this machine's browser; Claude Code opens its own on the daemon host.
+- Owner import refuses a switch while the previous owner's phrase is not backed up (the daemon's rule; embedded Studio switches and loses the old phrase).
+- Open gaps kept: `IDENTITY_PASSWORD_UNLOCK` answers `converted: false` (W1-C row above). The per-agent identity channels need the open file's agent in the daemon (W2-B hold), as the core reads do.
 
 ## Parity diffs after W2-C
 
