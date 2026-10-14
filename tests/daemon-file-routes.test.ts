@@ -217,17 +217,19 @@ describe('daemon file routes: path → id, delete, rename, clone', () => {
     expect(renames).toEqual([{ oldPath: a.filePath, newPath }])
   })
 
-  it('calls RuntimeService.rekeyAgentPath after a move when the runtime has it (W1-A)', async () => {
+  it('re-keys moves through RuntimeService.rekeyAgentPath, and its path events feed file_renamed and the watcher', async () => {
     const root = tempDir('adf-files-')
     const a = seedAgent(root, 'agent-1')
-    const settings = memorySettings({ trackedDirectories: [root] })
-    const runtime = new RuntimeService({ settings: settings.store, providerFactory: () => new MockLLMProvider() })
-    // TODO(W1-A): stub until RuntimeService.rekeyAgentPath lands; then assert on the real re-key.
-    const rekeyAgentPath = vi.fn(async () => {})
-    Object.assign(runtime, { rekeyAgentPath })
-    const { server } = setup({ trackedDirectories: [root] }, { runtime })
+    const { server, runtime, renames, watcher } = setup({ trackedDirectories: [root] })
+    const rekey = vi.spyOn(runtime, 'rekeyAgentPath')
     await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: 'agent-2' } })
-    expect(rekeyAgentPath).toHaveBeenCalledWith(a.filePath, join(root, 'agent-2.adf'))
+    const moved = join(root, 'agent-2.adf')
+    expect(rekey).toHaveBeenCalledWith(a.filePath, moved)
+    // A loaded agent's file moved by its runtime: same push, and no autostart of the new path.
+    const elsewhere = join(root, 'agent-3.adf')
+    runtime.emit('agent-path-changed', { agentId: a.id, oldFilePath: moved, filePath: elsewhere })
+    expect(renames.at(-1)).toEqual({ oldPath: moved, newPath: elsewhere })
+    expect((watcher as unknown as { isExpected(p: string): boolean }).isExpected(elsewhere)).toBe(true)
   })
 
   it('clones with selected tables and clone-fixup: new id, fresh identity, reviewed, folder tracked and pushed', async () => {
@@ -852,20 +854,17 @@ describe('daemon file routes: re-review fixes', () => {
     expect(existsSync(a.filePath)).toBe(true)
   })
 
-  it('applies a pending rename when the agent unloads after the server closed (daemon shutdown order)', async () => {
+  it('applies a pending rename when the agent unloads after the server closed (daemon shutdown order; RuntimeService renames)', async () => {
     const root = tempDir('adf-files-')
     const a = seedAgent(root, 'agent-1')
     const { server, runtime } = setup({ trackedDirectories: [root] })
     const ref = await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
     expect((await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: 'agent-7' } })).json().renameDeferred).toBe(true)
     await server.close()
-    const listening = runtime.listenerCount('agent-unloaded')
     await runtime.unloadAgent(ref.id, { mode: 'immediate' })
     const renamed = join(root, 'agent-7.adf')
     for (let i = 0; i < 50 && !existsSync(renamed); i++) await tick(20)
     expect(existsSync(renamed)).toBe(true)
-    // The pending rename was the last: the listener is gone now.
-    expect(runtime.listenerCount('agent-unloaded')).toBe(listening - 1)
   })
 
   it('the /agents/:id detach routes delete credentials by exact prefix too (shared AdfDatabase helper)', async () => {
@@ -889,5 +888,19 @@ describe('daemon file routes: re-review fixes', () => {
     expect(source).toMatch(/const trackedDirWatcher = new TrackedDirWatcher\(\{\s*runtime,\s*settings,\s*onTrackedDirectoriesChanged: \(dirs\) => meshManager\.setTrackedDirectories\(dirs\),/)
     expect(source).toMatch(/routes: \{[^}]*\}\), trackedDirWatcher \}/)
     expect(source).toMatch(/onShutdown: \[\s*\(\) => trackedDirWatcher\.close\(\),/)
+  })
+})
+
+describe('daemon file routes: delete with a pending rename', () => {
+  it('deleting a running agent with a deferred rename deletes the file, not a renamed copy', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { server, runtime } = setup({ trackedDirectories: [root] })
+    await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
+    expect((await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: 'agent-5' } })).json().renameDeferred).toBe(true)
+    expect((await server.inject({ method: 'DELETE', url: `/files?path=${q(a.filePath)}` })).json()).toMatchObject({ success: true, stopped: true })
+    await tick(50)
+    expect(existsSync(a.filePath)).toBe(false)
+    expect(existsSync(join(root, 'agent-5.adf'))).toBe(false)
   })
 })

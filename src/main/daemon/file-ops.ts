@@ -67,24 +67,9 @@ export interface FileOpsSettings extends TrackedDirsSettings {
   set?(key: string, value: unknown): void
 }
 
-/**
- * W1-A: `RuntimeService.rekeyAgentPath(oldPath, newPath)` moves a runtime's
- * path indexes and the agent lease to a file's new path. Called after every
- * move made here (rename, relocate).
- * TODO(W1-A): once rekeyAgentPath is on RuntimeService, type the runtime with
- * it and drop this structural check.
- */
-export interface AgentPathRekeyer {
-  rekeyAgentPath(oldPath: string, newPath: string): unknown
-}
-
-function rekeyerOf(runtime: unknown): AgentPathRekeyer | null {
-  const candidate = runtime as Partial<AgentPathRekeyer> | null
-  return candidate && typeof candidate.rekeyAgentPath === 'function' ? candidate as AgentPathRekeyer : null
-}
-
 export type FileOpsRuntime = Pick<RuntimeService,
-  'listAgents' | 'listLiveAgents' | 'getAgent' | 'getAgentConfig' | 'setAgentConfig' | 'unloadAgent' | 'scanAdfFiles'>
+  | 'listAgents' | 'listLiveAgents' | 'getAgent' | 'getAgentConfig' | 'setAgentConfig' | 'unloadAgent' | 'scanAdfFiles'
+  | 'rekeyAgentPath' | 'syncAgentFileToName' | 'getPendingRename'>
 
 export interface FileOpsDeps {
   runtime: FileOpsRuntime
@@ -791,9 +776,6 @@ export interface PathAgentInfo {
 const DELETE_UNLOAD_DEADLINE_MS = 15_000
 
 export class AgentFileOps {
-  /** Canonical path → the name the file takes when its agent stops. */
-  private readonly pendingRenames = new Map<string, string>()
-
   constructor(private readonly deps: FileOpsDeps) {}
 
   private get runtime(): FileOpsRuntime { return this.deps.runtime }
@@ -817,13 +799,9 @@ export class AgentFileOps {
     if (message) throw new FileOpError(message, 409, AGENT_LEASED_CODE)
   }
 
-  /** Renames still waiting for their agent to stop. */
-  hasPendingRenames(): boolean {
-    return this.pendingRenames.size > 0
-  }
-
+  /** The name a running agent's file takes when it stops (RuntimeService's deferred rename). */
   pendingName(filePath: string): string | undefined {
-    return this.pendingRenames.get(keyOf(filePath))
+    return this.runtime.getPendingRename(filePath)
   }
 
   /** The agent loaded from `filePath` here, if any. */
@@ -872,9 +850,9 @@ export class AgentFileOps {
     const filePath = await this.adfPath(input, { mustExist: false, destructive: true })
     const loaded = this.loadedAt(filePath)
     if (!loaded) await this.assertNotLeasedElsewhere(filePath)
-    // Before the unload: the unload listener must not apply a pending rename to a file being deleted.
-    const pending = this.pendingRenames.get(keyOf(filePath))
-    this.pendingRenames.delete(keyOf(filePath))
+    // Before the unload: a pending rename would move the file away from the delete.
+    const pending = this.runtime.getPendingRename(filePath)
+    if (pending) this.runtime.syncAgentFileToName(filePath, basename(filePath, '.adf'))
     if (loaded) {
       console.log(`[FileOps] Stopping ${loaded.name} before deleting ${filePath}`)
       const deadlineMs = this.deps.unloadDeadlineMs ?? DELETE_UNLOAD_DEADLINE_MS
@@ -884,7 +862,7 @@ export class AgentFileOps {
         new Promise<false>(r => { timer = setTimeout(() => r(false), deadlineMs) }),
       ]).finally(() => clearTimeout(timer))
       if (!stopped) {
-        if (pending) this.pendingRenames.set(keyOf(filePath), pending)
+        if (pending) this.runtime.syncAgentFileToName(filePath, pending)
         console.warn(`[FileOps] ${loaded.name} did not stop within ${deadlineMs / 1000}s; ${filePath} was not deleted`)
         throw new FileOpError(`${loaded.name} did not stop within ${deadlineMs / 1000} s, so its file was not deleted. It is still stopping; try again.`, 409, 'stop_timeout')
       }
@@ -897,11 +875,12 @@ export class AgentFileOps {
   }
 
   /**
-   * FILE_RENAME. A stopped agent's file is renamed now (sidecars folded in
-   * first) and its config.name set to match. A running agent keeps running
-   * under its file, its lease and its mesh registration: its name changes
-   * now and the file moves when it stops (Studio's deferred rename: SQLite
-   * files cannot move under an open handle on Windows).
+   * FILE_RENAME. A running agent keeps running under its file, its lease and
+   * its mesh registration: its name changes now and RuntimeService moves the
+   * file when it stops (syncAgentFileToName; SQLite files cannot move under
+   * an open handle on Windows), emitting 'agent-file-renamed'. A stopped
+   * agent's file is renamed here, now: after the lease check, by inode (so a
+   * case-only rename works on case-insensitive volumes), folded WAL first.
    */
   async rename(input: unknown, newNameInput: unknown): Promise<RenameResult> {
     const filePath = await this.adfPath(input, { destructive: true })
@@ -917,32 +896,15 @@ export class AgentFileOps {
     if (loaded) {
       const { config } = this.runtime.getAgentConfig(loaded.id)
       if (config.name !== newName) await this.runtime.setAgentConfig(loaded.id, { ...config, name: newName })
-      if (basename(filePath, '.adf') === newName) {
-        this.pendingRenames.delete(keyOf(filePath))
-        return { success: true, filePath, renameDeferred: false, agentId: loaded.id }
-      }
-      this.pendingRenames.set(keyOf(filePath), newName)
+      const sync = this.runtime.syncAgentFileToName(filePath, newName)
+      if (sync.error) throw new FileOpError(sync.error, 409, 'conflict')
+      if (!sync.deferred) return { success: true, filePath, renameDeferred: false, agentId: loaded.id }
       console.log(`[FileOps] ${loaded.name} is running: renamed to "${newName}" now; ${basename(filePath)} becomes ${newName}.adf when it stops`)
       this.deps.events.notifyPathChanged(filePath)
       return { success: true, filePath, renameDeferred: true, agentId: loaded.id }
     }
     await this.assertNotLeasedElsewhere(filePath)
     return this.performRename(filePath, newName)
-  }
-
-  /** The agent loaded from `filePath` stopped: apply its pending rename. Never throws. */
-  async onAgentUnloaded(filePath: string | null): Promise<void> {
-    if (!filePath) return
-    const newName = this.pendingRenames.get(keyOf(filePath))
-    if (!newName) return
-    if (this.loadedAt(filePath)) return
-    try {
-      const result = await this.performRename(filePath, newName)
-      console.log(`[FileOps] Deferred rename applied: ${filePath} -> ${result.filePath}`)
-    } catch (err) {
-      this.pendingRenames.delete(keyOf(filePath))
-      console.warn(`[FileOps] Deferred rename of ${basename(filePath)} to "${newName}.adf" failed: ${err instanceof Error ? err.message : String(err)}`)
-    }
   }
 
   private async performRename(filePath: string, newName: string): Promise<RenameResult> {
@@ -980,7 +942,6 @@ export class AgentFileOps {
     } finally {
       ws.close()
     }
-    this.pendingRenames.delete(keyOf(filePath))
     if (moves) {
       forgetTrackedFile(filePath)
       console.log(`[FileOps] Renamed ${filePath} -> ${newPath}`)
@@ -990,11 +951,10 @@ export class AgentFileOps {
     return { success: true, filePath: newPath, renameDeferred: false, agentId }
   }
 
+  /** A file this module moved: re-key the runtime's path indexes and lease if it holds the path (W1-A). */
   private async rekey(oldPath: string, newPath: string): Promise<void> {
-    const rekeyer = rekeyerOf(this.runtime)
-    if (!rekeyer) return // TODO(W1-A): RuntimeService.rekeyAgentPath
     try {
-      await rekeyer.rekeyAgentPath(oldPath, newPath)
+      await this.runtime.rekeyAgentPath(oldPath, newPath)
     } catch (err) {
       console.warn(`[FileOps] Re-keying ${basename(oldPath)} after its move failed:`, err)
     }
@@ -1251,11 +1211,6 @@ export class AgentFileOps {
       return fallback(err)
     }
     await this.rekey(filePath, dest)
-    const pending = this.pendingRenames.get(keyOf(filePath))
-    if (pending) {
-      this.pendingRenames.delete(keyOf(filePath))
-      this.pendingRenames.set(keyOf(dest), pending)
-    }
     forgetTrackedFile(filePath)
     console.log(`[FileOps] Moved ${filePath} into the agents folder: ${dest}`)
     this.fileCreated(dest)

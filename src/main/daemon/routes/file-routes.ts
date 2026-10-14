@@ -28,11 +28,11 @@ import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import { withSource } from '../../runtime/execution-context'
-import { RuntimeLoopError, RuntimeReviewRequiredError, type RuntimeAgentUnloadedEvent } from '../../runtime/runtime-service'
+import { RuntimeLoopError, RuntimeReviewRequiredError, type RuntimeAgentFileRenamedEvent, type RuntimeAgentPathChangedEvent } from '../../runtime/runtime-service'
 import { TrackedDirWatcher } from '../dir-watcher'
 import { AgentFileOps, FileOpError, browse, readCapped, resolveAgentsFolder, snapshotToTemp, streamSnapshot, type SnapshotMode } from '../file-ops'
 import { PathAgentOps } from '../path-agent-ops'
-import { scanTrackedTree, TrackedDirError, type TrackedDirsSettings } from '../tracked-dirs'
+import { forgetTrackedFile, scanTrackedTree, TrackedDirError, type TrackedDirsSettings } from '../tracked-dirs'
 import type { DaemonRouteContext } from './index'
 
 const MIB = 1024 * 1024
@@ -69,20 +69,23 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
   const importLimit = ctx.options.routes?.importBodyLimit ?? limitFromEnv('ADF_DAEMON_IMPORT_BODY_LIMIT_MB', IMPORT_BODY_LIMIT)
 
   // A running agent's deferred rename is applied once it stops.
-  // At shutdown the server closes before the agents unload (DaemonHost.stop):
-  // the listener stays until the last pending rename is applied.
-  let closing = false
-  const onUnloaded = async (event: RuntimeAgentUnloadedEvent) => {
-    await files.onAgentUnloaded(event.filePath)
-    if (closing && !files.hasPendingRenames()) runtime.off('agent-unloaded', onUnloaded)
+  // RuntimeService renames files (a running agent's deferred rename when it
+  // stops; the file following the agent's name) and re-keys moved ones
+  // (W1-A): both feed the file_renamed push, and the watcher must not
+  // autostart the moved file.
+  const onFileMoved = (event: RuntimeAgentFileRenamedEvent | RuntimeAgentPathChangedEvent) => {
+    forgetTrackedFile(event.oldFilePath)
+    watcher.notifyRenamed(event.oldFilePath, event.filePath)
+    watcher.notifyPathChanged(event.filePath)
   }
-  runtime.on('agent-unloaded', onUnloaded)
+  runtime.on('agent-file-renamed', onFileMoved)
+  runtime.on('agent-path-changed', onFileMoved)
   server.addHook('onReady', async () => {
     if (settings) watcher.start()
   })
   server.addHook('onClose', async () => {
-    closing = true
-    if (!files.hasPendingRenames()) runtime.off('agent-unloaded', onUnloaded)
+    runtime.off('agent-file-renamed', onFileMoved)
+    runtime.off('agent-path-changed', onFileMoved)
     await watcher.close()
   })
   // Other routes change the tracked list too (POST /agents/create tracks the
