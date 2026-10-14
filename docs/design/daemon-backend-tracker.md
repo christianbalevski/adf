@@ -328,6 +328,8 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W1-A | Key drop (remove/wipe) restarts every running adapter, not only those using the key | W3-B |
 | W1-A | Daemon-mode client must prompt for the file password before start, using the preflight `credentials_locked` code (design §6.1 row 27) | W3-A |
 | Lead | Regenerate `docs/daemon/api-reference.md`/`.html` once after Wave 1 merges (`npm run docs:api`) | Lead |
+| W2-C | Lease client record `controlUrl` is always port 7385; daemon host record carries `version: null` | W4-A |
+| W2-C | Daemon-mode quit behaviour (R4) and version-mismatch choice | W4-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
