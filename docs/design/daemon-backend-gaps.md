@@ -114,13 +114,6 @@ Renderer call sites that swallow the rejection of a pending channel (`.catch(() 
 
 | Channel | Workstream | Call sites |
 |---|---|---|
-| `AGENTS_FOLDER_DEFAULT_GET` | W3-A | `home/HomeComposer.tsx:96`, `home/HomePickers.tsx:452` |
-| `BACKGROUND_AGENT_START` | W3-A | `mesh/FleetCommandBar.tsx:224`, `mesh/MeshGraphNode.tsx:214`, `mesh/MeshGraphView.tsx:2521` |
-| `BACKGROUND_AGENT_STOP` | W3-A | `mesh/MeshGraphView.tsx:2530` |
-| `DOC_GET_AGENT_CONFIG` | W3-A | `agent/AgentConfig.tsx:1114`, `agent/AgentConfig.tsx:1120` |
-| `FILE_REVEAL` | W3-A | `layout/Sidebar.tsx:471`, `layout/Sidebar.tsx:501` |
-| `FILE_SHARE_PREPARE`, `FILE_SHARE_DISCARD` | W3-A | `hooks/useShareDrag.ts:48`, `hooks/useShareDrag.ts:63` |
-| `IDENTITY_DRAFT_DISCARD` | W3-A | `home/NextAgentIdentity.tsx:8` |
 | `CHATGPT_AUTH_STATUS`, `GROK_AUTH_STATUS`, `CLAUDE_AUTH_STATUS` | W3-B | `providers/useProviderManager.ts:103`, `:104`, `:109`, `:210` |
 | `DASHBOARD_QUICK_STATS`, `DASHBOARD_PROVIDER_TESTS`, `DASHBOARD_AGENT_STATS` | W3-D | `home/useDashboardData.ts:40`, `:45`, `:50` |
 
@@ -132,8 +125,6 @@ Inside the implemented handlers, a step whose daemon route has not landed throws
 |---|---|
 | Hold a file as an open document and release it (FILE_OPEN, FILE_CLOSE); until then FILE_OPEN of a file that is not running succeeds without its contents, logged once | W2-B |
 | DOC_GET_BATCH, DOC_GET_HEADER, DOC_GET_CHAT, DOC_READ_INTERNAL_FILE of a file that is not running in the daemon (the daemon serves open documents; Studio holds one only through its client session) | W2-B |
-| AGENT_START: start with `hasUserMessage`; no `sessionId` in the result | W3-A |
-| AGENT_START of a file whose own key is locked: the prompt before the start (design §6.1 row 27) | W3-A |
 | FILE_OPEN with the native dialog in remote mode | W4-B |
 
 The client stream is the interim `GET /events` adapter (`createEventsAdapterSession`). It forwards only the umbilical events with an exact executor counterpart (`agent.state.changed`, `turn.completed` with its `absorbed_turn_ids`, `agent.error`), `chat.discarded` (turn bookkeeping) and `agent.loaded` / `agent.unloaded`. Not delivered until W2-B: text and thinking deltas, tool call start and result, `chat_updated`, `trigger_message`, `context_injected`, `response_metadata`, `loop_seq`, document and file updates, approvals, asks, suspend, every push topic, and the host lifecycle events other than load and unload (W1-A emits them in the daemon; they need the client stream).
@@ -146,7 +137,25 @@ Follow-ups for other workstreams:
 - W0-C, W0-D, W4-A: the bugs the allowlist below names (client record `controlUrl`, the daemon's lazy host record, the agent lease's `agentId`, `version: null`, client-key defaults written by the daemon).
 - W4-A: the quit path ends the client session and leaves the daemon running; the R4 behaviour (stop a Studio-started daemon unless `keepDaemonRunning`) and the version-mismatch choice of §8.2 (shown today as the connection-failure dialog) are W4-A's.
 - W5-B: the CI job that runs `tests/parity` with the daemon bundle built and `PARITY_REQUIRE_DAEMON=1`.
-- W3-A (renderer, additive): `chat_updated` handling (`useAgent.ts:495`) calls `setLog(uiLog, 0, loop)` and ignores `earlierCount`. Embedded is unaffected: its `chat_updated` carries the whole loop and no `earlierCount` (`ipc/index.ts` `pushForegroundLoop`, `agent-executor.ts` after a compaction). Daemon mode's `stream.gap` resync repaints the last 200 entries (`GET /agents/:id/chat` caps at 500) with `earlierCount`, so after a resync the older entries cannot be paged until the file is reopened. The fix is the renderer honouring `payload.earlierCount` when present.
+- W3-A (renderer, additive; done): `chat_updated` honours `earlierCount` (`useAgent.ts`), so after a daemon-mode `stream.gap` resync the older entries page in as usual. Embedded sends no `earlierCount` (0).
+
+## Daemon-mode handlers after W3-A
+
+Every channel `pendingWorkstream()` gave W3-A has a daemon-mode handler (`src/main/backend/daemon-mode/documents/`): `FILE_*`, `DOC_*`, the runtime actions of `AGENT_*`, `BACKGROUND_AGENT_*`, `DIRECTORY_*`, review, templates, tracked folders and identity drafts, plus the send channel `FILE_SHARE_DRAG_START` (`DAEMON_MODE_SEND_HANDLERS`). Each answers what the embedded handler answers, error answers included; `handlers/core.ts` is W3-A's too. W3-A's daemon changes: the start takes `hasUserMessage` and answers `sessionId` (also on `GET /agents/:id/status` of a running agent), `GET /files/agent` reports `reviewed` and `passwordProtected` for a file that is not loaded, `POST /agents/:id/chat` takes `echoed`, `PUT /templates/:id/files/raw` takes binary template files, and the daemon runs the templates-folder watcher.
+
+The open file's agent is the document the client session holds or the agent running at that path (`documents/open-file.ts`). With the interim `GET /events` adapter nothing is held, so a file that is open but not running is refused with the W2-B error; `tests/parity/documents/daemon.test.ts` skips until W2-C2. Run with `PARITY_W3A_HOLDS=1` (real holds through `documents/hold-session.ts`), the W3-A scenarios differ from embedded only by the W2-B stream gaps, `IDENTITY_PASSWORD_UNLOCK` (W3-B) and the `mode` / W4-A entries.
+
+Remaining differences, each visible:
+
+| Difference | Where |
+|---|---|
+| File writes are attributed to `system:runtime-api` instead of `system:studio` (audit and file-change source). | `PUT /agents/:id/files/raw`, `PUT /agents/:id/files/content` |
+| `DOC_GET_LOGS`, `DOC_GET_TASKS` and `DOC_QUERY_LOCAL_TABLE` are capped by the daemon (500, 1000, 1000 rows); embedded has no cap. | resource routes |
+| `TRACKED_DIRS_ADD` autostarts the folder's agents and stores the canonical path; embedded only starts its watcher. `TRACKED_DIRS_SCAN` of a folder that is not tracked answers `{files: []}`. | `POST /tracked-dirs`, `GET /tracked-dirs/tree` |
+| The template routes refuse with `identity_not_ready` while the owner identity is not ready; embedded works without one. | `/templates*` |
+| `FILE_CREATE` names follow the daemon's stricter rule (reserved names, 64 characters). | `POST /agents/create` |
+| An agent in `error` or `stopped` state is restarted (stop, then start) where embedded rebuilds it in place and logs `executor_rebuilt`. | `AGENT_START` |
+| A stale approval, ask or suspend answer is a logged success, as embedded's executor ignores it. | `AGENT_*_RESPOND` |
 
 ## Parity diffs after W2-C
 

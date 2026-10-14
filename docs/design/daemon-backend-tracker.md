@@ -61,7 +61,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W2-B | Client sessions and client event stream (+ TUI on client sessions) | 2 | W1-A, W0-B | MERGED |
 | W2-C2 | Studio main switches from the interim `/events` adapter to W2-B client sessions (focus, holds, reattach, gap) | 2 | W2-B, W2-C | TODO |
 | W2-C | Daemon-mode core in Studio main | 2 | W0-A, W0-B, W0-E, W1-F | MERGED |
-| W3-A | Proxy: files, documents, agent runtime, review, templates | 3 | W2-A, W2-B, W2-C | TODO |
+| W3-A | Proxy: files, documents, agent runtime, review, templates | 3 | W2-A, W2-B, W2-C | DONE (ws/w3-a; daemon-side parity waits for W2-C2) |
 | W3-B | Proxy: settings, providers, models, subscription auth, identity, credentials | 3 | W2-C, W1-C | TODO |
 | W3-C | Proxy: MCP, adapters, sandbox packages, skills, registries | 3 | W2-C, W1-D | TODO |
 | W3-D | Proxy: mesh, fleet, dashboard, tools, token usage, compute, emergency stop | 3 | W2-C, W1-D | TODO |
@@ -304,7 +304,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-D | Packaged build not verified with a real `node_modules` (junction drops transitive deps); lead verifies `npm run package` in a real checkout | Lead, W5-B |
 | W0-A | `TEMPLATE_CHECK_REVIEW`: daemon reports provider status `unchecked` where Studio runs `autoProviderCheck`, and returns 409 when owner identity is not ready where embedded returns `needsReview:false` | W2-A (done: provider check through ProviderChecks; 200 `needsReview:false, identityReady:false`) |
 | W0-A | `DOC_READ_INTERNAL_FILE` needs a metadata-only / size-capped read so Studio does not download whole binaries to discard them | W1-E |
-| W0-A | `TEMPLATE_DELETE`: templates-trash vs OS trash semantics differ | W3-A |
+| W0-A | `TEMPLATE_DELETE`: templates-trash vs OS trash semantics differ | W3-A (done: local mode moves the file to the OS trash itself; remote uses templates-trash) |
 | W0-A | `fleetGroups`, `fleetStewards`, `fleetMapState` missing from `AppSettings` (`ipc.types.ts`) | W2-C |
 | W0-D | Pre-existing: the daemon's podman probe writes a stray `NUL` file in its working directory | W1-G (fixed) |
 | W1-B | (done in W1-A) **BLOCKING for W1-A**: nothing calls `builder.applyDerivedKey`; `RuntimeService` never passes `build({derivedKey})` (`runtime-service.ts:2449`), `unlockAgentIdentityPassword` (`:1812`) rebuilds only the provider, `createProviderForModel` fixes `derivedKey:null` (`:2457`). Password-protected agents unlocked in the daemon keep MCP, adapters and AdfCallHandler locked | W1-A |
@@ -314,7 +314,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-F | Streaming bound (300 ms/slice) MAY be too tight on loaded CI; make it configurable | W2-C |
 | W0-F | Upserted tables (adf_meta/config/files/identity) exempt from row-order check; sort them by primary key before daemon diffs | W2-C |
 | W0-F | A child spawned with a clean env (no `NODE_OPTIONS`) is unfenced | W2-C |
-| W0-F | E3 candidate: `cleanupAllProcesses` never calls `AgentTemplatesService.stopWatcher` | W3-A |
+| W0-F | E3 candidate: `cleanupAllProcesses` never calls `AgentTemplatesService.stopWatcher` | W3-A (done, E3: also closes the tracked-folder watcher) |
 | W1-G | Liveness is pid + 120 s heartbeat (interim); replace with W0-C `holderLiveness` and fold markers into the host record | W0-C (done) |
 | W1-G | Studio's 6 s teardown budget can expire during the 6 s stale-marker re-check, leaving containers running (safe direction) | W4-A |
 | W1-G | `leftRunning` and `containerUsers()` need UI in Settings → Compute and the reset confirmation | W3-D |
@@ -329,23 +329,23 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W1-D | Peer fetch: DNS rebinding between guard lookup and fetch (pre-existing); daemon port blocked only on loopback | W4-B |
 | W1-D | SSRF guard: map NAT64 `64:ff9b::/96` and 6to4 `2002::/16` back to IPv4 before checks (pre-existing gap, all callers); extend always-blocked metadata list (EKS `169.254.170.23`/`fd00:ec2::23`, Alibaba `100.100.100.200`, Azure `168.63.129.16`, OCI `192.0.0.192`); DNS-lookup failure currently passes through | W4-B |
 | W1-A | Key drop (remove/wipe) restarts every running adapter, not only those using the key | W3-B |
-| W1-A | Daemon-mode client must prompt for the file password before start, using the preflight `credentials_locked` code (design §6.1 row 27) | W3-A |
+| W1-A | Daemon-mode client must prompt for the file password before start, using the preflight `credentials_locked` code (design §6.1 row 27) | W3-A (done: FILE_OPEN asks for held and running agents; AGENT_START refuses a locked held document with code credentials_locked, which opens the dialog) |
 | Lead | Regenerate `docs/daemon/api-reference.md`/`.html` once after Wave 1 merges (`npm run docs:api`) | Lead |
 | W2-C | Lease client record `controlUrl` is always port 7385; daemon host record carries `version: null` | W4-A |
 | W2-C | Daemon-mode quit behaviour (R4) and version-mismatch choice | W4-A |
 | W2-C | CI job: build `out/main/daemon.js`, run `tests/parity` with `PARITY_REQUIRE_DAEMON=1` (the suite fails on a missing or stale bundle) | W5-B |
 | W2-C | Interim first-boot seed of `studio-client-settings.json` from `adf-settings.json` (`ClientSettingsStore.seedOnce`): replace with the switch's move | W4-A |
-| W2-C | Renderer ignores `chat_updated.earlierCount` (`useAgent.ts:495`): after a daemon-mode `stream.gap` resync (last 200 entries) older entries cannot be paged until reopen. Embedded sends the whole loop, no `earlierCount` | W3-A |
+| W2-C | Renderer ignores `chat_updated.earlierCount` (`useAgent.ts:495`): after a daemon-mode `stream.gap` resync (last 200 entries) older entries cannot be paged until reopen. Embedded sends the whole loop, no `earlierCount` | W3-A (done) |
 | Lead | MERGE GATE at W2-B merge: a test in the real daemon wiring proving a document held by a live session survives past the 60 s holder TTL (W2-B `setDocumentHolderCheck` wired to W2-A's sweep) | Lead (W2-B merge) |
-| W2-A | Read-only open of a file leased elsewhere still runs `AdfWorkspace.open` maintenance writes; a true read-only open needs an `AdfDatabase` change | W3-A |
+| W2-A | Read-only open of a file leased elsewhere still runs `AdfWorkspace.open` maintenance writes; a true read-only open needs an `AdfDatabase` change | W3-A (not done: needs a read-only AdfDatabase open; see the Lead row below) |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
-| W2-A | Start window: path-agent-ops `writeClosed` on a file that is loading (no open document) writes a config the start does not adopt (§6.1 row 24) | W3-A |
-| W2-A | Start window: `agent-runtime-builder.ts:1067` writes the start-time config back to the file, over a write made during the build (§6.1 row 24) | W3-A |
+| W2-A | Start window: path-agent-ops `writeClosed` on a file that is loading (no open document) writes a config the start does not adopt (§6.1 row 24) | W3-A (done: path ops wait for a load in flight (RuntimeService.waitForLoad)) |
+| W2-A | Start window: `agent-runtime-builder.ts:1067` writes the start-time config back to the file, over a write made during the build (§6.1 row 24) | W3-A (done: MCP tool syncs persist onto a fresh read) |
 | W2-A | An open document of a file leased elsewhere still gets AdfWorkspace.open's maintenance writes (migration, clean-close marker, skills registry); a read-only AdfDatabase open would remove them | Lead |
 | W2-A | Wire `setDocumentHolderCheck` and the hold/release/expiry calls to W2-B's `setDocumentHost` | W2-B merge (done: `wireDocumentsToClientSessions`; gate test `tests/daemon-client-documents-gate.test.ts`) |
-| W2-B | Templates folder watcher: `daemon-agent-factory.ts` creates AgentTemplatesService with `notifyChanged: () => {}` and never starts its watcher, so templates added or removed in the folder outside the daemon's routes push no `templates` frame; pass a `notifyTemplatesChanged` hook (→ `clientSessions.publishPush('templates', {})`) and start the watcher | W3-A |
+| W2-B | Templates folder watcher: `daemon-agent-factory.ts` creates AgentTemplatesService with `notifyChanged: () => {}` and never starts its watcher, so templates added or removed in the folder outside the daemon's routes push no `templates` frame; pass a `notifyTemplatesChanged` hook (→ `clientSessions.publishPush('templates', {})`) and start the watcher | W3-A (done) |
 
 ## 7. Parity triage (filled in W5-A)
 
