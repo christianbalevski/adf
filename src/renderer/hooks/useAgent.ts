@@ -491,8 +491,11 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         // This loop was compacted — replace ITS log with the compacted
         // version. Scoped to `loop` so a side loop's compaction never wipes
         // main's view (IMPL-5 / RT-F17).
-        const payload = event.payload as { uiLog: any[]; contextBaseline?: number }
-        agentStore.setLog(payload.uiLog, 0, loop)
+        const payload = event.payload as { uiLog: any[]; contextBaseline?: number; earlierCount?: number }
+        // `earlierCount`: entries older than this page that scroll-back can
+        // still load. Daemon mode's resync repaints the newest page only;
+        // embedded sends the whole loop and no count (0).
+        agentStore.setLog(payload.uiLog, typeof payload.earlierCount === 'number' ? payload.earlierCount : 0, loop)
         // A compaction / clear re-measured the context: reset the gauge to
         // the post-rebuild estimate (shown with the "~" marker) instead of
         // keeping the pre-compaction figure until the next call. The last

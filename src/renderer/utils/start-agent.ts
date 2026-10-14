@@ -73,6 +73,13 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
 
     // Only touch the store if the user is still looking at this agent.
     const stillViewing = useDocumentStore.getState().filePath === filePath
+    // Daemon mode: the file's password key is not unlocked (design §6.1 row
+    // 27). Ask for it with the same dialog the file open uses; embedded never
+    // answers this code (its file open asks first).
+    if ((result as { code?: string } | undefined)?.code === 'credentials_locked' && stillViewing && filePath) {
+      useAppStore.getState().setPasswordDialogOpen(true, filePath)
+      if (!result?.success) return { success: false, error: result?.error, cancelled: true }
+    }
     if (result?.success) {
       if (stillViewing) {
         agentStore.setState(toDisplayState(result.agentState ?? 'idle'))
