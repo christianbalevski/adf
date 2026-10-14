@@ -44,104 +44,22 @@ function deleteAdfFile(filePath: string): void {
   }
 }
 /**
- * Per-session cache of provider connection test results.
- * Keyed by a snapshot of fields that materially affect the test
- * (type/baseUrl/apiKey-presence). Cleared on app restart only.
- * Used by the home dashboard so revisiting the home screen doesn't
- * re-hit `/models` for every provider every time.
+ * Provider connection checks (services/provider-checks.ts): a per-session
+ * result cache plus the `providerChecksEnabled` opt-out for checks Studio
+ * starts on its own (dashboard, provider list, agent review). An explicit
+ * Test click calls testProviderCredentialsForDashboard directly.
  */
-const providerTestSessionCache = new Map<string, 'ok' | 'failed' | 'unconfigured'>()
+const providerChecks = new ProviderChecks({ isEnabled: () => settings?.get('providerChecksEnabled') !== false })
 
-function providerTestCacheKey(cfg: ProviderConfig): string {
-  // `id` alone isn't enough — the same provider id may have its key
-  // rotated mid-session. Include the credentials so edits bust the cache.
-  return `${cfg.id}::${cfg.type}::${cfg.baseUrl ?? ''}::${cfg.apiKey ? 'k' : '-'}`
-}
-
-/**
- * Probe for checks Studio starts on its own (dashboard, provider list, agent
- * review). Honors the `providerChecksEnabled` opt-out: off = no request, the
- * last result from this session if there is one, else 'unchecked'. An explicit
- * Test click always calls testProviderCredentialsForDashboard directly.
- */
 async function autoProviderCheck(cfg: ProviderConfig): Promise<'ok' | 'failed' | 'unconfigured' | 'unchecked'> {
-  if (settings?.get('providerChecksEnabled') === false) {
-    return providerTestSessionCache.get(providerTestCacheKey(cfg)) ?? 'unchecked'
-  }
-  return testProviderCredentialsForDashboard(cfg)
+  return providerChecks.autoCheck(cfg)
 }
 
 async function testProviderCredentialsForDashboard(
   cfg: ProviderConfig,
   force = false
 ): Promise<'ok' | 'failed' | 'unconfigured'> {
-  const cacheKey = providerTestCacheKey(cfg)
-  if (force) providerTestSessionCache.delete(cacheKey)
-  const cached = providerTestSessionCache.get(cacheKey)
-  if (cached) return cached
-
-  const finish = (result: 'ok' | 'failed' | 'unconfigured') => {
-    providerTestSessionCache.set(cacheKey, result)
-    return result
-  }
-
-  if (cfg.type === 'chatgpt-subscription') {
-    // No /models endpoint we can hit cheaply — treat session-auth presence as "ok".
-    return finish(getChatGptAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
-  }
-
-  if (cfg.type === 'grok-subscription') {
-    const { getGrokAuthManager } = await import('../providers/grok-subscription/auth-manager')
-    return finish(getGrokAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
-  }
-
-  if (cfg.type === 'claude-subscription') {
-    const { getClaudeAuthManager } = await import('../providers/claude-subscription/auth-manager')
-    return finish(await getClaudeAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
-  }
-
-  if (cfg.type === 'anthropic') {
-    if (!cfg.apiKey) return finish('unconfigured')
-    try {
-      const response = await fetch('https://api.anthropic.com/v1/models', {
-        headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
-        signal: AbortSignal.timeout(5000),
-      })
-      return finish(response.ok ? 'ok' : 'failed')
-    } catch {
-      return finish('failed')
-    }
-  }
-
-  if (cfg.type === 'openrouter') {
-    if (!cfg.apiKey) return finish('unconfigured')
-    try {
-      const url = (cfg.baseUrl?.replace(/\/+$/, '') || 'https://openrouter.ai/api/v1') + '/models'
-      const response = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${cfg.apiKey}` },
-        signal: AbortSignal.timeout(5000),
-      })
-      return finish(response.ok ? 'ok' : 'failed')
-    } catch {
-      return finish('failed')
-    }
-  }
-
-  // openai + openai-compatible — both use /models with Bearer.
-  // openai requires a key; openai-compatible may omit one (local proxies).
-  if (cfg.type === 'openai' && !cfg.apiKey) return finish('unconfigured')
-  if (cfg.type === 'openai-compatible' && !cfg.baseUrl) return finish('unconfigured')
-
-  try {
-    const baseUrl = cfg.type === 'openai' ? 'https://api.openai.com/v1' : cfg.baseUrl
-    const url = baseUrl.replace(/\/+$/, '') + '/models'
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
-    const response = await fetch(url, { headers, signal: AbortSignal.timeout(5000) })
-    return finish(response.ok ? 'ok' : 'failed')
-  } catch {
-    return finish('failed')
-  }
+  return providerChecks.test(cfg, force)
 }
 
 import chokidar from 'chokidar'
@@ -249,6 +167,8 @@ import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 
 import { encrypt } from '../crypto/identity-crypto'
 import { readRecentToolsFromWorkspace } from '../services/recent-tools'
+import { ProviderChecks } from '../services/provider-checks'
+import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById } from '../services/dashboard-stats'
 import { buildMeshStatus } from '../services/mesh-status'
 
 // Application state
@@ -6610,54 +6530,20 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // data resolves rather than waiting on the slowest one). ---
 
   // Slice 1: instant. Settings reads + in-memory services.
-  ipcMain.handle(IPC.DASHBOARD_QUICK_STATS, async () => {
-    const providers = (settings.get('providers') as ProviderConfig[]) ?? []
-    const mcpServers = (settings.get('mcpServers') as McpServerRegistration[]) ?? []
-    const adapters = (settings.get('adapters') as AdapterRegistration[]) ?? []
-    const compute = (settings.get('compute') as { hostAccessEnabled?: boolean } | undefined) ?? {}
-
-    return {
-      providers: { total: providers.length },
-      mcp: { configured: mcpServers.length },
-      adapters: {
-        configured: adapters.length,
-        types: Array.from(new Set(adapters.map((a) => a.type).filter(Boolean))),
-      },
-      packages: { total: sandboxPackagesService.getInstalledPackages().length },
-      hostAccess: { enabledGlobally: !!compute.hostAccessEnabled },
-      tokens: getTokenUsageService().getSummary(),
-    }
-  })
+  ipcMain.handle(IPC.DASHBOARD_QUICK_STATS, async () => buildQuickStats({
+    get: (key) => settings.get(key),
+    installedPackageCount: () => sandboxPackagesService.getInstalledPackages().length,
+    tokenSummary: () => getTokenUsageService().getSummary(),
+  }))
 
   // Slice 2: provider connection tests. Session-cached in main.
-  ipcMain.handle(IPC.DASHBOARD_PROVIDER_TESTS, async () => {
-    const providers = (settings.get('providers') as ProviderConfig[]) ?? []
-    let ok = 0
-    let failed = 0
-    let unconfigured = 0
-    await Promise.all(providers.map(async (cfg) => {
-      const result = await autoProviderCheck(cfg)
-      if (result === 'ok') ok++
-      else if (result === 'failed') failed++
-      else if (result === 'unconfigured') unconfigured++
-    }))
-    return { ok, failed, unconfigured }
-  })
+  ipcMain.handle(IPC.DASHBOARD_PROVIDER_TESTS, async () =>
+    runDashboardProviderTests((settings.get('providers') as ProviderConfig[]) ?? [], providerChecks))
 
   // Test a single provider's connection. `force` busts the session cache so the
   // Settings "Test" button always re-checks live.
-  ipcMain.handle(IPC.PROVIDER_TEST, async (_event, args: { providerId: string; force?: boolean }) => {
-    const providers = (settings.get('providers') as ProviderConfig[]) ?? []
-    const cfg = providers.find((p) => p.id === args?.providerId)
-    if (!cfg) return { status: 'unconfigured' as const }
-    // force = the owner clicked Test; the automatic first-sight test honors the opt-out.
-    if (args?.force !== true) {
-      const auto = await autoProviderCheck(cfg)
-      return { status: auto === 'unchecked' ? 'unknown' as const : auto }
-    }
-    const status = await testProviderCredentialsForDashboard(cfg, true)
-    return { status }
-  })
+  ipcMain.handle(IPC.PROVIDER_TEST, async (_event, args: { providerId: string; force?: boolean }) =>
+    testProviderById((settings.get('providers') as ProviderConfig[]) ?? [], args?.providerId, args?.force === true, providerChecks))
 
   // Slice 3: podman container probe.
   // `listContainers()` returns `{ name, status, running }` — the `running`
@@ -6683,41 +6569,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   // Slice 4: readonly peek across tracked .adf files.
-  ipcMain.handle(IPC.DASHBOARD_AGENT_STATS, async () => {
-    const { realpath } = await import('fs/promises')
-    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-
-    const seen = new Set<string>()
-    const uniqueFiles: string[] = []
-    for (const dir of trackedDirs) {
-      // Shared cached async walk — the same listing the fleet poll uses.
-      const files = await listAdfFiles(dir, 5)
-      const resolved = await mapWithConcurrency(files, 8, async (file) => {
-        try { return await realpath(file) } catch { return file }
-      })
-      files.forEach((file, i) => {
-        const settled = resolved[i]
-        const canon = settled.status === 'fulfilled' ? settled.value : file
-        if (seen.has(canon)) return
-        seen.add(canon)
-        uniqueFiles.push(file)
-      })
-    }
-
-    let autostart = 0
-    let autonomous = 0
-    let hostAccessAgents = 0
-    for (const filePath of uniqueFiles) {
-      // mtime-keyed — an unchanged agent file is never reopened.
-      const meta = peekAgentMetaCached(filePath)
-      if (!meta) continue
-      if (meta.autostart) autostart++
-      if (meta.autonomous) autonomous++
-      if (meta.hostAccess) hostAccessAgents++
-    }
-
-    return { total: uniqueFiles.length, autostart, autonomous, hostAccessAgents }
-  })
+  ipcMain.handle(IPC.DASHBOARD_AGENT_STATS, async () =>
+    buildAgentStats((settings.get('trackedDirectories') as string[]) ?? [], {
+      listAdfFiles: (dir, maxDepth) => listAdfFiles(dir, maxDepth),
+      peekMeta: (filePath) => peekAgentMetaCached(filePath),
+    }))
 
   ipcMain.handle(IPC.TOKEN_COUNT, async (_event, { text, provider, model }: { text: string; provider?: string; model?: string }) => {
     const tokenCounter = getTokenCounterService()
