@@ -58,7 +58,8 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W1-F | E1 extraction: background event mapping | 1 | W0-F | MERGED (squashed) |
 | W1-G | Compute ownership: a runtime stops only containers it started | 1 | none | MERGED |
 | W2-A | Open documents | 2 | W1-A, W1-E | MERGED |
-| W2-B | Client sessions and client event stream | 2 | W1-A, W0-B | TODO |
+| W2-B | Client sessions and client event stream (+ TUI on client sessions) | 2 | W1-A, W0-B | MERGED |
+| W2-C2 | Studio main switches from the interim `/events` adapter to W2-B client sessions (focus, holds, reattach, gap) | 2 | W2-B, W2-C | TODO |
 | W2-C | Daemon-mode core in Studio main | 2 | W0-A, W0-B, W0-E, W1-F | MERGED |
 | W3-A | Proxy: files, documents, agent runtime, review, templates | 3 | W2-A, W2-B, W2-C | TODO |
 | W3-B | Proxy: settings, providers, models, subscription auth, identity, credentials | 3 | W2-C, W1-C | TODO |
@@ -188,8 +189,10 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 #### W2-B Client sessions and client event stream
 
 - **Goal**: design D5.
-- **Owns**: new `src/main/daemon/client-sessions.ts`, `src/main/daemon/routes/client-routes.ts`, client-session methods in `src/shared/daemon-client/**`, client wiring in `src/main/daemon/index.ts`, tests.
+- **Owns**: new `src/main/daemon/client-sessions.ts`, `src/main/daemon/routes/client-routes.ts`, client-session methods in `src/shared/daemon-client/**`, client wiring in `src/main/daemon/index.ts`, `src/main/tui/**` (the terminal app on the session stream, owner 2026-10-14), tests.
 - **Acceptance**: frames per agent in emission order; deltas only for the focused agent; per-session ring of 4096 with `stream.gap` on eviction and epoch change; session expiry releases documents; `exitDaemonWhenClosed` orphan rule (§8.3); delta frame latency p95 ≤ 50 ms on loopback measured by a test; the existing `/events` output is unchanged.
+- **Acceptance (several clients, owner 2026-10-14)**: three concurrent sessions on one daemon, two focused on the same agent, receive the same non-delta frames per agent in the same order; both focused sessions get the deltas, the third none. A session that goes slow or disconnects mid-turn and resumes with `since=` gets the missed frames or a `stream.gap`; the others are unaffected and stay within the latency budget. A REST write by one client (config, document, file, inbox, HIL resolve) produces the matching frame on every other session (the writer's own echo is skipped, as in embedded Studio). A HIL request and its resolution reach every session. Fan-out is per session (D5.1).
+- **Acceptance (terminal app, owner 2026-10-14)**: the TUI opens a session on connect and ends it on exit; its focus is the chat view's agent, which streams tokens whatever `umbilical.stream_deltas` says; other agents update from non-delta frames; frames map into the existing reducer; reconnect keeps backoff, idle watchdog and resume; `stream.gap` resyncs chat, agents and approvals; an older daemon or another `clientApiVersion` falls back to `/events`, logged once; all TUI suites pass (`--project tui --maxWorkers=4`); a Studio-like and a TUI session on one daemon see the same state.
 - **Review focus**: memory growth with many agents and a slow client (back-pressure, drop policy must be a visible gap, never silent loss); executor event payload size (`tool_call_result` content).
 
 #### W2-C Daemon-mode core in Studio main
@@ -335,13 +338,17 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W2-C | Renderer ignores `chat_updated.earlierCount` (`useAgent.ts:495`): after a daemon-mode `stream.gap` resync (last 200 entries) older entries cannot be paged until reopen. Embedded sends the whole loop, no `earlierCount` | W3-A |
 | Lead | MERGE GATE at W2-B merge: a test in the real daemon wiring proving a document held by a live session survives past the 60 s holder TTL (W2-B `setDocumentHolderCheck` wired to W2-A's sweep) | Lead (W2-B merge) |
 | W2-A | Read-only open of a file leased elsewhere still runs `AdfWorkspace.open` maintenance writes; a true read-only open needs an `AdfDatabase` change | W3-A |
+| W3-C | Agent MCP OAuth via HIL (`mcp_oauth_authorize`) not met end-to-end: opener sees only the connect snapshot on the interim adapter; a request pending at connect lands in the approvals panel with no Open action. Needs a parity scenario on client sessions | W2-C2 |
+| W3-C | Interim-adapter install-progress branch (`install-progress.ts:121-138`, `progressLog` relay) is dead once on client sessions; delete and rerun `w3c-install-progress` on sessions | W2-C2 |
+| W3-C | E3 candidate: `MCP_ATTACH_SERVER` drops OAuth flags (renderer + `ipc/index.ts:7167`); the `.adf` lacks `oauth:true`, so on another runtime it connects without OAuth and 401s | W5-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
 | W2-A | Start window: path-agent-ops `writeClosed` on a file that is loading (no open document) writes a config the start does not adopt (§6.1 row 24) | W3-A |
 | W2-A | Start window: `agent-runtime-builder.ts:1067` writes the start-time config back to the file, over a write made during the build (§6.1 row 24) | W3-A |
 | W2-A | An open document of a file leased elsewhere still gets AdfWorkspace.open's maintenance writes (migration, clean-close marker, skills registry); a read-only AdfDatabase open would remove them | Lead |
-| W2-A | Wire `setDocumentHolderCheck` and the hold/release/expiry calls to W2-B's `setDocumentHost` | W2-B merge |
+| W2-A | Wire `setDocumentHolderCheck` and the hold/release/expiry calls to W2-B's `setDocumentHost` | W2-B merge (done: `wireDocumentsToClientSessions`; gate test `tests/daemon-client-documents-gate.test.ts`) |
+| W2-B | Templates folder watcher: `daemon-agent-factory.ts` creates AgentTemplatesService with `notifyChanged: () => {}` and never starts its watcher, so templates added or removed in the folder outside the daemon's routes push no `templates` frame; pass a `notifyTemplatesChanged` hook (→ `clientSessions.publishPush('templates', {})`) and start the watcher | W3-A |
 
 ## 7. Parity triage (filled in W5-A)
 

@@ -30,6 +30,8 @@ import type { GapRouteDeps } from './gap-deps'
 import { registerIdentityImportRoutes } from './identity-import-routes'
 import { registerFileRoutes } from './file-routes'
 import type { TrackedDirWatcher } from '../dir-watcher'
+import { registerClientRoutes } from './client-routes'
+import type { ClientSessionRegistry } from '../client-sessions'
 import { registerDocumentRoutes } from './document-routes'
 import { registerPackageJobRoutes } from './package-job-routes'
 import { registerAgentFileConfigRoutes } from './agent-file-config-routes'
@@ -46,6 +48,8 @@ export interface DaemonRouteDeps {
   rawFileBodyLimit?: number
   /** POST /files/import byte limit (default 1 GiB, ADF_DAEMON_IMPORT_BODY_LIMIT_MB). */
   importBodyLimit?: number
+  /** Client sessions and their event stream (client-sessions.ts). Absent: the one daemon/index.ts registered (registerDaemonClientSessions), else one fed by the runtime, the approvals hub and the event bus. */
+  clientSessions?: ClientSessionRegistry
 }
 
 export interface DaemonRouteContext {
@@ -72,6 +76,7 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerJobRoutes,
   registerIdentityImportRoutes,
   registerFileRoutes,
+  registerClientRoutes,
   registerDocumentRoutes,
   registerPackageJobRoutes,
   registerAgentFileConfigRoutes,

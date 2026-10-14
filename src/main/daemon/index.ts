@@ -43,6 +43,8 @@ import { takeLaunchEnv } from './routes/meta-routes'
 import { daemonGapRouteDeps } from './routes/gap-deps'
 import { RuntimeDiscovery } from '../services/runtime-discovery'
 import { applySettingLive } from './live-setting'
+import { approvalHub } from '../runtime/approval-hub'
+import { createDaemonClientSessions } from './client-wiring'
 import { wireRuntimeToMesh } from './runtime-mesh-wiring'
 
 // Defined by the builds that ship the daemon (electron.vite.config.ts for
@@ -335,6 +337,27 @@ const trackedDirWatcher = new TrackedDirWatcher({
   settings,
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
 })
+// Client sessions and the client event stream (design daemon-backend.md D5):
+// every push Studio's window gets in embedded mode, as frames, and session
+// documents as W2-A's open documents. Built by client-wiring.ts (the gate
+// test builds the same); the HTTP side is routes/client-routes.ts.
+const client = createDaemonClientSessions({
+  runtime,
+  mesh: meshManager,
+  compute: podmanService,
+  approvals: approvalHub,
+  trackedDirWatcher,
+  eventBus,
+  packages: { mcp: mcpPackageResolver, python: uvxPackageResolver, adapters: adapterPackageResolver, sandbox: sandboxPackagesService },
+  options: {
+    startedBy,
+    // §8.3 orphan rule: the session of a Studio that crashed expired.
+    requestShutdown: () => {
+      console.log('[ADF Daemon] The last client session that owned this daemon run expired — shutting down...')
+      void boundedShutdown(0)
+    },
+  },
+})
 const daemon = new DaemonHost({
   runtime,
   identity: ownerIdentity,
@@ -416,10 +439,12 @@ const daemon = new DaemonHost({
     getLanAddresses,
     getDiscoveredRuntimes: (args?: { force?: boolean }) => runtimeDiscovery.getDiscoveredRuntimes(args),
   },
-  mcpPackageService: mcpPackageResolver,
-  mcpPythonPackageService: uvxPackageResolver,
-  adapterPackageService: adapterPackageResolver,
-  sandboxPackageService: sandboxPackagesService,
+  // The admin install routes report progress on the client stream, as
+  // Studio's install handlers push *_INSTALL_PROGRESS (client-wiring.ts).
+  mcpPackageService: client.packages.mcp,
+  mcpPythonPackageService: client.packages.python,
+  adapterPackageService: client.packages.adapters,
+  sandboxPackageService: client.packages.sandbox,
   // Runs FIRST in DaemonHost.stop(), before server close and agent unload —
   // debounced token usage is the most losable data, and a hang anywhere later
   // in shutdown must not cost it (Studio's cleanupAllProcesses phase-1 parity).
