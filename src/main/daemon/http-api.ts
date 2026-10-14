@@ -45,6 +45,7 @@ import type { ProviderKeyVault } from './provider-key-vault'
 import { listFolderAgents, listTrackedAgents, listTrackedDirs, noteAutostartReport, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
 import { registerDaemonRoutes, type DaemonRouteDeps } from './routes'
 import { RuntimeGate } from '../runtime/runtime-gate'
+import { safeJsonStringify } from './sse-wire'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
@@ -3111,7 +3112,7 @@ function handleRuntimeError(reply: FastifyReply, err: unknown) {
  * no `id:` line (the resume cursor is unchanged) and a non-EventFrame body.
  */
 function writeSseControl(stream: NodeJS.WritableStream, name: string, data: Record<string, unknown>): void {
-  stream.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
+  stream.write(`event: ${name}\ndata: ${safeJsonStringify(data)}\n\n`)
 }
 
 function single(value: string | string[] | undefined): string | undefined {
@@ -3122,7 +3123,8 @@ function writeSseEvent(stream: NodeJS.WritableStream, envelope: DaemonEventEnvel
   // `id` is the resume cursor (matches ?since=), not the per-agent seq.
   stream.write(`id: ${envelope.cursor}\n`)
   stream.write(`event: ${envelope.event.event_type}\n`)
-  stream.write(`data: ${JSON.stringify(envelope)}\n\n`)
+  // Never throws on a BigInt or a cycle in a payload (sse-wire.ts says what the wire keeps).
+  stream.write(`data: ${safeJsonStringify(envelope)}\n\n`)
 }
 
 // Response shapes of the diagnostics builders, for typed clients (the TUI).
