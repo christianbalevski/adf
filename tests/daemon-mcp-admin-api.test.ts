@@ -67,8 +67,28 @@ describe('probe and logs', () => {
   })
 })
 
-describe('registration test interactive steps', () => {
-  it('an OAuth authorization URL is handed to the client while the test runs', async () => {
+type Server = ReturnType<typeof setup>
+
+/** Poll GET /jobs/:id until the job leaves `running`. */
+async function awaitJob(server: Server, jobId: string): Promise<Record<string, any>> {
+  for (let i = 0; i < 500; i++) {
+    const job = (await server.inject({ method: 'GET', url: `/jobs/${jobId}` })).json()
+    if (job.state !== 'running') return job
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  throw new Error(`job ${jobId} still running`)
+}
+
+async function startTest(server: Server, payload: unknown): Promise<string> {
+  const res = await server.inject({ method: 'POST', url: '/admin/mcp/registration-test', payload: payload as object })
+  expect(res.statusCode).toBe(202)
+  const body = res.json()
+  expect(body.job).toMatchObject({ id: body.jobId, kind: 'mcp.registration-test', state: 'running' })
+  return body.jobId
+}
+
+describe('registration test as a job, with interactive steps', () => {
+  it('an OAuth authorization URL is handed to the client while the test runs; the result arrives on the job', async () => {
     const store = { get: vi.fn(async () => undefined), save: vi.fn(async () => {}), invalidate: vi.fn(async () => {}) }
     const server = setup({ routes: { gaps: { mcpAppOAuthStore: store, uvManager } } })
     let release!: () => void
@@ -77,16 +97,18 @@ describe('registration test interactive steps', () => {
       await new Promise<void>((r) => { release = r })
       return { authorized: true }
     })
-    const pending = server.inject({ method: 'POST', url: '/admin/mcp/registration-test', payload: { interactionTag: 'tag-1', registration: { name: 'remote', type: 'http', url: 'https://mcp.example.test/mcp', oauth: true } } })
+    const jobId = await startTest(server, { registration: { name: 'remote', type: 'http', url: 'https://mcp.example.test/mcp', oauth: true } })
     await vi.waitFor(() => expect(h.oauthFlow).toHaveBeenCalled())
-    const list = (await server.inject({ method: 'GET', url: '/admin/mcp/interactions?tag=tag-1' })).json()
-    expect(list.interactions).toEqual([expect.objectContaining({ kind: 'open_url', tag: 'tag-1', serverName: 'remote', url: 'https://auth.example.test/authorize?state=abc' })])
+    const list = (await server.inject({ method: 'GET', url: `/admin/mcp/interactions?jobId=${jobId}` })).json()
+    expect(list.interactions).toEqual([expect.objectContaining({ jobId, kind: 'open_url', state: 'pending', serverName: 'remote', url: 'https://auth.example.test/authorize?state=abc' })])
     expect((await server.inject({ method: 'POST', url: `/admin/mcp/interactions/${list.interactions[0].id}/continue` })).json()).toEqual({ success: true })
     release()
-    const res = await pending
-    expect(res.json()).toMatchObject({ success: true, location: 'remote http', oauthRan: true, authRan: true })
+    const job = await awaitJob(server, jobId)
+    expect(job.state).toBe('succeeded')
+    expect(job.result).toMatchObject({ success: true, location: 'remote http', oauthRan: true, authRan: true })
     expect((await server.inject({ method: 'GET', url: '/admin/mcp/interactions' })).json()).toEqual({ interactions: [] })
     expect((await server.inject({ method: 'POST', url: '/admin/mcp/interactions/nope/continue' })).statusCode).toBe(404)
+    expect((await server.inject({ method: 'GET', url: '/jobs/no-such-job' })).statusCode).toBe(404)
   })
 
   it('the stdio auth preflight Continue prompt waits for the client', async () => {
@@ -96,25 +118,64 @@ describe('registration test interactive steps', () => {
       await io.confirm({ serverName: 'gh', authUrlOpened: true })
       confirmed = true
     })
-    const pending = server.inject({ method: 'POST', url: '/admin/mcp/registration-test', payload: { registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host', auth: true } } })
+    const jobId = await startTest(server, { registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host', auth: true } })
     let id = ''
     await vi.waitFor(async () => {
-      const list = (await server.inject({ method: 'GET', url: '/admin/mcp/interactions' })).json()
+      const list = (await server.inject({ method: 'GET', url: `/admin/mcp/interactions?jobId=${jobId}` })).json()
       expect(list.interactions).toHaveLength(1)
-      expect(list.interactions[0]).toMatchObject({ kind: 'confirm', serverName: 'gh', authUrlOpened: true })
+      expect(list.interactions[0]).toMatchObject({ kind: 'confirm', state: 'pending', serverName: 'gh', authUrlOpened: true })
       id = list.interactions[0].id
     })
     expect(confirmed).toBe(false)
     await server.inject({ method: 'POST', url: `/admin/mcp/interactions/${id}/continue` })
-    const res = await pending
+    const job = await awaitJob(server, jobId)
     expect(confirmed).toBe(true)
-    expect(res.json()).toMatchObject({ success: true, location: 'host', authRan: true })
+    expect(job.result).toMatchObject({ success: true, location: 'host', authRan: true, notes: [] })
+  })
+
+  it('an unanswered confirm is kept as timed_out and named in the result', async () => {
+    const server = setup({ routes: { gaps: { uvManager, mcpConfirmTimeoutMs: 50 } } })
+    let afterConfirm!: () => void
+    const gate = new Promise<void>((r) => { afterConfirm = r })
+    h.preflight.mockImplementation(async (_cfg: unknown, _opts: unknown, io: { confirm(i: { serverName: string; authUrlOpened: boolean }): Promise<void> }) => {
+      await io.confirm({ serverName: 'gh', authUrlOpened: false })
+      await gate // hold the run so the timed-out step can be observed
+    })
+    const jobId = await startTest(server, { registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host', auth: true } })
+    await vi.waitFor(async () => {
+      const list = (await server.inject({ method: 'GET', url: `/admin/mcp/interactions?jobId=${jobId}` })).json()
+      expect(list.interactions).toEqual([expect.objectContaining({ kind: 'confirm', state: 'timed_out' })])
+      // A timed-out step cannot be answered any more.
+      expect((await server.inject({ method: 'POST', url: `/admin/mcp/interactions/${list.interactions[0].id}/continue` })).statusCode).toBe(404)
+    })
+    afterConfirm()
+    const job = await awaitJob(server, jobId)
+    expect(job.result.notes).toEqual([expect.stringMatching(/^No one confirmed the authorization step for "gh"/)])
+    expect((await server.inject({ method: 'GET', url: '/admin/mcp/interactions' })).json()).toEqual({ interactions: [] })
+  })
+
+  it('POST /jobs/:id/cancel stops a running test and releases its pending steps', async () => {
+    const server = setup({ routes: { gaps: { uvManager } } })
+    let preflightDone = false
+    h.preflight.mockImplementation(async (_cfg: unknown, _opts: unknown, io: { confirm(i: { serverName: string; authUrlOpened: boolean }): Promise<void> }) => {
+      await io.confirm({ serverName: 'gh', authUrlOpened: true })
+      preflightDone = true
+    })
+    const jobId = await startTest(server, { registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host', auth: true } })
+    await vi.waitFor(async () => expect((await server.inject({ method: 'GET', url: `/admin/mcp/interactions?jobId=${jobId}` })).json().interactions).toHaveLength(1))
+    const cancel = await server.inject({ method: 'POST', url: `/jobs/${jobId}/cancel` })
+    expect(cancel.json()).toMatchObject({ cancelled: true, job: { state: 'cancelled', error: 'Cancelled by the client' } })
+    await vi.waitFor(async () => expect((await server.inject({ method: 'GET', url: '/admin/mcp/interactions' })).json().interactions).toEqual([]))
+    expect(preflightDone).toBe(true) // the waiting confirm was released
+    expect((await server.inject({ method: 'GET', url: `/jobs/${jobId}` })).json().state).toBe('cancelled')
+    expect((await server.inject({ method: 'POST', url: `/jobs/${jobId}/cancel` })).json()).toMatchObject({ cancelled: false })
   })
 
   it('without an app OAuth store an OAuth remote fails plainly', async () => {
     const server = setup()
-    const res = await server.inject({ method: 'POST', url: '/admin/mcp/registration-test', payload: { registration: { name: 'remote', type: 'http', url: 'https://mcp.example.test/mcp', oauth: true } } })
-    expect(res.json()).toMatchObject({ success: false, oauthRan: true, error: 'MCP OAuth sign-in is not available on this host: it has no app-level OAuth token store.' })
+    const jobId = await startTest(server, { registration: { name: 'remote', type: 'http', url: 'https://mcp.example.test/mcp', oauth: true } })
+    const job = await awaitJob(server, jobId)
+    expect(job.result).toMatchObject({ success: false, oauthRan: true, error: 'MCP OAuth sign-in is not available on this host: it has no app-level OAuth token store.' })
     expect(h.oauthFlow).not.toHaveBeenCalled()
   })
 })
@@ -141,8 +202,11 @@ describe('OAuth status and sign-out', () => {
 })
 
 describe('POST /admin/mcp/python-runtime', () => {
-  it('ensures uv and Python with the daemon UvManager', async () => {
+  it('runs as a job with the daemon UvManager', async () => {
     const server = setup({ routes: { gaps: { uvManager } } })
-    expect((await server.inject({ method: 'POST', url: '/admin/mcp/python-runtime' })).json()).toEqual({ success: true, uvAvailable: true, uvVersion: '0.5.1', pythonAvailable: true, uvPath: '/bin/uv' })
+    const res = await server.inject({ method: 'POST', url: '/admin/mcp/python-runtime' })
+    expect(res.statusCode).toBe(202)
+    const job = await awaitJob(server, res.json().jobId)
+    expect(job).toMatchObject({ kind: 'mcp.python-runtime', state: 'succeeded', result: { success: true, uvAvailable: true, uvVersion: '0.5.1', pythonAvailable: true, uvPath: '/bin/uv' } })
   })
 })

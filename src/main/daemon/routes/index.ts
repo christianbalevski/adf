@@ -25,6 +25,7 @@ import { registerCatalogRoutes } from './catalog-routes'
 import { registerMcpAdminRoutes } from './mcp-admin-routes'
 import { registerOwnerEnvelopeRoutes } from './owner-envelope-routes'
 import { registerComputeAdminRoutes } from './compute-admin-routes'
+import { registerJobRoutes } from './job-routes'
 import type { GapRouteDeps } from './gap-deps'
 
 /** Dependencies of route modules that DaemonHttpApiOptions does not carry. Every field is optional. */
@@ -56,6 +57,7 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerMcpAdminRoutes,
   registerOwnerEnvelopeRoutes,
   registerComputeAdminRoutes,
+  registerJobRoutes,
 ]
 
 export function registerDaemonRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {

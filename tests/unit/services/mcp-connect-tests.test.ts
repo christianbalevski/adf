@@ -204,3 +204,20 @@ describe('runMcpRegistrationTest: host credential files', () => {
     }
   })
 })
+
+describe('runMcpRegistrationTest: cancel signal', () => {
+  it('stops at the next step, disconnects and answers Cancelled', async () => {
+    const controller = new AbortController()
+    let releasePreflight!: () => void
+    const d = deps({ authPreflight: vi.fn(() => new Promise<void>((r) => { releasePreflight = r })) })
+    const run = runMcpRegistrationTest({ registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host', auth: true } }, { ...d, signal: controller.signal })
+    await vi.waitFor(() => expect(d.authPreflight).toHaveBeenCalled())
+    controller.abort()
+    const result = await run
+    expect(result).toMatchObject({ success: false, error: 'Cancelled', location: 'host' })
+    const manager = h.FakeManager.instances.at(-1)!
+    expect(manager.connects).toEqual([]) // never got to connect
+    expect(manager.disconnected).toBe(true)
+    releasePreflight()
+  })
+})

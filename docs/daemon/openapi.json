@@ -125,6 +125,10 @@
     {
       "name": "Registries",
       "description": "Agent registry, curated MCP registry and skill catalogs."
+    },
+    {
+      "name": "Jobs",
+      "description": "Long-running work: routes that may take minutes answer 202 with a job; poll it, or cancel it. Finished jobs are kept for 10 minutes."
     }
   ],
   "paths": {
@@ -10178,7 +10182,7 @@
           }
         ],
         "requestBody": {
-          "required": true,
+          "required": false,
           "content": {
             "application/json": {
               "schema": {
@@ -10481,7 +10485,7 @@
           "MCP"
         ],
         "summary": "Connect test for an MCP registration",
-        "description": "Runs the real pipeline for the draft. Interactive steps (an OAuth authorization URL, the auth preflight’s Continue) appear in GET /admin/mcp/interactions while the test runs.",
+        "description": "Runs the real pipeline for the draft. Interactive steps (an OAuth authorization URL, the auth preflight’s Continue) appear in GET /admin/mcp/interactions while the test runs. Runs as a job: answers 202 at once. Interactive steps of this run are listed by GET /admin/mcp/interactions?jobId=; POST /jobs/{jobId}/cancel stops it and disconnects the server it started.",
         "operationId": "testMcpRegistration",
         "requestBody": {
           "required": true,
@@ -10494,12 +10498,29 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "OK",
+          "202": {
+            "description": "Started; poll GET /jobs/{jobId}. The finished job's `result` is a McpRegistrationTestResult.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/McpRegistrationTestResult"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/McpRegistrationTestResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -10518,14 +10539,14 @@
         "tags": [
           "MCP"
         ],
-        "summary": "Pending interactive steps of running MCP tests",
+        "summary": "Interactive steps of running MCP registration tests",
         "operationId": "getMcpInteractions",
         "parameters": [
           {
-            "name": "tag",
+            "name": "jobId",
             "in": "query",
             "required": false,
-            "description": "Only steps of runs started with this interactionTag",
+            "description": "Only the steps of this job",
             "schema": {
               "type": "string"
             }
@@ -10557,7 +10578,7 @@
           "MCP"
         ],
         "summary": "Answer an interactive step",
-        "description": "Removes an open_url step; lets a waiting confirm step continue.",
+        "description": "Removes an open_url step; lets a waiting confirm step continue. A timed-out step cannot be answered (404).",
         "operationId": "continueMcpInteraction",
         "parameters": [
           {
@@ -10722,15 +10743,32 @@
           "MCP"
         ],
         "summary": "Ensure uv and Python on the daemon host",
-        "description": "Downloads them when missing; answers after at most 10 minutes (the download then continues).",
+        "description": "Downloads uv and Python when missing. Runs as a job: answers 202 at once. Cancel stops waiting; a download already running finishes.",
         "operationId": "ensureMcpPythonRuntime",
         "responses": {
-          "200": {
-            "description": "OK",
+          "202": {
+            "description": "Started; poll GET /jobs/{jobId}. The finished job's `result` is a PythonRuntimeResult.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PythonRuntimeResult"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/PythonRuntimeResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -11207,6 +11245,89 @@
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/jobs/{jobId}": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "A job: state, and its result once finished",
+        "operationId": "getJob",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "description": "Job id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/jobs/{jobId}/cancel": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Cancel a running job",
+        "description": "Aborts the work at its next step and marks the job `cancelled` at once. Work that cannot stop mid-way (a download) finishes in the background; the job still reads `cancelled`.",
+        "operationId": "cancelJob",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "description": "Job id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancelled, or already finished",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobCancelResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -21965,10 +22086,6 @@
                 }
               }
             }
-          },
-          "interactionTag": {
-            "type": "string",
-            "description": "Echoed on this run’s interactive steps (GET /admin/mcp/interactions?tag=)"
           }
         }
       },
@@ -22030,13 +22147,19 @@
         "type": "object",
         "required": [
           "id",
+          "jobId",
           "kind",
+          "state",
           "message",
           "createdAt"
         ],
         "properties": {
           "id": {
             "type": "string"
+          },
+          "jobId": {
+            "type": "string",
+            "description": "The registration-test job the step belongs to"
           },
           "kind": {
             "type": "string",
@@ -22045,8 +22168,13 @@
               "confirm"
             ]
           },
-          "tag": {
-            "type": "string"
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "timed_out"
+            ],
+            "description": "`timed_out`: a confirm nobody answered within 5 minutes; the test went on without it and its result says so"
           },
           "serverName": {
             "type": "string"
@@ -22404,6 +22532,80 @@
           "skipped": [
             "mesh server"
           ]
+        }
+      },
+      "Job": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "What the job does, e.g. `mcp.registration-test`"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "createdAt": {
+            "type": "number",
+            "description": "Epoch ms"
+          },
+          "finishedAt": {
+            "type": "number"
+          },
+          "result": {
+            "description": "The work's answer (state `succeeded`): the route's documented result shape"
+          },
+          "error": {
+            "type": "string",
+            "description": "Why it failed or was cancelled"
+          },
+          "progress": {
+            "type": "string"
+          }
+        }
+      },
+      "JobAccepted": {
+        "type": "object",
+        "required": [
+          "jobId",
+          "job"
+        ],
+        "properties": {
+          "jobId": {
+            "type": "string"
+          },
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          }
+        }
+      },
+      "JobCancelResponse": {
+        "type": "object",
+        "required": [
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "description": "False when the job had already finished"
+          },
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          }
         }
       }
     }

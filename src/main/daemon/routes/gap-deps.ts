@@ -27,6 +27,8 @@ export interface GapRouteDeps {
   meshServer?: { stop(): Promise<void> }
   /** Interactive stdio auth preflight for the registration test. Default: interaction prompts relayed to the client (mcp-admin-routes). */
   mcpAuthPreflight?: McpAuthPreflightRunner
+  /** How long an unanswered auth-preflight confirm waits (tests). Default: CONFIRM_TIMEOUT_MS, 5 minutes. */
+  mcpConfirmTimeoutMs?: number
   /** External execution target probe (Settings → Compute). Default: a private ExternalExecutionService. */
   externalExecution?: { probe(target: unknown): Promise<unknown> }
   /** Registry service overrides (tests): bundled dir, cache dir, app version, fetchers. */

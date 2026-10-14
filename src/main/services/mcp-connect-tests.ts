@@ -203,6 +203,16 @@ export interface McpRegistrationTestDeps {
   /** Interactive stdio auth preflight (Studio: browser + Continue dialog). */
   authPreflight: McpAuthPreflightRunner
   onLog: McpLogSink
+  /**
+   * Cancels the test (daemon jobs). The run stops waiting at its next step,
+   * disconnects the server it started and answers `error: 'Cancelled'`. An
+   * OAuth callback listener already open stays until its own timeout.
+   */
+  signal?: AbortSignal
+}
+
+class McpTestCancelled extends Error {
+  constructor() { super('Cancelled') }
 }
 
 export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistrationTestDeps): Promise<McpRegistrationTestResult> {
@@ -238,6 +248,16 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
     () => appOAuthStore ?? undefined,
   ))
   tempManager.on('log', (name, entry) => deps.onLog(name, entry))
+  // Each awaited step races the cancel signal (no signal: the step as is).
+  const signal = deps.signal
+  const cancelled = signal
+    ? new Promise<never>((_resolve, reject) => {
+        if (signal.aborted) reject(new McpTestCancelled())
+        else signal.addEventListener('abort', () => reject(new McpTestCancelled()), { once: true })
+      })
+    : null
+  cancelled?.catch(() => { /* observed by step() */ })
+  const step = <T>(work: Promise<T>): Promise<T> => (cancelled ? Promise.race([work, cancelled]) : work)
   const finish = async (result: { success: boolean; tools: unknown[]; error?: string }): Promise<McpRegistrationTestResult> => {
     // Capture state BEFORE disconnect — teardown clears the log buffer.
     const state = tempManager.getServerState(reg.name)
@@ -263,15 +283,15 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
         if (!appOAuthStore) {
           return finish({ success: false, tools: [], error: 'MCP OAuth sign-in is not available on this host: it has no app-level OAuth token store.' })
         }
-        const flow = await runMcpHttpOAuthFlow(serverCfg.url, appOAuthStore, deps.oauthIO, {
+        const flow = await step(runMcpHttpOAuthFlow(serverCfg.url, appOAuthStore, deps.oauthIO, {
           clientId: oauthReg.oauthClientId,
           scopes: oauthReg.oauthScopes,
-        })
+        }))
         if (!flow.authorized) {
           return finish({ success: false, tools: [], error: flow.error ?? 'OAuth sign-in did not complete.' })
         }
       }
-      const tools = await tempManager.connect({ ...serverCfg, env: Object.keys(env).length ? env : undefined })
+      const tools = await step(tempManager.connect({ ...serverCfg, env: Object.keys(env).length ? env : undefined }))
       if (tools) return finish({ success: true, tools })
       return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
     }
@@ -303,7 +323,7 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
       const userArgs = (reg.args ?? []).filter(Boolean)
       if (reg.pypiPackage) {
         try {
-          const uvPath = await deps.uvManager.ensureUv()
+          const uvPath = await step(deps.uvManager.ensureUv())
           command = uvPath
           args = ['tool', 'run', reg.pypiPackage, ...userArgs]
         } catch {
@@ -324,9 +344,9 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
         // preflight's own npx/uv fallbacks never fire, so the auth run is
         // exactly `<command> <args> <authArgs>` — e.g.
         // `uv tool run <pkg> <userArgs> <authArgs>` for pypi.
-        await deps.authPreflight({ ...serverCfg, command, args }, { authArgs: reg.authArgs, authPort: reg.authPort, resolvedEnv: env })
+        await step(deps.authPreflight({ ...serverCfg, command, args }, { authArgs: reg.authArgs, authPort: reg.authPort, resolvedEnv: env }))
       }
-      const tools = await tempManager.connect({ name: reg.name, transport: 'stdio', command, args, env: Object.keys(env).length ? env : undefined })
+      const tools = await step(tempManager.connect({ name: reg.name, transport: 'stdio', command, args, env: Object.keys(env).length ? env : undefined }))
       if (tools) return finish({ success: true, tools })
       return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
     }
@@ -334,8 +354,8 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
     // Shared container: real containerized launch under an ephemeral test
     // home (auth + credential capture are per-agent concerns — see plan
     // notes). Cleaned up afterwards.
-    await deps.podman.ensureRunning()
-    const podmanBin = await deps.podman.findPodman()
+    await step(deps.podman.ensureRunning())
+    const podmanBin = await step(deps.podman.findPodman())
     if (!podmanBin) return finish({ success: false, tools: [], error: 'Podman is unavailable — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute.' })
     // Per-invocation test dir so overlapping Connect/Reconnect tests never
     // delete each other's ephemeral home.
@@ -344,10 +364,10 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
     try { await deps.podman.ensureWorkspace('adf-mcp', testHome) } catch { /* mkdir in wrapper */ }
     const containerCmd = resolveContainerCommand(serverCfg)
     try {
-      const tools = await tempManager.connect(
+      const tools = await step(tempManager.connect(
         { name: reg.name, transport: 'stdio', env },
         { externalTransport: new PodmanStdioTransport({ podmanBin, containerName: 'adf-mcp', command: containerCmd.command, args: containerCmd.args, env: { HOME: testHome, ...env }, cwd: testDir }) },
-      )
+      ))
       if (tools) return finish({ success: true, tools })
       return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
     } finally {
