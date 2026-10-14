@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -270,6 +270,31 @@ describe('daemon agent creation', () => {
     expect(missing.statusCode).toBe(422)
     expect(missing.json().code).toBe('template_missing')
     expect(existsSync(join(agentsDir, 'agent-2.adf'))).toBe(false)
+  }, 60_000)
+
+  it('a confirmed replace whose identity provisioning fails: the replacement is kept with a warning, nothing is lost, no work file left', async () => {
+    const { server, identity } = makeDaemon()
+    await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
+    const first = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir, load: false } })
+    expect(first.statusCode).toBe(201)
+    const original = first.json() as { filePath: string; did: string }
+    const spy = vi.spyOn(identity.service, 'ensureWorkspaceIdentity').mockImplementation(() => { throw new Error('keychain unavailable') })
+    try {
+      // Not replacing: a failed identity is refused and leaves no file.
+      const fresh = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-2', directory: agentsDir, load: false } })
+      expect(fresh.statusCode).toBe(500)
+      expect(existsSync(join(agentsDir, 'agent-2.adf'))).toBe(false)
+
+      const replaced = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir, load: false, replace: true } })
+      expect(replaced.statusCode).toBe(201)
+      expect(replaced.json()).toMatchObject({ filePath: original.filePath, did: null, warnings: [expect.stringContaining('keychain unavailable')] })
+    } finally {
+      spy.mockRestore()
+    }
+    expect(existsSync(original.filePath)).toBe(true)
+    const ws = AdfWorkspace.open(original.filePath)
+    try { expect(ws.getDid()).not.toBe(original.did) } finally { ws.close() }
+    expect(readdirSync(agentsDir).filter(f => f.includes('.replacing'))).toEqual([])
   }, 60_000)
 
   it('422 load_failed when the new file cannot load (e.g. no provider): the file stays and the message says so', async () => {

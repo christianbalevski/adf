@@ -5,6 +5,7 @@
  * optionally started) in the daemon runtime.
  */
 
+import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'fs'
 import { basename, isAbsolute, join, resolve } from 'path'
 import { AdfWorkspace } from '../adf/adf-workspace'
@@ -327,7 +328,8 @@ export class DaemonAgentFactory {
 
     const name = typedName || generateAgentName({ taken: (n) => existsSync(join(directory, `${n}.adf`)) })
     const filePath = join(directory, `${name}.adf`)
-    if (existsSync(filePath)) {
+    const replacing = existsSync(filePath)
+    if (replacing) {
       if (input.replace !== true) throw new AgentCreateError('name_taken', `An agent named "${name}" already exists in ${directory}.`, 409)
       const key = canonicalizePath(filePath)
       const inUse = this.deps.runtime.listAgents().some((a) => a.filePath && canonicalizePath(a.filePath) === key) || !!this.deps.runtime.getOpenDocument?.(filePath)
@@ -336,8 +338,23 @@ export class DaemonAgentFactory {
     }
 
     // --- file: template instance, then identity (Studio's studioCreateDeps) ---
-    const made = await this.templatesService().instantiate({ templateId, destPath: filePath, name, providerId, modelId })
+    // A replace builds the new agent beside the original and renames it over
+    // the original only once it is made, so a failure never costs the original.
+    const workPath = replacing ? join(directory, `.${name}.adf.${randomUUID().slice(0, 8)}.replacing`) : filePath
+    const removeWork = () => {
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { if (existsSync(`${workPath}${suffix}`)) unlinkSync(`${workPath}${suffix}`) } catch { /* best effort */ }
+      }
+    }
+    let made: Awaited<ReturnType<AgentTemplatesService['instantiate']>>
+    try {
+      made = await this.templatesService().instantiate({ templateId, destPath: workPath, name, providerId, modelId })
+    } catch (err) {
+      if (replacing) removeWork()
+      throw err
+    }
     if (!made.success) {
+      if (replacing) removeWork()
       throw new AgentCreateError(made.code ?? 'template_missing', made.error ?? 'The template was refused.', 422)
     }
 
@@ -346,7 +363,7 @@ export class DaemonAgentFactory {
     let identityDraft: CreateAgentResult['identityDraft']
     const warnings: string[] = []
     try {
-      const workspace = AdfWorkspace.open(filePath)
+      const workspace = AdfWorkspace.open(workPath)
       // Taken (and so consumed) only once the file exists, as in Studio's
       // FILE_CREATE_QUICK (studioCreateDeps).
       const draft = identityDraftId ? identityDrafts.take(identityDraftId) : null
@@ -383,11 +400,36 @@ export class DaemonAgentFactory {
       }
       if (!did && identityReady) throw new Error('identity provisioning produced no DID')
     } catch (err) {
+      const why = err instanceof Error ? err.message : String(err)
       // An agent without its sealed, attested identity is not what was asked for.
-      for (const suffix of ['', '-wal', '-shm']) {
+      if (!replacing) {
+        removeWork()
+        throw new Error(`Could not provision the new agent's identity: ${why}`)
+      }
+      // A confirmed replace keeps the new agent and warns, as Studio's create does.
+      console.warn('[ADF Daemon] Identity provisioning on replace failed:', err)
+      warnings.push(`${name} was replaced, but its identity could not be provisioned (${why}); it has no DID yet.`)
+      did = null
+      try {
+        const workspace = AdfWorkspace.open(workPath)
+        try { config = workspace.getAgentConfig() } finally { workspace.close() }
+      } catch (readErr) {
+        removeWork()
+        throw new Error(`Could not provision the new agent's identity: ${why}`, { cause: readErr })
+      }
+    }
+    if (replacing) {
+      // The original is closed (checked above): its WAL/SHM are stale for the new file.
+      for (const suffix of ['-wal', '-shm']) {
         try { if (existsSync(`${filePath}${suffix}`)) unlinkSync(`${filePath}${suffix}`) } catch { /* best effort */ }
       }
-      throw new Error(`Could not provision the new agent's identity: ${err instanceof Error ? err.message : String(err)}`)
+      try {
+        renameSync(workPath, filePath)
+        for (const suffix of ['-wal', '-shm']) if (existsSync(`${workPath}${suffix}`)) renameSync(`${workPath}${suffix}`, `${filePath}${suffix}`)
+      } catch (err) {
+        removeWork()
+        throw new Error(`Could not replace ${filePath}: ${err instanceof Error ? err.message : String(err)}`)
+      }
     }
 
     // --- bookkeeping: reviewed (the owner made it), directory tracked ---
