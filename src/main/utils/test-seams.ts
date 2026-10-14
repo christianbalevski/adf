@@ -4,11 +4,11 @@
  * ways: the code does not run from inside `app.asar` or an installed npm
  * package (`node_modules`), and the process is not a packaged Electron app.
  *
- * Shared by the daemon keychain seam (daemon-identity.ts) and, at merge, the
- * compute seam (W1-G `isPackagedRuntime` in compute-service-factory.ts): the
- * lead unifies the runtime check with that one.
+ * Shared by the daemon keychain seam (daemon-identity.ts) and the compute
+ * seam (compute-service-factory.ts).
  */
 
+import { basename } from 'path'
 import { fileURLToPath } from 'url'
 
 export const TEST_SEAMS_ENV = 'ADF_TEST_SEAMS'
@@ -29,9 +29,22 @@ export function isPackagedModulePath(modulePath: string): boolean {
  * an Electron binary that is not the development `electron` package. Plain
  * Node is never packaged by this test (the module path test covers npm).
  */
-export function isPackagedRuntime(proc: { versions: NodeJS.ProcessVersions; execPath: string } = process): boolean {
-  if (!proc.versions.electron) return false
-  return !/[\\/]node_modules[\\/]electron[\\/]/.test(proc.execPath)
+export function isPackagedRuntime(
+  proc: { versions: NodeJS.ProcessVersions; execPath: string; argv: string[] } = process,
+): boolean {
+  if (proc.versions.electron && !/[\\/]node_modules[\\/]electron[\\/]/.test(proc.execPath)) return true
+  return isPackagedExecutable(proc.execPath, proc.argv[1] ?? '')
+}
+
+/**
+ * An executable that is not a bare `node`/`electron` binary (a packaged
+ * Studio runs the daemon as `ADF Studio.exe` with ELECTRON_RUN_AS_NODE=1),
+ * or an entry script inside `app.asar`.
+ */
+export function isPackagedExecutable(execPath: string, entry: string): boolean {
+  const exe = basename(execPath).toLowerCase().replace(/\.exe$/, '')
+  if (exe !== 'node' && exe !== 'electron') return true
+  return /[\\/]app\.asar([\\/]|$)/i.test(entry)
 }
 
 function currentModulePath(): string | null {

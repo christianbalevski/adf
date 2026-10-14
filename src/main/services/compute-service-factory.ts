@@ -9,21 +9,18 @@
  * processes with it, so a test run can never stop or start the owner's
  * containers (incident 2026-10-14).
  *
- * The seam is honoured only when both hold:
- *   - `ADF_TEST_SEAMS=1`, and
- *   - the process is not a packaged app. Studio main passes `app.isPackaged`.
- *     The daemon has no `app`; it counts as packaged when its executable is
- *     not a bare `node`/`electron` binary (a packaged Studio runs the daemon
- *     as `ADF Studio.exe` with ELECTRON_RUN_AS_NODE=1) or its script is
- *     inside an `app.asar`. `__ADF_VERSION__` is not used: electron-vite
- *     defines it for dev builds too, so it cannot tell the two apart.
+ * The seam is honoured only when `testSeamsAllowed` (utils/test-seams.ts)
+ * holds: `ADF_TEST_SEAMS=1`, the code is not inside `app.asar` or an
+ * installed npm package, and the process is not a packaged app. Studio main
+ * also passes `app.isPackaged`. `__ADF_VERSION__` is not used: electron-vite
+ * defines it for dev builds too, so it cannot tell the two apart.
  * Otherwise `ADF_COMPUTE` is ignored with a warning and the real service is
- * used. An npm-installed CLI daemon runs under `node`, so it honours the
- * seam when someone sets both variables on purpose.
+ * used.
  */
 
-import { basename } from 'node:path'
 import { PodmanService } from './podman.service'
+import { testSeamsAllowed } from '../utils/test-seams'
+
 
 const FAKE_MESSAGE = 'Compute is simulated (ADF_COMPUTE=fake): Podman is never run.'
 
@@ -43,16 +40,6 @@ export class FakeComputeService extends PodmanService {
   }
 }
 
-/** True when this process is a packaged app (see the header for the rule). */
-export function isPackagedRuntime(
-  execPath: string = process.execPath,
-  entry: string = process.argv[1] ?? '',
-): boolean {
-  const exe = basename(execPath).toLowerCase().replace(/\.exe$/, '')
-  if (exe !== 'node' && exe !== 'electron') return true
-  return /[\\/]app\.asar([\\/]|$)/i.test(entry)
-}
-
 export interface CreateComputeServiceOptions {
   /** `app.isPackaged` in Studio main; derived from the process otherwise. */
   packaged?: boolean
@@ -67,9 +54,9 @@ export function createComputeService(opts: CreateComputeServiceOptions = {}): Po
     console.warn(`[Compute] Ignoring ADF_COMPUTE=${requested}: the only supported value is "fake"`)
     return new PodmanService()
   }
-  const packaged = (opts.packaged ?? false) || isPackagedRuntime()
-  if (env.ADF_TEST_SEAMS !== '1' || packaged) {
-    const why = packaged ? 'this is a packaged app' : 'ADF_TEST_SEAMS=1 is not set'
+  const packaged = opts.packaged ?? false
+  if (packaged || !testSeamsAllowed({ env })) {
+    const why = env.ADF_TEST_SEAMS !== '1' ? 'ADF_TEST_SEAMS=1 is not set' : 'this is a packaged app'
     console.warn(`[Compute] Ignoring ADF_COMPUTE=fake: ${why}; using Podman`)
     return new PodmanService()
   }
