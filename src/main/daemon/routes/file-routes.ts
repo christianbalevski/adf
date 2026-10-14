@@ -415,7 +415,7 @@ function unsupported(reply: FastifyReply) {
 }
 
 /** Answer, then drop the connection: the rest of the request body is never read. */
-function closeAfterResponse(request: FastifyRequest, reply: FastifyReply): void {
+export function closeAfterResponse(request: FastifyRequest, reply: FastifyReply): void {
   // No `Connection: close` header: with it Node destroys the socket as soon as
   // the answer is written, and a client still sending gets a reset (ECONNRESET)
   // instead of the 413 body. Instead: half-close once the answer is out (the

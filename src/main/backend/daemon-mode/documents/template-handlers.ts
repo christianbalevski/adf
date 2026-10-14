@@ -5,7 +5,6 @@ import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DEFAULT_SHIPPED_TEMPLATE_ID, isShippedTemplateId } from '../../../../shared/constants/shipped-templates'
 import type { AgentConfig } from '../../../../shared/types/adf-v02.types'
 import type { AgentConfigSummary, AgentTemplateContents, AgentTemplateListResult, AgentTemplateSummary } from '../../../../shared/types/ipc.types'
-import { RESERVED_SEED_FILE_PATHS, TEMPLATE_EXTRA_FILE_MAX_BYTES, validateTemplateFilePath } from '../../../../shared/utils/agent-template'
 import { enc, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { daemonCode, daemonStatus, errorMessage } from './open-file'
 
@@ -236,18 +235,19 @@ export const TEMPLATE_HANDLERS: DaemonHandlerTable = {
         : await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'] })
       if (picked.canceled || picked.filePaths.length === 0) return { success: false, error: 'Cancelled' }
 
-      for (const host of picked.filePaths) {
+      // Whole batch or nothing, as embedded's addFiles: the daemon plans every
+      // name (numbering, reserved seed names, size, non-files) before any upload.
+      const items = await Promise.all(picked.filePaths.map(async (host) => {
         const name = basename(host)
-        const info = await stat(host)
-        if (!info.isFile()) return { success: false, error: `${name} is not a file.` }
-        if (info.size > TEMPLATE_EXTRA_FILE_MAX_BYTES) {
-          return { success: false, error: `${name} is larger than ${Math.round(TEMPLATE_EXTRA_FILE_MAX_BYTES / (1024 * 1024))} MB.` }
+        try {
+          const info = await stat(host)
+          return { name, isFile: info.isFile(), size: info.size }
+        } catch (err) {
+          return { name, statError: err instanceof Error ? err.message : String(err) }
         }
-        // A seed-file name is numbered when the template has that file (`README-2.md`); the daemon decides.
-        const reserved = RESERVED_SEED_FILE_PATHS.some((r) => r.toLowerCase() === name.toLowerCase())
-        const invalid = reserved ? null : validateTemplateFilePath(name)
-        if (invalid) return { success: false, error: `${name}: ${invalid}` }
-      }
+      }))
+      const plan = await client.request<{ success: boolean; dests?: string[]; error?: string }>('POST', `/templates/${enc(id)}/files/plan`, { body: { files: items } })
+      if (!plan.success) return { success: false, error: plan.error ?? 'The files were refused.' }
 
       const added: string[] = []
       for (const host of picked.filePaths) {

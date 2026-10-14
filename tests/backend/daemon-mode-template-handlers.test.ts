@@ -4,6 +4,7 @@
  * /templates routes; deleting a template in local mode puts it in the OS
  * trash as embedded does; added files travel as raw bytes.
  */
+import { stageTemplateAddFiles, type TemplateAddFileItem } from '../../src/main/adf/agent-templates'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -170,6 +171,11 @@ describe('daemon-mode template handlers (W3-A)', () => {
     daemon.routes.set('GET /templates/mine', () => ({ contents: {} }))
     let n = 0
     daemon.routes.set('PUT /templates/mine/files/raw', ({ query }) => ({ id: 'mine', path: n++ === 0 ? query.name : 'logo-2.png', size: 3, success: true }))
+    // The daemon plans with embedded's own staging (AgentTemplatesService.addFiles), on a template without README.md.
+    daemon.routes.set('POST /templates/mine/files/plan', ({ body }) => {
+      const plan = stageTemplateAddFiles(new Set(['mind.md', 'soul.md']), (body as { files: TemplateAddFileItem[] }).files)
+      return 'error' in plan ? { success: false, error: plan.error } : { success: true, dests: plan.dests }
+    })
     const a = join(dir, 'logo.png')
     const b = join(dir, 'sub', 'logo.png')
     mkdirSync(join(dir, 'sub'), { recursive: true })
@@ -186,6 +192,12 @@ describe('daemon-mode template handlers (W3-A)', () => {
     uploads.length = 0
     picked = [a, join(dir, 'sub')]
     expect(await call(IPC.TEMPLATE_ADD_FILES, { id: 'mine' })).toEqual({ success: false, error: 'sub is not a file.' })
+    expect(uploads).toEqual([])
+    // A reserved seed name the template lacks refuses the whole batch: nothing is half written.
+    const readme = join(dir, 'README.md')
+    writeFileSync(readme, 'x')
+    picked = [a, readme]
+    expect(await call(IPC.TEMPLATE_ADD_FILES, { id: 'mine' })).toEqual({ success: false, error: 'README.md: README.md is created by the agent itself.' })
     expect(uploads).toEqual([])
     daemon.routes.set('GET /templates/gone', refuse(404, 'gone.adf is not in the templates folder.', 'template_missing'))
     expect(await call(IPC.TEMPLATE_ADD_FILES, { id: 'gone' })).toEqual({ success: false, error: 'gone.adf is not in the templates folder.' })

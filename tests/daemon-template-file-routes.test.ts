@@ -123,6 +123,40 @@ describe('PUT /templates/:id/files/raw (W3-A)', () => {
   })
 })
 
+describe('POST /templates/:id/files/plan: a batch is planned whole before any upload (review fix)', () => {
+  it('numbers taken names, refuses the whole batch at a reserved seed name the template lacks, and writes nothing', async () => {
+    const { server } = makeDaemon()
+    await call(server, 'POST', '/identity/create', {})
+    await call(server, 'POST', '/templates', { name: 'Plan' })
+    const file = (name: string) => ({ name, isFile: true, size: 3 })
+    expect((await call(server, 'POST', '/templates/plan/files/plan', { files: [file('a.txt'), file('a.txt'), file('README.md')] })).body)
+      .toEqual({ success: true, dests: ['a.txt', 'a-2.txt', 'README-2.md'] })
+    const refused = await call(server, 'POST', '/templates/plan/files/plan', { files: [file('b.txt'), file('readme.md')] })
+    expect(refused.body).toEqual({ success: false, error: 'readme.md: readme.md is created by the agent itself.' })
+    expect((await call(server, 'POST', '/templates/plan/files/plan', { files: [{ name: 'gone.txt', statError: 'ENOENT: gone' }] })).body).toEqual({ success: false, error: 'ENOENT: gone' })
+    const extra = (await call(server, 'GET', '/templates/plan')).body.contents.extra as Array<{ path: string }>
+    expect(extra.map((e) => e.path)).not.toContain('b.txt')
+    expect((await call(server, 'POST', '/templates/plan/files/plan', { files: [] })).status).toBe(400)
+  })
+
+  it('an upload refused before its body is read answers and closes the connection', async () => {
+    const { server } = makeDaemon()
+    await call(server, 'POST', '/identity/create', {})
+    await server.listen({ host: '127.0.0.1', port: 0 })
+    const port = (server.server.address() as { port: number }).port
+    const { request } = await import('node:http')
+    const outcome = await new Promise<{ status: number; closed: boolean }>((resolve, reject) => {
+      const req = request({ host: '127.0.0.1', port, method: 'PUT', path: '/templates/standard/files/raw?name=big.bin', headers: { 'content-type': 'application/octet-stream', 'content-length': String(30 * 1024 * 1024) } })
+      let status = 0
+      req.on('response', (res) => { status = res.statusCode ?? 0; res.resume() })
+      req.on('close', () => resolve({ status, closed: true }))
+      req.on('error', (err) => (status ? resolve({ status, closed: true }) : reject(err)))
+      req.write(Buffer.alloc(64 * 1024))
+    })
+    expect(outcome).toEqual({ status: 413, closed: true })
+  }, 20_000)
+})
+
 describe('daemon templates-folder watcher (tracker §6, W2-B row)', () => {
   it('a template copied into the folder outside the routes notifies once; writes through the routes notify too', async () => {
     let notified = 0

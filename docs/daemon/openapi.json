@@ -7232,6 +7232,94 @@
         }
       }
     },
+    "/templates/{id}/files/plan": {
+      "post": {
+        "tags": [
+          "Templates"
+        ],
+        "summary": "Plan the names of a batch of template files",
+        "description": "Studio's TEMPLATE_ADD_FILES is whole batch or nothing: the client sends every picked file (`{name, isFile, size}`, or `{name, statError}` for one it could not read) and gets the path each would get (base name, numbered past a taken one), or the first refusal (not a file, over 25 MiB, a reserved seed name the template lacks), before it uploads any of them with PUT /templates/{id}/files/raw. Writes nothing.",
+        "operationId": "planTemplateFiles",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TemplateIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "files"
+                ],
+                "properties": {
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "name"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "isFile": {
+                          "type": "boolean"
+                        },
+                        "size": {
+                          "type": "integer"
+                        },
+                        "statError": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The plan, or the refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "dests": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
     "/templates/{id}/files/raw": {
       "put": {
         "tags": [
