@@ -50,7 +50,7 @@ describe.skipIf(!existsSync(DAEMON_BUNDLE))('parity: mesh scenarios, daemon back
       for (let run = 0; run < RUNS; run++) {
         const daemon = await runScenario(scenario, daemonBackend(), { tolerant: true })
         const reference = structuredClone(embedded.normalized)
-        const { unmatched } = applyGapAllowlist(scenario.name, daemon.normalized, reference)
+        const { unmatched } = applyGapAllowlist(scenario.name, daemon.normalized, reference, { daemon: daemon.raw })
         expect(unmatched, `gap entries that matched nothing in ${scenario.name} (fixed? remove them from harness/gaps.ts)`).toEqual([])
         const actual = renderRecording(toGoldenForm(daemon.normalized))
         expect(diffRendered(expected, actual, { expected: 'embedded', actual: 'daemon (after gaps)' })).toBe('')
@@ -61,15 +61,16 @@ describe.skipIf(!existsSync(DAEMON_BUNDLE))('parity: mesh scenarios, daemon back
   }
 
   // Embedded shows an incoming mesh message on AGENT_EVENT (inter_agent_message,
-  // ipc/index.ts foreground_incoming); the daemon emits it on the client
-  // stream once W2-B lands (push topic inter_agent_message).
-  it.todo('inter-agent-message: a message agent-1 sends agent-2 over the mesh renders the same in the open agent-2 (W2-B)')
+  // ipc/index.ts foreground_incoming); the daemon publishes it on the client
+  // stream (W2-B), which Studio reads once W2-C2 replaces the interim adapter.
+  it.todo('inter-agent-message: a message agent-1 sends agent-2 over the mesh renders the same in the open agent-2 (W2-C2)')
 
   // Embedded forwards PodmanService 'container-phase' unchanged on
   // COMPUTE_CONTAINER_PHASE; daemon mode maps the compute_phase push topic to
   // it unchanged (tests/backend/daemon-mode-fleet.test.ts). The daemon
-  // publishes the topic with W2-B, and neither compute fake (a machine
-  // without Podman) goes through a phase, so the live comparison waits for
-  // W2-B and a phase-emitting fake.
-  it.todo('compute-phase: the phase pushes of an agent container match (W2-B)')
+  // publishes the topic (W2-B), Studio reads it once W2-C2 replaces the
+  // interim adapter, and neither compute fake (a machine without Podman)
+  // goes through a phase, so the live comparison waits for W2-C2 and a
+  // phase-emitting fake.
+  it.todo('compute-phase: the phase pushes of an agent container match (W2-C2)')
 })
