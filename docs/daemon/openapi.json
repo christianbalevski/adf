@@ -12009,7 +12009,7 @@
           },
           "leftRunning": {
             "type": "array",
-            "description": "Containers this runtime's last stop left running because another runtime on the machine uses them. Present only when non-empty; cleared by the next start.",
+            "description": "Containers this runtime's last stop (POST /compute/stop, shutdown) left running because another runtime on the machine uses them. Present only when non-empty. Cleared when this runtime starts a container (shared or per-agent) and by a stop that finds nothing running.",
             "items": {
               "type": "object",
               "required": [

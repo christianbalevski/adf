@@ -11665,7 +11665,7 @@ A provider carried in the agent's own config. Its API key is a credential (PUT â
 | `containerName` | string | yes |  |
 | `activeAgents` | string[] | yes |  |
 | `error` | string |  |  |
-| `leftRunning` | object[] |  | Containers this runtime's last stop left running because another runtime on the machine uses them. Present only when non-empty; cleared by the next start. |
+| `leftRunning` | object[] |  | Containers this runtime's last stop (POST /compute/stop, shutdown) left running because another runtime on the machine uses them. Present only when non-empty. Cleared when this runtime starts a container (shared or per-agent) and by a stop that finds nothing running. |
 | `leftRunning[].name` | string | yes |  |
 | `leftRunning[].holders` | string[] | yes | Runtimes using it, e.g. "studio-embedded pid 4242". Empty when the owner is unknown. |
 | `leftRunning[].reason` | string | yes |  |

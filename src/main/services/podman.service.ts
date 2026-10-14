@@ -1165,6 +1165,7 @@ export class PodmanService extends EventEmitter {
 
     const p = (async () => {
       const bin = await this.requirePodman()
+      this._leftRunning = []
       await this.computeUsers.claim(name)
       await this.ensureMachine(bin)
       await this.ensureContainerRunning(bin, name, { kind: 'agent', agentId, agentName, browser: browserEnabled })
@@ -1432,11 +1433,15 @@ export class PodmanService extends EventEmitter {
    */
   async stopAll(): Promise<void> {
     const bin = await this.findPodman()
-    if (!bin) return
+    if (!bin) {
+      this._leftRunning = []
+      return
+    }
 
     const containers = await this.listContainers()
     const running = containers.filter((c) => c.running && c.managed)
     if (running.length === 0) {
+      this._leftRunning = []
       await this.computeUsers.release([...this.computeUsers.own()])
       return
     }
@@ -1481,6 +1486,7 @@ export class PodmanService extends EventEmitter {
     const bin = await this.findPodman()
     if (!bin) return false
     await this.assertManagedContainer(bin, name)
+    this._leftRunning = []
     await this.computeUsers.claim(name)
     const result = await this.exec0(bin, ['start', name])
     // The netns (and its firewall) is fresh after a start — reload it. No-op

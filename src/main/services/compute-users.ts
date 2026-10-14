@@ -20,7 +20,11 @@
  * touched within STALE_MS: its runtime touches it every HEARTBEAT_MS. The
  * heartbeat is what rejects a reused pid (a runtime killed by a crash or by
  * Defender, its pid later given to another process): the reused pid looks
- * alive, but nobody touches the marker any more.
+ * alive, but nobody touches the marker any more. Suspend: the holder checks
+ * every HEARTBEAT_TICK_MS whether a touch is due, so it refreshes within
+ * seconds of resuming; a reader that finds a stale marker of a running pid
+ * waits STALE_RECHECK_MS once (one wait per read, however many markers) and
+ * re-checks before voiding it.
  *
  * Crash safety. A dead marker is ignored and removed by the next reader, so
  * a crashed runtime can neither pin the shared container nor protect its
@@ -73,6 +77,12 @@ export interface ComputeUsers {
 export const HEARTBEAT_MS = 30_000
 /** A marker not touched for this long is dead, whatever its pid says. */
 export const STALE_MS = 120_000
+/** How often the holder checks whether a heartbeat is due. Short, so a resume
+ *  from suspend (or a wall-clock jump) refreshes the marker within seconds. */
+export const HEARTBEAT_TICK_MS = 5_000
+/** A reader re-checks a stale marker of a live pid once, after this long,
+ *  before voiding it: the holder may have just resumed from suspend. */
+export const STALE_RECHECK_MS = 6_000
 const RETRY_BASE_MS = 5_000
 const RETRY_MAX_MS = 60_000
 
@@ -110,7 +120,9 @@ export interface ComputeUserMarker {
   mtimeMs: number
 }
 
-export type ComputeUserLiveness = (marker: ComputeUserMarker) => Promise<{ alive: boolean; reason: string }>
+/** `recheck`: not alive now, but may be after a short wait (stale heartbeat
+ *  of a running pid, e.g. a holder that is resuming from suspend). */
+export type ComputeUserLiveness = (marker: ComputeUserMarker) => Promise<{ alive: boolean; reason: string; recheck?: boolean }>
 
 /**
  * Interim liveness until W0-C's holderLiveness (agent-lease.ts) replaces it:
@@ -127,7 +139,7 @@ export function markerLiveness(opts: {
   return async ({ pid, mtimeMs }) => {
     if (!await isAlive(pid)) return { alive: false, reason: 'pid not running' }
     const age = now() - mtimeMs
-    if (age > staleMs) return { alive: false, reason: `no heartbeat for ${Math.round(age / 1000)}s (pid reused)` }
+    if (age > staleMs) return { alive: false, recheck: true, reason: `no heartbeat for ${Math.round(age / 1000)}s (pid reused)` }
     return { alive: true, reason: 'pid running, heartbeat fresh' }
   }
 }
@@ -163,6 +175,10 @@ export interface ComputeUserRegistryOptions {
   /** Injectable for tests; defaults to markerLiveness(). */
   liveness?: ComputeUserLiveness
   heartbeatMs?: number
+  /** How often the holder checks whether a heartbeat is due. */
+  heartbeatTickMs?: number
+  /** Wait before re-checking a stale marker of a live pid. */
+  recheckMs?: number
   /** First retry delay after a failed marker write (doubles up to 60 s). */
   retryMs?: number
   /** Remove the marker on process exit (default true). */
@@ -177,6 +193,11 @@ export class ComputeUserRegistry implements ComputeUsers {
   private readonly kind: ComputeUserKind
   private readonly liveness: ComputeUserLiveness
   private readonly heartbeatMs: number
+  private readonly tickMs: number
+  private readonly recheckMs: number
+  /** When this runtime last wrote or touched its marker (wall clock). */
+  private lastTouch = 0
+  private touching = false
   private readonly retryMs: number
   private readonly startedAt = new Date().toISOString()
   private readonly claimed = new Set<string>()
@@ -197,6 +218,8 @@ export class ComputeUserRegistry implements ComputeUsers {
     this.kind = opts.kind ?? inferKind()
     this.liveness = opts.liveness ?? markerLiveness()
     this.heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS
+    this.tickMs = opts.heartbeatTickMs ?? HEARTBEAT_TICK_MS
+    this.recheckMs = opts.recheckMs ?? STALE_RECHECK_MS
     this.retryMs = opts.retryMs ?? RETRY_BASE_MS
     this.exitHook = opts.exitHook ?? true
     this.file = join(this.dir, `${safeHost(this.host)}-${this.pid}.json`)
@@ -228,15 +251,31 @@ export class ComputeUserRegistry implements ComputeUsers {
       if (errCode(err) !== 'ENOENT') console.warn(`[Compute] Could not read the container user registry ${this.dir}:`, err)
       return result
     }
-    await Promise.all(names.map(async (name) => {
+    const markers = names.flatMap((name) => {
       const m = MARKER_RE.exec(name)
-      if (!m) return
+      if (!m) return []
       const pid = Number(m[2])
-      if (m[1] !== safeHost(this.host) || pid === this.pid) return
-      const file = join(this.dir, name)
+      if (m[1] !== safeHost(this.host) || pid === this.pid) return []
+      return [{ pid, file: join(this.dir, name) }]
+    })
+    const judge = async ({ pid, file }: { pid: number; file: string }) => {
       let mtimeMs: number
-      try { mtimeMs = (await fsp.stat(file)).mtimeMs } catch { return } // released meanwhile
-      const live = await this.liveness({ pid, mtimeMs })
+      try { mtimeMs = (await fsp.stat(file)).mtimeMs } catch { return null } // released meanwhile
+      return this.liveness({ pid, mtimeMs })
+    }
+    const verdicts = await Promise.all(markers.map(judge))
+    // One shared wait, however many markers are stale: a holder resuming
+    // from suspend touches its marker within HEARTBEAT_TICK_MS.
+    if (verdicts.some((v) => v && !v.alive && v.recheck)) {
+      await new Promise((r) => setTimeout(r, this.recheckMs))
+      await Promise.all(markers.map(async (mk, i) => {
+        const v = verdicts[i]
+        if (v && !v.alive && v.recheck) verdicts[i] = await judge(mk)
+      }))
+    }
+    await Promise.all(markers.map(async ({ pid, file }, i) => {
+      const live = verdicts[i]
+      if (!live) return
       if (!live.alive) {
         // Crashed, killed or reused-pid runtime: its claims are void.
         console.log(`[Compute] Ignoring container claims of pid ${pid}: ${live.reason}`)
@@ -312,22 +351,27 @@ export class ComputeUserRegistry implements ComputeUsers {
       await fsp.rm(tmp, { force: true }).catch(() => {})
       throw err
     }
+    this.lastTouch = Date.now()
     this.startHeartbeat()
     this.installExitHook()
   }
 
-  /** Touch the marker so readers can tell this runtime from a reused pid. */
+  /** Touch the marker so readers can tell this runtime from a reused pid.
+   *  A short tick decides whether a touch is due, so after a suspend or a
+   *  wall-clock jump the marker is fresh again within HEARTBEAT_TICK_MS. */
   private startHeartbeat(): void {
     if (this.heartbeat) return
     this.heartbeat = setInterval(() => {
+      if (this.touching || Date.now() - this.lastTouch <= this.heartbeatMs) return
+      this.touching = true
       const now = new Date()
-      fsp.utimes(this.file, now, now).catch(() => {
+      fsp.utimes(this.file, now, now).then(() => { this.lastTouch = now.getTime() }, () => {
         // Removed by a reader that judged it stale (e.g. after a long
         // suspend), or unwritable: write it again.
         this.dirty = true
         void this.persist()
-      })
-    }, this.heartbeatMs)
+      }).finally(() => { this.touching = false })
+    }, this.tickMs)
     this.heartbeat.unref?.()
   }
 

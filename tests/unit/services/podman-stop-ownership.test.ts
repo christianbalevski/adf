@@ -108,7 +108,7 @@ function machine() {
   // One podman, one container table, shared by every runtime on the machine.
   const podman = new FakePodman()
   const runtime = (pid: number, kind: 'studio-embedded' | 'daemon'): Runtime => {
-    const users = new ComputeUserRegistry({ dir, pid, kind, host: 'test-host', liveness: markerLiveness({ isAlive: async (p) => alive.has(p) }), exitHook: false })
+    const users = new ComputeUserRegistry({ dir, pid, kind, host: 'test-host', liveness: markerLiveness({ isAlive: async (p) => alive.has(p) }), recheckMs: 10, exitHook: false })
     const svc = new PodmanService({ computeUsers: users })
     installFakePodman(svc, podman)
     // Provisioning is out of scope here: "create" just means running.
@@ -166,6 +166,27 @@ describe('PodmanService shutdown with two runtimes', () => {
 
     // The next start clears it.
     await a.svc.ensureRunning()
+    expect(a.svc.getStatus().leftRunning).toBeUndefined()
+  })
+
+  it('leftRunning clears on an agent container start and on a stop that finds nothing running', async () => {
+    const { podman, a, b } = machine()
+    await a.svc.ensureRunning()
+    await b.svc.ensureRunning()
+    const leftAfterStop = async () => { await a.svc.stop(); return a.svc.getStatus().leftRunning?.map((l) => l.name) }
+
+    expect(await leftAfterStop()).toEqual(['adf-mcp'])
+    await a.svc.ensureIsolatedRunning('agent-1', ID_1)
+    expect(a.svc.getStatus().leftRunning).toBeUndefined()
+
+    expect(await leftAfterStop()).toEqual(['adf-mcp'])
+    podman.add({ name: BOX_1, agentId: ID_1, agentName: 'agent-1', running: false })
+    await a.svc.startContainer(BOX_1)
+    expect(a.svc.getStatus().leftRunning).toBeUndefined()
+
+    expect(await leftAfterStop()).toEqual(['adf-mcp'])
+    await b.svc.stopAll() // B stops adf-mcp (and A's BOX_1, which A no longer claims)
+    await a.svc.stopAll() // nothing running any more
     expect(a.svc.getStatus().leftRunning).toBeUndefined()
   })
 
@@ -319,7 +340,7 @@ describe('PodmanService shutdown with two runtimes', () => {
 describe('ComputeUserRegistry', () => {
   it('heartbeats its marker while it holds claims', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-w1g-hb-'))
-    const users = new ComputeUserRegistry({ dir, pid: PID_A, host: 'test-host', heartbeatMs: 20, exitHook: false })
+    const users = new ComputeUserRegistry({ dir, pid: PID_A, host: 'test-host', heartbeatMs: 20, heartbeatTickMs: 10, exitHook: false })
     await users.claim('adf-mcp')
     const old = new Date(Date.now() - 10 * 60_000)
     utimesSync(users.file, old, old)
@@ -360,6 +381,86 @@ describe('ComputeUserRegistry', () => {
 
     expect(existsSync(users.file)).toBe(true)
     await users.release(['adf-mcp'])
+  })
+})
+
+describe('ComputeUserRegistry across suspend (fake timers)', () => {
+  // Timers and Date are fake; file I/O is real, so pump the event loop
+  // (setImmediate stays real) until the I/O a timer started has finished.
+  const pump = async (done: () => boolean) => {
+    for (let i = 0; i < 2000 && !done(); i++) await new Promise((r) => setImmediate(r))
+  }
+  const fakeTimers = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+  const staleMarker = (dir: string, pid: number, containers: string[]) => {
+    const file = join(dir, `test-host-${pid}.json`)
+    writeFileSync(file, JSON.stringify({ v: 1, pid, host: 'test-host', kind: 'daemon', startedAt: '', containers }))
+    const old = new Date(Date.now() - 10 * 60_000)
+    utimesSync(file, old, old)
+    return file
+  }
+  const reader = (dir: string) => new ComputeUserRegistry({
+    dir, pid: PID_A, host: 'test-host', exitHook: false,
+    liveness: markerLiveness({ isAlive: async () => true }),
+  })
+
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    return () => { vi.useRealTimers() }
+  })
+
+  it('the holder refreshes its marker within one tick of a wall-clock jump (resume)', async () => {
+    fakeTimers()
+    const dir = mkdtempSync(join(tmpdir(), 'adf-w1g-resume-'))
+    const holder = new ComputeUserRegistry({ dir, pid: PID_B, host: 'test-host', exitHook: false })
+    await holder.claim('adf-mcp')
+    const written = statSync(holder.file).mtimeMs
+
+    // Suspended for 10 minutes: the clock jumps, no interval fired meanwhile.
+    vi.setSystemTime(Date.now() + 10 * 60_000)
+    await vi.advanceTimersByTimeAsync(5_000)
+    await pump(() => statSync(holder.file).mtimeMs > written + 60_000)
+
+    expect(statSync(holder.file).mtimeMs).toBeGreaterThan(Date.now() - 10_000)
+    await holder.release(['adf-mcp'])
+  })
+
+  it('a reader keeps a stale marker whose holder touches it during the re-check wait', async () => {
+    fakeTimers()
+    const dir = mkdtempSync(join(tmpdir(), 'adf-w1g-recheck-'))
+    const file = staleMarker(dir, PID_B, ['adf-mcp'])
+
+    let result: Awaited<ReturnType<InstanceType<typeof ComputeUserRegistry>['others']>> | undefined
+    const reading = reader(dir).others().then((r) => { result = r })
+    await pump(() => vi.getTimerCount() > 0)
+    expect(vi.getTimerCount()).toBe(1)
+    utimesSync(file, new Date(), new Date()) // holder resumed and touched it
+    await vi.advanceTimersByTimeAsync(6_000)
+    await pump(() => result !== undefined)
+    await reading
+
+    expect(result!.claims.get('adf-mcp')).toEqual([`daemon pid ${PID_B}`])
+    expect(existsSync(file)).toBe(true)
+  })
+
+  it('a reader voids stale markers after one shared wait of about 6 s', async () => {
+    fakeTimers()
+    const dir = mkdtempSync(join(tmpdir(), 'adf-w1g-void-'))
+    const files = [staleMarker(dir, PID_B, ['adf-mcp']), staleMarker(dir, 41_003, [BOX_1]), staleMarker(dir, 41_004, [BOX_2])]
+
+    let result: Awaited<ReturnType<InstanceType<typeof ComputeUserRegistry>['others']>> | undefined
+    const started = Date.now()
+    const reading = reader(dir).others().then((r) => { result = r })
+    await pump(() => vi.getTimerCount() > 0)
+    expect(vi.getTimerCount()).toBe(1) // one wait for all three markers
+    await vi.advanceTimersByTimeAsync(5_999)
+    expect(result).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(1)
+    await pump(() => result !== undefined)
+    await reading
+
+    expect(Date.now() - started).toBe(6_000)
+    expect(result!.claims.size).toBe(0)
+    expect(files.filter((f) => existsSync(f))).toEqual([])
   })
 })
 
