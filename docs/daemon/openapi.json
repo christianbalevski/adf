@@ -13424,6 +13424,278 @@
           }
         }
       }
+    },
+    "/fleet/vitals": {
+      "get": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Agent vitals by file path",
+        "description": "The overview card of any .adf file, addressed by path as Studio's AGENT_VITALS is: a loaded agent is read from its open workspace, any other file with a readonly open, whether or not it is in a tracked folder. Same body and cache rules as `GET /agents/{id}/vitals`; the fleet scan behind `agentsSpawned` is refreshed when older than 30 s.",
+        "operationId": "getFleetAgentVitals",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "description": "Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Vitals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentVitals"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/fleet/activity": {
+      "get": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Agent activity by file path",
+        "description": "The overview's lower sections for any .adf file, addressed by path as Studio's AGENT_ACTIVITY is. Same body and cache rules as `GET /agents/{id}/activity`.",
+        "operationId": "getFleetAgentActivity",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "description": "Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Activity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentActivity"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/fleet/state": {
+      "post": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Set the state of running agents",
+        "description": "Studio's MESH_SET_AGENT_STATE: for each file, end any active turn and enter `idle` or `hibernate`. A file with no loaded agent fails with `agent offline`; a stopped or errored executor with `agent stopped` / `agent error`. Any other state fails every file with `invalid state`.",
+        "operationId": "setFleetAgentState",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetStateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetStateResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/fleet/found": {
+      "post": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Found an agent from the fleet map",
+        "description": "Studio's MESH_FOUND_AGENT: `dir` must be inside a tracked folder, or with `newRoot: true` a sibling of a tracked root. The folder is created when missing, the file is `<slug of name>.adf`, made from the default template with its identity, marked reviewed, left closed, and its folder tracked. Failures answer 200 with `success: false` and `error`.",
+        "operationId": "foundFleetAgent",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetFoundBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetFoundResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/compute/shared/stop": {
+      "post": {
+        "tags": [
+          "Compute"
+        ],
+        "summary": "Stop the shared container",
+        "description": "Studio's COMPUTE_STOP: stops the shared `adf-mcp` container only, and leaves it running while another live runtime on this machine uses it (`GET /compute/status` then lists it in `leftRunning`). `POST /compute/stop` stops every container this runtime started.",
+        "operationId": "stopSharedComputeContainer",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSuccessOrError"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/compute/users": {
+      "get": {
+        "tags": [
+          "Compute"
+        ],
+        "summary": "Other runtimes using containers",
+        "description": "For the shared container and each container in `names`: the other live runtimes on this machine that use it (`daemon pid 4242`). Containers nobody else uses are left out.",
+        "operationId": "getComputeUsers",
+        "parameters": [
+          {
+            "name": "names",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated container names besides the shared one.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputeUsersResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -25819,6 +26091,128 @@
           "readOnly": {
             "type": "string",
             "description": "Another runtime runs the file: it opened read-only (no open step wrote it), writes are refused; the sentence names the holder"
+          }
+        }
+      },
+      "FleetStateBody": {
+        "type": "object",
+        "required": [
+          "filePaths",
+          "state"
+        ],
+        "properties": {
+          "filePaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "hibernate"
+            ]
+          }
+        }
+      },
+      "FleetStateResult": {
+        "type": "object",
+        "required": [
+          "updated",
+          "failed"
+        ],
+        "properties": {
+          "updated": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "filePath",
+                "error"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "FleetFoundBody": {
+        "type": "object",
+        "required": [
+          "dir",
+          "name"
+        ],
+        "properties": {
+          "dir": {
+            "type": "string",
+            "description": "Absolute folder for the new agent."
+          },
+          "name": {
+            "type": "string"
+          },
+          "newRoot": {
+            "type": "boolean"
+          }
+        }
+      },
+      "FleetFoundResult": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentSuccessOrError": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "ComputeUsersResponse": {
+        "type": "object",
+        "required": [
+          "users"
+        ],
+        "properties": {
+          "users": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         }
       }
