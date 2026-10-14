@@ -49,6 +49,7 @@ import type { AgentConfig, InboxMessage, McpServerStatus } from '../../shared/ty
 import type { AdapterStatus } from '../../shared/types/channel-adapter.types'
 import type { BrowserSessionEvent, ContainerPhaseEvent } from '../../shared/types/compute.types'
 import type { AgentExecutionEvent, MeshEvent, NotificationsSnapshot } from '../../shared/types/ipc.types'
+import type { UmbilicalEvent } from '../runtime/umbilical-bus'
 import type { WorkspaceDataScope } from '../adf/adf-workspace'
 import { subscribeAgentRuntimeSignals } from '../runtime/agent-runtime-signals'
 import type {
@@ -188,7 +189,20 @@ export type ClientPushFrame = {
   }
 }[ClientPushTopic]
 
-export type ClientFrame = ClientExecutorFrame | ClientHostFrame | ClientPushFrame
+/**
+ * An umbilical envelope, as GET /events carries it, for a session opened
+ * with `umbilical: true` (the terminal app, whose state model is built on
+ * them). `turn.delta` is never sent: the focused agent's deltas arrive as
+ * executor frames whatever `umbilical.stream_deltas` says.
+ */
+export interface ClientUmbilicalFrame {
+  kind: 'umbilical'
+  cursor: number
+  agentId: string | null
+  event: UmbilicalEvent
+}
+
+export type ClientFrame = ClientExecutorFrame | ClientHostFrame | ClientPushFrame | ClientUmbilicalFrame
 
 /** `stream.gap` data. `epoch_changed`: the cursor came from another session; `evicted`: frames after it were dropped. */
 export interface ClientStreamGap {
@@ -333,6 +347,8 @@ class ClientSession {
   expiryTimer: ReturnType<typeof setTimeout> | null = null
   dropped = 0
   flushQueued = false
+  /** Also carries umbilical frames (ClientUmbilicalFrame). */
+  umbilical = false
 
   constructor(
     readonly id: string,
@@ -401,9 +417,10 @@ export class ClientSessionRegistry {
 
   // --- sessions ---------------------------------------------------------------
 
-  create(input: { client: string; version: string; exitDaemonWhenClosed?: boolean }): { sessionId: string; epoch: string } {
+  create(input: { client: string; version: string; exitDaemonWhenClosed?: boolean; umbilical?: boolean }): { sessionId: string; epoch: string } {
     if (this.disposed) throw new ClientSessionError('The daemon is shutting down.', 503, 'unavailable')
     const session = new ClientSession(randomUUID(), input.client, input.version, input.exitDaemonWhenClosed === true, this.ringFrames, this.ringChars)
+    session.umbilical = input.umbilical === true
     this.sessions.set(session.id, session)
     this.armExpiry(session)
     this.log(`Client session ${session.id} opened by ${input.client} ${input.version}${session.exitDaemonWhenClosed ? ' (stops the daemon when it expires)' : ''}`)
@@ -529,6 +546,15 @@ export class ClientSessionRegistry {
     if (this.write(session, connection, chunk)) this.flush(session)
   }
 
+  /** Close the session's stream; the session stays, and its client reconnects with `since=`. */
+  disconnect(sessionId: string): void {
+    const session = this.require(sessionId)
+    if (!session.connection) return
+    this.log(`Client session ${session.id} (${session.client}): stream closed by the daemon`)
+    this.closeConnection(session)
+    this.armExpiry(session)
+  }
+
   /** The stream closed (client gone): the expiry clock starts. */
   detach(sessionId: string, sink: ClientStreamSink): void {
     const session = this.sessions.get(sessionId)
@@ -557,6 +583,17 @@ export class ClientSessionRegistry {
         ? stripped ??= safeJsonStringify(executorFrame(event, true))
         : full ??= safeJsonStringify(executorFrame(event, false))
       this.append(session, 'executor', body)
+    }
+  }
+
+  /** An umbilical envelope, for the sessions that asked for them; never `turn.delta`. */
+  publishUmbilical(event: UmbilicalEvent): void {
+    if (this.sessions.size === 0 || event.event_type === 'turn.delta') return
+    let body: string | undefined
+    for (const session of this.sessions.values()) {
+      if (!session.umbilical) continue
+      body ??= safeJsonStringify({ kind: 'umbilical', agentId: event.agent_id ?? null, event })
+      this.append(session, 'umbilical', body)
     }
   }
 
@@ -779,6 +816,21 @@ export class ClientSessionRegistry {
     this.recentRenames.set(key, now)
     return false
   }
+}
+
+let daemonRegistry: ClientSessionRegistry | null = null
+
+/**
+ * The daemon process's registry (daemon/index.ts), served by the /client/*
+ * routes when DaemonRouteDeps.clientSessions is not given; the same pattern
+ * as registerDaemonEventBus.
+ */
+export function registerDaemonClientSessions(registry: ClientSessionRegistry | null): void {
+  daemonRegistry = registry
+}
+
+export function daemonClientSessions(): ClientSessionRegistry | null {
+  return daemonRegistry
 }
 
 const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin'
@@ -1032,6 +1084,14 @@ export function wireComputeToClientSessions(sessions: ClientSessionRegistry, com
     compute.off('container-phase', onPhase)
     compute.off('browser-session', onBrowser)
   }
+}
+
+/** Umbilical envelopes for sessions opened with `umbilical: true` (the daemon's GET /events bus). */
+export function wireEventBusToClientSessions(
+  sessions: ClientSessionRegistry,
+  bus: { subscribe(listener: (envelope: { event: UmbilicalEvent }) => void): () => void },
+): () => void {
+  return bus.subscribe((envelope) => sessions.publishUmbilical(envelope.event))
 }
 
 /** APPROVALS_CHANGED: every hub snapshot, as Studio sends it to every window. */

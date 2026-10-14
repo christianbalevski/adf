@@ -501,9 +501,48 @@ describe('client sessions: producers', () => {
     ])
   })
 
+  it('umbilical envelopes go only to sessions that asked, never turn.delta', async () => {
+    const sessions = registry()
+    const plain = open(sessions)
+    const { sessionId } = sessions.create({ client: 'tui', version: '1', umbilical: true })
+    const sink = new FakeSink()
+    sessions.attach(sessionId, sink)
+    const envelope = (event_type: string) => ({ seq: 1, event_type, timestamp: 1, source: 'agent:x', agent_id: AGENT_1, payload: {} })
+    sessions.publishUmbilical(envelope('turn.delta'))
+    sessions.publishUmbilical(envelope('turn.completed'))
+    await tick()
+    expect(plain.sink.frames()).toEqual([])
+    expect(sink.frames()).toEqual([{ cursor: 1, kind: 'umbilical', agentId: AGENT_1, event: envelope('turn.completed') }])
+    // disconnect: the session stays, its client resumes.
+    sessions.disconnect(sessionId)
+    expect(sink.destroyed).toBe(true)
+    expect(sessions.stats(sessionId).connected).toBe(false)
+  })
+
   it('no session: producers do no serialization work', () => {
     const sessions = registry()
     const payload = { get expensive() { throw new Error('serialized') } }
     expect(() => sessions.publishExecutor(exec(AGENT_1, 'tool_call_start', payload))).not.toThrow()
+  })
+})
+
+describe('client sessions: daemon wiring', () => {
+  it('daemon/index.ts registers the registry and wires every producer', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const source = readFileSync(join(__dirname, '../src/main/daemon/index.ts'), 'utf-8')
+    for (const line of [
+      'wireRuntimeToClientSessions(clientSessions, runtime)',
+      'wireMeshToClientSessions(clientSessions, meshManager)',
+      'wireComputeToClientSessions(clientSessions, podmanService)',
+      'wireApprovalsToClientSessions(clientSessions, approvalHub)',
+      'wireTrackedDirWatcherToClientSessions(clientSessions, trackedDirWatcher)',
+      'wireEventBusToClientSessions(clientSessions, eventBus)',
+      'registerDaemonClientSessions(clientSessions)',
+      "withInstallProgress(mcpPackageResolver, 'mcp_install', 1, clientSessions)",
+      "withInstallProgress(uvxPackageResolver, 'mcp_install', 2, clientSessions)",
+      "withInstallProgress(adapterPackageResolver, 'adapter_install', 1, clientSessions)",
+      "withInstallProgress(sandboxPackagesService, 'sandbox_install', 2, clientSessions)",
+    ]) expect(source).toContain(line)
   })
 })

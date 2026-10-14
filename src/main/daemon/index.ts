@@ -47,8 +47,10 @@ import { approvalHub } from '../runtime/approval-hub'
 import {
   ClientSessionRegistry,
   loadedAgentDocumentHost,
+  registerDaemonClientSessions,
   wireApprovalsToClientSessions,
   wireComputeToClientSessions,
+  wireEventBusToClientSessions,
   wireMeshToClientSessions,
   wireRuntimeToClientSessions,
   wireTrackedDirWatcherToClientSessions,
@@ -365,6 +367,10 @@ wireMeshToClientSessions(clientSessions, meshManager)
 wireComputeToClientSessions(clientSessions, podmanService)
 wireApprovalsToClientSessions(clientSessions, approvalHub)
 wireTrackedDirWatcherToClientSessions(clientSessions, trackedDirWatcher)
+// Sessions opened with `umbilical: true` (the terminal app) get the /events envelopes too.
+wireEventBusToClientSessions(clientSessions, eventBus)
+// The /client/* routes serve this registry (routes/client-routes.ts), as the event bus is registered above.
+registerDaemonClientSessions(clientSessions)
 const daemon = new DaemonHost({
   runtime,
   identity: ownerIdentity,
@@ -384,7 +390,7 @@ const daemon = new DaemonHost({
   // Services the W1-D gap routes reach (routes/gap-deps.ts): emergency stop
   // stops the mesh server and sandbox workers; MCP admin shares the uv
   // install and the app-level OAuth store (DaemonAppOAuthStore) the builder uses.
-  routes: { startedBy, clientSessions, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher },
+  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher },
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),

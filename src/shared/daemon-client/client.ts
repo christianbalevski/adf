@@ -117,6 +117,7 @@ import {
   type ClientSessionEndedResult,
   type ClientSessionFocus,
   type ClientSessionInput,
+  type DaemonVersion,
 } from './types'
 
 /**
@@ -403,6 +404,11 @@ export class DaemonClient {
   }
 
   // --- daemon ---------------------------------------------------------------
+
+  /** GET /version: build, client API version, settings file, pid, who started this run (§8.2). */
+  version(): Promise<DaemonVersion> {
+    return this.get('/version')
+  }
 
   health(): Promise<{ ok: boolean }> {
     return this.get('/health')

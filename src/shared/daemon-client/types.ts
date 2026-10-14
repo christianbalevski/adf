@@ -600,6 +600,7 @@ export type {
   ClientPushPayloads,
   ClientPushTopic,
   ClientStreamGap,
+  ClientUmbilicalFrame,
 } from '../../main/daemon/client-sessions'
 
 /** POST /client/sessions. `exitDaemonWhenClosed`: the daemon stops when this session expires and no other is open (§8.3). */
@@ -607,6 +608,8 @@ export interface ClientSessionInput {
   client: string
   version: string
   exitDaemonWhenClosed?: boolean
+  /** Also stream the umbilical envelopes GET /events carries (without turn.delta): the terminal app's state model is built on them. */
+  umbilical?: boolean
 }
 
 /** POST /client/sessions answer. `epoch` names the session's cursor space (resume with `?since=&epoch=`). */
@@ -631,3 +634,13 @@ export interface ClientSessionEndedResult {
   sessionId: string
   ended: true
 }
+
+/** GET /version (design §8.2): what a client checks before it attaches. */
+export type DaemonVersion = import('../../main/daemon/routes/meta-routes').DaemonVersionInfo
+
+/**
+ * The client API version (`/client/*` routes and their frames) this client
+ * speaks: GET /version `clientApiVersion` must equal it before a client uses
+ * client sessions. Equal to the daemon's CLIENT_API_VERSION (meta-routes.ts).
+ */
+export const SUPPORTED_CLIENT_API_VERSION = 1

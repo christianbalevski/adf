@@ -85,8 +85,8 @@ interface Reader {
   received: Array<{ frame: ClientFrame; at: number }>
 }
 
-async function reader(client: DaemonClient, opts: { focus?: string | null; client?: string } = {}): Promise<Reader> {
-  const { sessionId } = await client.createClientSession({ client: opts.client ?? 'test', version: '1' })
+async function reader(client: DaemonClient, opts: { focus?: string | null; client?: string; umbilical?: boolean } = {}): Promise<Reader> {
+  const { sessionId } = await client.createClientSession({ client: opts.client ?? 'test', version: '1', ...(opts.umbilical ? { umbilical: true } : {}) })
   if (opts.focus !== undefined) await client.setClientSessionFocus(sessionId, opts.focus)
   const out: Reader = { sessionId, frames: [], gaps: [], resumes: [], received: [], stream: null as never }
   let open = false
@@ -169,19 +169,26 @@ describe('several clients on one daemon, in real time', () => {
       agentRuntimeBuilder: new AgentRuntimeBuilder(),
     })
     cleanups.push(() => unloadAll(runtime))
-    const served = await serve(runtime)
+    const bus = new DaemonEventBus(5000)
+    registerDaemonEventBus(bus)
+    const served = await serve(runtime, { eventBus: bus })
     await runtime.loadAgent(one.filePath)
     await runtime.loadAgent(two.filePath)
-    return { runtime, one, two, ...served }
+    return { runtime, one, two, bus, ...served }
   }
 
-  it('three sessions, two focused on agent-1: the same non-delta frames per agent, deltas only to the focused two', async () => {
-    const { runtime, client, one, two } = await fleet()
+  it('three sessions, two focused on agent-1: the same non-delta frames per agent, deltas only to the focused two; a TUI session sees the same', async () => {
+    const { runtime, client, one, two, bus } = await fleet()
+    // /events streams agent-1's tokens too; the session streams must not carry them twice.
+    await runtime.setAgentConfig(one.agentId, { ...runtime.getAgentConfig(one.agentId).config, umbilical: { ...(runtime.getAgentConfig(one.agentId).config.umbilical ?? {}), stream_deltas: true } } as never)
+    const busDeltas: string[] = []
+    cleanups.push(bus.subscribe(e => { if (e.event.event_type === 'turn.delta') busDeltas.push(e.event.agent_id ?? '') }))
     const a = await reader(client, { focus: one.agentId })
     const b = await reader(client, { focus: 'agent-1' })
     const c = await reader(client, { focus: null })
+    const tui = await reader(client, { focus: one.agentId, client: 'tui', umbilical: true })
     await Promise.all([runtime.sendChat(one.agentId, 'hello one'), runtime.sendChat(two.agentId, 'hello two')])
-    for (const r of [a, b, c]) {
+    for (const r of [a, b, c, tui]) {
       await waitFor(() => executorTypes(r, one.agentId).includes('turn_complete') && executorTypes(r, two.agentId).includes('turn_complete'), 8000, 'both turns')
     }
     await new Promise(r => setTimeout(r, 100))
@@ -190,10 +197,18 @@ describe('several clients on one daemon, in real time', () => {
       expect(nonDelta(a).length).toBeGreaterThan(3)
       expect(nonDelta(b)).toEqual(nonDelta(a))
       expect(nonDelta(c)).toEqual(nonDelta(a))
+      expect(nonDelta(tui).filter(body => !body.startsWith('{"kind":"umbilical"'))).toEqual(nonDelta(a))
     }
+    // The TUI session also gets the umbilical envelopes, never turn.delta: its tokens are the executor deltas.
+    const umbilical = tui.frames.filter(f => f.kind === 'umbilical')
+    expect(umbilical.some(f => f.kind === 'umbilical' && f.event.event_type === 'turn.completed')).toBe(true)
+    expect(umbilical.filter(f => f.kind === 'umbilical' && f.event.event_type === 'turn.delta')).toEqual([])
+    expect(busDeltas).toContain(one.agentId)
+    expect(a.frames.some(f => f.kind === 'umbilical')).toBe(false)
     const deltas = (r: Reader, agentId: string) => r.frames.filter(f => isDelta(f) && f.kind === 'executor' && f.agentId === agentId).map(bodyOf)
     expect(deltas(a, one.agentId).length).toBeGreaterThan(0)
     expect(deltas(b, one.agentId)).toEqual(deltas(a, one.agentId))
+    expect(deltas(tui, one.agentId)).toEqual(deltas(a, one.agentId))
     expect(deltas(c, one.agentId)).toEqual([])
     for (const r of [a, b, c]) expect(deltas(r, two.agentId)).toEqual([])
   })

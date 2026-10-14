@@ -9,8 +9,9 @@
 //   DELETE /client/sessions/:id                      end the session
 //
 // The registry (client-sessions.ts) is the composition root's
-// (DaemonRouteDeps.clientSessions); a bare createDaemonHttpApi (tests) gets
-// one fed by the runtime and the approvals hub only.
+// (registerDaemonClientSessions, or DaemonRouteDeps.clientSessions); a bare
+// createDaemonHttpApi (tests) gets one fed by the runtime, the approvals hub
+// and the event bus only.
 //
 // Producers that are routes (not services) are observed here, after the
 // route answered:
@@ -25,8 +26,10 @@ import { approvalHub } from '../../runtime/approval-hub'
 import {
   ClientSessionError,
   ClientSessionRegistry,
+  daemonClientSessions,
   loadedAgentDocumentHost,
   wireApprovalsToClientSessions,
+  wireEventBusToClientSessions,
   wireRuntimeToClientSessions,
   type ClientStreamSink,
 } from '../client-sessions'
@@ -39,7 +42,7 @@ export const CLIENT_SESSION_HEADER = 'x-adf-client-session'
 interface SessionParams { id: string }
 
 export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
-  const given = ctx.options.routes?.clientSessions
+  const given = ctx.options.routes?.clientSessions ?? daemonClientSessions()
   const sessions = given ?? defaultRegistry(server, ctx)
 
   server.addHook('onClose', (_instance, done) => {
@@ -49,7 +52,7 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
     done()
   })
 
-  server.post<{ Body: { client?: unknown; version?: unknown; exitDaemonWhenClosed?: unknown } }>('/client/sessions', async (request, reply) => {
+  server.post<{ Body: { client?: unknown; version?: unknown; exitDaemonWhenClosed?: unknown; umbilical?: unknown } }>('/client/sessions', async (request, reply) => {
     const body = request.body ?? {}
     const client = stringParam(body.client)
     const version = stringParam(body.version)
@@ -57,7 +60,8 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
     if (body.exitDaemonWhenClosed !== undefined && typeof body.exitDaemonWhenClosed !== 'boolean') {
       return badRequest(reply, 'exitDaemonWhenClosed must be a boolean')
     }
-    return send(reply, () => reply.code(201).send(sessions.create({ client, version, exitDaemonWhenClosed: body.exitDaemonWhenClosed === true })))
+    if (body.umbilical !== undefined && typeof body.umbilical !== 'boolean') return badRequest(reply, 'umbilical must be a boolean')
+    return send(reply, () => reply.code(201).send(sessions.create({ client, version, exitDaemonWhenClosed: body.exitDaemonWhenClosed === true, umbilical: body.umbilical === true })))
   })
 
   server.get<{ Params: SessionParams; Querystring: { since?: string; epoch?: string } }>('/client/sessions/:id/events', async (request, reply) => {
@@ -130,7 +134,7 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
   observeRouteProducers(server, ctx, sessions)
 }
 
-/** A registry for a daemon whose composition root passed none: runtime frames and approvals. */
+/** A registry for a daemon whose composition root passed none: runtime frames, approvals and the event bus. */
 function defaultRegistry(server: FastifyInstance, ctx: DaemonRouteContext): ClientSessionRegistry {
   const sessions = new ClientSessionRegistry({
     startedBy: ctx.options.routes?.startedBy,
@@ -139,6 +143,7 @@ function defaultRegistry(server: FastifyInstance, ctx: DaemonRouteContext): Clie
     resolveAgentId: (identifier) => ctx.runtime.getAgent(identifier)?.id ?? null,
   })
   const unwire = [wireRuntimeToClientSessions(sessions, ctx.runtime), wireApprovalsToClientSessions(sessions, approvalHub)]
+  if (ctx.options.eventBus) unwire.push(wireEventBusToClientSessions(sessions, ctx.options.eventBus))
   server.addHook('onClose', (_instance, done) => {
     for (const fn of unwire) fn()
     done()
