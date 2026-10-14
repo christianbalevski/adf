@@ -7,6 +7,7 @@ import { IPC } from '../../../shared/constants/ipc-channels'
 import { BACKEND_ENV_OVERRIDE } from '../backend-config'
 import { CHANNEL_MAP, type ChannelEntry, type MappedChannel } from '../channel-map'
 import { processAgentLeases, type AgentLeaseRegistry } from '../../runtime/agent-lease'
+import { openSharedMnemonicStore, type SharedMnemonicStore } from '../../services/owner-secret-store'
 import { BackgroundEventBatcher } from '../../ipc/background-event-batch'
 import { initApplicationMenu, recordRecentFile } from '../../menu'
 import { createAdfFileHandler } from './adf-file'
@@ -79,6 +80,8 @@ export interface DaemonModeDeps {
   fetch?: typeof fetch
   /** The client session implementation. Default: the GET /events adapter until W2-B. */
   createSession?: (client: DaemonClient) => ClientSession
+  /** The shared owner-phrase keychain entry (tests: a stand-in). Default: the OS keychain's. */
+  sharedMnemonic?: () => SharedMnemonicStore | null
 }
 
 export interface DaemonModeHandle {
@@ -276,11 +279,14 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     approvals,
     ready: () => started,
     runningAgentAt: async (filePath) => findRunningAgent(await started, filePath),
-    raw: async (path, query) => {
+    raw: async (path, query, init) => {
       const client = await started
       const url = client.url(path, query)
-      return (deps.fetch ?? fetch)(url, { headers: client.headers({ Accept: '*/*' }), redirect: 'manual' })
+      const body = init?.body !== undefined ? JSON.stringify(init.body) : undefined
+      const headers = client.headers({ Accept: '*/*', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(init?.headers ?? {}) })
+      return (deps.fetch ?? fetch)(url, { method: init?.method ?? 'GET', headers, body, redirect: 'manual' })
     },
+    sharedMnemonic: deps.sharedMnemonic ?? openSharedMnemonicStore,
     recordRecentFile,
     hooks,
     log,

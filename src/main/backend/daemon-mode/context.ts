@@ -6,6 +6,7 @@ import type { MappedChannel } from '../channel-map'
 import type { ApprovalsUi } from './approvals-ui'
 import type { DaemonConnection } from './connection'
 import type { EventBridge } from './event-bridge'
+import type { SharedMnemonicStore } from '../../services/owner-secret-store'
 import type { DaemonModeSession } from './session'
 import type { ClientSettingsStore } from './settings'
 
@@ -25,8 +26,14 @@ export interface DaemonModeContext {
   ready(): Promise<DaemonClient>
   /** The running agent at `filePath` (GET /files/agent), or null. */
   runningAgentAt(filePath: string): Promise<string | null>
-  /** A raw (non-JSON) request to the daemon: the token is added for its origin only. */
-  raw(path: string, query?: Record<string, string | number | undefined>): Promise<Response>
+  /**
+   * A raw request to the daemon: the token is added for its origin only.
+   * GET unless `init` says otherwise; `init.headers` are added (the local
+   * proof of POST /identity/import).
+   */
+  raw(path: string, query?: Record<string, string | number | undefined>, init?: { method?: string; body?: unknown; headers?: Record<string, string> }): Promise<Response>
+  /** The owner-phrase entry Studio and the daemon share in the OS keychain (§5.4), or null when no keychain is usable. */
+  sharedMnemonic(): SharedMnemonicStore | null
   /** Records a recent file (menu Open Recent + OS list), in the client settings. */
   recordRecentFile(filePath: string): void
   hooks: { showMainWindow?: () => Electron.BrowserWindow | null; openFile?: (filePath: string) => void }
