@@ -41,9 +41,8 @@ export const CLIENT_SETTINGS_KEYS = [
   // (ipc/index.ts:5866). In daemon mode the fleet-burn handler reads it from
   // the client file and passes it to the daemon route as a parameter.
   'fleetMapState',
-  // fleetGroups, fleetStewards and fleetMapState are not AppSettings members
-  // (the renderer writes them through setSettings), so the compile check below
-  // does not see them; the source scan in the test does.
+  // The renderer writes fleetGroups, fleetStewards and fleetMapState through
+  // setSettings; all three are AppSettings members.
   'fleetGroups',
   'fleetStewards',
   'onboardingSharedAt',

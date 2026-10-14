@@ -58,8 +58,11 @@ export function stripForRenderer(event: BackgroundAgentEvent): RendererBackgroun
 
 export class BackgroundEventBatcher {
   private buffer: RendererBackgroundAgentEvent[] = []
-  /** filePath → the trailing state change in `buffer`, still open to collapse */
-  private stateSlots = new Map<string, { index: number; state?: AgentState }>()
+  /**
+   * filePath → the trailing state change in `buffer`, still open to collapse.
+   * `adf_file_created` names the created file, which may be absent.
+   */
+  private stateSlots = new Map<string | undefined, { index: number; state?: AgentState }>()
   private timer: ReturnType<typeof setTimeout> | null = null
   private disposed = false
 

@@ -57,6 +57,17 @@ export function applySettingsMigrations(data: Record<string, unknown>): Settings
   return { changed: changedKeys.size > 0, changedKeys: [...changedKeys] }
 }
 
+/**
+ * The migrations of client keys (§4.1 of docs/design/daemon-backend.md) only.
+ * In daemon mode Studio runs these on studio-client-settings.json, the one
+ * file that holds client keys; the daemon's file never sees them. Same
+ * contract as applySettingsMigrations.
+ */
+export function applyClientSettingsMigrations(data: Record<string, unknown>): SettingsMigrationResult {
+  const changedKeys = migrateUiFontSystemDefault(data)
+  return { changed: changedKeys.length > 0, changedKeys }
+}
+
 /** Owner opt-in (Settings → Prompts): overwrite every prompt when the shipped defaults change. */
 export const PROMPT_AUTO_UPDATE_KEY = 'autoApplyPromptUpdates'
 /** Fingerprint of the shipped prompt defaults last written by the auto-update. */
