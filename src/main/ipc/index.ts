@@ -171,7 +171,7 @@ import { readRecentToolsFromWorkspace } from '../services/recent-tools'
 import { ProviderChecks } from '../services/provider-checks'
 import { buildToolDescriptions } from '../services/tool-descriptions'
 import { availableAdfPath, bringRegistryAgentHome } from '../services/registry-bring-home'
-import { claimAgentWorkspace, issueAttestationsFor, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword } from '../services/envelope-actions'
+import { claimAgentWorkspace, issueAttestationsFor, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword, convertOwnLegacyPassword } from '../services/envelope-actions'
 import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById } from '../services/dashboard-stats'
 import { buildMeshStatus } from '../services/mesh-status'
 import { appendMcpLog, ensurePythonRuntime, mcpOAuthSignOut, mcpOAuthStatus, probeMcpServer, runMcpRegistrationTest } from '../services/mcp-connect-tests'
@@ -7769,44 +7769,17 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       derivedKeyCache.set(currentFilePath, currentDerivedKey)
       syncDerivedKeyToMesh(currentFilePath, currentDerivedKey)
 
-      // Whole-file passwords are deprecated: convert the user's OWN files on
-      // unlock — strip the whole-file password, mint keys + envelopes, then
-      // carry the SAME password forward as a credentials-envelope password
-      // slot (multi-route: opens silently via owner/runtime keys, and the
-      // password keeps working as a share password). Foreign files are left
-      // exactly as-is — the claim flow owns their conversion. Without
-      // envelope recipients, skip silently: never strip protection without
-      // re-protecting.
-      let converted = false
-      try {
-        const svc = settings.getOwnerIdentity()
-        const fileOwnerDid = currentWorkspace.getMeta('adf_owner_did')
-        const isMine = fileOwnerDid
-          ? fileOwnerDid === svc.getOwnerDid()
-          : !readAdfAttestations(currentWorkspace).some((a) => a.role === 'owner')
-        if (isMine && svc.getEnvelopeRecipients()) {
-          currentWorkspace.removePassword(currentDerivedKey)
+      // Whole-file passwords are deprecated: the user's OWN file is converted
+      // on unlock (services/envelope-actions.ts, shared with the daemon).
+      const unlockedPath = currentFilePath
+      const converted = convertOwnLegacyPassword(currentWorkspace, currentDerivedKey, args.password, {
+        svc: settings.getOwnerIdentity(),
+        onPasswordRemoved: () => {
           currentDerivedKey = null
-          derivedKeyCache.delete(currentFilePath)
-          syncDerivedKeyToMesh(currentFilePath, null)
-          converted = true
-          // Now unblocked (no longer password-protected): envelopes + keys +
-          // sealing. A failure here leaves a plain file that the FILE_OPEN
-          // lazy migration retries on next open.
-          try {
-            svc.ensureWorkspaceIdentity(currentWorkspace)
-            if (currentWorkspace.getEnvelopeState('credentials') === 'unlocked') {
-              // Same replace pattern as the share-password set flow.
-              currentWorkspace.removeEnvelopePasswordSlots('credentials')
-              currentWorkspace.addEnvelopePasswordSlot('credentials', args.password)
-            }
-          } catch (err) {
-            console.warn('[IDENTITY_PASSWORD_UNLOCK] Post-convert provisioning failed:', err)
-          }
-        }
-      } catch (err) {
-        console.warn('[IDENTITY_PASSWORD_UNLOCK] Auto-convert check failed:', err)
-      }
+          derivedKeyCache.delete(unlockedPath)
+          syncDerivedKeyToMesh(unlockedPath, null)
+        },
+      })
       return { success: true, converted }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
