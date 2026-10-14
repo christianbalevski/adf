@@ -55,7 +55,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W1-C | Daemon identity: runtime adoption, unlock cascade, app OAuth store, owner import | 1 | W0-D | TODO |
 | W1-D | Gap routes: approvals, fleet, dashboard, registries, MCP probes | 1 | W0-D | TODO |
 | W1-E | File-level ops, raw file routes, tracked-dir watcher | 1 | W0-D, W0-C | TODO |
-| W1-F | E1 extraction: background event mapping | 1 | W0-F | TODO |
+| W1-F | E1 extraction: background event mapping | 1 | W0-F | MERGED (squashed) |
 | W1-G | Compute ownership: a runtime stops only containers it started | 1 | none | MERGED |
 | W2-A | Open documents | 2 | W1-A, W1-E | TODO |
 | W2-B | Client sessions and client event stream | 2 | W1-A, W0-B | TODO |
@@ -304,6 +304,8 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-D | Pre-existing: the daemon's podman probe writes a stray `NUL` file in its working directory | W1-G (fixed) |
 | W1-B | **BLOCKING for W1-A**: nothing calls `builder.applyDerivedKey`; `RuntimeService` never passes `build({derivedKey})` (`runtime-service.ts:2449`), `unlockAgentIdentityPassword` (`:1812`) rebuilds only the provider, `createProviderForModel` fixes `derivedKey:null` (`:2457`). Password-protected agents unlocked in the daemon keep MCP, adapters and AdfCallHandler locked | W1-A |
 | W1-B | Mesh-parity test runs at MeshManager level, not through the daemon builder; full in-daemon scenario | W5-A |
+| W1-F | `adf_file_created` missing from `AgentExecutionEvent['type']` and `BackgroundAgentEvent['type']` (`ipc.types.ts:9,686`); add with real payload type, drop BAM cast | W2-C |
+| W1-F | Wire serializer MUST treat missing key == `undefined` and MUST NOT throw on BigInt/circular values (`writeSse*`) | W2-B |
 | W0-F | Streaming bound (300 ms/slice) MAY be too tight on loaded CI; make it configurable | W2-C |
 | W0-F | Upserted tables (adf_meta/config/files/identity) exempt from row-order check; sort them by primary key before daemon diffs | W2-C |
 | W0-F | A child spawned with a clean env (no `NODE_OPTIONS`) is unfenced | W2-C |
