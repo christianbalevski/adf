@@ -8244,6 +8244,8 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
   // The templates-folder watcher registerAllIpcHandlers started (and its
   // pending TEMPLATES_CHANGED): nothing may push to a closing window.
   try { templatesService?.stopWatcher() } catch { /* best effort */ }
+  // The tracked-folder watcher (startDirWatcher): its autostart must not fire mid-teardown.
+  try { stopDirWatcher() } catch { /* best effort */ }
   // Flush debounced token usage data before anything can go wrong.
   try { getTokenUsageService().flush() }
   catch (e) { console.error('[Cleanup] token usage flush error:', e) }
