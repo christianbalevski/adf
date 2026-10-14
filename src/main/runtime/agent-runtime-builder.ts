@@ -34,7 +34,7 @@ import type { SandboxPackagesService } from '../services/sandbox-packages.servic
 import type { LLMProvider } from '../providers/provider.interface'
 import type { AgentExecutor } from './agent-executor'
 import type { AdfWorkspace } from '../adf/adf-workspace'
-import type { AgentConfig, McpServerConfig, ModelConfig } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, McpServerConfig, McpToolInfo, ModelConfig } from '../../shared/types/adf-v02.types'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
 import type { RuntimeSettingsStore } from './runtime-service'
 import { McpClientManager } from '../services/mcp-client-manager'
@@ -679,20 +679,16 @@ export class AgentRuntimeBuilder {
     /**
      * Persist one server's tool sync onto a fresh read of the file's config:
      * the connect awaited, and a config write made meanwhile (a client's save
-     * during the start window, design §6.1 row 24) must not be overwritten
-     * with the caller's copy. Only that server's part moves over.
+     * or a tool toggle during the start window, design §6.1 row 24) must not
+     * be overwritten with the caller's copy. The sync runs again on that read,
+     * so only what the discovery changes moves over.
      */
-    const persistServerSync = (synced: AgentConfig, serverName: string): void => {
+    const persistServerSync = (serverName: string, tools: McpToolInfo[], envSchema: McpServerConfig['env_schema'] | null | undefined): void => {
       const onDisk = workspace.getAgentConfig()
-      const from = synced.mcp?.servers?.find(s => s.name === serverName)
-      const to = onDisk.mcp?.servers?.find(s => s.name === serverName)
-      if (!from || !to) return
-      to.available_tools = from.available_tools
-      if (from.env_schema !== undefined) to.env_schema = from.env_schema
-      const prefix = `mcp_${serverName}_`
-      const declared = new Map(synced.tools.filter(t => t.name.startsWith(prefix)).map(t => [t.name, t]))
-      onDisk.tools = onDisk.tools.map(t => declared.get(t.name) ?? t)
-      for (const [name, declaration] of declared) if (!onDisk.tools.some(t => t.name === name)) onDisk.tools.push(declaration)
+      const server = onDisk.mcp?.servers?.find(s => s.name === serverName)
+      if (!server) return
+      syncDiscoveredMcpTools(onDisk, server, tools, registry, manager)
+      if (envSchema) server.env_schema = envSchema
       workspace.setAgentConfig(onDisk)
     }
 
@@ -851,7 +847,7 @@ export class AgentRuntimeBuilder {
       const changed = syncDiscoveredMcpTools(freshConfig, serverCfg, tools, registry, manager)
       const nextSchema = captureEnvSchema(serverCfg, appEnvKeys, agentEnvKeys)
       if (nextSchema) serverCfg.env_schema = nextSchema
-      if (changed || nextSchema) persistServerSync(freshConfig, serverName)
+      if (changed || nextSchema) persistServerSync(serverName, tools, nextSchema)
       const assembled = getAssembled()
       // Through the assembled choke point (as the late resync below), so side
       // loops re-derive their MCP declarations too. notifyHost:false — a tool

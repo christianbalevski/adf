@@ -16,6 +16,7 @@ import { MCP_OAUTH_AUTHORIZE_APPROVAL, MCP_OAUTH_SIGNIN_APPROVAL } from '../src/
 import { currentAgentDerivedKey, subscribeAgentRuntimeSignals } from '../src/main/runtime/agent-runtime-signals'
 import { approvalHub } from '../src/main/runtime/approval-hub'
 import { mcpConnectorFor } from '../src/main/runtime/mcp-connectors'
+import { hashMcpToolInfo } from '../src/main/services/mcp-tool-sync'
 import { createDispatch, createEvent } from '../src/shared/types/adf-event.types'
 import type { runMcpHttpOAuthFlow } from '../src/main/services/mcp-http-oauth'
 import type { McpOAuthRecord } from '../src/main/services/mcp-oauth.types'
@@ -146,6 +147,35 @@ describe('AgentRuntimeBuilder parity: start window (design §6.1 row 24)', () =>
       const saved = workspace.getAgentConfig()
       expect(saved.description).toBe('written during the start')
       expect(saved.tools.find((t) => t.name === 'mcp_gone_ping')?.enabled).toBe(false)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+})
+
+describe('AgentRuntimeBuilder parity: start window, tool toggles (review fix)', () => {
+  it('a tool toggle saved while the server connects survives the startup tool sync', async () => {
+    let release!: (tools: McpToolInfo[]) => void
+    vi.spyOn(McpClientManager.prototype, 'connect').mockImplementation(() => new Promise((resolve) => { release = resolve as never }))
+    const base = makeAgentFile('agent-1')
+    const declared = { name: 'mcp_srv_ping', enabled: true, visible: true, restricted: false, mcp_tool_hash: hashMcpToolInfo(PING_TOOL) }
+    base.workspace.setAgentConfig({
+      ...base.workspace.getAgentConfig(),
+      tools: [...(base.workspace.getAgentConfig().tools ?? []), declared],
+      mcp: { servers: [stdioServer('srv', { available_tools: [PING_TOOL] })] },
+    })
+    const { workspace } = base
+    const building = new AgentRuntimeBuilder().build({ workspace, filePath: base.filePath, config: workspace.getAgentConfig(), provider: new MockLLMProvider() })
+    await waitFor(() => typeof release === 'function')
+    // The owner turns the tool off while the server is still connecting.
+    const now = workspace.getAgentConfig()
+    workspace.setAgentConfig({ ...now, tools: now.tools.map((t) => (t.name === 'mcp_srv_ping' ? { ...t, enabled: false } : t)) })
+    release([PING_TOOL, { name: 'pong', description: 'pong', input_schema: { type: 'object', properties: {} } }])
+    const agent = await building
+    try {
+      const saved = workspace.getAgentConfig()
+      expect(saved.tools.find((t) => t.name === 'mcp_srv_ping')?.enabled).toBe(false)
+      expect(saved.tools.some((t) => t.name === 'mcp_srv_pong')).toBe(true)
     } finally {
       await agent.disposeAsync()
     }
