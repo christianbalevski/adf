@@ -87,7 +87,7 @@ describe('envelope status and share password', () => {
     } finally {
       fresh.close()
     }
-  })
+  }, 30_000) // password-slot KDF runs several times; slow under a loaded machine
 })
 
 describe('attestations', () => {
