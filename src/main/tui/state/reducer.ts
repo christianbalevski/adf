@@ -327,9 +327,9 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
         return { ...t, items }
       })
     case 'event':
-      return applyEvent(state, action.frame.event)
+      return applyEvent(state, action.frame.event, !isSynthetic(action.frame))
     case 'events':
-      return action.frames.reduce((next, frame) => applyEvent(next, frame.event), state)
+      return action.frames.reduce((next, frame) => applyEvent(next, frame.event, !isSynthetic(frame)), state)
     case 'activity/note':
       return { ...state, activity: pushBounded(state.activity, { id: localId('a'), at: Date.now(), agentId: null, loop: MAIN_LOOP, type: action.kind, summary: action.text }, MAX_ACTIVITY) }
     case 'viewState/set':
@@ -353,10 +353,21 @@ const TRANSCRIPT_EVENTS = new Set([
   'chat.delivered', 'chat.discarded',
 ])
 
-function applyEvent(state: TuiState, event: UmbilicalEvent): TuiState {
+/**
+ * A frame the app built itself (client-stream.ts: the focused agent's token
+ * stream as `turn.delta`): it updates the transcript only, never the activity
+ * log or the event tail, which show what the daemon sent.
+ */
+export type LiveFrame = DaemonEventFrame & { synthetic?: true }
+
+function isSynthetic(frame: DaemonEventFrame): boolean {
+  return (frame as LiveFrame).synthetic === true
+}
+
+function applyEvent(state: TuiState, event: UmbilicalEvent, log = true): TuiState {
   const agentId = event.agent_id ?? null
   const loop = eventLoop(event)
-  let next: TuiState = {
+  let next: TuiState = log ? {
     ...state,
     activity: pushBounded(state.activity, {
       id: localId('a'),
@@ -367,7 +378,7 @@ function applyEvent(state: TuiState, event: UmbilicalEvent): TuiState {
       summary: summarizeEvent(event),
     }, MAX_ACTIVITY),
     lastEvents: pushBounded(state.lastEvents, event, MAX_LAST_EVENTS),
-  }
+  } : state
   if (!agentId || !next.agents[agentId]) return next
   const p = event.payload ?? {}
 

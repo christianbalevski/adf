@@ -1035,6 +1035,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       const { agentId, loop, toolUseId, result, isError } = effects.toolResult
       dispatch({ type: 'tool/result', key: transcriptKey(agentId, loop), toolUseId, result, isError })
     }
+    if (effects.notice) toast(effects.notice.text, effects.notice.level, effects.notice.level === 'warn' ? 10_000 : 4000)
     if (effects.reload) {
       const { agentId, loop } = effects.reload
       const key = transcriptKey(agentId, loop)

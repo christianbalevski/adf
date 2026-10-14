@@ -22,7 +22,8 @@ describe('client-session frames for the terminal app', () => {
 
   it('delta batches become turn.delta for the reducer, routed by loop', () => {
     const text = clientFrameEffects(exec('text_delta_batch', { deltas: ['Hel', 'lo'] }))
-    expect(text.frames[0].event).toMatchObject({ event_type: 'turn.delta', agent_id: AGENT, payload: { kind: 'text', text: 'Hello' } })
+    expect(text.frames[0].event).toMatchObject({ event_type: 'turn.delta', agent_id: AGENT, seq: 1, payload: { kind: 'text', text: 'Hello' } })
+    expect(text.frames[0].synthetic).toBe(true)
     expect(text.frames[0].event).not.toHaveProperty('loop')
     const thinking = clientFrameEffects(exec('thinking_delta_batch', { deltas: ['hmm'] }, { loop: 'critic' }))
     expect(thinking.frames[0].event).toMatchObject({ event_type: 'turn.delta', loop: 'critic', payload: { kind: 'thinking', text: 'hmm' } })
@@ -42,6 +43,25 @@ describe('client-session frames for the terminal app', () => {
       { type: 'tool/result', key, toolUseId: 'tu1', result: full, isError: false },
     )
     expect(state.transcripts[key].items[0]).toMatchObject({ result: full, status: 'ok' })
+  })
+
+  it('synthetic deltas stream into the transcript but stay out of the activity log and the event tail; daemon turn.delta still lands there', () => {
+    const key = transcriptKey(AGENT, 'main')
+    const base = reduce(initialState('http://127.0.0.1:7385'), { type: 'agents/loaded', agents: [{ id: AGENT, filePath: null, name: 'agent-1', handle: 'agent-1', autostart: false }] })
+    const synthetic = clientFrameEffects(exec('text_delta_batch', { deltas: ['Hi'] })).frames
+    const afterSynthetic = reduce(base, { type: 'events', frames: synthetic })
+    expect(afterSynthetic.transcripts[key].items).toEqual([expect.objectContaining({ kind: 'assistant', text: 'Hi', streaming: true })])
+    expect(afterSynthetic.activity).toEqual([])
+    expect(afterSynthetic.lastEvents).toEqual([])
+    // Another agent's umbilical turn.delta (stream_deltas on) is shown as before.
+    const umbilical = clientFrameEffects({ kind: 'umbilical', cursor: 2, agentId: AGENT, event: { seq: 7, event_type: 'turn.delta', timestamp: 1, source: 'agent:t', agent_id: AGENT, payload: { kind: 'text', text: '!' } } } as ClientFrame).frames
+    const afterUmbilical = reduce(afterSynthetic, { type: 'events', frames: umbilical })
+    expect(afterUmbilical.lastEvents.map(e => e.event_type)).toEqual(['turn.delta'])
+    expect(afterUmbilical.activity).toHaveLength(1)
+  })
+
+  it('daemon_orphan_hold becomes a notice', () => {
+    expect(clientFrameEffects({ kind: 'push', cursor: 1, agentId: null, filePath: null, topic: 'daemon_orphan_hold', payload: { holding: true, reason: 'studio closed', sessions: 1 } } as ClientFrame).notice).toEqual({ text: expect.stringContaining('studio closed'), level: 'warn' })
   })
 
   it('chat_updated reloads that loop; host and push frames need nothing here', () => {

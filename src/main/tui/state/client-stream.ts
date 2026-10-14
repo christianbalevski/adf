@@ -7,17 +7,22 @@
 //
 //   text / thinking delta batches  the focused agent's tokens, whatever
 //                                  `umbilical.stream_deltas` says (the session
-//                                  never carries `turn.delta`); fed to the
-//                                  reducer as `turn.delta`
+//                                  carries no `turn.delta` for that agent); fed
+//                                  to the reducer as a synthetic `turn.delta`
+//                                  that stays out of the activity log and the
+//                                  event tail
 //   tool_call_result               the full result (tool.completed carries a
 //                                  truncated copy)
 //   chat_updated                   the loop's display log was replaced
 //                                  (compaction, rewrite): reload that transcript
 //
-// Host and push frames are not needed: the umbilical envelopes carry the same
-// lifecycle and state changes for this model.
+// Other agents' `turn.delta` (with `stream_deltas` on) arrive as umbilical
+// frames, as on GET /events. Host and push frames are not needed: the
+// umbilical envelopes carry the same lifecycle and state changes, except
+// `daemon_orphan_hold`, which becomes a notice.
 
-import type { ClientFrame, DaemonEventFrame, UmbilicalEvent } from '../api/types'
+import type { ClientFrame, UmbilicalEvent } from '../api/types'
+import type { LiveFrame } from './reducer'
 
 /** Client name the TUI's sessions are opened with (the daemon logs it). */
 export const TUI_CLIENT_NAME = 'tui'
@@ -26,11 +31,13 @@ const MAIN = 'main'
 
 export interface ClientFrameEffects {
   /** Envelopes for the reducer and the store's event side effects, in order. */
-  frames: DaemonEventFrame[]
+  frames: LiveFrame[]
   /** A full tool result for the transcript's tool item. */
   toolResult?: { agentId: string; loop: string; toolUseId: string; result: string; isError: boolean }
   /** Reload this transcript from history. */
   reload?: { agentId: string; loop: string }
+  /** Something to tell the user (a toast). */
+  notice?: { text: string; level: 'info' | 'warn' }
 }
 
 const NONE: ClientFrameEffects = { frames: [] }
@@ -38,6 +45,10 @@ const NONE: ClientFrameEffects = { frames: [] }
 /** What one client-session frame means for the TUI. Pure. */
 export function clientFrameEffects(frame: ClientFrame): ClientFrameEffects {
   if (frame.kind === 'umbilical') return { frames: [{ cursor: frame.cursor, event: frame.event }] }
+  if (frame.kind === 'push' && frame.topic === 'daemon_orphan_hold') {
+    const payload = frame.payload as { holding: boolean; reason: string }
+    return { frames: [], notice: payload.holding ? { text: `The daemon stays up because this app is connected: ${payload.reason}`, level: 'warn' } : { text: 'The daemon is no longer waiting for this app to close', level: 'info' } }
+  }
   if (frame.kind !== 'executor') return NONE
   const { event, agentId } = frame
   const loop = frame.loop ?? event.loop ?? MAIN
@@ -50,8 +61,9 @@ export function clientFrameEffects(frame: ClientFrame): ClientFrameEffects {
       const text = deltaText(payload)
       if (!text) return NONE
       const kind = event.type.startsWith('thinking') ? 'thinking' : 'text'
+      // Keyed by the session cursor (no umbilical seq exists for it); built here, so marked synthetic.
       const delta: UmbilicalEvent = {
-        seq: 0,
+        seq: frame.cursor,
         event_type: 'turn.delta',
         timestamp: event.timestamp,
         source: `agent:${agentId}`,
@@ -59,7 +71,7 @@ export function clientFrameEffects(frame: ClientFrame): ClientFrameEffects {
         ...(loop !== MAIN ? { loop } : {}),
         payload: { kind, text },
       }
-      return { frames: [{ cursor: frame.cursor, event: delta }] }
+      return { frames: [{ cursor: frame.cursor, event: delta, synthetic: true }] }
     }
     case 'tool_call_result': {
       if (frame.stripped) return NONE
