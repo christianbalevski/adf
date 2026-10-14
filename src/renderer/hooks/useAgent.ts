@@ -538,13 +538,14 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
       }
 
       case 'tool_approval_resolved': {
-        const payload = event.payload as { requestId: string; approved: boolean }
+        const payload = event.payload as { requestId: string; approved: boolean; settled?: boolean }
         // pendingApprovals maps logEntryId -> info — find by requestId value
         for (const [logEntryId, info] of slice.pendingApprovals) {
           if (info.requestId === payload.requestId) {
             // Synthesized (outOfBand) entries have no tool_result to land —
             // stamp the decision so they don't render as "running…" forever.
-            agentStore.markApprovalOutcome(logEntryId, payload.approved, loop)
+            // `settled`: the runtime ended it (no human decision) — not a denial.
+            agentStore.markApprovalOutcome(logEntryId, payload.settled ? 'completed' : payload.approved, loop)
             agentStore.removePendingApproval(logEntryId, loop)
             break
           }

@@ -235,7 +235,7 @@ function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemView
     case 'tool':
       return <ToolBody item={item} w={w} expanded={expanded} />
     case 'hil': {
-      const tone = item.status === 'pending' ? theme.color.warn : item.status === 'approved' ? theme.color.success : theme.color.error
+      const tone = item.status === 'pending' ? theme.color.warn : item.status === 'approved' || item.status === 'completed' ? theme.color.success : theme.color.error
       return (
         <Box flexDirection="column" width={w} borderStyle={theme.ascii ? 'classic' : 'single'} borderLeft borderRight={false} borderTop={false} borderBottom={false} borderColor={tone} paddingLeft={1}>
           <Text wrap="truncate-end">

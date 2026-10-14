@@ -361,7 +361,7 @@ export function applyEventToItems(items: TranscriptItem[], event: UmbilicalEvent
     case 'hil.resolved': {
       const taskId = str(p.task_id) ?? str(p.request_id)
       const index = items.findIndex(item => item.kind === 'hil' && item.taskId === taskId)
-      const status = p.approved === true ? 'approved' as const : 'denied' as const
+      const status = p.settled === true ? 'completed' as const : p.approved === true ? 'approved' as const : 'denied' as const
       if (index < 0) {
         return cap([...items, { id: localId(), at, local: true, kind: 'notice', level: 'info', event: event.event_type, text: `Approval ${taskId ?? ''} ${status}${p.timed_out ? ' (timed out)' : ''}` }])
       }

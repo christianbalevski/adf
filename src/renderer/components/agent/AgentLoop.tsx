@@ -564,7 +564,7 @@ const LogEntryRow = memo(({
   // Terminal state for synthesized (outOfBand) approval entries — they never
   // get a paired tool_result (the gated call runs inside the shell/code that
   // raised the approval), so the human's decision is the entry's outcome.
-  const overrideOutcome = entry.metadata?.overrideOutcome as 'approved' | 'denied' | undefined
+  const overrideOutcome = entry.metadata?.overrideOutcome as 'approved' | 'denied' | 'completed' | undefined
   const statusValue = toolName === 'sys_set_meta' && toolInputRecord?.key === 'status' && typeof toolInputRecord.value === 'string'
     ? toolInputRecord.value.trim()
     : ''
@@ -723,11 +723,11 @@ const LogEntryRow = memo(({
             {!pendingApprovalRequestId && overrideOutcome && (
               <div className="px-1.5 pb-1">
                 <span className={`text-[10px] font-medium ${
-                  overrideOutcome === 'approved'
+                  overrideOutcome === 'approved' || overrideOutcome === 'completed'
                     ? 'text-[var(--status-stable)]'
                     : 'text-[var(--status-deprecated)]'
                 }`}>
-                  {overrideOutcome === 'approved' ? 'Approved — ran in the calling shell/code' : 'Denied'}
+                  {overrideOutcome === 'approved' ? 'Approved — ran in the calling shell/code' : overrideOutcome === 'completed' ? 'Completed' : 'Denied'}
                 </span>
               </div>
             )}
@@ -2407,7 +2407,7 @@ function LoopStream({ loop }: { loop: string }) {
             } : null}
             awaitingApproval={!!modalApprovalRequestId}
             approvalTitle={modalApproval?.protection?.description}
-            overrideOutcome={call?.metadata?.overrideOutcome as 'approved' | 'denied' | undefined}
+            overrideOutcome={call?.metadata?.overrideOutcome as 'approved' | 'denied' | 'completed' | undefined}
             durationMs={callDurationMs}
             startedAt={call?.timestamp}
             toolId={call?.metadata?.tool_id as string | undefined}
