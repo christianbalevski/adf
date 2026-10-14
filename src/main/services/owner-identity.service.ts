@@ -21,7 +21,7 @@ import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../
 import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
 import { generateX25519KeyPair, extractRawX25519PublicKey, type KeySlotRecord } from '../crypto/envelope-crypto'
 import { daemonEncKeyLabel } from '../daemon/daemon-enc-key'
-import { appendAdfAttestation, createAttestation, issueOwnerAttestation, verifyAttestation } from './attestation.service'
+import { appendAdfAttestation, createAttestation, issueOwnerAttestation, readAdfAttestations, verifyAttestation } from './attestation.service'
 import { getReviewedIds } from './agent-review'
 import type { SettingsService } from './settings.service'
 import type { SharedMnemonicStore } from './owner-secret-store'
@@ -99,9 +99,19 @@ export class OwnerIdentityService {
     this.sharedMnemonic = store
   }
 
-  /** Copy the phrase into the shared keychain entry when it differs. Never throws. */
+  /**
+   * Copy the phrase into the shared keychain entry when it differs. Never
+   * throws. A phrase that does not derive the owner DID on record is never
+   * mirrored: after an owner switch made outside this app (adf identity
+   * import) it would overwrite the new owner's phrase, the only copy on this
+   * machine.
+   */
   private mirrorToSharedStore(mnemonic: string): void {
     if (!this.sharedMnemonic) return
+    if (!phraseDerives(mnemonic, this.getOwnerDid())) {
+      console.warn(`[OwnerIdentity] Not mirroring this install's owner phrase into the OS keychain: it does not belong to this machine's owner ${this.getOwnerDid()}`)
+      return
+    }
     try {
       if (this.sharedMnemonic.read() !== mnemonic) this.sharedMnemonic.write(mnemonic)
     } catch (err) {
@@ -115,7 +125,7 @@ export class OwnerIdentityService {
    * record is taken (or any valid phrase on a fresh install with no owner
    * DID yet). Returns the adopted phrase, or null.
    */
-  private importFromSharedStore(currentOwnerDid: string | undefined): string | null {
+  private importFromSharedStore(currentOwnerDid: string | undefined, opts: { replacingStale?: boolean } = {}): string | null {
     if (!this.sharedMnemonic) return null
     // Without safeStorage, setSecret would write the phrase to the settings
     // file in plaintext. Keep Studio's previous behavior instead.
@@ -138,7 +148,9 @@ export class OwnerIdentityService {
       this.settings.set('ownerSeedBackupConfirmed', false)
     }
     this.markSeedDerived()
-    console.log(`[OwnerIdentity] Imported owner phrase for ${owner.did} from the OS keychain`)
+    console.log(opts.replacingStale
+      ? `[OwnerIdentity] The owner is now ${owner.did} (switched outside this app, e.g. adf identity import): replaced this install's phrase of the previous owner with the one in the OS keychain`
+      : `[OwnerIdentity] Imported owner phrase for ${owner.did} from the OS keychain`)
     return phrase
   }
 
@@ -160,7 +172,15 @@ export class OwnerIdentityService {
     const existingOwnerDid = this.settings.get('ownerDid') as string | undefined
     // Own copy first; else the phrase the CLI/daemon put in the OS keychain
     // (same owner DID only — see importFromSharedStore).
-    const mnemonic = this.settings.getSecret('ownerMnemonic') ?? this.importFromSharedStore(existingOwnerDid)
+    let mnemonic = this.settings.getSecret('ownerMnemonic')
+    // Own copy of ANOTHER owner: the owner was switched outside this app (the
+    // daemon's import rewrites ownerDid and the keychain phrase). Take the
+    // keychain phrase when it is the owner on record; ensureRuntimeKey below
+    // then re-signs this runtime's delegation under it.
+    if (mnemonic && existingOwnerDid && !phraseDerives(mnemonic, existingOwnerDid)) {
+      mnemonic = this.importFromSharedStore(existingOwnerDid, { replacingStale: true }) ?? mnemonic
+    }
+    mnemonic = mnemonic ?? this.importFromSharedStore(existingOwnerDid)
 
     if (mnemonic) {
       // Already migrated. Sanity-check determinism; never crash the app over it.
@@ -373,12 +393,18 @@ export class OwnerIdentityService {
     return (this.settings.get('runtimeDid') as string) ?? ''
   }
 
-  /** Derive the owner signing key from the mnemonic on demand. Never cached to disk. */
+  /**
+   * Derive the owner signing key from the mnemonic on demand. Never cached to
+   * disk. Null when the stored phrase belongs to another owner than the DID
+   * on record: its attestations would name one owner and be signed by
+   * another, and never verify.
+   */
   getOwnerSigningKey(): Buffer | null {
     const mnemonic = this.settings.getSecret('ownerMnemonic')
     if (!mnemonic) return null
     try {
-      return deriveOwnerIdentity(mnemonic).privateKeyPkcs8
+      const owner = deriveOwnerIdentity(mnemonic)
+      return owner.did === this.getOwnerDid() ? owner.privateKeyPkcs8 : null
     } catch {
       return null
     }
@@ -871,15 +897,31 @@ export class OwnerIdentityService {
 
     let attested = false
     if (restamped && workspace.getDid()) {
+      // The operator attestation belongs to the runtime the file is stamped
+      // with. When that is another runtime on this machine (the daemon's, or
+      // Studio's for a daemon), keep its operator attestations rather than
+      // replacing them with one from a runtime the file was never stamped by.
+      const ownRuntime = workspace.getMeta('adf_runtime_did') === this.getRuntimeDid()
+      const keptOperators = ownRuntime ? [] : readAdfAttestations(workspace).filter((a) => a.role === 'operator')
       const issued = issueOwnerAttestation(workspace, {
         ownerDid: this.getOwnerDid(),
         ownerPrivateKey: this.getOwnerSigningKey(),
-        runtimeDid: this.getRuntimeDid(),
-        runtimePrivateKey: this.getRuntimeSigningKey()
+        ...(ownRuntime ? { runtimeDid: this.getRuntimeDid(), runtimePrivateKey: this.getRuntimeSigningKey() } : {})
       })
+      if (issued.length > 0) for (const att of keptOperators) appendAdfAttestation(workspace, att)
       attested = issued.length > 0
     }
     return { restamped, attested }
+  }
+}
+
+/** True when `mnemonic` derives `ownerDid`. False for an unreadable phrase or an empty DID. */
+function phraseDerives(mnemonic: string, ownerDid: string | undefined): boolean {
+  if (!ownerDid) return false
+  try {
+    return deriveOwnerIdentity(mnemonic).did === ownerDid
+  } catch {
+    return false
   }
 }
 
