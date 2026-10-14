@@ -240,17 +240,19 @@ const runtimeDiscovery = new RuntimeDiscovery({
   getOwnerDid: () => (settings.get('ownerDid') as string | undefined) || undefined,
 })
 runtimeDiscovery.start()
+// The mDNS TXT record carries the runtime DID: re-announce when the daemon
+// starts or stops presenting Studio's.
+ownerIdentity.onRuntimeChange(() => {
+  void runtimeDiscovery.stop().then(() => runtimeDiscovery.start())
+})
 
 /**
- * The runtime DID mDNS advertises: the one this daemon signs with, never
- * Studio's `runtimeDid` from a shared settings file. Reads the key
- * DaemonIdentity keeps it under (`daemonRuntimeDid`, written by
- * ensureRuntimeKey); its own accessor is private and `status()` refreshes.
- * Repoint at the active-DID accessor once runtime adoption (W1-C) lands.
+ * The runtime DID mDNS advertises: the one this daemon signs with, the
+ * adopted Studio runtime DID while adoption is active, else its own
+ * (`daemonRuntimeDid`). Same source as mesh /ping (presentedSettings).
  */
 function discoveryRuntimeDid(): string | undefined {
-  const did = settings.get('daemonRuntimeDid')
-  return typeof did === 'string' && did ? did : undefined
+  return ownerIdentity.presentedRuntime().did ?? undefined
 }
 const agentRuntimeBuilder = new AgentRuntimeBuilder({
   settings,
@@ -268,6 +270,9 @@ const agentRuntimeBuilder = new AgentRuntimeBuilder({
   basePrompt,
   toolPrompts,
   compactionPrompt,
+  // App-level MCP OAuth sign-ins: capture-on-attach and interactive sign-in
+  // store here first, as Studio's mcpOauthCredentials.
+  mcpOAuthAppStore: ownerIdentity.mcpOAuth,
 })
 const runtime = new RuntimeService({
   settings,
