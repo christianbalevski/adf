@@ -128,7 +128,7 @@ describe('RuntimeService umbilical /events output', () => {
   it('a trigger error', async () => {
     const { filePath, runtime, events, stop } = scene()
     const ref = await runtime.loadAgent(filePath)
-    const agent = (runtime as unknown as { requireAgent(id: string): { agent: { executor: { executeTurn: unknown }; triggerEvaluator: { emit(e: string, d: unknown): void } } } }).requireAgent(ref.id).agent
+    const agent = (runtime as unknown as { requireAgent(id: string): { agent: { executor: { executeTurn: unknown }; triggerEvaluator: { emit(e: string, d: unknown): void }; workspace: { getLogs(n: number): Array<{ event: string | null; message: string }> } } } }).requireAgent(ref.id).agent
     const errors: unknown[] = []
     const origError = console.error
     console.error = (...args: unknown[]) => { errors.push(args) }
@@ -139,6 +139,10 @@ describe('RuntimeService umbilical /events output', () => {
     } finally {
       console.error = origError
     }
+    // The error fired: the daemon builder's trigger_error log row (before and after W1-A).
+    expect(agent.workspace.getLogs(50)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: 'trigger_error', message: 'turn exploded' }),
+    ]))
     await stop()
     expect(events.join('\n')).toMatchSnapshot()
   })
