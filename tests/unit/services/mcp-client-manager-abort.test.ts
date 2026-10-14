@@ -3,9 +3,9 @@
 // its connect times out, and nothing retries it. The server is a node
 // process that writes its pid and never answers the MCP handshake (no
 // network, no npx).
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { McpClientManager } from '../../../src/main/services/mcp-client-manager'
 
@@ -45,6 +45,29 @@ describe('McpClientManager connect with a signal', () => {
     expect(messages).toContain('Connect cancelled — closing the server it started')
     // No inline retry and no background retry after the cancel.
     expect(messages.some((m) => /Retrying/.test(m))).toBe(false)
+    await manager.disconnectAll()
+  }, 30_000)
+
+  // E3: abandonAttempt read the pid after client.close(), which clears the
+  // transport's process, so the Windows tree sweep never ran and a server
+  // started through a cmd.exe shim (npx, uvx) outlived the cancel.
+  it.runIf(process.platform === 'win32')('abort of a server behind a cmd.exe shim (npx/uvx) kills the whole tree', async () => {
+    const manager = new McpClientManager()
+    const controller = new AbortController()
+    const server = silentServer()
+    const script = join(dirname(server.pidFile), 'server.js')
+    writeFileSync(script, "require('fs').writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000)")
+    const shimmed = ['/d', '/c', 'node', script, server.pidFile]
+    const connecting = manager.connect({ name: 'shim', transport: 'stdio', command: 'cmd.exe', args: shimmed }, { signal: controller.signal })
+    for (let i = 0; i < 200 && !existsSync(server.pidFile); i++) await sleep(50)
+    const pid = Number(readFileSync(server.pidFile, 'utf-8'))
+    expect(isAlive(pid)).toBe(true)
+    controller.abort()
+    expect(await connecting).toBeNull()
+    for (let i = 0; i < 100 && isAlive(pid); i++) await sleep(50)
+    const survived = isAlive(pid)
+    if (survived) process.kill(pid)
+    expect(survived, 'the node grandchild of the cmd.exe shim survived the cancel').toBe(false)
     await manager.disconnectAll()
   }, 30_000)
 

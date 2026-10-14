@@ -14,6 +14,7 @@ import type {
 } from '../../shared/types/adf-v02.types'
 import { resolveMcpRequestHeaders } from './mcp-spawn-utils'
 import { hostLinkedFileReader, loadLinkedImages, type McpLinkedFileReader } from './mcp-linked-files'
+import { execFile } from 'child_process'
 import { killTree } from '../utils/child-registry'
 // UnauthorizedError is a runtime value (re-exported from the SDK via the same
 // CJS shim this file uses); AdfOAuthClientProvider is type-only here.
@@ -469,16 +470,35 @@ export class McpClientManager extends EventEmitter {
     client: Client | null,
     transport: McpManagedServer['transport']
   ): Promise<void> {
+    // E3: the attempt is abandoned, so on Windows its process tree goes
+    // first, while the shim is still alive. Read after client.close() the
+    // transport no longer has its process (closing the client closes it), and
+    // once close() has killed the cmd.exe shim of an npx/uvx server, a
+    // `taskkill /T` of the dead shim no longer reaches the real server.
+    const child = this.stdioTransportChild(transport)
+    const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
+    if (!exitedBeforeClose) await this.sweepPidTreeNow(this.stdioTransportPid(transport))
     if (client) {
       try { client.onclose = () => {}; await client.close() } catch { /* ignore */ }
     }
     if (transport) {
-      const child = this.stdioTransportChild(transport)
-      const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
-      const pid = this.stdioTransportPid(transport)
       try { await transport.close() } catch { /* ignore */ }
-      if (!exitedBeforeClose) this.sweepPidTree(pid)
     }
+  }
+
+  /** sweepPidTree, awaited (bounded): taskkill /T has run when it resolves. */
+  private sweepPidTreeNow(pid: number | null): Promise<void> {
+    if (pid == null || process.platform !== 'win32') return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 3000)
+      timer.unref?.()
+      try {
+        execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => { clearTimeout(timer); resolve() })
+      } catch {
+        clearTimeout(timer)
+        resolve()
+      }
+    })
   }
 
   /**
