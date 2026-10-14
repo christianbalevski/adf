@@ -64,6 +64,17 @@ export interface OwnerIdentityStatus {
  */
 export const OWNER_SEED_DERIVED_KEY = 'ownerDidSeedDerived'
 
+/**
+ * Secret settings key holding a previous owner's phrase after an owner switch
+ * made outside this install: `ownerMnemonicSuperseded:<that owner's DID>`,
+ * same `safe:` encoding as `ownerMnemonic`, one key per owner so a later
+ * switch never overwrites it. Kept so the phrase stays recoverable; never
+ * shown, never used to sign.
+ */
+export function ownerMnemonicSupersededKey(ownerDid: string): string {
+  return `ownerMnemonicSuperseded:${ownerDid}`
+}
+
 export interface RestampResult {
   restamped: number
   attested: number
@@ -125,7 +136,7 @@ export class OwnerIdentityService {
    * record is taken (or any valid phrase on a fresh install with no owner
    * DID yet). Returns the adopted phrase, or null.
    */
-  private importFromSharedStore(currentOwnerDid: string | undefined, opts: { replacingStale?: boolean } = {}): string | null {
+  private importFromSharedStore(currentOwnerDid: string | undefined, opts: { replacingStale?: string } = {}): string | null {
     if (!this.sharedMnemonic) return null
     // Without safeStorage, setSecret would write the phrase to the settings
     // file in plaintext. Keep Studio's previous behavior instead.
@@ -141,6 +152,13 @@ export class OwnerIdentityService {
     if (currentOwnerDid && owner.did !== currentOwnerDid) {
       console.warn(`[OwnerIdentity] The OS keychain holds the phrase for ${owner.did}, not this install's owner ${currentOwnerDid} — not importing it.`)
       return null
+    }
+    const staleOwner = opts.replacingStale ? derivedDid(opts.replacingStale) : null
+    if (opts.replacingStale && staleOwner) {
+      // Never destroyed: the previous owner's phrase stays recoverable.
+      const key = ownerMnemonicSupersededKey(staleOwner)
+      this.settings.setSecret(key, opts.replacingStale)
+      console.log(`[OwnerIdentity] Kept this install's phrase of the previous owner ${staleOwner} as ${key}`)
     }
     this.settings.setSecret('ownerMnemonic', phrase)
     if (!currentOwnerDid) {
@@ -173,12 +191,23 @@ export class OwnerIdentityService {
     // Own copy first; else the phrase the CLI/daemon put in the OS keychain
     // (same owner DID only — see importFromSharedStore).
     let mnemonic = this.settings.getSecret('ownerMnemonic')
-    // Own copy of ANOTHER owner: the owner was switched outside this app (the
-    // daemon's import rewrites ownerDid and the keychain phrase). Take the
-    // keychain phrase when it is the owner on record; ensureRuntimeKey below
-    // then re-signs this runtime's delegation under it.
+    // Own copy of ANOTHER owner. Taken over only for a recorded switch made
+    // outside this app (the daemon's import puts the previous owner into
+    // legacyOwnerDids and the new phrase into the keychain): an ownerDid that
+    // is merely wrong (hand edit, settings copied from elsewhere) must never
+    // cost this install its own phrase. ensureRuntimeKey below then re-signs
+    // this runtime's delegation under the new owner.
     if (mnemonic && existingOwnerDid && !phraseDerives(mnemonic, existingOwnerDid)) {
-      mnemonic = this.importFromSharedStore(existingOwnerDid, { replacingStale: true }) ?? mnemonic
+      const staleOwner = derivedDid(mnemonic)
+      const legacy = (this.settings.get('legacyOwnerDids') as string[] | undefined) ?? []
+      if (staleOwner && legacy.includes(staleOwner)) {
+        mnemonic = this.importFromSharedStore(existingOwnerDid, { replacingStale: mnemonic }) ?? mnemonic
+      } else {
+        console.warn(
+          `[OwnerIdentity] This install's phrase belongs to ${staleOwner ?? '(unreadable)'}, but the settings name the owner ${existingOwnerDid}, ` +
+          'and no owner switch from it is recorded (legacyOwnerDids). Keeping this install\'s phrase; check ownerDid in the settings file.'
+        )
+      }
     }
     mnemonic = mnemonic ?? this.importFromSharedStore(existingOwnerDid)
 
@@ -901,7 +930,10 @@ export class OwnerIdentityService {
       // with. When that is another runtime on this machine (the daemon's, or
       // Studio's for a daemon), keep its operator attestations rather than
       // replacing them with one from a runtime the file was never stamped by.
-      const ownRuntime = workspace.getMeta('adf_runtime_did') === this.getRuntimeDid()
+      // A file with no runtime stamp gets this runtime's operator attestation,
+      // as before this check existed.
+      const stampedRuntime = workspace.getMeta('adf_runtime_did')
+      const ownRuntime = !stampedRuntime || stampedRuntime === this.getRuntimeDid()
       const keptOperators = ownRuntime ? [] : readAdfAttestations(workspace).filter((a) => a.role === 'operator')
       const issued = issueOwnerAttestation(workspace, {
         ownerDid: this.getOwnerDid(),
@@ -917,11 +949,14 @@ export class OwnerIdentityService {
 
 /** True when `mnemonic` derives `ownerDid`. False for an unreadable phrase or an empty DID. */
 function phraseDerives(mnemonic: string, ownerDid: string | undefined): boolean {
-  if (!ownerDid) return false
+  return !!ownerDid && derivedDid(mnemonic) === ownerDid
+}
+
+function derivedDid(mnemonic: string): string | null {
   try {
-    return deriveOwnerIdentity(mnemonic).did === ownerDid
+    return deriveOwnerIdentity(mnemonic).did
   } catch {
-    return false
+    return null
   }
 }
 
