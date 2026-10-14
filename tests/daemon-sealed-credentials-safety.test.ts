@@ -281,6 +281,8 @@ describe('owner replace of a locked sealed credential (replace: true)', () => {
     const refused = await server.inject({ method: 'PUT', url, payload: { adapterType: 'telegram', envKey: 'TELEGRAM_BOT_TOKEN', value: 'new-token' } })
     expect(refused.statusCode).toBe(409)
     expect(refused.json().code).toBe('credentials_locked')
+    // Structured: a client chooses on these, never on the message.
+    expect(refused.json()).toMatchObject({ purpose: TOKEN_PURPOSE, sealed: true, envelopeState: 'foreign' })
     expectTokenIntact(file, phrase)
 
     const replaced = await server.inject({ method: 'PUT', url, payload: { adapterType: 'telegram', envKey: 'TELEGRAM_BOT_TOKEN', value: 'new-token', replace: true } })
@@ -320,6 +322,7 @@ describe('owner replace of a locked sealed credential (replace: true)', () => {
       const refused = await server.inject({ method: 'PUT', url: c.url, payload: c.payload })
       expect(refused.statusCode, c.url).toBe(409)
       expect(refused.json().code).toBe('credentials_locked')
+      expect(refused.json().sealed, c.url).toBe(false)
       const stored = await server.inject({ method: 'PUT', url: c.url, payload: { ...c.payload, replace: true } })
       expect(stored.statusCode, c.url).toBe(200)
       // Nothing sealed was there: stored while locked, not a discard.

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain as electronIpcMain, type IpcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain as electronIpcMain, shell, type IpcMain } from 'electron'
 import { join } from 'node:path'
 import type { StudioBackendMode } from '../../../shared/types/backend.types'
 import type { AgentStatus, AgentSummary, DaemonClient } from '../../../shared/daemon-client'
@@ -7,11 +7,13 @@ import { IPC } from '../../../shared/constants/ipc-channels'
 import { BACKEND_ENV_OVERRIDE } from '../backend-config'
 import { CHANNEL_MAP, type ChannelEntry, type MappedChannel } from '../channel-map'
 import { processAgentLeases, type AgentLeaseRegistry } from '../../runtime/agent-lease'
+import { openSharedMnemonicStore, type SharedMnemonicStore } from '../../services/owner-secret-store'
+import { isLocalOnlyRoute, LOCAL_PROOF_HEADER, readLocalProof } from '../../daemon/local-access'
 import { BackgroundEventBatcher } from '../../ipc/background-event-batch'
 import { initApplicationMenu, recordRecentFile } from '../../menu'
 import { createAdfFileHandler } from './adf-file'
 import { ApprovalsUi } from './approvals-ui'
-import { createEventsAdapterSession, type ClientSession } from './client-stream'
+import { createDaemonClientSession, type ClientSession } from './client-stream'
 import { DaemonConnection, type DaemonConnector } from './connection'
 import { findRunningAgent, type DaemonModeContext } from './context'
 import { DaemonModeUnavailableError } from './errors'
@@ -20,6 +22,8 @@ import { DAEMON_MODE_HANDLERS, DAEMON_MODE_SEND_HANDLERS } from './handlers'
 import { channelKey, pendingWorkstream } from './pending'
 import { DaemonModeSession } from './session'
 import { ClientSettingsStore, clientSettingsPath } from './settings'
+import { InstallProgressRelay } from './mcp/install-progress'
+import { McpOAuthAuthorizeOpener } from './mcp/oauth-authorize'
 import { ConnectionStatusUi, connectionProblem, openDaemonLog } from './status-ui'
 
 /**
@@ -77,8 +81,17 @@ export interface DaemonModeDeps {
   leases?: Pick<AgentLeaseRegistry, 'registerClient'>
   ipcMain?: Pick<IpcMain, 'handle' | 'on'>
   fetch?: typeof fetch
-  /** The client session implementation. Default: the GET /events adapter until W2-B. */
+  /** The client session implementation. Default: the daemon's client sessions (W2-B). */
   createSession?: (client: DaemonClient) => ClientSession
+  /**
+   * studio-backend.json `keepDaemonRunning` (§8.3). Off in local mode, the
+   * session is opened with `exitDaemonWhenClosed`, so a crashed Studio's
+   * daemon stops once its session expires and no other client is open. The
+   * quit path itself is W4-A's.
+   */
+  keepDaemonRunning?: boolean
+  /** The shared owner-phrase keychain entry (tests: a stand-in). Default: the OS keychain's. */
+  sharedMnemonic?: () => SharedMnemonicStore | null
 }
 
 export interface DaemonModeHandle {
@@ -119,8 +132,33 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   // Before W4-A's switch moves them: seed the client file once from adf-settings.json.
   ClientSettingsStore.seedOnce(clientSettingsPath(deps.userDataDir), join(deps.userDataDir, 'adf-settings.json'), log)
   const clientSettings = new ClientSettingsStore(clientSettingsPath(deps.userDataDir), log)
-  const connection = new DaemonConnection(deps.connect, log, deps.fetch)
-  const session = new DaemonModeSession(null, log)
+  // Local mode: the daemon is this machine's and keeps its settings next to
+  // Studio's (daemon-process.ts checks that), so Studio reads its local proof
+  // and sends it on the local-only routes (owner import, stored-value
+  // reveal), as the adf CLI does. Never for another route or another host.
+  const connect: DaemonConnector = deps.mode !== 'local' ? deps.connect : Object.assign(
+    async (progress: (text: string) => void) => {
+      const endpoint = await deps.connect(progress)
+      const port = Number(new URL(endpoint.baseUrl).port) || undefined
+      return {
+        ...endpoint,
+        source: {
+          ...endpoint.source,
+          token: () => endpoint.source.token(),
+          ...(endpoint.source.refresh ? { refresh: () => endpoint.source.refresh!() } : {}),
+          localProof: (path: string): Record<string, string> => {
+            if (!isLocalOnlyRoute(path)) return {}
+            const proof = readLocalProof(deps.userDataDir, port)
+            return proof ? { [LOCAL_PROOF_HEADER]: proof } : {}
+          },
+        },
+      }
+    },
+    { logFile: deps.connect.logFile },
+  )
+  const connection = new DaemonConnection(connect, log, deps.fetch)
+  // A re-hold that failed after a reconnect is a notice (statusUi exists by the time a reconnect happens).
+  const session = new DaemonModeSession(null, log, (text) => { log.warn(`[Backend] ${text}`); statusUi.notice(text) })
 
   const firstWindow = (): BrowserWindow | null => {
     const windows = BrowserWindow.getAllWindows()
@@ -154,6 +192,14 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       .catch(() => {})
   }
 
+  const installs = new InstallProgressRelay((channel, payload) => output.send(channel, payload), log)
+  const mcpOAuth = new McpOAuthAuthorizeOpener({
+    mode: deps.mode,
+    fetchInput: async (filePath, approvalId) => (await started).request<{ input?: unknown }>('GET', '/approvals/input', { query: { filePath, approvalId } }).then((r) => r.input),
+    openExternal: (url) => shell.openExternal(url),
+    log,
+  })
+
   // eslint-disable-next-line prefer-const
   let bridge: EventBridge
   const approvals = new ApprovalsUi({
@@ -177,9 +223,10 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     output,
     batcher,
     client: () => connection.current,
-    onApprovals: (snapshot) => approvals.apply(snapshot),
+    onApprovals: (snapshot) => { approvals.apply(snapshot); void mcpOAuth.apply(snapshot) },
     onAgentsChanged: () => { approvals.refresh(); refreshTokens() },
     onFileRenamed: (oldPath, newPath) => session.rekey(oldPath, newPath),
+    onNotice: (text) => statusUi.notice(text),
     log,
   })
 
@@ -209,12 +256,10 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   })
   const statusUi = new ConnectionStatusUi(connection, { reconnect, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: RECOVERY_HINT }, log)
 
+  const exitDaemonWhenClosed = deps.mode === 'local' && deps.keepDaemonRunning !== true
   const started: Promise<DaemonClient> = connection.client().then(async (client) => {
-    clientSession = (deps.createSession ?? ((c) => createEventsAdapterSession(c)))(client)
+    clientSession = (deps.createSession ?? ((c) => createDaemonClientSession(c, { version: app.getVersion(), exitDaemonWhenClosed, log })))(client)
     session.attach(clientSession)
-    if (clientSession.limitations.length) {
-      log.warn(`[Backend] The client stream is the interim ${clientSession.kind}; not delivered yet:\n  - ${clientSession.limitations.join('\n  - ')}`)
-    }
     // Learn what already runs and what is pending, without pushing: the
     // renderer pulls its initial state itself.
     try {
@@ -226,26 +271,37 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       log.warn(`[Backend] Could not list the daemon's agents at connect: ${err instanceof Error ? err.message : String(err)}`)
     }
     try {
-      approvals.apply(await client.request<NotificationsSnapshot>('GET', '/approvals'))
+      const snapshot = await client.request<NotificationsSnapshot>('GET', '/approvals')
+      approvals.apply(snapshot)
+      void mcpOAuth.apply(snapshot)
       // Requests reach the daemon: connected, before the stream's own open.
       connection.markConnected()
     } catch (err) {
       log.warn(`[Backend] Could not read the daemon's approvals at connect: ${err instanceof Error ? err.message : String(err)}`)
     }
     clientSession.start({
-      onFrame: (frame) => bridge.handleFrame(frame),
-      onGap: (gap) => { void bridge.handleGap(gap) },
+      onFrame: (frame) => { installs.observe(frame); bridge.handleFrame(frame) },
+      onGap: (gap) => { installs.onGap(); void bridge.handleGap(gap) },
       onConnection: (c) => {
         if (c.state === 'open') connection.markConnected()
         else if (c.state === 'reconnecting') connection.markDisconnected(c.error)
       },
       onReattached: (info) => {
-        log.log(`[Backend] Client stream reattached${info.epochChanged ? ' to a restarted daemon' : ''}: re-sending the focus and the held documents`)
-        void session.reattach()
+        log.log(`[Backend] Client stream reattached${info.epochChanged ? ' (new session)' : ''}: re-sending the focus and the held documents`)
+        return session.reattach()
+      },
+      onFatal: (message) => {
+        connection.markFailed(message)
+        bridge.failTurns('disconnected')
       },
     })
     return client
   })
+  /** Requests name the client session (X-ADF-Client-Session): the daemon does not echo this window's own writes (D5.1). */
+  const sessionClient = (client: DaemonClient): DaemonClient => {
+    const id = clientSession?.sessionId
+    return id ? client.withClientSession(id) : client
+  }
   started.catch(() => {})
 
   // AGENT_INVOKE waits must not outlive the daemon: a failed connector ends
@@ -274,13 +330,15 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     bridge,
     clientSettings,
     approvals,
-    ready: () => started,
+    installs,
+    ready: () => started.then(sessionClient),
     runningAgentAt: async (filePath) => findRunningAgent(await started, filePath),
     raw: async (path, query) => {
-      const client = await started
+      const client = sessionClient(await started)
       const url = client.url(path, query)
       return (deps.fetch ?? fetch)(url, { headers: client.headers({ Accept: '*/*' }), redirect: 'manual' })
     },
+    sharedMnemonic: deps.sharedMnemonic ?? openSharedMnemonicStore,
     recordRecentFile,
     hooks,
     log,

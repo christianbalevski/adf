@@ -18,7 +18,9 @@
  *      send it to this machine's daemon only; a caller behind the proxy cannot.
  */
 
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { userInfo } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { tokensEqual } from './daemon-token'
@@ -56,13 +58,47 @@ export function localProofPath(settingsDir: string, port: number = DEFAULT_PORT)
   return join(settingsDir, port === DEFAULT_PORT ? LOCAL_PROOF_FILENAME : `${LOCAL_PROOF_FILENAME}-${port}`)
 }
 
-/** Mint a fresh proof for this daemon run (0600); replaces any previous one. */
-export function mintLocalProof(settingsDir: string, port: number = DEFAULT_PORT): { proof: string; path: string } {
+/**
+ * Windows: the file's own ACL, granting full control to the current user
+ * only, with inheritance removed (mode 0600 means nothing there, and the
+ * folder's inherited ACL depends on where the settings live:
+ * ADF_USER_DATA_DIR or a custom settings path need not be in the profile).
+ * Throws when icacls fails: an unprotected proof must not be used.
+ */
+export function restrictToCurrentUserWindows(path: string, run: (file: string, args: string[]) => void = (file, args) => {
+  execFileSync(file, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+}): void {
+  const user = process.env.USERDOMAIN && process.env.USERNAME
+    ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}`
+    : userInfo().username
+  run('icacls', [path, '/inheritance:r', '/grant:r', `${user}:F`])
+}
+
+/**
+ * Mint a fresh proof for this daemon run; replaces any previous one. Readable
+ * by the current user only: mode 0600 on POSIX; on Windows an explicit ACL
+ * (restrictToCurrentUserWindows) set before the proof is written into the
+ * file. Throws when the file cannot be protected (the caller then runs
+ * without a proof: the routes that need it refuse).
+ */
+export function mintLocalProof(settingsDir: string, port: number = DEFAULT_PORT, platform: NodeJS.Platform = process.platform): { proof: string; path: string } {
   mkdirSync(settingsDir, { recursive: true })
   const proof = randomBytes(32).toString('base64url')
   const path = localProofPath(settingsDir, port)
+  if (platform === 'win32') {
+    // Protect first, write the secret after: the file never holds it under the inherited ACL.
+    writeFileSync(path, '')
+    try {
+      restrictToCurrentUserWindows(path)
+    } catch (err) {
+      try { unlinkSync(path) } catch { /* gone */ }
+      throw new Error(`Could not restrict ${path} to the current user (icacls): ${err instanceof Error ? err.message : String(err)}`)
+    }
+    writeFileSync(path, `${proof}\n`)
+    return { proof, path }
+  }
   writeFileSync(path, `${proof}\n`, { mode: 0o600 })
-  try { chmodSync(path, 0o600) } catch { /* windows */ }
+  chmodSync(path, 0o600)
   return { proof, path }
 }
 
@@ -74,6 +110,20 @@ export function readLocalProof(settingsDir: string, port: number = DEFAULT_PORT)
   } catch {
     return null
   }
+}
+
+/**
+ * Routes the daemon answers for local callers only, where a client on this
+ * machine sends the local proof: owner secrets and shutdown (proof required
+ * behind a proxy), owner import and the stored-value reveal routes (proof
+ * required in every mode). A client never sends the proof for another route.
+ */
+export function isLocalOnlyRoute(path: string): boolean {
+  const p = path.split('?')[0]
+  return p === '/daemon/shutdown'
+    || /^\/identity\/(create|restore|import|unlock|lock|confirm-backup)$/.test(p)
+    || /^\/agents\/[^/]+\/identity\/reveal$/.test(p)
+    || p === '/files/agent/identity/reveal'
 }
 
 export interface LocalAccessOptions {

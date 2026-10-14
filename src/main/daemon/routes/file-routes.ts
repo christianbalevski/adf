@@ -96,7 +96,10 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
   server.addHook('onResponse', (request, _reply, done) => {
     if (settings && request.method !== 'GET' && request.method !== 'HEAD') {
       // POST/DELETE /tracked-dirs tell the daemon themselves (onTrackedDirectoriesChanged).
-      const announce = !(request.routeOptions.url ?? '').startsWith('/tracked-dirs')
+      // A settings write that adds a tracked folder only re-syncs the watcher, as
+      // Studio's SETTINGS_SET restarts its watcher without a TRACKED_DIRS_CHANGED.
+      const url = request.routeOptions.url ?? ''
+      const announce = !url.startsWith('/tracked-dirs') && !url.startsWith('/settings')
       try { watcher.sync({ announce }) } catch (err) { console.warn('[FileRoutes] Tracked-folder re-sync failed:', err) }
     }
     done()

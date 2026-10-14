@@ -1,5 +1,5 @@
 import { dialog } from 'electron'
-import { basename } from 'node:path'
+import { basename, dirname } from 'node:path'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import type { AgentStatus, ChatHistory } from '../../../../shared/daemon-client'
 import { resolveStartInState, type AgentConfig } from '../../../../shared/types/adf-v02.types'
@@ -9,7 +9,8 @@ import { DaemonModeUnavailableError } from '../errors'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { samePath } from '../session'
 import { TURN_WAIT_TIMEOUT_MS } from '../event-bridge'
-import { isAgentGone, onOpenFile, requireOpenAgent } from '../documents/open-file'
+import { isAgentGone, notOpenError, onOpenFile, requireOpenAgent } from '../documents/open-file'
+import { isTempLocation } from '../documents/file-handlers'
 
 /**
  * The daemon-mode handlers of the core flow: open a file, read it, start the
@@ -18,10 +19,11 @@ import { isAgentGone, onOpenFile, requireOpenAgent } from '../documents/open-fil
  * handlers for the rest of FILE_*, DOC_*, AGENT_* (documents/) build on the
  * same session.
  *
- * The open file's agent is the document the client session holds (W2-B,
- * W2-A's open documents) or the agent already running at that path. With
- * the interim GET /events adapter, which holds nothing, a file that is open
- * but not running is refused visibly (W2-B); it is never read another way.
+ * FILE_OPEN holds the file as a document of Studio's client session (W2-A,
+ * W2-B), so the /agents/:id routes reach it whether its agent runs or not.
+ * A file the daemon no longer holds (the hold failed, or the daemon
+ * restarted and the re-hold failed) is refused with "open it again"; it is
+ * never read another way.
  */
 
 /** Same window as embedded DOC_GET_BATCH / DOC_GET_CHAT. */
@@ -49,6 +51,25 @@ async function agentStatus(ctx: DaemonModeContext, agentId: string | null): Prom
   } catch (err) {
     if (isNotFound(err)) return null
     throw err
+  }
+}
+
+/** A reviewed file that is not loaded, moved out of the temp dir into the agents folder (POST /files/relocate); its new path, or null. */
+async function healStrandedTempFile(ctx: DaemonModeContext, filePath: string): Promise<string | null> {
+  const client = await ctx.ready()
+  try {
+    const info = await client.request<{ loaded: boolean; reviewed?: boolean }>('GET', '/files/agent', { query: { path: filePath } })
+    if (info.loaded || info.reviewed !== true) return null
+    const moved = await client.request<{ movedTo?: string; moveError?: string }>('POST', '/files/relocate', { body: { path: filePath } })
+    if (moved.moveError) ctx.log.warn(`[Review] ${moved.moveError}`)
+    if (!moved.movedTo) return null
+    ctx.log.log(`[Review] Self-healed stranded temp agent -> ${moved.movedTo}`)
+    ctx.session.rekey(filePath, moved.movedTo)
+    ctx.recordRecentFile(moved.movedTo)
+    return moved.movedTo
+  } catch (err) {
+    ctx.log.warn(`[Review] Could not move ${filePath} out of the temp dir: ${err instanceof Error ? err.message : String(err)}`)
+    return null
   }
 }
 
@@ -87,11 +108,19 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       const status = await agentStatus(ctx, opened.agentId)
       const agentWasRunning = status !== null
       // Prompt on open, before any start, as embedded (useAdfFile opens the
-      // dialog on needsPassword): the held document, or the running agent,
-      // reports whether the daemon holds the file's key.
-      if (opened.agentId && await passwordLocked(ctx, opened.agentId)) {
+      // dialog on needsPassword): the session's hold answers it (W2-A), and an
+      // agent reached only as running is asked directly.
+      const locked = opened.opened ? opened.opened.needsPassword === true : !!opened.agentId && await passwordLocked(ctx, opened.agentId)
+      if (locked) {
         ctx.session.forgetUnlocked(filePath)
         return { success: true, filePath, needsPassword: true }
+      }
+      // Self-heal a claimed-but-stranded temp file, as embedded's FILE_OPEN:
+      // reviewed already, but a prior move failed and it still sits in the OS
+      // temp dir. Local mode only: the temp dir is this machine's.
+      if (!agentWasRunning && ctx.mode === 'local' && await isTempLocation(dirname(filePath))) {
+        const moved = await healStrandedTempFile(ctx, filePath)
+        if (moved) return { success: true, filePath: moved, agentWasRunning, movedTo: moved }
       }
       return { success: true, filePath, agentWasRunning }
     } catch (error) {
@@ -157,10 +186,8 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       meta = await client.request<{ mime_type: string | null; size: number }>('GET', `/agents/${enc(agentId)}/files/meta`, { query: { path: args.path } })
     } catch (err) {
       if (!isNotFound(err)) throw err
-      // Unknown file, or the agent stopped and nothing holds its document: tell them apart.
-      if (isAgentGone(err, agentId)) {
-        throw new DaemonModeUnavailableError('Reading a file of the open agent', 'W2-B', `${ctx.session.filePath} is no longer running in the daemon, and holding it open needs a client session`)
-      }
+      // Unknown file, or the daemon no longer has the agent: tell them apart.
+      if (isAgentGone(err, agentId)) throw notOpenError(ctx, 'Reading a file of the open agent')
       return { content: null, binary: false }
     }
     const ext = args.path.split('.').pop()?.toLowerCase() ?? ''

@@ -4,7 +4,7 @@
     "title": "ADF Daemon API",
     "version": "0.2.0",
     "summary": "HTTP API of the headless ADF runtime (adf daemon).",
-    "description": "The daemon is a headless ADF runtime: it loads agents from .adf files, runs them, streams their events and resolves human-in-the-loop requests. This document is the contract; docs/daemon/api-reference.md and api-reference.html are generated from it (`npm run docs:api`).\n\n**Authentication.** Every route except `GET /health` (and `HEAD /health`) requires `Authorization: Bearer <token>`: the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.\n\n**Request guard.** A Host header that does not name this daemon (403 `host_not_allowed`, DNS-rebinding protection) and browser cross-site requests — a foreign `Origin` or `Sec-Fetch-Site: cross-site|same-site` (403 `cross_origin`) — are refused on every route. No CORS headers are ever sent.\n\n**Errors** are JSON `{ \"error\": \"<message>\", \"code\": \"<code>\" }`. Every error body carries a stable machine-readable `code`: a specific one where the route defines it (listed per response), otherwise the status default: 400 `bad_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 405 `not_supported`, 409 `conflict`, 500 `internal_error`, 502 `upstream_error`, 503 `unavailable`. Branch on `code`, not on the message. A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ \"statusCode\": 400, \"code\": \"FST_ERR_CTP_EMPTY_JSON_BODY\", \"error\": \"Bad Request\", \"message\": \"…\" }`: send no Content-Type (or `{}`) on bodiless POSTs.\n\n**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take \"local\" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (0600), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy.\n\n**Secrets.** Credential and identity reads return metadata only; stored values and key material never leave the daemon. The owner seed phrase appears in exactly one response (`POST /identity/create`).\n\n**Agents** are addressed by id, handle or name (`{id}`). Loop-aware routes take `loop` (absent = `main`).",
+    "description": "The daemon is a headless ADF runtime: it loads agents from .adf files, runs them, streams their events and resolves human-in-the-loop requests. This document is the contract; docs/daemon/api-reference.md and api-reference.html are generated from it (`npm run docs:api`).\n\n**Authentication.** Every route except `GET /health` (and `HEAD /health`) requires `Authorization: Bearer <token>`: the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.\n\n**Request guard.** A Host header that does not name this daemon (403 `host_not_allowed`, DNS-rebinding protection) and browser cross-site requests — a foreign `Origin` or `Sec-Fetch-Site: cross-site|same-site` (403 `cross_origin`) — are refused on every route. No CORS headers are ever sent.\n\n**Errors** are JSON `{ \"error\": \"<message>\", \"code\": \"<code>\" }`. Every error body carries a stable machine-readable `code`: a specific one where the route defines it (listed per response), otherwise the status default: 400 `bad_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 405 `not_supported`, 409 `conflict`, 500 `internal_error`, 502 `upstream_error`, 503 `unavailable`. Branch on `code`, not on the message. A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ \"statusCode\": 400, \"code\": \"FST_ERR_CTP_EMPTY_JSON_BODY\", \"error\": \"Bad Request\", \"message\": \"…\" }`: send no Content-Type (or `{}`) on bodiless POSTs.\n\n**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup|import`), the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take \"local\" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (readable by the daemon's user only: mode 0600, on Windows an explicit ACL with inheritance removed), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy. `POST /identity/import` and the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) need `X-ADF-Local-Proof` in every mode, not only behind a proxy: the token alone, forwarded to the loopback port (`ssh -L`, socat), does not pass.\n\n**Secrets.** Credential and identity reads return metadata only; key material never leaves the daemon. The one exception is the stored-value reveal routes (tag `Client (internal)`): they return stored values, never key material, to a local caller that presents this run's local proof, so Studio on the same machine can show what the owner asks to see. The owner seed phrase appears in exactly one response (`POST /identity/create`).\n\n**Agents** are addressed by id, handle or name (`{id}`). Loop-aware routes take `loop` (absent = `main`).",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -3259,6 +3259,91 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/agents/{id}/identity/reveal": {
+      "post": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "x-adf-stability": "internal",
+        "summary": "Read stored values of an agent (local callers only)",
+        "description": "Local callers that present this run's local proof (`X-ADF-Local-Proof`, the daemon-local-proof file next to the daemon settings) only, in every mode; the token alone gets 403 `loopback_only`. Studio on this machine shows these values in its own window (Identity panel Reveal, provider override key field). The one exception to \"values never leave the daemon\": key material (`crypto:*`) is never returned, and a value sealed in a locked envelope, or encrypted with a file password the daemon does not hold, is left out. `Cache-Control: no-store`; values are never logged.",
+        "operationId": "revealAgentIdentityValues",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Which values: an explicit list of purposes, every purpose under an exact prefix, or both. At least one.",
+                "properties": {
+                  "purposes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "provider:anthropic:apiKey"
+                    ]
+                  },
+                  "prefix": {
+                    "type": "string",
+                    "example": "provider:anthropic:"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "agentId",
+                    "values"
+                  ],
+                  "properties": {
+                    "agentId": {
+                      "type": "string"
+                    },
+                    "values": {
+                      "type": "object",
+                      "description": "purpose → value. Absent, locked and key-material (`crypto:*`) purposes are left out.",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/LoopbackOnly"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           }
         }
       }
@@ -8606,8 +8691,25 @@
           "Network"
         ],
         "summary": "Start the mesh HTTP server (persisted)",
-        "description": "The mesh server (port 7295 by default, separate from this API) serves agent cards, health, ALF inbox delivery and agent web/API routes under /agents/{handle}/*. It is on by default; this persists meshServerEnabled: true. No body.",
+        "description": "The mesh server (port 7295 by default, separate from this API) serves agent cards, health, ALF inbox delivery and agent web/API routes under /agents/{handle}/*. It is on by default; this persists meshServerEnabled: true. No body. With `persist=0` the setting is left as it is.",
         "operationId": "startMeshServer",
+        "parameters": [
+          {
+            "name": "persist",
+            "in": "query",
+            "required": false,
+            "description": "`0` or `false`: change the running server only and leave meshServerEnabled as it is (Studio's start/stop, as embedded Studio). Default `1`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Started",
@@ -8643,8 +8745,25 @@
           "Network"
         ],
         "summary": "Stop the mesh HTTP server (persisted)",
-        "description": "Persists meshServerEnabled: false, so it stays off across restarts until started again. No body.",
+        "description": "Persists meshServerEnabled: false, so it stays off across restarts until started again. No body. With `persist=0` only the running server stops; the setting is left as it is.",
         "operationId": "stopMeshServer",
+        "parameters": [
+          {
+            "name": "persist",
+            "in": "query",
+            "required": false,
+            "description": "`0` or `false`: change the running server only and leave meshServerEnabled as it is (Studio's start/stop, as embedded Studio). Default `1`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Stopped",
@@ -9246,6 +9365,90 @@
         }
       }
     },
+    "/admin/mcp/packages/npm/jobs": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Install an MCP npm package as a job",
+        "description": "The same install as POST /admin/mcp/packages/npm, run as a job so no request is held open. Progress lines are on the job (`progressLog`, `detail.package`). While an install of the same package runs, the request joins it. An install cannot stop half-way: cancel marks the job cancelled and the installer finishes; a new request for the same package then starts a job that waits for it.",
+        "operationId": "startMcpNpmPackageInstallJob",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "package"
+                ],
+                "properties": {
+                  "package": {
+                    "type": "string",
+                    "example": "@modelcontextprotocol/server-filesystem"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a PackageInstallJobResult.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/PackageInstallJobResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/admin/mcp/packages/python": {
       "post": {
         "tags": [
@@ -9327,6 +9530,93 @@
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/admin/mcp/packages/python/jobs": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Install an MCP Python package as a job",
+        "description": "The same install as POST /admin/mcp/packages/python (uv and Python are downloaded first when missing), run as a job. Joins a running install of the same package and version.",
+        "operationId": "startMcpPythonPackageInstallJob",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "package"
+                ],
+                "properties": {
+                  "package": {
+                    "type": "string",
+                    "example": "mcp-server-fetch"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a PackageInstallJobResult.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/PackageInstallJobResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -9440,6 +9730,90 @@
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/admin/adapters/packages/jobs": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Install a channel adapter package as a job",
+        "description": "The same install as POST /admin/adapters/packages, run as a job. Joins a running install of the same package.",
+        "operationId": "startAdapterPackageInstallJob",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "package"
+                ],
+                "properties": {
+                  "package": {
+                    "type": "string",
+                    "example": "@modelcontextprotocol/server-filesystem"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a PackageInstallJobResult.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/PackageInstallJobResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -9613,6 +9987,105 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/admin/sandbox/packages/jobs": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Install sandbox packages as a job",
+        "description": "Installs each package in turn, as Studio's sandbox package dialog does; a failed package does not stop the others. Joins a running job for the same package list.",
+        "operationId": "startSandboxPackagesInstallJob",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "packages"
+                ],
+                "properties": {
+                  "packages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "name"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "example": "lodash"
+                        },
+                        "version": {
+                          "type": "string",
+                          "example": "4.17.21"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a SandboxInstallJobResult.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/SandboxInstallJobResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -10986,6 +11459,20 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
           }
         }
       }
@@ -11199,7 +11686,7 @@
           "MCP"
         ],
         "summary": "Ensure uv and Python on the daemon host",
-        "description": "Downloads uv and Python when missing. Runs as a job: answers 202 at once. Cancel stops waiting; a download already running finishes.",
+        "description": "Downloads uv and Python when missing. Runs as a job: answers 202 at once. Cancel stops waiting; a download already running finishes. While one runs, another request joins it (`job.joined`).",
         "operationId": "ensureMcpPythonRuntime",
         "responses": {
           "202": {
@@ -11234,6 +11721,20 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
           }
         }
       }
@@ -11830,6 +12331,55 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/files/agent/config": {
+      "get": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "An agent file's config by path",
+        "description": "The live config of a running agent or open document; any other file is read through one readonly connection (nothing written). Same path rules as the other /files routes. Credential values are identity rows, not config.",
+        "operationId": "getAgentFileConfig",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The config",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFileConfigResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           }
         }
       }
@@ -12843,6 +13393,179 @@
           },
           "409": {
             "$ref": "#/components/responses/CredentialsLocked"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/providers/{providerId}/credential/copy-app-key": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Store the app provider's key as an agent file's provider key",
+        "description": "Studio's \"Copy app key\": the app provider with this id (Settings → Providers) gives its API key, which a client only ever sees as `__redacted__`, and the daemon stores it as `provider:{providerId}:apiKey` in the file. Same locked-envelope rules as PUT /files/agent/providers/{providerId}/credential (409 `credentials_locked`, `replace: true`); a file that is not loaded is refused with 409 `agent_leased` while another runtime runs it. 409 `no_app_key` when the app provider is unknown or has no key.",
+        "operationId": "copyAppProviderKeyToAgentFile",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          },
+          {
+            "$ref": "#/components/parameters/ProviderIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "replace": {
+                    "type": "boolean",
+                    "description": "Store it although the credentials envelope is locked here (a locked sealed value is discarded)."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderCredentialWriteResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/CredentialsLocked"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/identity/reveal": {
+      "post": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "x-adf-stability": "internal",
+        "summary": "Read stored values of an agent file (local callers only)",
+        "description": "POST /agents/{id}/identity/reveal by file path; works on a file that is not loaded through one readonly connection (nothing written, no envelope unlocked: its plain values only, as Studio reads a file it does not have open). Local callers that present this run's local proof (`X-ADF-Local-Proof`, the daemon-local-proof file next to the daemon settings) only, in every mode; the token alone gets 403 `loopback_only`. Studio on this machine shows these values in its own window (Identity panel Reveal, provider override key field). The one exception to \"values never leave the daemon\": key material (`crypto:*`) is never returned, and a value sealed in a locked envelope, or encrypted with a file password the daemon does not hold, is left out. `Cache-Control: no-store`; values are never logged.",
+        "operationId": "revealAgentFileIdentityValues",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Which values: an explicit list of purposes, every purpose under an exact prefix, or both. At least one.",
+                "properties": {
+                  "purposes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "provider:anthropic:apiKey"
+                    ]
+                  },
+                  "prefix": {
+                    "type": "string",
+                    "example": "provider:anthropic:"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "values"
+                      ],
+                      "properties": {
+                        "values": {
+                          "type": "object",
+                          "description": "purpose → value. Absent, locked and key-material (`crypto:*`) purposes are left out.",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/LoopbackOnly"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -14101,6 +14824,278 @@
           }
         }
       }
+    },
+    "/fleet/vitals": {
+      "get": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Agent vitals by file path",
+        "description": "The overview card of any .adf file, addressed by path as Studio's AGENT_VITALS is: a loaded agent is read from its open workspace, any other file with a readonly open, whether or not it is in a tracked folder. Same body and cache rules as `GET /agents/{id}/vitals`; the fleet scan behind `agentsSpawned` is refreshed when older than 30 s.",
+        "operationId": "getFleetAgentVitals",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "description": "Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Vitals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentVitals"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/fleet/activity": {
+      "get": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Agent activity by file path",
+        "description": "The overview's lower sections for any .adf file, addressed by path as Studio's AGENT_ACTIVITY is. Same body and cache rules as `GET /agents/{id}/activity`.",
+        "operationId": "getFleetAgentActivity",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "description": "Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Activity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentActivity"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/fleet/state": {
+      "post": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Set the state of running agents",
+        "description": "Studio's MESH_SET_AGENT_STATE: for each file, end any active turn and enter `idle` or `hibernate`. A file with no loaded agent fails with `agent offline`; a stopped or errored executor with `agent stopped` / `agent error`. Any other state fails every file with `invalid state`.",
+        "operationId": "setFleetAgentState",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetStateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetStateResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/fleet/found": {
+      "post": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Found an agent from the fleet map",
+        "description": "Studio's MESH_FOUND_AGENT: `dir` must be inside a tracked folder, or with `newRoot: true` a sibling of a tracked root. The folder is created when missing, the file is `<slug of name>.adf`, made from the default template with its identity, marked reviewed, left closed, and its folder tracked. Failures answer 200 with `success: false` and `error`.",
+        "operationId": "foundFleetAgent",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetFoundBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetFoundResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/compute/shared/stop": {
+      "post": {
+        "tags": [
+          "Compute"
+        ],
+        "summary": "Stop the shared container",
+        "description": "Studio's COMPUTE_STOP: stops the shared `adf-mcp` container only, and leaves it running while another live runtime on this machine uses it (`GET /compute/status` then lists it in `leftRunning`). `POST /compute/stop` stops every container this runtime started.",
+        "operationId": "stopSharedComputeContainer",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSuccessOrError"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/compute/users": {
+      "get": {
+        "tags": [
+          "Compute"
+        ],
+        "summary": "Other runtimes using containers",
+        "description": "For the shared container and each container in `names`: the other live runtimes on this machine that use it (`daemon pid 4242`). Containers nobody else uses are left out.",
+        "operationId": "getComputeUsers",
+        "parameters": [
+          {
+            "name": "names",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated container names besides the shared one.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputeUsersResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -14544,7 +15539,7 @@
         }
       },
       "CredentialsLocked": {
-        "description": "Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock",
+        "description": "Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock. An envelope refusal also names `purpose`, `sealed` (a value is stored sealed here: a replace discards it unread) and `envelopeState` (`locked` or `foreign`); choose on these, not on the message.",
         "content": {
           "application/json": {
             "schema": {
@@ -25703,7 +26698,15 @@
             "description": "Why it failed or was cancelled"
           },
           "progress": {
-            "type": "string"
+            "type": "string",
+            "description": "The latest progress line the work reported"
+          },
+          "progressLog": {
+            "type": "array",
+            "description": "The last 50 progress lines, oldest first",
+            "items": {
+              "$ref": "#/components/schemas/JobProgressEntry"
+            }
           }
         }
       },
@@ -25718,7 +26721,20 @@
             "type": "string"
           },
           "job": {
-            "$ref": "#/components/schemas/Job"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Job"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "joined": {
+                    "type": "boolean",
+                    "description": "True when the request joined a job of the same kind and key that was already running"
+                  }
+                }
+              }
+            ]
           }
         }
       },
@@ -26764,6 +27780,233 @@
           }
         },
         "additionalProperties": true
+      },
+      "FleetStateBody": {
+        "type": "object",
+        "required": [
+          "filePaths",
+          "state"
+        ],
+        "properties": {
+          "filePaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "hibernate"
+            ]
+          }
+        }
+      },
+      "FleetStateResult": {
+        "type": "object",
+        "required": [
+          "updated",
+          "failed"
+        ],
+        "properties": {
+          "updated": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "filePath",
+                "error"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "FleetFoundBody": {
+        "type": "object",
+        "required": [
+          "dir",
+          "name"
+        ],
+        "properties": {
+          "dir": {
+            "type": "string",
+            "description": "Absolute folder for the new agent."
+          },
+          "name": {
+            "type": "string"
+          },
+          "newRoot": {
+            "type": "boolean"
+          }
+        }
+      },
+      "FleetFoundResult": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentSuccessOrError": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "ComputeUsersResponse": {
+        "type": "object",
+        "required": [
+          "users"
+        ],
+        "properties": {
+          "users": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "JobProgressEntry": {
+        "type": "object",
+        "required": [
+          "seq",
+          "text"
+        ],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "description": "Numbered from 1 per job"
+          },
+          "text": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "What the line is about, e.g. `{ \"package\": \"@scope/name\" }` for an install"
+          }
+        }
+      },
+      "PackageInstallJobResult": {
+        "type": "object",
+        "description": "Studio's install answer: the installed package, or the installer's error as String(error)",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "installed": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "error": {
+            "type": "string",
+            "example": "Error: Invalid npm package name: not a package!"
+          }
+        }
+      },
+      "SandboxInstallJobResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "results"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true
+          },
+          "results": {
+            "type": "object",
+            "description": "Per package name",
+            "additionalProperties": {
+              "type": "object",
+              "required": [
+                "success"
+              ],
+              "properties": {
+                "success": {
+                  "type": "boolean"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "AgentFileConfigResponse": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "agentId",
+          "loaded",
+          "config"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string",
+            "description": "Canonical path"
+          },
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "loaded": {
+            "type": "boolean",
+            "description": "Running here or an open document: the live config"
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "The agent's AgentConfig"
+          }
+        }
       }
     }
   }

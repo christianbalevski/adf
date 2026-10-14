@@ -128,7 +128,9 @@ export function registerOwnerEnvelopeRoutes(server: FastifyInstance, ctx: Daemon
       derivedKey: target.derivedKey,
       svc: identity.service,
       ensureRuntimeIdentity: () => { if (!identity.isReady()) throw new Error(NO_OWNER) },
-      onPasswordRemoved: () => {},
+      // The whole-file password is gone: its key must go with it, or a later
+      // write is encrypted with a key nothing can derive again.
+      onPasswordRemoved: () => runtime.forgetFileDerivedKey(target.filePath),
     })
     if (result.success) console.log(`[ADF Daemon] Claimed ${target.agentId} under the local owner: ${result.did}`)
     return result

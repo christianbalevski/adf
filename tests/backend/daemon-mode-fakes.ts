@@ -6,7 +6,7 @@ import type { ClientSession, ClientStreamListener } from '../../src/main/backend
  */
 export interface FakeDaemon {
   fetch: typeof fetch
-  requests: Array<{ method: string; path: string; query: Record<string, string>; auth: string | null; body: unknown }>
+  requests: Array<{ method: string; path: string; query: Record<string, string>; auth: string | null; body: unknown; headers: Record<string, string> }>
   routes: Map<string, (req: { query: Record<string, string>; body: unknown }) => { status?: number; body?: unknown; headers?: Record<string, string>; raw?: string } | unknown>
 }
 
@@ -21,7 +21,7 @@ export function createFakeDaemon(baseUrl = 'http://127.0.0.1:47385'): FakeDaemon
       const query = Object.fromEntries(url.searchParams.entries())
       const headers = (init?.headers ?? {}) as Record<string, string>
       const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined
-      daemon.requests.push({ method, path: url.pathname, query, auth: headers.Authorization ?? null, body })
+      daemon.requests.push({ method, path: url.pathname, query, auth: headers.Authorization ?? null, body, headers })
       const route = daemon.routes.get(`${method} ${url.pathname}`)
       if (!route) {
         return new Response(JSON.stringify({ message: `Route ${method}:${url.pathname} not found`, error: 'Not Found', statusCode: 404 }), { status: 404 })
@@ -50,7 +50,7 @@ export interface FakeClientSession extends ClientSession {
 export function createFakeClientSession(resolveHold: (filePath: string) => string | null = () => null): FakeClientSession {
   const s: FakeClientSession = {
     kind: 'client-session',
-    limitations: [],
+    sessionId: null,
     listener: null,
     focus: [],
     held: [],

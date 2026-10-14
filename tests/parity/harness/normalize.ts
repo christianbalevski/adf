@@ -145,10 +145,31 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   const timeToken = (stamp: Stamp, floor: number) =>
     stamp.ms + stamp.precision - 1 < floor ? '<t:earlier>' : '<t>'
 
+  // Rule R15 — OAuth authorization page URLs (a string carrying
+  // `code_challenge=`: the page Studio opens for an MCP OAuth sign-in). Per
+  // flow, the `state` and the PKCE `code_challenge` are random: numbered as
+  // `<oauth-state#n>` and `<pkce-challenge#n>`. `redirect_uri` names the
+  // loopback callback, on a port the flow picks at run time and the harness
+  // does not know: `<oauth-callback-port>`. A run-time port R2 knows, URL-
+  // encoded inside a query value (`resource=http%3A%2F%2F127.0.0.1%3A<port>`),
+  // becomes `<NAME>` as R2 does. Hides: those values only; the endpoint,
+  // client id, method, scope and resource are compared.
+  const oauthAuthorizationUrl = (url: string): string => {
+    let s = url
+      .replace(/([?&]state=)([^&\s"]+)/g, (_m, key: string, v: string) => `${key}${numbered('oauth-state', v)}`)
+      .replace(/([?&]code_challenge=)([^&\s"]+)/g, (_m, key: string, v: string) => `${key}${numbered('pkce-challenge', v)}`)
+      .replace(/([?&]redirect_uri=[^&\s"]*?(?:127\.0\.0\.1|localhost)(?:%3A|:))(\d+)/gi, '$1<oauth-callback-port>')
+    for (const { value, name } of ctx.ports) {
+      s = s.replace(new RegExp(`(127\\.0\\.0\\.1|localhost)%3A${escapeRegExp(value)}(?!\\d)`, 'gi'), `$1%3A<${name}>`)
+    }
+    return s
+  }
+
   const replaceString = (input: string, floor: number, seen: number[]): string => {
     let s = input
     if (rootRe) s = s.replace(rootRe, (m) => rootToken.get(m) ?? m)
     for (const { re, to } of portRes) s = s.replace(re, to)
+    if (s.includes('code_challenge=')) s = oauthAuthorizationUrl(s)
     for (const { value, name } of named) s = s.split(value).join(`<${name}>`)
 
     // Rule R4 — other DIDs. Agent DIDs are minted from fresh random keys on

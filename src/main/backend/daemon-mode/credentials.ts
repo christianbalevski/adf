@@ -11,12 +11,15 @@ import { DaemonClient, staticCredentials, type DaemonCredentials } from '../../.
 export interface StudioTokenSource {
   token(): string | undefined
   refresh?(): boolean
+  /** X-ADF-Local-Proof for a local-only route of this machine's daemon (local mode); {} otherwise. */
+  localProof?(path: string): Record<string, string>
 }
 
 export function studioDaemonCredentials(source: StudioTokenSource): DaemonCredentials {
   return {
     token: () => source.token(),
     ...(source.refresh ? { refresh: () => source.refresh!() } : {}),
+    ...(source.localProof ? { localProof: (path: string) => source.localProof!(path) } : {}),
   }
 }
 

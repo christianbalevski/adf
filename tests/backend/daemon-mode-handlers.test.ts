@@ -19,6 +19,7 @@ import { REGISTERED_OUTSIDE, registerDaemonModeHandlers, type DaemonModeHandle }
 import { DAEMON_MODE_HANDLERS, DAEMON_MODE_SEND_HANDLERS } from '../../src/main/backend/daemon-mode/handlers'
 import { FRAME_CHANNELS, PUSH_TOPICS } from '../../src/main/backend/daemon-mode/event-bridge'
 import { DAEMON_MODE_UNAVAILABLE } from '../../src/main/backend/daemon-mode/errors'
+import { channelKey, pendingWorkstream } from '../../src/main/backend/daemon-mode/pending'
 
 const entries = Object.entries(CHANNEL_MAP) as Array<[MappedChannel, ChannelEntry]>
 const BASE = 'http://127.0.0.1:47385'
@@ -96,14 +97,9 @@ describe('daemon-mode handler registration (D2)', () => {
     }
   })
 
-  it('a pending handler throws a visible error naming its workstream, and never reads embedded state', async () => {
-    const pending = handle.pending.find((p) => p.channel === IPC.MESH_FLEET_STATUS)!
-    expect(pending.workstream).toBe('W3-D')
-    const fn = electronStub.handlers.get(IPC.MESH_FLEET_STATUS)!
-    await expect(Promise.resolve().then(() => fn({}))).rejects.toMatchObject({
-      code: DAEMON_MODE_UNAVAILABLE,
-      message: 'MESH_FLEET_STATUS is not available in daemon mode yet: W3-D',
-    })
+  it('every Wave 3 channel has its handler: nothing is left pending', () => {
+    // The pending mechanism (pending.ts) stays for a channel added later without a handler.
+    expect(handle.pending).toEqual([])
   })
 
   it('every push channel the map feeds from the client stream has a bridge mapping', () => {
@@ -120,6 +116,11 @@ describe('daemon-mode handler registration (D2)', () => {
     // And every topic route names a push channel of the map with that frame.
     for (const [topic, route] of Object.entries(PUSH_TOPICS)) {
       if (route.focusedAgentEvent) continue
+      // Topics with no Studio push run an action or name why there is none.
+      if (route.channel === null) {
+        expect(route.action ?? route.none, topic).toBeTruthy()
+        continue
+      }
       const entry = CHANNEL_MAP[route.channel as MappedChannel]
       expect(entry.kind, topic).toBe('push')
       expect(entry.frame, topic).toBe(`push:${topic}`)
@@ -218,11 +219,7 @@ describe('daemon-mode handlers: review fixes', () => {
     await electronStub.handlers.get(IPC.FILE_CLOSE)!({})
   })
 
-  it('a pending channel warns once; BACKGROUND_AGENT_STATUS lists the running agents but the open one', async () => {
-    logs.length = 0
-    const fn = electronStub.handlers.get(IPC.MESH_STATUS)!
-    for (let i = 0; i < 3; i++) await expect(Promise.resolve().then(() => fn({}))).rejects.toThrow('not available in daemon mode yet')
-    expect(logs.filter((l) => l.includes('MESH_STATUS was called'))).toHaveLength(1)
+  it('BACKGROUND_AGENT_STATUS lists the running agents but the open one', async () => {
     const ID9 = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e09'
     daemon.routes.set('GET /agents', () => [{ id: ID9, filePath: join(dir, 'agent-9.adf'), name: 'agent-9', handle: 'agent-9', autostart: false }])
     daemon.routes.set(`GET /agents/${ID9}/status`, () => ({ id: ID9, filePath: join(dir, 'agent-9.adf'), name: 'agent-9', handle: 'agent-9', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0, running: true }))

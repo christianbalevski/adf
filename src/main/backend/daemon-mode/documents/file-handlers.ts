@@ -45,10 +45,12 @@ async function canonical(p: string): Promise<string> {
 }
 
 /** Embedded isTempLocation: inside the OS temp dir (canonical paths). Local mode only: the folder is on this machine. */
-async function isTempLocation(p: string): Promise<boolean> {
+export async function isTempLocation(p: string): Promise<boolean> {
   const candidate = await canonical(p)
   const roots = new Set<string>()
-  for (const t of [app.getPath('temp'), tmpdir(), '/tmp']) roots.add(await canonical(t))
+  let appTemp: string | null = null
+  try { appTemp = app.getPath('temp') } catch { /* no Electron app path (tests): the OS temp dirs below */ }
+  for (const t of [...(appTemp ? [appTemp] : []), tmpdir(), '/tmp']) roots.add(await canonical(t))
   for (const r of roots) if (containsPath(r, candidate, { caseInsensitive: CASE_INSENSITIVE })) return true
   return false
 }

@@ -91,7 +91,7 @@ async function unknownLoop(ctx: DaemonModeContext, client: DaemonClient, agentId
   return names.includes(loop) ? null : `Unknown loop "${loop}". Available: ${names.join(', ')}`
 }
 
-/** A daemon failure that is not "the agent is gone" (that one onOpenFile turns into the W2-B refusal). */
+/** A daemon failure that is not "the agent is gone" (that one onOpenFile turns into notOpenError). */
 function rethrowIfGone(err: unknown, agentId: string): void {
   if (isAgentGone(err, agentId)) throw err
 }

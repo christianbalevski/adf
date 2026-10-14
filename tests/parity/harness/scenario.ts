@@ -22,8 +22,8 @@ export interface ParityScenario {
   name: string
   description: string
   fixtures: readonly FixtureSpec[]
-  /** Merged over `baseSettings`. */
-  settings?: Record<string, unknown>
+  /** Merged over `baseSettings`; a function gets the run's environment (paths such as `agentsDir`). */
+  settings?: Record<string, unknown> | ((env: ParityEnv) => Record<string, unknown>)
   llm?: LlmScript
   /**
    * After `run` returns the scenario is done: the backend must then stay
@@ -124,7 +124,7 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
   let booted: BootedBackend | null = null
   try {
     const agents = createFixtureAgents(env, scenario.fixtures)
-    writeSettingsFile(env, baseSettings(env, llm, agents, scenario.settings))
+    writeSettingsFile(env, baseSettings(env, llm, agents, typeof scenario.settings === 'function' ? scenario.settings(env) : scenario.settings))
     booted = await backend.boot(env, electron)
 
     const waitCursor = new Map<string, number>()

@@ -68,6 +68,9 @@ async function testProviderCredentialsForDashboard(
 }
 
 import chokidar from 'chokidar'
+import { isKeyMaterialPurpose, REVEAL_REFUSED_REASON } from '../../shared/constants/identity-reveal'
+import { lockedCredentialCancelled, lockedCredentialWrite, replaceLockedCredential } from '../services/locked-credential'
+import { askReplaceLockedCredential } from '../services/locked-credential-dialog'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
@@ -176,7 +179,7 @@ import { readRecentToolsFromWorkspace } from '../services/recent-tools'
 import { ProviderChecks } from '../services/provider-checks'
 import { buildToolDescriptions } from '../services/tool-descriptions'
 import { availableAdfPath, bringRegistryAgentHome } from '../services/registry-bring-home'
-import { claimAgentWorkspace, issueAttestationsFor, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword } from '../services/envelope-actions'
+import { claimAgentWorkspace, issueAttestationsFor, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword, convertOwnLegacyPassword } from '../services/envelope-actions'
 import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById } from '../services/dashboard-stats'
 import { buildMeshStatus } from '../services/mesh-status'
 import { appendMcpLog, ensurePythonRuntime, mcpOAuthSignOut, mcpOAuthStatus, probeMcpServer, runMcpRegistrationTest } from '../services/mcp-connect-tests'
@@ -7475,6 +7478,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     try {
       const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)
       if (!workspace) return { success: false, error: 'Cannot open file' }
+      // A temp-open starts locked: run the unlock cascade first (as the MCP and
+      // adapter credential sets do), so the owner's own sealed key is replaced
+      // sealed and only a file this install cannot open asks (Rule E3).
+      if (workspace !== currentWorkspace) unlockWorkspaceEnvelopes(workspace)
       try {
         const purpose = `provider:${args.providerId}:apiKey`
         const derivedKey = derivedKeyCache.get(args.filePath) ?? null
@@ -7483,7 +7490,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           const kdfParamsJson = workspace.getDatabase().getIdentity('crypto:kdf:params')
           workspace.getDatabase().setIdentityRaw(purpose, ciphertext, 'aes-256-gcm', iv, kdfParamsJson)
         } else {
-          workspace.setIdentity(purpose, args.value)
+          // A locked credentials envelope: the owner chooses (Rule E3, design §3.2).
+          const locked = lockedCredentialWrite(workspace, purpose)
+          if (!locked) workspace.setIdentity(purpose, args.value)
+          else if (await askReplaceLockedCredential(locked, 'this machine', (line) => console.log(`[Credentials] ${line}`))) {
+            replaceLockedCredential(workspace, locked, args.value, (line) => console.warn(`[Credentials] ${args.filePath}: ${line}`))
+          } else {
+            return { success: false, error: String(new Error(lockedCredentialCancelled(locked))) }
+          }
         }
         return { success: true }
       } finally {
@@ -7641,12 +7655,22 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         args.purpose, ciphertext, 'aes-256-gcm', iv, kdfParamsJson
       )
     } else {
-      currentWorkspace.setIdentity(args.purpose, args.value)
+      // A locked credentials envelope: the owner chooses (Rule E3, design §3.2).
+      const workspace = currentWorkspace
+      const locked = args.purpose.startsWith('crypto:') ? null : lockedCredentialWrite(workspace, args.purpose)
+      if (!locked) workspace.setIdentity(args.purpose, args.value)
+      else if (await askReplaceLockedCredential(locked, 'this machine', (line) => console.log(`[Credentials] ${line}`))) {
+        replaceLockedCredential(workspace, locked, args.value, (line) => console.warn(`[Credentials] ${currentFilePath}: ${line}`))
+      } else {
+        throw new Error(lockedCredentialCancelled(locked))
+      }
     }
   })
 
   ipcMain.handle(IPC.IDENTITY_GET, async (_event, args: { purpose: string }) => {
     if (!currentWorkspace) return null
+    // Key material never reaches the renderer (Rule E3, design §3.2).
+    if (isKeyMaterialPurpose(args.purpose)) return null
     return currentWorkspace.getIdentityDecrypted(args.purpose, currentDerivedKey)
   })
 
@@ -7679,44 +7703,17 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       derivedKeyCache.set(currentFilePath, currentDerivedKey)
       syncDerivedKeyToMesh(currentFilePath, currentDerivedKey)
 
-      // Whole-file passwords are deprecated: convert the user's OWN files on
-      // unlock — strip the whole-file password, mint keys + envelopes, then
-      // carry the SAME password forward as a credentials-envelope password
-      // slot (multi-route: opens silently via owner/runtime keys, and the
-      // password keeps working as a share password). Foreign files are left
-      // exactly as-is — the claim flow owns their conversion. Without
-      // envelope recipients, skip silently: never strip protection without
-      // re-protecting.
-      let converted = false
-      try {
-        const svc = settings.getOwnerIdentity()
-        const fileOwnerDid = currentWorkspace.getMeta('adf_owner_did')
-        const isMine = fileOwnerDid
-          ? fileOwnerDid === svc.getOwnerDid()
-          : !readAdfAttestations(currentWorkspace).some((a) => a.role === 'owner')
-        if (isMine && svc.getEnvelopeRecipients()) {
-          currentWorkspace.removePassword(currentDerivedKey)
+      // Whole-file passwords are deprecated: the user's OWN file is converted
+      // on unlock (services/envelope-actions.ts, shared with the daemon).
+      const unlockedPath = currentFilePath
+      const converted = convertOwnLegacyPassword(currentWorkspace, currentDerivedKey, args.password, {
+        svc: settings.getOwnerIdentity(),
+        onPasswordRemoved: () => {
           currentDerivedKey = null
-          derivedKeyCache.delete(currentFilePath)
-          syncDerivedKeyToMesh(currentFilePath, null)
-          converted = true
-          // Now unblocked (no longer password-protected): envelopes + keys +
-          // sealing. A failure here leaves a plain file that the FILE_OPEN
-          // lazy migration retries on next open.
-          try {
-            svc.ensureWorkspaceIdentity(currentWorkspace)
-            if (currentWorkspace.getEnvelopeState('credentials') === 'unlocked') {
-              // Same replace pattern as the share-password set flow.
-              currentWorkspace.removeEnvelopePasswordSlots('credentials')
-              currentWorkspace.addEnvelopePasswordSlot('credentials', args.password)
-            }
-          } catch (err) {
-            console.warn('[IDENTITY_PASSWORD_UNLOCK] Post-convert provisioning failed:', err)
-          }
-        }
-      } catch (err) {
-        console.warn('[IDENTITY_PASSWORD_UNLOCK] Auto-convert check failed:', err)
-      }
+          derivedKeyCache.delete(unlockedPath)
+          syncDerivedKeyToMesh(unlockedPath, null)
+        },
+      })
       return { success: true, converted }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -7766,6 +7763,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.IDENTITY_REVEAL, async (_event, args: { purpose: string }) => {
     if (!currentWorkspace) return { value: null }
+    // The agent's private signing key and other key material are never
+    // revealed (Rule E3, design §3.2): the panel shows why.
+    if (isKeyMaterialPurpose(args.purpose)) return { value: null, reason: REVEAL_REFUSED_REASON }
     return { value: currentWorkspace.getIdentityDecrypted(args.purpose, currentDerivedKey) }
   })
 

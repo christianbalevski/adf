@@ -4,37 +4,49 @@ import type { AgentExecutionEvent, AgentState, BackgroundAgentEvent, Notificatio
 import { applyBackgroundEvent, type BackgroundMappingState } from '../../runtime/background-event-mapping'
 import { toDisplayState } from '../../runtime/display-state'
 import type { ClientFrame, ExecutorFrame, HostFrame, PushFrame, PushTopic, StreamGap, TurnFrame } from './client-stream'
-import { samePath, type DaemonModeSession } from './session'
+import { dirname } from 'node:path'
+import { pathKey, samePath, type DaemonModeSession } from './session'
 
 /**
  * Client-stream frames → IPC pushes (design D6, §7).
  *
  * - The focused agent (the open file's): `executor` frames go to AGENT_EVENT
- *   unchanged; `host` trigger and startup-dispatch failures become a
- *   synthetic `error` on AGENT_EVENT, as the foreground host bindings send
- *   them in embedded mode.
+ *   unchanged. A frame the daemon reduced (`stripped`: sent before the
+ *   session's focus reached the daemon) is never shown there; the renderer
+ *   reads the file's state after FILE_OPEN. `host` trigger and startup
+ *   failures are not repeated: RuntimeService emitted the `error` executor
+ *   event already (W1-A, D5.1).
  * - Every other agent: `executor` and `host` frames go through the pure
  *   background mapping shared with the background agent manager
  *   (background-event-mapping.ts, W1-F) into `BackgroundEventBatcher`, i.e.
  *   BACKGROUND_AGENT_EVENT_BATCH exactly as embedded batches it.
- * - `push` frames go to the channel PUSH_TOPICS names.
+ * - `push` frames go to the channel PUSH_TOPICS names, or run its action
+ *   (`adf_file_created`: embedded's notifyAdfFileCreated; `daemon_orphan_hold`:
+ *   a notice).
  * - `stream.gap`: frames were lost, so the bridge resyncs: `chat_updated`
  *   (full uiLog) for the focused agent, DOC_AGENT_CONFIG_CHANGED,
  *   TRACKED_DIRS_CHANGED, a fresh approvals snapshot, and one batch with
- *   `agent_started` + `agent_state_changed` for every running agent.
+ *   `agent_started` + `agent_state_changed` for every running agent. A loop
+ *   still mid-turn gets its `chat_updated` when the turn's state change
+ *   arrives, so the chat ends as embedded shows it.
  *
  * Mapping state is kept for the focused agent as well (its events are folded
  * in without being emitted), so the batch is right the moment focus moves.
  */
 
 export interface PushTopicRoute {
-  channel: string
+  /** The push channel; null for topics that feed no channel (see `action` / `none`). */
+  channel: string | null
   /** APPROVALS_CHANGED goes to every window (ipc/index.ts:1822); everything else to the first. */
   allWindows?: boolean
   /** Sent only when the push is about the open file (embedded guards on currentFilePath). */
   openFileOnly?: boolean
-  /** Sent on AGENT_EVENT for the focused agent (inter_agent_message, §7). */
+  /** Sent on AGENT_EVENT for the focused agent, as an executor event of the topic's name (inter_agent_message, §7). */
   focusedAgentEvent?: boolean
+  /** Bridge actions instead of a channel. */
+  action?: 'adf_file_created' | 'notice' | 'rekey'
+  /** No Studio push and no action: why. */
+  none?: string
 }
 
 /** Every push topic and the channel it feeds. The payload is the channel's own (client-stream.ts). */
@@ -55,6 +67,11 @@ export const PUSH_TOPICS: Readonly<Record<PushTopic, PushTopicRoute>> = {
   inter_agent_message: { channel: IPC.AGENT_EVENT, focusedAgentEvent: true },
   compute_phase: { channel: IPC.COMPUTE_CONTAINER_PHASE },
   browser_session: { channel: IPC.COMPUTE_BROWSER_SESSION },
+  adf_file_created: { channel: null, action: 'adf_file_created' },
+  daemon_orphan_hold: { channel: null, action: 'notice' },
+  agent_path_changed: { channel: null, action: 'rekey' },
+  autostart: { channel: null, none: 'the tracked-folder watcher\'s autostart; embedded Studio pushes nothing for it' },
+  autostart_overflow: { channel: null, none: 'logged by the daemon; embedded Studio pushes nothing for it' },
 }
 
 /** The channels fed by executor and host frames rather than a push topic. */
@@ -99,6 +116,8 @@ export interface EventBridgeDeps {
   onAgentsChanged?: () => void
   /** A file was renamed on disk (the session re-keys it). */
   onFileRenamed?: (oldPath: string, newPath: string) => void
+  /** A daemon notice for the user (`daemon_orphan_hold`). */
+  onNotice?: (text: string) => void
   /** Upper bound of one AGENT_INVOKE wait. Default TURN_WAIT_TIMEOUT_MS. */
   turnTimeoutMs?: number
   log?: Log
@@ -110,6 +129,10 @@ const LOOP_DISPLAY_LIMIT = 200
 const ENDED_TURNS_KEPT = 256
 /** An AGENT_INVOKE wait never outlives this; the handler then reports it. */
 export const TURN_WAIT_TIMEOUT_MS = 30 * 60_000
+
+function turnKey(agentId: string, turnId: string): string {
+  return `${agentId}\0${turnId}`
+}
 
 function initialMapping(state: AgentState): BackgroundMappingState {
   return { state, loopStates: new Map(), activeLoops: 0, accumulatedText: '' }
@@ -138,6 +161,11 @@ interface TurnWaiter {
   loop: string
   /** Set once the turn's end arrived; the next state change of the loop settles it. */
   ended: EndOutcome | null
+  /**
+   * Frames were lost after the wait started (`stream.gap`): the end may be
+   * among them, so the loop leaving its busy state also settles the wait.
+   */
+  lenient?: boolean
   timer: ReturnType<typeof setTimeout> | null
   resolve: (outcome: TurnOutcome) => void
 }
@@ -160,13 +188,16 @@ interface ForegroundHold {
 export class EventBridge {
   private readonly agents = new Map<string, BridgeAgent>()
   private readonly waiters = new Set<TurnWaiter>()
-  /** Insertion-ordered ring of ended turns, oldest first. */
+  /** Insertion-ordered ring of ended turns, oldest first, keyed by turnKey(agentId, turnId). */
   private readonly ended = new Map<string, EndedTurn>()
   /** Agents whose events the client no longer wants (it is stopping them, embedded detaches its host first). */
   private readonly detached = new Set<string>()
   private focus: string | null = null
   /** AGENT_EVENTs held back per file while its start request is in flight (see holdForeground). */
   private readonly holds = new Set<ForegroundHold>()
+  /** Focused loops that were mid-turn at a resync: `agentId\0loop` → refresh the chat when the turn settles. */
+  private readonly refreshAfterTurn = new Set<string>()
+  private strippedForegroundLogged = false
   private readonly log: Log
   private readonly now: () => number
   private resyncing: Promise<void> | null = null
@@ -201,19 +232,13 @@ export class EventBridge {
   }
 
   /**
-   * One `agent_started` per running agent the renderer does not list yet
-   * (not the open one). Until BACKGROUND_AGENT_STATUS has its daemon-mode
-   * handler (W3-A) this is how a fresh renderer learns what already runs.
+   * The renderer lists `agentId` as a background agent from an answer it
+   * pulled (BACKGROUND_AGENT_STATUS), not from an `agent_started` batch: its
+   * later stop and state changes reach the renderer as background events.
    */
-  announceRunning(): void {
-    const ts = this.now()
-    let any = false
-    for (const agent of this.agents.values()) {
-      if (agent.shownInBackground || this.deps.session.isFocused(agent.agentId, agent.filePath)) continue
-      this.showInBackground(agent, ts)
-      any = true
-    }
-    if (any) this.deps.batcher.flush()
+  markListedInBackground(agentId: string): void {
+    const agent = this.agents.get(agentId)
+    if (agent) agent.shownInBackground = true
   }
 
   handleFrame(frame: ClientFrame): void {
@@ -236,8 +261,8 @@ export class EventBridge {
    * `turnTimeoutMs`.
    */
   waitForTurn(agentId: string, turnId: string, loop = 'main'): Promise<TurnOutcome> {
-    const known = this.ended.get(turnId)
-    if (known?.settled || known?.outcome === 'discarded') return Promise.resolve(known.outcome)
+    const known = this.ended.get(turnKey(agentId, turnId))
+    if (known && (known.settled || known.outcome === 'discarded' || !this.loopBusy(agentId, known.loop))) return Promise.resolve(known.outcome)
     return new Promise((resolve) => {
       const waiter: TurnWaiter = {
         agentId, turnId, loop, ended: known?.outcome ?? null, timer: null,
@@ -273,8 +298,9 @@ export class EventBridge {
   }
 
   handleGap(gap: StreamGap): Promise<void> {
-    this.log.warn(`[Backend] The client event stream lost frames (${gap.reason}); resyncing`)
-    for (const w of [...this.waiters]) w.resolve('gap')
+    this.log.warn(`[Backend] The client event stream lost frames (${gap.reason}${gap.dropped !== undefined ? `, ${gap.dropped} dropped` : ''}); resyncing`)
+    // A wait whose end was among the lost frames settles when its loop is not busy (resync reads it, or the next state change says so).
+    for (const w of this.waiters) w.lenient = true
     return this.resync()
   }
 
@@ -387,11 +413,22 @@ export class EventBridge {
     const filePath = agent?.filePath ?? frame.filePath
     const focused = this.deps.session.isFocused(frame.agentId, filePath)
     const event = frame.event
-    if (focused) {
+    if (event.type === 'adf_file_created') {
+      const created = (event.payload as { filePath?: unknown })?.filePath
+      if (typeof created === 'string') void this.adfFileCreated(created)
+    }
+    if (focused && frame.stripped) {
+      // Reduced for an unfocused session: the daemon had not applied the focus yet.
+      if (!this.strippedForegroundLogged) {
+        this.strippedForegroundLogged = true
+        this.log.log(`[Backend] A reduced ${event.type} event of the open file arrived before the daemon applied the focus; not shown (the file's state is read after it opens)`)
+      }
+    } else if (focused) {
       this.sendForeground(frame.agentId, filePath, event)
       if (agent && event.type === 'state_changed' && (event.loop ?? 'main') === 'main') {
         agent.lastForegroundState = String((event.payload as { state?: unknown })?.state)
       }
+      if (event.type === 'state_changed') this.maybeRefreshAfterTurn(frame.agentId, event)
     }
     if (agent) {
       const before = agent.mapping.state
@@ -408,41 +445,118 @@ export class EventBridge {
     this.deps.batcher.push(event)
   }
 
-  /** Turn ends (with the chats they absorbed) and the state change that settles them. */
+  /** The state change that settles ended turns (their ends arrive as `turn` frames). */
   private trackTurns(frame: ExecutorFrame): void {
     const { event } = frame
-    const loop = event.loop ?? 'main'
-    if (event.type === 'turn_complete' || event.type === 'error') {
-      const outcome: EndOutcome = event.type === 'turn_complete' ? 'completed' : 'error'
-      for (const id of [...(frame.turnId ? [frame.turnId] : []), ...(frame.absorbedTurnIds ?? [])]) this.markEnded(id, frame.agentId, loop, outcome)
-      return
-    }
     if (event.type !== 'state_changed') return
+    const loop = event.loop ?? 'main'
+    const busy = toDisplayState(String((event.payload as { state?: unknown })?.state)) === 'active'
     for (const turn of this.ended.values()) {
       if (turn.agentId === frame.agentId && turn.loop === loop) turn.settled = true
     }
     for (const w of [...this.waiters]) {
-      if (w.agentId === frame.agentId && w.loop === loop && w.ended) w.resolve(w.ended)
+      if (w.agentId !== frame.agentId || w.loop !== loop) continue
+      if (w.ended) w.resolve(w.ended)
+      else if (w.lenient && !busy) w.resolve('gap')
     }
   }
 
+  /** A focused loop that was mid-turn at the last resync left its busy state: its chat as the daemon has it now. */
+  private maybeRefreshAfterTurn(agentId: string, event: AgentExecutionEvent): void {
+    const loop = event.loop ?? 'main'
+    const key = `${agentId}\0${loop}`
+    if (!this.refreshAfterTurn.has(key)) return
+    if (toDisplayState(String((event.payload as { state?: unknown })?.state)) === 'active') return
+    this.refreshAfterTurn.delete(key)
+    const client = this.deps.client()
+    if (!client) return
+    void this.sendChatUpdated(client, agentId, loop).catch((err) => {
+      this.log.warn(`[Backend] Could not refresh the chat after the turn: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
+
+  private async sendChatUpdated(client: DaemonClient, agentId: string, loop: string): Promise<void> {
+    const chat = await client.request<{ chatHistory: { uiLog: unknown[]; earlierCount?: number } | null }>(
+      'GET', `/agents/${encodeURIComponent(agentId)}/chat`, { query: { limit: LOOP_DISPLAY_LIMIT, ...(loop === 'main' ? {} : { loop }) } })
+    if (!this.deps.session.isFocused(agentId, null)) return
+    this.deps.output.send(IPC.AGENT_EVENT, {
+      type: 'chat_updated',
+      payload: { uiLog: chat.chatHistory?.uiLog ?? [], earlierCount: chat.chatHistory?.earlierCount ?? 0 },
+      timestamp: this.now(),
+      ...(loop === 'main' ? {} : { loop }),
+    })
+  }
+
+  /**
+   * Embedded's notifyAdfFileCreated: the tracked directory that covers the
+   * new file is rescanned; a file outside every tracked directory has its
+   * folder tracked (the daemon owns the list, POST /tracked-dirs).
+   */
+  private async adfFileCreated(filePath: string): Promise<void> {
+    const client = this.deps.client()
+    if (!client) return
+    try {
+      const dirPath = dirname(filePath)
+      const { directories } = await client.request<{ directories: Array<string | { path: string }> }>('GET', '/tracked-dirs')
+      const roots = (directories ?? []).map((d) => (typeof d === 'string' ? d : d.path)).filter((d): d is string => !!d)
+      const within = (parent: string, child: string): boolean => {
+        const p = pathKey(parent)
+        const c = pathKey(child)
+        return c === p || c.startsWith(p.endsWith('/') || p.endsWith('\\') ? p : `${p}${p.includes('\\') ? '\\' : '/'}`)
+      }
+      const parent = roots.find((root) => within(root, dirPath))
+      if (parent) {
+        this.deps.output.send(IPC.TRACKED_DIRS_CHANGED, { dirPath: parent })
+        return
+      }
+      await client.request('POST', '/tracked-dirs', { body: { path: dirPath } })
+      this.log.log(`[Backend] Tracking ${dirPath}: an agent created ${filePath} there`)
+      this.deps.output.send(IPC.TRACKED_DIRS_CHANGED, { dirPath })
+    } catch (err) {
+      this.log.warn(`[Backend] Could not refresh the tracked folders for ${filePath}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  /**
+   * A turn ended. Normally the loop is still busy and its next state change
+   * settles the wait; when the end arrives with the loop already idle (the
+   * executor's give-up recovery sets idle before it emits `error`), no state
+   * change follows, so it settles now.
+   */
   private markEnded(turnId: string, agentId: string, loop: string, outcome: EndOutcome): void {
-    this.ended.delete(turnId)
-    this.ended.set(turnId, { agentId, loop, outcome, settled: outcome === 'discarded' })
+    const key = turnKey(agentId, turnId)
+    const settled = outcome === 'discarded' || !this.loopBusy(agentId, loop)
+    this.ended.delete(key)
+    this.ended.set(key, { agentId, loop, outcome, settled })
     while (this.ended.size > ENDED_TURNS_KEPT) this.ended.delete(this.ended.keys().next().value!)
     for (const w of [...this.waiters]) {
-      if (w.turnId !== turnId) continue
-      if (outcome === 'discarded') w.resolve('discarded')
+      if (w.turnId !== turnId || w.agentId !== agentId) continue
+      if (settled) w.resolve(outcome)
       else w.ended = outcome
     }
   }
 
+  /** The loop's current display state (the background mapping folds every agent's state changes) is busy. */
+  private loopBusy(agentId: string, loop: string): boolean {
+    const agent = this.agents.get(agentId)
+    if (!agent) return false
+    const state = loop === 'main' ? agent.mapping.state : agent.mapping.loopStates.get(loop)
+    return state === 'active'
+  }
+
   private onTurn(frame: TurnFrame): void {
-    for (const id of [...frame.turnIds, ...frame.unansweredTurnIds]) this.markEnded(id, frame.agentId, 'main', 'discarded')
+    if (frame.outcome === 'discarded') {
+      for (const id of [...frame.turnIds, ...frame.unansweredTurnIds]) this.markEnded(id, frame.agentId, 'main', 'discarded')
+      return
+    }
+    for (const id of frame.turnIds) this.markEnded(id, frame.agentId, frame.loop ?? 'main', frame.outcome)
   }
 
   private onHost(frame: HostFrame): void {
-    const agent = this.agentFor(frame.agentId, frame.filePath)
+    // RuntimeService emitted the `error` executor event for these already
+    // (W1-A); embedded shows that one error, so nothing is added (D5.1).
+    if (frame.type === 'trigger_error' || frame.type === 'startup_failed') return
+    const agent = frame.agentId ? this.agentFor(frame.agentId, frame.filePath) : null
     const filePath = agent?.filePath ?? frame.filePath
     if (!filePath) {
       this.log.warn(`[Backend] Host event ${frame.type} for agent ${frame.agentId} with no known file; not shown`)
@@ -450,26 +564,15 @@ export class EventBridge {
     }
     const focused = this.deps.session.isFocused(frame.agentId, filePath)
 
-    if (frame.type === 'trigger_error' || frame.type === 'startup_dispatch_failed') {
-      // Embedded: the foreground host sends these as `error` on AGENT_EVENT
-      // (ipc/index.ts:3729, 4834, 4997); a background agent's land in its
-      // display state through the executor's own state change.
-      if (focused && !this.detached.has(frame.agentId)) {
-        const event: AgentExecutionEvent = { type: 'error', payload: { ...frame.payload }, timestamp: frame.timestamp }
-        this.sendForeground(frame.agentId, filePath, event)
-      }
-      return
-    }
-
     if (frame.type === 'agent_started' && agent) {
       if (typeof frame.payload.handle === 'string') agent.handle = frame.payload.handle
       if (typeof frame.payload.state === 'string') agent.mapping.state = frame.payload.state as AgentState
       // The open file's agent was started elsewhere (CLI, another client):
       // the session learns its id, so its contents and events follow.
-      if (focused) this.deps.session.noteAgent(filePath, frame.agentId)
+      if (focused && frame.agentId) this.deps.session.noteAgent(filePath, frame.agentId)
     }
     const stopped = frame.type === 'agent_stopped' || frame.type === 'agent_start_failed'
-    if (stopped) {
+    if (stopped && frame.agentId) {
       const wasDetached = this.detached.delete(frame.agentId)
       this.agents.delete(frame.agentId)
       for (const w of [...this.waiters]) if (w.agentId === frame.agentId) w.resolve('stopped')
@@ -509,11 +612,37 @@ export class EventBridge {
       this.log.warn(`[Backend] Unknown push topic ${String(frame.topic)}; not shown`)
       return
     }
+    if (route.action === 'adf_file_created') {
+      const created = (frame.payload as { filePath?: unknown })?.filePath
+      if (typeof created === 'string') void this.adfFileCreated(created)
+      return
+    }
+    if (route.action === 'notice') {
+      const p = frame.payload as { holding?: unknown; reason?: unknown; sessions?: unknown }
+      const text = p?.holding === true
+        ? `The ADF daemon keeps running while ${typeof p.sessions === 'number' ? p.sessions : 'other'} other client${p.sessions === 1 ? ' is' : 's are'} connected, and stops when the last one closes.${typeof p.reason === 'string' ? ` (${p.reason})` : ''}`
+        : `The ADF daemon no longer stops when the other clients close.${typeof p?.reason === 'string' ? ` (${p.reason})` : ''}`
+      this.log.log(`[Backend] ${text}`)
+      if (p?.holding === true) this.deps.onNotice?.(text)
+      return
+    }
+    if (route.action === 'rekey') {
+      const p = frame.payload as { oldFilePath?: unknown; filePath?: unknown }
+      if (typeof p?.oldFilePath === 'string' && typeof p.filePath === 'string') {
+        this.deps.onFileRenamed?.(p.oldFilePath, p.filePath)
+        for (const agent of this.agents.values()) if (samePath(agent.filePath, p.oldFilePath)) agent.filePath = p.filePath
+      }
+      return
+    }
+    if (!route.channel) return
     if (route.focusedAgentEvent) {
-      if (this.deps.session.isFocused(frame.agentId ?? null, frame.filePath ?? null)) this.deps.output.send(route.channel, frame.payload)
+      // Embedded: the open file's agent only, as an executor event (meshManager 'foreground_incoming').
+      if (frame.stripped || !this.deps.session.isFocused(frame.agentId ?? null, frame.filePath ?? null)) return
+      this.deps.output.send(route.channel, { type: frame.topic, payload: frame.payload, timestamp: this.now() })
       return
     }
     if (route.openFileOnly && !this.deps.session.isFocused(frame.agentId ?? null, frame.filePath ?? null)) return
+    if (route.openFileOnly && frame.stripped) return
     if (frame.topic === 'file_renamed') {
       const p = frame.payload as { oldPath?: unknown; newPath?: unknown }
       if (typeof p?.oldPath === 'string' && typeof p.newPath === 'string') {
@@ -555,6 +684,13 @@ export class EventBridge {
         else if (agent.shownInBackground) this.deps.batcher.push({ type: 'agent_stopped', payload: { filePath: agent.filePath }, timestamp: ts })
       }
       this.seed(statuses)
+      // Waits whose end may have been lost: settled now when their loop is not busy.
+      for (const w of [...this.waiters]) {
+        if (!w.lenient) continue
+        const status = statuses.find((s) => s.id === w.agentId)
+        if (!status) w.resolve('stopped')
+        else if (w.loop === 'main' && toDisplayState(String(status.runtimeState)) !== 'active') w.resolve('gap')
+      }
       for (const s of statuses) {
         if (this.deps.session.isFocused(s.id, s.filePath)) continue
         const agent = this.agents.get(s.id)!
@@ -578,16 +714,13 @@ export class EventBridge {
         for (const { name } of loops) {
           // A turn still streaming repaints itself; a chat_updated now would
           // replace the live entries (embedded skips it the same way).
+          // Its frames were lost, though: refresh once the turn settles.
           const busy = name === 'main' ? agent?.mapping.state === 'active' : agent?.mapping.loopStates.get(name) === 'active'
-          if (busy) continue
-          const chat = await client.request<{ chatHistory: { uiLog: unknown[]; earlierCount?: number } | null }>(
-            'GET', `/agents/${encodeURIComponent(focusedId)}/chat`, { query: { limit: LOOP_DISPLAY_LIMIT, ...(name === 'main' ? {} : { loop: name }) } })
-          this.deps.output.send(IPC.AGENT_EVENT, {
-            type: 'chat_updated',
-            payload: { uiLog: chat.chatHistory?.uiLog ?? [], earlierCount: chat.chatHistory?.earlierCount ?? 0 },
-            timestamp: this.now(),
-            ...(name === 'main' ? {} : { loop: name }),
-          })
+          if (busy) {
+            this.refreshAfterTurn.add(`${focusedId}\0${name}`)
+            continue
+          }
+          await this.sendChatUpdated(client, focusedId, name)
         }
       })
       await step('focused config', async () => {
@@ -595,7 +728,7 @@ export class EventBridge {
         this.deps.output.send(IPC.DOC_AGENT_CONFIG_CHANGED, { filePath: focusedPath, config })
       })
     } else if (focusedPath) {
-      this.log.warn('[Backend] Resync: the open file is not running in the daemon; its chat and config refresh once the client session holds it (W2-B)')
+      this.log.warn('[Backend] Resync: the open file has no agent id in the daemon; its chat and config are read when it opens again')
     }
 
     await step('tracked directories', async () => {

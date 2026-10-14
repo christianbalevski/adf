@@ -585,7 +585,8 @@ export interface AdfApi {
   changePassword: (newPassword: string) => Promise<{ success: boolean; error?: string }>
   listIdentityEntries: () => Promise<{ entries: Array<{ purpose: string; encrypted: boolean; code_access: boolean }> }>
   setIdentityCodeAccess: (purpose: string, codeAccess: boolean) => Promise<{ success: boolean }>
-  revealIdentity: (purpose: string) => Promise<{ value: string | null }>
+  /** `reason`: why no value is shown (key material is never revealed; a remote daemon sends no values). */
+  revealIdentity: (purpose: string) => Promise<{ value: string | null; reason?: string }>
   wipeAllIdentity: () => Promise<{ success: boolean }>
   getDid: () => Promise<{ did: string | null }>
   generateIdentityKeys: () => Promise<{ success: boolean; did?: string; error?: string }>

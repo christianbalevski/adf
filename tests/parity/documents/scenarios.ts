@@ -59,7 +59,7 @@ export const switchWithBackgroundScenario: ParityScenario = {
 export const passwordUnlockScenario: ParityScenario = {
   name: 'password-unlock',
   description: 'Open agent-1, protected by a legacy file password: the open asks for it, the unlock opens the file, then the agent starts and stops.',
-  fixtures: [{ name: 'agent-1', password: 'parity-password' }],
+  fixtures: [{ name: 'agent-1', legacyPassword: 'parity-password' }],
   quietMs: 1000,
   async run(ctx) {
     const agent = ctx.agent('agent-1')

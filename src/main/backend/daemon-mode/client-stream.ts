@@ -1,21 +1,34 @@
-import type { DaemonClient, DaemonEventFrame, EventStream } from '../../../shared/daemon-client'
+import {
+  DaemonError,
+  SUPPORTED_CLIENT_API_VERSION,
+  type ClientFrame as WireFrame,
+  type ClientPushTopic,
+  type DaemonClient,
+  type EventStream,
+  type StreamGap as WireGap,
+} from '../../../shared/daemon-client'
+import type { UmbilicalEvent } from '../../runtime/umbilical-bus'
 import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
-import { DaemonModeUnavailableError } from './errors'
 
 /**
  * The client session and client event stream as Studio main consumes them
- * (design D5). The event bridge (event-bridge.ts) and the session
- * (session.ts) depend only on `ClientSession`, so the daemon's real client
- * sessions (W2-B: `POST /client/sessions`, `GET /client/sessions/:id/events`)
- * replace the interim adapter below without touching them.
+ * (design D5, D5.1). The event bridge (event-bridge.ts) and the session
+ * (session.ts) depend only on `ClientSession`; `createDaemonClientSession`
+ * implements it over the daemon's client sessions (W2-B: POST
+ * /client/sessions, GET /client/sessions/:id/events, focus, documents).
  *
  * Frames carry domain events. For `push` frames the payload of each topic is
  * the payload of its IPC push channel, exactly as embedded Studio sends it
- * (PUSH_TOPICS in event-bridge.ts names the channel); a producer that cannot
- * build that payload must say so, not send another shape.
+ * (PUSH_TOPICS in event-bridge.ts names the channel).
+ *
+ * Turn bookkeeping (D5): executor frames carry no turn ids yet, so the
+ * session is opened with `umbilical: true` and only the umbilical envelopes
+ * that end chats (`turn.completed`, `agent.error` with their `turn_id` and
+ * `absorbed_turn_ids`, `chat.discarded`) are read, as `turn` frames. Every
+ * other umbilical envelope is dropped here.
  */
 
-/** Host events (D5 `host` frames); W1-A emits the lifecycle ones. */
+/** Host events (D5 `host` frames, W1-A's lifecycle events). */
 export type HostEventType =
   | 'agent_starting'
   | 'agent_started'
@@ -24,29 +37,29 @@ export type HostEventType =
   | 'agent_stopped'
   | 'agent_loops_changed'
   | 'agent_state_changed'
-  /** A trigger failed (embedded shows it as `error` on AGENT_EVENT for the open agent). */
+  /** A trigger failed; RuntimeService already emitted the `error` executor event (W1-A). */
   | 'trigger_error'
-  /** The startup dispatch failed. */
-  | 'startup_dispatch_failed'
+  /** The startup dispatch failed; the `error` executor event came first. */
+  | 'startup_failed'
 
 export interface ExecutorFrame {
   kind: 'executor'
   agentId: string
   filePath: string | null
-  /** The turn that produced it (`turnId` of POST /agents/:id/chat), when the daemon knows. */
-  turnId?: string
-  /**
-   * On `turn_complete` and `error`: chats answered inside this turn instead of
-   * their own (`absorbed_turn_ids`). Their AGENT_INVOKE waits end here too.
-   */
-  absorbedTurnIds?: string[]
   /** The executor event as AGENT_EVENT carries it; `event.loop` names a side loop. */
   event: AgentExecutionEvent
+  /**
+   * The daemon reduced the payload because this session is not focused on
+   * the agent (D5.1): `tool_result`, `tool_input` (input fields cut) or
+   * `stub` (scalars only). Never sent on AGENT_EVENT.
+   */
+  stripped?: 'tool_result' | 'tool_input' | 'stub'
 }
 
 export interface HostFrame {
   kind: 'host'
-  agentId: string
+  /** Null only for `agent_starting` / `agent_start_failed` before the file's id was read. */
+  agentId: string | null
   filePath: string | null
   type: HostEventType
   /** Event-specific fields: `state`, `handle` (agent_started), `activeLoops`, `error`, `code`. */
@@ -54,23 +67,7 @@ export interface HostFrame {
   timestamp: number
 }
 
-export type PushTopic =
-  | 'inbox'
-  | 'adapter_status'
-  | 'mcp_status'
-  | 'mcp_install'
-  | 'adapter_install'
-  | 'sandbox_install'
-  | 'tracked_dirs'
-  | 'templates'
-  | 'file_renamed'
-  | 'config_changed'
-  | 'workspace_data'
-  | 'approvals'
-  | 'mesh'
-  | 'inter_agent_message'
-  | 'compute_phase'
-  | 'browser_session'
+export type PushTopic = ClientPushTopic
 
 export interface PushFrame {
   kind: 'push'
@@ -79,18 +76,21 @@ export interface PushFrame {
   agentId?: string | null
   filePath?: string | null
   payload: unknown
+  /** The payload was reduced for a session not focused on the agent. */
+  stripped?: 'stub'
 }
 
 /**
- * Turn bookkeeping with no executor event: a stop dropped queued chats
- * (`turnIds`, never delivered) and cut off the running ones
- * (`unansweredTurnIds`). Their AGENT_INVOKE waits end.
+ * A chat's turn ended: `completed` / `error` (the turn that handled
+ * `turnIds`, plus the chats it absorbed), or `discarded` (a stop dropped
+ * `turnIds` and cut off `unansweredTurnIds`). AGENT_INVOKE waits settle here.
  */
 export interface TurnFrame {
   kind: 'turn'
   agentId: string
   filePath: string | null
-  outcome: 'discarded'
+  loop?: string
+  outcome: 'completed' | 'error' | 'discarded'
   turnIds: string[]
   unansweredTurnIds: string[]
 }
@@ -98,9 +98,10 @@ export interface TurnFrame {
 export type ClientFrame = ExecutorFrame | HostFrame | PushFrame | TurnFrame
 
 export interface StreamGap {
-  /** `evicted`: frames past the session ring were lost; `epoch_changed`: the daemon restarted. */
-  reason: 'evicted' | 'epoch_changed'
+  /** `evicted`: frames past the session ring (or one oversized frame) were lost; `epoch_changed`: the daemon restarted. */
+  reason: 'evicted' | 'epoch_changed' | 'oversized' | 'new_session'
   epoch?: string
+  dropped?: number
 }
 
 export interface StreamConnection {
@@ -114,23 +115,25 @@ export interface ClientStreamListener {
   onGap(gap: StreamGap): void
   onConnection(connection: StreamConnection): void
   /**
-   * The stream is open again after a drop. The client re-establishes what the
-   * session held: it re-sends the focus and re-holds its documents (the
-   * daemon may have expired the session, or restarted: `epochChanged`).
-   * Called before any frame of the new connection is delivered.
+   * The stream is open again after a drop, or a new session replaced an
+   * expired one. The client re-establishes what the session held: it
+   * re-sends the focus and re-holds its documents. For a new session this is
+   * awaited before its stream starts.
    */
-  onReattached?(info: { epochChanged: boolean }): void
+  onReattached?(info: { epochChanged: boolean }): void | Promise<void>
+  /** No session can be used with this daemon (client API version): shown, and the connection is failed. */
+  onFatal?(message: string): void
 }
 
 export interface ClientSession {
-  readonly kind: 'client-session' | 'events-adapter'
-  /** What this implementation cannot deliver. Logged once at start and listed in the gap doc. */
-  readonly limitations: readonly string[]
+  readonly kind: 'client-session'
+  /** The daemon's session id once opened (requests carry it: X-ADF-Client-Session). */
+  readonly sessionId: string | null
   start(listener: ClientStreamListener): void
-  /** The agent whose text/thinking deltas the stream carries (D5). */
+  /** The agent whose deltas and full payloads the stream carries (D5). */
   setFocus(agentId: string | null): Promise<void>
-  /** Hold an `.adf` as an open document (D4); resolves its agent id. */
-  holdDocument(filePath: string): Promise<{ agentId: string }>
+  /** Hold an `.adf` as an open document (D4); resolves its agent id and the open answer. */
+  holdDocument(filePath: string): Promise<HeldDocument>
   releaseDocument(agentId: string): Promise<void>
   /** Drop the stream connection and reconnect now. */
   reconnect(): void
@@ -138,122 +141,276 @@ export interface ClientSession {
   end(): Promise<void>
 }
 
-/**
- * INTERIM (until W2-B): a `ClientSession` over today's `GET /events`, the
- * umbilical stream. It is global, has no session and no focus, and is lossy
- * for UI purposes (D5 rationale): it carries only the executor events the
- * executor maps one to one onto typed umbilical events. Everything else is
- * listed in `limitations` and reaches the renderer only once W2-B ships the
- * client stream. No umbilical event is reinterpreted as something it is not.
- */
-export const EVENTS_ADAPTER_LIMITATIONS: readonly string[] = [
-  'no client session: documents cannot be held (FILE_OPEN of a file that is not running, FILE_CLOSE release) — W2-B',
-  'no focus: text and thinking deltas are not on GET /events unless the agent sets umbilical.stream_deltas — W2-B',
-  'executor events without a one-to-one umbilical event (deltas, tool_call_start/result, chat_updated, trigger_message, context_injected content, response_metadata, loop_seq, document/file updates, approvals, asks, suspend) — W2-B',
-  'host lifecycle events other than agent.loaded/agent.unloaded (agent_starting, agent_start_failed, agent_stopping, loops, trigger errors) — W1-A, W2-B',
-  'push topics (inbox, MCP/adapter status, installs, tracked dirs, templates, file renamed, config changed, workspace data, approvals, mesh, compute) — W2-B',
-]
+/** POST /client/sessions/:id/documents answer (W2-A's open answer: `running`, `needsPassword`, `readOnly`, …). */
+export interface HeldDocument {
+  agentId: string
+  filePath?: string | null
+  running?: boolean
+  needsPassword?: boolean
+  readOnly?: string
+  [key: string]: unknown
+}
 
-/** Keys the executor adds to a payload on its way onto the umbilical (agent-executor.ts emitEvent). */
-const UMBILICAL_ADDED_KEYS = ['filePath', 'absorbed_turn_ids']
+export const STUDIO_CLIENT_NAME = 'studio'
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []
 }
 
-function withoutKeys(payload: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(payload)) if (!keys.includes(k)) out[k] = v
-  return out
-}
-
 /**
- * One umbilical envelope as the frame it stands for, or null when it has no
- * exact counterpart. Exact means: `agent.state.changed`, `turn.completed` and
- * `agent.error` are emitted from exactly one executor event each, with the
- * executor payload plus the keys in UMBILICAL_ADDED_KEYS; `agent.loaded` /
- * `agent.unloaded` are the runtime's load and unload.
+ * The umbilical envelopes that end chats, as `turn` frames; null for every
+ * other envelope (Studio reads the umbilical stream for turn bookkeeping only).
  */
-export function translateUmbilicalEnvelope(envelope: DaemonEventFrame): ClientFrame | null {
-  const e = envelope.event
-  const agentId = e.agent_id
+export function turnFrameOf(event: UmbilicalEvent): TurnFrame | null {
+  const agentId = event.agent_id
   if (!agentId) return null
-  const payload = (e.payload ?? {}) as Record<string, unknown>
+  const payload = (event.payload ?? {}) as Record<string, unknown>
   const filePath = typeof payload.filePath === 'string' ? payload.filePath : null
-  const absorbed = stringList(payload.absorbed_turn_ids)
-  const executor = (event: AgentExecutionEvent): ExecutorFrame => ({
-    kind: 'executor',
-    agentId,
-    filePath,
-    ...(e.turn_id ? { turnId: e.turn_id } : {}),
-    ...(absorbed.length ? { absorbedTurnIds: absorbed } : {}),
-    event: e.loop ? { ...event, loop: e.loop } : event,
-  })
-  switch (e.event_type) {
-    case 'agent.state.changed':
-      return executor({ type: 'state_changed', payload: withoutKeys(payload, UMBILICAL_ADDED_KEYS), timestamp: e.timestamp })
+  const base = { kind: 'turn' as const, agentId, filePath, ...(event.loop ? { loop: event.loop } : {}) }
+  switch (event.event_type) {
     case 'turn.completed':
-      return executor({ type: 'turn_complete', payload: withoutKeys(payload, UMBILICAL_ADDED_KEYS), timestamp: e.timestamp })
     case 'agent.error': {
-      const inner = payload.event as AgentExecutionEvent | undefined
-      if (!inner || typeof inner !== 'object' || inner.type !== 'error') return null
-      return executor({ ...inner })
+      const turnIds = [...(event.turn_id ? [event.turn_id] : []), ...stringList(payload.absorbed_turn_ids)]
+      if (turnIds.length === 0) return null
+      return { ...base, outcome: event.event_type === 'turn.completed' ? 'completed' : 'error', turnIds, unansweredTurnIds: [] }
     }
-    case 'agent.loaded':
-      return {
-        kind: 'host', agentId, filePath, type: 'agent_started', timestamp: e.timestamp,
-        payload: typeof payload.handle === 'string' ? { handle: payload.handle } : {},
-      }
-    case 'agent.unloaded':
-      return { kind: 'host', agentId, filePath, type: 'agent_stopped', timestamp: e.timestamp, payload: {} }
     case 'chat.discarded':
-      return { kind: 'turn', agentId, filePath, outcome: 'discarded', turnIds: stringList(payload.turn_ids), unansweredTurnIds: stringList(payload.unanswered_turn_ids) }
+      return { ...base, outcome: 'discarded', turnIds: stringList(payload.turn_ids), unansweredTurnIds: stringList(payload.unanswered_turn_ids) }
     default:
       return null
   }
 }
 
-/** The interim adapter. `holdDocument` and `releaseDocument` refuse visibly (W2-B). */
-export function createEventsAdapterSession(client: DaemonClient, opts: { idleTimeoutMs?: number } = {}): ClientSession {
-  let stream: EventStream<DaemonEventFrame> | null = null
+/** One wire frame as the bridge's frame, or null (umbilical envelopes that are not turn ends). */
+export function translateClientFrame(frame: WireFrame): ClientFrame | null {
+  switch (frame.kind) {
+    case 'executor':
+      return {
+        kind: 'executor',
+        agentId: frame.agentId,
+        filePath: frame.filePath,
+        event: frame.event,
+        ...(frame.stripped ? { stripped: frame.stripped } : {}),
+      }
+    case 'host':
+      return { kind: 'host', agentId: frame.agentId, filePath: frame.filePath, type: frame.type as HostEventType, payload: frame.payload ?? {}, timestamp: frame.timestamp }
+    case 'push':
+      return {
+        kind: 'push',
+        topic: frame.topic,
+        agentId: frame.agentId,
+        filePath: frame.filePath,
+        payload: frame.payload,
+        ...(frame.stripped ? { stripped: frame.stripped } : {}),
+      }
+    case 'umbilical':
+      return turnFrameOf(frame.event)
+    default:
+      return null
+  }
+}
+
+/** The message shown when the daemon speaks another client API (§8.2: the switch dialog handles version skew). */
+export function clientApiMismatchMessage(daemonVersion: unknown, clientApiVersion: unknown): string {
+  return `The ADF daemon${typeof daemonVersion === 'string' ? ` ${daemonVersion}` : ''} speaks client API ${String(clientApiVersion)}; this Studio needs ${SUPPORTED_CLIENT_API_VERSION}. Update the daemon (or Studio) so both are the same version.`
+}
+
+export interface DaemonClientSessionOptions {
+  /** Studio's version (POST /client/sessions `version`). */
+  version: string
+  /** §8.3: the daemon stops when this session expires and no other is open (local mode, keepDaemonRunning off). */
+  exitDaemonWhenClosed: boolean
+  log?: Pick<Console, 'log' | 'warn'>
+  /** Retry delay while the daemon cannot be reached to open the session. */
+  retryMs?: number
+  /** EventStream idle timeout (tests). */
+  idleTimeoutMs?: number
+}
+
+const isGone = (err: unknown): boolean => err instanceof DaemonError && err.status === 404
+/** The session itself is gone (`session_not_found`), not a file or document it names. */
+const sessionGone = (err: unknown): boolean => isGone(err) && ((err as DaemonError).body as { code?: unknown } | null)?.code === 'session_not_found'
+
+/**
+ * A `ClientSession` over the daemon's client sessions (W2-B).
+ *
+ * - Opening: GET /version must report `clientApiVersion` ===
+ *   SUPPORTED_CLIENT_API_VERSION, else `onFatal` with an "update the daemon"
+ *   message (no fallback stream). An unreachable daemon is retried.
+ * - A 404 on reconnect (the session expired, or the daemon restarted) opens
+ *   a new session: the focus and the documents are sent again (awaited
+ *   `onReattached`), then its stream starts and the bridge resyncs.
+ * - Every `stream.gap` (evicted, oversized, new epoch) reaches `onGap`.
+ */
+export function createDaemonClientSession(client: DaemonClient, options: DaemonClientSessionOptions): ClientSession {
+  const log = options.log ?? console
+  let listener: ClientStreamListener | null = null
+  let sessionId: string | null = null
+  let stream: EventStream<WireFrame> | null = null
+  let focus: string | null = null
+  let ended = false
+  let opening: Promise<string | null> | null = null
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+  const openSession = async (): Promise<string | null> => {
+    while (!ended) {
+      try {
+        const info = await client.version()
+        if (info.clientApiVersion !== SUPPORTED_CLIENT_API_VERSION) {
+          const message = clientApiMismatchMessage(info.version, info.clientApiVersion)
+          log.warn(`[Backend] ${message}`)
+          listener?.onFatal?.(message)
+          return null
+        }
+        const created = await client.createClientSession({ client: STUDIO_CLIENT_NAME, version: options.version, exitDaemonWhenClosed: options.exitDaemonWhenClosed, umbilical: true })
+        log.log(`[Backend] Client session ${created.sessionId} opened${options.exitDaemonWhenClosed ? ' (the daemon stops when it expires and no other client is open)' : ''}`)
+        return created.sessionId
+      } catch (err) {
+        if (ended) return null
+        if (err instanceof DaemonError && err.unreachable) {
+          listener?.onConnection({ state: 'reconnecting', error: err.message })
+          await new Promise<void>((r) => { retryTimer = setTimeout(r, options.retryMs ?? 2_000); retryTimer.unref?.() })
+          continue
+        }
+        const message = isGone(err)
+          ? clientApiMismatchMessage(undefined, 'none (no client sessions)')
+          : `Studio could not open a client session on the ADF daemon: ${err instanceof Error ? err.message : String(err)}`
+        log.warn(`[Backend] ${message}`)
+        listener?.onFatal?.(message)
+        return null
+      }
+    }
+    return null
+  }
+
+  const startStream = (id: string): void => {
+    const l = listener!
+    stream = client.clientSessionEvents(id, {
+      ...(options.idleTimeoutMs !== undefined ? { idleTimeoutMs: options.idleTimeoutMs } : {}),
+      onEvent: (wire) => {
+        const frame = translateClientFrame(wire)
+        if (frame) l.onFrame(frame)
+      },
+      onState: (info) => {
+        if (stream === null || sessionId !== id) return
+        l.onConnection({ state: info.state === 'idle' ? 'connecting' : info.state, ...(info.error ? { error: info.error } : {}) })
+        // The session is gone (expired while we were away, or a restarted daemon): open a new one.
+        if (info.state === 'reconnecting' && info.error?.startsWith('HTTP 404')) void reopen()
+      },
+      onResume: (info) => {
+        if (sessionId !== id) return
+        void l.onReattached?.({ epochChanged: info.reason === 'epoch_changed' })
+        if (!info.exact && info.reason === 'epoch_changed') l.onGap({ reason: 'epoch_changed', epoch: info.epoch })
+      },
+      onGap: (gap: WireGap) => {
+        if (sessionId !== id) return
+        const raw = (gap as { reason: string }).reason
+        l.onGap({ reason: raw === 'oversized' || raw === 'epoch_changed' ? raw : 'evicted', epoch: gap.epoch, ...(gap.dropped !== undefined ? { dropped: gap.dropped } : {}) })
+      },
+    }).start()
+  }
+
+  const open = (): Promise<string | null> => {
+    opening ??= (async () => {
+      const id = await openSession()
+      if (!id || ended) {
+        if (id) void client.endClientSession(id).catch(() => {})
+        return null
+      }
+      sessionId = id
+      if (focus) await client.setClientSessionFocus(id, focus).catch((err) => log.warn(`[Backend] Could not set the session focus: ${err instanceof Error ? err.message : String(err)}`))
+      return id
+    })().finally(() => { opening = null })
+    return opening
+  }
+
+  let reopening: Promise<void> | null = null
+  const reopen = (): Promise<void> => {
+    reopening ??= (async () => {
+      const old = stream
+      stream = null
+      old?.close()
+      const previous = sessionId
+      sessionId = null
+      log.warn(`[Backend] Client session ${previous ?? '?'} is gone on the daemon; opening a new one`)
+      const id = await open()
+      if (!id || !listener) return
+      // The new session holds nothing yet: focus and documents first, then frames.
+      try { await listener.onReattached?.({ epochChanged: true }) } catch (err) {
+        log.warn(`[Backend] Re-holding the documents on the new session failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      startStream(id)
+      listener.onGap({ reason: 'new_session' })
+    })().finally(() => { reopening = null })
+    return reopening
+  }
+
+  /** The session id for a call, opening the session if needed; a 404 reopens it once. */
+  /**
+   * The session id for a call, waiting for an open in progress. It never
+   * waits for a whole reopen: that awaits `onReattached`, whose re-holds run
+   * after the caller's own operation (session.ts serializes them).
+   */
+  const currentId = async (): Promise<string | null> => sessionId ?? (opening ? await opening : sessionId)
+
+  /** Run a call on the session; a `session_not_found` opens a new session and retries once. */
+  const withSession = async <T>(what: string, run: (id: string) => Promise<T>): Promise<T> => {
+    const id = await currentId()
+    if (!id) throw new Error(`${what}: Studio has no client session on the ADF daemon`)
+    try {
+      return await run(id)
+    } catch (err) {
+      if (!sessionGone(err)) throw err
+      if (sessionId === id) void reopen()
+      const next = await currentId()
+      if (!next || next === id) throw err
+      return run(next)
+    }
+  }
+
   return {
-    kind: 'events-adapter',
-    limitations: EVENTS_ADAPTER_LIMITATIONS,
-    start(listener) {
-      if (stream) return
-      stream = client.events<DaemonEventFrame>({
-        path: '/events',
-        ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
-        onEvent: (envelope) => {
-          const frame = translateUmbilicalEnvelope(envelope)
-          if (frame) listener.onFrame(frame)
-        },
-        onState: (info) => {
-          listener.onConnection({ state: info.state === 'idle' ? 'connecting' : info.state, ...(info.error ? { error: info.error } : {}) })
-        },
-        onResume: (info) => {
-          // GET /events holds no session state; the hook still runs so the
-          // client re-sends what a real session would have lost.
-          listener.onReattached?.({ epochChanged: info.reason === 'epoch_changed' })
-          if (!info.exact) listener.onGap({ reason: info.reason === 'epoch_changed' ? 'epoch_changed' : 'evicted', epoch: info.epoch })
-        },
-      }).start()
+    kind: 'client-session',
+    get sessionId() { return sessionId },
+    start(l) {
+      if (listener) return
+      listener = l
+      l.onConnection({ state: 'connecting' })
+      void open().then((id) => { if (id && !ended) startStream(id) })
     },
-    async setFocus() {
-      // GET /events has no focus; nothing to tell the daemon.
+    async setFocus(agentId) {
+      focus = agentId
+      if (!sessionId) return // sent when the session opens
+      await withSession('Setting the session focus', (id) => client.setClientSessionFocus(id, agentId))
     },
-    async holdDocument() {
-      throw new DaemonModeUnavailableError('Holding an agent file as an open document', 'W2-B', 'POST /client/sessions/:id/documents')
+    async holdDocument(filePath) {
+      return withSession('Opening the file', (id) => client.holdClientSessionDocument(id, { filePath })) as Promise<HeldDocument>
     },
-    async releaseDocument() {
-      throw new DaemonModeUnavailableError('Releasing an open document', 'W2-B', 'DELETE /client/sessions/:id/documents/:agentId')
+    async releaseDocument(agentId) {
+      if (!sessionId) return
+      try {
+        await client.releaseClientSessionDocument(sessionId, agentId)
+      } catch (err) {
+        // The session or the hold is gone already: nothing is held.
+        if (!isGone(err)) throw err
+      }
     },
     reconnect() {
       stream?.reconnect()
     },
     async end() {
+      ended = true
+      if (retryTimer) clearTimeout(retryTimer)
       stream?.close()
       stream = null
+      const id = sessionId
+      sessionId = null
+      if (id) {
+        try {
+          await client.withTimeout(5_000).endClientSession(id)
+        } catch (err) {
+          log.warn(`[Backend] Ending client session ${id} failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
     },
   }
 }

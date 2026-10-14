@@ -105,9 +105,9 @@ describe('DOC_* without an open file', () => {
 describe('DOC_* on the open file', () => {
   beforeEach(open)
 
-  it('a 404 for the agent itself is the visible W2-B refusal, never an empty answer', async () => {
+  it('a 404 for the agent itself is the visible "open it again" refusal, never an empty answer', async () => {
     daemon.routes.set(`GET /agents/${AGENT}/document`, () => ({ status: 404, body: { error: `Unknown agent "${AGENT}"`, code: 'not_found' } }))
-    await expect(call(IPC.DOC_GET_DOCUMENT)).rejects.toMatchObject({ code: DAEMON_MODE_UNAVAILABLE })
+    await expect(call(IPC.DOC_GET_DOCUMENT)).rejects.toThrow('is not open in the ADF daemon any more. Open it again.')
   })
 
   it('DOC_GET_INBOX lists unread, read, archived in that order', async () => {

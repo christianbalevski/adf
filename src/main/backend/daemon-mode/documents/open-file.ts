@@ -1,43 +1,46 @@
 import type { DaemonClient } from '../../../../shared/daemon-client'
 import { DaemonError } from '../../../../shared/daemon-client'
 import { isNotFound, type DaemonModeContext } from '../context'
-import { DaemonModeUnavailableError } from '../errors'
 
 /**
- * How W3-A's handlers reach "the open file" (design D3, D4).
+ * How the daemon-mode handlers reach "the open file" (design D3, D4).
  *
  * Embedded handlers act on `currentWorkspace`, the workspace of the file the
- * renderer opened. In daemon mode that file is `ctx.session.filePath`, and
- * its agent in the daemon is `ctx.session.agentId`: the open document the
- * client session holds (W2-B hold), or the agent already running at that
- * path. Every `/agents/:id/*` resource route serves both (W2-A).
+ * renderer opened. In daemon mode that file is `ctx.session.filePath`, held
+ * as a document of Studio's client session (W2-B), and its agent in the
+ * daemon is `ctx.session.agentId`. Every `/agents/:id/*` resource route
+ * serves it whether its agent runs or not (W2-A).
  *
  * Without a file open the handler answers exactly what embedded answers
- * without a workspace (`none`). A file that is open but neither held nor
- * running (the interim GET /events adapter cannot hold documents) is refused
- * with the visible W2-B error: nothing reads the file another way.
+ * without a workspace (`none`). A file the daemon no longer has (the hold
+ * failed, or the daemon restarted and the re-hold failed) is refused with
+ * "open it again": nothing reads the file another way.
  */
 
-/** The open file's agent id; null when no file is open. Throws the W2-B refusal when the file is open but unreachable. */
+/** The daemon no longer has the open file (not held, not running): the user opens it again. */
+export function notOpenError(ctx: DaemonModeContext, what: string): Error {
+  return new Error(`${what}: ${ctx.session.filePath} is not open in the ADF daemon any more. Open it again.`)
+}
+
+/** The open file's agent id; null when no file is open. Throws notOpenError when the daemon does not have the file. */
 export function openFileAgent(ctx: DaemonModeContext, what: string): string | null {
   if (!ctx.session.filePath) return null
   const id = ctx.session.agentId
   if (id) return id
-  throw new DaemonModeUnavailableError(what, 'W2-B', `${ctx.session.filePath} is not running in the daemon, and holding it open needs a client session`)
+  throw notOpenError(ctx, what)
 }
 
-/** The open file's agent id, or the W2-B refusal: for handlers that only run with a file open. */
+/** The open file's agent id, for handlers that only run with a file open. */
 export function requireOpenAgent(ctx: DaemonModeContext, what: string): string {
   const id = openFileAgent(ctx, what)
   if (id) return id
-  throw new DaemonModeUnavailableError(what, 'W2-B', 'no file is open')
+  throw new Error(`${what}: no file is open`)
 }
 
 /**
  * Run `fn` on the open file's agent. `none` is the embedded answer without a
- * workspace. A 404 from the daemon means the agent stopped and nothing holds
- * its document (only without W2-B holds): the W2-B refusal, never a
- * silently empty answer.
+ * workspace. A 404 for the agent itself means the daemon no longer has the
+ * file: notOpenError, never a silently empty answer.
  */
 export async function onOpenFile<T>(
   ctx: DaemonModeContext,
@@ -51,9 +54,7 @@ export async function onOpenFile<T>(
   try {
     return await fn(client, agentId)
   } catch (err) {
-    if (isAgentGone(err, agentId)) {
-      throw new DaemonModeUnavailableError(what, 'W2-B', `${ctx.session.filePath} is no longer running in the daemon, and holding it open needs a client session`)
-    }
+    if (isAgentGone(err, agentId)) throw notOpenError(ctx, what)
     throw err
   }
 }

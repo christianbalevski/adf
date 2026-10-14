@@ -6,8 +6,10 @@ import type { MappedChannel } from '../channel-map'
 import type { ApprovalsUi } from './approvals-ui'
 import type { DaemonConnection } from './connection'
 import type { EventBridge } from './event-bridge'
+import type { SharedMnemonicStore } from '../../services/owner-secret-store'
 import type { DaemonModeSession } from './session'
 import type { ClientSettingsStore } from './settings'
+import type { InstallProgressRelay } from './mcp/install-progress'
 
 /**
  * What every daemon-mode handler gets. Handlers hold no state of their own:
@@ -21,12 +23,16 @@ export interface DaemonModeContext {
   bridge: EventBridge
   clientSettings: ClientSettingsStore
   approvals: ApprovalsUi
+  /** Install progress pushes the client stream cannot deliver (W3-C, mcp/install-progress.ts). */
+  installs: InstallProgressRelay
   /** The client once connected and the session started; rejects when there is no daemon. */
   ready(): Promise<DaemonClient>
   /** The running agent at `filePath` (GET /files/agent), or null. */
   runningAgentAt(filePath: string): Promise<string | null>
   /** A raw (non-JSON) request to the daemon: the token is added for its origin only. */
   raw(path: string, query?: Record<string, string | number | undefined>): Promise<Response>
+  /** The owner-phrase entry Studio and the daemon share in the OS keychain (§5.4), or null when no keychain is usable. */
+  sharedMnemonic(): SharedMnemonicStore | null
   /** Records a recent file (menu Open Recent + OS list), in the client settings. */
   recordRecentFile(filePath: string): void
   hooks: { showMainWindow?: () => Electron.BrowserWindow | null; openFile?: (filePath: string) => void }

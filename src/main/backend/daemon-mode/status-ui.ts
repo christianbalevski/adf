@@ -183,6 +183,11 @@ export class ConnectionStatusUi {
     }
   }
 
+  /** A daemon notice (client stream `daemon_orphan_hold`), as a native notification. */
+  notice(body: string): void {
+    this.notify('ADF Studio', body)
+  }
+
   private notify(title: string, body: string): void {
     try {
       if (!Notification.isSupported()) return

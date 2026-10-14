@@ -183,6 +183,11 @@ describe('stripForRenderer', () => {
     expect(JSON.stringify(stripped).length).toBeLessThan(300)
   })
 
+  it('keeps the size of a result that arrived stripped (daemon mode, D5.1)', () => {
+    const event = { type: 'tool_call_result', payload: { filePath: AGENT_1, name: 'fs_read', id: 't1', result: { isError: false }, resultSize: 64_000 }, timestamp: 1 } as never
+    expect(stripForRenderer(event).payload).toEqual({ filePath: AGENT_1, name: 'fs_read', id: 't1', result: { isError: false }, resultSize: 64_000 })
+  })
+
   it('leaves other event types untouched', () => {
     const event = toolStart(AGENT_1, 'fs_read')
     expect(stripForRenderer(event)).toBe(event)

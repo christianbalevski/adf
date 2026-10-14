@@ -218,7 +218,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
       }
       const status = statuses.find((s) => s.id === agent.agentId)!
       // The renderer lists it from this answer: later stops reach it as background events.
-      ;(agent as { shownInBackground: boolean }).shownInBackground = true
+      ctx.bridge.markListedInBackground(agent.agentId)
       agents.push({
         filePath: agent.filePath,
         handle: status.handle || agent.handle || basename(agent.filePath, '.adf'),

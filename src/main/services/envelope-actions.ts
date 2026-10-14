@@ -155,6 +155,62 @@ export function unlockWithSharePassword(workspace: AdfWorkspace, password: unkno
   }
 }
 
+export interface LegacyConvertOptions {
+  svc: Pick<OwnerIdentityService, 'getOwnerDid' | 'getEnvelopeRecipients' | 'ensureWorkspaceIdentity'>
+  /** The whole-file password was removed: forget the derived key everywhere it is held. */
+  onPasswordRemoved: () => void
+  /** Where the two non-fatal failures are logged (default console). */
+  log?: Pick<Console, 'warn'>
+  /** Log prefix (default the IPC channel's). */
+  label?: string
+}
+
+/**
+ * Whole-file passwords are deprecated: right after a successful unlock,
+ * convert the user's OWN files — strip the whole-file password, mint keys +
+ * envelopes, then carry the SAME password forward as a credentials-envelope
+ * password slot (multi-route: opens silently via owner/runtime keys, and the
+ * password keeps working as a share password). Foreign files are left
+ * exactly as-is — the claim flow owns their conversion. Without envelope
+ * recipients, skip silently: never strip protection without re-protecting.
+ *
+ * Returns true when the password was removed (converted). Shared by
+ * Studio's IDENTITY_PASSWORD_UNLOCK and the daemon's unlock route.
+ */
+export function convertOwnLegacyPassword(workspace: AdfWorkspace, derivedKey: Buffer, password: string, opts: LegacyConvertOptions): boolean {
+  const log = opts.log ?? console
+  const label = opts.label ?? '[IDENTITY_PASSWORD_UNLOCK]'
+  let converted = false
+  try {
+    const svc = opts.svc
+    const fileOwnerDid = workspace.getMeta('adf_owner_did')
+    const isMine = fileOwnerDid
+      ? fileOwnerDid === svc.getOwnerDid()
+      : !readAdfAttestations(workspace).some((a) => a.role === 'owner')
+    if (isMine && svc.getEnvelopeRecipients()) {
+      workspace.removePassword(derivedKey)
+      opts.onPasswordRemoved()
+      converted = true
+      // Now unblocked (no longer password-protected): envelopes + keys +
+      // sealing. A failure here leaves a plain file that the FILE_OPEN
+      // lazy migration retries on next open.
+      try {
+        svc.ensureWorkspaceIdentity(workspace)
+        if (workspace.getEnvelopeState('credentials') === 'unlocked') {
+          // Same replace pattern as the share-password set flow.
+          workspace.removeEnvelopePasswordSlots('credentials')
+          workspace.addEnvelopePasswordSlot('credentials', password)
+        }
+      } catch (err) {
+        log.warn(`${label} Post-convert provisioning failed:`, err)
+      }
+    }
+  } catch (err) {
+    log.warn(`${label} Auto-convert check failed:`, err)
+  }
+  return converted
+}
+
 export interface ClaimOptions {
   /** The file's derived key when it is password-protected and unlocked; else null. */
   derivedKey: Buffer | null

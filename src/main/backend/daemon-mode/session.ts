@@ -1,5 +1,5 @@
 import { resolve } from 'node:path'
-import type { ClientSession } from './client-stream'
+import type { ClientSession, HeldDocument } from './client-stream'
 import { DaemonModeUnavailableError } from './errors'
 
 /**
@@ -30,6 +30,8 @@ export interface SessionFile {
   agentId: string | null
   /** The session holds the file as an open document (W2-B). */
   held: boolean
+  /** The daemon's open answer for a held file (W2-A: `running`, `needsPassword`, `readOnly`, `nameChangedFrom`). */
+  opened?: HeldDocument
 }
 
 type Log = Pick<Console, 'log' | 'warn'>
@@ -51,13 +53,35 @@ export class DaemonModeSession {
   private focus: string | null = null
   private readonly focusListeners = new Set<(agentId: string | null) => void>()
   private holdUnavailableLogged = false
+  /**
+   * FILE_OPEN, FILE_CLOSE, reattach and session end run one at a time, in
+   * call order: the last click wins, and a slow hold cannot finish after a
+   * later open and leave the session on the file the user left.
+   */
+  private ops: Promise<unknown> = Promise.resolve()
+  /** Focus PUTs go out one at a time, each with the focus current when it is sent. */
+  private focusSends: Promise<void> = Promise.resolve()
+  /** The focus the daemon has (as far as this session knows); undefined: unknown (new session). */
+  private sentFocus: string | null | undefined = undefined
 
-  constructor(private client: ClientSession | null, private readonly log: Log = console) {}
+  constructor(
+    private client: ClientSession | null,
+    private readonly log: Log = console,
+    /** A problem the user must see (a re-hold that failed after a reconnect): a notice. */
+    private readonly onProblem: (text: string) => void = () => {},
+  ) {}
 
   /** The client session, once connected (the stream starts after the connector). */
   attach(client: ClientSession): void {
     this.client = client
+    this.sentFocus = undefined
     void this.pushFocus()
+  }
+
+  private serial<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.ops.then(op, op)
+    this.ops = run.catch(() => {})
+    return run
   }
 
   get filePath(): string | null {
@@ -91,16 +115,25 @@ export class DaemonModeSession {
   /**
    * Make `filePath` the current file. The previous file's document is
    * released unless it is kept for its derived key. The new file is held as
-   * an open document; until W2-B that refuses, and `resolveRunning` supplies
-   * the id of an agent already running at that path.
+   * an open document of this client session (W2-A/W2-B): that resolves its
+   * agent id whether it runs or not. A session that cannot hold documents
+   * (tests' fakes) falls back to `resolveRunning`, the id of an agent already
+   * running at that path. Resolves once the daemon has the new focus, so
+   * frames after it carry the file's full payloads.
    */
-  async openFile(filePath: string, resolveRunning: (filePath: string) => Promise<string | null>): Promise<SessionFile> {
+  openFile(filePath: string, resolveRunning: (filePath: string) => Promise<string | null>): Promise<SessionFile> {
+    return this.serial(() => this.openFileNow(filePath, resolveRunning))
+  }
+
+  private async openFileNow(filePath: string, resolveRunning: (filePath: string) => Promise<string | null>): Promise<SessionFile> {
     await this.leaveCurrent()
     let agentId: string | null = null
     let held = false
+    let opened: HeldDocument | undefined
     try {
       if (!this.client) throw new Error('no client session')
-      agentId = (await this.client.holdDocument(filePath)).agentId
+      opened = await this.client.holdDocument(filePath)
+      agentId = opened.agentId
       held = true
     } catch (err) {
       if (!(err instanceof DaemonModeUnavailableError)) throw err
@@ -110,16 +143,18 @@ export class DaemonModeSession {
       }
       agentId = await resolveRunning(filePath)
     }
-    this.file = { filePath, agentId, held }
-    this.setFocus(agentId)
+    this.file = { filePath, agentId, held, ...(opened ? { opened } : {}) }
+    await this.setFocus(agentId)
     return this.file
   }
 
   /** FILE_CLOSE. */
-  async closeFile(): Promise<void> {
-    await this.leaveCurrent()
-    this.file = null
-    this.setFocus(null)
+  closeFile(): Promise<void> {
+    return this.serial(async () => {
+      await this.leaveCurrent()
+      this.file = null
+      await this.setFocus(null)
+    })
   }
 
   /** The current file's agent became known (a start loaded it) or went away (null). */
@@ -127,7 +162,7 @@ export class DaemonModeSession {
     if (!this.file || !samePath(this.file.filePath, filePath)) return
     if (this.file.agentId === agentId) return
     this.file = { ...this.file, agentId }
-    this.setFocus(agentId)
+    void this.setFocus(agentId)
   }
 
   /** A file moved on disk (FILE_RENAMED). */
@@ -157,42 +192,72 @@ export class DaemonModeSession {
   /**
    * The client stream reconnected (ClientStreamListener.onReattached): the
    * daemon may have expired the session or restarted, so the focus is sent
-   * again and every document this session holds is held again. A document
-   * whose hold now refuses is left as it is (logged).
+   * again and every document this session holds is held again.
+   *
+   * - The open file's re-hold fails: the file stays the current one, but
+   *   the daemon has nothing for it (reads say "open it again"), and the
+   *   user is told (onProblem).
+   * - It answers `needsPassword` (a restarted daemon lost the derived key):
+   *   the key is forgotten, as embedded drops a stale key, and the user is
+   *   told to open the file again to enter its password.
+   * - A file kept only for its key: forgotten and released when it is
+   *   locked again; a failed re-hold drops it (logged).
    */
-  async reattach(): Promise<void> {
+  reattach(): Promise<void> {
+    return this.serial(() => this.reattachNow())
+  }
+
+  private async reattachNow(): Promise<void> {
     const client = this.client
     if (!client) return
-    if (this.file?.held) {
+    this.sentFocus = undefined
+    const current = this.file
+    if (current?.held) {
+      const name = current.filePath
       try {
-        const { agentId } = await client.holdDocument(this.file.filePath)
-        if (agentId !== this.file.agentId) {
-          this.file = { ...this.file, agentId }
-          this.setFocus(agentId)
+        const opened = await client.holdDocument(current.filePath)
+        this.file = { ...current, agentId: opened.agentId, opened }
+        if (opened.needsPassword) {
+          this.forgetUnlocked(current.filePath)
+          this.onProblem(`${name} is locked again after the ADF daemon restarted. Open it again to enter its password.`)
         }
+        await this.setFocus(opened.agentId)
       } catch (err) {
-        this.log.warn(`[Backend] Could not hold ${this.file.filePath} again after the reconnect: ${err instanceof Error ? err.message : String(err)}`)
+        const message = err instanceof Error ? err.message : String(err)
+        this.log.warn(`[Backend] Could not hold ${name} again after the reconnect: ${message}`)
+        this.file = { ...current, agentId: null, held: false }
+        this.forgetUnlocked(current.filePath)
+        await this.setFocus(null)
+        this.onProblem(`Studio could not reopen ${name} on the ADF daemon after reconnecting (${message}). Open it again.`)
       }
     }
     for (const [key, id] of [...this.unlocked]) {
       if (this.file?.held && pathKey(this.file.filePath) === key) continue
       try {
-        await client.holdDocument(key)
+        const opened = await client.holdDocument(key)
+        if (opened.needsPassword) {
+          this.unlocked.delete(key)
+          await this.release(opened.agentId)
+          this.log.log(`[Backend] ${key} is locked again after the reconnect; its key is forgotten`)
+        }
       } catch (err) {
-        this.log.warn(`[Backend] Could not hold the unlocked document ${id} again after the reconnect: ${err instanceof Error ? err.message : String(err)}`)
+        this.unlocked.delete(key)
+        this.log.warn(`[Backend] Could not hold the unlocked document ${id} again after the reconnect; it is no longer kept: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
     await this.pushFocus()
   }
 
   /** Session end: release every document still held, kept ones included. */
-  async releaseAll(): Promise<void> {
-    const ids = new Set<string>(this.unlocked.values())
-    if (this.file?.held && this.file.agentId) ids.add(this.file.agentId)
-    this.unlocked.clear()
-    this.file = null
-    this.setFocus(null)
-    for (const id of ids) await this.release(id)
+  releaseAll(): Promise<void> {
+    return this.serial(async () => {
+      const ids = new Set<string>(this.unlocked.values())
+      if (this.file?.held && this.file.agentId) ids.add(this.file.agentId)
+      this.unlocked.clear()
+      this.file = null
+      void this.setFocus(null)
+      for (const id of ids) await this.release(id)
+    })
   }
 
   private async leaveCurrent(): Promise<void> {
@@ -211,20 +276,33 @@ export class DaemonModeSession {
     }
   }
 
-  private setFocus(agentId: string | null): void {
-    if (this.focus === agentId) return
+  private setFocus(agentId: string | null): Promise<void> {
+    if (this.focus === agentId) return Promise.resolve()
     this.focus = agentId
     for (const listener of this.focusListeners) {
       try { listener(agentId) } catch (err) { this.log.warn('[Backend] Focus listener failed:', err) }
     }
-    void this.pushFocus()
+    return this.pushFocus()
   }
 
-  private async pushFocus(): Promise<void> {
-    try {
-      await this.client?.setFocus(this.focus)
-    } catch (err) {
-      this.log.warn(`[Backend] Could not set the session focus: ${err instanceof Error ? err.message : String(err)}`)
-    }
+  /**
+   * Send the focus. Sends are chained, and each sends the focus current when
+   * it runs, so the daemon always ends on the latest focus whatever order
+   * the calls came in; a send of what the daemon already has is skipped.
+   */
+  private pushFocus(): Promise<void> {
+    this.focusSends = this.focusSends.then(async () => {
+      const client = this.client
+      const focus = this.focus
+      if (!client || focus === this.sentFocus) return
+      try {
+        await client.setFocus(focus)
+        this.sentFocus = focus
+      } catch (err) {
+        this.sentFocus = undefined
+        this.log.warn(`[Backend] Could not set the session focus: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    })
+    return this.focusSends
   }
 }

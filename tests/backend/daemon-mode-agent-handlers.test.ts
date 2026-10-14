@@ -29,6 +29,7 @@ const daemon = createFakeDaemon(BASE)
 const quiet = { log: () => {}, warn: () => {}, error: () => {} }
 const client = createStudioDaemonClient({ baseUrl: BASE, source: { token: () => 'tok' }, fetch: daemon.fetch })
 let fake: FakeClientSession
+let holdLocked = false
 let session: DaemonModeSession
 let bridgeAgents: Array<{ agentId: string; filePath: string; handle?: string; mapping: { state: string; activeLoops: number }; shownInBackground: boolean }>
 let ctx: DaemonModeContext
@@ -53,6 +54,10 @@ beforeEach(() => {
   daemon.routes.clear()
   fake = createFakeClientSession((p) => (p === file1 ? AGENT : OTHER))
   fake.holdsAvailable = true
+  // The hold answers the open-document info (W2-A): needsPassword as the daemon reports it.
+  const hold = fake.holdDocument.bind(fake)
+  fake.holdDocument = async (filePath: string) => ({ ...(await hold(filePath)), running: false, needsPassword: holdLocked })
+  holdLocked = false
   session = new DaemonModeSession(fake, quiet)
   bridgeAgents = []
   ctx = {
@@ -67,6 +72,7 @@ beforeEach(() => {
         for (const s of statuses) if (!bridgeAgents.some((a) => a.agentId === s.id)) bridgeAgents.push({ agentId: s.id, filePath: s.filePath, handle: s.handle, mapping: { state: s.runtimeState, activeLoops: 0 }, shownInBackground: false })
       },
       runningAgents: () => bridgeAgents,
+      markListedInBackground: (id: string) => { const a = bridgeAgents.find((b) => b.agentId === id); if (a) a.shownInBackground = true },
     },
     log: quiet,
   } as unknown as DaemonModeContext
@@ -80,7 +86,7 @@ beforeEach(() => {
 
 describe('open file: prompt before start (design §6.1 row 27)', () => {
   it('FILE_OPEN of a held document whose key the daemon lacks answers needsPassword', async () => {
-    daemon.routes.set(`GET /agents/${AGENT}/identity/password`, () => ({ agentId: AGENT, needsPassword: true, unlocked: false }))
+    holdLocked = true
     expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toEqual({ success: true, filePath: file1, needsPassword: true })
   })
 

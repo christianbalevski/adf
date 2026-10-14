@@ -30,7 +30,7 @@
 // servers' own stdout/stderr lines.
 
 import { randomUUID } from 'crypto'
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply } from 'fastify'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../../services/mcp-auth-preflight'
 import {
   appendMcpLog,
@@ -43,7 +43,7 @@ import {
 } from '../../services/mcp-connect-tests'
 import type { ComputeSettings } from '../../services/container-routing'
 import type { McpServerLogEntry } from '../../../shared/types/adf-v02.types'
-import { jobsFor } from '../jobs'
+import { JobLimitError, jobsFor, type JobContext, type JobView } from '../jobs'
 import { gapDeps, uvManagerOf } from './gap-deps'
 import type { DaemonRouteContext } from './index'
 import { loadedAgentIndex } from './loaded-agents'
@@ -170,7 +170,7 @@ export function registerMcpAdminRoutes(server: FastifyInstance, ctx: DaemonRoute
   server.post<{ Body: unknown }>('/admin/mcp/registration-test', async (request, reply) => {
     const body = request.body
     const serverName = stringParam((body as { registration?: { name?: unknown } } | null)?.registration?.name)
-    const job = jobs.start('mcp.registration-test', async ({ signal, id }) => {
+    const run = async ({ signal, id }: JobContext) => {
       try {
         const result = await runMcpRegistrationTest(body, {
           computeSettings: () => (options.settingsStore?.get('compute') ?? { hostAccessEnabled: false, hostApproved: [] }) as ComputeSettings,
@@ -189,7 +189,14 @@ export function registerMcpAdminRoutes(server: FastifyInstance, ctx: DaemonRoute
       } finally {
         closeInteractions(id)
       }
-    })
+    }
+    let job: JobView
+    try {
+      job = jobs.start('mcp.registration-test', run)
+    } catch (err) {
+      if (err instanceof JobLimitError) return tooManyJobs(reply, err)
+      throw err
+    }
     return reply.code(202).send({ jobId: job.id, job })
   })
 
@@ -237,9 +244,21 @@ export function registerMcpAdminRoutes(server: FastifyInstance, ctx: DaemonRoute
   })
 
   // Downloads uv and Python when missing: a job (202 { jobId, job }). A
-  // cancelled job stops waiting; a download already running finishes.
+  // cancelled job stops waiting; a download already running finishes. While
+  // one runs, another request joins it (`job.joined`) instead of starting a
+  // second download into the same directory.
   server.post('/admin/mcp/python-runtime', async (_request, reply) => {
-    const job = jobs.start('mcp.python-runtime', () => ensurePythonRuntime(uvManagerOf(ctx)))
-    return reply.code(202).send({ jobId: job.id, job })
+    try {
+      const job = jobs.start('mcp.python-runtime', () => ensurePythonRuntime(uvManagerOf(ctx)), { key: 'uv' })
+      return reply.code(202).send({ jobId: job.id, job })
+    } catch (err) {
+      if (err instanceof JobLimitError) return tooManyJobs(reply, err)
+      throw err
+    }
   })
+}
+
+/** 429: the job registry is full (jobs.ts MAX_RUNNING). */
+export function tooManyJobs(reply: FastifyReply, err: JobLimitError): FastifyReply {
+  return reply.code(429).send({ error: err.message, code: err.code })
 }

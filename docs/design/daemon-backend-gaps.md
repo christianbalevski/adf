@@ -38,14 +38,9 @@ All W1-A gaps are closed.
 | umbilical taps on, or a written reason | `AGENT_START`, `BACKGROUND_AGENT_START` |
 | shared ensureCoreToolDeclarations (delete the private copy, agent-runtime-builder.ts:350) | `AGENT_START`, `BACKGROUND_AGENT_START` |
 | interactive MCP OAuth as a HIL request carrying the authorize URL; keep the MCP manager on setup failure | `AGENT_START`, `BACKGROUND_AGENT_START` |
-| the derived key reaches provider, MCP, adapters and AdfCallHandler; restart after unlock | `IDENTITY_PASSWORD_UNLOCK` |
 | mDNS and tailnet discovery in the daemon (the route returns [], daemon/index.ts:343), with directory cards, /ping meta and trust decoration | `MESH_DISCOVERED_RUNTIMES` |
 ## W1-C
-| Need | Channels |
-|---|---|
-| DaemonAppOAuthStore | `MCP_OAUTH_SIGNOUT`, `MCP_OAUTH_STATUS` |
-| unlock converts the owner's own legacy whole-file password to envelopes, keeps the password as a share slot, and returns converted | `IDENTITY_PASSWORD_UNLOCK` |
-| POST /identity/import (local-only): importMnemonic, restamp, reload loaded agents | `IDENTITY_OWNER_IMPORT` |
+All W1-C gaps are closed.
 ## W1-D
 All W1-D gaps are closed. The routes are in the channel map; see "Route notes from W1-D" below.
 ## W1-E
@@ -53,34 +48,7 @@ All W1-E gaps are closed. The routes are in the channel map (`/files*`, `/files/
 ## W2-A
 All W2-A gaps are closed: every `/agents/:id/*` route reaches an open document (D4 as built), and the one-call reads, checkpoint, keyset chat paging, content blocks, create without load and the review parity are routes. Studio holds a document only through its client session (the W2-B hold gap below).
 ## W2-B
-| Need | Channels |
-|---|---|
-| hold the file as the session document (POST /client/sessions/:id/documents) | `FILE_OPEN`, `FILE_CREATE`, `FILE_CREATE_QUICK` |
-| self-heal on open: the hold relocates a reviewed file stranded in the daemon host's OS temp dir into the agents folder (POST /files/relocate exists; nothing reports the temp location) | `FILE_OPEN` |
-| release the session document (DELETE /client/sessions/:id/documents/:agentId) | `FILE_CLOSE` |
-| client-stream push topic `file_renamed` | `FILE_RENAMED` |
-| client-stream push topic `config_changed` | `DOC_AGENT_CONFIG_CHANGED` |
-| origin dedup: a config write made by a session is not echoed to that session | `DOC_AGENT_CONFIG_CHANGED` |
-| clearing the inbox emits the inbox topic with an empty inbox | `DOC_CLEAR_INBOX` |
-| set the session focus to the started agent | `AGENT_START` |
-| executor frames, deltas for the focused agent only | `AGENT_EVENT` |
-| client-stream push topic `approvals` | `APPROVALS_CHANGED` |
-| client-stream push topic `templates` | `TEMPLATES_CHANGED` |
-| client-stream push topic `tracked_dirs` | `TRACKED_DIRS_CHANGED` |
-| client-stream push topic `mesh` | `MESH_EVENT` |
-| station:<adapter> message_routed events on adapter inbound (notifyStationInbound) | `MESH_EVENT` |
-| executor and host frames for every agent | `BACKGROUND_AGENT_EVENT_BATCH` |
-| in-flight starts (embedded `starting`): host frames agent_starting / agent_start_failed (GET /agents lists loaded agents only) | `BACKGROUND_AGENT_STATUS` |
-| client-stream push topic `inbox` | `INBOX_UPDATED` |
-| client-stream push topic `workspace_data` | `WORKSPACE_DATA_CHANGED` |
-| client-stream push topic `mcp_install`, fed by progress callbacks in the install routes | `MCP_INSTALL_PROGRESS` |
-| client-stream push topic `mcp_status` | `MCP_SERVER_STATUS_CHANGED` |
-| push adf_file_created for the brought-home file | `AGENT_REGISTRY_BRING_HOME` |
-| client-stream push topic `browser_session` | `COMPUTE_BROWSER_SESSION` |
-| client-stream push topic `compute_phase` | `COMPUTE_CONTAINER_PHASE` |
-| client-stream push topic `sandbox_install`, fed by progress callbacks in the install route | `SANDBOX_INSTALL_PROGRESS` |
-| client-stream push topic `adapter_install`, fed by progress callbacks in the install route | `ADAPTER_INSTALL_PROGRESS` |
-| client-stream push topic `adapter_status` | `ADAPTER_STATUS_CHANGED` |
+All W2-B gaps are closed: client sessions, focus, session documents, executor/host/push frames with origin dedup (D5.1). Studio main runs on them (W2-C2).
 ## W2-C
 All W2-C gaps are closed: Studio main runs the client-key migrations on `studio-client-settings.json`, and the `TOOLS_DESCRIPTIONS` handler folds in the open agent's own tools. See "Daemon-mode handlers after W2-C" below.
 
@@ -108,14 +76,12 @@ Implemented by W2-C (24): `FILE_OPEN`, `FILE_CLOSE`, `FILE_GET_CURRENT`, `DOC_GE
 
 They use the merged W1-A and W1-E routes: a fresh start is `POST /agents/:id/start?preflight=1` on the file (provider codes, startup turn); the path of a file maps to its running agent through `GET /files/agent`; `DOC_READ_INTERNAL_FILE` reads `/agents/:id/files/meta` and `/agents/:id/files/raw` (a binary it only flags is never downloaded; an inline one is capped by `maxBytes`); `adf-file://` streams `/agents/:id/files/raw`.
 
-Every other channel (218) is registered with a handler that throws `<CHANNEL> is not available in daemon mode yet: <workstream>` (`pending.ts`) and logs one warning per channel the first time it is called: W3-A 86 (files, documents, agent runtime, review, templates, tracked and bulk directories, identity drafts, the share drag), W3-B 44 (models, providers, subscription auth, identity), W3-C 40 (MCP, adapters, sandbox packages, skills, registries), W3-D 48 (mesh, fleet, dashboard, token usage, compute, firewall, vitals, emergency stop). Until W3-A, a call of `BACKGROUND_AGENT_STATUS` also announces the running agents as `agent_started` events, so a fresh sidebar is not empty. A W3 workstream adds its table to `handlers/index.ts`; the channel then leaves the pending list.
+Every other channel (218 after W2-C) is registered with a handler that throws `<CHANNEL> is not available in daemon mode yet: <workstream>` (`pending.ts`) and logs one warning per channel the first time it is called: W3-A 86 (files, documents, agent runtime, review, templates, tracked and bulk directories, identity drafts, the share drag). W3-C's 40 (MCP, adapters, sandbox packages, skills, registries), W3-B's 44 (models, providers, subscription auth, identity) and W3-D's 48 (mesh, fleet, dashboard, token usage, compute, firewall, vitals, emergency stop) are implemented: see "Daemon-mode handlers after W3-B", "… after W3-D" and "… after W3-C" below. Until W3-A, a call of `BACKGROUND_AGENT_STATUS` also announces the running agents as `agent_started` events, so a fresh sidebar is not empty. A W3 workstream adds its table to `handlers/index.ts`; the channel then leaves the pending list.
 
 Renderer call sites that swallow the rejection of a pending channel (`.catch(() => {})` or an empty handler), so only the main log's once-per-channel warning shows it:
 
 | Channel | Workstream | Call sites |
 |---|---|---|
-| `CHATGPT_AUTH_STATUS`, `GROK_AUTH_STATUS`, `CLAUDE_AUTH_STATUS` | W3-B | `providers/useProviderManager.ts:103`, `:104`, `:109`, `:210` |
-| `DASHBOARD_QUICK_STATS`, `DASHBOARD_PROVIDER_TESTS`, `DASHBOARD_AGENT_STATS` | W3-D | `home/useDashboardData.ts:40`, `:45`, `:50` |
 
 Paths are under `src/renderer/components/` (hooks under `src/renderer/`).
 
@@ -123,17 +89,21 @@ Inside the implemented handlers, a step whose daemon route has not landed throws
 
 | Step | Workstream |
 |---|---|
-| Hold a file as an open document and release it (FILE_OPEN, FILE_CLOSE); until then FILE_OPEN of a file that is not running succeeds without its contents, logged once | W2-B |
-| DOC_GET_BATCH, DOC_GET_HEADER, DOC_GET_CHAT, DOC_READ_INTERNAL_FILE of a file that is not running in the daemon (the daemon serves open documents; Studio holds one only through its client session) | W2-B |
 | FILE_OPEN with the native dialog in remote mode | W4-B |
 
-The client stream is the interim `GET /events` adapter (`createEventsAdapterSession`). It forwards only the umbilical events with an exact executor counterpart (`agent.state.changed`, `turn.completed` with its `absorbed_turn_ids`, `agent.error`), `chat.discarded` (turn bookkeeping) and `agent.loaded` / `agent.unloaded`. Not delivered until W2-B: text and thinking deltas, tool call start and result, `chat_updated`, `trigger_message`, `context_injected`, `response_metadata`, `loop_seq`, document and file updates, approvals, asks, suspend, every push topic, and the host lifecycle events other than load and unload (W1-A emits them in the daemon; they need the client stream).
+Client sessions (W2-C2, `client-stream.ts` `createDaemonClientSession`). Studio opens one session per daemon connection after `GET /version` reports `clientApiVersion` equal to `SUPPORTED_CLIENT_API_VERSION`; another version fails the connection with an "update the daemon" message (no `GET /events` fallback; §8.2's dialog owns version skew). The session is opened with `exitDaemonWhenClosed` in local mode unless `keepDaemonRunning` is set; quitting ends it (`DELETE /client/sessions/:id`) and leaves the daemon running (the R4 stop is W4-A's). Every request carries `X-ADF-Client-Session`, so this window's own config and document writes are not echoed back.
+
+- FILE_OPEN holds the file as a session document (W2-A open documents), so a file that is not running opens with its contents; the focus is the document's id and FILE_OPEN answers once the daemon applied it. Switching files releases the previous document (one kept for its derived key stays held); FILE_CLOSE and quitting release.
+- Frames: the focused agent's `executor` frames go to AGENT_EVENT; a frame the daemon reduced (sent before it applied the focus) is never shown there. Other agents' frames (the background whitelist, a truncated `tool_call_start`, a `tool_call_result` with `resultSize`, stubs) feed the background mapping and batcher, which need nothing more. `inter_agent_message` becomes an AGENT_EVENT for the focused agent only, as embedded's `foreground_incoming`. `adf_file_created` (executor event or push) runs embedded's notifyAdfFileCreated against the daemon's tracked folders. `daemon_orphan_hold` is a native notification. `trigger_error` and `startup_failed` add nothing (W1-A emitted the `error`).
+- Turn bookkeeping: executor frames carry no turn ids, so the session is opened with `umbilical: true` and Studio reads only `turn.completed`, `agent.error` (with `turn_id`, `absorbed_turn_ids`) and `chat.discarded` from the umbilical frames. Stamping executor frames (D5) would let Studio drop `umbilical: true`.
+- Gaps: every `stream.gap` (evicted, oversized, new epoch) resyncs (D6). A loop still mid-turn at the resync gets its `chat_updated` when its turn settles; an AGENT_INVOKE wait whose end may have been lost settles when its loop is not busy. A 404 on reconnect (the session expired, or the daemon restarted) opens a new session, re-holds the documents and the focus before its frames, then resyncs.
 
 Interim behaviour W4-A replaces: on the first daemon-mode boot with no `studio-client-settings.json`, Studio copies the client keys of `adf-settings.json` into it (logged; `ClientSettingsStore.seedOnce`). Without it a switch through `ADF_STUDIO_BACKEND` or `studio-backend.json` would reset theme, recent files and the other client keys to their defaults. The mode switch moves them instead (§4.3).
 
 Follow-ups for other workstreams:
 
-- W2-B: implement `ClientSession` (`client-stream.ts`) over `/client/sessions` and pass it as `createSession`. Push frame payloads are the payloads of their IPC channels (`PUSH_TOPICS`); `host` frames carry `state` and `handle` for `agent_started`; executor frames carry the chat `turnId` and, on a turn's end, `absorbedTurnIds`; a stop's dropped chats arrive as a `turn` frame; after a reconnect the session calls `onReattached` before the first frame (design D5).
+- W2-B follow-up: executor frames do not carry the chat `turnId` / `absorbedTurnIds` and no `turn` frame reports discarded chats (D5 "Turn bookkeeping"); Studio reads them from `umbilical: true` frames meanwhile.
+- W3-A: `POST /agents/:id/chat` takes no `echoed`, so the daemon announces Studio's own chat as a `trigger_message` and the renderer shows a second user bubble (allowlist `w3a:chat-echo`). Embedded dispatches the window's chat with `echoed: true`. AGENT_INVOKE should send it.
 - W0-C, W0-D, W4-A: the bugs the allowlist below names (client record `controlUrl`, the daemon's lazy host record, the agent lease's `agentId`, `version: null`, client-key defaults written by the daemon).
 - W4-A: the quit path ends the client session and leaves the daemon running; the R4 behaviour (stop a Studio-started daemon unless `keepDaemonRunning`) and the version-mismatch choice of §8.2 (shown today as the connection-failure dialog) are W4-A's.
 - W5-B: the CI job that runs `tests/parity` with the daemon bundle built and `PARITY_REQUIRE_DAEMON=1`.
@@ -158,6 +128,66 @@ Remaining differences, each visible:
 | An agent in `error` or `stopped` state is restarted (stop, then start) where embedded rebuilds it in place and logs `executor_rebuilt`. | `AGENT_START` |
 | A stale approval, ask or suspend answer is a logged success, as embedded's executor ignores it. | `AGENT_*_RESPOND` |
 
+## Daemon-mode handlers after W3-B
+
+W3-B implemented its 44 channels (`handlers/providers.ts`, `handlers/identity.ts`): `MODELS_LIST`, `PROVIDER_*`, `CHATGPT_*`, `GROK_*`, `CLAUDE_*` and `IDENTITY_*` except the drafts. `SETTINGS_GET` and `SETTINGS_SET` are W2-C's.
+
+- Secrets. App provider keys reach Studio as `__redacted__` only. "Copy app key" (`PROVIDER_CREDENTIAL_SET` with that value) never writes the placeholder: the daemon copies the key it holds (`POST /files/agent/providers/:providerId/credential/copy-app-key`). Stored values the renderer shows come from the reveal routes, which need the local proof in every mode (design §5.4.1); key material (`crypto:*`) is refused in both modes. In remote mode `IDENTITY_GET`, `IDENTITY_REVEAL` and `PROVIDER_CREDENTIAL_GET` say that a remote daemon never sends values. The owner phrase is read from the shared keychain entry in Studio main (§5.4); with the daemon's passphrase file there is none, and "Back up seed phrase" is disabled (`hasMnemonic` false).
+- Locked credentials. A save to a locked credentials envelope asks Replace or Cancel in both modes (`services/locked-credential.ts`, design §3.2); the daemon's 409 `credentials_locked` carries `purpose`, `sealed`, `envelopeState`.
+- Sign-in. ChatGPT runs the relay flow in both modes (callback server in Studio main, code exchanged and tokens kept by the daemon). Grok's approval page and ChatGPT's sign-in page open in this machine's browser, only as https pages of the providers' sign-in hosts; Claude Code opens its own on the daemon host.
+- Owner import sends the local proof; it refuses a switch while the previous owner's phrase is not backed up (the daemon's rule; embedded Studio switches and loses the old phrase). A restore of the same owner keeps the runtime delegation the daemon adopted from Studio.
+- Unlock converts the owner's own legacy whole-file-password file as embedded does (`envelope-actions.ts` `convertOwnLegacyPassword`). A claim that removes the file password drops the file key.
+- The per-agent identity channels need the open file's agent in the daemon (W2-B hold, wired in Studio by W2-C2), as the core reads do. Parity scenarios that need it run against embedded only until then (`legacy-password-unlock`).
+
+## Daemon-mode handlers after W3-D
+
+Every channel `pendingWorkstream()` gave W3-D has a handler (`handlers/mesh.ts`, `usage.ts`, `compute.ts`, one spread line `FLEET_HANDLERS` in `handlers/index.ts`) with the embedded result shapes, error answers included. Tests: `tests/backend/daemon-mode-fleet.test.ts`; parity scenarios `fleet-map` and `emergency-stop` (`tests/parity/mesh/`).
+
+Routes added (`src/main/daemon/routes/fleet-client-routes.ts`, `tests/daemon-fleet-client-routes.test.ts`): `GET /fleet/vitals` and `GET /fleet/activity` (by file path: AGENT_VITALS reads any .adf, `/agents/:id/vitals` only loaded or tracked ones), `POST /fleet/state` (MESH_SET_AGENT_STATE's offline / stopped / invalid answers), `POST /fleet/found` (MESH_FOUND_AGENT: absolute folder inside a tracked one, folder created, slugged file with the typed name, no length limit, identity failure logged and the agent kept, new folder tracked through the watcher), `POST /compute/shared/stop` (COMPUTE_STOP stops the shared container only; `POST /compute/stop` stops every container the runtime started), `GET /compute/users` (W1-G `containerUsers()` per container). `POST /network/server/start|stop` take `persist=0`, which Studio sends (embedded does not write `meshServerEnabled`; the CLI keeps persisting). Mesh off closes the WebSocket connections (`daemon/mesh-controls.ts`, `tests/daemon-mesh-controls.test.ts`).
+
+What Studio main does itself:
+
+- **Polling.** The fleet map polls one batched route (`GET /fleet/map`). The polled reads (MESH_MAP_POLL, MESH_FLEET_STATUS, MESH_TOKEN_BURN, MESH_STATUS, MESH_GET_RECENT_TOOLS, DASHBOARD_CONTAINERS) share a read in flight (`handlers/poll.ts`); a settled answer is not reused, as embedded computes every read, so a poll right after a start or stop shows it. The burn totals (client key `fleetMapState.burnTotals`) are handed over before the first burn read of each daemon connection; a lost connection hands them over again (the daemon keeps the larger value).
+- **Foreground/background split (D3).** The daemon has no foreground. The fleet and mesh rows of the session's open, running agent keep the daemon's executor state; every other running agent gets the state and inner-loop count of the bridge's background mapping, as embedded reads them from the background manager. The mesh debug view lists the open agent under `foregroundAgents`.
+- **LAN firewall.** Checked and changed on the Studio host, with the port and LAN binding from `GET /network/server`. Remote mode answers `supported: false` with the reason in `detail` (check) and `success: false` with it in `error` (apply). The browser viewer (COMPUTE_BROWSER_INFO) answers no port in remote mode, with the reason as `detail`.
+- **Emergency stop.** The open agent is detached from the bridge first, as embedded detaches its foreground host. A stop that does not reach the daemon shows an error dialog ("agents may still be running"), keeps the open agent attached and rejects; the status bar resets its stores only after a stop that answered `success: true`. A partial stop (`success: false` with `skipped` / `failed`) is returned as is, logged and shown once; when the daemon names the open agent in `failed` or it still runs, it is attached again and its state sent; when it stopped, the window gets its `state_changed: stopped`.
+- **Settings → Compute (W1-G).** `leftRunning` from COMPUTE_STATUS is listed under the containers; a container row names the other runtimes that use it (`users`), and the rebuild/remove confirmation says the container is deleted anyway. Embedded rows carry no `users`.
+
+Known differences left:
+
+| Difference | Where |
+|---|---|
+| The daemon starts its mesh server 500 ms after the first agent registers; embedded starts it at boot. A MESH_SERVER_STATUS read right after the first start can say `running: false`. | `daemon/index.ts` ensureMeshServer |
+| MESH_MESSAGE_AGENTS to the open, not running agent: embedded repaints its loop panel (`chat_updated`); daemon mode has no such push while Studio reads the interim adapter. | W2-C2 |
+| TOKEN_COUNT defaults to the open agent's model only while it runs in the daemon (its config is read through the session's hold). | W2-C2 |
+| COMPUTE_CONTAINER_PHASE and the inter-agent message: the daemon publishes both topics (W2-B); Studio reads them once W2-C2 replaces the interim adapter. The bridge mapping of `compute_phase` is tested; the parity comparisons are `todo`s, and neither compute fake goes through a phase. | W2-C2 |
+| Embedded bug: during EMERGENCY_STOP the open agent's startup dispatch reports "Cannot dispatch startup while agent lifecycle is disposed" on AGENT_EVENT (allowlist `e3:emergency-stop-startup-dispatch-error`). | E3 candidate (tracker §6) |
+
+Request for W3-A (E1): MESH_FOUND_AGENT's checks and slug are a second copy in `fleet-client-routes.ts`; extract them from `ipc/index.ts` into a shared function both use.
+
+## Daemon-mode handlers after W3-C
+
+W3-C added the handlers of all 40 channels `pendingWorkstream()` assigned to it: `MCP_*` (20), `ADAPTER_*` (11), `SANDBOX_*` (3), `SKILLS_*` (2), `AGENT_REGISTRY_*` (3) and `AGENT_MODEL_SET_FOR_FILE` (`handlers/mcp.ts`, `handlers/adapters.ts`, `handlers/registries.ts`; helpers in `daemon-mode/mcp/`). Agent files are addressed by path through `/files/agent/*` (W1-E).
+
+Routes added: `POST /admin/mcp/packages/npm/jobs`, `/admin/mcp/packages/python/jobs`, `/admin/adapters/packages/jobs`, `/admin/sandbox/packages/jobs` (installs as jobs, the result is Studio's answer), `GET /files/agent/config` (a file's config by path; ADAPTER_ATTACH reads it first). Jobs (`daemon/jobs.ts`): a start with the key of a running job of the same kind joins it (`job.joined`; the Python runtime and each install are keyed), and the key stays taken until the work of a cancelled job has settled (a retry waits for it); at most 128 run at once (429 `too_many_jobs`); each job keeps its last 50 progress lines (`progressLog`).
+
+- **Long work.** Installs, the Python runtime and the connect test run as jobs. Studio polls `GET /jobs/:id` every 250-300 ms, so no request outlives the shared client's timeout or undici's 300 s header limit. A daemon unreachable for 60 s, or a job the daemon no longer knows (it restarted), ends the wait with a sentence as the install's or the test's error. Each waiter has its own 30-minute deadline: past it Studio stops waiting, and cancels only a job nobody else can share (the connect test). A refused start (429) answers as the install's or the test's error, never as a rejected invoke.
+- **Install progress.** The daemon publishes the install topics on the client stream (W2-B `withInstallProgress`); the event bridge sends them. `mcp/install-progress.ts` covers what the stream cannot deliver: with the interim GET /events adapter (no push topics) it sends each progress line from the job and each package's end from the job's result; with a client session it sends an end only when a `stream.gap` came during the install and the end push has not arrived 1.5 s after the job ended (logged).
+- **Credential values.** Local mode reads them as embedded shows them: MCP_CREDENTIAL_GET and ADAPTER_CREDENTIAL_GET use `POST /files/agent/identity/reveal` (W3-B; local callers with the local proof only) with the prefix `mcp:<namespace>:` or `adapter:<type>:`; `storedKeys` comes from the metadata route. A remote daemon never sends them: MCP_CREDENTIAL_GET answers `__redacted__` per readable value, and MCP_CREDENTIAL_SET keeps the stored value for the untouched placeholder of a stored key and refuses an edited placeholder or one under a key the file does not store, with a sentence; ADAPTER_CREDENTIAL_GET answers no values (the channel dialog shows "stored"). A refused write (409, envelope locked on this daemon) answers the daemon's sentence.
+- **Interactive OAuth.** The connect test's `open_url` steps open in the browser and its `confirm` steps show embedded's Continue dialog. For agents, `mcp/oauth-authorize.ts` opens each `mcp_oauth_authorize` page once, without a click, from the approvals snapshots (the URL from `GET /approvals/input`); requests already pending when Studio connects are logged, not opened. It fires for a request raised while Studio is connected only once approvals snapshots arrive on the client stream (W2-B; the interim adapter delivers none).
+- **Remote mode** (W4-B): MCP_REGISTRATION_TEST of an OAuth remote and MCP_PICK_ADF_FILE refuse with DaemonModeUnavailableError; the `mcp_oauth_authorize` opener opens nothing and logs why.
+
+Left for other workstreams:
+
+| Item | Workstream |
+|---|---|
+| The argument schemas of the MCP and adapter handlers are copies (`daemon-mode/mcp/schemas.ts`) of the ones inside `registerAllIpcHandlers` (`tests/backend/daemon-mode-mcp-schemas.test.ts` holds them equal); an E1 extraction removes the copy | W3-A |
+| MCP_ATTACH_SERVER drops the registration's `oauth`, `oauthClientId` and `oauthScopes` when it builds the server entry (embedded behaviour, mirrored): an OAuth server attached from the credential panel is attached without OAuth. E3 candidate | Lead |
+| The credential file lists (`/credentials/*/files`) scan the daemon's loaded agents and tracked folders; Studio's open file that is not running is not among them until documents are held | W2-B |
+| AGENT_REGISTRY_BRING_HOME: the `adf_file_created` push of the brought-home file (the daemon publishes the topic; the bridge has no mapping yet) | W2-B |
+
+Parity: `tests/parity/mcp` runs five scenarios through `parityCases('mcp', …)` (backends wrapped for the loopback MCP and OAuth server): the full recording against embedded and against the committed `recordings/w3c-*.embedded.txt`, with the shared allowlist (`harness/gaps.ts`, the `W3C` scenario list). No entry is W3-C's own. The OAuth page's per-flow values are normalizer rule R15.
+
 ## Parity diffs after W2-C
 
 `tests/parity/daemon.test.ts` compares each core scenario's daemon-mode run with the embedded run. Every remaining difference is a named transform in `tests/parity/harness/gaps.ts`, scoped to one place, tagged with the workstream that removes it (or "by design" for a documented per-mode expectation), and applied to the daemon side only. Each entry must match in every scenario it lists, so a fixed gap fails the test until its entry is removed; nothing may be left after them. No normalizer rule hides a difference. The table is generated from the list (`renderGapTable`; `tests/parity/gaps-doc.test.ts` keeps it in step, `PARITY_WRITE_GAPS_DOC=1` rewrites it).
@@ -165,22 +195,22 @@ Remaining differences, each visible:
 <!-- gap-allowlist:start -->
 | Entry | Workstream | Scenarios | Where | Difference |
 |---|---|---|---|---|
-| `w4a:local-mode-switch` | W4-A | open-agent, start-agent, chat-tool-call | harness: emulateLocalModeSwitch() (daemon-backend.ts) | The harness does what the switch to local mode will do: client keys moved to studio-client-settings.json, owner phrase and studio-runtime entry in the (test) keychain. |
-| `w2b:open-document-reads` | W2-B | open-agent, start-agent, chat-tool-call | steps: every DOC_GET_BATCH and DOC_READ_INTERNAL_FILE before the first AGENT_START (and their `(threw)` timeline markers), no other step | Reading a file that is not running throws "not available in daemon mode yet: W2-B": the daemon serves open documents (W2-A), but Studio holds one only through its client session. |
-| `w2b:agent-event-stream` | W2-B | start-agent, chat-tool-call | AGENT_EVENT: the pushes, their timeline lines and the step push watermarks they shift | The interim GET /events adapter carries only state_changed, turn_complete and error; deltas, tool calls, context, metadata, file updates and loop_seq come with the client stream. |
-| `w2b:streaming-check` | W2-B | start-agent, chat-tool-call | problems: the streaming check | No text_delta_batch reaches the window (same cause as w2b:agent-event-stream). |
-| `w2b:identity-on-open` | W2-B | open-agent, start-agent, chat-tool-call | state: adf_identity and adf_attestations rows | The daemon runs its open steps (ensureWorkspaceIdentity on open, W2-A) only for a document a client session holds: no keys, no owner and operator attestations. |
-| `w2b:identity-meta` | W2-B | open-agent, start-agent, chat-tool-call | state: adf_meta rows adf_did, adf_owner_did, adf_runtime_did | Same cause as w2b:identity-on-open: the identity stamps are written on open. |
-| `w2b:open-document-handle` | W2-B | open-agent, start-agent | state: adf_meta row adf_clean_close | Nothing holds the file open (no client session to hold it), so the fixture's clean-close marker stays set. |
-| `w2b:open-document-wal` | W2-B | open-agent, start-agent | state.tree: the -wal and -shm files of an open agent file | Same cause as w2b:open-document-handle: the file is not held open, so no -wal/-shm beside it. |
-| `mode:help-menu` | by design | open-agent, start-agent, chat-tool-call | local calls: Menu.setApplicationMenu (Help: the separator, "Open Daemon Log", the status line, "Reconnect to the ADF Daemon") | Daemon mode adds a separator, "Open Daemon Log" and, while not connected, the status line (and "Reconnect to the ADF Daemon") to Help (§8.1). A menu built while not connected (at boot: connecting) is rebuilt on connect; those calls carry the status line and are the daemon mode's own. |
-| `w4a:daemon-writes-client-defaults` | W4-A | open-agent, start-agent, chat-tool-call | state: client keys at their shipped default in the daemon's adf-settings.json | The daemon's settings store writes the defaults of Studio client keys (menuBarEnabled, updateChecksEnabled, …) into adf-settings.json after the switch moved them out. |
-| `mode:client-settings-file` | by design | open-agent, start-agent, chat-tool-call | state: user-data/studio-client-settings.json, compared as one merged view with adf-settings.json | Client keys live in studio-client-settings.json (§4.2); a key in both files MUST have one value. |
-| `w4a:client-record-control-url` | W4-A | open-agent, start-agent, chat-tool-call | state.leases: clients/<pid:this-process>.json controlUrl | Bug: Studio's client record names the default daemon port 7385 whatever port the daemon uses (registerClient takes no URL). |
-| `w0c:daemon-host-record-lazy` | W0-C | open-agent | state.leases: the daemon's hosts/<pid>.json while it holds no lease | Bug: the daemon writes its runtime host record only once it holds an agent lease; §10.3 has every runtime host register (embedded Studio does at boot). |
-| `w0c:daemon-lease-agent-id` | W0-C | chat-tool-call | state.leases: the agent lease's agentId | Bug: the daemon's agent lease records agentId null. |
-| `w0d:daemon-version-null` | W0-D | start-agent, chat-tool-call | state.leases: `version` of the daemon's host record and lease holder | Bug: the daemon records version null in its host record and agent leases. |
-| `mode:lease-roles` | by design | open-agent, start-agent, chat-tool-call | state.leases and their tree lines: runtime host and Studio records | In daemon mode the daemon is the runtime host (hosts/<pid:daemon>.json, lease holder kind daemon, with its controlUrl, §10.2) and Studio a client (clients/<pid>.json, §10.3); mapped to the embedded roles. |
-| `mode:daemon-files` | by design | open-agent, start-agent, chat-tool-call | state.tree: files of the daemon process | Named: user-data/runtime-enc-key(.pub) (the daemon's enc key), user-data/daemon-local-proof-<port>, its scratch root under temp/ (scratch-root:daemon); user-data/templates/ is created on first use, not at boot. |
-| `mode:effective-runtime-host` | by design | start-agent, chat-tool-call | state: adf_meta adf_effective_runtime `host` field only | The agent file records which host profile ran it: `daemon`, not `studioForeground`. |
+| `w4a:local-mode-switch` | W4-A | open-agent, start-agent, chat-tool-call, provider-round-trip, agent-provider-key, subscription-status, owner-identity, locked-credentials, owner-import, owner-sealed-key, agent-keystore, agent-claim, w3c-install-progress, w3c-mcp-attach-credentials, w3c-adapter-telegram, w3c-mcp-connect-test, w3c-mcp-oauth-connect, legacy-password-unlock, fleet-map, emergency-stop | harness: emulateLocalModeSwitch() (daemon-backend.ts) | The harness does what the switch to local mode will do: client keys moved to studio-client-settings.json, owner phrase and studio-runtime entry in the (test) keychain. |
+| `mode:wire-undefined-keys` | by design | chat-tool-call | pushes: payload keys whose embedded value is `undefined` (e.g. file_updated `previousContent`) | The client stream is JSON: a key whose value is undefined is omitted (D5.1 wire serialization), where embedded IPC keeps the key with undefined. The renderer reads both the same. |
+| `w5a:restore-delegation-date` | W5-A | owner-import | runtimeDelegation: IDENTITY_OWNER_STATUS results after the restore, and adf-settings.json | Visible: after restoring the same owner, embedded Studio re-signs its runtime delegation, so Settings → Identity shows a new signing date and signature; the daemon keeps the delegation it adopted from Studio (§5.3: only Studio writes its runtime identity), still valid, with the old date. W5-A decides: the daemon re-signs, or Studio rewrites the studio-runtime entry after a restore (W4-A). |
+| `mode:help-menu` | by design | open-agent, start-agent, chat-tool-call, provider-round-trip, agent-provider-key, subscription-status, owner-identity, locked-credentials, owner-import, owner-sealed-key, agent-keystore, agent-claim, w3c-install-progress, w3c-mcp-attach-credentials, w3c-adapter-telegram, w3c-mcp-connect-test, w3c-mcp-oauth-connect, legacy-password-unlock, fleet-map, emergency-stop | local calls: Menu.setApplicationMenu (Help: the separator, "Open Daemon Log", the status line, "Reconnect to the ADF Daemon") | Daemon mode adds a separator, "Open Daemon Log" and, while not connected, the status line (and "Reconnect to the ADF Daemon") to Help (§8.1). A menu built while not connected (at boot: connecting) is rebuilt on connect; those calls carry the status line and are the daemon mode's own. |
+| `w4a:daemon-writes-client-defaults` | W4-A | open-agent, start-agent, chat-tool-call, provider-round-trip, agent-provider-key, subscription-status, owner-identity, locked-credentials, owner-import, owner-sealed-key, agent-keystore, agent-claim, w3c-install-progress, w3c-mcp-attach-credentials, w3c-adapter-telegram, w3c-mcp-connect-test, w3c-mcp-oauth-connect, legacy-password-unlock, fleet-map, emergency-stop | state: client keys at their shipped default in the daemon's adf-settings.json | The daemon's settings store writes the defaults of Studio client keys (menuBarEnabled, updateChecksEnabled, …) into adf-settings.json after the switch moved them out. |
+| `mode:client-settings-file` | by design | open-agent, start-agent, chat-tool-call, provider-round-trip, agent-provider-key, subscription-status, owner-identity, locked-credentials, owner-import, owner-sealed-key, agent-keystore, agent-claim, w3c-install-progress, w3c-mcp-attach-credentials, w3c-adapter-telegram, w3c-mcp-connect-test, w3c-mcp-oauth-connect, legacy-password-unlock, fleet-map, emergency-stop | state: user-data/studio-client-settings.json, compared as one merged view with adf-settings.json | Client keys live in studio-client-settings.json (§4.2); a key in both files MUST have one value. |
+| `mode:redacted-provider-keys` | by design | provider-round-trip, agent-provider-key | steps: providers[].apiKey in SETTINGS_GET results and in the SETTINGS_SET args that write them back; the PROVIDER_CREDENTIAL_SET value of "Copy app key" | The daemon answers app provider keys as __redacted__ (§4.2) and the renderer writes back what it read; the daemon keeps the stored key and copies the app key itself, so the persisted keys are the same. |
+| `w4a:client-record-control-url` | W4-A | open-agent, start-agent, chat-tool-call, provider-round-trip, agent-provider-key, subscription-status, owner-identity, locked-credentials, owner-import, owner-sealed-key, agent-keystore, agent-claim, w3c-install-progress, w3c-mcp-attach-credentials, w3c-adapter-telegram, w3c-mcp-connect-test, w3c-mcp-oauth-connect, legacy-password-unlock, fleet-map, emergency-stop | state.leases: clients/<pid:this-process>.json controlUrl | Bug: Studio's client record names the default daemon port 7385 whatever port the daemon uses (registerClient takes no URL). |
+| `w0c:daemon-host-record-lazy` | W0-C | open-agent, provider-round-trip, agent-provider-key, subscription-status, owner-identity, locked-credentials, owner-import, owner-sealed-key, w3c-install-progress, w3c-mcp-attach-credentials, w3c-adapter-telegram, w3c-mcp-connect-test, w3c-mcp-oauth-connect, legacy-password-unlock | state.leases: the daemon's hosts/<pid>.json while it holds no lease | Bug: the daemon writes its runtime host record only once it holds an agent lease; §10.3 has every runtime host register (embedded Studio does at boot). |
+| `w0c:daemon-lease-agent-id` | W0-C | chat-tool-call, agent-keystore, agent-claim, fleet-map | state.leases: the agent lease's agentId | Bug: the daemon's agent lease records agentId null. |
+| `w0d:daemon-version-null` | W0-D | start-agent, chat-tool-call, agent-keystore, agent-claim, fleet-map, emergency-stop | state.leases: `version` of the daemon's host record and lease holder | Bug: the daemon records version null in its host record and agent leases. |
+| `mode:lease-roles` | by design | open-agent, start-agent, chat-tool-call, provider-round-trip, agent-provider-key, subscription-status, owner-identity, locked-credentials, owner-import, owner-sealed-key, agent-keystore, agent-claim, w3c-install-progress, w3c-mcp-attach-credentials, w3c-adapter-telegram, w3c-mcp-connect-test, w3c-mcp-oauth-connect, legacy-password-unlock, fleet-map, emergency-stop | state.leases and their tree lines: runtime host and Studio records | In daemon mode the daemon is the runtime host (hosts/<pid:daemon>.json, lease holder kind daemon, with its controlUrl, §10.2) and Studio a client (clients/<pid>.json, §10.3); mapped to the embedded roles. |
+| `mode:daemon-files` | by design | open-agent, start-agent, chat-tool-call, provider-round-trip, agent-provider-key, subscription-status, owner-identity, locked-credentials, owner-import, owner-sealed-key, agent-keystore, agent-claim, w3c-install-progress, w3c-mcp-attach-credentials, w3c-adapter-telegram, w3c-mcp-connect-test, w3c-mcp-oauth-connect, legacy-password-unlock, fleet-map, emergency-stop | state.tree: files of the daemon process | Named: user-data/runtime-enc-key(.pub) (the daemon's enc key), user-data/daemon-local-proof-<port>, its scratch root under temp/ (scratch-root:daemon); user-data/templates/ is created on first use, not at boot. |
+| `mode:effective-runtime-host` | by design | start-agent, chat-tool-call, agent-keystore, agent-claim, fleet-map, emergency-stop | state: adf_meta adf_effective_runtime `host` field only | The agent file records which host profile ran it: `daemon`, not `studioForeground`. |
+| `mode:json-undefined-keys` | by design | fleet-map, emergency-stop | steps: keys whose value is `undefined` in MESH_STATUS, MESH_FLEET_STATUS and MESH_MAP_POLL results | The daemon answers in JSON, which has no `undefined`: a row key embedded sets to undefined (`nextWakeAt`, `contextTokens`, …) is absent. Reading it gives undefined either way; only a key count (rowsEqual) sees it, and every poll of one mode has the same keys. |
+| `mode:emergency-stop-teardown-pushes` | by design | emergency-stop | EMERGENCY_STOP: the BACKGROUND_AGENT_EVENT_BATCH pushes after embedded's and their timeline lines in the step | The daemon reports the background agent's stop as host events (agent_stopping, agent_stopped); embedded tears down without them. The renderer resets its stores after the call in both modes. |
+| `e3:emergency-stop-startup-dispatch-error` | E3 | emergency-stop | EMERGENCY_STOP: the embedded AGENT_EVENT error push and its timeline line | Embedded bug (tracker §6, E3 candidate): during the teardown the open agent's startup dispatch reports "Cannot dispatch startup while agent lifecycle is disposed" on AGENT_EVENT. Daemon mode sends no such error. |
+| `mode:mesh-foreground-handover` | by design | fleet-map, emergency-stop | MESH_EVENT: agent_left + agent_joined of the agent a FILE_OPEN moves to the background, agent_left at shutdown; their timeline lines and the step push watermarks they shift | Embedded unregisters the open agent from the mesh when another file opens and registers it again as a background agent (agent_left, agent_joined), and unregisters every agent on quit. In the daemon an agent has one registration whatever window shows it, and quitting Studio does not stop it (§8.3). |
 <!-- gap-allowlist:end -->

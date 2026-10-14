@@ -26,11 +26,12 @@ import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { AdapterInstanceConfigSchema } from '../adf/adf-schema'
 import { envelopeFromAlgo } from '../crypto/envelope-crypto'
+import { lockedCredentialWrite, replaceLockedCredential } from '../services/locked-credential'
 import { unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { stripLoopNameMarker } from '../runtime/loop-pool'
-import { CREDENTIALS_UNLOCK_HINT } from '../runtime/agent-runtime-builder'
 import {
   CREDENTIALS_LOCKED_CODE,
+  credentialsLockedError,
   RuntimeLoopError,
   type RuntimeIdentityMeta,
   type RuntimeService,
@@ -171,33 +172,14 @@ export function setCredentialIn(ws: AdfWorkspace, purpose: string, value: string
       CREDENTIALS_LOCKED_CODE,
     )
   }
-  const state = ws.getEnvelopeState('credentials')
-  const envelopeLocked = state === 'locked' || state === 'foreign'
-  const row = ws.getIdentityRow(purpose)
-  const rowEnvelope = row ? envelopeFromAlgo(row.encryption_algo) : null
-  const rowLocked = rowEnvelope !== null && ws.getEnvelopeState(rowEnvelope) !== 'unlocked'
-  if (!envelopeLocked && !rowLocked) {
+  const locked = lockedCredentialWrite(ws, purpose)
+  if (!locked) {
     ws.setIdentity(purpose, value)
     return false
   }
-  if (!opts.replace) {
-    throw new RuntimeLoopError(
-      rowLocked
-        ? `This agent's saved "${purpose}" is sealed and its credentials envelope is ${state} on this daemon, so it can't be read or overwritten. ${CREDENTIALS_UNLOCK_HINT} Or replace it (replace: true): the old value is discarded.`
-        : `The credentials envelope of this agent is ${state} on this daemon — refusing to store "${purpose}" unsealed. ${CREDENTIALS_UNLOCK_HINT} Or store it anyway (replace: true): it is sealed once the envelope unlocks.`,
-      409,
-      CREDENTIALS_LOCKED_CODE,
-    )
-  }
-  const codeAccess = row?.code_access ?? false
-  if (rowLocked) ws.deleteIdentity(purpose)
-  ws.setIdentity(purpose, value, codeAccess)
-  const message = rowLocked
-    ? `Owner replaced locked sealed credential "${purpose}" (the old value was discarded unread); the new value is stored unsealed until the credentials envelope unlocks.`
-    : `Owner stored credential "${purpose}" while the credentials envelope is ${state}; it is stored unsealed until the envelope unlocks.`
-  console.warn(`[PathAgentOps] ${ws.getFilePath()}: ${message}`)
-  try { ws.getDatabase().insertLog('warn', 'runtime', 'credential_replaced', purpose, message) } catch { /* non-fatal */ }
-  return rowLocked
+  if (!opts.replace) throw credentialsLockedError(locked)
+  replaceLockedCredential(ws, locked, value, (line) => console.warn(`[PathAgentOps] ${ws.getFilePath()}: ${line}`))
+  return locked.sealed
 }
 
 function writeConfig(ws: AdfWorkspace, config: AgentConfig): void {

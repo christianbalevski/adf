@@ -120,8 +120,54 @@ describe.skipIf(!existsSync(DAEMON_BUNDLE))('daemon mode: backend not connected,
     }
   }, 180_000)
 
-  // The D6 resync after LOST frames mid-turn (an evicted cursor) needs the
-  // client stream's executor frames and per-session ring; GET /events resumes
-  // exactly within its 1000-event buffer. Pending W2-B.
-  it.todo('a stream that loses frames mid-turn gets the D6 resync set and ends with the embedded chat (W2-B)')
+  it('a stream that loses frames mid-turn gets the D6 resync set and ends with the daemon\'s chat', async () => {
+    // The tool call's input is over the client stream's 4 Mi-character frame
+    // limit: the focused session gets `stream.gap` (oversized) instead of
+    // that tool_call_start, in the middle of the turn (W2-B, D5.1).
+    const big = 'x'.repeat(4_300_000)
+    const env = await createParityEnv('daemon-reconnect-gap')
+    const llm = await startMockLlm((req) => {
+      if (req.isPreflight) return { text: 'ok' }
+      if (req.last?.role === 'tool') return { text: 'Wrote big.md.' }
+      return { toolCalls: [{ name: 'fs_write', arguments: { mode: 'write', path: 'big.md', content: big } }] }
+    }, { now: () => Date.now() - env.startedAt })
+    env.allowPort(Number(new URL(llm.baseUrl).port))
+    const electron = createFakeElectron(env)
+    const agents = createFixtureAgents(env, [{ name: 'agent-1' }])
+    writeSettingsFile(env, baseSettings(env, llm, agents, { trackedDirectories: [env.agentsDir] }))
+    const booted = await daemonBackend().boot(env, electron)
+    try {
+      const invoke = (channel: string, ...args: unknown[]) => Promise.resolve(electron.handlers.get(channel)!(electron.ipcEvent(), ...args))
+      const filePath = agents['agent-1'].filePath
+      await invoke(IPC.FILE_OPEN, { filePath })
+      expect(await invoke(IPC.AGENT_START, { filePath, hasUserMessage: true })).toMatchObject({ success: true })
+      const before = electron.pushes.length
+      expect(await invoke(IPC.AGENT_INVOKE, { userMessage: 'Write a big note.', filePath })).toEqual({ success: true })
+      const events = () => electron.pushes.slice(before).filter((p) => p.channel === IPC.AGENT_EVENT).map((p) => p.args[0] as { type: string; payload: { uiLog?: unknown[] }; loop?: string })
+      // The lost tool_call_start never arrived; the resync set did.
+      expect(events().some((e) => e.type === 'tool_call_start')).toBe(false)
+      await waitFor('the resync set', () => {
+        const channels = electron.pushes.slice(before).map((p) => p.channel)
+        return channels.includes(IPC.DOC_AGENT_CONFIG_CHANGED) && channels.includes(IPC.TRACKED_DIRS_CHANGED) && channels.includes(IPC.APPROVALS_CHANGED)
+      })
+      // The turn was still running at the resync: the chat is repainted once it settles, as the daemon has it.
+      await waitFor('the chat repaint after the turn', () => events().some((e) => e.type === 'chat_updated' && !e.loop))
+      const repaint = events().filter((e) => e.type === 'chat_updated' && !e.loop).at(-1)!
+      const chat = await invoke(IPC.DOC_GET_CHAT, {}) as { chatHistory: { uiLog: unknown[] } }
+      expect(repaint.payload.uiLog).toEqual(chat.chatHistory.uiLog)
+      expect(JSON.stringify(chat.chatHistory.uiLog)).toContain('Wrote big.md.')
+      expect(JSON.stringify(chat.chatHistory.uiLog)).toContain('fs_write')
+      const read = await invoke(IPC.DOC_READ_INTERNAL_FILE, { path: 'big.md', binaryContent: false }) as { content: string }
+      expect(read.content.length).toBe(big.length)
+    } finally {
+      await booted.shutdown()
+      await llm.close()
+      try {
+        env.assertRealStateUntouched()
+      } finally {
+        env.dispose()
+      }
+    }
+    expect(booted.leaks()).toEqual([])
+  }, 240_000)
 })

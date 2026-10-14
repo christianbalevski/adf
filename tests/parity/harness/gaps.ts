@@ -2,7 +2,7 @@ import { IPC } from '../../../src/shared/constants/ipc-channels'
 import { CLIENT_SETTINGS_KEYS } from '../../../src/shared/constants/client-settings-keys'
 import { clientSettingsDefaults } from '../../../src/main/backend/daemon-mode/settings'
 import { EMULATE_W4A } from './daemon-backend'
-import type { ComparableRecording, StepRecord } from './recording'
+import type { ComparableRecording, RawRecording, StepRecord } from './recording'
 
 /**
  * The daemon backend's known differences from the embedded baseline, as
@@ -22,7 +22,7 @@ import type { ComparableRecording, StepRecord } from './recording'
  * in step).
  */
 
-export type GapTag = 'W1-A' | 'W2-A' | 'W2-B' | 'W0-C' | 'W0-D' | 'W3-A' | 'W4-A' | 'mode'
+export type GapTag = 'W1-A' | 'W2-A' | 'W2-C2' | 'W0-C' | 'W0-D' | 'W3-A' | 'W4-A' | 'E3' | 'W5-A' | 'mode'
 
 export interface GapEntry {
   id: string
@@ -32,13 +32,25 @@ export interface GapEntry {
   path: string
   /** The difference, in one sentence. */
   what: string
-  apply(daemon: ComparableRecording, embedded: ComparableRecording): number
+  /** `raw.daemon`: the daemon run before normalization, for entries that must check a value the normalizer replaced. */
+  apply(daemon: ComparableRecording, embedded: ComparableRecording, raw?: { daemon: RawRecording }): number
 }
 
-const ALL = ['open-agent', 'start-agent', 'chat-tool-call'] as const
-const RUNNING = ['start-agent', 'chat-tool-call'] as const
-/** Scenarios whose agent file nobody holds open when the state is dumped (chat-tool-call's still runs). */
-const NOT_RUNNING_AT_DUMP = ['open-agent', 'start-agent'] as const
+const CORE = ['open-agent', 'start-agent', 'chat-tool-call'] as const
+/** W3-B scenarios (tests/parity/settings, tests/parity/identity) that run no agent. */
+const W3B_NO_AGENT = ['provider-round-trip', 'agent-provider-key', 'subscription-status', 'owner-identity', 'locked-credentials', 'owner-import', 'owner-sealed-key'] as const
+/** The W3-B scenarios that start agent-1 and leave it running (as chat-tool-call). */
+const W3B_RUNNING = ['agent-keystore', 'agent-claim'] as const
+/** W3-C scenarios (tests/parity/mcp): no agent runs, the fixture files are edited closed. */
+const W3C = ['w3c-install-progress', 'w3c-mcp-attach-credentials', 'w3c-adapter-telegram', 'w3c-mcp-connect-test', 'w3c-mcp-oauth-connect'] as const
+/** Scenarios that open a file that is not running, held by the client session (W2-C2). */
+const HELD_ONLY = ['legacy-password-unlock'] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY] as const
+const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING] as const
+/** The mesh scenarios (tests/parity/mesh, W3-D). */
+const MESH = ['fleet-map', 'emergency-stop'] as const
+/** The mesh-status channels whose results carry fleet rows (MESH_STATUS, MESH_FLEET_STATUS, MESH_MAP_POLL). */
+const FLEET_ROW_CHANNELS = new Set<string>([IPC.MESH_STATUS, IPC.MESH_FLEET_STATUS, IPC.MESH_MAP_POLL])
 
 // --- helpers ------------------------------------------------------------------
 
@@ -55,21 +67,55 @@ type Row = Record<string, unknown>
 function table(rec: ComparableRecording, name: string): Array<{ file: string; rows: Row[] }> {
   return Object.entries(rec.state.adf).flatMap(([file, dump]) => (dump.tables[name] ? [{ file, rows: dump.tables[name].rows as Row[] }] : []))
 }
-function setRows(rec: ComparableRecording, file: string, name: string, rows: Row[]): void {
-  rec.state.adf[file].tables[name].rows = rows
-}
+const leaseFiles = (rec: ComparableRecording) => Object.keys(rec.state.leases)
 function withoutPushes(step: StepRecord): unknown {
   const { pushes: _p, ...rest } = step as StepRecord & { pushes: unknown }
   return rest
 }
-const leaseFiles = (rec: ComparableRecording) => Object.keys(rec.state.leases)
 
-/** AGENT_EVENT types the interim GET /events adapter carries (client-stream.ts). */
-const ADAPTER_EVENT_TYPES = new Set(['state_changed', 'turn_complete', 'error'])
-const eventLineType = (line: string): string | null => {
-  const m = /^ {2}(?:\[app\] )?adf:agent:event ([a-z_]+)/.exec(line)
-  return m ? m[1] : null
+/**
+ * Walk a daemon value and the embedded value at the same place: `visit`
+ * sees every pair of objects and answers how many changes it made. Arrays
+ * are walked only when their lengths match.
+ */
+function walkPair(d: unknown, e: unknown, visit: (d: Row, e: Row) => number): number {
+  if (Array.isArray(d) && Array.isArray(e)) return d.length === e.length ? d.reduce<number>((n, v, i) => n + walkPair(v, e[i], visit), 0) : 0
+  if (!d || !e || typeof d !== 'object' || typeof e !== 'object' || Array.isArray(d) || Array.isArray(e)) return 0
+  let n = visit(d as Row, e as Row)
+  for (const k of Object.keys(d)) if (k in (e as Row)) n += walkPair((d as Row)[k], (e as Row)[k], visit)
+  return n
 }
+
+/** walkPair with the daemon's raw (not normalized) value at the same place. */
+function walkRaw(d: unknown, e: unknown, r: unknown, visit: (d: Row, e: Row, r: Row) => number): number {
+  if (Array.isArray(d) && Array.isArray(e) && Array.isArray(r)) {
+    return d.length === e.length && d.length === r.length ? d.reduce<number>((n, v, i) => n + walkRaw(v, e[i], r[i], visit), 0) : 0
+  }
+  const obj = (v: unknown): v is Row => !!v && typeof v === 'object' && !Array.isArray(v)
+  if (!obj(d) || !obj(e) || !obj(r)) return 0
+  let n = visit(d, e, r)
+  for (const k of Object.keys(d)) if (k in e && k in r) n += walkRaw(d[k], e[k], r[k], visit)
+  return n
+}
+
+/** The invoke results of fleet-row channels, daemon and embedded side by side. */
+function fleetResults(d: ComparableRecording, e: ComparableRecording): Array<[unknown, unknown]> {
+  const out: Array<[unknown, unknown]> = []
+  d.steps.forEach((step, i) => {
+    const base = e.steps[i]
+    if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== base.channel || !FLEET_ROW_CHANNELS.has(step.channel)) return
+    out.push([step.result, base.result])
+  })
+  return out
+}
+
+/** A timeline's lines for step `n`, between `> n …` and `< n`. */
+function stepBlock(lines: string[], n: number): { from: number; to: number } | null {
+  const from = lines.findIndex((l) => l.startsWith(`> ${n} `))
+  const to = lines.findIndex((l, i) => i > from && (l === `< ${n}` || l.startsWith(`< ${n} `)))
+  return from >= 0 && to > from ? { from: from + 1, to } : null
+}
+const isMeshEventLine = (line: string) => /^ {2}(?:\[app\] )?adf:mesh:event /.test(line)
 
 type MenuItem = { label?: string; type?: string; role?: string; enabled?: boolean; submenu?: MenuItem[] }
 const STATUS_LINE = /^ADF daemon: /
@@ -106,7 +152,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w4a:local-mode-switch',
     ws: 'W4-A',
-    scenarios: ALL,
+    scenarios: [...ALL, ...MESH],
     path: 'harness: emulateLocalModeSwitch() (daemon-backend.ts)',
     what: 'The harness does what the switch to local mode will do: client keys moved to studio-client-settings.json, owner phrase and studio-runtime entry in the (test) keychain.',
     apply(d) {
@@ -118,147 +164,67 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2b:open-document-reads',
-    ws: 'W2-B',
-    scenarios: ALL,
-    path: 'steps: every DOC_GET_BATCH and DOC_READ_INTERNAL_FILE before the first AGENT_START (and their `(threw)` timeline markers), no other step',
-    what: 'Reading a file that is not running throws "not available in daemon mode yet: W2-B": the daemon serves open documents (W2-A), but Studio holds one only through its client session.',
+    id: 'mode:wire-undefined-keys',
+    ws: 'mode',
+    scenarios: ['chat-tool-call'],
+    path: 'pushes: payload keys whose embedded value is `undefined` (e.g. file_updated `previousContent`)',
+    what: 'The client stream is JSON: a key whose value is undefined is omitted (D5.1 wire serialization), where embedded IPC keeps the key with undefined. The renderer reads both the same.',
     apply(d, e) {
-      const reads = new Set<string>([IPC.DOC_GET_BATCH, IPC.DOC_READ_INTERNAL_FILE])
-      const start = e.steps.findIndex((s) => s.kind === 'invoke' && s.channel === IPC.AGENT_START)
-      const before = start < 0 ? e.steps : e.steps.slice(0, start)
-      const want = before.filter((s) => s.kind === 'invoke' && reads.has(s.channel)).length
-      const hits: number[] = []
-      for (const [i, step] of d.steps.entries()) {
-        const base = e.steps[i]
-        if (step.kind !== 'invoke-error' || base?.kind !== 'invoke' || base.channel !== step.channel) continue
-        if (!reads.has(step.channel) || (start >= 0 && i >= start)) return 0
-        if ((step.error as { code?: unknown }).code !== 'daemon_mode_unavailable' || !/: W2-B\b/.test(step.error.message)) return 0
-        hits.push(i)
-      }
-      if (hits.length !== want) return 0
-      for (const i of hits) {
-        d.steps[i] = clone(e.steps[i])
-        for (const lines of Object.values(d.timelines)) {
-          const at = lines.indexOf(`< ${i + 1} (threw)`)
-          if (at >= 0) lines[at] = `< ${i + 1}`
+      let n = 0
+      const restore = (dv: unknown, ev: unknown): void => {
+        if (!dv || !ev || typeof dv !== 'object' || typeof ev !== 'object') return
+        if (Array.isArray(ev)) {
+          if (Array.isArray(dv)) ev.forEach((item, i) => restore(dv[i], item))
+          return
+        }
+        const dObj = dv as Record<string, unknown>
+        for (const [k, v] of Object.entries(ev as Record<string, unknown>)) {
+          if (v === undefined && !(k in dObj)) { dObj[k] = undefined; n++ } else restore(dObj[k], v)
         }
       }
-      return hits.length
-    },
-  },
-  {
-    id: 'w2b:agent-event-stream',
-    ws: 'W2-B',
-    scenarios: RUNNING,
-    path: 'AGENT_EVENT: the pushes, their timeline lines and the step push watermarks they shift',
-    what: 'The interim GET /events adapter carries only state_changed, turn_complete and error; deltas, tool calls, context, metadata, file updates and loop_seq come with the client stream.',
-    apply(d, e) {
-      const ch = IPC.AGENT_EVENT
-      const full = e.pushes[ch] ?? []
-      const kept = full.filter((p) => ADAPTER_EVENT_TYPES.has((p as { type?: string }).type ?? ''))
-      if (full.length === kept.length || !same(kept, d.pushes[ch] ?? [])) return 0
-      for (const [agent, lines] of Object.entries(e.timelines)) {
-        const filtered = lines.filter((l) => { const t = eventLineType(l); return t === null || ADAPTER_EVENT_TYPES.has(t) })
-        if (!same(filtered, d.timelines[agent])) return 0
-      }
-      if (d.steps.length !== e.steps.length || d.steps.some((s, i) => !same(withoutPushes(s), withoutPushes(e.steps[i])))) return 0
-      d.pushes[ch] = clone(full)
-      d.timelines = clone(e.timelines)
-      d.steps = d.steps.map((s, i) => ({ ...s, pushes: clone(e.steps[i].pushes) }) as StepRecord)
-      return 1
-    },
-  },
-  {
-    id: 'w2b:streaming-check',
-    ws: 'W2-B',
-    scenarios: RUNNING,
-    path: 'problems: the streaming check',
-    what: 'No text_delta_batch reaches the window (same cause as w2b:agent-event-stream).',
-    apply(d) {
-      const before = d.problems?.length ?? 0
-      d.problems = (d.problems ?? []).filter((p) => !/^streaming: \d+ text slice\(s\) arrived as 0 text_delta_batch push\(es\)$/.test(p))
-      const n = before - d.problems.length
-      if (d.problems.length === 0) delete d.problems
-      return n
-    },
-  },
-  {
-    id: 'w2b:identity-on-open',
-    ws: 'W2-B',
-    scenarios: ALL,
-    path: 'state: adf_identity and adf_attestations rows',
-    what: 'The daemon runs its open steps (ensureWorkspaceIdentity on open, W2-A) only for a document a client session holds: no keys, no owner and operator attestations.',
-    apply(d, e) {
-      let n = 0
-      for (const name of ['adf_identity', 'adf_attestations']) {
-        for (const { file, rows } of table(d, name)) {
-          const base = e.state.adf[file]?.tables[name]?.rows as Row[] | undefined
-          if (rows.length === 0 && base && base.length > 0) { setRows(d, file, name, clone(base)); n++ }
-        }
+      for (const [ch, list] of Object.entries(e.pushes)) {
+        const mine = d.pushes[ch]
+        if (!mine || mine.length !== list.length) continue
+        list.forEach((ev, i) => { if (same(mine[i], ev)) restore(mine[i], ev) })
       }
       return n
     },
   },
   {
-    id: 'w2b:identity-meta',
-    ws: 'W2-B',
-    scenarios: ALL,
-    path: 'state: adf_meta rows adf_did, adf_owner_did, adf_runtime_did',
-    what: 'Same cause as w2b:identity-on-open: the identity stamps are written on open.',
+    id: 'w5a:restore-delegation-date',
+    ws: 'W5-A',
+    scenarios: ['owner-import'],
+    path: 'runtimeDelegation: IDENTITY_OWNER_STATUS results after the restore, and adf-settings.json',
+    what: 'Visible: after restoring the same owner, embedded Studio re-signs its runtime delegation, so Settings → Identity shows a new signing date and signature; the daemon keeps the delegation it adopted from Studio (§5.3: only Studio writes its runtime identity), still valid, with the old date. W5-A decides: the daemon re-signs, or Studio rewrites the studio-runtime entry after a restore (W4-A).',
     apply(d, e) {
       let n = 0
-      for (const { file, rows } of table(d, 'adf_meta')) {
-        const base = (e.state.adf[file]?.tables.adf_meta?.rows ?? []) as Row[]
-        for (const key of ['adf_did', 'adf_owner_did', 'adf_runtime_did']) {
-          const want = base.find((r) => r.key === key)
-          if (!want || rows.some((r) => r.key === key)) continue
-          rows.push(clone(want))
-          n++
-        }
-        rows.sort((a, b) => String(a.key).localeCompare(String(b.key)))
-      }
-      return n
-    },
-  },
-  {
-    id: 'w2b:open-document-handle',
-    ws: 'W2-B',
-    scenarios: NOT_RUNNING_AT_DUMP,
-    path: 'state: adf_meta row adf_clean_close',
-    what: 'Nothing holds the file open (no client session to hold it), so the fixture\'s clean-close marker stays set.',
-    apply(d, e) {
-      let n = 0
-      for (const { file, rows } of table(d, 'adf_meta')) {
-        const base = (e.state.adf[file]?.tables.adf_meta?.rows ?? []) as Row[]
-        if (base.some((r) => r.key === 'adf_clean_close')) continue
-        const at = rows.findIndex((r) => r.key === 'adf_clean_close')
-        if (at >= 0) { rows.splice(at, 1); n++ }
-      }
-      return n
-    },
-  },
-  {
-    id: 'w2b:open-document-wal',
-    ws: 'W2-B',
-    scenarios: NOT_RUNNING_AT_DUMP,
-    path: 'state.tree: the -wal and -shm files of an open agent file',
-    what: 'Same cause as w2b:open-document-handle: the file is not held open, so no -wal/-shm beside it.',
-    apply(d, e) {
-      let n = 0
-      for (const line of e.state.tree) {
-        if (!/\.adf-(wal|shm)$/.test(line) || d.state.tree.includes(line)) continue
-        d.state.tree.push(line)
+      const ORIGINAL = '<sig:runtime-delegation>'
+      type Delegation = { issuer?: unknown; subject?: unknown; role?: unknown; signature?: unknown; issued_at?: unknown }
+      const swap = (mine: Delegation | undefined, theirs: Delegation | undefined): Delegation | undefined => {
+        if (!mine || !theirs || mine.signature !== ORIGINAL || theirs.signature === ORIGINAL) return undefined
+        if (mine.issuer !== theirs.issuer || mine.subject !== theirs.subject || mine.role !== theirs.role) return undefined
+        if (!/^<sig:valid#\d+>$/.test(String(theirs.signature))) return undefined
         n++
+        return clone(theirs)
       }
-      if (n) d.state.tree.sort((a, b) => (a.slice(2) < b.slice(2) ? -1 : a.slice(2) > b.slice(2) ? 1 : 0))
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== IPC.IDENTITY_OWNER_STATUS) return
+        const r = step.result as { runtimeDelegation?: Delegation }
+        const next = swap(r?.runtimeDelegation, (base.result as { runtimeDelegation?: Delegation })?.runtimeDelegation)
+        if (next) r.runtimeDelegation = next
+      })
+      const settings = d.state.userDataJson['adf-settings.json'] as { runtimeDelegation?: Delegation } | undefined
+      const baseSettings = e.state.userDataJson['adf-settings.json'] as { runtimeDelegation?: Delegation } | undefined
+      const next = swap(settings?.runtimeDelegation, baseSettings?.runtimeDelegation)
+      if (next && settings) settings.runtimeDelegation = next
       return n
     },
   },
   {
     id: 'mode:help-menu',
     ws: 'mode',
-    scenarios: ALL,
+    scenarios: [...ALL, ...MESH],
     path: 'local calls: Menu.setApplicationMenu (Help: the separator, "Open Daemon Log", the status line, "Reconnect to the ADF Daemon")',
     what: 'Daemon mode adds a separator, "Open Daemon Log" and, while not connected, the status line (and "Reconnect to the ADF Daemon") to Help (§8.1). A menu built while not connected (at boot: connecting) is rebuilt on connect; those calls carry the status line and are the daemon mode\'s own.',
     apply(d, e) {
@@ -282,7 +248,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w4a:daemon-writes-client-defaults',
     ws: 'W4-A',
-    scenarios: ALL,
+    scenarios: [...ALL, ...MESH],
     path: 'state: client keys at their shipped default in the daemon\'s adf-settings.json',
     what: 'The daemon\'s settings store writes the defaults of Studio client keys (menuBarEnabled, updateChecksEnabled, …) into adf-settings.json after the switch moved them out.',
     apply(d) {
@@ -303,7 +269,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'mode:client-settings-file',
     ws: 'mode',
-    scenarios: ALL,
+    scenarios: [...ALL, ...MESH],
     path: 'state: user-data/studio-client-settings.json, compared as one merged view with adf-settings.json',
     what: 'Client keys live in studio-client-settings.json (§4.2); a key in both files MUST have one value.',
     apply(d) {
@@ -323,9 +289,50 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
+    id: 'mode:redacted-provider-keys',
+    ws: 'mode',
+    scenarios: ['provider-round-trip', 'agent-provider-key'],
+    path: 'steps: providers[].apiKey in SETTINGS_GET results and in the SETTINGS_SET args that write them back; the PROVIDER_CREDENTIAL_SET value of "Copy app key"',
+    what: 'The daemon answers app provider keys as __redacted__ (§4.2) and the renderer writes back what it read; the daemon keeps the stored key and copies the app key itself, so the persisted keys are the same.',
+    apply(d, e) {
+      const REDACTED = '__redacted__'
+      let n = 0
+      // `__redacted__` where embedded has a real key: `apiKey` of an entry of a
+      // `providers` list at the same index (the settings object's), nothing else.
+      const swapProviders = (dv: unknown, ev: unknown): void => {
+        const mine = (dv as { providers?: unknown } | null)?.providers
+        const theirs = (ev as { providers?: unknown } | null)?.providers
+        if (!Array.isArray(mine) || !Array.isArray(theirs)) return
+        mine.forEach((entry, i) => {
+          const base = theirs[i] as { id?: unknown; apiKey?: unknown } | undefined
+          const p = entry as { id?: unknown; apiKey?: unknown } | null
+          if (!p || p.apiKey !== REDACTED || !base || base.id !== p.id) return
+          if (typeof base.apiKey !== 'string' || base.apiKey === '' || base.apiKey === REDACTED) return
+          p.apiKey = base.apiKey
+          n++
+        })
+      }
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== base.channel) return
+        if (step.channel === IPC.SETTINGS_GET) swapProviders(step.result, base.result)
+        if (step.channel === IPC.SETTINGS_SET) swapProviders(step.args[0], base.args[0])
+        if (step.channel === IPC.PROVIDER_CREDENTIAL_SET) {
+          const a = step.args[0] as { value?: unknown } | undefined
+          const b = base.args[0] as { value?: unknown } | undefined
+          if (a?.value === REDACTED && typeof b?.value === 'string' && b.value !== REDACTED) {
+            step.args = [{ ...a, value: b.value }, ...step.args.slice(1)]
+            n++
+          }
+        }
+      })
+      return n
+    },
+  },
+  {
     id: 'w4a:client-record-control-url',
     ws: 'W4-A',
-    scenarios: ALL,
+    scenarios: [...ALL, ...MESH],
     path: 'state.leases: clients/<pid:this-process>.json controlUrl',
     what: 'Bug: Studio\'s client record names the default daemon port 7385 whatever port the daemon uses (registerClient takes no URL).',
     apply(d) {
@@ -336,7 +343,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-host-record-lazy',
     ws: 'W0-C',
-    scenarios: ['open-agent'],
+    scenarios: ['open-agent', ...W3B_NO_AGENT, ...W3C, ...HELD_ONLY],
     path: 'state.leases: the daemon\'s hosts/<pid>.json while it holds no lease',
     what: 'Bug: the daemon writes its runtime host record only once it holds an agent lease; §10.3 has every runtime host register (embedded Studio does at boot).',
     apply(d, e) {
@@ -350,7 +357,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-lease-agent-id',
     ws: 'W0-C',
-    scenarios: ['chat-tool-call'],
+    scenarios: ['chat-tool-call', ...W3B_RUNNING, 'fleet-map'],
     path: 'state.leases: the agent lease\'s agentId',
     what: 'Bug: the daemon\'s agent lease records agentId null.',
     apply(d, e) {
@@ -368,7 +375,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0d:daemon-version-null',
     ws: 'W0-D',
-    scenarios: RUNNING,
+    scenarios: [...RUNNING, ...MESH],
     path: 'state.leases: `version` of the daemon\'s host record and lease holder',
     what: 'Bug: the daemon records version null in its host record and agent leases.',
     apply(d) {
@@ -384,7 +391,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'mode:lease-roles',
     ws: 'mode',
-    scenarios: ALL,
+    scenarios: [...ALL, ...MESH],
     path: 'state.leases and their tree lines: runtime host and Studio records',
     what: 'In daemon mode the daemon is the runtime host (hosts/<pid:daemon>.json, lease holder kind daemon, with its controlUrl, §10.2) and Studio a client (clients/<pid>.json, §10.3); mapped to the embedded roles.',
     apply(d, e) {
@@ -430,7 +437,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'mode:daemon-files',
     ws: 'mode',
-    scenarios: ALL,
+    scenarios: [...ALL, ...MESH],
     path: 'state.tree: files of the daemon process',
     what: 'Named: user-data/runtime-enc-key(.pub) (the daemon\'s enc key), user-data/daemon-local-proof-<port>, its scratch root under temp/ (scratch-root:daemon); user-data/templates/ is created on first use, not at boot.',
     apply(d, e) {
@@ -446,7 +453,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'mode:effective-runtime-host',
     ws: 'mode',
-    scenarios: RUNNING,
+    scenarios: [...RUNNING, ...MESH],
     path: 'state: adf_meta adf_effective_runtime `host` field only',
     what: 'The agent file records which host profile ran it: `daemon`, not `studioForeground`.',
     apply(d) {
@@ -461,15 +468,151 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       return n
     },
   },
+  {
+    id: 'mode:json-undefined-keys',
+    ws: 'mode',
+    scenarios: MESH,
+    path: 'steps: keys whose value is `undefined` in MESH_STATUS, MESH_FLEET_STATUS and MESH_MAP_POLL results',
+    what: 'The daemon answers in JSON, which has no `undefined`: a row key embedded sets to undefined (`nextWakeAt`, `contextTokens`, …) is absent. Reading it gives undefined either way; only a key count (rowsEqual) sees it, and every poll of one mode has the same keys.',
+    apply(d, e) {
+      let n = 0
+      for (const [dv, ev] of fleetResults(d, e)) {
+        n += walkPair(dv, ev, (dr, er) => {
+          let k = 0
+          for (const key of Object.keys(er)) {
+            if (er[key] === undefined && !(key in dr)) { dr[key] = undefined; k++ }
+          }
+          return k
+        })
+      }
+      return n
+    },
+  },
+  {
+    id: 'mode:emergency-stop-teardown-pushes',
+    ws: 'mode',
+    scenarios: ['emergency-stop'],
+    path: 'EMERGENCY_STOP: the BACKGROUND_AGENT_EVENT_BATCH pushes after embedded\'s and their timeline lines in the step',
+    what: 'The daemon reports the background agent\'s stop as host events (agent_stopping, agent_stopped); embedded tears down without them. The renderer resets its stores after the call in both modes.',
+    apply(d, e) {
+      const batch = IPC.BACKGROUND_AGENT_EVENT_BATCH
+      const step = e.steps.findIndex((s) => s.kind === 'invoke' && s.channel === IPC.EMERGENCY_STOP)
+      if (step < 0) return 0
+      const dBatches = d.pushes[batch] ?? []
+      const eBatches = e.pushes[batch] ?? []
+      if (dBatches.length <= eBatches.length || !same(dBatches.slice(0, eBatches.length), eBatches)) return 0
+      const extra = dBatches.slice(eBatches.length).flatMap((b) => (Array.isArray(b) ? b : [b])) as Array<{ type?: string; payload?: { state?: string } }>
+      const teardown = new Set(['agent_stopping', 'agent_stopped', 'agent_state_changed'])
+      if (!extra.every((ev) => teardown.has(ev.type ?? '') && (ev.type !== 'agent_state_changed' || ev.payload?.state === 'off')) || !extra.some((ev) => ev.type === 'agent_stopped')) return 0
+      const line = /^ {2}\[app\] adf:background-agent:event-batch (agent_stopping|agent_stopped|agent_state_changed:off)$/
+      let n = 0
+      for (const lines of Object.values(d.timelines)) {
+        const db = stepBlock(lines, step + 1)
+        if (!db) return 0
+        const block = lines.slice(db.from, db.to)
+        const kept = block.filter((l) => !line.test(l))
+        if (block.length - kept.length !== extra.length) return 0
+        lines.splice(db.from, db.to - db.from, ...kept)
+        n += extra.length
+      }
+      d.pushes[batch] = clone(eBatches)
+      return n
+    },
+  },
+  {
+    id: 'e3:emergency-stop-startup-dispatch-error',
+    ws: 'E3',
+    scenarios: ['emergency-stop'],
+    path: 'EMERGENCY_STOP: the embedded AGENT_EVENT error push and its timeline line',
+    what: 'Embedded bug (tracker §6, E3 candidate): during the teardown the open agent\'s startup dispatch reports "Cannot dispatch startup while agent lifecycle is disposed" on AGENT_EVENT. Daemon mode sends no such error.',
+    apply(d, e) {
+      const step = e.steps.findIndex((s) => s.kind === 'invoke' && s.channel === IPC.EMERGENCY_STOP)
+      if (step < 0) return 0
+      const errors = (e.pushes[IPC.AGENT_EVENT] ?? []) as Array<{ type?: string; payload?: { error?: string } }>
+      if ((d.pushes[IPC.AGENT_EVENT] ?? []).length !== 0 || errors.length !== 1 || errors[0].type !== 'error' || !/lifecycle is disposed/.test(errors[0].payload?.error ?? '')) return 0
+      let n = 0
+      for (const [agent, lines] of Object.entries(d.timelines)) {
+        const eb = stepBlock(e.timelines[agent] ?? [], step + 1)
+        const db = stepBlock(lines, step + 1)
+        if (!eb || !db) return 0
+        const errorLines = e.timelines[agent].slice(eb.from, eb.to).filter((l) => /^ {2}adf:agent:event error$/.test(l))
+        if (errorLines.length === 0) continue
+        lines.splice(db.to, 0, ...errorLines)
+        n += errorLines.length
+      }
+      if (n !== 1) return 0
+      d.pushes[IPC.AGENT_EVENT] = clone(e.pushes[IPC.AGENT_EVENT])
+      // Channels in name order, as the recording keeps them.
+      d.pushes = Object.fromEntries(Object.keys(d.pushes).sort().map((c) => [c, d.pushes[c]]))
+      if (d.pushSeq) d.pushSeq[IPC.AGENT_EVENT] = clone(e.pushSeq?.[IPC.AGENT_EVENT] ?? [])
+      return n
+    },
+  },
+  {
+    id: 'mode:mesh-foreground-handover',
+    ws: 'mode',
+    scenarios: MESH,
+    path: 'MESH_EVENT: agent_left + agent_joined of the agent a FILE_OPEN moves to the background, agent_left at shutdown; their timeline lines and the step push watermarks they shift',
+    what: 'Embedded unregisters the open agent from the mesh when another file opens and registers it again as a background agent (agent_left, agent_joined), and unregisters every agent on quit. In the daemon an agent has one registration whatever window shows it, and quitting Studio does not stop it (§8.3).',
+    apply(d, e) {
+      const ch = IPC.MESH_EVENT
+      const list = e.pushes[ch] ?? []
+      const timeline = Object.values(e.timelines)[0]
+      if (list.length === 0 || !timeline) return 0
+      // Steps whose mesh events are Studio's own: a FILE_OPEN that switches files, and the shutdown.
+      const opens = e.steps.flatMap((st, i) => (st.kind === 'invoke' && st.channel === IPC.FILE_OPEN ? [i] : []))
+      const windows = [
+        ...opens.slice(1).map((i) => ({ step: i + 1, types: ['agent_left', 'agent_joined'] })),
+        ...e.steps.flatMap((st, i) => (st.kind === 'shutdown' ? [{ step: i + 1, types: ['agent_left'] }] : [])),
+      ]
+      // Mesh events are app pushes, in every timeline in send order: the k-th mesh line is list[k].
+      const meshLine = /^ {2}(?:\[app\] )?adf:mesh:event ([a-z_]+)/
+      const typeOf = (p: unknown) => (p as { type?: string })?.type ?? ''
+      const dropped = new Set<number>()
+      let k = -1
+      timeline.forEach((l, at) => {
+        const m = meshLine.exec(l)
+        if (!m) return
+        k++
+        const inWindow = windows.some((w) => {
+          const block = stepBlock(timeline, w.step)
+          return !!block && at >= block.from && at < block.to && w.types.includes(m[1])
+        })
+        if (inWindow && typeOf(list[k]) === m[1]) dropped.add(k)
+      })
+      if (k + 1 !== list.length) return 0
+      if (dropped.size === 0) return 0
+      if (!same(list.filter((_p, i) => !dropped.has(i)), d.pushes[ch] ?? [])) return 0
+      // The same lines out of each embedded timeline's step blocks must give the daemon's.
+      const line = /^ {2}(?:\[app\] )?adf:mesh:event (agent_left|agent_joined)\b/
+      for (const [agent, lines] of Object.entries(e.timelines)) {
+        const filtered = [...lines]
+        for (const w of windows) {
+          const block = stepBlock(filtered, w.step)
+          if (!block) return 0
+          const kept = filtered.slice(block.from, block.to).filter((l) => { const m = line.exec(l); return !m || !w.types.includes(m[1]) })
+          filtered.splice(block.from, block.to - block.from, ...kept)
+        }
+        if (!same(filtered, d.timelines[agent])) return 0
+      }
+      if (d.steps.length !== e.steps.length || d.steps.some((st, i) => !same(withoutPushes(st), withoutPushes(e.steps[i])))) return 0
+      d.pushes[ch] = clone(list)
+      if (d.pushSeq && e.pushSeq) d.pushSeq[ch] = clone(e.pushSeq[ch])
+      d.timelines = clone(e.timelines)
+      d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
+      return dropped.size
+    },
+  },
+
 ]
 
 /** Apply every entry for `scenario`; the ids of entries that matched nothing are returned. */
-export function applyGapAllowlist(scenario: string, daemon: ComparableRecording, embedded: ComparableRecording): { unmatched: string[]; counts: Record<string, number> } {
+export function applyGapAllowlist(scenario: string, daemon: ComparableRecording, embedded: ComparableRecording, raw?: { daemon: RawRecording }): { unmatched: string[]; counts: Record<string, number> } {
   const unmatched: string[] = []
   const counts: Record<string, number> = {}
   for (const entry of GAP_ALLOWLIST) {
     if (!entry.scenarios.includes(scenario)) continue
-    const n = entry.apply(daemon, embedded)
+    const n = entry.apply(daemon, embedded, raw)
     counts[entry.id] = n
     if (n === 0) unmatched.push(entry.id)
   }

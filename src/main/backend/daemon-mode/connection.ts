@@ -108,6 +108,13 @@ export class DaemonConnection {
     if (this.status.state !== 'connected') this.set({ state: 'connected' })
   }
 
+  /** No session can be used with this daemon (client API version): the connection fails, visibly. */
+  markFailed(message: string): void {
+    if (this.status.state === 'failed') return
+    this.log.error(`[Backend] No usable ADF daemon for this session: ${message}`)
+    this.set({ state: 'failed', message })
+  }
+
   markDisconnected(error?: string): void {
     if (this.status.state === 'failed' || this.status.state === 'disconnected') return
     this.set({ state: 'disconnected', since: Date.now(), ...(error ? { error } : {}) })
