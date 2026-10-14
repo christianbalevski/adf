@@ -357,3 +357,70 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
     return finish({ success: false, tools: [], error: error instanceof Error ? error.message : String(error) })
   }
 }
+
+/** The uv calls MCP_ENSURE_PYTHON_RUNTIME makes (UvManager). */
+export interface PythonRuntimeUv {
+  ensureUv(): Promise<string>
+  getUvVersion(): Promise<string | null>
+  isPythonAvailable(): Promise<boolean>
+  ensurePython(): Promise<unknown>
+}
+
+/** Make sure uv and a Python it manages exist on this host (downloads them when missing). */
+export async function ensurePythonRuntime(uvManager: PythonRuntimeUv) {
+  try {
+    const uvPath = await uvManager.ensureUv()
+    const uvVersion = await uvManager.getUvVersion()
+    const pythonAvailable = await uvManager.isPythonAvailable()
+
+    if (!pythonAvailable) {
+      await uvManager.ensurePython()
+    }
+
+    return {
+      success: true,
+      uvAvailable: true,
+      uvVersion,
+      pythonAvailable: true,
+      uvPath
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error),
+      uvAvailable: false,
+      pythonAvailable: false
+    }
+  }
+}
+
+/**
+ * Whether a valid token is stored (app store) for a remote server URL: lets
+ * the client show a "signed in" indicator. Never returns the token.
+ */
+export async function mcpOAuthStatus(store: Pick<McpOAuthStore, 'get'>, rawArgs: unknown): Promise<{ signedIn: boolean }> {
+  const url = (rawArgs as { url?: unknown } | null | undefined)?.url
+  if (typeof url !== 'string' || !url) return { signedIn: false }
+  try {
+    const record = await store.get(url)
+    return { signedIn: !!record?.tokens }
+  } catch {
+    return { signedIn: false }
+  }
+}
+
+/**
+ * Clear the stored token for a remote server URL ("Sign out"). Clears the
+ * app-level store, the sign-in source of truth; agent-sealed copies are
+ * re-captured on the next attach.
+ */
+export async function mcpOAuthSignOut(store: Pick<McpOAuthStore, 'invalidate'>, rawArgs: unknown): Promise<{ success: boolean; error?: string }> {
+  const url = (rawArgs as { url?: unknown } | null | undefined)?.url
+  if (typeof url !== 'string' || !url) return { success: false, error: 'A server url is required to sign out.' }
+  try {
+    await store.invalidate(url, 'all')
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}

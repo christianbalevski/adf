@@ -173,7 +173,11 @@ import { availableAdfPath, bringRegistryAgentHome } from '../services/registry-b
 import { claimAgentWorkspace, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword } from '../services/envelope-actions'
 import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById } from '../services/dashboard-stats'
 import { buildMeshStatus } from '../services/mesh-status'
-import { appendMcpLog, probeMcpServer, runMcpRegistrationTest } from '../services/mcp-connect-tests'
+import { appendMcpLog, ensurePythonRuntime, mcpOAuthSignOut, mcpOAuthStatus, probeMcpServer, runMcpRegistrationTest } from '../services/mcp-connect-tests'
+import { mergeAdapterStates } from '../services/adapter-status'
+import { fetchPeerSharedFile, probePeerHealth } from '../services/peer-fetch'
+import { fetchSkillPackage, fetchSkillsCatalog } from '../services/skills-catalog-fetch'
+import { getComputeBrowserInfo } from '../services/compute-browser-info'
 
 // Application state
 let currentWorkspace: AdfWorkspace | null = null
@@ -6143,19 +6147,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // Live health probe for a remote agent — the fleet map's peer readout shows
   // the /health state (idle/active) on open. Runs in main because the mesh
   // server doesn't send CORS headers.
-  ipcMain.handle(IPC.MESH_PEER_AGENT_HEALTH, async (_event, healthUrl: string) => {
-    if (typeof healthUrl !== 'string' || !/^https?:\/\//.test(healthUrl)) {
-      return { ok: false as const, error: 'Bad health URL' }
-    }
-    try {
-      const res = await fetch(healthUrl, { signal: AbortSignal.timeout(5_000) })
-      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
-      const body = (await res.json()) as { status?: string; state?: string }
-      return { ok: true as const, status: body?.status, state: body?.state }
-    } catch (err) {
-      return { ok: false as const, error: err instanceof Error ? err.message : 'Fetch failed' }
-    }
-  })
+  ipcMain.handle(IPC.MESH_PEER_AGENT_HEALTH, async (_event, healthUrl: string) => probePeerHealth(healthUrl))
 
   // LAN reachability preconditions: is the mesh server LAN-bound, and is the
   // inbound firewall rule that lets peers fetch our directory in place? Drives
@@ -6187,33 +6179,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // renderer can't fetch a peer directly. baseUrl is the agent's base
   // (<runtime>/<handle>); shared files are served at <base>/<path>
   // (mesh-server agentCatchAll).
-  ipcMain.handle(IPC.MESH_PEER_SHARED_FILE, async (_event, baseUrl: string, filePath: string) => {
-    const MAX_BYTES = 2_000_000
-    if (typeof baseUrl !== 'string' || !/^https?:\/\//.test(baseUrl)) {
-      return { ok: false as const, error: 'Bad base URL' }
-    }
-    if (typeof filePath !== 'string' || filePath.includes('..') || filePath.startsWith('/')) {
-      return { ok: false as const, error: 'Bad file path' }
-    }
-    const url = `${baseUrl.replace(/\/+$/, '')}/${filePath.split('/').map(encodeURIComponent).join('/')}`
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
-      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
-      const buf = Buffer.from(await res.arrayBuffer())
-      if (buf.length > MAX_BYTES) return { ok: false as const, error: 'File too large to preview (>2 MB)' }
-      // Null byte in the head = binary; the viewer offers download-only
-      const binary = buf.subarray(0, 8192).includes(0)
-      return {
-        ok: true as const,
-        mime: res.headers.get('content-type') ?? '',
-        size: buf.length,
-        binary,
-        content: binary ? buf.toString('base64') : buf.toString('utf8')
-      }
-    } catch {
-      return { ok: false as const, error: 'Peer unreachable' }
-    }
-  })
+  ipcMain.handle(IPC.MESH_PEER_SHARED_FILE, async (_event, baseUrl: string, filePath: string) => fetchPeerSharedFile(baseUrl, filePath))
 
   ipcMain.handle(IPC.MESH_SERVER_STOP, async () => {
     console.log('[IPC] MESH_SERVER_STOP called, meshServer exists:', !!meshServer, 'running:', meshServer?.isRunning())
@@ -6633,29 +6599,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // renderer's "Sign out" works. Clears the app-level (Studio) store — the
   // sign-in source of truth. Agent-sealed copies are re-captured on the next
   // attach, so this does not need to reach into every .adf.
-  ipcMain.handle(IPC.MCP_OAUTH_SIGNOUT, async (_event, rawArgs: unknown) => {
-    const url = (rawArgs as { url?: unknown } | null | undefined)?.url
-    if (typeof url !== 'string' || !url) return { success: false, error: 'A server url is required to sign out.' }
-    try {
-      await getAppOAuthStore().invalidate(url, 'all')
-      return { success: true }
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) }
-    }
-  })
+  ipcMain.handle(IPC.MCP_OAUTH_SIGNOUT, async (_event, rawArgs: unknown) => mcpOAuthSignOut(getAppOAuthStore(), rawArgs))
 
   // Phase 4 HTTP OAuth: whether a valid token is stored (app store) for a URL —
   // lets the renderer show a "signed in" indicator without exposing the token.
-  ipcMain.handle(IPC.MCP_OAUTH_STATUS, async (_event, rawArgs: unknown) => {
-    const url = (rawArgs as { url?: unknown } | null | undefined)?.url
-    if (typeof url !== 'string' || !url) return { signedIn: false }
-    try {
-      const record = await getAppOAuthStore().get(url)
-      return { signedIn: !!record?.tokens }
-    } catch {
-      return { signedIn: false }
-    }
-  })
+  ipcMain.handle(IPC.MCP_OAUTH_STATUS, async (_event, rawArgs: unknown) => mcpOAuthStatus(getAppOAuthStore(), rawArgs))
 
   ipcMain.handle(IPC.MCP_INSTALL_PACKAGE, async (_event, rawArgs: unknown) => {
     const v = validateMcpArgs(McpPackageArgs, rawArgs)
@@ -6749,32 +6697,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
   })
 
-  ipcMain.handle(IPC.MCP_ENSURE_PYTHON_RUNTIME, async () => {
-    try {
-      const uvPath = await uvManager.ensureUv()
-      const uvVersion = await uvManager.getUvVersion()
-      const pythonAvailable = await uvManager.isPythonAvailable()
-
-      if (!pythonAvailable) {
-        await uvManager.ensurePython()
-      }
-
-      return {
-        success: true,
-        uvAvailable: true,
-        uvVersion,
-        pythonAvailable: true,
-        uvPath
-      }
-    } catch (error) {
-      return {
-        success: false,
-        error: String(error),
-        uvAvailable: false,
-        pythonAvailable: false
-      }
-    }
-  })
+  ipcMain.handle(IPC.MCP_ENSURE_PYTHON_RUNTIME, async () => ensurePythonRuntime(uvManager))
 
   // Curated registry — remote-first with cached/bundled fallback; the service
   // never rejects, so this always yields a usable entry list.
@@ -6974,49 +6897,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // local control API), the redirect hop cap, and the size ceiling all have to
   // hold on every hop — not just the one the user typed.
 
-  const SKILLS_FETCH_TIMEOUT_MS = 10_000
+  ipcMain.handle(IPC.SKILLS_CATALOG_GET, async (_event, { url }: { url: string }) => fetchSkillsCatalog(url))
 
-  ipcMain.handle(IPC.SKILLS_CATALOG_GET, async (_event, { url }: { url: string }) => {
-    if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
-      return { ok: false as const, error: 'Catalog URL must be https' }
-    }
-    const body = await guardedFetch(url, {
-      maxBytes: MAX_CATALOG_BYTES,
-      timeoutMs: SKILLS_FETCH_TIMEOUT_MS
-    })
-    if ('error' in body) return { ok: false as const, error: body.error }
-    let json: unknown
-    try {
-      json = JSON.parse(body.bytes.toString('utf8'))
-    } catch {
-      return { ok: false as const, error: 'Catalog is not valid JSON' }
-    }
-    const parsed = parseSkillsCatalogDocument(json)
-    if (!parsed) return { ok: false as const, error: 'Unrecognized catalog schema' }
-    return {
-      ok: true as const,
-      entries: parsed.entries,
-      publisher: parsed.publisher,
-      dropped: parsed.dropped
-    }
-  })
-
-  ipcMain.handle(IPC.SKILLS_PACKAGE_GET, async (_event, { url }: { url: string }) => {
-    if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
-      return { ok: false as const, error: 'Package URL must be https' }
-    }
-    // The indexer rejects anything past this bound anyway — the guard aborts the
-    // stream at the cap rather than installing a package that could never index.
-    const body = await guardedFetch(url, {
-      maxBytes: MAX_SKILL_PACKAGE_BYTES,
-      timeoutMs: SKILLS_FETCH_TIMEOUT_MS
-    })
-    if ('error' in body) return { ok: false as const, error: body.error }
-    if (body.bytes.subarray(0, 8192).includes(0)) {
-      return { ok: false as const, error: 'SKILL.md is not text' }
-    }
-    return { ok: true as const, content: body.bytes.toString('utf8') }
-  })
+  ipcMain.handle(IPC.SKILLS_PACKAGE_GET, async (_event, { url }: { url: string }) => fetchSkillPackage(url))
 
   // --- Sandbox Package Management ---
 
@@ -7407,36 +7290,16 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // Extracted so the fleet map's aggregate poll can reuse the body.
   const getAdapterStatus = async (): Promise<{ adapters: ReturnType<ChannelAdapterManager['getStates']>; perAgent: AdapterAgentStatus[] }> => {
     // Merge adapter states across the foreground agent AND every background
-    // agent — adapters run per-agent, and the fleet map's base stations must
-    // exist regardless of which agent hosts the channel. Deduped by type,
-    // healthiest instance wins.
-    const rank = (status: string): number =>
-      status === 'connected' || status === 'running' ? 2 : status === 'error' ? 1 : 0
-    const byType = new Map<string, ReturnType<ChannelAdapterManager['getStates']>[number]>()
-    // Per-agent view for Settings → Channels: which agent hosts which adapter
-    // and how that instance is doing. Logs are dropped (the by-type view
-    // keeps them) to keep the payload small.
-    const perAgent: AdapterAgentStatus[] = []
-    const fold = (filePath: string | null, states: ReturnType<ChannelAdapterManager['getStates']>): void => {
-      for (const s of states) {
-        const prev = byType.get(s.type)
-        if (!prev || rank(s.status) > rank(prev.status)) byType.set(s.type, s)
-      }
-      if (filePath && states.length > 0) {
-        perAgent.push({
-          filePath,
-          adapters: states.map((s) => ({ type: s.type, status: s.status, error: s.error, connectedAt: s.connectedAt })),
-        })
-      }
-    }
-    if (currentAdapterManager) fold(currentWorkspace?.getFilePath() ?? null, currentAdapterManager.getStates())
+    // agent (services/adapter-status.ts).
+    const sources: Array<{ filePath: string | null; states: ReturnType<ChannelAdapterManager['getStates']> }> = []
+    if (currentAdapterManager) sources.push({ filePath: currentWorkspace?.getFilePath() ?? null, states: currentAdapterManager.getStates() })
     if (backgroundAgentManager) {
       for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
         const refs = backgroundAgentManager.getAgent(fp)
-        if (refs?.adapterManager) fold(fp, refs.adapterManager.getStates())
+        if (refs?.adapterManager) sources.push({ filePath: fp, states: refs.adapterManager.getStates() })
       }
     }
-    return { adapters: [...byType.values()], perAgent }
+    return mergeAdapterStates(sources)
   }
 
   ipcMain.handle(IPC.ADAPTER_GET_STATUS, async () => getAdapterStatus())
@@ -8280,20 +8143,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     getMainWindow()?.webContents.send(IPC.COMPUTE_CONTAINER_PHASE, payload)
   })
 
-  ipcMain.handle(IPC.COMPUTE_BROWSER_INFO, async (_event, args: { agentName: string; agentId: string }) => {
-    const containerName = isolatedContainerName(args.agentName, args.agentId)
-    // The Computer tab opens in any phase and shows it; only a ready
-    // container gets the (slow) browser bring-up awaited, so the viewer
-    // never lands on connection-refused right after a restart.
-    const { phase, detail } = await podmanService.containerPhase(containerName)
-    if (phase !== 'ready') return { containerName, hostPort: null, phase, detail }
-    let browserError: string | undefined
-    await podmanService.browserReady(containerName).catch((err) => {
-      browserError = err instanceof Error ? err.message : String(err)
-    })
-    const hostPort = await podmanService.getNovncHostPort(containerName)
-    return { containerName, hostPort, phase, detail: browserError }
-  })
+  ipcMain.handle(IPC.COMPUTE_BROWSER_INFO, async (_event, args: { agentName: string; agentId: string }) =>
+    getComputeBrowserInfo(podmanService, args))
 
   ipcMain.handle(IPC.COMPUTE_TEST_EXECUTION_TARGET, async (_event, target) => {
     return externalExecutionService.probe(target)
