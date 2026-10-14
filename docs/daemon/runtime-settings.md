@@ -216,10 +216,12 @@ Agents can request isolated compute from their own `.adf` config. The daemon set
 
 | Field | Description |
 |-------|-------------|
-| `meshEnabled` | Mesh registration (agents discoverable and messageable); on unless explicitly `false`. `adf network mesh enable\|disable` sets it |
+| `meshEnabled` | Mesh registration; on unless explicitly `false`. `adf network mesh enable\|disable` sets it. With `false`, loaded agents are not on the mesh: no messaging tools, no agent websites or `serving.api` routes on the mesh server, no outbound `ws_connections`, no mDNS or tailnet discovery |
 | `meshServerEnabled` | The mesh HTTP server (agent websites, mesh delivery); on unless explicitly `false`. `adf network server start\|stop` sets it |
 | `meshLan` | Bind the mesh server to all interfaces (it also does so when a `lan` or `public` agent loads) |
 | `meshPort` | Mesh server port, default `7295` |
+
+From the first release after 0.7.8 the daemon treats `meshEnabled: false` as ADF Studio does. Before, a daemon with the mesh disabled still served its agents' websites and `serving.api` routes and opened their `ws_connections`. To keep those, leave the mesh on and limit who can reach each agent with its `messaging.visibility`.
 
 Environment variables override mesh binding:
 
