@@ -63,6 +63,9 @@ export interface ContainerSummary {
    *  then 'failed' and no container exists behind the row). The message is
    *  the provisioning error; Rebuild retries, Remove clears the row. */
   error?: string
+  /** Other live runtimes on this machine that use this container ("daemon
+   *  pid 4242"). Studio in daemon mode only; absent when nobody else does. */
+  users?: string[]
 }
 
 /**
