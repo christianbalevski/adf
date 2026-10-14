@@ -1,13 +1,11 @@
-import { dirname } from 'node:path'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError, type DaemonClient } from '../../../../shared/daemon-client'
 import type { AlfAttestation } from '../../../../shared/types/adf-v02.types'
 import { deriveOwnerIdentity, validateMnemonic } from '../../../crypto/mnemonic-identity'
-import { LOCAL_PROOF_HEADER, readLocalProof } from '../../../daemon/local-access'
 import { verifyAttestation } from '../../../services/attestation.service'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
-import { confirmLockedReplace } from './providers'
+import { confirmLockedReplace, REMOTE_VALUES_UNSUPPORTED } from './providers'
 
 /**
  * The daemon-mode handlers of identity (tracker W3-B, design §5): the open
@@ -132,11 +130,19 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
       return undefined
     }),
 
+  // Values come only from the daemon on this machine (local-only reveal
+  // routes with the local proof); a remote daemon never sends them.
   [IPC.IDENTITY_GET]: (ctx, _event, args: { purpose: string }) =>
-    onOpenAgent(ctx, 'Reading a value of the open agent', () => null, (client, agentId) => reveal(client, agentId, args.purpose)),
+    onOpenAgent(ctx, 'Reading a value of the open agent', () => null, (client, agentId) => {
+      if (ctx.mode === 'remote') throw new Error(REMOTE_VALUES_UNSUPPORTED)
+      return reveal(client, agentId, args.purpose)
+    }),
 
   [IPC.IDENTITY_REVEAL]: (ctx, _event, args: { purpose: string }) =>
-    onOpenAgent(ctx, 'Revealing a value of the open agent', () => ({ value: null }), async (client, agentId) => ({ value: await reveal(client, agentId, args.purpose) })),
+    onOpenAgent(ctx, 'Revealing a value of the open agent', () => ({ value: null }), async (client, agentId) => {
+      if (ctx.mode === 'remote') return { value: null, reason: REMOTE_VALUES_UNSUPPORTED }
+      return { value: await reveal(client, agentId, args.purpose) }
+    }),
 
   [IPC.IDENTITY_DELETE]: (ctx, _event, args: { purpose: string }) =>
     onOpenAgent(ctx, 'Deleting a value of the open agent', () => undefined, async (client, agentId) => {
@@ -288,8 +294,8 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
   },
 
   /**
-   * POST /identity/import with this machine's local proof (local mode: read
-   * from the file next to the daemon's settings). Studio's import switches
+   * POST /identity/import with this machine's local proof (local mode: the
+   * client sends it, read from the file next to the daemon's settings). Studio's import switches
    * owners (`switchOwner`); with `expectedOwnerDid` it restores that owner
    * only. The daemon refuses a switch while the previous owner's phrase is
    * not backed up, since the switch removes it from this machine; that
@@ -305,20 +311,9 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
         throw new Error(`That phrase belongs to ${did}, not this machine's owner ${expected}. Check the words, or use Import identity to switch owners.`)
       }
       const client = await ctx.ready()
-      const headers: Record<string, string> = {}
-      if (ctx.mode === 'local') {
-        const { filePath } = await client.request<{ filePath: string | null }>('GET', '/settings')
-        const port = Number(new URL(ctx.connection.baseUrl ?? 'http://127.0.0.1').port) || undefined
-        const proof = filePath ? readLocalProof(dirname(filePath), port) : null
-        if (proof) headers[LOCAL_PROOF_HEADER] = proof
-      }
-      const res = await ctx.raw('/identity/import', undefined, {
-        method: 'POST',
-        headers,
-        body: { mnemonic: normalized, ...(expected ? {} : { switchOwner: true }) },
-      })
-      const body = await res.json().catch(() => ({})) as { error?: string; ownerDid?: string; restamp?: { restamped: number; attested: number; failures: string[] } }
-      if (!res.ok) throw new Error(body.error ?? `The ADF daemon answered ${res.status}`)
+      // Local mode: the client sends this machine's local proof (index.ts).
+      const body = await client.request<{ ownerDid?: string; restamp?: { restamped: number; attested: number; failures: string[] } }>(
+        'POST', '/identity/import', { body: { mnemonic: normalized, ...(expected ? {} : { switchOwner: true }) }, timeoutMs: 120_000 })
       ctx.log.log(`[Backend] Owner identity imported in the daemon: ${body.ownerDid}`)
       return { success: true, ownerDid: body.ownerDid, ...(body.restamp ?? { restamped: 0, attested: 0, failures: [] }) }
     } catch (err) {

@@ -20,6 +20,9 @@ import { enc, type DaemonHandlerTable, type DaemonModeContext } from '../context
  * and relays the ChatGPT callback.
  */
 
+/** Stored values in remote mode (channel map: remote-unsupported): the daemon's reveal routes answer its own machine only. */
+export const REMOTE_VALUES_UNSUPPORTED = 'Stored credential values stay on the daemon\'s machine: a remote daemon never sends them to Studio.'
+
 /** GET /settings answers provider keys as this (daemon/http-api.ts). */
 export const REDACTED_API_KEY = '__redacted__'
 
@@ -103,6 +106,27 @@ function statusShape(status: AuthStatus, signedIn: readonly string[], signedOut:
   return out
 }
 
+/** Where the daemon's sign-in pages may point: the providers' own sign-in hosts (auth-manager.ts of each). */
+const CHATGPT_SIGN_IN_HOSTS = ['auth.openai.com']
+const GROK_SIGN_IN_HOSTS = ['x.ai', '.x.ai']
+
+/**
+ * Open a sign-in page the daemon handed over in this machine's browser, only
+ * when it is an https page of the provider's own sign-in hosts (an entry
+ * starting with "." admits subdomains): a daemon, or anything that answers
+ * on its port, never makes Studio open another address.
+ */
+export async function openSignInPage(url: string, hosts: readonly string[]): Promise<void> {
+  let parsed: URL
+  try { parsed = new URL(url) } catch { throw new Error('The ADF daemon sent a sign-in address that is not a URL; it was not opened.') }
+  const host = parsed.hostname.toLowerCase()
+  const allowed = hosts.some((h) => (h.startsWith('.') ? host.endsWith(h) : host === h))
+  if (parsed.protocol !== 'https:' || !allowed) {
+    throw new Error(`The ADF daemon sent an unexpected sign-in address (${parsed.protocol}//${host}); it was not opened.`)
+  }
+  await shell.openExternal(parsed.toString())
+}
+
 /** One ChatGPT sign-in at a time per Studio, as the embedded auth manager runs one flow. */
 const chatgptFlows = new WeakMap<DaemonModeContext, Promise<{ success: boolean; error?: string }>>()
 
@@ -119,7 +143,7 @@ async function chatgptSignIn(ctx: DaemonModeContext, client: DaemonClient): Prom
     const redirectUri = `http://localhost:${server.port}/auth/callback`
     const flow = await client.request<{ flowId: string; authUrl: string; state: string }>('POST', '/auth/chatgpt/start', { body: { mode: 'relay', redirectUri } })
     ctx.log.log('[Backend] ChatGPT sign-in: opening the sign-in page in the browser')
-    await shell.openExternal(flow.authUrl)
+    await openSignInPage(flow.authUrl, CHATGPT_SIGN_IN_HOSTS)
     const result = await server.waitForCallback()
     if (result.state !== flow.state) throw new Error('OAuth state mismatch — possible CSRF attack')
     await client.request('POST', '/auth/chatgpt/complete', { body: { flowId: flow.flowId, code: result.code, state: result.state }, timeoutMs: 60_000 })
@@ -179,6 +203,7 @@ export const PROVIDER_HANDLERS: DaemonHandlerTable = {
   [IPC.PROVIDER_CREDENTIAL_GET]: async (ctx, _event, rawArgs: unknown) => {
     const args = credentialGetArgs.parse(rawArgs)
     const prefix = `provider:${args.providerId}:`
+    if (ctx.mode === 'remote') return { credentials: {}, error: REMOTE_VALUES_UNSUPPORTED }
     try {
       const client = await ctx.ready()
       const query = { path: args.filePath }
@@ -280,7 +305,7 @@ export const PROVIDER_HANDLERS: DaemonHandlerTable = {
       const client = await ctx.ready()
       const flow = await client.request<{ userCode: string; verificationUri: string; verificationUriComplete?: string; expiresIn: number }>('POST', '/auth/grok/start', { timeoutMs: 60_000 })
       ctx.log.log('[Backend] Grok sign-in: opening the approval page in the browser')
-      await shell.openExternal(flow.verificationUriComplete ?? flow.verificationUri)
+      await openSignInPage(flow.verificationUriComplete ?? flow.verificationUri, GROK_SIGN_IN_HOSTS)
       return {
         success: true,
         userCode: flow.userCode,

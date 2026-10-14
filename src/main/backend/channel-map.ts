@@ -425,7 +425,7 @@ export const CHANNEL_MAP = {
 
   // --- Identity / keystore (per agent) ---------------------------------------
   [IPC.IDENTITY_SET]: proxied('invoke', ['PUT /agents/:id/identity/:purpose'], { note: 'The derived key of a password-protected file lives in the daemon (§5.4).' }),
-  [IPC.IDENTITY_GET]: proxied('invoke', ['POST /agents/:id/identity/reveal'], { note: 'The value through the local-only reveal route (W3-B); key material (crypto:*) is never returned.' }),
+  [IPC.IDENTITY_GET]: unsupported('invoke', ['POST /agents/:id/identity/reveal'], 'Stored values stay on the daemon\'s machine: Studio says so ("a remote daemon never sends them").', { note: 'Local mode: the value through the reveal route, which needs the local proof (Studio sends it); key material (crypto:*) is never returned.' }),
   [IPC.IDENTITY_DELETE]: proxied('invoke', ['DELETE /agents/:id/identity/:purpose']),
   [IPC.IDENTITY_DELETE_PREFIX]: proxied('invoke', ['DELETE /agents/:id/identity-prefix']),
   [IPC.IDENTITY_LIST]: proxied('invoke', ['GET /agents/:id/identity']),
@@ -439,7 +439,7 @@ export const CHANNEL_MAP = {
   [IPC.IDENTITY_PASSWORD_REMOVE]: proxied('invoke', ['DELETE /agents/:id/identity/password']),
   [IPC.IDENTITY_PASSWORD_CHANGE]: local('invoke', 'Deprecated: always refuses. The daemon-mode handler returns the same refusal.'),
   [IPC.IDENTITY_LIST_ENTRIES]: proxied('invoke', ['GET /agents/:id/identity/entries']),
-  [IPC.IDENTITY_REVEAL]: proxied('invoke', ['POST /agents/:id/identity/reveal'], { note: 'The value through the local-only reveal route (W3-B); key material (crypto:*) is never returned.' }),
+  [IPC.IDENTITY_REVEAL]: unsupported('invoke', ['POST /agents/:id/identity/reveal'], 'Stored values stay on the daemon\'s machine: Studio says so ("a remote daemon never sends them").', { note: 'Local mode: the value through the reveal route, which needs the local proof (Studio sends it); key material (crypto:*) is never returned. Remote: { value: null, reason } with that sentence.' }),
   [IPC.IDENTITY_WIPE_ALL]: proxied('invoke', ['POST /agents/:id/identity/wipe']),
   [IPC.IDENTITY_GET_DID]: proxied('invoke', ['GET /agents/:id/identity/did']),
   [IPC.IDENTITY_GENERATE_KEYS]: proxied('invoke', ['POST /agents/:id/identity/generate-keys'], { note: 'The daemon issues owner and operator attestations too (runtime-service.ts:1879).' }),
@@ -485,7 +485,7 @@ export const CHANNEL_MAP = {
   [IPC.PROVIDER_CREDENTIAL_SET]: proxied('invoke', ['PUT /files/agent/providers/:providerId/credential', 'POST /files/agent/providers/:providerId/credential/copy-app-key'], {
     note: 'A value of __redacted__ (Copy app key) stands for the app key the daemon holds: copy-app-key. 409 credentials_locked asks the owner (native dialog) to replace or cancel.',
   }),
-  [IPC.PROVIDER_CREDENTIAL_GET]: proxied('invoke', ['GET /files/agent/providers/:providerId/credentials', 'POST /files/agent/identity/reveal']),
+  [IPC.PROVIDER_CREDENTIAL_GET]: unsupported('invoke', ['GET /files/agent/providers/:providerId/credentials', 'POST /files/agent/identity/reveal'], 'Stored values stay on the daemon\'s machine: Studio says so ("a remote daemon never sends them").', { note: 'Local mode: values through the reveal route with the local proof. Remote: { credentials: {}, error } with that sentence.' }),
   [IPC.PROVIDER_CREDENTIAL_LIST_FILES]: proxied('invoke', ['GET /credentials/providers/files']),
   [IPC.PROVIDER_ATTACH]: proxied('invoke', ['POST /files/agent/providers']),
   [IPC.PROVIDER_DETACH]: proxied('invoke', ['DELETE /files/agent/providers/:providerId']),

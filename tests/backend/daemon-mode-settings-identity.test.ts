@@ -6,7 +6,7 @@
  * owner-status shapes of every daemon identity status, the ChatGPT relay,
  * and the secrets that must not cross into the renderer.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -154,6 +154,18 @@ describe('identity of the open agent', () => {
     await handle.session.closeFile()
   })
 
+  it('reveal sends the local proof of this machine, and only on the reveal route', async () => {
+    const { proof } = mintLocalProof(dir, 47391)
+    await handle.session.openFile(FILE, async () => AGENT)
+    daemon.routes.set(`POST /agents/${AGENT}/identity/reveal`, () => ({ agentId: AGENT, values: { 'app:token': 'v' } }))
+    daemon.routes.set(`GET /agents/${AGENT}/identity/did`, () => ({ did: 'did:key:x' }))
+    expect(await invoke(IPC.IDENTITY_REVEAL, { purpose: 'app:token' })).toEqual({ value: 'v' })
+    expect(await invoke(IPC.IDENTITY_GET_DID)).toEqual({ did: 'did:key:x' })
+    expect(requests('POST', `/agents/${AGENT}/identity/reveal`)[0].headers[LOCAL_PROOF_HEADER]).toBe(proof)
+    expect(requests('GET', `/agents/${AGENT}/identity/did`)[0].headers[LOCAL_PROOF_HEADER]).toBeUndefined()
+    await handle.session.closeFile()
+  })
+
   it('unlock keeps the key in the daemon and maps a wrong password as embedded does', async () => {
     await handle.session.openFile(FILE, async () => AGENT)
     daemon.routes.set(`POST /agents/${AGENT}/identity/password/unlock`, ({ body }) => ((body as { password: string }).password === 'right'
@@ -245,11 +257,8 @@ describe('owner identity (§5.4)', () => {
   })
 
   it('import sends this machine\'s local proof and switches owners unless restoring', async () => {
-    const settingsDir = join(dir, 'daemon-settings')
-    mkdirSync(settingsDir, { recursive: true })
-    writeFileSync(join(settingsDir, 'adf-settings.json'), '{}')
-    const { proof } = mintLocalProof(settingsDir, 47391)
-    daemon.routes.set('GET /settings', () => ({ filePath: join(settingsDir, 'adf-settings.json'), settings: {} }))
+    // Local mode: the daemon keeps its settings (and its proof) next to Studio's.
+    const { proof } = mintLocalProof(dir, 47391)
     daemon.routes.set('POST /identity/import', () => ({ ownerDid: fixture.ownerDid, restamp: { restamped: 2, attested: 1, failures: [] } }))
     expect(await invoke(IPC.IDENTITY_OWNER_IMPORT, `  ${PHRASE.toUpperCase()} `)).toEqual({ success: true, ownerDid: fixture.ownerDid, restamped: 2, attested: 1, failures: [] })
     const sent = requests('POST', '/identity/import')[0]
