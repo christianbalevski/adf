@@ -190,7 +190,8 @@ interface AgentStoreState extends LoopSlice {
    *  inside the shell/code that raised it and reports its output there — so
    *  without a stamp they render as "running…" forever. No-op for entries that
    *  belong to a real tool call (their paired result is the terminal state). */
-  markApprovalOutcome: (logEntryId: string, approved: boolean, loop?: string) => void
+  /** `'completed'`: the runtime settled the request (no human decision). */
+  markApprovalOutcome: (logEntryId: string, approved: boolean | 'completed', loop?: string) => void
   addPendingAsk: (logEntryId: string, requestId: string, question: string, loop?: string) => void
   removePendingAsk: (logEntryId: string, loop?: string) => void
   setPendingSuspend: (logEntryId: string | null, loop?: string) => void
@@ -349,7 +350,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       if (!entry || entry.metadata?.outOfBand !== true) return {}
       s.log[index] = {
         ...entry,
-        metadata: { ...entry.metadata, overrideOutcome: approved ? 'approved' : 'denied' }
+        metadata: { ...entry.metadata, overrideOutcome: approved === 'completed' ? 'completed' : approved ? 'approved' : 'denied' }
       }
       // A new entry object — the grouping passes must hand the row out again.
       return { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }

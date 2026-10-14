@@ -39,6 +39,7 @@ import { withDeadline } from '../utils/concurrency'
 import { AdfDatabase } from '../adf/adf-database'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
 import { takeLaunchEnv } from './routes/meta-routes'
+import { RuntimeDiscovery } from '../services/runtime-discovery'
 
 // Defined by the builds that ship the daemon (electron.vite.config.ts for
 // out/main/daemon.js, scripts/build-npm.mjs for the npm package).
@@ -228,6 +229,31 @@ meshServer.setWsConnectionManager(wsConnectionManager)
 if (settings.get('meshEnabled') !== false) {
   meshManager.enableMesh()
 }
+// Peer discovery: mDNS announce/browse, tailnet sweep, manual peers (Studio
+// parity for Settings → Networking and the fleet map). Follows the mesh
+// server on its own; stopped before it at shutdown so goodbyes go out.
+const runtimeDiscovery = new RuntimeDiscovery({
+  settings,
+  meshServer,
+  mesh: meshManager,
+  getRuntimeDid: discoveryRuntimeDid,
+  getOwnerDid: () => (settings.get('ownerDid') as string | undefined) || undefined,
+})
+runtimeDiscovery.start()
+// The mDNS TXT record carries the runtime DID: re-announce when the daemon
+// starts or stops presenting Studio's.
+ownerIdentity.onRuntimeChange(() => {
+  void runtimeDiscovery.stop().then(() => runtimeDiscovery.start())
+})
+
+/**
+ * The runtime DID mDNS advertises: the one this daemon signs with, the
+ * adopted Studio runtime DID while adoption is active, else its own
+ * (`daemonRuntimeDid`). Same source as mesh /ping (presentedSettings).
+ */
+function discoveryRuntimeDid(): string | undefined {
+  return ownerIdentity.presentedRuntime().did ?? undefined
+}
 const agentRuntimeBuilder = new AgentRuntimeBuilder({
   settings,
   codeSandboxService,
@@ -244,6 +270,9 @@ const agentRuntimeBuilder = new AgentRuntimeBuilder({
   basePrompt,
   toolPrompts,
   compactionPrompt,
+  // App-level MCP OAuth sign-ins: capture-on-attach and interactive sign-in
+  // store here first, as Studio's mcpOauthCredentials.
+  mcpOAuthAppStore: ownerIdentity.mcpOAuth,
 })
 const runtime = new RuntimeService({
   settings,
@@ -364,7 +393,7 @@ const daemon = new DaemonHost({
       return { success: meshServer.isRunning(), running: meshServer.isRunning(), port: meshServer.getPort(), host: meshServer.getHost() }
     },
     getLanAddresses,
-    getDiscoveredRuntimes: () => [],
+    getDiscoveredRuntimes: (args?: { force?: boolean }) => runtimeDiscovery.getDiscoveredRuntimes(args),
   },
   mcpPackageService: mcpPackageResolver,
   mcpPythonPackageService: uvxPackageResolver,
@@ -381,6 +410,7 @@ const daemon = new DaemonHost({
   // independently try-caught by the host.
   onShutdown: [
     () => wsConnectionManager.stopAll(),
+    () => runtimeDiscovery.stop(),
     () => meshServer.stop(),
     () => meshManager.disableMesh(),
     () => codeSandboxService.destroyAll(),
@@ -557,10 +587,9 @@ function registerAgentWithMesh(event: RuntimeAgentLoadedEvent): void {
     event.agent.adfCallHandler ?? null,
     event.agent.codeSandboxService ?? codeSandboxService,
     event.agent.triggerEvaluator,
+    // Stored only when the agent registered; dropped when it unregisters.
+    event.agent.adapterManager ?? null,
   )
-  if (event.agent.adapterManager) {
-    meshManager.setAdapterManager(event.filePath, event.agent.adapterManager)
-  }
   ensureMeshServer()
 }
 

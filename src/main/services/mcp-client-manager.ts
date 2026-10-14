@@ -745,6 +745,27 @@ export class McpClientManager extends EventEmitter {
   }
 
   /**
+   * Mark a server that could not connect for lack of an OAuth token as
+   * waiting for an interactive sign-in. `message` names the recovery path;
+   * the status is visible in getServerStates() and the status-changed event.
+   * A server not held yet is added in that state; a connected one is left alone.
+   */
+  markNeedsSignIn(config: McpServerConfig, message: string): void {
+    let managed = this.servers.get(config.name)
+    if (managed?.status === 'connected') return
+    if (!managed) {
+      managed = { config, client: null, transport: null, status: 'needs_sign_in', tools: [], logs: [], restartCount: 0, autoRestart: false }
+      this.servers.set(config.name, managed)
+    }
+    managed.status = 'needs_sign_in'
+    managed.error = message
+    managed.autoRestart = false
+    this.clearRetryTimer(managed)
+    this.addLog(managed, 'system', message)
+    this.emitStatusChange(managed)
+  }
+
+  /**
    * Version the server reported in the MCP initialize handshake
    * (serverInfo.version), or undefined if not connected / not reported.
    */

@@ -304,6 +304,41 @@ The daemon recipe is the target recipe. For each drift item, the user-visible be
 | Compute `hostInfo` | Absent | Present | Present | Keep daemon behaviour |
 | Tracked-dir watcher + autostart of new files | chokidar (`ipc/index.ts:1154-1221`) | n/a | None | Daemon gains the watcher; emits `tracked_dirs` push |
 
+### 6.1 Recipe diff (W1-B, 2026-10-14)
+
+Line-by-line comparison of the three recipes: foreground `AGENT_START` (`ipc/index.ts:3678-5008`), `BackgroundAgentManager.doStartAgent` + `setupManagedAgent` (`background-agent-manager.ts:535-1993`), and `AgentRuntimeBuilder.build` with the daemon's mesh wiring (`daemon/index.ts`). It extends the table above. "Builder" is the state before W1-B.
+
+| # | Item | Studio fg | BAM | Builder | Resolution |
+|---|---|---|---|---|---|
+| 1 | Core tool declarations | Shared helper, fresh read-modify-write | Same | Private copy, wrote the start-time config back | W1-B: shared helper (E1) |
+| 2 | `container_exec` → `compute_exec` | Running config only | Same | Persisted | W1-B: running config only |
+| 3 | Derived key in MCP env, credential files, OAuth store, adapters, `AdfCallHandler` identity and signing | Captured key | Same | `null` everywhere | W1-B: one per-agent cell; `applyDerivedKey(agent, key)` restarts adapters and MCP servers whose credentials need the key. RuntimeService calls it after an unlock (W1-A); `build({ derivedKey })` for a key held before start |
+| 4 | Derived key in `createProviderForModel` | Captured key | Same | `null` (RuntimeService) | W1-A |
+| 5 | OAuth connect store | Agent store, app store fallback | Agent store | Agent store | Keep agent store; app store via `mcpOAuthAppStore` once W1-C's `DaemonAppOAuthStore` is passed in `daemon/index.ts` |
+| 6 | Capture-on-attach (app token sealed into the agent before an http+oauth connect) | Yes | No | No | W1-B: done when an app store is injected |
+| 7 | Interactive OAuth sign-in from an agent call | `mcp_oauth_signin` approval, browser opened by Studio | Same approval, injected runner | None | W1-B: same approval; the daemon runs the flow and raises `mcp_oauth_authorize` with `authorize_url`. It stays pending until the callback lands (approve = opened); the runtime ends it with `AgentExecutor.settleHilTask` (outcome `completed`). One sign-in per server. Studio daemon mode MUST open that URL without a click (W3-C); remote mode needs the relayed callback (§9.3, W4-B) |
+| 8 | Stdio auth preflight (`mcp_install` with `auth`) | Native "Continue" dialog | Same (injected) | Headless: browser best-effort, wait for exit | Open: needs a HIL-based preflight; proposed for W3-C with the registration-test gap (W1-D list) |
+| 9 | MCP setup-level failure | Keeps manager, removes scratch dir | Keeps both | Manager `null` | W1-B: BAM behaviour |
+| 10 | MCP reconcile on config change | Agents-screen save and `sys_update_config` | None | None | W1-B: on every `applyConfigChange` (agent writes and `RuntimeService.setAgentConfig`); a server `mcp_install` already connected is skipped; it prompts for OAuth only while a turn runs |
+| 11 | `hostDenied` in `mcp_install`/`mcp_restart` results | Yes | No | No | W1-B: yes |
+| 12 | Config fan-out after an MCP tool sync | Hand-rolled `updateConfig` | Same | Same | W1-B: `applyConfigChange(…, { notifyHost: false })`, so inner loops re-derive (deliberate difference) |
+| 13 | Empty host spawn args filtered (`args.filter(Boolean)`) | Yes | No | No | Keep BAM behaviour |
+| 14 | MCP status push, MCP log cache kept after stop | `MCP_SERVER_STATUS_CHANGED`, `mcpLogCache` | Workspace logs | Workspace logs | W2-B (push), W3-C (logs) |
+| 15 | Adapter inbound and status pushes | `INBOX_UPDATED`, `ADAPTER_STATUS_CHANGED` | `inbox_updated`, `adapter_status_changed` events | None | W2-B |
+| 16 | Umbilical taps | `getTapManager` | Same | Taps registered, `tapManager` not exposed; profile `umbilicalTaps: false` | W1-B: exposed, profile on, ledger entry fixed |
+| 17 | Host `onConfigChanged` | Renderer config push, mesh copy, file rename, MCP reconcile, adapter reconcile | Mesh copy, rename scheduled, adapter reconcile | Adapter reconcile | W1-B: mesh copy (through `agent-runtime-signals`), MCP reconcile. Rename: W1-A/W1-E. Config push: W2-B |
+| 18 | Agent sets itself `off` | `handleAgentOff`: mesh unregister, owner-off dispose | `onStateOff` → same | Nothing: stays loaded and registered | W1-A (host attachment) |
+| 19 | Trigger error shown in the UI | `error` on `AGENT_EVENT` | Display state `error` | Log only | W1-A |
+| 20 | Mesh registration | `registerAgent`: bus, `isMessageTriggered`, config and key updates, adapter manager | Same | Servable only; `isMessageTriggered` false (respond_only agents could never reply) | W1-B: full registration inside `registerServableAgent` |
+| 21 | Mesh registration while the mesh is disabled | None | None | Registered (served on the mesh port) | W1-B: none |
+| 22 | Mesh-defaulted config pushed into the executor after registration | Yes (fresh start) | No | No | Keep BAM behaviour |
+| 23 | Main-loop clear | `clearLoop` + reset, then `meshManager.resetAgentSession` (a second clear) | n/a | `RuntimeService.clearAgentChat`: one clear + the same reset | No gap: the W0-A row is met by `clearAgentChat` |
+| 24 | Config written during the startup window | Adopted at install (`pickFresherConfig`); MCP startup sync onto a fresh read | Start-time config | Start-time config | No writer exists before the daemon registers an agent. W2-A open documents MUST adopt such writes |
+| 25 | Idle sweep (`beforeDispatch` activity, session rehydrate) | n/a | Yes | None | Accepted: memory relief only, nothing visible |
+| 26 | Peer discovery | mDNS, tailnet, manual peers | n/a | `[]` | W1-B: `services/runtime-discovery.ts`. It polls the mesh server state (2 s) where Studio reacts in its start/stop handlers. `GET /network/mesh/discovered-runtimes` does not forward `force` yet (`http-api.ts`, W2-A) |
+
+Double delivery: the message-bus subscription adds no delivery path. Nothing calls `MessageBus.send`; local sends deliver in-process (`mesh-manager.ts` `sendMessage`), HTTP and WS ingress go through `processIngressMessage`. `tests/daemon-mesh-parity.test.ts` runs the mesh-triggered turn under both registrations.
+
 ## 7. Event parity
 
 Renderer consumers that daemon mode MUST feed with identical payloads:

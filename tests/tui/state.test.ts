@@ -101,6 +101,16 @@ describe('reducer: loop-aware event ingestion', () => {
     expect(state.transcripts[transcriptKey(AGENT, 'main')].items[0]).toEqual(expect.objectContaining({ kind: 'hil', status: 'approved' }))
   })
 
+  it('shows a request the runtime settled as completed, not denied', () => {
+    let state = reduce(
+      loaded(),
+      { type: 'event', frame: frame('hil.requested', { request_id: 't10', task_id: 't10', tool: 'mcp_oauth_authorize', input: { server: 'remote' }, reason: 'restricted' }) },
+    )
+    state = reduce(state, { type: 'event', frame: frame('hil.resolved', { request_id: 't10', task_id: 't10', approved: false, settled: true, feedback: 'Authorization completed' }) })
+    expect(state.agents[AGENT].pendingTasks).toEqual([])
+    expect(state.transcripts[transcriptKey(AGENT, 'main')].items[0]).toEqual(expect.objectContaining({ kind: 'hil', status: 'completed', feedback: 'Authorization completed' }))
+  })
+
   it('falls back to main when the selected loop disappears', () => {
     let state = reduce(loaded(), { type: 'select/loop', agentId: AGENT, loop: 'consolidator' })
     expect(state.selectedLoop[AGENT]).toBe('consolidator')
