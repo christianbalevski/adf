@@ -19,6 +19,7 @@ import { REGISTERED_OUTSIDE, registerDaemonModeHandlers, type DaemonModeHandle }
 import { DAEMON_MODE_HANDLERS } from '../../src/main/backend/daemon-mode/handlers'
 import { FRAME_CHANNELS, PUSH_TOPICS } from '../../src/main/backend/daemon-mode/event-bridge'
 import { DAEMON_MODE_UNAVAILABLE } from '../../src/main/backend/daemon-mode/errors'
+import { channelKey, pendingWorkstream } from '../../src/main/backend/daemon-mode/pending'
 
 const entries = Object.entries(CHANNEL_MAP) as Array<[MappedChannel, ChannelEntry]>
 const BASE = 'http://127.0.0.1:47385'
@@ -94,12 +95,13 @@ describe('daemon-mode handler registration (D2)', () => {
   })
 
   it('a pending handler throws a visible error naming its workstream, and never reads embedded state', async () => {
-    const pending = handle.pending.find((p) => p.channel === IPC.MESH_FLEET_STATUS)!
-    expect(pending.workstream).toBe('W3-D')
-    const fn = electronStub.handlers.get(IPC.MESH_FLEET_STATUS)!
+    // Any pending channel will do; the W3 workstreams shrink the list.
+    const pending = handle.pending.find((p) => p.channel !== IPC.BACKGROUND_AGENT_STATUS)!
+    expect(pending.workstream).toBe(pendingWorkstream(pending.channel))
+    const fn = electronStub.handlers.get(pending.channel)!
     await expect(Promise.resolve().then(() => fn({}))).rejects.toMatchObject({
       code: DAEMON_MODE_UNAVAILABLE,
-      message: 'MESH_FLEET_STATUS is not available in daemon mode yet: W3-D',
+      message: `${channelKey(pending.channel)} is not available in daemon mode yet: ${pending.workstream}`,
     })
   })
 
@@ -217,9 +219,12 @@ describe('daemon-mode handlers: review fixes', () => {
 
   it('a pending channel warns once, and BACKGROUND_AGENT_STATUS announces the running agents', async () => {
     logs.length = 0
-    const fn = electronStub.handlers.get(IPC.MESH_STATUS)!
+    // Not the channel the test above already called (it warned then).
+    const called = handle.pending.find((p) => p.channel !== IPC.BACKGROUND_AGENT_STATUS)!.channel
+    const channel = handle.pending.find((p) => p.channel !== IPC.BACKGROUND_AGENT_STATUS && p.channel !== called)!.channel
+    const fn = electronStub.handlers.get(channel)!
     for (let i = 0; i < 3; i++) await expect(Promise.resolve().then(() => fn({}))).rejects.toThrow('not available in daemon mode yet')
-    expect(logs.filter((l) => l.includes('MESH_STATUS was called'))).toHaveLength(1)
+    expect(logs.filter((l) => l.includes(`${channelKey(channel)} was called`))).toHaveLength(1)
     handle.bridge.seed([{ id: 'id-9', filePath: join(dir, 'agent-9.adf'), handle: 'agent-9', runtimeState: 'idle' as never }])
     electronStub.pushes.length = 0
     await expect(Promise.resolve().then(() => electronStub.handlers.get(IPC.BACKGROUND_AGENT_STATUS)!({}))).rejects.toThrow('W3-A')

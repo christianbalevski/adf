@@ -292,6 +292,13 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
           connect: Object.assign(
             async () => ({ baseUrl: url, logFile, description: `the parity daemon pid ${daemon.child.pid} on ${url}`, source: { token: () => token } }),
             { logFile }),
+          // The OS keychain's shared owner-phrase entry is the test keychain file here, as for the daemon child.
+          sharedMnemonic: () => ({
+            read: () => {
+              try { return (JSON.parse(readFileSync(keychainFile, 'utf-8')) as Record<string, string>)['owner-mnemonic'] ?? null } catch { return null }
+            },
+            write: () => { throw new Error('parity harness: Studio main does not write the shared owner phrase in daemon mode') },
+          }),
           hooks: {
             showMainWindow: () => { electron.openWindow(); return null },
             openFile: (filePath) => { electron.localCalls.push({ api: 'hooks.openFile', args: [filePath] }) },

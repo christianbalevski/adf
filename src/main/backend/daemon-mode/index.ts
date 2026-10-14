@@ -7,6 +7,8 @@ import { IPC } from '../../../shared/constants/ipc-channels'
 import { BACKEND_ENV_OVERRIDE } from '../backend-config'
 import { CHANNEL_MAP, type ChannelEntry, type MappedChannel } from '../channel-map'
 import { processAgentLeases, type AgentLeaseRegistry } from '../../runtime/agent-lease'
+import { openSharedMnemonicStore, type SharedMnemonicStore } from '../../services/owner-secret-store'
+import { isLocalOnlyRoute, LOCAL_PROOF_HEADER, readLocalProof } from '../../daemon/local-access'
 import { BackgroundEventBatcher } from '../../ipc/background-event-batch'
 import { initApplicationMenu, recordRecentFile } from '../../menu'
 import { createAdfFileHandler } from './adf-file'
@@ -81,6 +83,8 @@ export interface DaemonModeDeps {
   fetch?: typeof fetch
   /** The client session implementation. Default: the GET /events adapter until W2-B. */
   createSession?: (client: DaemonClient) => ClientSession
+  /** The shared owner-phrase keychain entry (tests: a stand-in). Default: the OS keychain's. */
+  sharedMnemonic?: () => SharedMnemonicStore | null
 }
 
 export interface DaemonModeHandle {
@@ -121,7 +125,31 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   // Before W4-A's switch moves them: seed the client file once from adf-settings.json.
   ClientSettingsStore.seedOnce(clientSettingsPath(deps.userDataDir), join(deps.userDataDir, 'adf-settings.json'), log)
   const clientSettings = new ClientSettingsStore(clientSettingsPath(deps.userDataDir), log)
-  const connection = new DaemonConnection(deps.connect, log, deps.fetch)
+  // Local mode: the daemon is this machine's and keeps its settings next to
+  // Studio's (daemon-process.ts checks that), so Studio reads its local proof
+  // and sends it on the local-only routes (owner import, stored-value
+  // reveal), as the adf CLI does. Never for another route or another host.
+  const connect: DaemonConnector = deps.mode !== 'local' ? deps.connect : Object.assign(
+    async (progress: (text: string) => void) => {
+      const endpoint = await deps.connect(progress)
+      const port = Number(new URL(endpoint.baseUrl).port) || undefined
+      return {
+        ...endpoint,
+        source: {
+          ...endpoint.source,
+          token: () => endpoint.source.token(),
+          ...(endpoint.source.refresh ? { refresh: () => endpoint.source.refresh!() } : {}),
+          localProof: (path: string): Record<string, string> => {
+            if (!isLocalOnlyRoute(path)) return {}
+            const proof = readLocalProof(deps.userDataDir, port)
+            return proof ? { [LOCAL_PROOF_HEADER]: proof } : {}
+          },
+        },
+      }
+    },
+    { logFile: deps.connect.logFile },
+  )
+  const connection = new DaemonConnection(connect, log, deps.fetch)
   const session = new DaemonModeSession(null, log)
 
   const firstWindow = (): BrowserWindow | null => {
@@ -295,6 +323,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       const url = client.url(path, query)
       return (deps.fetch ?? fetch)(url, { headers: client.headers({ Accept: '*/*' }), redirect: 'manual' })
     },
+    sharedMnemonic: deps.sharedMnemonic ?? openSharedMnemonicStore,
     recordRecentFile,
     hooks,
     log,

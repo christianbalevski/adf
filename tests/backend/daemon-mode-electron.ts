@@ -81,7 +81,7 @@ export function createElectronStub(): ElectronStub {
     },
     shell: {
       openPath: async (p: string) => { call('shell.openPath', [p]); return '' },
-      openExternal: async () => {},
+      openExternal: async (url: string) => { call('shell.openExternal', [url]) },
     },
     Notification,
     Menu: {

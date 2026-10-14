@@ -8,6 +8,9 @@ import { applyGapAllowlist, GAP_ALLOWLIST } from './harness/gaps'
 import { toGoldenForm } from './harness/normalize'
 import { runScenario } from './harness/scenario'
 import { CORE_SCENARIOS } from './scenarios/core'
+import { SETTINGS_SCENARIOS } from './settings/scenarios'
+import { IDENTITY_SCENARIOS } from './identity/scenarios'
+import { MESH_SCENARIOS } from './mesh/scenarios'
 
 /**
  * Parity harness, daemon side (tracker W2-C, README "Daemon backend").
@@ -68,7 +71,7 @@ describe.skipIf(!BUNDLE)('parity: daemon backend (child process)', () => {
       for (let run = 0; run < RUNS; run++) {
         const daemon = await runScenario(scenario, daemonBackend(), { tolerant: true })
         const reference = structuredClone(embedded.normalized)
-        const { unmatched } = applyGapAllowlist(scenario.name, daemon.normalized, reference)
+        const { unmatched } = applyGapAllowlist(scenario.name, daemon.normalized, reference, { daemon: daemon.raw })
         expect(unmatched, `gap entries that matched nothing in ${scenario.name} (fixed? remove them from harness/gaps.ts)`).toEqual([])
         const actual = renderRecording(toGoldenForm(daemon.normalized))
         expect(diffRendered(expected, actual, { expected: 'embedded', actual: 'daemon (after gaps)' })).toBe('')
@@ -78,10 +81,10 @@ describe.skipIf(!BUNDLE)('parity: daemon backend (child process)', () => {
     }, 120_000 + RUNS * 120_000)
   }
 
-  it('every gap entry names a workstream and lists only core scenarios', () => {
-    const names = new Set(CORE_SCENARIOS.map((s) => s.name))
+  it('every gap entry names a workstream and lists only known scenarios', () => {
+    const names = new Set([...CORE_SCENARIOS, ...MESH_SCENARIOS, ...SETTINGS_SCENARIOS, ...IDENTITY_SCENARIOS].map((s) => s.name))
     for (const entry of GAP_ALLOWLIST) {
-      expect(entry.ws).toMatch(/^(W\d-[A-Z]|mode)$/)
+      expect(entry.ws).toMatch(/^(W\d-[A-Z]\d?|E3|mode)$/)
       for (const s of entry.scenarios) expect(names.has(s), `${entry.id}: ${s}`).toBe(true)
     }
     expect(new Set(GAP_ALLOWLIST.map((e) => e.id)).size).toBe(GAP_ALLOWLIST.length)

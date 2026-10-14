@@ -64,7 +64,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W3-A | Proxy: files, documents, agent runtime, review, templates | 3 | W2-A, W2-B, W2-C | TODO |
 | W3-B | Proxy: settings, providers, models, subscription auth, identity, credentials | 3 | W2-C, W1-C | TODO |
 | W3-C | Proxy: MCP, adapters, sandbox packages, skills, registries | 3 | W2-C, W1-D | TODO |
-| W3-D | Proxy: mesh, fleet, dashboard, tools, token usage, compute, emergency stop | 3 | W2-C, W1-D | TODO |
+| W3-D | Proxy: mesh, fleet, dashboard, tools, token usage, compute, emergency stop | 3 | W2-C, W1-D | MERGED |
 | W3-E | TUI on client sessions — folded into W2-B (owner, 2026-10-14) | 2 | — | IN W2-B |
 | W3-F | Multi-client write conflicts: revisions + `If-Match` on config/document/file writes, `409 stale_revision`, "changed elsewhere" handling in Studio and TUI editors. Baseline (embedded today): an external (agent) write replaces the open tab and discards unsaved local edits (`editor-tabs.store.ts` `updateTabFromExternal`), and the save layer drops a pending autosave (`lastExternalWrite`). Another client's save arrives through the same path, so parity holds without W3-F; W3-F is an improvement for both modes | 3 | W2-A, W2-B | TODO |
 | W4-A | Mode switch, handover, quit behaviour | 4 | W3-A, W3-B, W1-C, W0-D, **W1-G (hard)** | TODO |
@@ -317,7 +317,9 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-F | E3 candidate: `cleanupAllProcesses` never calls `AgentTemplatesService.stopWatcher` | W3-A |
 | W1-G | Liveness is pid + 120 s heartbeat (interim); replace with W0-C `holderLiveness` and fold markers into the host record | W0-C (done) |
 | W1-G | Studio's 6 s teardown budget can expire during the 6 s stale-marker re-check, leaving containers running (safe direction) | W4-A |
-| W1-G | `leftRunning` and `containerUsers()` need UI in Settings → Compute and the reset confirmation | W3-D |
+| W1-G | `leftRunning` and `containerUsers()` need UI in Settings → Compute and the reset confirmation | W3-D (done: `leftRunning` listed under the containers, `users` per row from `GET /compute/users`, named in the rebuild/remove confirmation) |
+| W3-D | E3 candidate: during EMERGENCY_STOP embedded's teardown makes the open agent's startup dispatch report "Cannot dispatch startup while agent lifecycle is disposed" on AGENT_EVENT (parity allowlist `e3:emergency-stop-startup-dispatch-error`) | W5-A |
+| W3-D | E1 request: extract MESH_FOUND_AGENT's destination checks and file-name slug from `ipc/index.ts`; `daemon/routes/fleet-client-routes.ts` has a copy | W3-A |
 | W1-C | E3 in `owner-identity.service.ts` (owner switched outside Studio): own phrase not of `ownerDid` → take the keychain phrase; never mirror such a phrase; `getOwnerSigningKey` null for it; restamp keeps operator attestations of files stamped by another runtime. Tests: `tests/daemon-runtime-adoption.test.ts` "owner switch from the CLI…" | Lead (merge note) |
 | W1-C | Write `studio-runtime:<scope>` with `serializeStudioRuntimeEntry` + `studioRuntimeScope`; rewrite it after any delegation change (owner import); delete it on the switch back to embedded; move app MCP OAuth with `DaemonAppOAuthStore.importBlob/exportBlob`; send the local proof for `POST /identity/import` | W4-A |
 | W1-C | Unify `src/main/utils/test-seams.ts` with W1-G's `isPackagedRuntime` | Lead (done: both seams use `testSeamsAllowed`) |
@@ -341,6 +343,11 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W3-C | Agent MCP OAuth via HIL (`mcp_oauth_authorize`) not met end-to-end: opener sees only the connect snapshot on the interim adapter; a request pending at connect lands in the approvals panel with no Open action. Needs a parity scenario on client sessions | W2-C2 |
 | W3-C | Interim-adapter install-progress branch (`install-progress.ts:121-138`, `progressLog` relay) is dead once on client sessions; delete and rerun `w3c-install-progress` on sessions | W2-C2 |
 | W3-C | E3 candidate: `MCP_ATTACH_SERVER` drops OAuth flags (renderer + `ipc/index.ts:7167`); the `.adf` lacks `oauth:true`, so on another runtime it connects without OAuth and 401s | W5-A |
+| W3-D | E3 candidate: embedded emergency stop logs a spurious chat error "Cannot dispatch startup while agent lifecycle is disposed" (`useAgent.ts:465`) | W5-A |
+| W3-D | `/fleet/vitals` builds a second `AgentVitalsService` (duplicate caches/scans) | W5-A |
+| W2-C2 | D5 deviation: executor frames carry no `turnId`, absorbed ids or discarded-turn frame; Studio works around it with `umbilical:true` (turn.completed/agent.error/chat.discarded). Add them to executor frames and drop the workaround | W5-A |
+| W2-C2 | `w3a:chat-echo`: in daemon mode Studio shows its own chat twice (`POST /agents/:id/chat` lacks `echoed`). W3-A acceptance criterion | W3-A |
+| W2-C2 | Version-mismatch refusal only offers `ADF_STUDIO_BACKEND=embedded`/hand edit as the way back; needs the §8.2 dialog | W4-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |

@@ -184,6 +184,34 @@ describe('AgentRuntimeBuilder parity: derived key', () => {
     }
   })
 
+  it('a key drop restarts only the running adapters that have stored credentials (W1-A follow-up)', async () => {
+    vi.spyOn(ChannelAdapterManager.prototype, 'startAdapter').mockResolvedValue(true)
+    const stop = vi.spyOn(ChannelAdapterManager.prototype, 'stopAdapter').mockResolvedValue()
+    // telegram reads its token through the key; email has no stored credential.
+    vi.spyOn(ChannelAdapterManager.prototype, 'getStates').mockReturnValue([
+      { type: 'telegram', status: 'connected', restartCount: 0, logs: [] },
+      { type: 'email', status: 'connected', restartCount: 0, logs: [] },
+    ] as never)
+    const { filePath, workspace } = makeAgentFile('agent-1', {
+      adapters: { telegram: { enabled: true, config: {} } } as AgentConfig['adapters'],
+    })
+    workspace.setIdentity('adapter:telegram:TELEGRAM_BOT_TOKEN', 'bot-secret')
+    const key = workspace.setPassword('pw')
+    const sandbox = new CodeSandboxService()
+    const builder = new AgentRuntimeBuilder({ settings: { get: () => undefined }, codeSandboxService: sandbox })
+    const agent = await builder.build({ workspace, filePath, config: workspace.getAgentConfig(), provider: new MockLLMProvider() })
+    try {
+      await builder.applyDerivedKey(agent, key)
+      stop.mockClear()
+      const dropped = await builder.applyDerivedKey(agent, null)
+      expect(dropped).toEqual({ applied: true, adaptersRestarted: ['telegram'], mcpReconnected: [] })
+      expect(stop.mock.calls.map((call) => call[0])).toEqual(['telegram'])
+    } finally {
+      await agent.disposeAsync()
+      sandbox.destroyAll()
+    }
+  })
+
   it('reports applied:false for an agent it did not build', async () => {
     const result = await new AgentRuntimeBuilder().applyDerivedKey({}, Buffer.alloc(32))
     expect(result).toEqual({ applied: false, adaptersRestarted: [], mcpReconnected: [] })

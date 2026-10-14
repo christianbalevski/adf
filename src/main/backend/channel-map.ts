@@ -221,7 +221,7 @@ export const CHANNEL_MAP = {
   [IPC.AGENT_SUSPEND_RESPOND]: proxied('invoke', ['POST /agents/:id/suspend/respond']),
 
   // --- Models and settings ---------------------------------------------------
-  [IPC.MODELS_LIST]: proxied('invoke', ['GET /runtime/models'], { note: 'filePath maps to agentId for ADF-stored providers.' }),
+  [IPC.MODELS_LIST]: proxied('invoke', ['GET /runtime/models'], { note: 'filePath goes to the route as filePath (an agent file\'s own provider); a path the route refuses is dropped and the app providers are listed.' }),
   [IPC.SETTINGS_GET]: proxied('invoke', ['GET /settings'], {
     note: 'Returns {...daemonSettings, ...clientSettings} (§4.2); provider apiKey arrives as __redacted__. Studio main runs the client-key migrations on studio-client-settings.json when it loads it (daemon-mode/settings.ts).' }),
   [IPC.SETTINGS_SET]: proxied('invoke', ['PATCH /settings'], {
@@ -272,9 +272,9 @@ export const CHANNEL_MAP = {
   [IPC.MESH_TOKEN_BURN]: proxied('invoke', ['GET /fleet/burn', 'POST /fleet/burn/hydrate'], { note: BURN_HYDRATE }),
   [IPC.MESH_MAP_POLL]: proxied('invoke', ['GET /fleet/map', 'POST /fleet/burn/hydrate'], { note: BURN_HYDRATE }),
   [IPC.MESH_MESSAGE_AGENTS]: proxied('invoke', ['POST /fleet/message']),
-  [IPC.MESH_SET_AGENT_STATE]: proxied('invoke', ['POST /agents/:id/state']),
-  [IPC.MESH_FOUND_AGENT]: proxied('invoke', ['POST /agents/create', 'GET /settings/:key'], {
-    note: 'Studio main checks the destination against trackedDirectories (newRoot: sibling of a tracked root) and slugs the file name.',
+  [IPC.MESH_SET_AGENT_STATE]: proxied('invoke', ['POST /fleet/state']),
+  [IPC.MESH_FOUND_AGENT]: proxied('invoke', ['POST /fleet/found'], {
+    note: 'The route checks the destination against trackedDirectories (newRoot: sibling of a tracked root), creates the folder and slugs the file name.',
   }),
 
   // --- Background agents -----------------------------------------------------
@@ -399,9 +399,9 @@ export const CHANNEL_MAP = {
   // --- Compute ---------------------------------------------------------------
   [IPC.COMPUTE_STATUS]: proxied('invoke', ['GET /compute/status']),
   [IPC.COMPUTE_INIT]: proxied('invoke', ['POST /compute/start']),
-  [IPC.COMPUTE_STOP]: proxied('invoke', ['POST /compute/stop']),
+  [IPC.COMPUTE_STOP]: proxied('invoke', ['POST /compute/shared/stop']),
   [IPC.COMPUTE_DESTROY]: proxied('invoke', ['POST /compute/destroy']),
-  [IPC.COMPUTE_LIST_CONTAINERS]: proxied('invoke', ['GET /compute/containers']),
+  [IPC.COMPUTE_LIST_CONTAINERS]: proxied('invoke', ['GET /compute/containers', 'GET /compute/users'], { note: 'Each row gets `users`, the other runtimes using the container (W1-G); absent when none.' }),
   [IPC.COMPUTE_STOP_CONTAINER]: proxied('invoke', ['POST /compute/containers/:name/stop']),
   [IPC.COMPUTE_START_CONTAINER]: proxied('invoke', ['POST /compute/containers/:name/start']),
   [IPC.COMPUTE_DESTROY_CONTAINER]: proxied('invoke', ['POST /compute/containers/:name/destroy']),
@@ -425,22 +425,17 @@ export const CHANNEL_MAP = {
 
   // --- Identity / keystore (per agent) ---------------------------------------
   [IPC.IDENTITY_SET]: proxied('invoke', ['PUT /agents/:id/identity/:purpose'], { note: 'The derived key of a password-protected file lives in the daemon (§5.4).' }),
-  [IPC.IDENTITY_GET]: proxied('invoke', ['GET /agents/:id/identity/:purpose']),
+  [IPC.IDENTITY_GET]: unsupported('invoke', ['POST /agents/:id/identity/reveal'], 'Stored values stay on the daemon\'s machine: Studio says so ("a remote daemon never sends them").', { note: 'Local mode: the value through the reveal route, which needs the local proof (Studio sends it); key material (crypto:*) is never returned.' }),
   [IPC.IDENTITY_DELETE]: proxied('invoke', ['DELETE /agents/:id/identity/:purpose']),
   [IPC.IDENTITY_DELETE_PREFIX]: proxied('invoke', ['DELETE /agents/:id/identity-prefix']),
   [IPC.IDENTITY_LIST]: proxied('invoke', ['GET /agents/:id/identity']),
   [IPC.IDENTITY_PASSWORD_CHECK]: proxied('invoke', ['GET /agents/:id/identity/password']),
-  [IPC.IDENTITY_PASSWORD_UNLOCK]: proxied('invoke', ['POST /agents/:id/identity/password/unlock'], {
-    gaps: [
-      gap('W1-B', 'the derived key reaches provider, MCP, adapters and AdfCallHandler; restart after unlock'),
-      gap('W1-C', 'unlock converts the owner\'s own legacy whole-file password to envelopes, keeps the password as a share slot, and returns converted'),
-    ],
-  }),
+  [IPC.IDENTITY_PASSWORD_UNLOCK]: proxied('invoke', ['POST /agents/:id/identity/password/unlock'], { note: 'The route converts the owner’s own legacy file (envelope-actions.ts convertOwnLegacyPassword) and answers converted.' }),
   [IPC.IDENTITY_PASSWORD_SET]: local('invoke', 'Deprecated: always refuses. The daemon-mode handler returns the same refusal and MUST NOT call PUT /agents/:id/identity/password.'),
   [IPC.IDENTITY_PASSWORD_REMOVE]: proxied('invoke', ['DELETE /agents/:id/identity/password']),
   [IPC.IDENTITY_PASSWORD_CHANGE]: local('invoke', 'Deprecated: always refuses. The daemon-mode handler returns the same refusal.'),
   [IPC.IDENTITY_LIST_ENTRIES]: proxied('invoke', ['GET /agents/:id/identity/entries']),
-  [IPC.IDENTITY_REVEAL]: proxied('invoke', ['GET /agents/:id/identity/:purpose']),
+  [IPC.IDENTITY_REVEAL]: unsupported('invoke', ['POST /agents/:id/identity/reveal'], 'Stored values stay on the daemon\'s machine: Studio says so ("a remote daemon never sends them").', { note: 'Local mode: the value through the reveal route, which needs the local proof (Studio sends it); key material (crypto:*) is never returned. Remote: { value: null, reason } with that sentence.' }),
   [IPC.IDENTITY_WIPE_ALL]: proxied('invoke', ['POST /agents/:id/identity/wipe']),
   [IPC.IDENTITY_GET_DID]: proxied('invoke', ['GET /agents/:id/identity/did']),
   [IPC.IDENTITY_GENERATE_KEYS]: proxied('invoke', ['POST /agents/:id/identity/generate-keys'], { note: 'The daemon issues owner and operator attestations too (runtime-service.ts:1879).' }),
@@ -448,13 +443,13 @@ export const CHANNEL_MAP = {
   [IPC.IDENTITY_SET_CODE_ACCESS]: proxied('invoke', ['PATCH /agents/:id/identity/:purpose/code-access']),
 
   // --- Owner identity --------------------------------------------------------
-  [IPC.IDENTITY_OWNER_STATUS]: proxied('invoke', ['GET /identity'], { note: 'Mapped to the Studio status shape (§5.4).' }),
+  [IPC.IDENTITY_OWNER_STATUS]: proxied('invoke', ['GET /identity', 'GET /settings'], { note: 'Mapped to the Studio status shape (§5.4): the runtime DID, delegation and legacy runtime DIDs are the ones status.runtime says the daemon presents.' }),
   [IPC.IDENTITY_OWNER_REVEAL_MNEMONIC]: unsupported('invoke', [], 'Not available; Studio says so (§5.4).', {
     note: 'Local mode: Studio main reads the shared keychain entry (SharedMnemonicStore). No route carries the phrase.',
   }),
   [IPC.IDENTITY_OWNER_CONFIRM_BACKUP]: unsupported('invoke', ['POST /identity/confirm-backup'], 'Refused by the daemon (local-only route); Studio shows its message.'),
-  [IPC.IDENTITY_OWNER_IMPORT]: unsupported('invoke', [], 'Refused by the daemon (local-only route); Studio shows its message.', {
-    gaps: [gap('W1-C', 'POST /identity/import (local-only): importMnemonic, restamp, reload loaded agents')],
+  [IPC.IDENTITY_OWNER_IMPORT]: unsupported('invoke', ['POST /identity/import', 'GET /settings'], 'Refused by the daemon (local-only route); Studio shows its message.', {
+    note: 'Local mode: sends the local proof read next to the daemon settings file; switchOwner unless expectedOwnerDid (restore).',
   }),
   [IPC.IDENTITY_ATTESTATIONS_GET]: proxied('invoke', ['GET /agents/:id/attestations']),
   [IPC.IDENTITY_ATTESTATIONS_REISSUE]: proxied('invoke', ['POST /agents/:id/attestations/reissue']),
@@ -483,21 +478,23 @@ export const CHANNEL_MAP = {
   [IPC.ADAPTER_DETACH]: proxied('invoke', ['DELETE /files/agent/adapters/:adapterType']),
 
   // --- Provider credentials (per agent) --------------------------------------
-  [IPC.PROVIDER_CREDENTIAL_SET]: proxied('invoke', ['PUT /agents/:id/providers/:providerId/credential', 'PUT /files/agent/providers/:providerId/credential']),
-  [IPC.PROVIDER_CREDENTIAL_GET]: proxied('invoke', ['GET /agents/:id/providers/:providerId/credentials', 'GET /files/agent/providers/:providerId/credentials']),
+  [IPC.PROVIDER_CREDENTIAL_SET]: proxied('invoke', ['PUT /files/agent/providers/:providerId/credential', 'POST /files/agent/providers/:providerId/credential/copy-app-key'], {
+    note: 'A value of __redacted__ (Copy app key) stands for the app key the daemon holds: copy-app-key. 409 credentials_locked asks the owner (native dialog) to replace or cancel.',
+  }),
+  [IPC.PROVIDER_CREDENTIAL_GET]: unsupported('invoke', ['GET /files/agent/providers/:providerId/credentials', 'POST /files/agent/identity/reveal'], 'Stored values stay on the daemon\'s machine: Studio says so ("a remote daemon never sends them").', { note: 'Local mode: values through the reveal route with the local proof. Remote: { credentials: {}, error } with that sentence.' }),
   [IPC.PROVIDER_CREDENTIAL_LIST_FILES]: proxied('invoke', ['GET /credentials/providers/files']),
-  [IPC.PROVIDER_ATTACH]: proxied('invoke', ['POST /agents/:id/providers', 'POST /files/agent/providers']),
-  [IPC.PROVIDER_DETACH]: proxied('invoke', ['DELETE /agents/:id/providers/:providerId', 'DELETE /files/agent/providers/:providerId']),
+  [IPC.PROVIDER_ATTACH]: proxied('invoke', ['POST /files/agent/providers']),
+  [IPC.PROVIDER_DETACH]: proxied('invoke', ['DELETE /files/agent/providers/:providerId']),
   [IPC.PROVIDER_AGENT_KEY_SOURCES]: proxied('invoke', ['POST /credentials/providers/key-sources']),
   [IPC.PROVIDER_TEST]: proxied('invoke', ['POST /runtime/providers/:id/test']),
 
   // --- Subscription sign-in --------------------------------------------------
   [IPC.CHATGPT_AUTH_START]: variant('invoke', ['POST /auth/chatgpt/start', 'POST /auth/chatgpt/complete'], 'Relay mode: Studio main runs the loopback callback and posts the code to POST /auth/chatgpt/complete.', {
-    note: 'Local mode: loopback mode; Studio main opens authUrl (the daemon opens no browser).',
+    note: 'Relay mode in local mode too: Studio main runs the callback server, opens authUrl and posts the code; the daemon exchanges it and keeps the tokens.',
   }),
   [IPC.CHATGPT_AUTH_STATUS]: proxied('invoke', ['GET /auth/chatgpt/status']),
   [IPC.CHATGPT_AUTH_LOGOUT]: proxied('invoke', ['POST /auth/chatgpt/logout']),
-  [IPC.GROK_AUTH_START]: proxied('invoke', ['POST /auth/grok/start'], { note: 'Device-code flow; works across machines.' }),
+  [IPC.GROK_AUTH_START]: proxied('invoke', ['POST /auth/grok/start'], { note: 'Device-code flow; works across machines. Studio main opens the verification page.' }),
   [IPC.GROK_AUTH_STATUS]: proxied('invoke', ['GET /auth/grok/status']),
   [IPC.GROK_AUTH_LOGOUT]: proxied('invoke', ['POST /auth/grok/logout']),
   [IPC.CLAUDE_AUTH_START]: proxied('invoke', ['POST /auth/claude/start'], { note: 'Claude Code on the daemon host opens its own browser; `url` plus CLAUDE_AUTH_SUBMIT_CODE is the remote path.' }),
@@ -557,8 +554,8 @@ export const CHANNEL_MAP = {
   [IPC.BACKEND_SETTINGS_SET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; writes studio-backend.json (token as safe:).'),
 
   // --- Overview, emergency stop, identity drafts -----------------------------
-  [IPC.AGENT_VITALS]: proxied('invoke', ['GET /agents/:id/vitals']),
-  [IPC.AGENT_ACTIVITY]: proxied('invoke', ['GET /agents/:id/activity']),
+  [IPC.AGENT_VITALS]: proxied('invoke', ['GET /fleet/vitals']),
+  [IPC.AGENT_ACTIVITY]: proxied('invoke', ['GET /fleet/activity']),
   [IPC.EMERGENCY_STOP]: proxied('invoke', ['POST /runtime/emergency-stop'], { note: 'A partial stop answers success: false with the skipped and failed parts; the handler shows them.' }),
   [IPC.IDENTITY_DRAFT_MINT]: proxied('invoke', ['POST /identity/drafts']),
   [IPC.IDENTITY_DRAFT_DISCARD]: proxied('invoke', ['DELETE /identity/drafts/:draftId'], { note: 'Unwraps { discarded }.' }),

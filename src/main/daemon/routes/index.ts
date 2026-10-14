@@ -33,6 +33,8 @@ import type { TrackedDirWatcher } from '../dir-watcher'
 import { registerClientRoutes } from './client-routes'
 import type { ClientSessionRegistry } from '../client-sessions'
 import { registerDocumentRoutes } from './document-routes'
+import { registerCredentialValueRoutes } from './credential-value-routes'
+import { registerFleetClientRoutes } from './fleet-client-routes'
 import { registerPackageJobRoutes } from './package-job-routes'
 import { registerAgentFileConfigRoutes } from './agent-file-config-routes'
 
@@ -78,6 +80,8 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerFileRoutes,
   registerClientRoutes,
   registerDocumentRoutes,
+  registerCredentialValueRoutes,
+  registerFleetClientRoutes,
   registerPackageJobRoutes,
   registerAgentFileConfigRoutes,
 ]

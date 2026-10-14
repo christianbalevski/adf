@@ -95,6 +95,8 @@ export function IdentityPanel() {
   const [entries, setEntries] = useState<IdentityEntry[]>([])
   const [isProtected, setIsProtected] = useState(false)
   const [revealed, setRevealed] = useState<Record<string, string>>({})
+  /** Why the last Reveal showed nothing (key material, or a remote daemon). */
+  const [revealNote, setRevealNote] = useState<string | null>(null)
   const [attestations, setAttestations] = useState<AttestationEntry[]>([])
   const [publishOnCard, setPublishOnCard] = useState(false)
   const [addKeyOpen, setAddKeyOpen] = useState(false)
@@ -128,6 +130,7 @@ export function IdentityPanel() {
       sharePasswordSet: !!envResult.sharePasswordSet
     } : null)
     setRevealed({})
+    setRevealNote(null)
   }, [])
 
   const handleReissueAttestations = useCallback(async () => {
@@ -162,6 +165,7 @@ export function IdentityPanel() {
       return
     }
     const result = await window.adfApi.revealIdentity(purpose)
+    setRevealNote(result.value === null && result.reason ? result.reason : null)
     if (result.value !== null) {
       setRevealed((prev) => ({ ...prev, [purpose]: result.value! }))
     }
@@ -546,6 +550,9 @@ export function IdentityPanel() {
         <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
           <span className="text-amber-500 dark:text-amber-400">Locked</span> = agent code cannot access &nbsp; <span className="text-neutral-500 dark:text-neutral-400">Unlocked</span> = agent code can read via get_identity
         </p>
+        {revealNote && (
+          <p className="text-[10px] text-amber-500 dark:text-amber-400 mb-2">{revealNote}</p>
+        )}
         {entries.length === 0 ? (
           <p className="text-xs text-neutral-400">No identity entries</p>
         ) : (

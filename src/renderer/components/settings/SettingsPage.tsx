@@ -1352,7 +1352,7 @@ export function SettingsPage() {
   const computeHostApprovedSourcesRef = useRef<Record<string, string>>({})
   useEffect(() => { computeHostApprovedRef.current = computeHostApproved }, [computeHostApproved])
   useEffect(() => { computeHostApprovedSourcesRef.current = computeHostApprovedSources }, [computeHostApprovedSources])
-  const [computeEnvStatus, setComputeEnvStatus] = useState<{ status: string; activeAgents: string[] }>({ status: 'stopped', activeAgents: [] })
+  const [computeEnvStatus, setComputeEnvStatus] = useState<ComputeEnvView>({ status: 'stopped', activeAgents: [] })
   const [computeContainerPackages, setComputeContainerPackages] = useState('python3, python3-pip, git, curl')
   const [computeMachineCpus, setComputeMachineCpus] = useState(2)
   const [computeMachineMemoryMb, setComputeMachineMemoryMb] = useState(2048)
@@ -2596,6 +2596,10 @@ interface PodmanAvailability {
   prerequisites: Prerequisite[]
 }
 
+/** COMPUTE_STATUS as Settings → Compute reads it. `leftRunning`: containers the
+ *  last stop left running because another runtime uses them (W1-G). */
+type ComputeEnvView = { status: string; activeAgents: string[]; leftRunning?: Array<{ name: string; holders: string[]; reason: string }> }
+
 /** Compute settings tab — extracted for useEffect on mount. */
 function ComputeTab({
   computeEnvStatus, setComputeEnvStatus,
@@ -2607,8 +2611,8 @@ function ComputeTab({
   containerImage, setContainerImage,
   executionTargets, setExecutionTargets,
 }: {
-  computeEnvStatus: { status: string; activeAgents: string[] }
-  setComputeEnvStatus: (s: { status: string; activeAgents: string[] }) => void
+  computeEnvStatus: ComputeEnvView
+  setComputeEnvStatus: (s: ComputeEnvView) => void
   computeHostAccessEnabled: boolean
   setComputeHostAccessEnabled: (v: boolean) => void
   computeHostApproved: string[]
@@ -2649,7 +2653,7 @@ function ComputeTab({
   }, [setExecutionTargets])
 
   const refreshAll = useCallback(() => {
-    window.adfApi?.computeStatus?.().then((s: { status: string; activeAgents: string[] }) => {
+    window.adfApi?.computeStatus?.().then((s: ComputeEnvView) => {
       if (s) setComputeEnvStatus(s)
     })
     window.adfApi?.computeSetup?.({ step: 'check' }).then((r: { success: boolean; availability?: PodmanAvailability }) => {
@@ -2751,6 +2755,9 @@ function ComputeTab({
           <div>
             <h4 className="text-xs font-semibold text-[var(--adf-ui-text)]">Containers</h4>
             <p className="text-[10px] text-[var(--adf-ui-text-muted)]">{containers.filter((container) => container.running).length} running · {containers.length} total</p>
+            {(computeEnvStatus.leftRunning ?? []).map((kept) => (
+              <p key={kept.name} className="text-[10px] text-[var(--adf-ui-text-muted)]">{kept.name} was left running: {kept.reason}.</p>
+            ))}
           </div>
           <div className="flex items-center gap-2">
             <SegmentedControl
@@ -2801,7 +2808,10 @@ function ComputeTab({
                     </Tooltip>
                   )}
                 </span>
-                <span className="truncate text-[11px] text-[var(--adf-ui-text-muted)]">{isShared ? `${computeEnvStatus.activeAgents.length} active agents` : c.agentName || c.agentId || 'Unassigned'}</span>
+                <span className="min-w-0 text-[11px] text-[var(--adf-ui-text-muted)]">
+                  <span className="block truncate">{isShared ? `${computeEnvStatus.activeAgents.length} active agents` : c.agentName || c.agentId || 'Unassigned'}</span>
+                  {c.users && c.users.length > 0 && <span className="block truncate text-[10px]">Also used by {c.users.join(', ')}</span>}
+                </span>
                 <div className="relative flex justify-end gap-1">
                   <Tooltip tip={failed ? 'Setup failed: rebuild to retry' : c.managed ? (c.running ? 'Stop' : 'Start') : 'Legacy container: rebuild to migrate before managing'}>
                     <IconButton

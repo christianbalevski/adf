@@ -131,15 +131,19 @@ export function registerIdentityImportRoutes(server: FastifyInstance, ctx: Daemo
   })
 }
 
-/** This route needs the local proof in every mode (requireLocalCaller asks for it only behind a proxy). */
-function requireLocalProof(request: FastifyRequest, reply: FastifyReply, localProof: string | null): boolean {
+const IMPORT_REFUSAL = 'Importing an owner identity needs this machine\'s local proof (X-ADF-Local-Proof, read from the daemon-local-proof file next to the daemon settings). Run adf identity import on the daemon host.'
+
+/**
+ * Routes that need the local proof in every mode (requireLocalCaller asks
+ * for it only behind a proxy): owner import, and the stored-value reveal
+ * routes (credential-value-routes.ts). The token alone, forwarded to the
+ * loopback port (`ssh -L`, socat), does not pass.
+ */
+export function requireLocalProof(request: FastifyRequest, reply: FastifyReply, localProof: string | null, refusal = IMPORT_REFUSAL): boolean {
   const raw = request.headers[LOCAL_PROOF_HEADER]
   const presented = (Array.isArray(raw) ? raw[0] : raw)?.trim()
   if (presented && localProof && tokensEqual(presented, localProof)) return true
-  void reply.code(403).send({
-    error: 'Importing an owner identity needs this machine\'s local proof (X-ADF-Local-Proof, read from the daemon-local-proof file next to the daemon settings). Run adf identity import on the daemon host.',
-    code: 'loopback_only',
-  })
+  void reply.code(403).send({ error: refusal, code: 'loopback_only' })
   return false
 }
 
