@@ -27,6 +27,7 @@ import { registerOwnerEnvelopeRoutes } from './owner-envelope-routes'
 import { registerComputeAdminRoutes } from './compute-admin-routes'
 import { registerJobRoutes } from './job-routes'
 import type { GapRouteDeps } from './gap-deps'
+import { registerIdentityImportRoutes } from './identity-import-routes'
 
 /** Dependencies of route modules that DaemonHttpApiOptions does not carry. Every field is optional. */
 export interface DaemonRouteDeps {
@@ -58,6 +59,7 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerOwnerEnvelopeRoutes,
   registerComputeAdminRoutes,
   registerJobRoutes,
+  registerIdentityImportRoutes,
 ]
 
 export function registerDaemonRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {

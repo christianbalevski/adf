@@ -8,7 +8,8 @@ vi.mock('child_process', async (orig) => {
   return { ...real, execFile: refuse, spawn: refuse, execFileSync: refuse }
 })
 
-const { createComputeService, FakeComputeService, isPackagedRuntime } = await import('../../../src/main/services/compute-service-factory')
+const { createComputeService, FakeComputeService } = await import('../../../src/main/services/compute-service-factory')
+const { isPackagedExecutable } = await import('../../../src/main/utils/test-seams')
 const { PodmanService } = await import('../../../src/main/services/podman.service')
 
 describe('createComputeService (ADF_COMPUTE=fake seam)', () => {
@@ -65,7 +66,7 @@ describe('FakeComputeService', () => {
   })
 })
 
-describe('isPackagedRuntime', () => {
+describe('isPackagedExecutable', () => {
   it.each([
     ['C:\\Program Files\\ADF Studio\\ADF Studio.exe', 'C:\\Program Files\\ADF Studio\\resources\\app.asar\\out\\main\\daemon.js', true],
     ['/Applications/ADF Studio.app/Contents/MacOS/ADF Studio', '/Applications/ADF Studio.app/Contents/Resources/app.asar/out/main/daemon.js', true],
@@ -74,6 +75,6 @@ describe('isPackagedRuntime', () => {
     ['/usr/local/bin/node', '/repo/out/main/daemon.js', false],
     ['C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\adf\\dist\\cli.js', false],
   ])('%s %s → %s', (execPath, entry, expected) => {
-    expect(isPackagedRuntime(execPath, entry)).toBe(expected)
+    expect(isPackagedExecutable(execPath, entry)).toBe(expected)
   })
 })

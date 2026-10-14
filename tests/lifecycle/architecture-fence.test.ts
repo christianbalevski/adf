@@ -18,8 +18,8 @@ const TERMINAL_STATUSES = new Set<string>(LIFECYCLE_CHARACTERIZATION_TERMINAL_ST
 // visible in verbose CI output. Adding or resolving a finding requires an
 // intentional update here and in the lifecycle contract.
 const EXPECTED_LEDGER_COUNTS = {
-  fixed: 6,
-  declaredByProfile: 3,
+  fixed: 7,
+  declaredByProfile: 2,
   pending: 0,
   other: 0,
 } as const
@@ -84,7 +84,7 @@ function formatSites(sites: readonly MatchSite[]): string {
 }
 
 describe('lifecycle characterization ledger', () => {
-  it('is closed: 6 fixed, 3 declaredByProfile, 0 pending', () => {
+  it('is closed: 7 fixed, 2 declaredByProfile, 0 pending', () => {
     const entries = LIFECYCLE_CHARACTERIZATION_LEDGER as ReadonlyArray<{
       status: string
       profiles: readonly string[]

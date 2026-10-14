@@ -51,8 +51,8 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W0-E | Backend selection at boot, Settings → Backend | 0 | W0-A (merge order) | MERGED c0305508 |
 | W0-F | Parity harness, embedded side | 0 | none | MERGED |
 | W1-A | RuntimeService parity hooks | 1 | W0-C, W0-D | TODO |
-| W1-B | AgentRuntimeBuilder and mesh parity | 1 | W0-D | TODO |
-| W1-C | Daemon identity: runtime adoption, unlock cascade, app OAuth store, owner import | 1 | W0-D | TODO |
+| W1-B | AgentRuntimeBuilder and mesh parity | 1 | W0-D | MERGED |
+| W1-C | Daemon identity: runtime adoption, unlock cascade, app OAuth store, owner import | 1 | W0-D | MERGED |
 | W1-D | Gap routes: approvals, fleet, dashboard, registries, MCP probes | 1 | W0-D | TODO |
 | W1-E | File-level ops, raw file routes, tracked-dir watcher | 1 | W0-D, W0-C | TODO |
 | W1-F | E1 extraction: background event mapping | 1 | W0-F | MERGED (squashed) |
@@ -313,6 +313,13 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W1-G | Liveness is pid + 120 s heartbeat (interim); replace with W0-C `holderLiveness` and fold markers into the host record | W0-C fold, after W0-C merges |
 | W1-G | Studio's 6 s teardown budget can expire during the 6 s stale-marker re-check, leaving containers running (safe direction) | W4-A |
 | W1-G | `leftRunning` and `containerUsers()` need UI in Settings → Compute and the reset confirmation | W3-D |
+| W1-C | E3 in `owner-identity.service.ts` (owner switched outside Studio): own phrase not of `ownerDid` → take the keychain phrase; never mirror such a phrase; `getOwnerSigningKey` null for it; restamp keeps operator attestations of files stamped by another runtime. Tests: `tests/daemon-runtime-adoption.test.ts` "owner switch from the CLI…" | Lead (merge note) |
+| W1-C | Write `studio-runtime:<scope>` with `serializeStudioRuntimeEntry` + `studioRuntimeScope`; rewrite it after any delegation change (owner import); delete it on the switch back to embedded; move app MCP OAuth with `DaemonAppOAuthStore.importBlob/exportBlob`; send the local proof for `POST /identity/import` | W4-A |
+| W1-C | Unify `src/main/utils/test-seams.ts` with W1-G's `isPackagedRuntime` | Lead (done: both seams use `testSeamsAllowed`) |
+| W1-C | Wire `identity.mcpOAuth` (DaemonAppOAuthStore) into the builder's MCP OAuth path | W1-B / W3-C |
+| W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
+| W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
+| W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
 
 ## 7. Parity triage (filled in W5-A)
 

@@ -312,7 +312,7 @@ export const ToolCallModal = memo(function ToolCallModal({
    * shell/code that raised the approval and reports its output there — so the
    * decision itself is the terminal state instead of "running…".
    */
-  overrideOutcome?: 'approved' | 'denied'
+  overrideOutcome?: 'approved' | 'denied' | 'completed'
   durationMs?: number | null
   /** Unix ms the call started — shown in the footer meta line. */
   startedAt?: number
@@ -427,6 +427,8 @@ export const ToolCallModal = memo(function ToolCallModal({
           ? { label: 'approved', cls: 'bg-[var(--status-stable-bg)] text-[var(--status-stable)]' }
           : overrideOutcome === 'denied'
             ? { label: 'denied', cls: 'bg-[var(--status-deprecated-bg)] text-[var(--status-deprecated)]' }
+            : overrideOutcome === 'completed'
+              ? { label: 'completed', cls: 'bg-[var(--status-stable-bg)] text-[var(--status-stable)]' }
             : { label: 'running…', cls: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400' }
   const accent = awaitingApproval ? ATTENTION_TOOL_STYLE : isError ? ERROR_TOOL_STYLE : TOOL_FAMILY_STYLES[getToolFamily(toolName)]
 
@@ -593,6 +595,8 @@ export const ToolCallModal = memo(function ToolCallModal({
                           ? 'Approved — the gated call ran inside the shell or code that requested it; its output is reported in that caller’s result.'
                           : overrideOutcome === 'denied'
                             ? 'Denied — the override was rejected and the call did not run.'
+                            : overrideOutcome === 'completed'
+                              ? 'Completed — the runtime ended this request; no one approved or denied it.'
                             : 'Pending…'}
                       </p>
                     ) : shell ? (

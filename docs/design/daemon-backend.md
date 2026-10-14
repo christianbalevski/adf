@@ -213,7 +213,53 @@ Mechanism:
 4. Unlock tries Studio's runtime enc key, then the daemon's own `runtime-enc-key` (files it created before adoption, trusted-daemon slots), then the owner key. This cascade lives in daemon code (`daemon/index.ts` identity hooks); `OwnerIdentityService` is unchanged.
 5. `ensureRuntimeKey` MUST NOT mint while the adopted entry is in use.
 
-Security: writing the keychain entry requires the same OS-user keychain access that already exposes the owner phrase in the same service, so adoption grants nothing a local attacker did not have. The delegation check stops a corrupted or planted entry from changing the signing identity. A token-only attacker (HTTP) gains nothing because no route accepts key material.
+#### 5.3.1 Keychain entry `studio-runtime:<scope>` (version 1)
+
+Code: `src/main/daemon/studio-runtime-entry.ts` (type `StudioRuntimeEntryV1`, writer `serializeStudioRuntimeEntry`, reader `verifyStudioRuntimeEntry`). Studio main MUST write the entry with `serializeStudioRuntimeEntry` and nothing else.
+
+| Item | Value |
+|---|---|
+| Service | `ADF` (`KEYCHAIN_SERVICE`) |
+| Account | `studio-runtime:` + `studioRuntimeScope(settingsPath)`: the first 12 hex characters of `sha256(canonicalSettingsPath(settingsPath))`. The canonical path is the native realpath (as the agent lease canonicalizes, W0-C), long-path prefix stripped, case-folded on Windows and macOS, so every spelling of one file gives one account. Studio MUST use `studioRuntimeScope`. An entry found only under the old `settingsScope` account is reported as `scope_mismatch`, naming the canonical path. |
+| Value | JSON object, fields below |
+
+| Field | Type | Content |
+|---|---|---|
+| `v` | number | `1`. A reader MUST reject any other value (`unsupported_version`). |
+| `runtimeDid` | string | Studio's `runtimeDid` |
+| `runtimeDelegation` | object | Studio's `runtimeDelegation` (`AlfAttestation`, role `runtime`) |
+| `runtimePrivateKey` | string | Studio's `runtimePrivateKey` secret: base64 PKCS8 DER, Ed25519 |
+| `runtimeEncPrivateKey` | string | Studio's `runtimeEncPrivateKey` secret: base64 PKCS8 DER, X25519 |
+| `runtimeEncPublicKey` | string | Studio's `runtimeEncPublicKey`: base64, raw 32 bytes |
+| `writtenAt` | string | ISO 8601; diagnostics only |
+
+The daemon adopts the entry only when every check passes; the first failing check is the `reason` in `GET /identity` → `runtime`:
+
+| Check | `reason` on failure |
+|---|---|
+| Valid JSON object with every field typed as above | `malformed` |
+| `v` is 1 | `unsupported_version` |
+| The settings file has an `ownerDid` | `no_owner` |
+| `runtimeDelegation.role` is `runtime` | `bad_delegation` |
+| `runtimeDelegation.issuer` equals `ownerDid` in the settings file | `owner_mismatch` |
+| `runtimePrivateKey` is an Ed25519 PKCS8 key | `bad_signing_key` |
+| The DID of that key equals `runtimeDid` and the delegation subject | `subject_mismatch` |
+| The delegation signature verifies and has not expired | `bad_delegation` |
+| `runtimeDid` equals `runtimeDid` in the settings file | `runtime_did_mismatch` |
+| The public key of `runtimeEncPrivateKey` equals `runtimeEncPublicKey` in the entry and in the settings file | `enc_key_mismatch` |
+| (no entry under the canonical account, one under the uncanonicalized one) | `scope_mismatch` |
+
+Only the attestation fields of `runtimeDelegation` (`issuer`, `subject`, `role`, `issued_at`, `expires_at`, `scope`, `signature`) are read; the copy that is verified is the one the daemon uses.
+
+The entry is re-read at boot, on every identity refresh (`GET /identity`, an owner change, the 60 s re-check while an agent is degraded). Studio MUST rewrite it whenever one of the copied values changes, including after an owner import, which re-signs `runtimeDelegation`; until then the daemon reports `rejected` / `owner_mismatch` and runs as its own runtime. Studio MUST delete it when it rotates its runtime key, and MUST delete it when it switches back to embedded mode (W4-A), so no copy of its runtime keys outlives local mode.
+
+Owner switch from the daemon (`POST /identity/import` with `switchOwner`, `adf identity import`): the daemon keeps the adopted runtime for the restamp, so Studio-stamped files get operator attestations from Studio's runtime key; a restamp by any runtime keeps the existing operator attestations of a file stamped by another runtime. It overwrites the daemon's copy of the phrase (the keychain entry, or the passphrase file when the daemon uses file storage; a keychain copy is then left as it is) and moves Studio's stored copy of the previous phrase, still encrypted, from `ownerMnemonic` to `ownerMnemonicSuperseded:<previous owner DID>` (never overwriting an existing one). Embedded Studio at its next start finds no phrase of its own, imports the keychain phrase for the owner on record, and `ensureRuntimeKey` re-signs its runtime delegation under the new owner (the step Studio's own Import identity also runs). Rule E3 hardens the same path for a Studio copy that is still present: Studio takes the keychain phrase when its own copy does not derive `ownerDid` AND `legacyOwnerDids` records the switch from its copy's owner (a merely wrong `ownerDid`, from a hand edit or copied settings, never costs Studio its phrase), keeps its copy as `ownerMnemonicSuperseded:<DID>`, never mirrors such a copy over the keychain entry, and never signs owner attestations with it. `ownerMnemonicSuperseded:*` keys are secret: never returned by `getAll` or the daemon's `/settings`, never writable over HTTP. Adoption recovers when Studio next writes the entry. The switch is refused while the previous owner's backup is unconfirmed, unless the caller states it holds that phrase (`previousOwnerBackupConfirmed`, `--i-have-a-backup`), because the switch deletes it from the machine.
+
+`GET /identity` → `runtime` = `{state: 'adopted' | 'absent' | 'rejected' | 'unavailable', source: 'studio' | 'daemon', reason, daemonRuntimeDid, daemonEncPublicKey, message}`. The switch dialog SHOULD show `message` when `state` is not `adopted`.
+
+Testing: `tests/helpers/studio-runtime-entry.ts` (`writeStudioRuntimeEntry`, `fakeKeychain`). A spawned test daemon reads a plaintext keychain file named by `ADF_TEST_KEYCHAIN_FILE` when `src/main/utils/test-seams.ts` allows it: `ADF_TEST_SEAMS=1`, the code does not run from `app.asar` or `node_modules`, and the process is not a packaged Electron (to be unified with W1-G's `isPackagedRuntime` at merge); otherwise that variable makes it use the passphrase file, never the OS keychain. `ADF_KEYCHAIN=0` disables every keychain, including the test file.
+
+Security: on Windows (Credential Manager) and Linux (Secret Service) any process of the OS user reads every `ADF` entry; there the entry exposes nothing such a process could not already read, PROVIDED the owner phrase is also in the keychain (`ADF / owner-mnemonic`, which Studio mirrors when a keychain exists): the phrase is strictly stronger (it signs delegations and opens every owner slot). Without the phrase in the keychain, the entry is new exposure: Studio's runtime signing and encryption keys, which otherwise sit only in Studio's safeStorage, become readable to that user's processes. On macOS keychain items carry per-application ACLs: the entry is created by Studio, and the daemon reading it prompts once; the real weakening is that the daemon runs as a generic Electron-as-Node or `node` binary, so "Always Allow" grants that binary, and with it any script it runs, access to the item. The switch dialog SHOULD say so on macOS. The delegation check stops a corrupted, stale or planted entry from changing the signing identity; it is no barrier to someone who holds the phrase. A token-only attacker (HTTP) gains nothing: no route accepts or returns key material, and `POST /identity/import` requires the local proof file in every mode.
 
 Fallback: without a usable keychain (Linux without Secret Service), adoption is not possible. The daemon keeps its own runtime; Studio enrolls the daemon's enc key into `trustedDaemonEncKeys` on switch (Phase C) so credentials unlock. Review then shows `recognized` for files stamped by the other runtime. This difference MUST be stated in the switch dialog.
 
@@ -257,6 +303,41 @@ The daemon recipe is the target recipe. For each drift item, the user-visible be
 | Prompt settings | Live | Live | Read at boot | Read through a settings accessor at use |
 | Compute `hostInfo` | Absent | Present | Present | Keep daemon behaviour |
 | Tracked-dir watcher + autostart of new files | chokidar (`ipc/index.ts:1154-1221`) | n/a | None | Daemon gains the watcher; emits `tracked_dirs` push |
+
+### 6.1 Recipe diff (W1-B, 2026-10-14)
+
+Line-by-line comparison of the three recipes: foreground `AGENT_START` (`ipc/index.ts:3678-5008`), `BackgroundAgentManager.doStartAgent` + `setupManagedAgent` (`background-agent-manager.ts:535-1993`), and `AgentRuntimeBuilder.build` with the daemon's mesh wiring (`daemon/index.ts`). It extends the table above. "Builder" is the state before W1-B.
+
+| # | Item | Studio fg | BAM | Builder | Resolution |
+|---|---|---|---|---|---|
+| 1 | Core tool declarations | Shared helper, fresh read-modify-write | Same | Private copy, wrote the start-time config back | W1-B: shared helper (E1) |
+| 2 | `container_exec` → `compute_exec` | Running config only | Same | Persisted | W1-B: running config only |
+| 3 | Derived key in MCP env, credential files, OAuth store, adapters, `AdfCallHandler` identity and signing | Captured key | Same | `null` everywhere | W1-B: one per-agent cell; `applyDerivedKey(agent, key)` restarts adapters and MCP servers whose credentials need the key. RuntimeService calls it after an unlock (W1-A); `build({ derivedKey })` for a key held before start |
+| 4 | Derived key in `createProviderForModel` | Captured key | Same | `null` (RuntimeService) | W1-A |
+| 5 | OAuth connect store | Agent store, app store fallback | Agent store | Agent store | Keep agent store; app store via `mcpOAuthAppStore` once W1-C's `DaemonAppOAuthStore` is passed in `daemon/index.ts` |
+| 6 | Capture-on-attach (app token sealed into the agent before an http+oauth connect) | Yes | No | No | W1-B: done when an app store is injected |
+| 7 | Interactive OAuth sign-in from an agent call | `mcp_oauth_signin` approval, browser opened by Studio | Same approval, injected runner | None | W1-B: same approval; the daemon runs the flow and raises `mcp_oauth_authorize` with `authorize_url`. It stays pending until the callback lands (approve = opened); the runtime ends it with `AgentExecutor.settleHilTask` (outcome `completed`). One sign-in per server. Studio daemon mode MUST open that URL without a click (W3-C); remote mode needs the relayed callback (§9.3, W4-B) |
+| 8 | Stdio auth preflight (`mcp_install` with `auth`) | Native "Continue" dialog | Same (injected) | Headless: browser best-effort, wait for exit | Open: needs a HIL-based preflight; proposed for W3-C with the registration-test gap (W1-D list) |
+| 9 | MCP setup-level failure | Keeps manager, removes scratch dir | Keeps both | Manager `null` | W1-B: BAM behaviour |
+| 10 | MCP reconcile on config change | Agents-screen save and `sys_update_config` | None | None | W1-B: on every `applyConfigChange` (agent writes and `RuntimeService.setAgentConfig`); a server `mcp_install` already connected is skipped; it prompts for OAuth only while a turn runs |
+| 11 | `hostDenied` in `mcp_install`/`mcp_restart` results | Yes | No | No | W1-B: yes |
+| 12 | Config fan-out after an MCP tool sync | Hand-rolled `updateConfig` | Same | Same | W1-B: `applyConfigChange(…, { notifyHost: false })`, so inner loops re-derive (deliberate difference) |
+| 13 | Empty host spawn args filtered (`args.filter(Boolean)`) | Yes | No | No | Keep BAM behaviour |
+| 14 | MCP status push, MCP log cache kept after stop | `MCP_SERVER_STATUS_CHANGED`, `mcpLogCache` | Workspace logs | Workspace logs | W2-B (push), W3-C (logs) |
+| 15 | Adapter inbound and status pushes | `INBOX_UPDATED`, `ADAPTER_STATUS_CHANGED` | `inbox_updated`, `adapter_status_changed` events | None | W2-B |
+| 16 | Umbilical taps | `getTapManager` | Same | Taps registered, `tapManager` not exposed; profile `umbilicalTaps: false` | W1-B: exposed, profile on, ledger entry fixed |
+| 17 | Host `onConfigChanged` | Renderer config push, mesh copy, file rename, MCP reconcile, adapter reconcile | Mesh copy, rename scheduled, adapter reconcile | Adapter reconcile | W1-B: mesh copy (through `agent-runtime-signals`), MCP reconcile. Rename: W1-A/W1-E. Config push: W2-B |
+| 18 | Agent sets itself `off` | `handleAgentOff`: mesh unregister, owner-off dispose | `onStateOff` → same | Nothing: stays loaded and registered | W1-A (host attachment) |
+| 19 | Trigger error shown in the UI | `error` on `AGENT_EVENT` | Display state `error` | Log only | W1-A |
+| 20 | Mesh registration | `registerAgent`: bus, `isMessageTriggered`, config and key updates, adapter manager | Same | Servable only; `isMessageTriggered` false (respond_only agents could never reply) | W1-B: full registration inside `registerServableAgent` |
+| 21 | Mesh registration while the mesh is disabled | None | None | Registered (served on the mesh port) | W1-B: none |
+| 22 | Mesh-defaulted config pushed into the executor after registration | Yes (fresh start) | No | No | Keep BAM behaviour |
+| 23 | Main-loop clear | `clearLoop` + reset, then `meshManager.resetAgentSession` (a second clear) | n/a | `RuntimeService.clearAgentChat`: one clear + the same reset | No gap: the W0-A row is met by `clearAgentChat` |
+| 24 | Config written during the startup window | Adopted at install (`pickFresherConfig`); MCP startup sync onto a fresh read | Start-time config | Start-time config | No writer exists before the daemon registers an agent. W2-A open documents MUST adopt such writes |
+| 25 | Idle sweep (`beforeDispatch` activity, session rehydrate) | n/a | Yes | None | Accepted: memory relief only, nothing visible |
+| 26 | Peer discovery | mDNS, tailnet, manual peers | n/a | `[]` | W1-B: `services/runtime-discovery.ts`. It polls the mesh server state (2 s) where Studio reacts in its start/stop handlers. `GET /network/mesh/discovered-runtimes` does not forward `force` yet (`http-api.ts`, W2-A) |
+
+Double delivery: the message-bus subscription adds no delivery path. Nothing calls `MessageBus.send`; local sends deliver in-process (`mesh-manager.ts` `sendMessage`), HTTP and WS ingress go through `processIngressMessage`. `tests/daemon-mesh-parity.test.ts` runs the mesh-triggered turn under both registrations.
 
 ## 7. Event parity
 
@@ -383,6 +464,8 @@ Switching backends happens at restart (D9) and moves, not copies, the state that
 Studio main performs the handover itself before starting or attaching to the daemon: it has safeStorage, the keychain and the credential-cipher key file, so no route returns secrets over HTTP. If a daemon is already running, Studio asks it to reload the moved stores (`POST /client/reload-credentials`, local-only, carries no secrets).
 
 The switch dialog lists each moved item. Each move is logged. If the daemon already holds a ChatGPT/Grok session for another account, the dialog names both accounts and the user chooses which to keep.
+
+App-level MCP OAuth mapping (`DaemonAppOAuthStore`, `src/main/services/mcp-oauth-store.ts`): Studio's `mcpOauthCredentials` secret is one JSON blob `Record<serverUrl, McpOAuthRecord>`. The daemon keeps one record per server in its secret backend: index account `mcp-oauth-credentials:<settingsScope>` = `{"v":1,"servers":[serverUrl…]}`, record account `mcp-oauth-credentials:<settingsScope>:<first 16 hex of sha256(serverUrl)>` = the record JSON, both chunked because Windows Credential Manager caps a value at 1280 UTF-16 characters, less than one JWT pair: head `{"v":1,"gen","n","sha256"}`, chunks at `<account>#<gen>:<i>` (at most 1000 characters, cut on code-point boundaries). A write stores a new generation, flips the head, then deletes the old generation; a crash leaves the head on one complete generation, the read verifies the checksum, and leftovers listed in the head (`pending`, `prev`) are deleted by the next write. W4-A moves the blob with `importBlob(blob)` (to local) and `exportBlob()` (to embedded); record contents and blob keys are unchanged.
 
 Rationale: ChatGPT and MCP OAuth refresh tokens rotate. A copied session is invalidated in one place the first time the other refreshes it, so one-way import on first switch would sign the user out after switching back. Moving the session with the backend role keeps exactly one live copy.
 
