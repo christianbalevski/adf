@@ -346,16 +346,25 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
   }
 
   /** The session id for a call, opening the session if needed; a 404 reopens it once. */
+  /**
+   * The session id for a call, waiting for an open in progress. It never
+   * waits for a whole reopen: that awaits `onReattached`, whose re-holds run
+   * after the caller's own operation (session.ts serializes them).
+   */
+  const currentId = async (): Promise<string | null> => sessionId ?? (opening ? await opening : sessionId)
+
+  /** Run a call on the session; a `session_not_found` opens a new session and retries once. */
   const withSession = async <T>(what: string, run: (id: string) => Promise<T>): Promise<T> => {
-    const id = sessionId ?? (await (opening ?? reopening?.then(() => sessionId) ?? Promise.resolve(sessionId)))
+    const id = await currentId()
     if (!id) throw new Error(`${what}: Studio has no client session on the ADF daemon`)
     try {
       return await run(id)
     } catch (err) {
-      if (!sessionGone(err) || sessionId !== id) throw err
-      await reopen()
-      if (!sessionId) throw err
-      return run(sessionId)
+      if (!sessionGone(err)) throw err
+      if (sessionId === id) void reopen()
+      const next = await currentId()
+      if (!next || next === id) throw err
+      return run(next)
     }
   }
 

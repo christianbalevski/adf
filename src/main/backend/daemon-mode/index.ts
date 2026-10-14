@@ -127,7 +127,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   ClientSettingsStore.seedOnce(clientSettingsPath(deps.userDataDir), join(deps.userDataDir, 'adf-settings.json'), log)
   const clientSettings = new ClientSettingsStore(clientSettingsPath(deps.userDataDir), log)
   const connection = new DaemonConnection(deps.connect, log, deps.fetch)
-  const session = new DaemonModeSession(null, log)
+  // A re-hold that failed after a reconnect is a notice (statusUi exists by the time a reconnect happens).
+  const session = new DaemonModeSession(null, log, (text) => { log.warn(`[Backend] ${text}`); statusUi.notice(text) })
 
   const firstWindow = (): BrowserWindow | null => {
     const windows = BrowserWindow.getAllWindows()
