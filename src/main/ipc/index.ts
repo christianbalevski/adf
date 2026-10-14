@@ -3929,6 +3929,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       console.warn(`[AGENT_START] ${lease.message}`)
       return { success: false, error: lease.message, code: lease.code }
     }
+    if (lease.unprotected) {
+      getMainWindow()?.webContents.send(IPC.AGENT_EVENT, { type: 'error', payload: { error: lease.unprotected }, timestamp: Date.now() })
+    }
 
     // Helper: check if the foreground file has changed during an await
     const fileChanged = () => currentFilePath !== capturedFilePath

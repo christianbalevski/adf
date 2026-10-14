@@ -559,6 +559,9 @@ export class BackgroundAgentManager extends EventEmitter {
     try {
       const lease = await this.agentLeases.acquire(filePath)
       if (!lease.ok) throw new BackgroundStartError(lease.message, AGENT_LEASED_CODE)
+      if (lease.unprotected) {
+        this.emitEvent({ type: 'error', payload: { filePath, error: lease.unprotected, code: 'LEASES_UNAVAILABLE' }, timestamp: Date.now() })
+      }
 
       const workspace = AdfWorkspace.open(filePath)
       // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)

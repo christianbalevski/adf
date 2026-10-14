@@ -576,6 +576,14 @@ export class RuntimeService extends EventEmitter {
       const provider = await this.resolveProvider(config, canonicalPath, opts.provider, workspace)
       const agent = await this.buildLoadedAgent(workspace, canonicalPath, config, provider)
       const ref = this.registerAgent(agent, canonicalPath, config)
+      if (lease?.ok && lease.unprotected) {
+        // The lease dir is unusable: the agent runs, and the user is told.
+        const event = { type: 'error' as const, payload: { error: lease.unprotected, code: 'LEASES_UNAVAILABLE' }, timestamp: Date.now() }
+        this.emit('agent-event', { agentId: ref.id, filePath: canonicalPath, event } satisfies RuntimeAgentEvent)
+        withSource('system:lifecycle', ref.id, () => {
+          emitUmbilicalEvent({ event_type: 'agent.error', agentId: ref.id, timestamp: event.timestamp, payload: { filePath: canonicalPath, event } })
+        })
+      }
       if (degradedReason) {
         const managed = this.resolveAgent(ref.id)
         if (managed) managed.degraded = degradedReason
@@ -608,6 +616,11 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
+  /**
+   * No agent lease here: createHeadlessAgent creates a brand-new file (or an
+   * in-memory agent), so no other process can be running it yet; the harness
+   * is the only caller.
+   */
   createAgent(opts: RuntimeCreateAgentOptions): RuntimeAgentRef {
     const agent = createHeadlessAgent({
       ...opts,
