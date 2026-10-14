@@ -133,6 +133,10 @@
     {
       "name": "Agent files",
       "description": "Agent files on the daemon host: the path → id rule, delete, rename, clone, accept-relocate, snapshots (share, export, save as), import, the daemon-side folder picker, raw transfers of an agent's internal files, and the operations Studio runs on agent files that are not loaded (`/files/agent/*`). Every agent file argument is an absolute path ending in `.adf`."
+    },
+    {
+      "name": "Client (internal)",
+      "description": "Client sessions and the client event stream, for clients that need exact UI parity (ADF Studio in daemon mode, the terminal app): one session per client, one SSE stream per session carrying executor, host and push frames (design daemon-backend.md D5). Internal: these routes MAY change between versions; a client checks `clientApiVersion` (GET /version) first."
     }
   ],
   "paths": {
@@ -487,7 +491,7 @@
           "Agents"
         ],
         "summary": "Create an agent from a template, then load it",
-        "description": "Studio's \"new agent\", headless: template instance → sealed identity with owner/runtime stamps and attestations → marked reviewed → directory tracked → loaded (and started with `start: true`). Needs a ready owner identity; 409 `identity_not_ready` carries `identity` so a client can offer create / restore / unlock. `load_failed` (422) means the file was created, reviewed and tracked but could not load (e.g. no provider configured): fix it, then POST /agents/load.",
+        "description": "Studio's \"new agent\", headless: template instance → sealed identity with owner/runtime stamps and attestations → marked reviewed → directory tracked → loaded (and started with `start: true`). Needs a ready owner identity; 409 `identity_not_ready` carries `identity` so a client can offer create / restore / unlock. `load_failed` (422) means the file was created, reviewed and tracked but could not load (e.g. no provider configured): fix it, then POST /agents/load. With `load: false` and the header `X-ADF-Client-Session`, the new file is held open (not running) by that client session, which must be live (404 `session_not_found` otherwise); a `holder` body field is refused (400).",
         "operationId": "createAgent",
         "requestBody": {
           "required": false,
@@ -529,6 +533,20 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "X-ADF-Client-Session names no live client session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "No client session 3f0c… (it ended or expired, or the daemon restarted).",
+                  "code": "session_not_found"
+                }
+              }
+            }
           },
           "409": {
             "description": "Owner identity not ready (`identity_not_ready`) or the name is taken in that directory (`name_taken`)",
@@ -574,7 +592,18 @@
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "X-ADF-Client-Session",
+            "in": "header",
+            "required": false,
+            "description": "The requesting client session (POST /client/sessions). With load: false it holds the new file as an open document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
       }
     },
     "/agents/autostart": {
@@ -13680,6 +13709,425 @@
           }
         }
       }
+    },
+    "/client/sessions": {
+      "post": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "Open a client session",
+        "description": "Opens a session; its stream (GET /client/sessions/{id}/events) holds every frame from now on, so frames between this call and the first connect are not lost. A session expires 60 s after its stream disconnects (or after this call, if it never connects); expiry releases its documents. `exitDaemonWhenClosed: true` (ADF Studio when \"Keep the daemon running\" is off): when this session expires and no other session is open, a daemon Studio started (GET /version `startedBy: studio`) shuts down and logs why; a daemon the CLI or a service started never does. Ending the session with DELETE does not stop the daemon. A write to /agents/{id}/* that sends the header `X-ADF-Client-Session: <sessionId>` is not echoed back to that session (`config_changed`, `file_updated`, `document_updated` raised by the write itself); every other session gets them, and work the request starts (a turn, a timer) reaches that session too.",
+        "operationId": "createClientSession",
+        "x-adf-stability": "internal",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientSessionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientSessionCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/client/sessions/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Client session id (POST /client/sessions)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "delete": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "End a client session",
+        "description": "Ends the session now: its stream closes and its documents are released. The orphan rule (exitDaemonWhenClosed) applies only to expiry, not to this call.",
+        "operationId": "endClientSession",
+        "x-adf-stability": "internal",
+        "responses": {
+          "200": {
+            "description": "Ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientSessionEnded"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No such client session (it ended or expired, or the daemon restarted): open a new one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "No client session 3f0c… (it ended or expired, or the daemon restarted).",
+                  "code": "session_not_found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client/sessions/{id}/events": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Client session id (POST /client/sessions)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "Stream the session's frames (Server-Sent Events)",
+        "description": "One stream per session (a new connect replaces the open one). Starts with `: connected` and `stream.hello` `{epoch, oldestCursor, latestCursor}`, then the frames after the resume cursor; `: heartbeat` every 30 s. Each frame: `id: <cursor>`, `event: executor | host | push | umbilical`, `data: <ClientFrame JSON>`. Without `since` the stream starts at the session's first frame. **Frames**: `executor` = a raw executor event (as ADF Studio's AGENT_EVENT carries it): text and thinking deltas only for the session's focused agent (PUT …/focus), whatever `umbilical.stream_deltas` says; a `tool_call_result` of another agent carries `result.isError` and `resultSize` instead of the content (`stripped: tool_result`). `host` = an agent lifecycle event (`agent_starting` … `agent_stopped`, `agent_state_changed`, `agent_loops_changed`, `trigger_error`, `startup_failed`). `push` = a topic for every other change (inbox, approvals snapshot, mesh, config_changed, workspace data, file and folder changes, install progress, MCP and adapter status, compute). Frames of one agent arrive in emission order. Sessions not focused on an agent get its large payloads as stubs (see ClientFrame), so one agent's large write never fills another session's ring; a single frame over 4 Mi characters becomes `stream.gap` `oversized` for the session that would get it. **Ring**: each session keeps its newest 4096 frames (and at most 32 Mi characters). A frame dropped before it was written (a slow reader, or a long disconnect) is announced: `stream.gap` `{reason: evicted, dropped, …}` comes before the next frame; `epoch_changed` when the cursor is from another session. On a gap, reload state. Fan-out is per session: a slow or absent session never delays another.",
+        "operationId": "streamClientSessionEvents",
+        "x-adf-stability": "internal",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SinceQuery"
+          },
+          {
+            "name": "epoch",
+            "in": "query",
+            "required": false,
+            "description": "The session epoch the resume cursor came from (POST /client/sessions, `stream.hello`). Another epoch yields `stream.gap` `epoch_changed` and the whole ring.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/LastEventIdHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stream (text/event-stream)",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ClientFrame"
+                      },
+                      {
+                        "$ref": "#/components/schemas/StreamHello"
+                      },
+                      {
+                        "$ref": "#/components/schemas/ClientStreamGap"
+                      }
+                    ]
+                  },
+                  "description": "One object per SSE frame. On the wire:\n\n```text\n: connected\n\nevent: stream.hello\ndata: {\"epoch\":\"0b6f…\",\"oldestCursor\":1,\"latestCursor\":12}\n\nid: 13\nevent: executor\ndata: {\"cursor\":13,\"kind\":\"executor\",\"agentId\":\"…\",\"filePath\":\"/agents/agent-1.adf\",\"event\":{\"type\":\"text_delta_batch\",\"payload\":{\"delta\":\"Hel\"},\"timestamp\":1790000000000}}\n```"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No such client session (it ended or expired, or the daemon restarted): open a new one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "No client session 3f0c… (it ended or expired, or the daemon restarted).",
+                  "code": "session_not_found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client/sessions/{id}/focus": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Client session id (POST /client/sessions)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "Set the agent the session follows",
+        "description": "The focused agent's text and thinking deltas and full tool results reach this session; `null` focuses none. An id, handle or name of a loaded agent is resolved to its id; any other string is kept as given (an agent that is not running yet).",
+        "operationId": "setClientSessionFocus",
+        "x-adf-stability": "internal",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "agentId"
+                ],
+                "properties": {
+                  "agentId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The focus",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientSessionFocus"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No such client session (it ended or expired, or the daemon restarted): open a new one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "No client session 3f0c… (it ended or expired, or the daemon restarted).",
+                  "code": "session_not_found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client/sessions/{id}/documents": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Client session id (POST /client/sessions)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "Hold an agent file open for the session",
+        "description": "Opens the agent file (by `filePath` or `agentId`) as an open document held by this session (design D4): a closed file opens without starting, a running agent's file joins its runtime. The holder is the session id from the path, never the body; answers never list holders. Released by DELETE …/documents/{agentId}, by ending the session or by its expiry; while the session is live the holder sweep keeps the document open.",
+        "operationId": "holdClientSessionDocument",
+        "x-adf-stability": "internal",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filePath": {
+                    "type": "string"
+                  },
+                  "agentId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The held document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientHeldDocument"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No such client session (it ended or expired, or the daemon restarted): open a new one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "No client session 3f0c… (it ended or expired, or the daemon restarted).",
+                  "code": "session_not_found"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "409": {
+            "description": "The file cannot be opened here (for example another file with the same agent id is open)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Another loaded agent has id …",
+                  "code": "duplicate_agent_id"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client/sessions/{id}/documents/{agentId}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Client session id (POST /client/sessions)",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "agentId",
+          "in": "path",
+          "required": true,
+          "description": "Agent id of the held document",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "delete": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "Release a held document",
+        "operationId": "releaseClientSessionDocument",
+        "x-adf-stability": "internal",
+        "responses": {
+          "200": {
+            "description": "Released",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientDocumentReleased"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "No such session, or the session does not hold that agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Client session 3f0c… does not hold 1b9d….",
+                  "code": "document_not_held"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -16687,10 +17135,6 @@
             "type": "boolean",
             "default": true,
             "description": "false: create the file and load nothing (Studio's FILE_CREATE, MESH_FOUND_AGENT). With `holder`, the file is held as an open document."
-          },
-          "holder": {
-            "type": "string",
-            "description": "With load: false: the client session (its id, a UUID) that holds the new file open, not running. A holder that is not a live session is released."
           }
         },
         "example": {
@@ -26077,6 +26521,239 @@
             "description": "Another runtime runs the file: it opened read-only (no open step wrote it), writes are refused; the sentence names the holder"
           }
         }
+      },
+      "ClientSessionInput": {
+        "type": "object",
+        "required": [
+          "client",
+          "version"
+        ],
+        "properties": {
+          "client": {
+            "type": "string",
+            "description": "Client name, for the daemon log (`studio`, `tui`)"
+          },
+          "version": {
+            "type": "string",
+            "description": "Client version, for the daemon log"
+          },
+          "exitDaemonWhenClosed": {
+            "type": "boolean",
+            "description": "Stop a Studio-started daemon when this session expires and no other session is open. Default false."
+          },
+          "umbilical": {
+            "type": "boolean",
+            "description": "Also stream the umbilical envelopes GET /events carries, as `umbilical` frames, without `turn.delta` (the focused agent's tokens arrive as executor frames). The terminal app sets it. Default false."
+          }
+        }
+      },
+      "ClientSessionCreated": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "epoch"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The session's cursor space; resume with `?since=&epoch=`"
+          }
+        }
+      },
+      "ClientSessionFocus": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "focus"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "focus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The focused agent id, or null"
+          }
+        }
+      },
+      "ClientHeldDocument": {
+        "type": "object",
+        "required": [
+          "agentId",
+          "filePath"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "running": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": true
+      },
+      "ClientDocumentReleased": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "agentId",
+          "released"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "released": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      },
+      "ClientSessionEnded": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "ended"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "ended": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      },
+      "ClientStreamGap": {
+        "type": "object",
+        "description": "Data of the `stream.gap` control frame on a client session stream: frames were lost; reload state.",
+        "required": [
+          "reason",
+          "epoch",
+          "requestedCursor",
+          "oldestCursor",
+          "latestCursor"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "evicted",
+              "epoch_changed",
+              "oversized"
+            ],
+            "description": "`evicted`: frames after `requestedCursor` were dropped before they were written (slow reader, long disconnect). `epoch_changed`: the cursor is from another session; the whole ring follows. `oversized`: one frame was larger than the 4 Mi-character frame limit and was not kept (this session only)."
+          },
+          "epoch": {
+            "type": "string"
+          },
+          "requestedCursor": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "oldestCursor": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "latestCursor": {
+            "type": "integer"
+          },
+          "dropped": {
+            "type": "integer",
+            "description": "Frames lost (`evicted`, `oversized`)"
+          },
+          "size": {
+            "type": "integer",
+            "description": "Serialized size of the oversized frame"
+          }
+        }
+      },
+      "ClientFrame": {
+        "type": "object",
+        "description": "One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes \"[Circular]\". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).",
+        "required": [
+          "cursor",
+          "kind"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "description": "Resume cursor, per session"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "executor",
+              "host",
+              "push",
+              "umbilical"
+            ]
+          },
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filePath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "loop": {
+            "type": "string"
+          },
+          "event": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "stripped": {
+            "type": "string",
+            "enum": [
+              "tool_result",
+              "tool_input",
+              "stub"
+            ],
+            "description": "Reduced for a session not focused on the agent: `tool_result` (result content dropped, `resultSize` added), `tool_input` (`tool_call_start` with each input field cut to 2048 characters, `inputTruncated: true`), `stub` (only short scalar fields plus `size`)."
+          },
+          "type": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          },
+          "payload": {},
+          "timestamp": {
+            "type": "number"
+          },
+          "unserializable": {
+            "type": "boolean",
+            "const": true,
+            "description": "The payload could not be serialized; it is `{unserializable: reason}`."
+          }
+        },
+        "additionalProperties": true
       }
     }
   }

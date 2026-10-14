@@ -3,45 +3,22 @@
 // AgentTemplatesTab.tsx) and its template review (AgentReviewDialog's
 // ReviewContent in template mode) over the daemon's /templates routes.
 
-import type { AgentConfig } from '../api/types'
-import type { AgentConfigSummary, AgentTemplateContents, AgentTemplateSummary } from '../../../shared/types/ipc.types'
+import type { AgentConfig, AgentTemplate, TemplateDetail } from '../api/types'
+import type { AgentConfigSummary, AgentTemplateContents } from '../../../shared/types/ipc.types'
 import type { Line, Segment } from '../views/inspect/format'
+
+// The wire types of the /templates routes live with the shared daemon client.
+export type { TemplateDetail, TemplateReview, TemplateWriteResult } from '../api/types'
 
 /** Overlay kind (registered by the shell's overlay host). */
 export const TEMPLATES_OVERLAY = 'templates'
 
-export type TemplateSummary = AgentTemplateSummary
+export type TemplateSummary = AgentTemplate
 export type TemplateContents = AgentTemplateContents
 
 /** Props of the templates overlay. `id` opens that template's details. */
 export interface TemplatesOverlayProps {
   id?: string
-}
-
-/** `GET /templates/:id`. */
-export interface TemplateDetail {
-  template: TemplateSummary | null
-  isDefault: boolean
-  defaultId: string
-  contents: TemplateContents
-}
-
-/** Create / rename / notes / reset / accept: the (possibly new) id and its summary. */
-export interface TemplateWriteResult {
-  id: string
-  template: TemplateSummary | null
-}
-
-/** `GET /templates/:id/review`. */
-export interface TemplateReview {
-  id: string
-  needsReview: boolean
-  reviewed: boolean
-  /** Absent while the owner identity is not ready. */
-  summary?: AgentConfigSummary
-  /** false: the owner identity is not ready, so there is no review yet (set it up first). */
-  identityReady?: false
-  message?: string
 }
 
 /** Shown first, in this order (Studio's SHIPPED_ORDER). */

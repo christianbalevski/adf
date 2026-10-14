@@ -114,7 +114,15 @@ describe('POST /agents/create without load (FILE_CREATE, FILE_CREATE_QUICK, MESH
     expect(runtime.listOpenDocuments()).toEqual([])
     expect(existsSync(closed.body.filePath)).toBe(true)
 
-    const held = await call(server, 'POST', '/agents/create', { name: 'agent-2', directory: dir, load: false, holder: S1 })
+    // The holder is the client session in the X-ADF-Client-Session header, never a body field.
+    expect((await call(server, 'POST', '/agents/create', { name: 'agent-2', directory: dir, load: false, holder: S1 })).status).toBe(400)
+    const unknown = await server.inject({ method: 'POST', url: '/agents/create', headers: { 'x-adf-client-session': S1 }, payload: { name: 'agent-2', directory: dir, load: false } })
+    expect(unknown.statusCode).toBe(404)
+    expect(unknown.json()).toMatchObject({ code: 'session_not_found' })
+    const sessionId = (await call(server, 'POST', '/client/sessions', { client: 'studio', version: 'test' })).body.sessionId as string
+    const heldRes = await server.inject({ method: 'POST', url: '/agents/create', headers: { 'x-adf-client-session': sessionId }, payload: { name: 'agent-2', directory: dir, load: false } })
+    const held = { status: heldRes.statusCode, body: heldRes.json() as Record<string, any> }
+    expect(JSON.stringify(held.body)).not.toContain(sessionId)
     expect(held.status).toBe(201)
     expect(held.body).toMatchObject({ name: 'agent-2', loaded: false, started: false, document: { running: false, holders: 1, needsPassword: false } })
     expect(runtime.listAgents()).toEqual([])
@@ -127,7 +135,7 @@ describe('POST /agents/create without load (FILE_CREATE, FILE_CREATE_QUICK, MESH
     expect(runtime.getAgent(loaded.body.agentId)).toBeDefined()
 
     expect((await call(server, 'POST', '/agents/create', { name: 'agent-4', directory: dir, load: false, start: true })).status).toBe(400)
-    expect((await call(server, 'POST', '/agents/create', { name: 'agent-4', directory: dir, holder: S1 })).status).toBe(400)
+    expect((await call(server, 'POST', '/agents/create', { name: 'agent-4', directory: dir, holder: sessionId })).status).toBe(400)
     expect((await call(server, 'POST', '/agents/create', { name: 'agent-4', directory: dir, load: 'no' })).status).toBe(400)
   })
 

@@ -12,3 +12,4 @@ export const MAIN_LOOP = shared.MAIN_LOOP
 export const DaemonError = shared.DaemonError
 export type DaemonError = typesNs.DaemonError
 export const isCredentialsLocked = shared.isCredentialsLocked
+export const SUPPORTED_CLIENT_API_VERSION = shared.SUPPORTED_CLIENT_API_VERSION
