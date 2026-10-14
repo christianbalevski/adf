@@ -44,10 +44,10 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 
 | ID | Workstream | Wave | Depends on | Status |
 |---|---|---|---|---|
-| W0-A | Channel map and settings-key classes | 0 | none | TODO |
+| W0-A | Channel map and settings-key classes | 0 | none | MERGED |
 | W0-B | Shared daemon client | 0 | none | MERGED e23ec054 |
 | W0-C | Agent lease and runtime host registry | 0 | none | TODO |
-| W0-D | Daemon packaging, process control, `/version`, route hook | 0 | none | TODO |
+| W0-D | Daemon packaging, process control, `/version`, route hook | 0 | none | MERGED |
 | W0-E | Backend selection at boot, Settings → Backend | 0 | W0-A (merge order) | MERGED c0305508 |
 | W0-F | Parity harness, embedded side | 0 | none | TODO |
 | W1-A | RuntimeService parity hooks | 1 | W0-C, W0-D | TODO |
@@ -283,7 +283,27 @@ Each W3 workstream implements the daemon-mode handlers for its channels in `src/
 | K18 | One runtime's shutdown stops another runtime's containers (`PodmanService.stopAll`, happened 2026-10-14) | High | High: live agents lose compute | W1-G; agent rule: kill test processes, never graceful stop | W1-G |
 | K17 | Duplicate `config.id` files: daemon silently serves the first | Medium | Medium | `409 duplicate_agent_id` (W1-A) | W1-A |
 
-## 6. Parity triage (filled in W5-A)
+## 6. Review follow-ups
+
+Low-severity items accepted at merge, each with the workstream that picks it up.
+
+| From | Item | Owner |
+|---|---|---|
+| W0-E | Remote→embedded fallback at boot (unconfirmed http URL dropped) is logged but not shown in Settings → Backend; a later unrelated save rewrites the file without the dropped fields, silently | W4-B |
+| W0-E | A confirmed plain-http URL cannot be un-confirmed without changing the URL | W4-B |
+| W0-B | Template types copied into `src/shared/daemon-client/types.ts` and `src/main/tui/templates/model.ts`; make `model.ts` re-export | W2-B |
+| W0-B | `credentialsFor` implementations MUST honour the explicit `token` argument; document for Studio's implementation | W2-C |
+| W0-B | `api-guide.md` lines 11, 518 and `src/main/tui/CONTRACT.md` 287, 294 still name `src/main/tui/api/*` | W4-C |
+| W0-D | If the race-winning daemon is still booting 3 s after our child exits, Studio shows "exited during startup"; keep waiting while a pid file appears or retry `ensure` once | W4-A |
+| W0-D | "Waiting for the ADF daemon (pid N)…" progress is not shown in the UI yet | W4-A |
+| W0-D | Packaged build not verified with a real `node_modules` (junction drops transitive deps); lead verifies `npm run package` in a real checkout | Lead, W5-B |
+| W0-A | `TEMPLATE_CHECK_REVIEW`: daemon reports provider status `unchecked` where Studio runs `autoProviderCheck`, and returns 409 when owner identity is not ready where embedded returns `needsReview:false` | W2-A |
+| W0-A | `DOC_READ_INTERNAL_FILE` needs a metadata-only / size-capped read so Studio does not download whole binaries to discard them | W1-E |
+| W0-A | `TEMPLATE_DELETE`: templates-trash vs OS trash semantics differ | W3-A |
+| W0-A | `fleetGroups`, `fleetStewards`, `fleetMapState` missing from `AppSettings` (`ipc.types.ts`) | W2-C |
+| W0-D | Pre-existing: the daemon's podman probe writes a stray `NUL` file in its working directory | W1-G |
+
+## 7. Parity triage (filled in W5-A)
 
 | Scenario | Diff | Decision | Commit |
 |---|---|---|---|
