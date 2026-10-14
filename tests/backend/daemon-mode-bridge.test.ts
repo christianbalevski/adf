@@ -284,6 +284,34 @@ describe('event bridge: focus and lifecycle', () => {
     ])
   })
 
+  it('AGENT_START hold: per file; a file switch mid-start drops the held events and leaves the new file live', async () => {
+    const { session, bridge, pushes, batched } = setup()
+    const live = () => pushes.filter((p) => p.channel === IPC.AGENT_EVENT).map((p) => (p.args[0] as { payload: { state?: string; t?: string } }).payload.t)
+    const exec = (agentId: string, filePath: string, t: string) =>
+      bridge.handleFrame({ kind: 'executor', agentId, filePath, event: { type: 'text_delta', payload: { t }, timestamp: 1 } as never })
+    await focus(session, FILE_1, null)
+    const release1 = bridge.holdForeground(FILE_1)
+    started(bridge, AGENT_1, FILE_1, 'active')
+    exec(AGENT_1, FILE_1, 'a1-held')
+    expect(live()).toEqual([])
+    // The user opens agent-2 before agent-1's start answers.
+    await session.openFile(FILE_2, async () => AGENT_2)
+    expect(batched.at(-1)).toMatchObject({ type: 'agent_started', payload: { filePath: FILE_1, state: 'active' } })
+    exec(AGENT_2, FILE_2, 'a2-live')
+    expect(live()).toEqual(['a2-live'])
+    exec(AGENT_1, FILE_1, 'a1-background')
+    release1()
+    expect(live()).toEqual(['a2-live'])
+    // A start of agent-2 holds only agent-2's events; release sends them in order.
+    const release2 = bridge.holdForeground(FILE_2)
+    exec(AGENT_2, FILE_2, 'a2-held-1')
+    exec(AGENT_2, FILE_2, 'a2-held-2')
+    expect(live()).toEqual(['a2-live'])
+    release2()
+    release2()
+    expect(live()).toEqual(['a2-live', 'a2-held-1', 'a2-held-2'])
+  })
+
   it('a fresh start of the open file adds nothing to the background list', async () => {
     const { session, bridge, batched } = setup()
     await focus(session, FILE_1, null)

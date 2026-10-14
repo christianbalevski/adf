@@ -4,7 +4,7 @@ import type { AgentExecutionEvent, AgentState, BackgroundAgentEvent, Notificatio
 import { applyBackgroundEvent, type BackgroundMappingState } from '../../runtime/background-event-mapping'
 import { toDisplayState } from '../../runtime/display-state'
 import type { ClientFrame, ExecutorFrame, HostFrame, PushFrame, PushTopic, StreamGap, TurnFrame } from './client-stream'
-import type { DaemonModeSession } from './session'
+import { samePath, type DaemonModeSession } from './session'
 
 /**
  * Client-stream frames → IPC pushes (design D6, §7).
@@ -151,6 +151,12 @@ interface EndedTurn {
   settled: boolean
 }
 
+/** AGENT_EVENTs of one file held while its AGENT_START request is in flight. */
+interface ForegroundHold {
+  filePath: string
+  events: Array<{ agentId: string; event: unknown }>
+}
+
 export class EventBridge {
   private readonly agents = new Map<string, BridgeAgent>()
   private readonly waiters = new Set<TurnWaiter>()
@@ -159,8 +165,8 @@ export class EventBridge {
   /** Agents whose events the client no longer wants (it is stopping them, embedded detaches its host first). */
   private readonly detached = new Set<string>()
   private focus: string | null = null
-  /** AGENT_EVENTs held back while a start request is in flight (see holdForeground). */
-  private heldForeground: unknown[] | null = null
+  /** AGENT_EVENTs held back per file while its start request is in flight (see holdForeground). */
+  private readonly holds = new Set<ForegroundHold>()
   private readonly log: Log
   private readonly now: () => number
   private resyncing: Promise<void> | null = null
@@ -288,22 +294,40 @@ export class EventBridge {
   /**
    * AGENT_START: embedded answers the start before the startup turn's first
    * event reaches the renderer (the turn is dispatched after the reply); the
-   * daemon's events can arrive before its HTTP reply. The open agent's
-   * AGENT_EVENTs are held until `releaseForeground` and then sent in order.
+   * daemon's events can arrive before its HTTP reply. AGENT_EVENTs of the
+   * agent at `filePath` are held until the returned release runs, then sent
+   * in order. Only that file's events wait: another file opened meanwhile
+   * streams as usual. Held events of a file that lost the focus are dropped
+   * (its background view comes from the mapping, which saw every event); the
+   * release sends only the events of the file focused then.
    */
-  holdForeground(): void {
-    this.heldForeground ??= []
+  holdForeground(filePath: string): () => void {
+    for (const h of this.holds) if (samePath(h.filePath, filePath)) return () => {}
+    const hold: ForegroundHold = { filePath, events: [] }
+    this.holds.add(hold)
+    return () => {
+      if (!this.holds.delete(hold)) return
+      if (this.disposed) return
+      this.dropUnfocused(hold)
+      for (const { event } of hold.events) this.deps.output.send(IPC.AGENT_EVENT, event)
+    }
   }
 
-  releaseForeground(): void {
-    const held = this.heldForeground
-    this.heldForeground = null
-    for (const event of held ?? []) this.deps.output.send(IPC.AGENT_EVENT, event)
+  private sendForeground(agentId: string, filePath: string, event: unknown): void {
+    for (const hold of this.holds) {
+      if (!samePath(hold.filePath, filePath)) continue
+      hold.events.push({ agentId, event })
+      return
+    }
+    this.deps.output.send(IPC.AGENT_EVENT, event)
   }
 
-  private sendForeground(event: unknown): void {
-    if (this.heldForeground) this.heldForeground.push(event)
-    else this.deps.output.send(IPC.AGENT_EVENT, event)
+  /** Held events whose file is no longer the focused one never reach AGENT_EVENT. */
+  private dropUnfocused(hold: ForegroundHold): void {
+    const before = hold.events.length
+    hold.events = hold.events.filter((h) => this.deps.session.isFocused(h.agentId, hold.filePath))
+    const dropped = before - hold.events.length
+    if (dropped > 0) this.log.log(`[Backend] ${dropped} live event(s) of ${hold.filePath} not shown: the file lost the window before its start answered; it is listed in the background`)
   }
 
   // --- focus ---------------------------------------------------------------
@@ -318,7 +342,9 @@ export class EventBridge {
   private focusChanged(next: string | null): void {
     const prev = this.focus
     this.focus = next
-    if (prev === next || this.disposed) return
+    if (this.disposed) return
+    for (const hold of this.holds) this.dropUnfocused(hold)
+    if (prev === next) return
     const lost = prev ? this.agents.get(prev) : undefined
     const gained = next ? this.agents.get(next) : undefined
     if (!lost && !gained?.shownInBackground) return
@@ -362,7 +388,7 @@ export class EventBridge {
     const focused = this.deps.session.isFocused(frame.agentId, filePath)
     const event = frame.event
     if (focused) {
-      this.sendForeground(event)
+      this.sendForeground(frame.agentId, filePath, event)
       if (agent && event.type === 'state_changed' && (event.loop ?? 'main') === 'main') {
         agent.lastForegroundState = String((event.payload as { state?: unknown })?.state)
       }
@@ -430,7 +456,7 @@ export class EventBridge {
       // display state through the executor's own state change.
       if (focused && !this.detached.has(frame.agentId)) {
         const event: AgentExecutionEvent = { type: 'error', payload: { ...frame.payload }, timestamp: frame.timestamp }
-        this.sendForeground(event)
+        this.sendForeground(frame.agentId, filePath, event)
       }
       return
     }
@@ -474,7 +500,7 @@ export class EventBridge {
   private foregroundStopped(agent: BridgeAgent, timestamp: number): void {
     if (agent.lastForegroundState === 'stopped') return
     agent.lastForegroundState = 'stopped'
-    this.sendForeground({ type: 'state_changed', payload: { state: 'stopped' }, timestamp })
+    this.sendForeground(agent.agentId, agent.filePath, { type: 'state_changed', payload: { state: 'stopped' }, timestamp })
   }
 
   private onPush(frame: PushFrame): void {
@@ -569,7 +595,7 @@ export class EventBridge {
         this.deps.output.send(IPC.DOC_AGENT_CONFIG_CHANGED, { filePath: focusedPath, config })
       })
     } else if (focusedPath) {
-      this.log.warn('[Backend] Resync: the open file is not running in the daemon; its chat and config refresh when open documents land (W2-A)')
+      this.log.warn('[Backend] Resync: the open file is not running in the daemon; its chat and config refresh once the client session holds it (W2-B)')
     }
 
     await step('tracked directories', async () => {
