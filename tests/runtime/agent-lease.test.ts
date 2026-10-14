@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { type ChildProcess, execFileSync, execSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,7 +30,9 @@ import {
   canonicalLeasePath,
   LeasedStartTracker,
   leaseKeyForCanonicalPath,
+  leaseDir,
   listRuntimeHosts,
+  listStudioClients,
   processAgentLeases,
   type AgentLeaseRecord,
 } from '../../src/main/runtime/agent-lease'
@@ -39,6 +42,7 @@ import { RuntimeGate } from '../../src/main/runtime/runtime-gate'
 import { createHeadlessAgent, MockLLMProvider } from '../../src/main/runtime/headless'
 import { markConfigReviewed } from '../../src/main/services/agent-review'
 import { daemonPaths, studioConflict } from '../../src/main/cli/daemon-control'
+import { registerDaemonModeHandlers } from '../../src/main/backend/daemon-mode'
 import type { AssembledAgent } from '../../src/main/runtime/assemble-agent'
 import type { SettingsService } from '../../src/main/services/settings.service'
 import type { AgentConfig } from '../../src/shared/types/adf-v02.types'
@@ -152,17 +156,21 @@ class Child {
   }
 }
 
+// Child bundles live inside the worktree (gitignored out/), so their bare
+// imports resolve by walking up to node_modules: no link to it is created.
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url))
+const bundleDir = join(repoRoot, 'out', 'test-fixtures')
+const bundles: string[] = []
 let childBundle = ''
-let childRoot = ''
+let takerBundle = ''
 
-beforeAll(async () => {
-  childRoot = realpathSync.native(mkdtempSync(join(tmpdir(), 'adf-lease-child-')))
-  const nodeModules = realpathSync(fileURLToPath(new URL('../../node_modules', import.meta.url)))
-  symlinkSync(nodeModules, join(childRoot, 'node_modules'), 'junction')
-  childBundle = join(childRoot, 'lease-child.mjs')
+async function bundle(entry: string): Promise<string> {
+  mkdirSync(bundleDir, { recursive: true })
+  const outfile = join(bundleDir, `${entry}-${process.pid}-${Date.now()}.mjs`)
+  bundles.push(outfile)
   await build({
-    entryPoints: [fileURLToPath(new URL('./fixtures/lease-child.ts', import.meta.url))],
-    outfile: childBundle,
+    entryPoints: [fileURLToPath(new URL(`./fixtures/${entry}.ts`, import.meta.url))],
+    outfile,
     bundle: true,
     format: 'esm',
     platform: 'node',
@@ -170,26 +178,26 @@ beforeAll(async () => {
     target: 'node22',
     logLevel: 'error',
   })
+  return outfile
+}
+
+beforeAll(async () => {
+  childBundle = await bundle('lease-child')
+  takerBundle = await bundle('lease-taker')
 }, 60_000)
 
 afterAll(() => {
-  if (!childRoot) return
-  // Remove the node_modules link FIRST and on its own: rmSync({ recursive })
-  // follows a Windows junction and deletes the shared node_modules behind it.
-  const link = join(childRoot, 'node_modules')
-  try { rmdirSync(link) } catch { /* not created */ }
-  if (existsSync(link)) throw new Error(`could not remove the node_modules link ${link}; left ${childRoot} in place`)
-  rmSync(childRoot, { recursive: true, force: true })
+  for (const file of bundles) rmSync(file, { force: true })
 })
 
 async function spawnHost(trackedDir: string, leaseDirPath: string, extra: string[] = []): Promise<Child> {
   const proc = spawn(process.execPath, [childBundle, trackedDir, ...extra], {
-    cwd: childRoot,
+    cwd: repoRoot,
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
       ADF_LEASE_DIR: leaseDirPath,
-      ADF_USER_DATA_DIR: join(leaseDirPath, '..'),
+      ADF_USER_DATA_DIR: tempDir('adf-lease-child-userdata-'),
       NODE_ENV: 'test',
     },
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -207,6 +215,25 @@ function spawnSleeper(): ChildProcess {
   })
   cleanups.push(async () => { killTree(proc.pid!); await waitForExit(proc) })
   return proc
+}
+
+/**
+ * The endpoint of a holder that crashed: a process listened on it and was
+ * killed (Windows: the pipe is gone; Unix: the socket file stays and refuses).
+ */
+async function deadEndpoint(leases: string): Promise<{ runtimeId: string; endpoint: string }> {
+  const runtimeId = randomBytes(8).toString('hex')
+  mkdirSync(join(leases, 'hosts'), { recursive: true })
+  const endpoint = IS_WIN ? `\\\\.\\pipe\\adf-runtime-${runtimeId}` : join(leases, 'hosts', `${runtimeId}.sock`)
+  const proc = spawn(process.execPath, ['-e', [
+    "const net = require('net')",
+    `net.createServer().listen(${JSON.stringify(endpoint)}, () => console.log('LISTENING'))`,
+    'setInterval(() => {}, 1000)',
+  ].join(';')], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+  await new Child(proc).next('LISTENING')
+  killTree(proc.pid!)
+  await waitForExit(proc)
+  return { runtimeId, endpoint }
 }
 
 // --- cross-process -------------------------------------------------------------
@@ -268,25 +295,51 @@ describe('agent lease across processes', () => {
     expect(existsSync(join(leases, 'hosts', `${loser.pid}.json`))).toBe(false)
   }, 120_000)
 
+  it('five processes racing to take over one stale lease: exactly one wins, 300 trials in a row', async () => {
+    const leases = tempDir('adf-lease-takeover-race-')
+    const work = tempDir('adf-lease-takeover-race-work-')
+    const { filePath } = seedAgent(work, 'agent-1', false)
+    // The stale holder: its pid exited and its endpoint is dead. The endpoint
+    // decides even when Windows hands the pid to a new process mid-test.
+    const sleeper = spawnSleeper()
+    killTree(sleeper.pid!)
+    await waitForExit(sleeper)
+    const dead = await deadEndpoint(leases)
+    const canonical = await canonicalLeasePath(filePath)
+    const file = join(leases, `${leaseKeyForCanonicalPath(canonical)}.json`)
+    const takers = await Promise.all(Array.from({ length: 5 }, async () => {
+      const proc = spawn(process.execPath, [takerBundle, filePath], {
+        cwd: repoRoot, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ADF_LEASE_DIR: leases }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+      })
+      const child = new Child(proc)
+      await child.next('READY')
+      return child
+    }))
+    const failures: string[] = []
+    for (let trial = 0; trial < 300; trial++) {
+      writeFileSync(file, JSON.stringify({
+        v: 1, path: canonical, agentId: null, acquiredAt: trial,
+        holder: { kind: 'daemon', pid: sleeper.pid, runtimeId: dead.runtimeId, hostname: 'x', settingsPath: 's', startedAt: 1, version: null, endpoint: dead.endpoint },
+      }))
+      const at = Date.now() + 40 // every taker starts at this instant
+      for (const t of takers) t.send(`take ${trial} ${at}`)
+      const outcomes = await Promise.all(takers.map((t) => t.next(`TOOK ${trial} `)))
+      const wins = outcomes.filter((o) => o.endsWith(' ok')).length
+      if (wins !== 1) failures.push(`trial ${trial}: ${wins} winners: ${outcomes.map((o) => o.slice(0, 100)).join(' | ')}`)
+      for (const t of takers) t.send(`release ${trial}`)
+      await Promise.all(takers.map((t) => t.next(`RELEASED ${trial}`)))
+    }
+    expect(failures).toEqual([])
+  }, 300_000)
+
   it('replaces a lease whose pid now belongs to another program (pid reuse)', async () => {
     const leases = tempDir('adf-lease-reuse-')
+    mkdirSync(join(leases, 'hosts'), { recursive: true })
     const work = tempDir('adf-lease-reuse-work-')
     const { filePath } = seedAgent(work, 'agent-1', false)
 
-    // A holder that crashed: its endpoint is dead (Windows: the pipe is gone;
-    // Unix: the socket file stays and refuses).
-    const crashed = new AgentLeaseRegistry({ dir: leases, kind: 'studio-embedded', settingsPath: join(work, 's.json') })
-    const endpointHolder = spawn(process.execPath, ['-e', [
-      "const net = require('net')",
-      `const p = ${JSON.stringify(IS_WIN ? `\\\\.\\pipe\\adf-runtime-${crashed.runtimeId}` : join(leases, `${crashed.runtimeId}.sock`))}`,
-      "net.createServer().listen(p, () => console.log('LISTENING'))",
-      'setInterval(() => {}, 1000)',
-    ].join(';')], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
-    const endpointChild = new Child(endpointHolder)
-    await endpointChild.next('LISTENING')
-    const endpoint = IS_WIN ? `\\\\.\\pipe\\adf-runtime-${crashed.runtimeId}` : join(leases, `${crashed.runtimeId}.sock`)
-    killTree(endpointHolder.pid!)
-    await waitForExit(endpointHolder)
+    // A holder that crashed: its endpoint is dead.
+    const { runtimeId, endpoint } = await deadEndpoint(leases)
 
     // ...and its pid is now some unrelated live process.
     const sleeper = spawnSleeper()
@@ -296,7 +349,7 @@ describe('agent lease across processes', () => {
       path: canonical,
       agentId: null,
       holder: {
-        kind: 'studio-embedded', pid: sleeper.pid!, runtimeId: crashed.runtimeId, hostname: hostname().toLowerCase(),
+        kind: 'studio-embedded', pid: sleeper.pid!, runtimeId, hostname: hostname().toLowerCase(),
         settingsPath: join(work, 's.json'), startedAt: 1, version: null, endpoint,
       },
       acquiredAt: 1,
@@ -384,9 +437,58 @@ describe('agent lease semantics', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const reg = registry(join(blocker, 'leases'))
     const result = await reg.acquire(filePath)
-    expect(result).toMatchObject({ ok: true, unprotected: expect.any(String) })
-    expect(error.mock.calls.some(([m]) => String(m).includes('Starting without protection'))).toBe(true)
+    expect(result).toMatchObject({ ok: true, unprotected: expect.stringMatching(/^Agent leases unavailable: .+ agent-1 runs without protection/) })
+    expect(error).toHaveBeenCalledTimes(1)
+
+    // Remembered: the next start neither retries nor logs again, and still carries the sentence.
+    const t0 = Date.now()
+    const again = await reg.acquire(filePath)
+    expect(Date.now() - t0).toBeLessThan(100)
+    expect(again).toMatchObject({ ok: true, unprotected: expect.stringMatching(/^Agent leases unavailable/) })
+    expect(error).toHaveBeenCalledTimes(1)
     vi.restoreAllMocks()
+  })
+
+  it('never probes an endpoint that is not this module\'s local form (no UNC/SMB); the pid decides', async () => {
+    const leases = tempDir('adf-lease-untrusted-')
+    const work = tempDir('adf-lease-untrusted-work-')
+    const { filePath } = seedAgent(work, 'agent-1', false)
+    const sleeper = spawnSleeper()
+    const canonical = await canonicalLeasePath(filePath)
+    const runtimeId = '0123456789abcdef'
+    // Absent, so a probe would read "dead" and take the lease over.
+    const endpoint = IS_WIN ? `\\\\127.0.0.1\\pipe\\adf-runtime-${runtimeId}` : join(work, `${runtimeId}.sock`)
+    writeFileSync(join(leases, `${leaseKeyForCanonicalPath(canonical)}.json`), JSON.stringify({
+      v: 1, path: canonical, agentId: null, acquiredAt: 1,
+      holder: { kind: 'daemon', pid: sleeper.pid, runtimeId, hostname: 'x', settingsPath: 's', startedAt: 1, version: null, endpoint },
+    }))
+    const result = await registry(leases).acquire(filePath)
+    expect(result.ok).toBe(false)
+  })
+
+  it('a reconcile racing a host-to-host hand-off keeps the lease (probes are read in one snapshot)', async () => {
+    const leases = tempDir('adf-lease-snapshot-')
+    const work = tempDir('adf-lease-snapshot-work-')
+    const { filePath } = seedAgent(work, 'agent-1', false)
+    const reg = registry(leases)
+    let inForeground = true
+    let inBackground = false
+    // Registered first: lists an uncached path, so canonicalizing it awaits.
+    reg.addHostedPathsProbe(() => [join(work, 'not-yet-created.adf'), ...(inBackground ? [filePath] : [])])
+    reg.addHostedPathsProbe(() => (inForeground ? [filePath] : []))
+    expect((await reg.acquire(filePath)).ok).toBe(true)
+    for (let i = 0; i < 20; i++) {
+      setImmediate(() => { inForeground = !inForeground; inBackground = !inBackground })
+      await reg.reconcile()
+      expect(await reg.isHeld(filePath)).toBe(true)
+    }
+  })
+
+  it('records the hostname but never keys on it; the Windows lease dir is local, not roaming', () => {
+    expect(leaseKeyForCanonicalPath('/a/agent-1.adf', 'linux')).toBe(leaseKeyForCanonicalPath('/a/agent-1.adf', 'linux'))
+    if (IS_WIN) {
+      expect(leaseDir({ LOCALAPPDATA: 'X:\\Local', APPDATA: 'X:\\Roaming' })).toBe('X:\\Local\\adf\\leases')
+    }
   })
 
   it('rename re-keys a held lease to the new path', async () => {
@@ -648,6 +750,9 @@ describe('runtime host registry and the adf daemon start check', () => {
     await studio.configure({ kind: 'studio-embedded', mode: 'embedded' })
     const hosts = await listRuntimeHosts(leases)
     expect(hosts).toEqual([expect.objectContaining({ kind: 'studio-embedded', pid: process.pid, alive: true, mode: 'embedded' })])
+    // The machine was renamed since Studio started: it must still be seen.
+    const entryFile = join(leases, 'hosts', `${process.pid}.json`)
+    writeFileSync(entryFile, JSON.stringify({ ...JSON.parse(readFileSync(entryFile, 'utf-8')), hostname: 'renamed-machine' }))
     const refusal = await studioConflict(paths, env, down)
     if (process.platform === 'linux') expect(refusal).toBeNull() // case-sensitive paths differ
     else expect(refusal).toBe(`ADF Studio (pid ${process.pid}) is running agents from the same settings file (${settingsFile}).`)
@@ -661,6 +766,23 @@ describe('runtime host registry and the adf daemon start check', () => {
     await client.registerClient('local', { settingsPath: settingsFile })
     expect(await listRuntimeHosts(leases)).toEqual([])
     expect(await studioConflict(paths, env, down)).toBeNull()
+  })
+
+  it('daemon-mode Studio boot registers it as a client, so adf daemon start does not refuse it', async () => {
+    const leases = tempDir('adf-lease-daemon-mode-')
+    const client = registry(leases, { kind: 'studio-embedded' })
+    let registered: Promise<void> | null = null
+    registerDaemonModeHandlers({
+      mode: 'local',
+      ipcMain: { handle: () => {} } as never,
+      app: { getVersion: () => '9.9.9', setBadgeCount: () => true },
+      log: { warn: () => {} },
+      leases: { registerClient: (...args) => (registered = client.registerClient(...args)) },
+    })
+    expect(registered).not.toBeNull()
+    await registered
+    expect(await listStudioClients(leases)).toEqual([expect.objectContaining({ kind: 'studio-client', mode: 'local', pid: process.pid, alive: true, version: '9.9.9' })])
+    expect(await listRuntimeHosts(leases)).toEqual([])
   })
 
   it('ignores the entry of a host that is gone', async () => {
