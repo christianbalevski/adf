@@ -11880,7 +11880,7 @@
           "Agent files"
         ],
         "summary": "Upload an .adf into a tracked folder",
-        "description": "The body is the file (`application/octet-stream`, up to 1 GiB; ADF_DAEMON_IMPORT_BODY_LIMIT_MB). It lands in `directory`, which must be a tracked folder or inside one, or the agents folder (the default; tracked then). The file is never treated as reviewed: an upload carrying a config id reviewed here gets a fresh id (`idReassigned`), and the watcher does not autostart it. 400 `not_an_adf`, `invalid_name`; 403 `outside_tracked`; 409 `name_taken` (send `unique=true` for \"name (2).adf\"); 413 `too_large`; 415 for another content type.",
+        "description": "The body is the file (`application/octet-stream`, up to 1 GiB; ADF_DAEMON_IMPORT_BODY_LIMIT_MB). It lands in `directory`, which must be a tracked folder or inside one, or the agents folder (the default; tracked then). The file is never treated as reviewed and the watcher does not autostart it. An upload whose config id or DID matches an agent known here (reviewed, loaded, or in a tracked folder) gets a fresh id and loses its identity (`idReassigned`). 400 `not_an_adf`, `invalid_name`; 403 `outside_tracked`; 409 `name_taken` (send `unique=true` for \"name (2).adf\"); 413 `too_large`; 415 for another content type.",
         "operationId": "importAgentFile",
         "parameters": [
           {
@@ -25002,14 +25002,28 @@
           "idReassigned": {
             "type": "object",
             "required": [
-              "previousId"
+              "previousId",
+              "reason",
+              "identityStripped"
             ],
             "properties": {
               "previousId": {
                 "type": "string"
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "reviewed",
+                  "loaded",
+                  "tracked"
+                ]
+              },
+              "identityStripped": {
+                "type": "boolean",
+                "const": true
               }
             },
-            "description": "The upload carried a config id this daemon has reviewed (review is keyed on the id); it got a fresh id so that review does not carry over"
+            "description": "The upload's config id or DID matched an agent known here (reviewed, loaded, or a file in a tracked folder): it got a fresh id and its identity was stripped, so it is neither a twin nor covered by that agent's review; claiming it mints a new DID"
           }
         }
       },

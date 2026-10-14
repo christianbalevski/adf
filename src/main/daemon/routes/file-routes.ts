@@ -69,13 +69,20 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
   const importLimit = ctx.options.routes?.importBodyLimit ?? limitFromEnv('ADF_DAEMON_IMPORT_BODY_LIMIT_MB', IMPORT_BODY_LIMIT)
 
   // A running agent's deferred rename is applied once it stops.
-  const onUnloaded = (event: RuntimeAgentUnloadedEvent) => { void files.onAgentUnloaded(event.filePath) }
+  // At shutdown the server closes before the agents unload (DaemonHost.stop):
+  // the listener stays until the last pending rename is applied.
+  let closing = false
+  const onUnloaded = async (event: RuntimeAgentUnloadedEvent) => {
+    await files.onAgentUnloaded(event.filePath)
+    if (closing && !files.hasPendingRenames()) runtime.off('agent-unloaded', onUnloaded)
+  }
   runtime.on('agent-unloaded', onUnloaded)
   server.addHook('onReady', async () => {
     if (settings) watcher.start()
   })
   server.addHook('onClose', async () => {
-    runtime.off('agent-unloaded', onUnloaded)
+    closing = true
+    if (!files.hasPendingRenames()) runtime.off('agent-unloaded', onUnloaded)
     await watcher.close()
   })
   // Other routes change the tracked list too (POST /agents/create tracks the
@@ -404,9 +411,35 @@ function unsupported(reply: FastifyReply) {
 
 /** Answer, then drop the connection: the rest of the request body is never read. */
 function closeAfterResponse(request: FastifyRequest, reply: FastifyReply): void {
-  reply.header('Connection', 'close')
-  reply.raw.once('finish', () => { request.raw.destroy() })
+  // No `Connection: close` header: with it Node destroys the socket as soon as
+  // the answer is written, and a client still sending gets a reset (ECONNRESET)
+  // instead of the 413 body. Instead: half-close once the answer is out (the
+  // client reads it, then EOF), discard what it still sends within a budget,
+  // then cut the connection.
+  reply.raw.once('finish', () => {
+    const socket = request.raw.socket as (typeof request.raw.socket & { end?: () => void }) | undefined
+    if (!socket || socket.destroyed || typeof socket.end !== 'function') return
+    let drained = 0
+    const cut = () => {
+      clearTimeout(timer)
+      if (!socket.destroyed) socket.destroy()
+    }
+    const timer = setTimeout(cut, DRAIN_TIMEOUT_MS)
+    timer.unref?.()
+    socket.once('close', () => clearTimeout(timer))
+    socket.end()
+    request.raw.on('data', (chunk: Buffer) => {
+      drained += chunk.length
+      if (drained > DRAIN_BUDGET_BYTES) cut()
+    })
+    request.raw.once('end', cut)
+    request.raw.resume()
+  })
 }
+
+/** What a refused upload may still send after its 413 before the connection is cut. */
+const DRAIN_BUDGET_BYTES = 8 * MIB
+const DRAIN_TIMEOUT_MS = 5_000
 
 function tooLarge(request: FastifyRequest, reply: FastifyReply, maxBytes: number) {
   closeAfterResponse(request, reply)

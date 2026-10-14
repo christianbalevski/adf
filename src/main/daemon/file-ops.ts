@@ -106,9 +106,16 @@ export interface FileOpsDeps {
 /** Characters not allowed in file names on Windows (superset of POSIX). Same rule as Studio's rename. */
 const INVALID_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/
 
+/**
+ * A name a rename or import may give a file: no separators or characters
+ * Windows refuses, no trailing dot or space, and no Windows device name
+ * (CON, NUL, COM1, …, with any extension), on every OS so the file stays
+ * openable when it travels.
+ */
 export function isValidAgentFileName(name: string): boolean {
   return name.length > 0 && name.length <= 255 && !INVALID_FILENAME_CHARS.test(name) &&
-    !name.endsWith('.') && !name.endsWith(' ') && name !== '.' && name !== '..'
+    !name.endsWith('.') && !name.endsWith(' ') && name !== '.' && name !== '..' &&
+    !RESERVED_NAME.test(name.split('.')[0].trim())
 }
 
 export interface AdfPathOptions {
@@ -634,8 +641,11 @@ async function writeCapped(body: unknown, dest: string, maxBytes: number): Promi
     if (writeError) throw writeError
     return total
   } catch (err) {
-    out.destroy()
-    await new Promise(r => out.once('close', r)).catch(() => {})
+    if (!out.closed) {
+      const closed = new Promise(r => out.once('close', r))
+      out.destroy()
+      await closed
+    }
     try { await unlink(dest) } catch { /* not created */ }
     throw err
   }
@@ -743,6 +753,9 @@ export interface RelocateResult {
   moveError?: string
 }
 
+/** Why an upload's identity was replaced: its config id or DID matched an agent known here. */
+export type ImportCollision = 'reviewed' | 'loaded' | 'tracked'
+
 export interface ImportResult {
   success: true
   filePath: string
@@ -750,8 +763,13 @@ export interface ImportResult {
   agentId: string
   /** Always false: an imported file runs only after the owner reviews it here. */
   reviewed: false
-  /** The upload carried a config id this daemon has reviewed; it got a fresh id so that review does not carry over. */
-  idReassigned?: { previousId: string }
+  /**
+   * The upload's config id or DID is already known here (reviewed, loaded, or
+   * a file in a tracked folder): it got a fresh id and its identity was
+   * stripped (as a registry agent brought home), so it is neither a twin of
+   * that agent nor covered by its review. Claiming it mints a new DID.
+   */
+  idReassigned?: { previousId: string; reason: ImportCollision; identityStripped: true }
   size: number
 }
 
@@ -797,6 +815,11 @@ export class AgentFileOps {
   async assertNotLeasedElsewhere(filePath: string): Promise<void> {
     const message = await leaseHolderElsewhere(this.leases, filePath)
     if (message) throw new FileOpError(message, 409, AGENT_LEASED_CODE)
+  }
+
+  /** Renames still waiting for their agent to stop. */
+  hasPendingRenames(): boolean {
+    return this.pendingRenames.size > 0
   }
 
   pendingName(filePath: string): string | undefined {
@@ -1089,18 +1112,17 @@ export class AgentFileOps {
   /**
    * POST /files/import: an .adf sent from another machine lands in a tracked
    * folder (or the agents folder, which is then tracked). It is never treated
-   * as reviewed: review is keyed on config.id alone, so a file carrying an id
-   * this daemon has reviewed gets a fresh id first (reported as
-   * idReassigned), and the watcher does not autostart it. It runs only after
-   * the owner reviews it here.
+   * as reviewed, and the watcher does not autostart it. Review and loading
+   * are keyed on config.id, so an upload whose id or DID matches an agent
+   * known here (reviewed, loaded, or a file in a tracked folder) gets a fresh
+   * id and loses its identity (AdfDatabase.stripIdentity, as bring-home
+   * does): it can be neither that agent's twin nor pass its review. It runs
+   * only after the owner reviews (claims) it here.
    */
   async import(body: unknown, opts: { directory?: unknown; name?: unknown; unique?: boolean; maxBytes: number }): Promise<ImportResult> {
     const directory = await this.importDirectory(opts.directory)
     const rawName = typeof opts.name === 'string' ? opts.name.trim().replace(/\.adf$/i, '') : ''
     if (!isValidAgentFileName(rawName)) throw new FileOpError('name must be a file name (no path separators)', 400, 'invalid_name')
-    if (process.platform === 'win32' && RESERVED_NAME.test(rawName.split('.')[0].trim())) {
-      throw new FileOpError(`"${rawName}" is a reserved device name`, 400, 'invalid_name')
-    }
     let target = join(directory, `${rawName}.adf`)
     if (await pathExists(target)) {
       if (!opts.unique) throw new FileOpError(`An agent named "${rawName}" already exists in ${directory}.`, 409, 'name_taken')
@@ -1126,11 +1148,14 @@ export class AgentFileOps {
         throw new FileOpError(`The upload is not a readable .adf: ${peek.error ?? 'no agent config'}`, 400, 'not_an_adf')
       }
       agentId = peek.status.agentId
-      if (isConfigReviewed(this.deps.settings?.get('reviewedAgents'), peek.config)) {
+      const did = AdfDatabase.peekMessagingConfig(partial)?.did ?? null
+      const reason = isConfigReviewed(this.deps.settings?.get('reviewedAgents'), peek.config) ? 'reviewed' : await this.knownAgent(agentId, did)
+      if (reason) {
         const fresh = nanoid(12)
+        AdfDatabase.stripIdentity(partial)
         reassignConfigId(partial, fresh)
-        idReassigned = { previousId: agentId }
-        console.warn(`[FileOps] Import of ${rawName}: config id ${agentId} is reviewed here; the upload gets id ${fresh} and needs its own review`)
+        idReassigned = { previousId: agentId, reason, identityStripped: true }
+        console.warn(`[FileOps] Import of ${rawName}: config id ${agentId}${did ? ` / ${did}` : ''} is already ${reason} here; the upload gets id ${fresh} without that identity and needs its own review`)
         agentId = fresh
       }
       this.deps.events.expectFile(target)
@@ -1142,6 +1167,20 @@ export class AgentFileOps {
     console.log(`[FileOps] Imported ${basename(target)} (${size} bytes) into ${directory}; it needs review before it runs`)
     this.fileCreated(target)
     return { success: true, filePath: target, name: basename(target, '.adf'), agentId, reviewed: false, ...(idReassigned ? { idReassigned } : {}), size }
+  }
+
+  /** Is an agent with this config id or DID loaded here, or in a tracked folder? (async scan) */
+  private async knownAgent(agentId: string, did: string | null): Promise<ImportCollision | null> {
+    if (this.runtime.listAgents().some(a => a.id === agentId)) return 'loaded'
+    if (did && this.runtime.listLiveAgents().some(a => { try { return a.workspace.getDid() === did } catch { return false } })) return 'loaded'
+    const settings = this.deps.settings
+    if (!settings) return null
+    for (const file of await scanAdfFilesAsync(storedDirs(settings), maxDepthOf(settings))) {
+      const peek = AdfDatabase.peekMessagingConfig(file)
+      if (peek && (peek.id === agentId || (did && peek.did === did))) return 'tracked'
+      await yieldToLoop()
+    }
+    return null
   }
 
   private async importDirectory(input: unknown): Promise<string> {

@@ -1,6 +1,9 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { Readable } from 'node:stream'
+import { request as httpRequest } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { AdfDatabase } from '../src/main/adf/adf-database'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
@@ -369,7 +372,7 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
     const res = await server.inject({ method: 'POST', url: `/files/import?directory=${q(root)}&name=agent-1`, payload: readFileSync(source.filePath), headers: { 'content-type': 'application/octet-stream' } })
     expect(res.statusCode).toBe(201)
     const body = res.json()
-    expect(body).toMatchObject({ reviewed: false, idReassigned: { previousId: source.id } })
+    expect(body).toMatchObject({ reviewed: false, idReassigned: { previousId: source.id, reason: 'reviewed', identityStripped: true } })
     expect(body.agentId).not.toBe(source.id)
     expect(Object.keys(settings.data.reviewedAgents as Record<string, unknown>)).toEqual([source.id])
     const ws = AdfWorkspace.open(body.filePath)
@@ -444,7 +447,6 @@ describe('daemon file routes: raw internal files', () => {
     const res = await server.inject({ method: 'PUT', url: `/agents/${ref.id}/files/raw?path=big.bin`, payload: stream, headers: { 'content-type': 'application/octet-stream' } })
     expect(res.statusCode).toBe(413)
     expect(res.json().code).toBe('too_large')
-    expect(res.headers.connection).toBe('close')
     expect(sent).toBeLessThan(4 * MIB)
     expect(runtime.getAgentFile(ref.id, 'big.bin')).toBeNull()
   })
@@ -767,5 +769,125 @@ describe('daemon file routes: rename keeps the mesh registration', () => {
     } finally {
       mesh.disableMesh()
     }
+  })
+})
+
+describe('daemon file routes: re-review fixes', () => {
+  it('a client still sending an oversized upload receives the 413 JSON over a real socket', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { server, runtime } = setup({ trackedDirectories: [root] }, { rawFileBodyLimit: MIB })
+    const ref = await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
+    await server.listen({ port: 0, host: '127.0.0.1' })
+    const { port } = server.server.address() as AddressInfo
+    const result = await new Promise<{ status: number; body: string }>((resolveResult, reject) => {
+      const req = httpRequest({
+        host: '127.0.0.1', port, method: 'PUT', path: `/agents/${ref.id}/files/raw?path=big.bin`,
+        headers: { 'content-type': 'application/octet-stream', 'transfer-encoding': 'chunked' },
+      }, (res) => {
+        let body = ''
+        res.setEncoding('utf-8')
+        res.on('data', (c: string) => { body += c })
+        res.on('end', () => resolveResult({ status: res.statusCode ?? 0, body }))
+        res.on('error', reject)
+      })
+      req.on('error', reject)
+      const chunk = Buffer.alloc(64 * 1024, 7)
+      let sent = 0
+      let answered = false
+      req.once('response', () => { answered = true; req.end() })
+      const pump = () => {
+        while (!answered && sent < 6 * MIB) {
+          sent += chunk.length
+          if (!req.write(chunk)) { req.once('drain', pump); return }
+        }
+        if (!answered) req.end()
+      }
+      pump()
+    })
+    expect(result.status).toBe(413)
+    expect(JSON.parse(result.body)).toMatchObject({ code: 'too_large' })
+  })
+
+  it('an upload whose id or DID is known here gets a fresh id and no identity: reviewed, loaded, or in a tracked folder', async () => {
+    const root = tempDir('adf-files-')
+    const other = tempDir('adf-files-other-')
+    const reviewed = seedAgent(tempDir('adf-src-'), 'agent-1')
+    const loadedSrc = seedAgent(tempDir('adf-src-'), 'agent-2')
+    const trackedOne = seedAgent(other, 'agent-3')
+    const fresh = seedAgent(tempDir('adf-src-'), 'agent-4')
+    for (const f of [reviewed, loadedSrc, trackedOne, fresh]) {
+      const ws = AdfWorkspace.open(f.filePath)
+      try { ws.generateIdentityKeys(null) } finally { ws.close() }
+    }
+    const didOf = (file: string) => { const ws = AdfWorkspace.open(file); try { return ws.getDid() } finally { ws.close() } }
+    const { server, runtime } = setup({ trackedDirectories: [root, other], reviewedAgents: { [reviewed.id]: 'accepted' } })
+    await runtime.loadAgent(loadedSrc.filePath, { enforceReviewGate: false }) // loaded, never reviewed
+    const upload = async (file: string, name: string) => (await server.inject({
+      method: 'POST', url: `/files/import?directory=${q(root)}&name=${name}`, payload: readFileSync(file), headers: { 'content-type': 'application/octet-stream' },
+    })).json()
+
+    for (const [src, name, reason] of [[reviewed, 'up-1', 'reviewed'], [loadedSrc, 'up-2', 'loaded'], [trackedOne, 'up-3', 'tracked']] as const) {
+      const body = await upload(src.filePath, name)
+      expect(body.idReassigned).toEqual({ previousId: src.id, reason, identityStripped: true })
+      expect(body.agentId).not.toBe(src.id)
+      expect(didOf(body.filePath)).toBeNull()
+    }
+    // Nothing known: the agent arrives as it is (id and DID kept), still unreviewed.
+    const kept = await upload(fresh.filePath, 'up-4')
+    expect(kept).toMatchObject({ agentId: fresh.id, reviewed: false })
+    expect(kept.idReassigned).toBeUndefined()
+    expect(didOf(kept.filePath)).toBe(didOf(fresh.filePath))
+    // Loading by the source's id still finds the source, not the upload.
+    expect(runtime.listAgents().map(x => x.filePath)).toEqual([loadedSrc.filePath])
+  })
+
+  it('refuses reserved device names on rename on every OS', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { server } = setup({ trackedDirectories: [root] })
+    for (const name of ['CON', 'nul', 'com1', 'Lpt9.backup']) {
+      expect((await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: name } })).json().code).toBe('invalid_name')
+    }
+    expect(existsSync(a.filePath)).toBe(true)
+  })
+
+  it('applies a pending rename when the agent unloads after the server closed (daemon shutdown order)', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { server, runtime } = setup({ trackedDirectories: [root] })
+    const ref = await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
+    expect((await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: 'agent-7' } })).json().renameDeferred).toBe(true)
+    await server.close()
+    const listening = runtime.listenerCount('agent-unloaded')
+    await runtime.unloadAgent(ref.id, { mode: 'immediate' })
+    const renamed = join(root, 'agent-7.adf')
+    for (let i = 0; i < 50 && !existsSync(renamed); i++) await tick(20)
+    expect(existsSync(renamed)).toBe(true)
+    // The pending rename was the last: the listener is gone now.
+    expect(runtime.listenerCount('agent-unloaded')).toBe(listening - 1)
+  })
+
+  it('the /agents/:id detach routes delete credentials by exact prefix too (shared AdfDatabase helper)', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { server, runtime } = setup({ trackedDirectories: [root] })
+    const ref = await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
+    for (const pkg of ['a_b', 'aXb', 'A_B']) runtime.setAgentMcpCredential(ref.id, pkg, 'KEY', 'v')
+    const res = (await server.inject({ method: 'DELETE', url: `/agents/${ref.id}/mcp/servers/a_b` })).json()
+    expect(res.deletedCredentials).toBe(1)
+    expect(Object.keys(runtime.getAgentMcpCredentials(ref.id, 'aXb').credentials)).toEqual(['KEY'])
+    expect(Object.keys(runtime.getAgentMcpCredentials(ref.id, 'A_B').credentials)).toEqual(['KEY'])
+    const ws = runtime.listLiveAgents()[0].workspace
+    expect(ws.listIdentityPurposes('mcp:a')).toEqual(expect.arrayContaining(['mcp:aXb:KEY']))
+    expect(ws.listIdentityPurposes('mcp:a%')).toEqual([])
+    expect(AdfDatabase.peekIdentityPurposes(a.filePath, 'mcp:A_')).toEqual(['mcp:A_B:KEY'])
+  })
+
+  it('daemon/index.ts wires the watcher into the routes and closes it at shutdown', () => {
+    const source = readFileSync(join(__dirname, '../src/main/daemon/index.ts'), 'utf-8')
+    expect(source).toMatch(/const trackedDirWatcher = new TrackedDirWatcher\(\{\s*runtime,\s*settings,\s*onTrackedDirectoriesChanged: \(dirs\) => meshManager\.setTrackedDirectories\(dirs\),/)
+    expect(source).toMatch(/routes: \{[^}]*\}\), trackedDirWatcher \}/)
+    expect(source).toMatch(/onShutdown: \[\s*\(\) => trackedDirWatcher\.close\(\),/)
   })
 })
