@@ -47,34 +47,41 @@ export function BackendSettings() {
   const [view, setView] = useState<BackendSettingsView | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [urlDraft, setUrlDraft] = useState('')
-  const [insecureDraft, setInsecureDraft] = useState(false)
+  /**
+   * Origin the plain-HTTP confirmation was given for. The checkbox shows as
+   * checked only while the draft URL has this origin, so editing the URL to
+   * another address clears it.
+   */
+  const [insecureFor, setInsecureFor] = useState<string | null>(null)
   const [tokenDraft, setTokenDraft] = useState('')
   const [saving, setSaving] = useState(false)
   /** Result of the last save, shown in the group whose control triggered it. */
   const [message, setMessage] = useState<{ group: MessageGroup; kind: 'ok' | 'error'; text: string } | null>(null)
 
-  const adopt = (next: BackendSettingsView) => {
+  /** Take main's view. Drafts reset only on load and after the remote Save, so other saves keep unsaved URL edits. */
+  const adopt = (next: BackendSettingsView, resetDrafts: boolean) => {
     setView(next)
+    if (!resetDrafts) return
     setUrlDraft(next.configured.remoteUrl ?? '')
-    setInsecureDraft(next.configured.allowInsecureHttp)
+    setInsecureFor(next.configured.allowInsecureHttp ? remoteUrlOrigin(next.configured.remoteUrl) : null)
+    setTokenDraft('')
   }
 
   useEffect(() => {
     let cancelled = false
     window.adfApi?.getBackendSettings()
-      .then((next) => { if (!cancelled) adopt(next) })
+      .then((next) => { if (!cancelled) adopt(next, true) })
       .catch(() => { if (!cancelled) setLoadError('Could not read the backend settings.') })
     return () => { cancelled = true }
   }, [])
 
-  const save = async (group: MessageGroup, patch: BackendSettingsPatch, okText = 'Saved. Applies at the next launch.') => {
+  const save = async (group: MessageGroup, patch: BackendSettingsPatch, okText = 'Saved. Applies at the next launch.', resetDrafts = false) => {
     setSaving(true)
     setMessage(null)
     try {
       const result = await window.adfApi.setBackendSettings(patch)
       if (result.ok) {
-        adopt(result.view)
-        setTokenDraft('')
+        adopt(result.view, resetDrafts)
         setMessage({ group, kind: 'ok', text: [okText, ...result.notices].join(' ') })
       } else {
         setMessage({ group, kind: 'error', text: result.error })
@@ -98,13 +105,16 @@ export function BackendSettings() {
   const savedUrl = view.configured.remoteUrl ?? ''
   const urlChanged = (urlCheck?.url ?? urlDraft.trim()) !== savedUrl
   const originChanged = urlChanged && remoteUrlOrigin(urlCheck?.url) !== remoteUrlOrigin(savedUrl)
-  const remoteDirty = urlChanged || insecureDraft !== view.configured.allowInsecureHttp || tokenDraft.trim() !== ''
-  const remoteInvalid = urlCheck?.kind === 'invalid' || (urlCheck?.kind === 'insecure-http' && !insecureDraft)
+  const draftOrigin = remoteUrlOrigin(urlCheck?.url)
+  const insecureConfirmed = draftOrigin !== null && insecureFor === draftOrigin
+  const remoteDirty = urlChanged || insecureConfirmed !== view.configured.allowInsecureHttp || tokenDraft.trim() !== ''
+  const remoteInvalid = urlCheck?.kind === 'invalid' || (urlCheck?.kind === 'insecure-http' && !insecureConfirmed)
 
   const saveRemote = () => {
-    const patch: BackendSettingsPatch = { remoteUrl: urlDraft.trim() || null, allowInsecureHttp: insecureDraft }
+    const patch: BackendSettingsPatch = { remoteUrl: urlDraft.trim() || null, allowInsecureHttp: insecureConfirmed }
+    if (insecureConfirmed && draftOrigin) patch.insecureHttpOrigin = draftOrigin
     if (tokenDraft.trim()) patch.remoteToken = tokenDraft
-    void save('remote', patch)
+    void save('remote', patch, undefined, true)
   }
 
   const messageFor = (group: MessageGroup) =>
@@ -180,8 +190,8 @@ export function BackendSettings() {
             <label className="mt-2 flex items-center gap-2 cursor-pointer text-[12px] text-[var(--adf-ui-text-muted)]">
               <input
                 type="checkbox"
-                checked={insecureDraft}
-                onChange={(event) => setInsecureDraft(event.target.checked)}
+                checked={insecureConfirmed}
+                onChange={(event) => setInsecureFor(event.target.checked ? draftOrigin : null)}
                 className="rounded text-blue-500"
               />
               I trust this network; the token is sent unencrypted.
@@ -197,7 +207,7 @@ export function BackendSettings() {
             : originChanged && !tokenDraft.trim()
               ? 'A token is saved for the old address. Saving the new address removes it.'
               : 'A token is saved. Enter a new one to replace it.'}
-          error={view.encryptionAvailable ? undefined : 'OS keychain encryption is not available, so a token cannot be saved.'}
+          error={view.encryptionAvailable ? undefined : (view.encryptionUnavailableReason ?? 'OS keychain encryption is not available, so a token cannot be saved.')}
         >
           <div className="flex items-center gap-2">
             <TextInput
