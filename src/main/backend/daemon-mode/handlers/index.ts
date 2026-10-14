@@ -1,4 +1,5 @@
-import type { DaemonHandlerTable } from '../context'
+import type { DaemonHandlerTable, DaemonSendHandlerTable } from '../context'
+import { DOCUMENT_HANDLERS, DOCUMENT_SEND_HANDLERS } from '../documents'
 import { APP_HANDLERS } from './app'
 import { CORE_HANDLERS } from './core'
 
@@ -10,4 +11,10 @@ import { CORE_HANDLERS } from './core'
 export const DAEMON_MODE_HANDLERS: DaemonHandlerTable = {
   ...APP_HANDLERS,
   ...CORE_HANDLERS,
+  ...DOCUMENT_HANDLERS,
+}
+
+/** Every implemented daemon-mode `send` handler (renderer `ipcRenderer.send`); the rest log "not available yet". */
+export const DAEMON_MODE_SEND_HANDLERS: DaemonSendHandlerTable = {
+  ...DOCUMENT_SEND_HANDLERS,
 }

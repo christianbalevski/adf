@@ -16,7 +16,7 @@ import { DaemonConnection, type DaemonConnector } from './connection'
 import { findRunningAgent, type DaemonModeContext } from './context'
 import { DaemonModeUnavailableError } from './errors'
 import { EventBridge } from './event-bridge'
-import { DAEMON_MODE_HANDLERS } from './handlers'
+import { DAEMON_MODE_HANDLERS, DAEMON_MODE_SEND_HANDLERS } from './handlers'
 import { channelKey, pendingWorkstream } from './pending'
 import { DaemonModeSession } from './session'
 import { ClientSettingsStore, clientSettingsPath } from './settings'
@@ -291,6 +291,12 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   for (const [channel, entry] of Object.entries(CHANNEL_MAP) as Array<[MappedChannel, ChannelEntry]>) {
     if (REGISTERED_OUTSIDE.includes(channel)) continue
     if (entry.kind === 'send') {
+      const sendHandler = DAEMON_MODE_SEND_HANDLERS[channel]
+      if (sendHandler) {
+        ipc.on(channel, (event, ...args) => sendHandler(ctx, event as Electron.IpcMainEvent, ...args))
+        registered.push(channel)
+        continue
+      }
       const workstream = pendingWorkstream(channel)
       ipc.on(channel, () => {
         log.error(`[Backend] ${channelKey(channel)} is not available in daemon mode yet: ${workstream}`)
