@@ -4,6 +4,7 @@ import { dirname, join } from 'path'
 import { readJsonOrQuarantine, writeJsonAtomicAsync } from '../utils/atomic-json'
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import type {
+  BackendDaemonStatus,
   BackendSettingsErrorCode,
   BackendSettingsPatch,
   BackendSettingsSaveResult,
@@ -32,8 +33,11 @@ export const BACKEND_CONFIG_FILE = 'studio-backend.json'
 /** Recovery override: `ADF_STUDIO_BACKEND=embedded` boots embedded whatever the file says. */
 export const BACKEND_ENV_OVERRIDE = 'ADF_STUDIO_BACKEND'
 
-/** Switching backends from Settings ships with the handover (tracker W4-A). */
-export const MODE_SWITCH_AVAILABLE = false
+/** Switching between embedded and local daemon from Settings, with the handover (W4-A, handover.ts). */
+export const MODE_SWITCH_AVAILABLE = true
+
+/** Switching to a remote daemon from Settings (W4-B sets it when remote mode ships). */
+export const REMOTE_SWITCH_AVAILABLE = false
 
 const SAFE_PREFIX = 'safe:'
 const MAX_TOKEN_LENGTH = 4096
@@ -208,7 +212,7 @@ export function readRemoteToken(config: StudioBackendConfig, codec: SecretCodec)
   return config.remote.token ? codec.decrypt(config.remote.token) : null
 }
 
-export function toBackendSettingsView(config: StudioBackendConfig, boot: Pick<BootBackend, 'mode' | 'source'>, codec: SecretCodec): BackendSettingsView {
+export function toBackendSettingsView(config: StudioBackendConfig, boot: Pick<BootBackend, 'mode' | 'source'>, codec: SecretCodec, daemon: BackendDaemonStatus | null = null): BackendSettingsView {
   return {
     active: { mode: boot.mode, source: boot.source },
     configured: {
@@ -219,6 +223,8 @@ export function toBackendSettingsView(config: StudioBackendConfig, boot: Pick<Bo
       allowInsecureHttp: config.remote.allowInsecureHttp,
     },
     modeSwitchAvailable: MODE_SWITCH_AVAILABLE,
+    remoteSwitchAvailable: REMOTE_SWITCH_AVAILABLE,
+    daemon,
     encryptionAvailable: codec.available(),
     encryptionUnavailableReason: codec.available() ? null : (codec.unavailableReason?.() ?? null),
   }
@@ -243,7 +249,7 @@ function fail(code: BackendSettingsErrorCode, error: string): ApplyPatchResult {
 export function applyBackendPatch(
   current: StudioBackendConfig,
   patch: BackendSettingsPatch,
-  opts: { codec: SecretCodec; allowModeChange: boolean },
+  opts: { codec: SecretCodec; allowModeChange: boolean; allowRemoteSwitch?: boolean },
 ): ApplyPatchResult {
   const next: StudioBackendConfig = { ...current, remote: { ...current.remote } }
   const notices: string[] = []
@@ -272,6 +278,9 @@ export function applyBackendPatch(
       // Back to embedded is always allowed: it is the recovery path from a
       // hand-edited file, and embedded needs no handover.
       if (!opts.allowModeChange && patch.mode !== 'embedded') return fail('mode_switch_unavailable', 'Switching the backend is available in a later build.')
+      if (patch.mode === 'remote' && !(opts.allowRemoteSwitch ?? REMOTE_SWITCH_AVAILABLE)) {
+        return fail('mode_switch_unavailable', 'Switching to a remote daemon from Settings is available in a later build.')
+      }
       next.mode = patch.mode
       changes.push(`mode=${patch.mode}`)
     }
@@ -370,7 +379,17 @@ export function createBackendSettingsStore(deps: {
   boot: BootBackend
   codec: SecretCodec
   allowModeChange?: boolean
+  allowRemoteSwitch?: boolean
   log?: Log
+  /** The daemon line of the view (daemon mode). */
+  daemonStatus?: () => BackendDaemonStatus | null
+  /**
+   * A save that changes the mode (design D9, §11): show the switch dialog
+   * (what moves, what happens to running agents). False cancels the save.
+   */
+  confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
+  /** After a confirmed mode change is on disk: restart Studio into it. */
+  applyModeSwitch?: (target: StudioBackendMode) => void
 }): BackendSettingsStore {
   const log = deps.log ?? console
   let current = deps.boot.config
@@ -378,8 +397,14 @@ export function createBackendSettingsStore(deps: {
 
   const save = async (patch: BackendSettingsPatch): Promise<BackendSettingsSaveResult> => {
     if (deps.boot.writeBlocked) return { ok: false, code: 'file_unreadable', error: deps.boot.writeBlocked }
-    const result = applyBackendPatch(current, patch, { codec: deps.codec, allowModeChange: deps.allowModeChange ?? MODE_SWITCH_AVAILABLE })
+    const result = applyBackendPatch(current, patch, { codec: deps.codec, allowModeChange: deps.allowModeChange ?? MODE_SWITCH_AVAILABLE, allowRemoteSwitch: deps.allowRemoteSwitch })
     if (!result.ok) return result
+    // A switch away from the running backend restarts Studio (D9); back to it is a plain save.
+    const switching = result.config.mode !== current.mode && result.config.mode !== deps.boot.mode
+    if (switching && deps.confirmModeSwitch && !await deps.confirmModeSwitch(result.config.mode)) {
+      log.log(`[Backend] Switch to ${result.config.mode} cancelled in the switch dialog`)
+      return { ok: false, code: 'switch_cancelled', error: 'Switch cancelled. Nothing changed.' }
+    }
     if (result.changes.length > 0) {
       try {
         await mkdir(dirname(deps.boot.configPath), { recursive: true })
@@ -389,13 +414,14 @@ export function createBackendSettingsStore(deps: {
         return { ok: false, code: 'write_failed', error: `Could not save ${deps.boot.configPath}.` }
       }
       current = result.config
-      log.log(`[Backend] Settings → Backend saved: ${result.changes.join(', ')} (applies at next launch)`)
+      log.log(`[Backend] Settings → Backend saved: ${result.changes.join(', ')} (${switching ? 'Studio restarts into it now' : 'applies at next launch'})`)
     }
-    return { ok: true, view: toBackendSettingsView(current, deps.boot, deps.codec), notices: result.notices }
+    if (switching && deps.applyModeSwitch) deps.applyModeSwitch(result.config.mode)
+    return { ok: true, view: toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null), notices: result.notices }
   }
 
   return {
-    get: () => toBackendSettingsView(current, deps.boot, deps.codec),
+    get: () => toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null),
     set: (patch) => {
       const run = queue.then(() => save(patch))
       queue = run.catch(() => {})

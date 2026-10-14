@@ -318,6 +318,15 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
       const body = await client.request<{ ownerDid?: string; restamp?: { restamped: number; attested: number; failures: string[] } }>(
         'POST', '/identity/import', { body: { mnemonic: normalized, ...(expected ? {} : { switchOwner: true }) }, timeoutMs: 120_000 })
       ctx.log.log(`[Backend] Owner identity imported in the daemon: ${body.ownerDid}`)
+      if (ctx.mode === 'local' && ctx.afterOwnerImport) {
+        // The new owner signs Studio's runtime delegation; the daemon adopts it again (§5.3.1).
+        try {
+          ctx.log.log(`[Backend] Runtime identity after the owner import: ${await ctx.afterOwnerImport(normalized)}`)
+          await client.request('POST', '/client/reload-credentials')
+        } catch (err) {
+          ctx.log.warn(`[Backend] Rewriting the runtime identity entry after the owner import failed; the daemon runs as its own runtime until the next start: ${message(err)}`)
+        }
+      }
       return { success: true, ownerDid: body.ownerDid, ...(body.restamp ?? { restamped: 0, attested: 0, failures: [] }) }
     } catch (err) {
       return { success: false, error: message(err) }

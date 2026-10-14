@@ -15,6 +15,7 @@ import {
   type StudioBackendConfig,
 } from '../../src/main/backend/backend-config'
 import { checkRemoteDaemonUrl } from '../../src/shared/utils/remote-backend-url'
+import type { StudioBackendMode } from '../../src/shared/types/backend.types'
 
 const TOKEN = 'tok_3f9b2c7e1a5d4f60b8e2c9a7d1f3e5b7'
 
@@ -115,11 +116,17 @@ describe('normalizeBackendConfig', () => {
 })
 
 describe('Settings → Backend store', () => {
-  function store(opts: { allowModeChange?: boolean; codec?: SecretCodec; path?: string } = {}) {
+  function store(opts: {
+    allowModeChange?: boolean
+    codec?: SecretCodec
+    path?: string
+    confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
+    applyModeSwitch?: (target: StudioBackendMode) => void
+  } = {}) {
     const path = opts.path ?? tempConfigPath()
     const rec = recordingLog()
     const boot = resolveBootBackend(path, {}, rec.log)
-    const s = createBackendSettingsStore({ boot, codec: opts.codec ?? fakeCodec(), allowModeChange: opts.allowModeChange, log: rec.log })
+    const s = createBackendSettingsStore({ boot, codec: opts.codec ?? fakeCodec(), allowModeChange: opts.allowModeChange, log: rec.log, confirmModeSwitch: opts.confirmModeSwitch, applyModeSwitch: opts.applyModeSwitch })
     return { path, s, lines: rec.lines }
   }
 
@@ -132,11 +139,34 @@ describe('Settings → Backend store', () => {
   })
 
   it('refuses a mode switch while switching is unavailable and writes nothing', async () => {
-    const { path, s } = store()
+    const { path, s } = store({ allowModeChange: false })
     const result = await s.set({ mode: 'local' })
     expect(result).toMatchObject({ ok: false, code: 'mode_switch_unavailable' })
     expect(existsSync(path)).toBe(false)
-    expect(s.get().modeSwitchAvailable).toBe(false)
+  })
+
+  it('switching to local asks first (the switch dialog), then saves and restarts; cancel writes nothing (W4-A)', async () => {
+    const asked: string[] = []
+    const restarted: string[] = []
+    let answer = false
+    const { path, s } = store({ confirmModeSwitch: async (target) => { asked.push(target); return answer }, applyModeSwitch: (target) => { restarted.push(target) } })
+    expect(s.get().modeSwitchAvailable).toBe(true)
+    expect(await s.set({ mode: 'local' })).toMatchObject({ ok: false, code: 'switch_cancelled' })
+    expect(existsSync(path)).toBe(false)
+    expect(restarted).toEqual([])
+    answer = true
+    const result = await s.set({ mode: 'local' })
+    expect(result.ok && result.view.configured.mode).toBe('local')
+    expect(asked).toEqual(['local', 'local'])
+    expect(restarted).toEqual(['local'])
+    expect(resolveBootBackend(path, {}, recordingLog().log).mode).toBe('local')
+  })
+
+  it('refuses a switch to remote until remote mode ships (W4-B)', async () => {
+    const { path, s } = store()
+    expect(s.get().remoteSwitchAvailable).toBe(false)
+    expect(await s.set({ mode: 'remote', remoteUrl: 'https://adf.example.com' })).toMatchObject({ ok: false, code: 'mode_switch_unavailable' })
+    expect(existsSync(path)).toBe(false)
   })
 
   it('always allows going back to embedded', async () => {

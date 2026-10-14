@@ -1,6 +1,6 @@
 import { ipcMain, safeStorage } from 'electron'
 import { IPC } from '../../shared/constants/ipc-channels'
-import type { BackendSettingsPatch } from '../../shared/types/backend.types'
+import type { BackendDaemonStatus, BackendSettingsPatch, StudioBackendMode } from '../../shared/types/backend.types'
 import { createBackendSettingsStore, type BackendSettingsStore, type BootBackend, type SecretCodec } from './backend-config'
 
 const SAFE_PREFIX = 'safe:'
@@ -39,8 +39,12 @@ export const safeStorageCodec: SecretCodec = {
  * mode, outside `registerAllIpcHandlers`, so both backends share them.
  * The patch may carry a new token; it is never logged and never returned.
  */
-export function registerBackendSettingsHandlers(boot: BootBackend): BackendSettingsStore {
-  const store = createBackendSettingsStore({ boot, codec: safeStorageCodec })
+export function registerBackendSettingsHandlers(boot: BootBackend, hooks: {
+  daemonStatus?: () => BackendDaemonStatus | null
+  confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
+  applyModeSwitch?: (target: StudioBackendMode) => void
+} = {}): BackendSettingsStore {
+  const store = createBackendSettingsStore({ boot, codec: safeStorageCodec, ...hooks })
   ipcMain.handle(IPC.BACKEND_SETTINGS_GET, () => store.get())
   ipcMain.handle(IPC.BACKEND_SETTINGS_SET, (_event, patch: BackendSettingsPatch) =>
     store.set(patch && typeof patch === 'object' ? patch : {}))

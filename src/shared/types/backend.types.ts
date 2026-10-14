@@ -30,12 +30,34 @@ export interface BackendSettingsView {
     /** The user confirmed sending the token over plain HTTP to `remoteUrl`. */
     allowInsecureHttp: boolean
   }
-  /** False until mode switching ships; the renderer disables mode choices. */
+  /** Switching between embedded and local daemon from Settings (W4-A). */
   modeSwitchAvailable: boolean
+  /** Switching to remote from Settings (W4-B); false: the remote choice is disabled. */
+  remoteSwitchAvailable?: boolean
+  /** The daemon this Studio uses, in local or remote mode (null in embedded mode). */
+  daemon?: BackendDaemonStatus | null
   /** OS keychain encryption (safeStorage) works; a token cannot be saved without it. */
   encryptionAvailable: boolean
   /** Why encryption is unavailable, when main knows (e.g. Linux without a keyring). */
   encryptionUnavailableReason: string | null
+}
+
+/** Settings → Backend's daemon line (MODE-02): what Studio is connected to. */
+export interface BackendDaemonStatus {
+  connection: 'connecting' | 'connected' | 'disconnected' | 'failed'
+  /** While connecting: "Waiting for the ADF daemon (pid N)…" and the like. */
+  progress: string | null
+  /** Failed or disconnected: the reason. */
+  message: string | null
+  url: string | null
+  pid: number | null
+  version: string | null
+  startedBy: 'studio' | 'cli' | 'service' | null
+  /** Local mode: Studio started this daemon run, or attached to a running one. */
+  how: 'attached' | 'spawned' | null
+  /** The daemon's local proof (stored-value reveal, owner import); null when unknown (remote, older daemon). */
+  localProof: { available: boolean; problem: string | null } | null
+  logFile: string | null
 }
 
 export interface BackendSettingsPatch {
@@ -56,6 +78,8 @@ export interface BackendSettingsPatch {
 
 export type BackendSettingsErrorCode =
   | 'mode_switch_unavailable'
+  /** The user cancelled the switch dialog; nothing changed. */
+  | 'switch_cancelled'
   | 'invalid_mode'
   | 'invalid_url'
   | 'insecure_url_unconfirmed'

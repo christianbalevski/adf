@@ -8,8 +8,10 @@ import type { ConnectionState, DaemonConnection } from './connection'
  *
  * - every transition is logged, and the menu is rebuilt on every one;
  * - while Studio waits for the daemon at boot (§8.2 step 5) the Help menu
- *   names what it waits for and, past a moment, the taskbar shows an
- *   indeterminate progress bar;
+ *   and Settings → Backend name what it waits for and, past a moment, the
+ *   taskbar shows an indeterminate progress bar; waiting on another
+ *   daemon process ("Waiting for the ADF daemon (pid N)…") also raises one
+ *   OS notification;
  * - the Help menu gains a status line and "Reconnect to the ADF Daemon"
  *   while the connection is down (menu.ts DaemonMenuOptions);
  * - a disconnect that lasts past a short grace period raises a dialog, with
@@ -56,6 +58,7 @@ export class ConnectionStatusUi {
   private disposed = false
   private progressTimer: ReturnType<typeof setTimeout> | null = null
   private progressShown = false
+  private waitNoticeShown = false
   private readonly unsubscribe: () => void
 
   constructor(
@@ -103,6 +106,10 @@ export class ConnectionStatusUi {
     buildApplicationMenu()
     if (state.state === 'connecting') {
       this.startBootProgress()
+      if (state.progress?.startsWith('Waiting for the ADF daemon') && !this.waitNoticeShown) {
+        this.waitNoticeShown = true
+        this.notify('ADF Studio', `${state.progress} Studio connects when it answers.`)
+      }
       return
     }
     this.stopBootProgress()

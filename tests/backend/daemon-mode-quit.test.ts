@@ -1,0 +1,132 @@
+/**
+ * Studio's quit in daemon mode (design §8.3, tracker W4-A): keepDaemonRunning
+ * off asks the daemon to stop (it decides: started by Studio, no other
+ * client), on only ends the session, remote never stops anything; the value
+ * is read at quit. After a handover the daemon is asked to reload its
+ * credential stores; Settings → Backend gets the daemon line.
+ */
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('electron', async () => (await import('./daemon-mode-electron')).electronStub.module)
+
+import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
+import { registerDaemonModeHandlers } from '../../src/main/backend/daemon-mode'
+import type { ClientQuitAnswer } from '../../src/main/backend/daemon-mode/client-stream'
+import type { DaemonVersionInfo } from '../../src/main/daemon/routes/meta-routes'
+
+const BASE = 'http://127.0.0.1:47385'
+const TOKEN = 'a'.repeat(43)
+const dirs: string[] = []
+afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
+
+const versionInfo = (over: Partial<DaemonVersionInfo> = {}): DaemonVersionInfo => ({
+  version: '0.8.0', clientApiVersion: 1, settingsPath: 'C:/x/adf-settings.json', dataDir: 'C:/x', runtimeId: null, pid: 4242, startedBy: 'studio',
+  localProof: { available: false, problem: 'the local proof file could not be written or protected: icacls failed' }, ...over,
+})
+
+async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => boolean); reloadCredentials?: boolean; answer?: ClientQuitAnswer }) {
+  const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-mode-quit-'))
+  dirs.push(dir)
+  const daemon = createFakeDaemon(BASE)
+  daemon.routes.set('GET /agents', () => [])
+  daemon.routes.set('GET /approvals', () => ({ pending: [], history: [] }))
+  daemon.routes.set('POST /client/reload-credentials', () => ({ runtime: { state: 'adopted' }, unlocked: [], stillLocked: [], sessions: ['chatgpt'], recovered: 0 }))
+  const session = createFakeClientSession()
+  const quits: boolean[] = []
+  session.quit = async (stopDaemon: boolean) => {
+    quits.push(stopDaemon)
+    return opts.answer ?? { sessionId: 's-1', ended: true, stopping: stopDaemon, reason: stopDaemon ? 'Studio started this daemon run and no other client session is open' : 'the client asked to leave the daemon running (keepDaemonRunning on)', otherSessions: 0 }
+  }
+  const logs: string[] = []
+  const log = { log: (m: string) => { logs.push(m) }, warn: (m: string) => { logs.push(m) }, error: (m: string) => { logs.push(m) } }
+  const handle = registerDaemonModeHandlers({
+    mode: opts.mode ?? 'local',
+    userDataDir: dir,
+    connect: Object.assign(async () => ({
+      baseUrl: BASE, logFile: join(dir, 'adf-daemon.log'), description: 'the fake daemon', source: { token: () => TOKEN },
+      daemon: versionInfo(), how: 'spawned' as const,
+    }), { logFile: join(dir, 'adf-daemon.log') }),
+    leases: { registerClient: async () => {} },
+    ipcMain: { handle: () => {}, on: () => {} } as never,
+    fetch: daemon.fetch,
+    createSession: () => session,
+    keepDaemonRunning: opts.keep,
+    reloadCredentials: opts.reloadCredentials,
+    log,
+  })
+  expect(await handle.ready).toBe(true)
+  return { handle, session, quits, logs, daemon }
+}
+
+describe('daemon-mode quit (§8.3)', () => {
+  it('keepDaemonRunning off: asks the daemon to stop, and logs its decision', async () => {
+    const { handle, quits, logs, session } = await boot({ keep: false })
+    await handle.shutdown()
+    expect(quits).toEqual([true])
+    expect(session.ended).toBe(false)
+    expect(logs).toContain('[Backend] Quit: client session ended; the ADF daemon is stopping: Studio started this daemon run and no other client session is open')
+  })
+
+  it('keepDaemonRunning on: ends the session only', async () => {
+    const { handle, quits, logs } = await boot({ keep: true })
+    await handle.shutdown()
+    expect(quits).toEqual([false])
+    expect(logs.some((l) => l.includes('the ADF daemon keeps running'))).toBe(true)
+  })
+
+  it('reads keepDaemonRunning at quit, not at launch', async () => {
+    let keep = true
+    const { handle, quits } = await boot({ keep: () => keep })
+    keep = false
+    await handle.shutdown()
+    expect(quits).toEqual([true])
+  })
+
+  it('a daemon that keeps running for another client is reported as such', async () => {
+    const { handle, logs } = await boot({ keep: false, answer: { sessionId: 's-1', ended: true, stopping: false, reason: '1 other client session(s) are still open', otherSessions: 1 } })
+    await handle.shutdown()
+    expect(logs).toContain('[Backend] Quit: client session ended; the ADF daemon keeps running: 1 other client session(s) are still open')
+  })
+
+  it('remote mode never asks a daemon to stop', async () => {
+    const { handle, quits, session } = await boot({ mode: 'remote', keep: false })
+    await handle.shutdown()
+    expect(quits).toEqual([])
+    expect(session.ended).toBe(true)
+  })
+
+  it('a switch to embedded waits for the stopped daemon to exit', async () => {
+    const { handle, logs, daemon } = await boot({ keep: false })
+    let healthChecks = 0
+    // Answers twice more while it stops its agents, then is gone.
+    daemon.routes.set('GET /health', () => { if (++healthChecks > 2) throw new TypeError('fetch failed'); return { ok: true } })
+    await handle.shutdown({ waitForDaemonExitMs: 4_000 })
+    expect(healthChecks).toBe(3)
+    expect(logs).toContain('[Backend] The ADF daemon exited')
+  })
+})
+
+describe('after a handover, and Settings → Backend', () => {
+  it('asks the daemon to reload the moved credentials once connected', async () => {
+    const { daemon, logs } = await boot({ keep: false, reloadCredentials: true })
+    await vi.waitFor(() => expect(daemon.requests.some((r) => r.method === 'POST' && r.path === '/client/reload-credentials')).toBe(true))
+    await vi.waitFor(() => expect(logs.some((l) => l.includes('reloaded the moved credentials: runtime identity adopted'))).toBe(true))
+  })
+
+  it('does not ask without a handover', async () => {
+    const { daemon, handle } = await boot({ keep: false })
+    await handle.ready
+    expect(daemon.requests.some((r) => r.path === '/client/reload-credentials')).toBe(false)
+  })
+
+  it('status(): the daemon line with pid, version, who started it and the local proof state', async () => {
+    const { handle } = await boot({ keep: false })
+    expect(handle.status()).toMatchObject({
+      connection: 'connected', url: BASE, pid: 4242, version: '0.8.0', startedBy: 'studio', how: 'spawned',
+      localProof: { available: false, problem: expect.stringContaining('icacls') },
+    })
+  })
+})

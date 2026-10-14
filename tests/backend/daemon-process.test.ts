@@ -11,6 +11,7 @@ import {
   type SpawnFn,
 } from '../../src/main/backend/daemon-process'
 import { CLIENT_API_VERSION, type DaemonVersionInfo } from '../../src/main/daemon/routes/meta-routes'
+import { localDaemonConnector, SwitchToEmbeddedError } from '../../src/main/backend/daemon-mode/connectors'
 
 const TOKEN = 'a'.repeat(43)
 const PORT = 17491
@@ -40,7 +41,7 @@ function info(over: Partial<DaemonVersionInfo> = {}): DaemonVersionInfo {
 
 /** A daemon behind fetch: health, /version and /daemon/shutdown, with every request recorded. */
 function fakeDaemon(state: { up: boolean; info: DaemonVersionInfo | null; versionStatus?: number }) {
-  const calls: Array<{ method: string; path: string; auth: string | null }> = []
+  const calls: Array<{ method: string; path: string; auth: string | null; proof?: string | null }> = []
   const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     const headers = (init?.headers ?? {}) as Record<string, string>
@@ -56,6 +57,10 @@ function fakeDaemon(state: { up: boolean; info: DaemonVersionInfo | null; versio
     if (url.pathname === '/daemon/shutdown') {
       state.up = false
       return json(202, { accepted: true, pid: state.info?.pid })
+    }
+    if (url.pathname === '/client/reload-credentials') {
+      calls[calls.length - 1].proof = headers['x-adf-local-proof'] ?? null
+      return json(200, { runtime: { state: 'absent' }, unlocked: [], stillLocked: [], sessions: [], recovered: 0 })
     }
     return json(404, { error: 'not found' })
   }) as typeof fetch
@@ -296,5 +301,97 @@ describe('DaemonProcessController', () => {
     expect(result.stopped).toBe(false)
     expect(result.message).toContain('pid 5555')
     expect(calls.some(c => c.path === '/daemon/shutdown')).toBe(false)
+  })
+
+  it('keeps waiting for a race winner that is still booting (pid file appears after the child exits) (W4-A)', async () => {
+    const state = { up: false, info: info({ pid: 900, startedBy: 'cli' }) }
+    const { fetchImpl } = fakeDaemon(state)
+    const pidFile = join(dir, `adf-daemon-${PORT}.pid`)
+    const spawner = fakeSpawner(() => setTimeout(() => {
+      spawner.child.emit('exit', 1)
+      setTimeout(() => writeFileSync(pidFile, JSON.stringify({ pid: 900, startedAt: Date.now() })), 100)
+      setTimeout(() => { state.up = true }, 230)
+    }, 0), 4242)
+    const { ctl, logs } = controller(fetchImpl, { spawn: spawner.spawn, alive: (pid) => pid === 900 && existsSync(pidFile) })
+    const progress: string[] = []
+    const result = await ctl.ensure((text) => progress.push(text))
+    expect(result).toMatchObject({ kind: 'attached', handle: { pid: 900, spawnedHere: false } })
+    expect(progress).toContain('Waiting for the ADF daemon (pid 900)…')
+    expect(logs.some(l => l.includes('won the start race'))).toBe(true)
+    expect(spawner.spawns).toHaveLength(1)
+  })
+
+  it('starts the daemon once more when the child exits and no other daemon takes over (W4-A)', async () => {
+    const state = { up: false, info: info({ pid: 4242, startedBy: 'studio' }) }
+    const { fetchImpl } = fakeDaemon(state)
+    let spawns = 0
+    const spawner = fakeSpawner(() => {
+      spawns++
+      if (spawns === 1) setTimeout(() => spawner.child.emit('exit', 1), 0)
+      else setTimeout(() => { state.up = true }, 0)
+    }, 4242)
+    const { ctl, logs } = controller(fetchImpl, { spawn: spawner.spawn, alive: () => false })
+    const result = await ctl.ensure()
+    expect(result).toMatchObject({ kind: 'spawned', handle: { pid: 4242, spawnedHere: true } })
+    expect(spawner.spawns).toHaveLength(2)
+    expect(logs.some(l => l.includes('starting it once more'))).toBe(true)
+  })
+
+  it("restart (the user's version-mismatch choice) stops the running daemon, whoever started it, then starts Studio's (W4-A)", async () => {
+    const state = { up: true, info: info({ clientApiVersion: 99, startedBy: 'cli', pid: 900 }) as DaemonVersionInfo }
+    const { fetchImpl, calls } = fakeDaemon(state)
+    const spawner = fakeSpawner(() => { state.info = info({ pid: 4242, startedBy: 'studio' }); setTimeout(() => { state.up = true }, 0) }, 4242)
+    const { ctl, logs } = controller(fetchImpl, { spawn: spawner.spawn, alive: (pid) => pid === 900 ? state.up : pid === 4242 })
+    const refused = await ctl.ensure()
+    if (refused.kind !== 'refused') throw new Error(refused.kind)
+    const progress: string[] = []
+    const result = await ctl.restart(refused.info, (t) => progress.push(t))
+    expect(calls.filter(c => c.path === '/daemon/shutdown')).toHaveLength(1)
+    expect(result).toMatchObject({ kind: 'spawned', handle: { pid: 4242, spawnedHere: true } })
+    expect(progress[0]).toBe('Stopping the ADF daemon (pid 900)…')
+    expect(logs.some(l => l.includes('as the user chose'))).toBe(true)
+  })
+
+  it('asks a running daemon to reload its credential stores, with the local proof (W4-A)', async () => {
+    const { fetchImpl, calls } = fakeDaemon({ up: true, info: info({ startedBy: 'cli' }) })
+    writeFileSync(join(dir, `daemon-local-proof-${PORT}`), `${'p'.repeat(43)}\n`)
+    const message = await controller(fetchImpl).ctl.notifyCredentialsMoved()
+    expect(message).toMatch(/reloaded its credential stores \(runtime identity absent\)/)
+    expect(calls.find(c => c.path === '/client/reload-credentials')).toMatchObject({ method: 'POST', auth: `Bearer ${TOKEN}`, proof: 'p'.repeat(43) })
+    const none = await controller(fakeDaemon({ up: false, info: null }).fetchImpl).ctl.notifyCredentialsMoved()
+    expect(none).toBe('no ADF daemon runs on these settings')
+  })
+})
+
+describe('local connector: version mismatch choice (§8.2 step 3, W4-A)', () => {
+  function connector(state: { up: boolean; info: DaemonVersionInfo | null }, choice: 'restart' | 'embedded', spawn?: SpawnFn) {
+    const { fetchImpl, calls } = fakeDaemon(state)
+    const asked: string[] = []
+    const connect = localDaemonConnector({
+      userDataDir: dir,
+      execPath: join('app', 'ADF Studio.exe'),
+      daemonEntry: join('app', 'out', 'main', 'daemon.js'),
+      env: { PATH: '/usr/bin', ADF_DAEMON_PORT: String(PORT) },
+      log: () => {},
+      onVersionMismatch: async (decision, running) => { asked.push(`${decision.daemonVersion}/${running.pid}`); return choice },
+      processDeps: { fetch: fetchImpl, spawn, processAlive: (pid) => pid === 900 ? state.up : true, sleep: () => new Promise(r => setTimeout(r, 1)), startTimeoutMs: 2000, stopTimeoutMs: 2000, staleWaitMs: 200, raceSettleMs: 200 },
+    })
+    return { connect, calls, asked }
+  }
+
+  it('"Use embedded mode for this session" fails the connection with the reason and restarts nothing', async () => {
+    const { connect, calls, asked } = connector({ up: true, info: info({ clientApiVersion: 99, version: '0.6.0', pid: 900 }) }, 'embedded')
+    await expect(connect(() => {})).rejects.toBeInstanceOf(SwitchToEmbeddedError)
+    expect(asked).toEqual(['0.6.0/900'])
+    expect(calls.some(c => c.path === '/daemon/shutdown')).toBe(false)
+  })
+
+  it('"Restart the daemon with Studio’s version" stops it and attaches to the new one', async () => {
+    const state = { up: true, info: info({ clientApiVersion: 99, version: '0.6.0', pid: 900, startedBy: 'cli' }) as DaemonVersionInfo }
+    const spawner = fakeSpawner(() => { state.info = info({ pid: 4242, startedBy: 'studio' }); setTimeout(() => { state.up = true }, 0) }, 4242)
+    const { connect, calls } = connector(state, 'restart', spawner.spawn)
+    const endpoint = await connect(() => {})
+    expect(calls.filter(c => c.path === '/daemon/shutdown')).toHaveLength(1)
+    expect(endpoint).toMatchObject({ how: 'spawned', daemon: { pid: 4242 } })
   })
 })

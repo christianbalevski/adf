@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain as electronIpcMain, shell, type IpcMain } from 'electron'
 import { join } from 'node:path'
-import type { StudioBackendMode } from '../../../shared/types/backend.types'
+import type { BackendDaemonStatus, StudioBackendMode } from '../../../shared/types/backend.types'
 import type { AgentStatus, AgentSummary, DaemonClient } from '../../../shared/daemon-client'
 import type { NotificationsSnapshot } from '../../../shared/types/ipc.types'
 import { IPC } from '../../../shared/constants/ipc-channels'
@@ -13,7 +13,7 @@ import { BackgroundEventBatcher } from '../../ipc/background-event-batch'
 import { initApplicationMenu, recordRecentFile } from '../../menu'
 import { createAdfFileHandler } from './adf-file'
 import { ApprovalsUi } from './approvals-ui'
-import { createDaemonClientSession, type ClientSession } from './client-stream'
+import { createDaemonClientSession, type ClientQuitAnswer, type ClientSession } from './client-stream'
 import { DaemonConnection, type DaemonConnector } from './connection'
 import { findRunningAgent, type DaemonModeContext } from './context'
 import { DaemonModeUnavailableError } from './errors'
@@ -22,6 +22,7 @@ import { DAEMON_MODE_HANDLERS, DAEMON_MODE_SEND_HANDLERS } from './handlers'
 import { channelKey, pendingWorkstream } from './pending'
 import { DaemonModeSession } from './session'
 import { ClientSettingsStore, clientSettingsPath } from './settings'
+import type { DaemonVersionInfo } from '../../daemon/routes/meta-routes'
 import { InstallProgressRelay } from './mcp/install-progress'
 import { McpOAuthAuthorizeOpener } from './mcp/oauth-authorize'
 import { ConnectionStatusUi, connectionProblem, openDaemonLog } from './status-ui'
@@ -64,7 +65,7 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.BACKEND_SETTINGS_SET,
 ]
 
-export const RECOVERY_HINT = `To use embedded mode for this session, start Studio with ${BACKEND_ENV_OVERRIDE}=embedded.`
+export const RECOVERY_HINT = `To run agents in Studio instead, choose Embedded in Settings → Backend (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session.`
 
 /** How long a lost daemon connection may last before waiting chats are ended. */
 export const TURN_DISCONNECT_GRACE_MS = 15_000
@@ -84,14 +85,24 @@ export interface DaemonModeDeps {
   /** The client session implementation. Default: the daemon's client sessions (W2-B). */
   createSession?: (client: DaemonClient) => ClientSession
   /**
-   * studio-backend.json `keepDaemonRunning` (§8.3). Off in local mode, the
-   * session is opened with `exitDaemonWhenClosed`, so a crashed Studio's
-   * daemon stops once its session expires and no other client is open. The
-   * quit path itself is W4-A's.
+   * studio-backend.json `keepDaemonRunning` (§8.3), read at quit (a getter:
+   * Settings → Backend changes it for the next quit). Off in local mode, the
+   * session is opened with `exitDaemonWhenClosed` (the value at launch), so
+   * a crashed Studio's daemon stops once its session expires and no other
+   * client is open; a quit stops a daemon Studio started when no other
+   * client session is open.
    */
-  keepDaemonRunning?: boolean
+  keepDaemonRunning?: boolean | (() => boolean)
+  /**
+   * The boot handover (handover.ts) changed the daemon's credential stores:
+   * once connected, ask the daemon to reload them (POST
+   * /client/reload-credentials), for a daemon that was already running.
+   */
+  reloadCredentials?: boolean
   /** The shared owner-phrase keychain entry (tests: a stand-in). Default: the OS keychain's. */
   sharedMnemonic?: () => SharedMnemonicStore | null
+  /** Local mode: rewrite Studio's runtime identity entry after an owner import (DaemonModeContext.afterOwnerImport). */
+  afterOwnerImport?: (phrase: string) => Promise<string>
 }
 
 export interface DaemonModeHandle {
@@ -109,8 +120,17 @@ export interface DaemonModeHandle {
   adfFile(request: Request): Promise<Response>
   /** Drop the client stream connection and reconnect now (Help > Reconnect). */
   reconnect(): void
-  /** Studio's quit path in daemon mode: end the client session. The daemon itself is not stopped here (W4-A). */
-  shutdown(): Promise<void>
+  /** Settings → Backend: the daemon this session uses and the connection state. */
+  status(): BackendDaemonStatus
+  /**
+   * Studio's quit path in daemon mode (§8.3): end the client session; in
+   * local mode with `keepDaemonRunning` off, the daemon stops when Studio
+   * started it and no other client session is open (the daemon decides,
+   * POST /client/sessions/:id/quit). `waitForDaemonExitMs`: a switch to
+   * embedded waits for that daemon to exit, so embedded Studio can start
+   * the agents it ran.
+   */
+  shutdown(opts?: { waitForDaemonExitMs?: number }): Promise<void>
 }
 
 function isInvoke(entry: ChannelEntry): boolean {
@@ -124,13 +144,13 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
 
   // Studio runs no agents in this mode: it records itself as a client, not a
   // runtime host, so `adf daemon start` does not refuse it (agent-lease.ts).
-  void (deps.leases ?? processAgentLeases()).registerClient(deps.mode, {
-    settingsPath: join(deps.userDataDir, 'adf-settings.json'),
-    version: app.getVersion(),
-  })
+  // The daemon's URL is added once the connector found it.
+  const leases = deps.leases ?? processAgentLeases()
+  const clientRecord = { settingsPath: join(deps.userDataDir, 'adf-settings.json'), version: app.getVersion() }
+  void leases.registerClient(deps.mode, clientRecord)
+  const keepRunning = (): boolean => typeof deps.keepDaemonRunning === 'function' ? deps.keepDaemonRunning() : deps.keepDaemonRunning === true
 
-  // Before W4-A's switch moves them: seed the client file once from adf-settings.json.
-  ClientSettingsStore.seedOnce(clientSettingsPath(deps.userDataDir), join(deps.userDataDir, 'adf-settings.json'), log)
+  // The client keys were moved into the client file by the switch (handover.ts, at boot).
   const clientSettings = new ClientSettingsStore(clientSettingsPath(deps.userDataDir), log)
   // Local mode: the daemon is this machine's and keeps its settings next to
   // Studio's (daemon-process.ts checks that), so Studio reads its local proof
@@ -256,8 +276,18 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   })
   const statusUi = new ConnectionStatusUi(connection, { reconnect, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: RECOVERY_HINT }, log)
 
-  const exitDaemonWhenClosed = deps.mode === 'local' && deps.keepDaemonRunning !== true
+  const exitDaemonWhenClosed = deps.mode === 'local' && !keepRunning()
+  let versionInfo: DaemonVersionInfo | null = null
   const started: Promise<DaemonClient> = connection.client().then(async (client) => {
+    void leases.registerClient(deps.mode, { ...clientRecord, ...(connection.baseUrl ? { controlUrl: connection.baseUrl } : {}) })
+    versionInfo = connection.endpointInfo?.daemon ?? null
+    if (!versionInfo) void client.request<DaemonVersionInfo>('GET', '/version').then((v) => { versionInfo = v }).catch(() => {})
+    if (deps.reloadCredentials && deps.mode === 'local') {
+      // The handover moved credentials while this daemon may already have been running.
+      void client.request<{ runtime: { state: string } | null; unlocked: unknown[]; stillLocked: unknown[]; sessions: string[]; recovered: number }>('POST', '/client/reload-credentials')
+        .then((r) => log.log(`[Backend] The ADF daemon reloaded the moved credentials: runtime identity ${r.runtime?.state ?? 'n/a'}, ${r.unlocked.length} agent(s) unlocked, ${r.stillLocked.length} still locked, sessions [${r.sessions.join(', ')}]`))
+        .catch((err) => log.warn(`[Backend] Asking the ADF daemon to reload the moved credentials failed: ${err instanceof Error ? err.message : String(err)}`))
+    }
     clientSession = (deps.createSession ?? ((c) => createDaemonClientSession(c, { version: app.getVersion(), exitDaemonWhenClosed, log })))(client)
     session.attach(clientSession)
     // Learn what already runs and what is pending, without pushing: the
@@ -341,6 +371,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     sharedMnemonic: deps.sharedMnemonic ?? openSharedMnemonicStore,
     recordRecentFile,
     hooks,
+    ...(deps.afterOwnerImport ? { afterOwnerImport: deps.afterOwnerImport } : {}),
     log,
   }
 
@@ -387,24 +418,70 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
 
   const adfFile = createAdfFileHandler({ session, connection, fetch: deps.fetch, log })
 
+  /** Resolves true once nothing answers the daemon's /health (it exited), false at the deadline. */
+  const waitDaemonGone = async (budgetMs: number): Promise<boolean> => {
+    const url = connection.baseUrl
+    if (!url) return true
+    const deadline = Date.now() + budgetMs
+    while (Date.now() < deadline) {
+      try {
+        await (deps.fetch ?? fetch)(`${url}/health`, { signal: AbortSignal.timeout(800) })
+      } catch {
+        return true
+      }
+      await new Promise((r) => setTimeout(r, 250))
+    }
+    return false
+  }
+
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (): Promise<void> => {
+  const shutdown = (opts: { waitForDaemonExitMs?: number } = {}): Promise<void> => {
     shutdownPromise ??= (async () => {
       statusUi.dispose()
       approvals.dispose()
       bridge.dispose()
       batcher.dispose()
+      const stopDaemon = deps.mode === 'local' && !keepRunning()
+      let answer: ClientQuitAnswer | null = null
       try {
         await session.releaseAll()
-        await clientSession?.end()
+        if (deps.mode === 'local' && clientSession?.quit) answer = await clientSession.quit(stopDaemon)
+        else await clientSession?.end()
       } catch (err) {
         log.warn('[Backend] Ending the client session failed:', err)
       }
       await clientSettings.flush()
-      // R4 quit behaviour (stop a Studio-started daemon unless keepDaemonRunning) is W4-A's.
-      if (connection.current) log.log('[Backend] Client session ended; the ADF daemon keeps running (quit behaviour: W4-A)')
+      if (answer) {
+        // §8.3: the daemon decided; its log has the same line.
+        log.log(`[Backend] Quit: client session ended; ${answer.stopping ? 'the ADF daemon is stopping' : 'the ADF daemon keeps running'}: ${answer.reason}`)
+      } else if (connection.current) {
+        log.log(`[Backend] Quit: client session ended; the ADF daemon keeps running${deps.mode === 'remote' ? ' (remote mode never stops it)' : ''}`)
+      }
+      if (answer?.stopping && opts.waitForDaemonExitMs) {
+        log.log(`[Backend] Waiting up to ${Math.round(opts.waitForDaemonExitMs / 1000)}s for the ADF daemon to stop its agents and exit`)
+        const gone = await waitDaemonGone(opts.waitForDaemonExitMs)
+        log.log(gone ? '[Backend] The ADF daemon exited' : '[Backend] The ADF daemon is still stopping; embedded Studio reports any agent it still holds as running in the daemon')
+      }
     })()
     return shutdownPromise
+  }
+
+  const status = (): BackendDaemonStatus => {
+    const state = connection.state
+    const endpoint = connection.endpointInfo
+    const info = versionInfo ?? endpoint?.daemon ?? null
+    return {
+      connection: state.state,
+      progress: state.state === 'connecting' ? state.progress ?? null : null,
+      message: state.state === 'failed' ? state.message : state.state === 'disconnected' ? state.error ?? null : null,
+      url: connection.baseUrl,
+      pid: info?.pid ?? null,
+      version: info?.version ?? null,
+      startedBy: info?.startedBy ?? null,
+      how: endpoint?.how ?? null,
+      localProof: info?.localProof ?? null,
+      logFile: connection.logFile,
+    }
   }
 
   return {
@@ -417,6 +494,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     ready: started.then(() => true, () => false),
     adfFile,
     reconnect,
+    status,
     shutdown,
   }
 }

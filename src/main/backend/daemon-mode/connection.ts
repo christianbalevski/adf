@@ -1,4 +1,5 @@
 import type { DaemonClient } from '../../../shared/daemon-client'
+import type { DaemonVersionInfo } from '../../daemon/routes/meta-routes'
 import { BackendNotConnectedError } from './errors'
 import { createStudioDaemonClient, type StudioTokenSource } from './credentials'
 
@@ -14,6 +15,10 @@ export interface DaemonEndpoint {
   logFile: string | null
   /** One line for the log: which daemon Studio uses and how it got it. Never contains the token. */
   description: string
+  /** Local mode: the daemon's GET /version at attach (pid, version, who started it, local proof). */
+  daemon?: DaemonVersionInfo
+  /** Local mode: how Studio got it (Settings → Backend shows it). */
+  how?: 'attached' | 'spawned'
 }
 
 /**
@@ -95,6 +100,11 @@ export class DaemonConnection {
 
   get baseUrl(): string | null {
     return this.endpoint?.baseUrl ?? null
+  }
+
+  /** The endpoint once the connector resolved (local mode: the daemon's version info). */
+  get endpointInfo(): DaemonEndpoint | null {
+    return this.endpoint
   }
 
   onState(listener: (state: ConnectionState) => void): () => void {
