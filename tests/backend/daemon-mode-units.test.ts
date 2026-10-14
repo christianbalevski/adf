@@ -3,7 +3,7 @@
  * with the client-key migration, credentials, the visible
  * "backend not connected" state, and adf-file://.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -282,6 +282,18 @@ describe('reattach, seeding, defaults (review fixes)', () => {
     ClientSettingsStore.seedOnce(clientPath, settingsPath, log)
     expect(JSON.parse(readFileSync(clientPath, 'utf8')).theme).toBe('dark')
     expect(logs).toHaveLength(1)
+  })
+
+  it('the seed never renames a corrupt adf-settings.json (the daemon\'s file)', () => {
+    const sub = mkdtempSync(join(dir, 'seed-corrupt-'))
+    const settingsPath = join(sub, 'adf-settings.json')
+    const clientPath = clientSettingsPath(sub)
+    writeFileSync(settingsPath, '{ not json')
+    const errors: string[] = []
+    ClientSettingsStore.seedOnce(clientPath, settingsPath, { log: () => {}, warn: () => {}, error: (m: string) => { errors.push(m) } })
+    expect(readdirSync(sub)).toEqual(['adf-settings.json'])
+    expect(readFileSync(settingsPath, 'utf8')).toBe('{ not json')
+    expect(errors.join('\n')).toContain('Could not read')
   })
 
   it('computes the client defaults once', () => {

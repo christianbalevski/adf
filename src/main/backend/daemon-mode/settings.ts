@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { CLIENT_SETTINGS_KEYS, settingsKeyClass, type ClientSettingsKey } from '../../../shared/constants/client-settings-keys'
 import { createSettingsDefaults } from '../../../shared/constants/settings-defaults'
@@ -59,10 +59,18 @@ export class ClientSettingsStore {
    */
   static seedOnce(clientPath: string, settingsPath: string, log: Log = console): void {
     if (existsSync(clientPath) || !existsSync(settingsPath)) return
-    const { data } = readJsonOrQuarantine<Record<string, unknown>>(settingsPath)
-    if (!data || typeof data !== 'object') return
+    // A plain read: adf-settings.json is the daemon's file; a corrupt one is
+    // left where it is for the daemon (never renamed from here).
+    let data: unknown
+    try {
+      data = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    } catch (err) {
+      log.error(`[Settings] Could not read ${settingsPath} to seed ${clientPath}; client keys start at their defaults:`, err)
+      return
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return
     const seed: Record<string, unknown> = {}
-    for (const key of CLIENT_SETTINGS_KEYS) if (key in data) seed[key] = data[key]
+    for (const key of CLIENT_SETTINGS_KEYS) if (key in data) seed[key] = (data as Record<string, unknown>)[key]
     try {
       writeJsonAtomic(clientPath, seed)
       log.log(`[Settings] First daemon-mode boot: copied ${Object.keys(seed).length} client keys from ${settingsPath} into ${clientPath} (interim; the mode switch, W4-A, moves them)`)
