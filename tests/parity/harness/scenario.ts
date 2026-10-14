@@ -9,7 +9,8 @@ import { defaultScript, recordedRequest, startMockLlm, type LlmScript, type Mock
 import { normalizeRecording, type NormalizationContext } from './normalize'
 import { toComparable, type ComparableRecording, type RawRecording, type StepRecord } from './recording'
 import { verifySignatures } from './signatures'
-import { dumpPersistedState } from './state-dump'
+import { dumpPersistedState, type PersistedState } from './state-dump'
+import { leaseKeyForCanonicalPath } from '../../../src/main/runtime/agent-lease'
 
 /**
  * A parity scenario: a renderer-side call sequence written once and run
@@ -231,9 +232,13 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
           value: `${a.name}-${createHash('md5').update(a.filePath).digest('hex').slice(0, 6)}`,
           name: `scratch:${a.name}`,
         })),
+        // Lease file names: sha256 of the canonical path (agent-lease.ts).
+        ...Object.values(agents).map((a) => ({ value: leaseKeyForCanonicalPath(a.filePath), name: `lease:${a.name}` })),
+        ...registryRoles(state),
         ...(extra.named ?? []),
       ],
       fixtureIds: Object.values(agents).map((a) => a.id),
+      pids: [{ value: process.pid, name: 'pid:this-process' }, ...(extra.pids ?? [])],
       window: { from: env.startedAt, to: Date.now() },
       signatures: verifySignatures(raw),
     }
@@ -293,5 +298,27 @@ export function streamingProblems(report: StreamingReport): string[] {
   report.sliceLatencyMs.forEach((ms, k) => {
     if (!(ms >= 0 && ms <= SLICE_DELTA_BOUND_MS)) out.push(`streaming: slice ${k + 1} reached the window after ${ms} ms (bound ${SLICE_DELTA_BOUND_MS} ms)`)
   })
+  return out
+}
+
+/**
+ * Per-process values in the runtime host registry, named by the record's
+ * kind (`studio-embedded`, `daemon`, `studio-client`): its random
+ * runtimeId and the endpoint derived from it, plus the machine id and
+ * hostname every record carries. Read from the run's own registry files.
+ */
+function registryRoles(state: PersistedState): { value: string | undefined; name: string }[] {
+  const out: { value: string | undefined; name: string }[] = []
+  for (const [file, record] of Object.entries(state.leases)) {
+    if (!/^(hosts|clients)\//.test(file) || !record || typeof record !== 'object') continue
+    const r = record as { kind?: string; runtimeId?: string; endpoint?: string | null; machineId?: string | null; hostname?: string }
+    const kind = r.kind ?? 'unknown'
+    out.push(
+      { value: r.endpoint ?? undefined, name: `lease-endpoint:${kind}` },
+      { value: r.runtimeId, name: `lease-runtime-id:${kind}` },
+      { value: r.machineId ?? undefined, name: 'machine-id' },
+      { value: r.hostname, name: 'hostname' },
+    )
+  }
   return out
 }
