@@ -270,6 +270,70 @@ describe('several clients on one daemon, in real time', () => {
     expect(turnId).toMatch(/^turn_/)
   })
 
+  /** Each session's trigger_message texts for the agent, in order. */
+  const triggerTexts = (r: Reader, agentId: string) => r.frames
+    .filter(f => f.kind === 'executor' && f.agentId === agentId && f.event.type === 'trigger_message')
+    .map(f => f.kind === 'executor' && String((f.event.payload as { content?: unknown }).content ?? ''))
+  const echoOriginsLeft = (runtime: RuntimeService) => (runtime as unknown as { echoOrigins: Map<string, unknown> }).echoOrigins.size
+
+  it('echoed chats queued behind a running turn: each trigger_message skips only its own sender', async () => {
+    const { runtime, client, one } = await fleet()
+    const s1 = await reader(client, { focus: one.agentId, client: 'studio' })
+    const s2 = await reader(client, { focus: one.agentId, client: 'studio-2' })
+    let release: () => void = () => {}
+    const held = new Promise<void>(resolve => { release = resolve })
+    let calls = 0
+    runtime.getLoadedAgent(one.agentId)!.agent.executor.updateProvider({
+      name: 'scripted', modelId: 'scripted-v1',
+      async createMessage() {
+        if (calls++ === 0) await held
+        return { id: `m${calls}`, content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }
+      },
+      async validateConfig() { return { valid: true } },
+    } as never)
+    const chat = (r: Reader, text: string) => client.withClientSession(r.sessionId).request<{ turnId: string }>('POST', `/agents/${one.agentId}/chat`, { body: { text, echoed: true } })
+    await chat(s1, 'first from s1')
+    await waitFor(() => triggerTexts(s2, one.agentId).length === 1, 5000, 'first trigger')
+    // Both queue: the replay runs 'second', 'third' is delivered into it at turn start.
+    await chat(s1, 'second from s1')
+    await chat(s2, 'third from s2')
+    release()
+    await waitFor(() => triggerTexts(s1, one.agentId).length >= 1 && triggerTexts(s2, one.agentId).length >= 2 && calls >= 2, 8000, 'queued triggers')
+    await waitFor(() => runtime.getLoadedAgent(one.agentId)!.agent.executor.getState() === 'idle', 5000, 'idle')
+    await new Promise(r => setTimeout(r, 100))
+    expect(triggerTexts(s1, one.agentId)).toEqual(['third from s2'])
+    expect(triggerTexts(s2, one.agentId)).toEqual(['first from s1', 'second from s1'])
+    expect(echoOriginsLeft(runtime)).toBe(0)
+  })
+
+  it('an echoed chat that interrupts a turn waiting on approval: the restart skips only its sender, and no origin is left behind', async () => {
+    const { runtime, client, one } = await fleet()
+    const s1 = await reader(client, { focus: one.agentId, client: 'studio' })
+    const s2 = await reader(client, { focus: one.agentId, client: 'studio-2' })
+    const executor = runtime.getLoadedAgent(one.agentId)!.agent.executor
+    let calls = 0
+    executor.updateProvider({
+      name: 'scripted', modelId: 'scripted-v1',
+      async createMessage() {
+        // The first turn waits on the owner; the interrupting chat ends that wait.
+        if (calls++ === 0) await executor.requestHilApproval('fs_write', { path: 'a.md', content: 'x' })
+        return { id: `m${calls}`, content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }
+      },
+      async validateConfig() { return { valid: true } },
+    } as never)
+    const chat = (r: Reader, text: string) => client.withClientSession(r.sessionId).request<{ turnId: string }>('POST', `/agents/${one.agentId}/chat`, { body: { text, echoed: true } })
+    await chat(s1, 'first from s1')
+    await waitFor(() => executor.getState() === 'awaiting_approval', 5000, 'awaiting approval')
+    await chat(s2, 'interrupt from s2')
+    const interrupted = (r: Reader) => r.frames.some(f => f.kind === 'executor' && f.agentId === one.agentId && f.event.type === 'turn_complete' && (f.event.payload as { interrupted?: boolean }).interrupted === true)
+    await waitFor(() => interrupted(s1) && calls >= 2 && triggerTexts(s1, one.agentId).length >= 1, 8000, 'restart')
+    await waitFor(() => executor.getState() === 'idle', 5000, 'idle')
+    await new Promise(r => setTimeout(r, 100))
+    expect(triggerTexts(s1, one.agentId)).toEqual(['interrupt from s2'])
+    expect(triggerTexts(s2, one.agentId)).toEqual(['first from s1'])
+    expect(echoOriginsLeft(runtime)).toBe(0)
+  })
+
   it('echo suppression is per event: an agent write raised during a client PUT still reaches the writer', async () => {
     // The client's request is held open 300 ms before its handler runs; the agent writes meanwhile, in its own turn.
     let inRequest: () => void = () => {}

@@ -1339,28 +1339,50 @@ export class RuntimeService extends EventEmitter {
       }),
       { scope: 'agent' },
     )
-    if (opts.turnId && opts.echoOrigin) this.noteEchoOrigin(opts.turnId, opts.echoOrigin)
+    if (opts.turnId && opts.echoOrigin) this.noteEchoOrigin(opts.turnId, { session: opts.echoOrigin, agentId: this.requireAgent(agentId).id, loop: loop || MAIN_LOOP })
     await this.trigger(agentId, opts.turnId ? { ...dispatch, turnId: opts.turnId } : dispatch, loop)
   }
 
-  /** Chat turns whose sender already shows the message: turnId → client session. Oldest dropped past ECHO_ORIGINS_KEPT. */
-  private readonly echoOrigins = new Map<string, string>()
+  /** Chat dispatches whose sender already shows the message: turnId → the client session, and where it runs. Oldest dropped past ECHO_ORIGINS_KEPT. */
+  private readonly echoOrigins = new Map<string, { session: string; agentId: string; loop: string }>()
 
-  private noteEchoOrigin(turnId: string, sessionId: string): void {
-    this.echoOrigins.set(turnId, sessionId)
+  private noteEchoOrigin(turnId: string, origin: { session: string; agentId: string; loop: string }): void {
+    this.echoOrigins.set(turnId, origin)
     while (this.echoOrigins.size > ECHO_ORIGINS_KEPT) this.echoOrigins.delete(this.echoOrigins.keys().next().value!)
   }
 
-  /** The session that sent the chat a `trigger_message` announces, from the emitting executor's running turn. */
+  /**
+   * The session that sent the chat a `trigger_message` announces — keyed by
+   * the turnId of the dispatch that event announces (a queued chat delivered
+   * into a running turn announces its own id, not the running turn's). When a
+   * turn ends, origins of the dispatches it settled (its own and the ones it
+   * absorbed) that were never announced — a skipped trigger on interrupt
+   * restart — are dropped so they cannot mask a later event; a stop or off
+   * drops the loop's rest (queued chats it discards).
+   */
   private takeEchoOrigin(managed: ManagedRuntimeAgent, event: AgentExecutionEvent): string | undefined {
-    if (event.type !== 'trigger_message' || this.echoOrigins.size === 0) return undefined
+    if (this.echoOrigins.size === 0) return undefined
     const loop = event.loop ?? MAIN_LOOP
+    if (event.type === 'state_changed') {
+      const state = (event.payload as { state?: unknown } | undefined)?.state
+      if (state !== 'stopped' && state !== 'off') return undefined
+      for (const [turnId, origin] of this.echoOrigins) if (origin.agentId === managed.id && origin.loop === loop) this.echoOrigins.delete(turnId)
+      return undefined
+    }
+    if (event.type !== 'trigger_message' && event.type !== 'turn_complete' && event.type !== 'error') return undefined
     const executor = loop === MAIN_LOOP ? managed.agent.executor : managed.agent.loopPool.getRuntime(loop)?.executor
-    const turnId = executor?.getRunningTurnId()
+    if (!executor) return undefined
+    if (event.type !== 'trigger_message') {
+      const running = executor.getRunningTurnId()
+      if (running) this.echoOrigins.delete(running)
+      for (const id of executor.getAbsorbedTurnIds()) this.echoOrigins.delete(id)
+      return undefined
+    }
+    const turnId = executor.getAnnouncingTurnId()
     if (!turnId) return undefined
     const origin = this.echoOrigins.get(turnId)
     if (origin !== undefined) this.echoOrigins.delete(turnId)
-    return origin
+    return origin?.session
   }
 
   /**
