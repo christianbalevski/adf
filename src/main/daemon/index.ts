@@ -22,6 +22,7 @@ import { DaemonHost } from './daemon-host'
 import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
 import { noteAutostartReport } from './tracked-dirs'
+import { TrackedDirWatcher } from './dir-watcher'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import { ensureDaemonToken } from './daemon-token'
 import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof } from './local-access'
@@ -326,6 +327,14 @@ setInterval(() => {
     .catch(err => console.error('[ADF Daemon] Credential re-check failed:', err))
 }, CREDENTIAL_RECHECK_MS).unref?.()
 const agentFactory =new DaemonAgentFactory({ settings, identity: ownerIdentity, runtime })
+// Tracked-folder watcher (W1-E): autostarts new agent files and feeds the
+// tracked_dirs / file_renamed pushes. Started when the HTTP server is ready,
+// closed with it, and closed again (idempotent) in the shutdown hooks.
+const trackedDirWatcher = new TrackedDirWatcher({
+  runtime,
+  settings,
+  onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
+})
 const daemon = new DaemonHost({
   runtime,
   identity: ownerIdentity,
@@ -345,7 +354,7 @@ const daemon = new DaemonHost({
   // Services the W1-D gap routes reach (routes/gap-deps.ts): emergency stop
   // stops the mesh server and sandbox workers; MCP admin shares the uv
   // install and the app-level OAuth store (DaemonAppOAuthStore) the builder uses.
-  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }) },
+  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher },
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
@@ -421,6 +430,7 @@ const daemon = new DaemonHost({
   // daemon shutdown at parity with Studio's cleanupAllProcesses. Each hook is
   // independently try-caught by the host.
   onShutdown: [
+    () => trackedDirWatcher.close(),
     () => wsConnectionManager.stopAll(),
     () => runtimeDiscovery.stop(),
     () => meshServer.stop(),
