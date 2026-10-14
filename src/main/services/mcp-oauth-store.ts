@@ -198,6 +198,8 @@ export function daemonAppOAuthRecordAccount(indexAccount: string, serverUrl: str
 
 /** Characters per keychain value; under the Windows 1280-character cap with room for the account metadata. */
 export const SECRET_CHUNK_CHARS = 1000
+/** Most chunks one value may have (a head with more is not a generation `isGeneration` accepts). */
+export const MAX_SECRET_CHUNKS = 999
 
 /**
  * Chunked secret value with generations. The head account holds
@@ -237,7 +239,7 @@ function readHead(backend: OAuthSecretBackendHandle, account: string): ChunkHead
 function isGeneration(g: unknown): g is { gen: string; n: number } {
   const value = g as { gen?: unknown; n?: unknown } | undefined
   return !!value && typeof value.gen === 'string' && /^[0-9a-f]{1,32}$/.test(value.gen) &&
-    typeof value.n === 'number' && Number.isInteger(value.n) && value.n > 0 && value.n < 1000
+    typeof value.n === 'number' && Number.isInteger(value.n) && value.n > 0 && value.n <= MAX_SECRET_CHUNKS
 }
 
 function deleteGeneration(backend: OAuthSecretBackendHandle, account: string, g: { gen: string; n: number }): void {
@@ -250,6 +252,8 @@ function sha256Hex(value: string): string {
 
 /** Split into chunks of at most `size` UTF-16 units, never between the halves of a surrogate pair. */
 export function splitOnCodePoints(value: string, size: number = SECRET_CHUNK_CHARS): string[] {
+  // A chunk must hold a whole surrogate pair, or a high surrogate would never advance.
+  if (!Number.isInteger(size) || size < 2) throw new RangeError(`chunk size must be an integer of at least 2, not ${size}`)
   const chunks: string[] = []
   let start = 0
   while (start < value.length) {
@@ -268,6 +272,10 @@ export function chunkedSecretWrite(backend: OAuthSecretBackendHandle, account: s
   for (const leftover of [head?.pending, head?.prev]) if (isGeneration(leftover)) deleteGeneration(backend, account, leftover)
   const current = head && isGeneration(head) ? { gen: head.gen!, n: head.n! } : null
   const chunks = splitOnCodePoints(value)
+  // Checked before anything is written: a head with more chunks would read as absent.
+  if (chunks.length > MAX_SECRET_CHUNKS) {
+    throw new Error(`Secret ${account} is too large for the secret store (${chunks.length} chunks of ${SECRET_CHUNK_CHARS} characters; at most ${MAX_SECRET_CHUNKS})`)
+  }
   const next = { gen: randomBytes(8).toString('hex'), n: chunks.length }
   const live: ChunkHead = current ? { v: 1, gen: current.gen, n: current.n, sha256: head!.sha256 } : { v: 1 }
   backend.set(account, JSON.stringify({ ...live, pending: next }))
@@ -297,13 +305,19 @@ export function chunkedSecretRead(backend: OAuthSecretBackendHandle, account: st
   return value
 }
 
+/**
+ * Chunks first, head last: a crash in between leaves a head whose chunks are
+ * gone (it reads as absent, and the next write or delete finds every
+ * generation through it), never chunks no head lists.
+ */
 export function chunkedSecretDelete(backend: OAuthSecretBackendHandle, account: string): void {
   const head = readHead(backend, account)
-  backend.delete(account)
-  if (!head) return
-  for (const g of [isGeneration(head) ? { gen: head.gen!, n: head.n! } : null, head.pending, head.prev]) {
-    if (isGeneration(g)) deleteGeneration(backend, account, g)
+  if (head) {
+    for (const g of [isGeneration(head) ? { gen: head.gen!, n: head.n! } : null, head.pending, head.prev]) {
+      if (isGeneration(g)) deleteGeneration(backend, account, g)
+    }
   }
+  backend.delete(account)
 }
 
 /**
