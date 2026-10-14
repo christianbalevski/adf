@@ -424,6 +424,22 @@
     state: "stopped"
 7. shutdown  [pushes 0→0]
 
+## timeline <ROOT>/agents/agent-1.adf
+> 1 adf:file:open
+< 1
+> 2 adf:doc:get-batch
+< 2
+> 3 adf:doc:read-internal-file
+< 3
+> 4 adf:doc:read-internal-file
+< 4
+> 5 adf:file:get-current
+< 5
+> 6 adf:agent:status
+< 6
+> 7 shutdown
+< 7
+
 ## local calls (3)
 #1 Menu.setApplicationMenu:
   -
@@ -615,6 +631,8 @@
 ## state: files
 d agents/
 f agents/agent-1.adf
+f agents/agent-1.adf-shm
+f agents/agent-1.adf-wal
 d home/
 d home/.claude/
 d home/.codex/
@@ -837,7 +855,7 @@ adf-settings.json:
     issued_at: "2026-10-14T15:54:24.928Z"
     issuer: "<did:owner>"
     role: "runtime"
-    signature: "<sig#3>"
+    signature: "<sig:runtime-delegation>"
     subject: "<did:runtime>"
   runtimeDid: "<did:runtime>"
   runtimeEncPrivateKey: "safe:cGFyaXR5LXNhZmU6TUM0Q0FRQXdCUVlESzJWdUJDSUVJRGZhUEdwdnpLYWloZFdNUDJqZ1V3Mzd5cGhqdGFuemFxeVJQZHRaMHB5Ug=="
@@ -958,20 +976,20 @@ adf-settings.json:
   id: 1
   issued_at: "<t>"
   issuer: "<did:owner>"
-  raw_json: "{\"issuer\":\"<did:owner>\",\"subject\":\"<did#1>\",\"role\":\"owner\",\"issued_at\":\"<t>\",\"signature\":\"<sig#1>\"}"
+  raw_json: "{\"issuer\":\"<did:owner>\",\"subject\":\"<did#1>\",\"role\":\"owner\",\"issued_at\":\"<t>\",\"signature\":\"<sig:valid#1>\"}"
   role: "owner"
   scope: null
-  signature: "<sig#1>"
+  signature: "<sig:valid#1>"
   subject: "<did#1>"
 #2:
   expires_at: null
   id: 2
   issued_at: "<t>"
   issuer: "<did:runtime>"
-  raw_json: "{\"issuer\":\"<did:runtime>\",\"subject\":\"<did#1>\",\"role\":\"operator\",\"issued_at\":\"<t>\",\"signature\":\"<sig#2>\"}"
+  raw_json: "{\"issuer\":\"<did:runtime>\",\"subject\":\"<did#1>\",\"role\":\"operator\",\"issued_at\":\"<t>\",\"signature\":\"<sig:valid#2>\"}"
   role: "operator"
   scope: null
-  signature: "<sig#2>"
+  signature: "<sig:valid#2>"
   subject: "<did#1>"
 
 ## state: agents/agent-1.adf adf_audit (0 rows; id, source, start_seq, end_seq, ref, entry_count, size_bytes, data, created_at)
@@ -1065,7 +1083,7 @@ adf-settings.json:
 
 ## state: agents/agent-1.adf adf_loop (0 rows; seq, role, content_json, model, tokens, created_at, ord, loop)
 
-## state: agents/agent-1.adf adf_meta (13 rows; key, value, protection)
+## state: agents/agent-1.adf adf_meta (12 rows; key, value, protection)
 #1:
   key: "adf_version"
   protection: "readonly"
@@ -1114,10 +1132,6 @@ adf-settings.json:
   key: "adf_runtime_did"
   protection: "readonly"
   value: "<did:runtime>"
-#13:
-  key: "adf_clean_close"
-  protection: "readonly"
-  value: "<t>"
 
 ## state: agents/agent-1.adf adf_outbox (0 rows; id, message_id, from, to, address, reply_to, network, thread_id, parent_id, subject, content, content_type, attachments, meta, sender_alias, recipient_alias, owner, card, return_path, status_code, created_at, delivered_at, status, original_message)
 

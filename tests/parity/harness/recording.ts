@@ -14,7 +14,9 @@ import type { PersistedState } from './state-dump'
  * - `local`: native UI and OS calls (dialogs, shell, notifications, menu,
  *   tray, badge, recent docs).
  * - `llm`: the requests the backend sent to the mock LLM, in arrival order.
- * - `state`: what the run left on disk (see state-dump.ts).
+ * - `state`: what is on disk once the scenario is done, before shutdown
+ *   (see state-dump.ts). `stateAfterShutdown`: the same after shutdown;
+ *   raw only, because shutdown behaviour differs by mode.
  * - `timing`: streamed-reply write times. Raw only: never compared, never
  *   in golden files; the streaming assertions read it.
  */
@@ -33,6 +35,7 @@ export interface RawRecording {
   local: LocalCallRecord[]
   llm: RecordedLlmRequest[]
   state: PersistedState
+  stateAfterShutdown: PersistedState
   timing: { streams: StreamTiming[] }
 }
 
@@ -52,6 +55,8 @@ export interface ComparableRecording {
   steps: StepRecord[]
   pushes: Record<string, unknown[]>
   timelines: Record<string, string[]>
+  /** Global send seq of each push in `pushes` (R9's cross-channel order). Not rendered. */
+  pushSeq?: Record<string, number[]>
   local: LocalCallRecord[]
   llm: RecordedLlmRequest[]
   state: PersistedState
@@ -72,7 +77,9 @@ function describe(channel: string, payload: Payload): string {
  * Which agent a push belongs to. AGENT_EVENT carries no file: it is the
  * foreground agent's, i.e. the file of the last FILE_OPEN that had started
  * before the push (FILE_CLOSE clears it). Background batches are split per
- * event. Anything else names its `filePath` or belongs to `app`.
+ * event. Anything else belongs to each file it names (`filePath`, or
+ * FILE_RENAMED's `oldPath` and `newPath`), or to `app`. Every opened file
+ * gets a timeline, even without pushes of its own.
  */
 function attribute(raw: RawRecording): Map<string, { seq: number; line: string }[]> {
   const openings: { from: number; file: string | null }[] = []
@@ -103,24 +110,36 @@ function attribute(raw: RawRecording): Map<string, { seq: number; line: string }
       continue
     }
     const p = Array.isArray(payload) ? undefined : payload
-    const file = push.channel === IPC.AGENT_EVENT
-      ? foregroundAt(push.seq)
-      : typeof p?.filePath === 'string' ? p.filePath : null
-    add(file ?? 'app', push.seq, describe(push.channel, p))
+    if (push.channel === IPC.AGENT_EVENT) {
+      add(foregroundAt(push.seq) ?? 'app', push.seq, describe(push.channel, p))
+      continue
+    }
+    // FILE_RENAMED names both files; it belongs to the timeline of each.
+    const files = [...new Set(['filePath', 'oldPath', 'newPath']
+      .map((k) => p?.[k]).filter((v): v is string => typeof v === 'string'))]
+    if (files.length === 0) add('app', push.seq, describe(push.channel, p))
+    for (const file of files) add(file, push.seq, describe(push.channel, p))
   }
+  for (const o of openings) if (o.file && !out.has(o.file)) out.set(o.file, [])
   return out
 }
 
 export function toComparable(raw: RawRecording): ComparableRecording {
   const byChannel = new Map<string, unknown[]>()
+  const seqByChannel = new Map<string, number[]>()
   for (const push of raw.pushes) {
     const list = byChannel.get(push.channel) ?? []
     // Every Studio push carries one payload argument; keep the array only when it does not.
     list.push(push.args.length === 1 ? push.args[0] : push.args)
     byChannel.set(push.channel, list)
+    seqByChannel.set(push.channel, [...(seqByChannel.get(push.channel) ?? []), push.seq])
   }
   const pushes: Record<string, unknown[]> = {}
-  for (const channel of [...byChannel.keys()].sort()) pushes[channel] = byChannel.get(channel)!
+  const pushSeq: Record<string, number[]> = {}
+  for (const channel of [...byChannel.keys()].sort()) {
+    pushes[channel] = byChannel.get(channel)!
+    pushSeq[channel] = seqByChannel.get(channel)!
+  }
 
   // Step markers: `> n channel` when a step starts, `< n` when it resolves,
   // placed by push watermark.
@@ -137,16 +156,23 @@ export function toComparable(raw: RawRecording): ComparableRecording {
   })
   const timelines: Record<string, string[]> = {}
   const byAgent = attribute(raw)
-  for (const agent of [...byAgent.keys()].sort()) {
-    const events = byAgent.get(agent)!
+  // App-level pushes (approvals, templates, …) are merged into every agent's
+  // timeline, marked `[app]`, so their order against the agent's own events
+  // is compared. With no agent at all they get a timeline of their own.
+  const appEvents = byAgent.get('app') ?? []
+  const agents = [...byAgent.keys()].filter((a) => a !== 'app').sort()
+  const keys = agents.length ? agents : appEvents.length ? ['app'] : []
+  for (const agent of keys) {
+    const own = agent === 'app' ? [] : byAgent.get(agent)!
     const lines: { at: number; order: number; line: string }[] = [
       ...markers,
       // Global seq numbers are not printed: other agents' pushes would shift them.
-      ...events.map((e) => ({ at: e.seq - 1, order: Number.MAX_SAFE_INTEGER, line: `  ${e.line}` })),
+      ...own.map((e) => ({ at: e.seq - 1, order: Number.MAX_SAFE_INTEGER, line: `  ${e.line}` })),
+      ...appEvents.map((e) => ({ at: e.seq - 1, order: Number.MAX_SAFE_INTEGER, line: agent === 'app' ? `  ${e.line}` : `  [app] ${e.line}` })),
     ]
     // A marker at watermark w sits after push w and before push w+1; markers keep step order.
     lines.sort((a, b) => a.at - b.at || a.order - b.order)
     timelines[agent] = lines.map((l) => l.line)
   }
-  return { scenario: raw.scenario, steps: raw.steps, pushes, timelines, local: raw.local, llm: raw.llm, state: raw.state }
+  return { scenario: raw.scenario, steps: raw.steps, pushes, pushSeq, timelines, local: raw.local, llm: raw.llm, state: raw.state }
 }

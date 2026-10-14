@@ -1897,6 +1897,8 @@
 ## state: files
 d agents/
 f agents/agent-1.adf
+f agents/agent-1.adf-shm
+f agents/agent-1.adf-wal
 d home/
 d home/.claude/
 d home/.codex/
@@ -1911,12 +1913,13 @@ d home/Documents/
 d home/Downloads/
 d leases/
 d temp/
+d temp/<scratch-root:this-process>/
+d temp/<scratch-root:this-process>/<scratch:agent-1>/
 d user-data/
 f user-data/adf-settings.json
 d user-data/crashes/
 d user-data/logs/
 d user-data/templates/
-f user-data/token-usage.json
 
 ## state: user-data/adf-settings.json
 adf-settings.json:
@@ -2120,7 +2123,7 @@ adf-settings.json:
     issued_at: "2026-10-14T15:54:24.928Z"
     issuer: "<did:owner>"
     role: "runtime"
-    signature: "<sig#3>"
+    signature: "<sig:runtime-delegation>"
     subject: "<did:runtime>"
   runtimeDid: "<did:runtime>"
   runtimeEncPrivateKey: "safe:cGFyaXR5LXNhZmU6TUM0Q0FRQXdCUVlESzJWdUJDSUVJRGZhUEdwdnpLYWloZFdNUDJqZ1V3Mzd5cGhqdGFuemFxeVJQZHRaMHB5Ug=="
@@ -2235,36 +2238,26 @@ adf-settings.json:
   uiScale: 1
   updateChecksEnabled: false
 
-## state: user-data/token-usage.json
-token-usage.json:
-  2026-10-14:
-    parity-llm:
-      parity-model:
-        cache_read: 0
-        input: 200
-        output: 20
-        reasoning: 0
-
 ## state: agents/agent-1.adf adf_attestations (2 rows; id, issuer, subject, role, issued_at, expires_at, scope, signature, raw_json)
 #1:
   expires_at: null
   id: 1
   issued_at: "<t>"
   issuer: "<did:owner>"
-  raw_json: "{\"issuer\":\"<did:owner>\",\"subject\":\"<did#1>\",\"role\":\"owner\",\"issued_at\":\"<t>\",\"signature\":\"<sig#1>\"}"
+  raw_json: "{\"issuer\":\"<did:owner>\",\"subject\":\"<did#1>\",\"role\":\"owner\",\"issued_at\":\"<t>\",\"signature\":\"<sig:valid#1>\"}"
   role: "owner"
   scope: null
-  signature: "<sig#1>"
+  signature: "<sig:valid#1>"
   subject: "<did#1>"
 #2:
   expires_at: null
   id: 2
   issued_at: "<t>"
   issuer: "<did:runtime>"
-  raw_json: "{\"issuer\":\"<did:runtime>\",\"subject\":\"<did#1>\",\"role\":\"operator\",\"issued_at\":\"<t>\",\"signature\":\"<sig#2>\"}"
+  raw_json: "{\"issuer\":\"<did:runtime>\",\"subject\":\"<did#1>\",\"role\":\"operator\",\"issued_at\":\"<t>\",\"signature\":\"<sig:valid#2>\"}"
   role: "operator"
   scope: null
-  signature: "<sig#2>"
+  signature: "<sig:valid#2>"
   subject: "<did#1>"
 
 ## state: agents/agent-1.adf adf_audit (0 rows; id, source, start_seq, end_seq, ref, entry_count, size_bytes, data, created_at)
@@ -2422,7 +2415,7 @@ token-usage.json:
   seq: 5
   tokens: "{\"input\":100,\"output\":10,\"cache_read\":0,\"reasoning\":0}"
 
-## state: agents/agent-1.adf adf_meta (17 rows; key, value, protection)
+## state: agents/agent-1.adf adf_meta (16 rows; key, value, protection)
 #1:
   key: "adf_version"
   protection: "readonly"
@@ -2487,10 +2480,6 @@ token-usage.json:
   key: "context_baseline_tokens"
   protection: "readonly"
   value: "{\"tokens\":110,\"estimated\":false,\"updated_at\":<t>}"
-#17:
-  key: "adf_clean_close"
-  protection: "readonly"
-  value: "<t>"
 
 ## state: agents/agent-1.adf adf_outbox (0 rows; id, message_id, from, to, address, reply_to, network, thread_id, parent_id, subject, content, content_type, attachments, meta, sender_alias, recipient_alias, owner, card, return_path, status_code, created_at, delivered_at, status, original_message)
 

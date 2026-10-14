@@ -8,10 +8,17 @@
  * 2026-10-14); and the owner's real daemon listens on 7385.
  *
  * It patches the built-in module objects (child_process, net, tls, http,
- * https) and calls module.syncBuiltinESMExports(), so ESM named imports,
- * createRequire users and libraries such as cross-spawn (the MCP SDK's
- * StdioClientTransport) all see the fenced functions. globalThis.fetch is
- * wrapped as well.
+ * https, worker_threads), net.Socket.prototype.connect and the dgram socket
+ * prototype, then calls module.syncBuiltinESMExports(), so ESM named
+ * imports, createRequire users and libraries such as cross-spawn (the MCP
+ * SDK's StdioClientTransport) all see the fenced functions.
+ * globalThis.fetch is wrapped as well.
+ *
+ * Propagation: every worker_threads Worker gets `--require <this file>` in
+ * its execArgv, and the harness puts `--require "<this file>"` in
+ * NODE_OPTIONS for the run, so Node and Electron-as-Node children and
+ * grandchildren install the fence too (it installs itself when
+ * PARITY_FENCE_LOG is set).
  *
  * Two ways to use it:
  * - In process: `require('./fence.cjs').install({ logFile, ports })`, then
@@ -29,6 +36,8 @@ const net = require('node:net')
 const tls = require('node:tls')
 const http = require('node:http')
 const https = require('node:https')
+const dgram = require('node:dgram')
+const workerThreads = require('node:worker_threads')
 const fs = require('node:fs')
 const { promisify } = require('node:util')
 const { syncBuiltinESMExports } = require('node:module')
@@ -150,11 +159,33 @@ function httpTarget(args, defaultPort) {
   return { host: o.hostname ?? (o.host ? String(o.host).replace(/:\d+$/, '') : undefined), port: o.port ?? defaultPort, path: o.socketPath }
 }
 
+/** dgram send(msg[, offset, length], port[, address][, cb]); a connected socket passes no port. */
+function dgramTarget(args) {
+  if (typeof args[1] === 'number' && typeof args[2] === 'number' && typeof args[3] === 'number') return { port: args[3], host: args[4] }
+  if (typeof args[1] === 'number') return { port: args[1], host: typeof args[2] === 'string' ? args[2] : undefined }
+  return null
+}
+
+/** `targetOf` returning null = nothing to check (e.g. a send on a connected UDP socket). */
 function fencedConnect(kind, original, targetOf) {
   return function (...args) {
     const t = targetOf(args)
-    checkTarget(kind, t.host, t.port, t.path)
+    if (t) checkTarget(kind, t.host, t.port, t.path)
     return original.apply(this, args)
+  }
+}
+
+function fencedWorkerClass(Original) {
+  const self = __filename
+  return class FencedWorker extends Original {
+    constructor(file, options = {}) {
+      const execArgv = [...(options.execArgv ?? process.execArgv), '--require', self]
+      // A worker with its own env object would not see the fence settings.
+      const env = options.env && typeof options.env === 'object'
+        ? { ...options.env, PARITY_FENCE_LOG: state.logFile, PARITY_FENCE_ROOT: state.root ?? '', PARITY_FENCE_PORTS: [...state.ports].join(',') }
+        : options.env
+      super(file, { ...options, execArgv, ...(env !== undefined ? { env } : {}) })
+    }
   }
 }
 
@@ -177,8 +208,20 @@ function install(options) {
   for (const name of SPAWNERS) {
     if (typeof childProcess[name] === 'function') patch(childProcess, name, fencedSpawner(name, childProcess[name]))
   }
+  // Socket.prototype.connect covers `new net.Socket().connect()` and every
+  // path that builds its own socket (http Agent, tls). Internal callers pass
+  // the normalized [options, cb] array.
+  patch(net.Socket.prototype, 'connect', fencedConnect('net', net.Socket.prototype.connect, (args) =>
+    netTarget(Array.isArray(args[0]) ? args[0] : args)))
   patch(net, 'connect', fencedConnect('net', net.connect, netTarget))
   patch(net, 'createConnection', fencedConnect('net', net.createConnection, netTarget))
+  // UDP: only to the run's loopback ports; no multicast (mDNS) at all.
+  const udp = dgram.Socket.prototype
+  patch(udp, 'send', fencedConnect('dgram', udp.send, (args) => dgramTarget(args)))
+  patch(udp, 'connect', fencedConnect('dgram', udp.connect, (args) => ({ port: args[0], host: typeof args[1] === 'string' ? args[1] : undefined })))
+  patch(udp, 'addMembership', function (group) { throw record('dgram', `multicast ${group}`) })
+  // Workers have their own copies of the built-ins: each loads this fence first.
+  patch(workerThreads, 'Worker', fencedWorkerClass(workerThreads.Worker))
   patch(tls, 'connect', fencedConnect('tls', tls.connect, netTarget))
   for (const [mod, port] of [[http, 80], [https, 443]]) {
     patch(mod, 'request', fencedConnect('http', mod.request, (args) => httpTarget(args, port)))

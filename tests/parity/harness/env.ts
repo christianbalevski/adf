@@ -16,7 +16,8 @@ import Module from 'node:module'
  *
  * Fences (all fail the run when hit):
  * - `fence.cjs`: no podman/wsl spawn, no connection except to this run's own
- *   loopback ports, never 7385.
+ *   loopback ports, never 7385. Also in child processes and workers
+ *   (NODE_OPTIONS and Worker execArgv carry `--require fence.cjs`).
  * - Secrets: `ADF_KEYCHAIN=0` makes every OS-keychain opener in Studio code
  *   return null, `ADF_SECRET_STORE=file` forces the daemon's passphrase-file
  *   backend, and any load of `@napi-rs/keyring` is refused and recorded.
@@ -54,6 +55,7 @@ type Fence = {
   uninstall(): void
   allowPort(port: number): void
 }
+export const FENCE_PATH = join(__dirname, 'fence.cjs')
 const fence = createRequire(__filename)('./fence.cjs') as Fence
 
 /** Variables the harness sets; every other `ADF_*` is removed for the run. */
@@ -61,7 +63,7 @@ const OWN_ENV = [
   'ADF_USER_DATA_DIR', 'ADF_LEASE_DIR', 'ADF_TEMP_DIR', 'ADF_SECRET_STORE', 'ADF_KEYCHAIN',
   'MESH_PORT', 'MESH_HOST', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'TMPDIR', 'TEMP', 'TMP',
-  'PARITY_FENCE_LOG', 'PARITY_FENCE_ROOT', 'PARITY_FENCE_PORTS',
+  'PARITY_FENCE_LOG', 'PARITY_FENCE_ROOT', 'PARITY_FENCE_PORTS', 'NODE_OPTIONS',
 ] as const
 
 /** The owner's real per-user state. Fingerprinted, never read. */
@@ -252,6 +254,10 @@ export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
     PARITY_FENCE_LOG: violationsLog,
     PARITY_FENCE_ROOT: root,
     PARITY_FENCE_PORTS: String(meshPort),
+    // Every Node / Electron-as-Node child (and grandchild) loads the fence
+    // first. NODE_OPTIONS unescapes backslashes inside quotes, so the path is
+    // written with forward slashes (valid on every OS).
+    NODE_OPTIONS: [saved.get('NODE_OPTIONS'), `--require "${FENCE_PATH.replace(/\\/g, '/')}"`].filter(Boolean).join(' '),
   }
   for (const [k, v] of Object.entries(set)) process.env[k] = v
 

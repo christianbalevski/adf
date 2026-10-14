@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { embeddedBackend } from './harness/backend'
 import { diffRendered, renderRecording } from './harness/format'
 import { toGoldenForm } from './harness/normalize'
-import { diffBackends, runScenario, streamingReport } from './harness/scenario'
+import { diffBackends, runScenario } from './harness/scenario'
 import { CORE_SCENARIOS, chatToolCallScenario } from './scenarios/core'
 
 /**
@@ -16,27 +16,21 @@ import { CORE_SCENARIOS, chatToolCallScenario } from './scenarios/core'
  * state changes the recording: review the diff, then refresh with
  * `vitest run tests/parity -u`.
  *
- * Streaming is checked on timing data that never enters a recording: every
- * text slice the mock LLM writes (200 ms apart) must arrive as its own
- * text_delta_batch, and the first one within FIRST_DELTA_BOUND_MS.
+ * Streaming, fences, leaks and the quiet window are checked inside
+ * runScenario, so every run of every backend gets them.
  */
 
 const RUNS = Math.max(1, Number(process.env.PARITY_RUNS ?? 1))
-/** The executor's 50 ms batch window plus generous scheduling slack for loaded CI runners. */
-const FIRST_DELTA_BOUND_MS = 50 + 250
 
 describe('parity: embedded backend', () => {
   for (const scenario of CORE_SCENARIOS) {
-    it(`${scenario.name}: stable, streams per slice, matches its recording`, async () => {
+    it(`${scenario.name}: stable and matches its recording`, async () => {
       const texts: string[] = []
       let first: Awaited<ReturnType<typeof runScenario>> | null = null
       for (let i = 0; i < RUNS; i++) {
         const result = await runScenario(scenario, embeddedBackend)
         first ??= result
         texts.push(result.text)
-        const report = streamingReport(result.raw)
-        expect(report.batches, 'one text_delta_batch per streamed slice').toBe(report.slices)
-        for (const ms of report.firstDeltaLatencyMs) expect(ms).toBeLessThanOrEqual(FIRST_DELTA_BOUND_MS)
       }
       for (let i = 1; i < texts.length; i++) {
         expect(diffRendered(texts[0], texts[i], { expected: 'run 1', actual: `run ${i + 1}` })).toBe('')

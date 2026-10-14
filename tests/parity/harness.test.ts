@@ -11,7 +11,10 @@ import { createComputeLog, createFakePodmanServiceClass } from './harness/fake-c
 import { diffRendered, renderRecording } from './harness/format'
 import { normalizeRecording, toGoldenForm, type NormalizationContext } from './harness/normalize'
 import type { ComparableRecording } from './harness/recording'
-import { runScenario, type ParityScenario } from './harness/scenario'
+import { runScenario, streamingProblems, streamingReport, type ParityScenario } from './harness/scenario'
+import { verifySignatures } from './harness/signatures'
+import { IDENTITY } from './harness/fixtures'
+import type { PushRecord } from './harness/electron-fake'
 
 /**
  * Self-tests for the parity harness: isolation and fences, and that each
@@ -87,9 +90,35 @@ describe('parity harness: normalizer', () => {
     expect(norm('order 1234567890123')).toBe('order 1234567890123')
   })
 
-  it('R9 marks a push stamped before an earlier push of the same channel', () => {
-    const out = normalizeRecording(rec({ ev: [{ timestamp: T0 + 10 }, { timestamp: T0 + 10 }, { timestamp: T0 + 5 }, { timestamp: T0 + 20 }] }), ctx)
-    expect(out.pushes.ev).toEqual([{ timestamp: '<t>' }, { timestamp: '<t>' }, { timestamp: '<t:earlier>' }, { timestamp: '<t>' }])
+  it('R9 marks an instant before one of an earlier push, on any channel, in send order', () => {
+    const r = rec({ a: [{ timestamp: T0 + 10 }, { timestamp: T0 + 10 }, { timestamp: T0 + 30 }], b: [{ timestamp: T0 + 20 }] })
+    r.pushSeq = { a: [1, 2, 4], b: [3] }
+    expect(normalizeRecording(r, ctx).pushes).toEqual({
+      a: [{ timestamp: '<t>' }, { timestamp: '<t>' }, { timestamp: '<t>' }],
+      b: [{ timestamp: '<t>' }],
+    })
+    // b sent before a's second push, but stamped later: a's second push is earlier.
+    r.pushSeq = { a: [1, 3, 4], b: [2] }
+    expect(normalizeRecording(r, ctx).pushes.a).toEqual([{ timestamp: '<t>' }, { timestamp: '<t:earlier>' }, { timestamp: '<t>' }])
+  })
+
+  it('R9 applies to every array: rows, nested lists and steps', () => {
+    const r = rec({}, [])
+    r.state = { adf: {}, userDataJson: { 'x.json': { rows: [{ at: T0 + 5 }, { at: T0 + 9, inner: [T0 + 9, T0 + 7] }, { at: T0 + 8 }] } }, tree: [] }
+    expect(normalizeRecording(r, ctx).state.userDataJson['x.json']).toEqual({
+      rows: [{ at: '<t>' }, { at: '<t>', inner: ['<t>', '<t:earlier>'] }, { at: '<t:earlier>' }],
+    })
+  })
+
+  it('R10 names the fixture signature, prints verified ones by validity, leaves unverified ones raw', () => {
+    const sig = (c: string) => `ed25519:${c.repeat(86)}==`
+    const r = rec({ ch: [sig('A'), sig('B'), sig('C'), sig('B'), sig('D')] })
+    const out = normalizeRecording(r, {
+      ...ctx,
+      named: [...ctx.named, { value: sig('A'), name: 'sig:runtime-delegation' }],
+      signatures: new Map([[sig('B'), true], [sig('C'), false]]),
+    })
+    expect(out.pushes.ch).toEqual(['<sig:runtime-delegation>', '<sig:valid#1>', '<sig:INVALID#1>', '<sig:valid#1>', sig('D')])
   })
 
   it('keeps undefined-valued properties, null, error text, counts and order', () => {
@@ -107,6 +136,31 @@ describe('parity harness: normalizer', () => {
   it('G1 (golden form only) turns separators under <ROOT> into / and <ROOT:fwd> into <ROOT>', () => {
     const r = rec({ ch: ['<ROOT>\\agents\\a.adf', '<ROOT:fwd>/b', 'C:\\x\\y'] })
     expect(toGoldenForm(r).pushes.ch).toEqual(['<ROOT>/agents/a.adf', '<ROOT>/b', 'C:\\x\\y'])
+  })
+})
+
+describe('parity harness: signatures', () => {
+  it('verifies attestations against their issuer, in objects, rows and raw JSON', () => {
+    const fixture = IDENTITY.runtimeDelegation as { issuer: string; subject: string; role: string; issued_at: string; signature: string }
+    const row = { id: 1, ...fixture, expires_at: null, scope: null, raw_json: JSON.stringify(fixture) }
+    // Same fields, other issuer: the signature does not verify against it.
+    const forged = { ...fixture, issuer: IDENTITY.runtimeDid, signature: fixture.signature.replace(/^ed25519:./, (m) => m.endsWith('A') ? 'ed25519:B' : 'ed25519:A') }
+    const map = verifySignatures({ a: fixture, b: [row], c: { ...fixture, issuer: IDENTITY.runtimeDid, signature: forged.signature } })
+    expect(map.get(fixture.signature)).toBe(true)
+    expect(map.get(forged.signature)).toBe(false)
+  })
+})
+
+describe('parity harness: streaming check', () => {
+  const push = (t: number, type: string): PushRecord => ({ seq: 0, t, channel: 'adf:agent:event', args: [{ type }] })
+  it('wants one batch per slice, each within the bound', () => {
+    const streams = [{ request: 0, textWrites: [100, 300, 500] }]
+    const ok = streamingReport([push(110, 'text_delta_batch'), push(320, 'text_delta_batch'), push(505, 'text_delta_batch')], streams)
+    expect(streamingProblems(ok)).toEqual([])
+    const merged = streamingReport([push(110, 'text_delta_batch'), push(505, 'text_delta_batch')], streams)
+    expect(streamingProblems(merged).join('\n')).toMatch(/3 text slice\(s\) arrived as 2/)
+    const late = streamingReport([push(110, 'text_delta_batch'), push(320, 'text_delta_batch'), push(900, 'text_delta_batch')], streams)
+    expect(streamingProblems(late).join('\n')).toMatch(/slice 3 reached the window after 400 ms/)
   })
 })
 
@@ -256,10 +310,36 @@ describe('parity harness: fences', () => {
       await expect(fetch('https://example.com/')).rejects.toThrow(/refused fetch: example.com:443/)
       const http = await import('node:http')
       expect(() => http.get('http://10.0.0.1:80/')).toThrow(/refused http: 10.0.0.1:80/)
-      expect(env.violations().length).toBe(5)
+      const net = await import('node:net')
+      expect(() => new net.Socket().connect(7385, '127.0.0.1')).toThrow(/refused net: 127.0.0.1:7385/)
+      const dgram = await import('node:dgram')
+      const udp = dgram.createSocket('udp4')
+      expect(() => udp.send('x', 5353, '224.0.0.251')).toThrow(/refused dgram: 224.0.0.251:5353/)
+      expect(() => udp.addMembership('224.0.0.251')).toThrow(/refused dgram: multicast/)
+      udp.close()
+      expect(env.violations().length).toBe(8)
     } finally {
       env.dispose()
       server.close()
+    }
+  })
+
+  it('reaches workers and child processes (Worker execArgv, NODE_OPTIONS)', async () => {
+    const env = await createParityEnv('selftest')
+    try {
+      const { Worker } = await import('node:worker_threads')
+      const code = "const wt = require('node:worker_threads'); try { require('node:net').connect(7385, '127.0.0.1'); wt.parentPort.postMessage('connected') } catch (e) { wt.parentPort.postMessage(e.message) }"
+      const w = new Worker(code, { eval: true })
+      expect(await new Promise((r) => w.once('message', r))).toMatch(/refused net: 127.0.0.1:7385/)
+      await w.terminate()
+      const { execFileSync } = await import('node:child_process')
+      const out = execFileSync(process.execPath, ['-e', "try { require('net').connect(7385, '127.0.0.1'); console.log('connected') } catch (e) { console.log(e.message) }"],
+        { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf-8' })
+      expect(out).toMatch(/refused net: 127.0.0.1:7385/)
+      // Both refusals are in the run's log, written by the worker and by the child.
+      expect(env.violations().length).toBe(2)
+    } finally {
+      env.dispose()
     }
   })
 

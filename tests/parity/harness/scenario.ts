@@ -1,12 +1,14 @@
+import { createHash } from 'node:crypto'
 import { IPC } from '../../../src/shared/constants/ipc-channels'
 import type { BootedBackend, ParityBackend } from './backend'
 import { createFakeElectron, type DialogScript, type PushRecord } from './electron-fake'
 import { createParityEnv, writeSettingsFile, type ParityEnv } from './env'
 import { baseSettings, createFixtureAgents, IDENTITY, type FixtureAgent, type FixtureName, type FixtureSpec } from './fixtures'
 import { diffRendered, renderRecording } from './format'
-import { defaultScript, recordedRequest, startMockLlm, type LlmScript, type MockLlm } from './mock-llm'
+import { defaultScript, recordedRequest, startMockLlm, type LlmScript, type MockLlm, type StreamTiming } from './mock-llm'
 import { normalizeRecording, type NormalizationContext } from './normalize'
 import { toComparable, type ComparableRecording, type RawRecording, type StepRecord } from './recording'
+import { verifySignatures } from './signatures'
 import { dumpPersistedState } from './state-dump'
 
 /**
@@ -173,6 +175,12 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
       ].join('\n'))
     }
 
+    // State while the backend still runs: what the user has at this point in
+    // either mode. Shutdown differs by mode (daemon-mode agents can outlive
+    // Studio), so the state after shutdown is kept raw and not compared.
+    const fixtureFiles = Object.values(agents).map((a) => a.filePath)
+    const state = dumpPersistedState(env, fixtureFiles)
+
     // Teardown with the window open, as on quit: its pushes are part of the recording.
     const before = electron.pushes.length
     const running: BootedBackend = booted
@@ -187,8 +195,9 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
     await llm.close()
     llmOpen = false
     problems.push(...(await leakedHandles(handlesBefore)))
+    problems.push(...streamingProblems(streamingReport(electron.pushes, llm.streams)))
 
-    const state = dumpPersistedState(env, Object.values(agents).map((a) => a.filePath))
+    const stateAfterShutdown = dumpPersistedState(env, fixtureFiles)
     env.assertRealStateUntouched()
     if (problems.length) throw new Error(`parity harness: ${scenario.name}:\n${problems.join('\n')}`)
 
@@ -200,6 +209,7 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
       local: [...electron.localCalls],
       llm: llm.requests.map(recordedRequest),
       state,
+      stateAfterShutdown,
       timing: { streams: [...llm.streams] },
     }
     const extra = running.normalization?.() ?? {}
@@ -213,10 +223,19 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
       named: [
         { value: IDENTITY.ownerDid, name: 'did:owner' },
         { value: IDENTITY.runtimeDid, name: 'did:runtime' },
+        { value: (IDENTITY.runtimeDelegation as { signature?: string } | undefined)?.signature, name: 'sig:runtime-delegation' },
+        // Scratch dirs: `<temp>/adf-scratch-<pid>/<name>-<md5(filePath)[0..6]>` (utils/scratch-dir.ts).
+        // A backend in another process names its own pid through normalization().
+        { value: `adf-scratch-${process.pid}`, name: 'scratch-root:this-process' },
+        ...Object.values(agents).map((a) => ({
+          value: `${a.name}-${createHash('md5').update(a.filePath).digest('hex').slice(0, 6)}`,
+          name: `scratch:${a.name}`,
+        })),
         ...(extra.named ?? []),
       ],
       fixtureIds: Object.values(agents).map((a) => a.id),
       window: { from: env.startedAt, to: Date.now() },
+      signatures: verifySignatures(raw),
     }
     const normalized = normalizeRecording(toComparable(raw), nctx)
     return { raw, normalized, text: renderRecording(normalized) }
@@ -239,32 +258,40 @@ export async function diffBackends(scenario: ParityScenario, baseline: ParityBac
 }
 
 /**
- * Streaming check data: how the mock LLM's text slices (written 200 ms
- * apart, past the executor's 50 ms batch window) arrived as
- * `text_delta_batch` pushes. Timing data; never part of a golden file.
+ * Streaming check, run inside every `runScenario` (so `diffBackends` checks
+ * both sides). The mock LLM writes text slices 200 ms apart, past the
+ * executor's 50 ms batch window, so each slice must arrive as its own
+ * `text_delta_batch` on AGENT_EVENT, and each within SLICE_DELTA_BOUND_MS of
+ * its write. Timing data; never part of a recording.
  */
+export const SLICE_DELTA_BOUND_MS = 50 + 250
+
 export interface StreamingReport {
-  /** Text slices written by the mock LLM. */
+  /** Text slices written by the mock LLM, all replies. */
   slices: number
   /** text_delta_batch pushes on AGENT_EVENT. */
   batches: number
-  /** Per streamed reply: ms from its first slice write to the first batch push after it. */
-  firstDeltaLatencyMs: number[]
+  /** Per slice, in write order: ms from its write to the batch that carried it. */
+  sliceLatencyMs: number[]
 }
 
-export function streamingReport(raw: RawRecording): StreamingReport {
-  const batches = raw.pushes.filter((p: PushRecord) =>
+export function streamingReport(pushes: readonly PushRecord[], streams: readonly StreamTiming[]): StreamingReport {
+  const batches = pushes.filter((p) =>
     p.channel === IPC.AGENT_EVENT && (p.args[0] as { type?: string })?.type === 'text_delta_batch')
-  const firstDeltaLatencyMs: number[] = []
-  for (const stream of raw.timing.streams) {
-    const first = stream.textWrites[0]
-    if (first === undefined) continue
-    const batch = batches.find((b) => b.t >= first)
-    firstDeltaLatencyMs.push(batch ? batch.t - first : Number.POSITIVE_INFINITY)
+  const writes = streams.flatMap((s) => s.textWrites).sort((a, b) => a - b)
+  // The k-th slice written is carried by the k-th batch pushed.
+  const sliceLatencyMs = writes.map((w, k) => (batches[k] ? batches[k].t - w : Number.POSITIVE_INFINITY))
+  return { slices: writes.length, batches: batches.length, sliceLatencyMs }
+}
+
+/** The streaming problems of one run ([] = streamed as a real model streams). */
+export function streamingProblems(report: StreamingReport): string[] {
+  const out: string[] = []
+  if (report.batches !== report.slices) {
+    out.push(`streaming: ${report.slices} text slice(s) arrived as ${report.batches} text_delta_batch push(es)`)
   }
-  return {
-    slices: raw.timing.streams.reduce((n, s) => n + s.textWrites.length, 0),
-    batches: batches.length,
-    firstDeltaLatencyMs,
-  }
+  report.sliceLatencyMs.forEach((ms, k) => {
+    if (!(ms >= 0 && ms <= SLICE_DELTA_BOUND_MS)) out.push(`streaming: slice ${k + 1} reached the window after ${ms} ms (bound ${SLICE_DELTA_BOUND_MS} ms)`)
+  })
+  return out
 }
