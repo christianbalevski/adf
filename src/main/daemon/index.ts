@@ -229,10 +229,22 @@ const runtimeDiscovery = new RuntimeDiscovery({
   settings,
   meshServer,
   mesh: meshManager,
-  getRuntimeDid: () => (settings.get('runtimeDid') as string | undefined) || undefined,
+  getRuntimeDid: discoveryRuntimeDid,
   getOwnerDid: () => (settings.get('ownerDid') as string | undefined) || undefined,
 })
 runtimeDiscovery.start()
+
+/**
+ * The runtime DID mDNS advertises: the one this daemon signs with, never
+ * Studio's `runtimeDid` from a shared settings file. Reads the key
+ * DaemonIdentity keeps it under (`daemonRuntimeDid`, written by
+ * ensureRuntimeKey); its own accessor is private and `status()` refreshes.
+ * Repoint at the active-DID accessor once runtime adoption (W1-C) lands.
+ */
+function discoveryRuntimeDid(): string | undefined {
+  const did = settings.get('daemonRuntimeDid')
+  return typeof did === 'string' && did ? did : undefined
+}
 const agentRuntimeBuilder = new AgentRuntimeBuilder({
   settings,
   codeSandboxService,
