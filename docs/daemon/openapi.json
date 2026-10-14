@@ -15096,6 +15096,109 @@
           }
         }
       }
+    },
+    "/client/sessions/{id}/quit": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Client session id (POST /client/sessions)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "End a client session as its client quits",
+        "description": "ADF Studio's quit (design daemon-backend.md §8.3). Ends the session like DELETE /client/sessions/{id}, then, with `stopDaemon: true`, stops the daemon only when this run was started by Studio (GET /version `startedBy: studio`) and no other client session is open; otherwise it keeps running. One request, so no session can open between the check and the stop. The answer and the daemon log give the reason. The shutdown is the daemon's own bounded one (the same as POST /daemon/shutdown), started after the answer. An unknown or expired session id is not an error (`ended: false`): the stop decision still applies. With `stopDaemon: true` the caller must be local (loopback, no proxy headers; the local proof behind a proxy), as for POST /daemon/shutdown.",
+        "operationId": "quitClientSession",
+        "x-adf-stability": "internal",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientQuitInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The session ended; whether the daemon stops",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientQuitResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "stopDaemon is not a boolean",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "stopDaemon must be a boolean",
+                  "code": "bad_request"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "description": "This daemon has no client sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client/reload-credentials": {
+      "post": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "Re-read the credential stores a client changed",
+        "description": "ADF Studio moved credentials into or out of this daemon's stores while it ran (the mode-switch handover, design daemon-backend.md §11): ChatGPT and Grok sessions (auth.daemon.json), app-level MCP sign-ins and the `studio-runtime:<scope>` keychain entry. No secret crosses HTTP: the daemon re-reads the runtime identity entry (as GET /identity does), re-runs the credential unlock of every agent degraded on locked credentials, and brings loops that failed on a subscription's auth out of `error` for each subscription whose session is now in its store. Local callers only (loopback, no proxy headers; the local proof behind a proxy).",
+        "operationId": "reloadClientCredentials",
+        "x-adf-stability": "internal",
+        "responses": {
+          "200": {
+            "description": "What the reload found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialReloadResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -18294,6 +18397,26 @@
               "service"
             ],
             "description": "Who launched this daemon run (`ADF_DAEMON_STARTED_BY`)"
+          },
+          "localProof": {
+            "type": "object",
+            "required": [
+              "available",
+              "problem"
+            ],
+            "description": "Whether this run has a local proof (X-ADF-Local-Proof). Without one, every route that needs it refuses (POST /identity/import, the stored-value reveal routes); on Windows that happens when icacls cannot restrict the proof file. Absent in daemons before this field.",
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "problem": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why there is no proof; null when available."
+              }
+            }
           }
         },
         "example": {
@@ -28005,6 +28128,144 @@
             "type": "object",
             "additionalProperties": true,
             "description": "The agent's AgentConfig"
+          }
+        }
+      },
+      "ClientQuitInput": {
+        "type": "object",
+        "properties": {
+          "stopDaemon": {
+            "type": "boolean",
+            "description": "Stop the daemon when allowed (Studio: `keepDaemonRunning` off). Default false: only the session ends."
+          }
+        }
+      },
+      "ClientQuitResult": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "ended",
+          "stopping",
+          "reason",
+          "otherSessions"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "ended": {
+            "type": "boolean",
+            "description": "False when the session had already ended or expired."
+          },
+          "stopping": {
+            "type": "boolean",
+            "description": "True when the daemon shuts down because of this request."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the daemon stops or keeps running."
+          },
+          "otherSessions": {
+            "type": "integer",
+            "description": "Client sessions still open."
+          }
+        }
+      },
+      "CredentialReloadResult": {
+        "type": "object",
+        "required": [
+          "runtime",
+          "unlocked",
+          "stillLocked",
+          "sessions",
+          "recovered"
+        ],
+        "properties": {
+          "runtime": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Runtime identity adoption after the re-read (GET /identity `runtime`); null without an owner identity service.",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "adopted",
+                  "absent",
+                  "rejected",
+                  "unavailable"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          },
+          "unlocked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "agentId",
+                "filePath"
+              ],
+              "properties": {
+                "agentId": {
+                  "type": "string"
+                },
+                "filePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "description": "Agents whose credentials unlocked now."
+          },
+          "stillLocked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "agentId",
+                "filePath"
+              ],
+              "properties": {
+                "agentId": {
+                  "type": "string"
+                },
+                "filePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "description": "Agents still degraded on locked credentials."
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "chatgpt",
+                "grok"
+              ]
+            },
+            "description": "Subscription sessions in this daemon's stores."
+          },
+          "recovered": {
+            "type": "integer",
+            "description": "Loops that left an auth error."
           }
         }
       }

@@ -923,6 +923,11 @@ describe('runtime host registry and the adf daemon start check', () => {
     await client.registerClient('local', { settingsPath: settingsFile })
     expect(await listRuntimeHosts(leases)).toEqual([])
     expect(await studioConflict(paths, env, down)).toBeNull()
+    // W4-A: the client record names no guessed daemon port, then the daemon's URL once connected.
+    const clientFile = join(leases, 'clients', `${process.pid}.json`)
+    expect(JSON.parse(readFileSync(clientFile, 'utf-8'))).not.toHaveProperty('controlUrl')
+    await client.registerClient('local', { settingsPath: settingsFile, controlUrl: 'http://127.0.0.1:17411' })
+    expect(JSON.parse(readFileSync(clientFile, 'utf-8'))).toMatchObject({ kind: 'studio-client', mode: 'local', controlUrl: 'http://127.0.0.1:17411' })
   })
 
   it('ignores the entry of a host that is gone', async () => {

@@ -598,7 +598,7 @@ export class AgentLeaseRegistry {
       startedAt: this.startedAt,
       version: this.info.version,
       endpoint: this.endpoint,
-      ...(this.info.kind === 'daemon' && this.info.controlUrl ? { controlUrl: this.info.controlUrl } : {}),
+      ...((this.info.kind === 'daemon' || this.clientMode) && this.info.controlUrl ? { controlUrl: this.info.controlUrl } : {}),
     }
   }
 
@@ -685,10 +685,13 @@ export class AgentLeaseRegistry {
    * records itself as a client so `adf daemon start` knows the running
    * Studio is not a conflict.
    */
-  registerClient(mode: 'local' | 'remote', info: { settingsPath?: string; version?: string | null } = {}): Promise<void> {
+  registerClient(mode: 'local' | 'remote', info: { settingsPath?: string; version?: string | null; controlUrl?: string } = {}): Promise<void> {
     this.clientMode = mode
     if (info.settingsPath) this.info.settingsPath = info.settingsPath
     if (info.version !== undefined) this.info.version = info.version
+    // The daemon this client uses, once known; never a guessed default port.
+    if (info.controlUrl) this.info.controlUrl = info.controlUrl
+    else delete this.info.controlUrl
     return this.ensureReady(true)
   }
 

@@ -54,6 +54,13 @@ export interface DaemonVersionInfo {
   runtimeId: string | null
   pid: number
   startedBy: DaemonStartedBy
+  /**
+   * Whether this run has a local proof (local-access.ts). Without one, every
+   * route that needs it refuses (owner import, stored-value reveal); on
+   * Windows that happens when icacls cannot restrict the proof file.
+   * Absent in daemons before W4-A.
+   */
+  localProof?: { available: boolean; problem: string | null }
 }
 
 export function registerMetaRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
@@ -69,6 +76,7 @@ export function registerMetaRoutes(server: FastifyInstance, ctx: DaemonRouteCont
       runtimeId: typeof runtimeId === 'string' && runtimeId.length > 0 ? runtimeId : null,
       pid: process.pid,
       startedBy: options.routes?.startedBy ?? 'cli',
+      localProof: { available: !!ctx.localAccess.localProof, problem: ctx.localAccess.localProof ? null : options.routes?.localProofProblem ?? 'no local proof was minted for this run' },
     }
   })
 }

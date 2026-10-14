@@ -1268,6 +1268,19 @@ export class RuntimeService extends EventEmitter {
     return results
   }
 
+  /**
+   * Credential reload hook (POST /client/reload-credentials): Studio moved
+   * credentials into this daemon's stores without a restart (mode-switch
+   * handover). Re-runs the envelope unlock of every degraded agent, and
+   * brings loops that failed on a subscription's auth out of `error` for
+   * each provider whose session is now here (`signedIn`).
+   */
+  async reloadCredentials(reason: string, signedIn: Array<{ providerType: string; label: string }> = []): Promise<{ credentials: RuntimeCredentialRefresh[]; recovered: RuntimeAuthRecovery[] }> {
+    const credentials = await this.refreshAgentCredentials(reason)
+    const recovered = signedIn.flatMap(({ providerType, label }) => this.recoverAuthErroredAgents(providerType, label))
+    return { credentials, recovered }
+  }
+
   /** True when any loaded agent is degraded on sealed credentials. */
   hasDegradedAgents(): boolean {
     for (const managed of this.agents.values()) if (managed.degraded) return true

@@ -385,6 +385,18 @@ export async function daemonStatus(target: DaemonTarget, options: { env?: NodeJS
       if (body.daemon?.version) lines.push(`version   ${body.daemon.version}`)
       if (Array.isArray(body.agents)) lines.push(`agents    ${body.agents.length} loaded`)
     } catch { /* health is enough */ }
+    try {
+      // Who started this run (Studio stops only its own), and the local proof (W3-B: icacls can fail on Windows).
+      const token = resolveDaemonToken(undefined, env, target.url)
+      const res = await fetchImpl(`${target.url}/version`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(3000) })
+      if (res.ok) {
+        const info = await res.json() as { startedBy?: string; localProof?: { available?: boolean; problem?: string | null } }
+        if (info.startedBy) lines.push(`started   by ${info.startedBy}`)
+        if (info.localProof && !info.localProof.available) {
+          lines.push(`proof     unavailable: ${info.localProof.problem ?? 'unknown reason'} (owner import and stored-value reveal refuse until the daemon restarts with a protected proof file)`)
+        }
+      }
+    } catch { /* older daemon */ }
   } else if (record && processAlive(record.pid)) {
     lines.push(`pid       ${record.pid} (alive, not answering: starting or stuck)`)
   }

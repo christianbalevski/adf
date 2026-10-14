@@ -38,6 +38,7 @@ import { registerFleetClientRoutes } from './fleet-client-routes'
 import { registerPackageJobRoutes } from './package-job-routes'
 import { registerAgentFileConfigRoutes } from './agent-file-config-routes'
 import { registerTemplateFileRoutes } from './template-file-routes'
+import { registerClientLifecycleRoutes } from './client-lifecycle-routes'
 
 /** Dependencies of route modules that DaemonHttpApiOptions does not carry. Every field is optional. */
 export interface DaemonRouteDeps {
@@ -53,6 +54,8 @@ export interface DaemonRouteDeps {
   importBodyLimit?: number
   /** Client sessions and their event stream (client-sessions.ts). Absent: the one daemon/index.ts registered (registerDaemonClientSessions), else one fed by the runtime, the approvals hub and the event bus. */
   clientSessions?: ClientSessionRegistry
+  /** Why this run has no local proof (the proof file could not be protected), for GET /version; null when it has one. */
+  localProofProblem?: string | null
 }
 
 export interface DaemonRouteContext {
@@ -86,6 +89,7 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerPackageJobRoutes,
   registerAgentFileConfigRoutes,
   registerTemplateFileRoutes,
+  registerClientLifecycleRoutes,
 ]
 
 export function registerDaemonRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {

@@ -92,7 +92,9 @@ export class FileSettingsStore implements ProviderSettingsStore {
     // Same migrations SettingsService runs, so stale values (e.g. a partial
     // compute.containerPackages missing VNC packages) never survive in the daemon.
     const { changedKeys } = applySettingsMigrations(this.data)
-    if (changedKeys.length > 0) this.save(changedKeys)
+    // A migration of a client key the file does not hold is Studio's to run on its own file.
+    const toSave = changedKeys.filter((key) => !CLIENT_KEYS.includes(key) || this.clientKeysOnDisk.has(key))
+    if (toSave.length > 0) this.save(toSave)
   }
 
   /**

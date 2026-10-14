@@ -121,6 +121,8 @@ export function readLocalProof(settingsDir: string, port: number = DEFAULT_PORT)
 export function isLocalOnlyRoute(path: string): boolean {
   const p = path.split('?')[0]
   return p === '/daemon/shutdown'
+    || p === '/client/reload-credentials'
+    || /^\/client\/sessions\/[^/]+\/quit$/.test(p)
     || /^\/identity\/(create|restore|import|unlock|lock|confirm-backup)$/.test(p)
     || /^\/agents\/[^/]+\/identity\/reveal$/.test(p)
     || p === '/files/agent/identity/reveal'
