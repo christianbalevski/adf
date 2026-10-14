@@ -191,17 +191,6 @@ function anthropicBudget(maxTokens?: number, effort?: ReasoningEffort, requestMa
   return Math.max(Math.min(budget, ANTHROPIC_MAX_BUDGET), ANTHROPIC_MIN_BUDGET)
 }
 
-/**
- * Output limit for Claude models newer than @ai-sdk/anthropic's own table
- * (which knows up to Claude 4.6 and treats the rest as 4096). Undefined: let
- * the SDK decide.
- */
-export function anthropicOutputLimit(modelId: string): number | undefined {
-  if (/claude-(opus|sonnet)-(5|4-[7-9])/.test(modelId)) return 128_000
-  if (/claude-(fable|haiku-5)/.test(modelId)) return 64_000
-  return undefined
-}
-
 /** Pick the nearest effort level for a reasoning budget relative to the request max_tokens. */
 function effortFromBudget(maxTokens: number, requestMaxTokens?: number): ReasoningEffort {
   const base = requestMaxTokens && requestMaxTokens > 0 ? requestMaxTokens : maxTokens / 0.5
@@ -486,17 +475,9 @@ export class AiSdkProvider implements LLMProvider {
       // AI SDK v5+ renamed this call setting to `maxOutputTokens`; passing the old
       // `maxTokens` key is silently ignored, leaving the response uncapped.
       callSettings.maxOutputTokens = options.maxTokens
-    } else if (this.options?.providerType === 'anthropic') {
-      // No cap set: the model's own limit should apply. The Anthropic API
-      // requires max_tokens, and @ai-sdk/anthropic falls back to 4096 for
-      // models it doesn't know — so newer models get their real limit here,
-      // minus the thinking budget the SDK adds on top.
-      const limit = anthropicOutputLimit(this.modelId)
-      if (limit) {
-        const thinking = (reasoningPlan?.providerOptions?.anthropic as { thinking?: { budgetTokens?: number } } | undefined)?.thinking
-        callSettings.maxOutputTokens = Math.max(1024, limit - (thinking?.budgetTokens ?? 0))
-      }
     }
+    // No cap set: each provider applies the model's own limit. (The Anthropic
+    // API requires max_tokens; @ai-sdk/anthropic fills it from its model table.)
     if (tools) callSettings.tools = tools
     if (options.signal) callSettings.abortSignal = options.signal
 
