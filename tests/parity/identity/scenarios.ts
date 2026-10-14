@@ -52,6 +52,9 @@ export const agentKeystoreScenario: ParityScenario = {
     await ctx.invoke(IPC.IDENTITY_PASSWORD_CHECK)
     await ctx.invoke(IPC.IDENTITY_SET, { purpose: 'app:token', value: 'token-1' })
     await ctx.invoke(IPC.IDENTITY_REVEAL, { purpose: 'app:token' })
+    // Key material is never revealed, in either mode: the panel shows why.
+    await ctx.invoke(IPC.IDENTITY_REVEAL, { purpose: 'crypto:signing:private_key' })
+    await ctx.invoke(IPC.IDENTITY_GET, { purpose: 'crypto:signing:private_key' })
     await ctx.invoke(IPC.IDENTITY_SET, { purpose: 'app:token', value: 'token-2' })
     await ctx.invoke(IPC.IDENTITY_GET, { purpose: 'app:token' })
     await ctx.invoke(IPC.IDENTITY_SET_CODE_ACCESS, { purpose: 'app:token', codeAccess: true })

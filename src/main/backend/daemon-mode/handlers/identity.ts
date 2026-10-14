@@ -1,4 +1,5 @@
 import { IPC } from '../../../../shared/constants/ipc-channels'
+import { isKeyMaterialPurpose, REVEAL_REFUSED_REASON } from '../../../../shared/constants/identity-reveal'
 import { DaemonError, type DaemonClient } from '../../../../shared/daemon-client'
 import type { AlfAttestation } from '../../../../shared/types/adf-v02.types'
 import { deriveOwnerIdentity, validateMnemonic } from '../../../crypto/mnemonic-identity'
@@ -134,12 +135,14 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
   // routes with the local proof); a remote daemon never sends them.
   [IPC.IDENTITY_GET]: (ctx, _event, args: { purpose: string }) =>
     onOpenAgent(ctx, 'Reading a value of the open agent', () => null, (client, agentId) => {
+      if (isKeyMaterialPurpose(args.purpose)) return null
       if (ctx.mode === 'remote') throw new Error(REMOTE_VALUES_UNSUPPORTED)
       return reveal(client, agentId, args.purpose)
     }),
 
   [IPC.IDENTITY_REVEAL]: (ctx, _event, args: { purpose: string }) =>
     onOpenAgent(ctx, 'Revealing a value of the open agent', () => ({ value: null }), async (client, agentId) => {
+      if (isKeyMaterialPurpose(args.purpose)) return { value: null, reason: REVEAL_REFUSED_REASON }
       if (ctx.mode === 'remote') return { value: null, reason: REMOTE_VALUES_UNSUPPORTED }
       return { value: await reveal(client, agentId, args.purpose) }
     }),

@@ -62,6 +62,7 @@ async function testProviderCredentialsForDashboard(
 }
 
 import chokidar from 'chokidar'
+import { isKeyMaterialPurpose, REVEAL_REFUSED_REASON } from '../../shared/constants/identity-reveal'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
@@ -7734,6 +7735,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.IDENTITY_GET, async (_event, args: { purpose: string }) => {
     if (!currentWorkspace) return null
+    // Key material never reaches the renderer (Rule E3, design §3.2).
+    if (isKeyMaterialPurpose(args.purpose)) return null
     return currentWorkspace.getIdentityDecrypted(args.purpose, currentDerivedKey)
   })
 
@@ -7853,6 +7856,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.IDENTITY_REVEAL, async (_event, args: { purpose: string }) => {
     if (!currentWorkspace) return { value: null }
+    // The agent's private signing key and other key material are never
+    // revealed (Rule E3, design §3.2): the panel shows why.
+    if (isKeyMaterialPurpose(args.purpose)) return { value: null, reason: REVEAL_REFUSED_REASON }
     return { value: currentWorkspace.getIdentityDecrypted(args.purpose, currentDerivedKey) }
   })
 

@@ -16,6 +16,7 @@ vi.mock('electron', async () => (await import('./daemon-mode-electron')).electro
 import { electronStub } from './daemon-mode-electron'
 import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 import { IPC } from '../../src/shared/constants/ipc-channels'
+import { REVEAL_REFUSED_REASON } from '../../src/shared/constants/identity-reveal'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
 import { LOCAL_PROOF_HEADER, mintLocalProof } from '../../src/main/daemon/local-access'
 import identityFixture from '../parity/harness/identity.fixture.json'
@@ -163,6 +164,11 @@ describe('identity of the open agent', () => {
     expect(await invoke(IPC.IDENTITY_GET_DID)).toEqual({ did: 'did:key:x' })
     expect(requests('POST', `/agents/${AGENT}/identity/reveal`)[0].headers[LOCAL_PROOF_HEADER]).toBe(proof)
     expect(requests('GET', `/agents/${AGENT}/identity/did`)[0].headers[LOCAL_PROOF_HEADER]).toBeUndefined()
+    // Key material: refused with the reason, the daemon is not asked.
+    daemon.requests.length = 0
+    expect(await invoke(IPC.IDENTITY_REVEAL, { purpose: 'crypto:signing:private_key' })).toEqual({ value: null, reason: REVEAL_REFUSED_REASON })
+    expect(await invoke(IPC.IDENTITY_GET, { purpose: 'crypto:signing:private_key' })).toBeNull()
+    expect(daemon.requests).toEqual([])
     await handle.session.closeFile()
   })
 
