@@ -32,6 +32,7 @@ import {
   leaseKeyForCanonicalPath,
   leaseDir,
   listRuntimeHosts,
+  machineId,
   listStudioClients,
   processAgentLeases,
   type AgentLeaseRecord,
@@ -332,6 +333,65 @@ describe('agent lease across processes', () => {
     expect(failures).toEqual([])
   }, 300_000)
 
+  it('a taker that stalls after reading the stale lease keeps its live takeover lock: one holder', async () => {
+    const leases = tempDir('adf-lease-stall-')
+    const work = tempDir('adf-lease-stall-work-')
+    const { filePath } = seedAgent(work, 'agent-1', false)
+    const sleeper = spawnSleeper()
+    killTree(sleeper.pid!)
+    await waitForExit(sleeper)
+    const dead = await deadEndpoint(leases)
+    const canonical = await canonicalLeasePath(filePath)
+    const file = join(leases, `${leaseKeyForCanonicalPath(canonical)}.json`)
+    writeFileSync(file, JSON.stringify({
+      v: 1, path: canonical, agentId: null, acquiredAt: 1,
+      holder: { kind: 'daemon', pid: sleeper.pid, runtimeId: dead.runtimeId, hostname: 'x', settingsPath: 's', startedAt: 1, version: null, endpoint: dead.endpoint },
+    }))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let resume!: () => void
+    const stalled = new Promise<void>((r) => { resume = r })
+    let stalls = 0
+    // A short TTL: without the liveness rule B would break A's lock after 200 ms.
+    const a = registry(leases, { takeoverLockTtlMs: 200, beforeTakeoverReplace: async () => { if (stalls++ === 0) await stalled } })
+    const b = registry(leases, { takeoverLockTtlMs: 200 })
+
+    const first = a.acquire(filePath)
+    await vi.waitFor(() => expect(stalls).toBe(1), { timeout: 5000 })
+    const second = b.acquire(filePath)
+    await new Promise((r) => setTimeout(r, 1500)) // A stalls well past the TTL
+    resume()
+    const [ra, rb] = await Promise.all([first, second])
+    vi.restoreAllMocks()
+
+    expect(ra.ok).toBe(true)
+    expect(rb.ok).toBe(false)
+    expect(readOnlyLease(leases).holder.runtimeId).toBe(a.runtimeId)
+  }, 30_000)
+
+  it('an inconclusive takeover lock (no endpoint) expires after its TTL', async () => {
+    const leases = tempDir('adf-lease-lock-ttl-')
+    const work = tempDir('adf-lease-lock-ttl-work-')
+    const { filePath } = seedAgent(work, 'agent-1', false)
+    const sleeper = spawnSleeper()
+    killTree(sleeper.pid!)
+    await waitForExit(sleeper)
+    const canonical = await canonicalLeasePath(filePath)
+    const file = join(leases, `${leaseKeyForCanonicalPath(canonical)}.json`)
+    writeFileSync(file, JSON.stringify({
+      v: 1, path: canonical, agentId: null, acquiredAt: 1,
+      holder: { kind: 'daemon', pid: sleeper.pid, runtimeId: 'gone', hostname: 'x', settingsPath: 's', startedAt: 1, version: null, endpoint: null },
+    }))
+    // Left by a live pid (this one) without an endpoint: inconclusive.
+    writeFileSync(`${file}.takeover`, JSON.stringify({ pid: process.pid, runtimeId: 'unknown', endpoint: null, at: 1 }))
+    const old = new Date(Date.now() - 60_000)
+    utimesSync(`${file}.takeover`, old, old)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const result = await registry(leases, { takeoverLockTtlMs: 1000 }).acquire(filePath)
+    vi.restoreAllMocks()
+    expect(result.ok).toBe(true)
+    expect(existsSync(`${file}.takeover`)).toBe(false)
+  })
+
   it('replaces a lease whose pid now belongs to another program (pid reuse)', async () => {
     const leases = tempDir('adf-lease-reuse-')
     mkdirSync(join(leases, 'hosts'), { recursive: true })
@@ -535,6 +595,37 @@ describe('agent lease semantics', () => {
     expect(leaseFiles(leases)).toHaveLength(1)
     expect(leaseKeyForCanonicalPath('C:\\Agents\\agent-1.adf', 'win32')).toBe(leaseKeyForCanonicalPath('c:/agents/AGENT-1.ADF', 'win32'))
     expect(leaseKeyForCanonicalPath('/a/agent-1.adf', 'linux')).not.toBe(leaseKeyForCanonicalPath('/a/Agent-1.adf', 'linux'))
+  })
+
+  it('a record from another machine (shared network home) is alive, never taken over or swept', async () => {
+    const leases = tempDir('adf-lease-machine-')
+    const work = tempDir('adf-lease-machine-work-')
+    const { filePath } = seedAgent(work, 'agent-1', false)
+    expect(await machineId()).toBe('test-machine') // tests/isolate-user-data.setup.ts
+    const sleeper = spawnSleeper()
+    const pid = sleeper.pid!
+    killTree(pid)
+    await waitForExit(sleeper)
+    const canonical = await canonicalLeasePath(filePath)
+    const holder = { kind: 'daemon', pid, runtimeId: 'fedcba9876543210', hostname: 'machine-2', machineId: 'other-machine', settingsPath: 's', startedAt: 1, version: null, endpoint: null }
+    writeFileSync(join(leases, `${leaseKeyForCanonicalPath(canonical)}.json`), JSON.stringify({ v: 1, path: canonical, agentId: null, acquiredAt: 1, holder }))
+    mkdirSync(join(leases, 'hosts'), { recursive: true })
+    const entry = join(leases, 'hosts', `${pid}.json`)
+    writeFileSync(entry, JSON.stringify({ v: 1, ...holder, kind: 'studio-embedded', mode: 'embedded' }))
+
+    const reg = registry(leases)
+    const result = await reg.acquire(filePath)
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.message).toContain(
+      `agent-1 is already running on another machine (machine-2, pid ${pid}) that shares this lease folder. Stop it there, then start it here.`,
+    )
+    await reg.configure({ kind: 'daemon' }) // writes our entry and sweeps dead ones
+    await new Promise((r) => setTimeout(r, 300))
+    expect(existsSync(entry)).toBe(true)
+    expect((await listRuntimeHosts(leases)).find((h) => h.pid === pid)).toMatchObject({ alive: true, machineId: 'other-machine' })
+    expect(readOnlyLease(leases).holder.machineId).toBe('other-machine')
+    // Our own records carry our machine id.
+    expect(JSON.parse(readFileSync(reg.hostEntryFile, 'utf-8')).machineId).toBe('test-machine')
   })
 
   it('names the holder and what to do in the agent_leased sentence', () => {

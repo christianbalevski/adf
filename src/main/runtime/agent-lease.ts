@@ -35,8 +35,16 @@
  * (`<lease>.takeover`, created exclusively): the taker re-reads the lease,
  * removes it only if it still holds the bytes judged stale, and writes its
  * own exclusively. Any number of takers racing on one stale lease leave
- * exactly one holder. Endpoints are probed only in the exact local form this
- * module creates (never a UNC/SMB path).
+ * exactly one holder. The lock itself is never broken while its holder's
+ * pid runs and its endpoint answers (a stalled but live taker keeps it);
+ * only a dead holder's lock, or an inconclusive one past its TTL, is
+ * removed, and only if it still holds the bytes judged. Endpoints are probed
+ * only in the exact local form this module creates (never a UNC/SMB path).
+ *
+ * Machines. Records carry a machine id (Linux /etc/machine-id, macOS
+ * IOPlatformUUID, Windows MachineGuid; ADF_MACHINE_ID overrides). A record
+ * from another machine (a network home shared by two machines) is never
+ * judged by this machine's pids: it counts as alive and is never swept.
  *
  * In-process accounting. A process holds a lease once, however many of its
  * hosts (Studio foreground, BackgroundAgentManager, RuntimeService) touch the
@@ -53,6 +61,7 @@
  * minute so starts do not stall on it.
  */
 
+import { execFile } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { promises as fsp, readFileSync, unlinkSync } from 'node:fs'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
@@ -77,6 +86,8 @@ export interface LeaseHolder {
   endpoint: string | null
   /** Daemon holders: the daemon's HTTP base URL. */
   controlUrl?: string
+  /** machineId() of the machine the holder runs on; null when unknown. */
+  machineId?: string | null
 }
 
 export interface AgentLeaseRecord {
@@ -94,6 +105,8 @@ export interface RuntimeHostRecord extends Omit<LeaseHolder, 'kind'> {
   kind: RuntimeHostKind | 'studio-client'
   /** 'embedded' for Studio hosts, 'daemon' for daemons, 'local' | 'remote' for Studio clients. */
   mode: string
+  /** Containers this runtime started or uses (services/compute-users.ts). */
+  containers?: string[]
 }
 
 export type AgentLeaseResult =
@@ -123,6 +136,14 @@ export interface AgentLeaseHostInfo {
 export interface AgentLeaseRegistryOptions extends AgentLeaseHostInfo {
   /** Defaults to leaseDir(). */
   dir?: string
+  /** Tests that model several runtimes in one process: the pid, hostname and machine id recorded. */
+  pid?: number
+  hostname?: string
+  machineId?: string | null
+  /** Tests: how long an inconclusive takeover lock lives (default 10 s). */
+  takeoverLockTtlMs?: number
+  /** Tests: runs after a taker has read the stale lease under the lock, before it replaces it. */
+  beforeTakeoverReplace?: () => Promise<void>
 }
 
 /** Paths a host runs or is starting. Any form: they are canonicalized here. */
@@ -207,11 +228,13 @@ function samePath(a: string, b: string): boolean {
  * to do about it. `ownSettingsPath` adds the holder's settings file when it
  * differs from the caller's (two hosts on different data).
  */
-export function agentLeasedMessage(record: AgentLeaseRecord, ownSettingsPath?: string): string {
+export function agentLeasedMessage(record: AgentLeaseRecord, ownSettingsPath?: string, otherMachine = false): string {
   const name = agentNameOf(record.path)
   const h = record.holder
   let text: string
-  if (h.kind === 'daemon') {
+  if (otherMachine) {
+    text = `${name} is already running on another machine (${h.hostname || 'unknown host'}, pid ${h.pid}) that shares this lease folder. Stop it there, then start it here.`
+  } else if (h.kind === 'daemon') {
     const url = h.controlUrl && !/^http:\/\/(127\.0\.0\.1|localhost):7385\/?$/.test(h.controlUrl) ? h.controlUrl : null
     const target = url ? ` --url ${url}` : ''
     text = `${name} is already running in the ADF daemon (pid ${h.pid}${url ? `, ${url}` : ''}). ` +
@@ -235,6 +258,48 @@ function delay(ms: number): Promise<void> {
 
 function errCode(err: unknown): string | undefined {
   return (err as NodeJS.ErrnoException | undefined)?.code
+}
+
+let machineIdLookup: Promise<string | null> | null = null
+
+/** A stable id of this machine (cached), or null when it cannot be read. */
+export function machineId(): Promise<string | null> {
+  machineIdLookup ??= readMachineId().then((id) => id?.trim().toLowerCase() || null, () => null)
+  return machineIdLookup
+}
+
+function run(cmd: string, args: string[]): Promise<string> {
+  return new Promise((ok, fail) => {
+    try {
+      execFile(cmd, args, { timeout: 3000, windowsHide: true, encoding: 'utf-8' }, (err, stdout) => (err ? fail(err) : ok(stdout)))
+    } catch (err) {
+      fail(err)
+    }
+  })
+}
+
+async function readMachineId(): Promise<string | null> {
+  if (process.env.ADF_MACHINE_ID) return process.env.ADF_MACHINE_ID
+  if (process.platform === 'linux') {
+    for (const file of ['/etc/machine-id', '/var/lib/dbus/machine-id']) {
+      try { return await fsp.readFile(file, 'utf-8') } catch { /* next */ }
+    }
+    return null
+  }
+  if (process.platform === 'darwin') {
+    return /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(await run('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice']))?.[1] ?? null
+  }
+  if (process.platform === 'win32') {
+    return /MachineGuid\s+REG_SZ\s+(\S+)/i.exec(await run('reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid']))?.[1] ?? null
+  }
+  return null
+}
+
+/** Both ids known and different: the record was written on another machine. */
+export async function fromOtherMachine(record: { machineId?: string | null }): Promise<boolean> {
+  if (!record.machineId) return false
+  const ours = await machineId()
+  return !!ours && record.machineId !== ours
 }
 
 /** process.kill(pid, 0), plus the Linux zombie check (an exited, unreaped pid is not alive). */
@@ -283,7 +348,7 @@ function probeEndpoint(endpoint: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<
  * creates for that runtime id. Anything else (a UNC path, a foreign socket)
  * is never connected to; liveness then rests on the pid.
  */
-function trustedEndpoint(holder: Pick<LeaseHolder, 'endpoint' | 'runtimeId'>, dir: string): string | null {
+export function trustedEndpoint(holder: Pick<LeaseHolder, 'endpoint' | 'runtimeId'>, dir: string): string | null {
   const { endpoint, runtimeId } = holder
   if (!endpoint || !/^[0-9a-f]{16}$/.test(runtimeId)) return null
   if (process.platform === 'win32') return endpoint === pipeName(runtimeId) ? endpoint : null
@@ -309,7 +374,12 @@ async function fetchDaemonPid(controlUrl: string): Promise<number | null> {
  * Is the process that wrote this holder record still the one running? Only a
  * definite answer counts as dead; everything inconclusive is alive.
  */
-export async function holderLiveness(holder: LeaseHolder, dir: string = leaseDir()): Promise<{ alive: boolean; reason: string }> {
+export async function holderLiveness(
+  holder: Pick<LeaseHolder, 'pid' | 'runtimeId' | 'endpoint'> & { machineId?: string | null; kind?: string; controlUrl?: string },
+  dir: string = leaseDir(),
+): Promise<{ alive: boolean; reason: string; otherMachine?: boolean }> {
+  // Another machine's pids mean nothing here: never stale.
+  if (await fromOtherMachine(holder)) return { alive: true, otherMachine: true, reason: 'held on another machine' }
   if (!(await pidAlive(holder.pid))) return { alive: false, reason: `pid ${holder.pid} is not running` }
   const endpoint = trustedEndpoint(holder, dir)
   if (endpoint) {
@@ -358,11 +428,17 @@ async function readLease(file: string): Promise<ReadLease | null> {
 async function writeAtomic(file: string, data: string): Promise<void> {
   const tmp = `${file}.${process.pid}-${randomBytes(4).toString('hex')}.tmp`
   await fsp.writeFile(tmp, data, { mode: FILE_MODE })
-  try {
-    await fsp.rename(tmp, file)
-  } catch (err) {
-    await fsp.rm(tmp, { force: true }).catch(() => {})
-    throw err
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fsp.rename(tmp, file)
+      return
+    } catch (err) {
+      // Windows refuses a rename over a file a reader has open: retry briefly.
+      const code = errCode(err)
+      if (attempt < 5 && code && TRANSIENT_FS_CODES.has(code)) { await delay(20 * (attempt + 1)); continue }
+      await fsp.rm(tmp, { force: true }).catch(() => {})
+      throw err
+    }
   }
 }
 
@@ -427,11 +503,24 @@ export class AgentLeaseRegistry {
   private hostEntryWritten = false
   private clientMode: string | null = null
   private generation = 0
+  private readonly pid: number
+  private readonly hostnameOverride: string | undefined
+  private machineIdValue: string | null = null
+  private readonly machineIdOverride: string | null | undefined
+  private readonly takeoverLockTtlMs: number
+  private readonly beforeTakeoverReplace?: () => Promise<void>
+  /** Containers this runtime uses, written into its host record. */
+  private containers: string[] = []
   /** The lease dir refused writes: remembered so every start does not stall on it. */
   private unusable: { reason: string; at: number } | null = null
 
   constructor(opts: AgentLeaseRegistryOptions = {}) {
     this.dir = opts.dir ?? leaseDir()
+    this.pid = opts.pid ?? process.pid
+    this.hostnameOverride = opts.hostname
+    this.machineIdOverride = opts.machineId
+    this.takeoverLockTtlMs = opts.takeoverLockTtlMs ?? TAKEOVER_LOCK_TTL_MS
+    this.beforeTakeoverReplace = opts.beforeTakeoverReplace
     const kind = opts.kind ?? inferKind()
     this.info = {
       kind,
@@ -466,9 +555,10 @@ export class AgentLeaseRegistry {
   holder(): LeaseHolder {
     return {
       kind: this.info.kind,
-      pid: process.pid,
+      pid: this.pid,
       runtimeId: this.runtimeId,
-      hostname: osHostname(),
+      hostname: this.hostnameOverride ?? osHostname(),
+      machineId: this.machineIdValue,
       settingsPath: this.info.settingsPath,
       startedAt: this.startedAt,
       version: this.info.version,
@@ -691,7 +781,7 @@ export class AgentLeaseRegistry {
           code: AGENT_LEASED_CODE,
           leaseFile: target.file,
           record: existing.record,
-          message: agentLeasedMessage(existing.record, this.info.settingsPath),
+          message: agentLeasedMessage(existing.record, this.info.settingsPath, liveness.otherMachine),
         }
       }
       console.warn(`[AgentLease] ${name}: replacing a stale lease held by ${describeHolder(holder)} (${liveness.reason})`)
@@ -772,6 +862,13 @@ export class AgentLeaseRegistry {
         if (errCode(err) !== 'ENOENT') return false
       }
       if (current !== null && current !== expectedRaw) return false
+      await this.beforeTakeoverReplace?.()
+      // Re-verify right before the unlink: replace only the exact bytes judged stale.
+      try { current = await fsp.readFile(file, 'utf-8') } catch (err) {
+        if (errCode(err) !== 'ENOENT') return false
+        current = null
+      }
+      if (current !== null && current !== expectedRaw) return false
       if (current !== null) await fsp.rm(file, { force: true })
       // A reader that still has the old file open leaves it delete-pending
       // for a moment (Windows): retry the exclusive create briefly.
@@ -803,7 +900,7 @@ export class AgentLeaseRegistry {
     const deadline = Date.now() + TAKEOVER_LOCK_WAIT_MS
     while (Date.now() < deadline) {
       try {
-        await fsp.writeFile(lock, JSON.stringify({ pid: process.pid, runtimeId: this.runtimeId, at: Date.now() }), { flag: 'wx', mode: FILE_MODE })
+        await fsp.writeFile(lock, JSON.stringify({ pid: this.pid, runtimeId: this.runtimeId, endpoint: this.endpoint, machineId: this.machineIdValue, at: Date.now() }), { flag: 'wx', mode: FILE_MODE })
         return true
       } catch (err) {
         const code = errCode(err)
@@ -815,21 +912,47 @@ export class AgentLeaseRegistry {
         // opened to read its pid (an open handle would delay its removal).
         const st = await fsp.stat(lock)
         const age = Date.now() - st.mtimeMs
-        let crashed = age > TAKEOVER_LOCK_TTL_MS
-        if (!crashed && age > TAKEOVER_LOCK_SUSPECT_MS) {
-          let pid = 0
-          try { pid = Number((JSON.parse(await fsp.readFile(lock, 'utf-8')) as { pid?: unknown }).pid) || 0 } catch { /* being written */ }
-          crashed = pid > 0 && !(await pidAlive(pid))
-        }
-        if (crashed) {
-          console.warn(`[AgentLease] Removing a takeover lock left by a crashed process: ${lock}`)
-          await fsp.rm(lock, { force: true })
-          continue
+        if (age > TAKEOVER_LOCK_SUSPECT_MS) {
+          const raw = await fsp.readFile(lock, 'utf-8')
+          const state = await this.lockHolderState(raw)
+          // A live holder (pid running, endpoint answering) keeps its lock
+          // however long it stalls; the TTL is for inconclusive holders.
+          if (state === 'dead' || (state === 'unknown' && age > this.takeoverLockTtlMs)) {
+            // Several takers may judge one crashed lock: remove it only if it
+            // still holds the bytes judged (another taker's fresh lock stays).
+            if ((await fsp.readFile(lock, 'utf-8')) === raw) {
+              console.warn(`[AgentLease] Removing a takeover lock left by a ${state === 'dead' ? 'crashed' : 'stuck'} process: ${lock}`)
+              await fsp.rm(lock, { force: true })
+            }
+            continue
+          }
         }
       } catch { /* released meanwhile */ }
       await delay(5 + Math.floor(Math.random() * 15))
     }
     return false
+  }
+
+  /** Who holds a takeover lock: 'live' never expires, 'dead' is removed, 'unknown' waits for the TTL. */
+  private async lockHolderState(raw: string): Promise<'live' | 'dead' | 'unknown'> {
+    let holder: { pid?: unknown; runtimeId?: unknown; endpoint?: unknown; machineId?: unknown }
+    try { holder = JSON.parse(raw) } catch { return 'unknown' }
+    const pid = Number(holder.pid)
+    const rec = {
+      pid,
+      runtimeId: typeof holder.runtimeId === 'string' ? holder.runtimeId : '',
+      endpoint: typeof holder.endpoint === 'string' ? holder.endpoint : null,
+      machineId: typeof holder.machineId === 'string' ? holder.machineId : null,
+    }
+    if (!Number.isInteger(pid) || pid <= 0) return 'unknown'
+    if (await fromOtherMachine(rec)) return 'live'
+    if (!(await pidAlive(pid))) return 'dead'
+    const endpoint = trustedEndpoint(rec, this.dir)
+    if (!endpoint) return 'unknown'
+    const probe = await probeEndpoint(endpoint)
+    if (probe === 'connected') return 'live'
+    if (probe === 'refused' || (probe === 'missing' && process.platform === 'win32')) return 'dead'
+    return 'unknown'
   }
 
   private async releaseLocked(key: string): Promise<void> {
@@ -871,12 +994,36 @@ export class AgentLeaseRegistry {
   }
 
   private entryFile(): string {
-    return join(this.dir, this.clientMode ? 'clients' : 'hosts', `${process.pid}.json`)
+    return join(this.dir, this.clientMode ? 'clients' : 'hosts', `${this.pid}.json`)
+  }
+
+  /** This runtime's host record (`hosts/<pid>.json`). */
+  get hostEntryFile(): string {
+    return this.entryFile()
+  }
+
+  /**
+   * services/compute-users.ts: record the containers this runtime uses in
+   * its host record. Rejects when the record cannot be written.
+   */
+  setContainers(names: string[]): Promise<void> {
+    this.containers = [...new Set(names)].sort()
+    const run = this.ensureReady(false).then(() => this.writeEntryOrThrow())
+    this.ready = run.catch(() => {})
+    return run
+  }
+
+  /** Refresh the host record's mtime (compute-users heartbeat). Rejects when it is gone. */
+  async touchEntry(): Promise<void> {
+    const now = new Date()
+    await fsp.utimes(this.entryFile(), now, now)
   }
 
   private ensureReady(rewriteEntry: boolean): Promise<void> {
     if (!this.ready) {
-      this.ready = this.startEndpoint().then(() => this.writeEntry())
+      this.ready = this.startEndpoint()
+        .then(async () => { this.machineIdValue = this.machineIdOverride !== undefined ? this.machineIdOverride : await machineId() })
+        .then(() => this.writeEntry())
     } else if (rewriteEntry) {
       this.ready = this.ready.then(() => this.writeEntry())
     }
@@ -912,30 +1059,47 @@ export class AgentLeaseRegistry {
   }
 
   private async writeEntry(): Promise<void> {
+    try {
+      await this.writeEntryOrThrow()
+    } catch (err) {
+      console.warn(`[AgentLease] Could not write the runtime host entry in ${this.dir}:`, err instanceof Error ? err.message : err)
+    }
+  }
+
+  private async writeEntryOrThrow(): Promise<void> {
     const kind = this.clientMode ? 'studio-client' : this.info.kind
     // A Studio switching between modes must not leave the other entry behind.
-    const other = join(this.dir, this.clientMode ? 'hosts' : 'clients', `${process.pid}.json`)
+    const other = join(this.dir, this.clientMode ? 'hosts' : 'clients', `${this.pid}.json`)
     this.unlinkIfOwnSync(other)
     const entry: RuntimeHostRecord = {
       v: 1,
       ...this.holder(),
       kind,
       mode: this.clientMode ?? this.info.mode,
+      ...(this.clientMode ? {} : { containers: this.containers }),
     }
-    try {
-      await fsp.mkdir(join(this.dir, this.clientMode ? 'clients' : 'hosts'), { recursive: true, mode: DIR_MODE })
-      await writeAtomic(this.entryFile(), JSON.stringify(entry, null, 2))
-      this.hostEntryWritten = true
-      this.installExitHook()
-      void sweepDeadEntries(this.dir).catch(() => {})
-    } catch (err) {
-      console.warn(`[AgentLease] Could not write the runtime host entry in ${this.dir}:`, err instanceof Error ? err.message : err)
-    }
+    await fsp.mkdir(join(this.dir, this.clientMode ? 'clients' : 'hosts'), { recursive: true, mode: DIR_MODE })
+    await writeAtomic(this.entryFile(), JSON.stringify(entry, null, 2))
+    this.hostEntryWritten = true
+    this.installExitHook()
+    void sweepDeadEntries(this.dir, this.pid).catch(() => {})
   }
 
   private async removeOwnEntries(): Promise<void> {
-    for (const sub of ['hosts', 'clients']) this.unlinkIfOwnSync(join(this.dir, sub, `${process.pid}.json`))
+    for (const sub of ['hosts', 'clients']) this.unlinkIfOwnSync(join(this.dir, sub, `${this.pid}.json`))
     this.hostEntryWritten = false
+  }
+}
+
+/** Parse a host/client record; null when it is not one. */
+export function parseHostRecord(raw: string): RuntimeHostRecord | null {
+  try {
+    const record = JSON.parse(raw) as RuntimeHostRecord
+    if (record?.v !== 1 || typeof record.pid !== 'number' || typeof record.runtimeId !== 'string') return null
+    if (record.containers !== undefined && !(Array.isArray(record.containers) && record.containers.every((c) => typeof c === 'string'))) return null
+    return record
+  } catch {
+    return null
   }
 }
 
@@ -948,19 +1112,19 @@ async function readEntries(dir: string): Promise<Array<{ file: string; raw: stri
     const file = join(dir, name)
     try {
       const raw = await fsp.readFile(file, 'utf-8')
-      const record = JSON.parse(raw) as RuntimeHostRecord
-      if (record?.v === 1 && typeof record.pid === 'number' && typeof record.runtimeId === 'string') out.push({ file, raw, record })
+      const record = parseHostRecord(raw)
+      if (record) out.push({ file, raw, record })
     } catch { /* partial or foreign file */ }
   }
   return out
 }
 
-/** Remove host/client entries of processes that are definitely gone. */
-async function sweepDeadEntries(dir: string): Promise<void> {
+/** Remove host/client entries of processes that are definitely gone (never another machine's). */
+async function sweepDeadEntries(dir: string, ownPid: number): Promise<void> {
   for (const sub of ['hosts', 'clients']) {
     for (const { file, raw, record } of await readEntries(join(dir, sub))) {
-      if (record.pid === process.pid) continue
-      if ((await holderLiveness(record as LeaseHolder, dir)).alive) continue
+      if (record.pid === ownPid) continue
+      if ((await holderLiveness(record, dir)).alive) continue
       try {
         if ((await fsp.readFile(file, 'utf-8')) === raw) await fsp.rm(file, { force: true })
       } catch { /* gone */ }
@@ -984,7 +1148,7 @@ async function listEntries(dir: string, sub: 'hosts' | 'clients'): Promise<LiveR
   const entries = await readEntries(join(dir, sub))
   return Promise.all(entries.map(async ({ record }) => ({
     ...record,
-    alive: record.pid === process.pid ? true : (await holderLiveness(record as LeaseHolder, dir)).alive,
+    alive: record.pid === process.pid ? true : (await holderLiveness(record, dir)).alive,
   })))
 }
 
