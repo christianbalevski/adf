@@ -59,6 +59,7 @@ import { createHeadlessMcpAuthPreflight, type McpAuthPreflightRunner } from '../
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
 import { AgentKeystoreOAuthStore, resolveOAuthStoreForConnect } from '../services/mcp-oauth-store'
 import { buildOAuthProviderFactory } from '../services/mcp-oauth-connect'
+import { ensureCoreToolDeclarations } from './core-tool-declarations'
 
 /**
  * Per-agent budget for connecting all MCP servers. A hung server previously
@@ -149,7 +150,13 @@ export class AgentRuntimeBuilder {
     const { workspace, filePath, config, provider } = opts
     const agentId = filePath ?? config.id
 
-    this.ensureCoreToolDeclarations(config, workspace)
+    // Inbox and stream-binding declarations, in the running config and the
+    // file — the same shared helper both Studio hosts call.
+    ensureCoreToolDeclarations(config, workspace, filePath ?? config.id)
+    // Backward compat, running config only (as Studio): container_exec →
+    // compute_exec. AdfDatabase migrates the stored declaration on open.
+    const legacyComputeDecl = config.tools.find(t => t.name === 'container_exec')
+    if (legacyComputeDecl) legacyComputeDecl.name = 'compute_exec'
 
     const registry = new ToolRegistry()
     registerBuiltInTools(registry)
@@ -345,31 +352,6 @@ export class AgentRuntimeBuilder {
       try { workspace.dispose() } catch { /* idempotent */ }
       throw error
     }
-  }
-
-  private ensureCoreToolDeclarations(config: AgentConfig, workspace: AdfWorkspace): void {
-    let changed = false
-    const toolNames = new Set(config.tools.map(t => t.name))
-    for (const toolName of ['msg_list', 'msg_read', 'msg_update']) {
-      if (!toolNames.has(toolName)) {
-        config.tools.push({ name: toolName, enabled: true, visible: true })
-        changed = true
-      }
-    }
-    for (const toolName of ['stream_bind', 'stream_unbind', 'stream_bindings']) {
-      if (!toolNames.has(toolName)) {
-        config.tools.push({ name: toolName, enabled: false })
-        changed = true
-      }
-    }
-
-    const legacyDecl = config.tools.find(t => t.name === 'container_exec')
-    if (legacyDecl) {
-      legacyDecl.name = 'compute_exec'
-      changed = true
-    }
-
-    if (changed) workspace.setAgentConfig(config)
   }
 
   private createAdfCallHandler(opts: {
