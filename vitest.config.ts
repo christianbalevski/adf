@@ -4,7 +4,7 @@ import { defineConfig, configDefaults } from 'vitest/config'
 // double-runs every suite and races port-binding integration tests.
 // skills/*/tests are node:test suites for the skill packages; they run in
 // the agent sandbox with its own dependencies (jszip, pdf-lib), not here.
-const exclude = [...configDefaults.exclude, '**/.claude/**', 'skills/*/tests/**']
+const exclude = [...configDefaults.exclude, '.claude/**', 'skills/*/tests/**']
 
 export default defineConfig({
   test: {
