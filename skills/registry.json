@@ -260,6 +260,12 @@
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/telegram-remote-hil/scripts/telegram-hil.js"
         }
       ]
+    },
+    {
+      "name": "production-artifact-clean-install-qa",
+      "description": "Test a released desktop or package artifact in a clean environment. Report install-to-use evidence. Do not use secrets or a dev build unless the request says so.",
+      "path": "skills/production-artifact-clean-install-qa/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/production-artifact-clean-install-qa/SKILL.md"
     }
   ]
 }
