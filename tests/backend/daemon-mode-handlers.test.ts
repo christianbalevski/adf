@@ -1,0 +1,145 @@
+/**
+ * Daemon-mode registration against the channel map (design D2, §12 item 1):
+ * every channel the map gives a daemon-mode handler has one, every push
+ * channel has a bridge mapping, and every handler not written yet fails
+ * visibly with the workstream that writes it.
+ */
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+
+vi.mock('electron', async () => (await import('./daemon-mode-electron')).electronStub.module)
+
+import { electronStub, helpLabels } from './daemon-mode-electron'
+import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
+import { CHANNEL_MAP, type ChannelEntry, type MappedChannel } from '../../src/main/backend/channel-map'
+import { IPC } from '../../src/shared/constants/ipc-channels'
+import { REGISTERED_OUTSIDE, registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
+import { DAEMON_MODE_HANDLERS } from '../../src/main/backend/daemon-mode/handlers'
+import { FRAME_CHANNELS, PUSH_TOPICS } from '../../src/main/backend/daemon-mode/event-bridge'
+import { DAEMON_MODE_UNAVAILABLE } from '../../src/main/backend/daemon-mode/errors'
+
+const entries = Object.entries(CHANNEL_MAP) as Array<[MappedChannel, ChannelEntry]>
+const BASE = 'http://127.0.0.1:47385'
+const TOKEN = 'a'.repeat(43)
+
+let dir: string
+let handle: DaemonModeHandle
+const daemon = createFakeDaemon(BASE)
+const session = createFakeClientSession()
+const logs: string[] = []
+const log = { log: (m: string) => { logs.push(m) }, warn: (m: string) => { logs.push(m) }, error: (m: string) => { logs.push(m) } }
+
+beforeAll(async () => {
+  dir = mkdtempSync(join(tmpdir(), 'adf-daemon-mode-'))
+  daemon.routes.set('GET /agents', () => [])
+  daemon.routes.set('GET /approvals', () => ({ pending: [], history: [] }))
+  handle = registerDaemonModeHandlers({
+    mode: 'local',
+    userDataDir: dir,
+    connect: async () => ({ baseUrl: BASE, logFile: join(dir, 'logs', 'adf-daemon.log'), description: 'the fake daemon', source: { token: () => TOKEN } }),
+    leases: { registerClient: async () => {} },
+    fetch: daemon.fetch,
+    createSession: () => session,
+    log,
+  })
+  expect(await handle.ready).toBe(true)
+})
+
+afterAll(async () => {
+  await handle.shutdown()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+describe('daemon-mode handler registration (D2)', () => {
+  it('registers every invoke and send channel except those registered outside the backend', () => {
+    const missing: string[] = []
+    for (const [channel, entry] of entries) {
+      const outside = REGISTERED_OUTSIDE.includes(channel)
+      if (entry.kind === 'invoke') {
+        if (outside) expect(electronStub.handlers.has(channel), `${channel} is registered in main/index.ts`).toBe(false)
+        else if (!electronStub.handlers.has(channel)) missing.push(channel)
+      }
+      if (entry.kind === 'send' && !electronStub.listeners.has(channel)) missing.push(channel)
+    }
+    expect(missing).toEqual([])
+    // Every proxied and remote-variant channel in particular.
+    for (const [channel, entry] of entries) {
+      if ((entry.class === 'proxied' || entry.class === 'remote-variant' || entry.class === 'remote-unsupported') && entry.kind === 'invoke') {
+        expect(electronStub.handlers.has(channel), channel).toBe(true)
+      }
+    }
+  })
+
+  it('every REGISTERED_OUTSIDE channel is a local invoke channel', () => {
+    for (const channel of REGISTERED_OUTSIDE) {
+      expect(CHANNEL_MAP[channel].class).toBe('local')
+      expect(CHANNEL_MAP[channel].kind).toBe('invoke')
+    }
+  })
+
+  it('splits registered channels into implemented and pending, each pending one naming its workstream', () => {
+    const pending = new Set(handle.pending.map((p) => p.channel))
+    for (const channel of handle.registered) {
+      const implemented = !!DAEMON_MODE_HANDLERS[channel]
+      expect(implemented !== pending.has(channel), channel).toBe(true)
+    }
+    for (const { workstream } of handle.pending) expect(workstream).toMatch(/^W[1-4]-[A-E]$/)
+    // Implemented handlers are only for channels the map routes through daemon-mode registration.
+    for (const channel of Object.keys(DAEMON_MODE_HANDLERS) as MappedChannel[]) {
+      expect(CHANNEL_MAP[channel].kind, channel).toBe('invoke')
+      expect(REGISTERED_OUTSIDE.includes(channel), channel).toBe(false)
+    }
+  })
+
+  it('a pending handler throws a visible error naming its workstream, and never reads embedded state', async () => {
+    const pending = handle.pending.find((p) => p.channel === IPC.MESH_FLEET_STATUS)!
+    expect(pending.workstream).toBe('W3-D')
+    const fn = electronStub.handlers.get(IPC.MESH_FLEET_STATUS)!
+    await expect(Promise.resolve().then(() => fn({}))).rejects.toMatchObject({
+      code: DAEMON_MODE_UNAVAILABLE,
+      message: 'MESH_FLEET_STATUS is not available in daemon mode yet: W3-D',
+    })
+  })
+
+  it('every push channel the map feeds from the client stream has a bridge mapping', () => {
+    const topicChannels = new Map(Object.entries(PUSH_TOPICS).map(([topic, route]) => [`push:${topic}`, route.channel]))
+    for (const [channel, entry] of entries) {
+      if (entry.kind !== 'push' || entry.class === 'local') continue
+      expect(entry.frame, channel).toBeTruthy()
+      if (entry.frame === 'executor' || entry.frame === 'host') {
+        expect((FRAME_CHANNELS as readonly string[]).includes(channel), channel).toBe(true)
+      } else {
+        expect(topicChannels.get(entry.frame!), `${channel} ← ${entry.frame}`).toBe(channel)
+      }
+    }
+    // And every topic route names a push channel of the map with that frame.
+    for (const [topic, route] of Object.entries(PUSH_TOPICS)) {
+      if (route.focusedAgentEvent) continue
+      const entry = CHANNEL_MAP[route.channel as MappedChannel]
+      expect(entry.kind, topic).toBe('push')
+      expect(entry.frame, topic).toBe(`push:${topic}`)
+    }
+  })
+
+  it('adds "Open Daemon Log" to the Help menu', () => {
+    expect(helpLabels(electronStub)).toEqual(['ADF Studio Documentation', '<separator>', 'Open Daemon Log'])
+  })
+
+  it('local handlers answer without the daemon, as embedded does', async () => {
+    expect(electronStub.handlers.get(IPC.APP_GET_VERSION)!({})).toBe('9.9.9')
+    electronStub.handlers.get(IPC.APP_SET_BADGE_COUNT)!({}, -2)
+    expect(electronStub.calls.at(-1)).toEqual({ api: 'app.setBadgeCount', args: [0] })
+    expect(await electronStub.handlers.get(IPC.DOC_SET_CHAT)!({})).toEqual({ success: true })
+    expect(await electronStub.handlers.get(IPC.IDENTITY_PASSWORD_SET)!({})).toMatchObject({ success: false })
+  })
+
+  it('sends the daemon token in requests and never logs it', async () => {
+    await electronStub.handlers.get(IPC.APPROVALS_LIST)!({})
+    const approvals = daemon.requests.filter((r) => r.path === '/approvals')
+    expect(approvals.length).toBeGreaterThan(0)
+    expect(approvals.every((r) => r.auth === `Bearer ${TOKEN}`)).toBe(true)
+    expect(logs.join('\n')).not.toContain(TOKEN)
+  })
+})

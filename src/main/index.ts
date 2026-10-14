@@ -14,8 +14,9 @@ import { initSpellcheckDictionaries } from './services/spellcheck-dictionaries.s
 import { shutdownSandboxHosts } from './runtime/sandbox-host'
 import { getUserDataPath } from './utils/user-data-path'
 import { backendConfigPath, resolveBootBackend } from './backend/backend-config'
-import { registerBackendSettingsHandlers } from './backend/backend-settings-ipc'
-import { registerDaemonModeHandlers } from './backend/daemon-mode'
+import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/backend-settings-ipc'
+import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
+import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 
 // A console.log after the parent's stdout pipe is gone (app quitting, or the
 // dev harness restarting the main process underneath us) emits EIO/EPIPE on
@@ -96,6 +97,9 @@ if (loginShellPathNote) console.warn(loginShellPathNote)
 
 let mainWindow: BrowserWindow | null = null
 let fileToOpen: string | null = null
+// Set at boot when studio-backend.json selects a daemon backend (design D9).
+// Every branch on it below keeps the embedded path exactly as it was.
+let daemonMode: DaemonModeHandle | null = null
 // Set at the end of the whenReady continuation, once IPC handlers and the
 // adf-file protocol exist. app.isReady() flips earlier, on the 'ready' event.
 let startupComplete = false
@@ -129,7 +133,9 @@ function runShutdownCleanup(): Promise<void> {
       // On the fast path, shrink the inner phase-2 teardown too so the
       // synchronous workspace-close/WAL-sweep phase still gets to run.
       const cleanupOpts = budget < SHUTDOWN_BUDGET_MS ? { teardownBudgetMs: 1_500 } : undefined
-      const { timedOut } = await withDeadline(cleanupAllProcesses(cleanupOpts), budget, () => {
+      // Daemon mode runs no agents here: quitting ends the client session.
+      const cleanup = daemonMode ? daemonMode.shutdown() : cleanupAllProcesses(cleanupOpts)
+      const { timedOut } = await withDeadline(cleanup, budget, () => {
         console.error(`[App] Cleanup exceeded ${budget}ms budget — forcing exit`)
       })
       if (timedOut) console.error('[App] Shutdown proceeded past incomplete cleanup')
@@ -173,7 +179,7 @@ function handleSessionEnd(): void {
   shutdownBudgetMs = FAST_SHUTDOWN_BUDGET_MS
   shutdownCleanup = (async () => {
     try {
-      await withDeadline(fastSessionEndCleanup(2_000), FAST_SHUTDOWN_BUDGET_MS, () => {
+      await withDeadline(daemonMode ? daemonMode.shutdown() : fastSessionEndCleanup(2_000), FAST_SHUTDOWN_BUDGET_MS, () => {
         console.error('[App] Session-end cleanup exceeded budget — exiting')
       })
     } catch (error) {
@@ -506,7 +512,21 @@ app.whenReady().then(() => {
   if (backend.mode === 'embedded') {
     registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
   } else {
-    registerDaemonModeHandlers({ mode: backend.mode, ipcMain, app })
+    const userDataDir = getUserDataPath()
+    daemonMode = registerDaemonModeHandlers({
+      mode: backend.mode,
+      userDataDir,
+      connect: backend.mode === 'local'
+        ? localDaemonConnector({ userDataDir, execPath: process.execPath, daemonEntry: join(__dirname, 'daemon.js') })
+        : remoteDaemonConnector(backend.config, safeStorageCodec),
+      hooks: { showMainWindow, openFile: requestOpenFile },
+    })
+  }
+  // Client keys (updater, spellcheck) come from studio-client-settings.json in daemon mode (§4.1).
+  const readClientSetting = (key: string): unknown => daemonMode ? daemonMode.clientSettings.get(key) : readAppSetting(key)
+  const writeClientSetting = (key: string, value: unknown): void => {
+    if (daemonMode) daemonMode.clientSettings.set(key, value)
+    else writeAppSetting(key, value)
   }
   registerBackendSettingsHandlers(backend)
   registerOrbitalCacheHandlers(app.getPath('userData'))
@@ -516,7 +536,9 @@ app.whenReady().then(() => {
   })
 
   // Serve files from the current workspace's adf_files table via adf-file:// URLs
-  protocol.handle('adf-file', (request) => {
+  // (daemon mode: from the daemon's raw file route, daemon-mode/adf-file.ts).
+  if (daemonMode) protocol.handle('adf-file', daemonMode.adfFile)
+  else protocol.handle('adf-file', (request) => {
     const workspace = getCurrentWorkspace()
     if (!workspace) {
       return new Response('No workspace open', { status: 404 })
@@ -552,15 +574,15 @@ app.whenReady().then(() => {
   })
 
   initSpellcheckDictionaries({
-    isAllowed: () => readAppSetting('spellcheckDownloadsEnabled') === true,
-    allow: () => writeAppSetting('spellcheckDownloadsEnabled', true)
+    isAllowed: () => readClientSetting('spellcheckDownloadsEnabled') === true,
+    allow: () => writeClientSetting('spellcheckDownloadsEnabled', true)
   })
 
   createWindow()
 
   initAppUpdater({
     // Read per check, not cached: turning it off in Settings stops the next one.
-    isCheckEnabled: () => readAppSetting('updateChecksEnabled') !== false,
+    isCheckEnabled: () => readClientSetting('updateChecksEnabled') !== false,
     send: (state) => {
       if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
         mainWindow.webContents.send(IPC.APP_UPDATE_STATE, state)
