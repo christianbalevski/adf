@@ -13,7 +13,7 @@ import { gradientWallpaperPng } from './desktop-wallpaper'
 import { execFile, spawn, type ChildProcess } from 'child_process'
 import { cpus as hostCpus, tmpdir, totalmem } from 'os'
 import { join } from 'path'
-import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, rmSync } from 'fs'
+import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, rmSync, promises as fsp } from 'fs'
 import { EventEmitter } from 'events'
 import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
@@ -750,6 +750,32 @@ export function machineSize(
 }
 
 const PODMAN_MISS_TTL_MS = 60_000
+
+let machineCwd: Promise<string | undefined> | null = null
+
+/**
+ * Working directory for a podman call. On Windows, `podman machine ssh` (the
+ * clock check) leaves a file literally named `NUL` in its working directory:
+ * the ssh client podman runs writes the VM's host key to its null
+ * known-hosts path as a real file. `machine` subcommands run from a private
+ * temp directory so the file lands there, not in Studio's or the daemon's
+ * cwd (a user's folder, the install dir). Undefined = inherit.
+ */
+export function podmanCwd(args: string[], platform: NodeJS.Platform = process.platform): Promise<string | undefined> {
+  if (platform !== 'win32' || args[0] !== 'machine') return Promise.resolve(undefined)
+  machineCwd ??= (async () => {
+    const dir = join(tmpdir(), 'adf-podman-machine')
+    try {
+      await fsp.mkdir(dir, { recursive: true })
+      return dir
+    } catch (err) {
+      machineCwd = null
+      console.warn(`[Compute] Could not create ${dir}; podman machine commands run in the current directory:`, err instanceof Error ? err.message : err)
+      return undefined
+    }
+  })()
+  return machineCwd
+}
 
 export interface ContainerShutdownPlan {
   stop: string[]
@@ -1534,9 +1560,10 @@ export class PodmanService extends EventEmitter {
     if (!SETUP_STEPS.has(step)) return { success: false, error: `Unknown step: ${step}` }
     this.podmanMissAt = 0
 
-    const run = (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> =>
-      new Promise((resolve) => {
-        execFile(cmd, cmdArgs, { timeout, windowsHide: true }, (error, stdout, stderr) => {
+    const run = async (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> => {
+      const cwd = await podmanCwd(cmdArgs)
+      return new Promise((resolve) => {
+        execFile(cmd, cmdArgs, { timeout, windowsHide: true, cwd }, (error, stdout, stderr) => {
           resolve({
             stdout: stdout?.trim() ?? '',
             stderr: stderr?.trim() ?? '',
@@ -1549,6 +1576,7 @@ export class PodmanService extends EventEmitter {
           })
         })
       })
+    }
 
     if (step === 'check') {
       return { success: true, availability: await checkPodmanAvailability() }
@@ -2529,9 +2557,10 @@ export class PodmanService extends EventEmitter {
     return bin
   }
 
-  private exec0(cmd: string, args: string[], timeout = 30_000): Promise<ExecResult> {
+  private async exec0(cmd: string, args: string[], timeout = 30_000): Promise<ExecResult> {
+    const cwd = await podmanCwd(args)
     return new Promise((resolve) => {
-      execFile(cmd, args, { timeout, windowsHide: true }, (error, stdout, stderr) => {
+      execFile(cmd, args, { timeout, windowsHide: true, cwd }, (error, stdout, stderr) => {
         resolve({
           stdout: stdout?.trim() ?? '',
           stderr: stderr?.trim() ?? '',
