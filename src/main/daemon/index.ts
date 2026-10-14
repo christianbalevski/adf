@@ -162,7 +162,7 @@ if (behindProxy) {
   try {
     localProof = mintLocalProof(dirname(settingsPath), port).proof
   } catch (err) {
-    console.error('[ADF Daemon] Could not write the local proof file; owner import (adf identity import) stays unavailable:', err instanceof Error ? err.message : err)
+    console.error('[ADF Daemon] Could not write or protect the local proof file; owner import (adf identity import) and the stored-value reveal routes stay unavailable:', err instanceof Error ? err.message : err)
   }
 }
 
