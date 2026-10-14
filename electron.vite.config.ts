@@ -1,4 +1,4 @@
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { build, defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import type { Plugin } from 'vite'
@@ -17,25 +17,46 @@ const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8')
 const DAEMON_MODE = 'adf-daemon'
 
 function daemonEntryPlugin(): Plugin {
+  // Studio's resolved main outDir (`<outDir>/main`, honouring --outDir); the
+  // daemon is written next to it.
+  let mainOutDir = resolve(__dirname, 'out', 'main')
   let building: Promise<void> | null = null
+  let rebuildQueued = false
+  const buildDaemon = async (): Promise<void> => {
+    // electron-vite's build() sets NODE_ENV and NODE_ENV_ELECTRON_VITE for
+    // its own run; restore them so `electron-vite dev` keeps its values.
+    const saved = { NODE_ENV: process.env.NODE_ENV, NODE_ENV_ELECTRON_VITE: process.env.NODE_ENV_ELECTRON_VITE }
+    try {
+      // electron-vite maps build.outDir X to X/main for the main build.
+      await build({ configFile: resolve(__dirname, 'electron.vite.config.ts'), mode: DAEMON_MODE, ignoreConfigWarning: true, build: { outDir: dirname(mainOutDir) } })
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  }
   return {
     name: 'adf-daemon-entry',
     apply: 'build',
+    configResolved(config) {
+      mainOutDir = resolve(config.root, config.build.outDir)
+    },
     // writeBundle runs after every main build, including each rebuild under
-    // `electron-vite dev`, so the daemon never lags behind Studio's main.
+    // `electron-vite dev`, so the daemon never lags behind Studio's main. A
+    // main rebuild that lands while the daemon builds queues one more daemon
+    // build after it (several collapse into one).
     async writeBundle() {
-      if (building) return building
-      // electron-vite's build() sets NODE_ENV and NODE_ENV_ELECTRON_VITE for
-      // its own run; restore them so `electron-vite dev` keeps its values.
-      const saved = { NODE_ENV: process.env.NODE_ENV, NODE_ENV_ELECTRON_VITE: process.env.NODE_ENV_ELECTRON_VITE }
-      building = build({ configFile: resolve(__dirname, 'electron.vite.config.ts'), mode: DAEMON_MODE, ignoreConfigWarning: true })
-        .finally(() => {
-          for (const [key, value] of Object.entries(saved)) {
-            if (value === undefined) delete process.env[key]
-            else process.env[key] = value
-          }
-          building = null
-        })
+      if (building) {
+        rebuildQueued = true
+        return building
+      }
+      building = (async () => {
+        do {
+          rebuildQueued = false
+          await buildDaemon()
+        } while (rebuildQueued)
+      })().finally(() => { building = null })
       return building
     }
   }
