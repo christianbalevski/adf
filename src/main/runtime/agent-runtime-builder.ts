@@ -1061,13 +1061,17 @@ export class AgentRuntimeBuilder {
     let authorizeInput: { server: string; url: string; authorize_url: string } | null = null
     const io: McpHttpOAuthIO = {
       openUrl: (authorizeUrl) => {
-        authorizeInput = { server: serverName, url, authorize_url: authorizeUrl }
+        // One authorize request per flow: a repeated redirect replaces it.
+        const previous = authorizeInput
+        const input = { server: serverName, url, authorize_url: authorizeUrl }
+        authorizeInput = input
+        if (previous) settlePendingApproval(executor, previous, false, 'Superseded by a new authorization URL')
         log('info', `OAuth sign-in for "${serverName}" approved — authorization URL raised as a "${MCP_OAUTH_AUTHORIZE_APPROVAL}" request; open it to continue.`)
-        void executor.requestApproval(MCP_OAUTH_AUTHORIZE_APPROVAL, authorizeInput, { canAlwaysApprove: false })
-          .then((approved) => {
-            // Denied, or drained by agent teardown: stop waiting for the callback.
-            if (!approved && !controller.signal.aborted) controller.abort()
-          }, () => { if (!controller.signal.aborted) controller.abort() })
+        // Denied, or drained by agent teardown: stop waiting for the callback.
+        // Only the current request cancels; a superseded one is settled above.
+        const cancel = (): void => { if (authorizeInput === input && !controller.signal.aborted) controller.abort() }
+        void executor.requestApproval(MCP_OAUTH_AUTHORIZE_APPROVAL, input, { canAlwaysApprove: false })
+          .then((approved) => { if (!approved) cancel() }, cancel)
       },
       log: (message) => console.log(message),
     }
@@ -1078,6 +1082,8 @@ export class AgentRuntimeBuilder {
         scopes: params.scopes,
         signal: controller.signal,
       })
+    } catch (err) {
+      flow = { authorized: false, error: err instanceof Error ? err.message : String(err) }
     } finally {
       params.signIns.delete(controller)
     }

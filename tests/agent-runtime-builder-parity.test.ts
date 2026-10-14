@@ -276,6 +276,34 @@ describe('AgentRuntimeBuilder parity: interactive MCP OAuth', () => {
     }
   })
 
+  it('a repeated redirect replaces the authorize request without cancelling the flow', async () => {
+    const records = fakeAgentStore()
+    let aborted = false
+    const flow = vi.fn<typeof runMcpHttpOAuthFlow>(async (url, store, io, opts) => {
+      opts?.signal?.addEventListener('abort', () => { aborted = true })
+      await io.openUrl('https://auth.example.test/authorize?state=first')
+      await io.openUrl('https://auth.example.test/authorize?state=second')
+      await new Promise(resolve => setTimeout(resolve, 20))
+      await store.save(url, { tokens: { access_token: 'b', token_type: 'Bearer' }, updatedAt: Date.now() } as McpOAuthRecord)
+      return { authorized: true }
+    })
+    const { agent, workspace } = await setup(flow)
+    try {
+      const result = agent.registry.get('mcp_restart')!.execute({ name: 'remote' }, workspace)
+      await waitFor(() => agent.executor.getPendingApprovals().length === 1)
+      agent.executor.resolveHilTask(agent.executor.getPendingApprovals()[0].requestId, true)
+      await waitFor(() => agent.executor.getPendingApprovals().some(a => (a.input as { authorize_url?: string }).authorize_url?.endsWith('second')))
+      expect(agent.executor.getPendingApprovals()).toHaveLength(1)
+
+      await result
+      expect(aborted).toBe(false)
+      expect(records.get('https://mcp.example.test/mcp')?.tokens?.access_token).toBe('b')
+      expect(agent.executor.getPendingApprovals()).toEqual([])
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
   it('denying the authorize request cancels the flow', async () => {
     const records = fakeAgentStore()
     let aborted = false
