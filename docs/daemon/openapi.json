@@ -13545,7 +13545,7 @@
           "Client (internal)"
         ],
         "summary": "Stream the session's frames (Server-Sent Events)",
-        "description": "One stream per session (a new connect replaces the open one). Starts with `: connected` and `stream.hello` `{epoch, oldestCursor, latestCursor}`, then the frames after the resume cursor; `: heartbeat` every 30 s. Each frame: `id: <cursor>`, `event: executor | host | push | umbilical`, `data: <ClientFrame JSON>`. Without `since` the stream starts at the session's first frame. **Frames**: `executor` = a raw executor event (as ADF Studio's AGENT_EVENT carries it): text and thinking deltas only for the session's focused agent (PUT …/focus), whatever `umbilical.stream_deltas` says; a `tool_call_result` of another agent carries `result.isError` and `resultSize` instead of the content (`stripped: tool_result`). `host` = an agent lifecycle event (`agent_starting` … `agent_stopped`, `agent_state_changed`, `agent_loops_changed`, `trigger_error`, `startup_failed`). `push` = a topic for every other change (inbox, approvals snapshot, mesh, config_changed, workspace data, file and folder changes, install progress, MCP and adapter status, compute). Frames of one agent arrive in emission order. **Ring**: each session keeps its newest 4096 frames (and at most 32 Mi characters). A frame dropped before it was written (a slow reader, or a long disconnect) is announced: `stream.gap` `{reason: evicted, dropped, …}` comes before the next frame; `epoch_changed` when the cursor is from another session. On a gap, reload state. Fan-out is per session: a slow or absent session never delays another.",
+        "description": "One stream per session (a new connect replaces the open one). Starts with `: connected` and `stream.hello` `{epoch, oldestCursor, latestCursor}`, then the frames after the resume cursor; `: heartbeat` every 30 s. Each frame: `id: <cursor>`, `event: executor | host | push | umbilical`, `data: <ClientFrame JSON>`. Without `since` the stream starts at the session's first frame. **Frames**: `executor` = a raw executor event (as ADF Studio's AGENT_EVENT carries it): text and thinking deltas only for the session's focused agent (PUT …/focus), whatever `umbilical.stream_deltas` says; a `tool_call_result` of another agent carries `result.isError` and `resultSize` instead of the content (`stripped: tool_result`). `host` = an agent lifecycle event (`agent_starting` … `agent_stopped`, `agent_state_changed`, `agent_loops_changed`, `trigger_error`, `startup_failed`). `push` = a topic for every other change (inbox, approvals snapshot, mesh, config_changed, workspace data, file and folder changes, install progress, MCP and adapter status, compute). Frames of one agent arrive in emission order. Sessions not focused on an agent get its large payloads as stubs (see ClientFrame), so one agent's large write never fills another session's ring; a single frame over 4 Mi characters becomes `stream.gap` `oversized` for the session that would get it. **Ring**: each session keeps its newest 4096 frames (and at most 32 Mi characters). A frame dropped before it was written (a slow reader, or a long disconnect) is announced: `stream.gap` `{reason: evicted, dropped, …}` comes before the next frame; `epoch_changed` when the cursor is from another session. On a gap, reload state. Fan-out is per session: a slow or absent session never delays another.",
         "operationId": "streamClientSessionEvents",
         "x-adf-stability": "internal",
         "parameters": [
@@ -13711,7 +13711,7 @@
           "Client (internal)"
         ],
         "summary": "Hold an agent file open for the session",
-        "description": "Holds the agent file (by `filePath` or `agentId`) as one of this session's open documents; released by DELETE …/documents/{agentId}, by ending the session or by its expiry. Until open documents are available (design D4), only a running agent can be held: any other file answers 409 `document_unavailable`.",
+        "description": "Opens the agent file (by `filePath` or `agentId`) as an open document held by this session (design D4): a closed file opens without starting, a running agent's file joins its runtime. The holder is the session id from the path, never the body; answers never list holders. Released by DELETE …/documents/{agentId}, by ending the session or by its expiry; while the session is live the holder sweep keeps the document open.",
         "operationId": "holdClientSessionDocument",
         "x-adf-stability": "internal",
         "requestBody": {
@@ -13770,15 +13770,15 @@
             "$ref": "#/components/responses/MethodNotAllowed"
           },
           "409": {
-            "description": "The file cannot be held here",
+            "description": "The file cannot be opened here (for example another file with the same agent id is open)",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
                 },
                 "example": {
-                  "error": "/agents/agent-2.adf is not running; this daemon can hold only running agents until open documents are available.",
-                  "code": "document_unavailable"
+                  "error": "Another loaded agent has id …",
+                  "code": "duplicate_agent_id"
                 }
               }
             }
@@ -26378,9 +26378,10 @@
             "type": "string",
             "enum": [
               "evicted",
-              "epoch_changed"
+              "epoch_changed",
+              "oversized"
             ],
-            "description": "`evicted`: frames after `requestedCursor` were dropped before they were written (slow reader, long disconnect). `epoch_changed`: the cursor is from another session; the whole ring follows."
+            "description": "`evicted`: frames after `requestedCursor` were dropped before they were written (slow reader, long disconnect). `epoch_changed`: the cursor is from another session; the whole ring follows. `oversized`: one frame was larger than the 4 Mi-character frame limit and was not kept (this session only)."
           },
           "epoch": {
             "type": "string"
@@ -26402,13 +26403,17 @@
           },
           "dropped": {
             "type": "integer",
-            "description": "Frames lost (`evicted`)"
+            "description": "Frames lost (`evicted`, `oversized`)"
+          },
+          "size": {
+            "type": "integer",
+            "description": "Serialized size of the oversized frame"
           }
         }
       },
       "ClientFrame": {
         "type": "object",
-        "description": "One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes \"[Circular]\".",
+        "description": "One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes \"[Circular]\". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).",
         "required": [
           "cursor",
           "kind"
@@ -26449,8 +26454,10 @@
           "stripped": {
             "type": "string",
             "enum": [
-              "tool_result"
-            ]
+              "tool_result",
+              "stub"
+            ],
+            "description": "Reduced for a session not focused on the agent: `tool_result` (result content dropped, `resultSize` added), `stub` (only short scalar fields plus `size`)."
           },
           "type": {
             "type": "string"
@@ -26461,6 +26468,11 @@
           "payload": {},
           "timestamp": {
             "type": "number"
+          },
+          "unserializable": {
+            "type": "boolean",
+            "const": true,
+            "description": "The payload could not be serialized; it is `{unserializable: reason}`."
           }
         },
         "additionalProperties": true

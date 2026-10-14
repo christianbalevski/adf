@@ -23,11 +23,13 @@
 
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { approvalHub } from '../../runtime/approval-hub'
+import { DOCUMENT_HOLDER_FORMAT } from '../../runtime/runtime-service'
 import {
   ClientSessionError,
   ClientSessionRegistry,
   daemonClientSessions,
-  loadedAgentDocumentHost,
+  runAsClientWrite,
+  runtimeDocumentHost,
   wireApprovalsToClientSessions,
   wireEventBusToClientSessions,
   wireRuntimeToClientSessions,
@@ -85,7 +87,14 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
       'X-Accel-Buffering': 'no',
     })
     raw.write(': connected\n\n')
-    const sink: ClientStreamSink = raw
+    // Closed when the response or its socket is gone: a client that hung up
+    // before attach is never attached, so its session's expiry clock runs.
+    const sink: ClientStreamSink = {
+      write: (chunk) => raw.write(chunk),
+      once: (event, listener) => raw.once(event, listener),
+      destroy: () => raw.destroy(),
+      get destroyed() { return raw.destroyed || raw.writableEnded || !raw.socket || raw.socket.destroyed },
+    }
     const detach = () => sessions.detach(id, sink)
     request.raw.once('close', detach)
     raw.once('close', detach)
@@ -139,10 +148,16 @@ function defaultRegistry(server: FastifyInstance, ctx: DaemonRouteContext): Clie
   const sessions = new ClientSessionRegistry({
     startedBy: ctx.options.routes?.startedBy,
     requestShutdown: ctx.options.requestShutdown,
-    documents: loadedAgentDocumentHost(ctx.runtime),
-    resolveAgentId: (identifier) => ctx.runtime.getAgent(identifier)?.id ?? null,
+    resolveAgentId: (identifier) => ctx.runtime.getAgentOrDocument(identifier)?.id ?? null,
+    // Session documents are open documents; the holder sweep keeps its TTL
+    // here (the daemon's own wiring, wireDocumentsToClientSessions, also
+    // tells the sweep which holders are live sessions).
+    documents: runtimeDocumentHost(ctx.runtime),
   })
-  const unwire = [wireRuntimeToClientSessions(sessions, ctx.runtime), wireApprovalsToClientSessions(sessions, approvalHub)]
+  const unwire = [
+    wireRuntimeToClientSessions(sessions, ctx.runtime),
+    wireApprovalsToClientSessions(sessions, approvalHub),
+  ]
   if (ctx.options.eventBus) unwire.push(wireEventBusToClientSessions(sessions, ctx.options.eventBus))
   server.addHook('onClose', (_instance, done) => {
     for (const fn of unwire) fn()
@@ -158,32 +173,17 @@ const BRING_HOME = /^\/registry\/agents\/[^/?]+\/bring-home(?:\?|$)/
 const TEMPLATES = /^\/templates(?:[/?]|$)/
 
 function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext, sessions: ClientSessionRegistry): void {
-  const origins = new WeakMap<object, () => void>()
-
-  // A write to /agents/:id/* that names its client session: the echo frames
-  // it raises (config_changed, file_updated, document_updated) skip that
-  // session; every other session gets them.
-  server.addHook('onRequest', (request, _reply, done) => {
-    const sessionId = single(request.headers[CLIENT_SESSION_HEADER])
-    const match = sessionId && request.method !== 'GET' && request.method !== 'HEAD' ? AGENT_ROUTE.exec(request.url) : null
-    if (match && sessionId && sessions.has(sessionId)) {
-      const agentId = ctx.runtime.getAgent(decodeSegment(match[1]))?.id
-      if (agentId) origins.set(request, sessions.beginOrigin(sessionId, agentId))
+  // A write to /agents/:id/* that names its client session runs with source
+  // system:client:<session>: each echo frame it raises (config_changed,
+  // file_updated, document_updated) skips that session, decided per event,
+  // so a change the agent makes meanwhile still reaches it. The handler runs
+  // inside this hook's done(), so the source covers it and what it awaits.
+  server.addHook('preHandler', (request, _reply, done) => {
+    const sessionId = clientSessionOf(request.headers)
+    if (sessionId && sessions.has(sessionId) && request.method !== 'GET' && request.method !== 'HEAD' && AGENT_ROUTE.test(request.url)) {
+      runAsClientWrite(sessionId, () => done())
+      return
     }
-    done()
-  })
-
-  const endOrigin = (request: object) => {
-    origins.get(request)?.()
-    origins.delete(request)
-  }
-  server.addHook('onResponse', (request, _reply, done) => {
-    endOrigin(request)
-    done()
-  })
-  // A client that hangs up mid-request gets no onResponse: end its write window here.
-  server.addHook('onRequestAbort', (request, done) => {
-    endOrigin(request)
     done()
   })
 
@@ -199,13 +199,14 @@ function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext,
       if (document) {
         // What an agent's own fs_write of document.md raises (agent-executor),
         // so every other client refreshes through the same renderer path.
-        const ref = ctx.runtime.getAgent(decodeSegment(document[1]))
+        const ref = ctx.runtime.getAgentOrDocument(decodeSegment(document[1]))
         const content = (request.body as { content?: unknown } | undefined)?.content
         if (ref && typeof content === 'string') {
-          sessions.publishExecutor({ agentId: ref.id, filePath: ref.filePath ?? null, event: { type: 'document_updated', payload: { content }, timestamp: Date.now() } })
+          const origin = clientSessionOf(request.headers)
+          sessions.publishExecutor({ agentId: ref.id, filePath: ref.filePath ?? null, event: { type: 'document_updated', payload: { content }, timestamp: Date.now() } }, origin && sessions.has(origin) ? origin : null)
         }
       } else if (inbox) {
-        const ref = ctx.runtime.getAgent(decodeSegment(inbox[1]))
+        const ref = ctx.runtime.getAgentOrDocument(decodeSegment(inbox[1]))
         if (ref) sessions.publishPush('inbox', { inbox: { version: 1, messages: [] } }, { agentId: ref.id, filePath: ref.filePath ?? null })
       } else if (request.method === 'POST' && BRING_HOME.test(url)) {
         const result = parseJson(payload) as { success?: unknown; filePath?: unknown } | null
@@ -226,6 +227,12 @@ function send(reply: FastifyReply, run: () => unknown): unknown {
   } catch (err) {
     return sendError(reply, err)
   }
+}
+
+/** The client session a request names (X-ADF-Client-Session), when it is a session id. */
+function clientSessionOf(headers: Record<string, string | string[] | undefined>): string | null {
+  const value = single(headers[CLIENT_SESSION_HEADER])
+  return value && DOCUMENT_HOLDER_FORMAT.test(value) ? value : null
 }
 
 function sendError(reply: FastifyReply, err: unknown) {

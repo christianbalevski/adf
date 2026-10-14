@@ -27,22 +27,27 @@
 //   A frame evicted before it was written is never skipped silently: the
 //   writer sends `stream.gap` (reason `evicted`, with the count) before the
 //   next frame it has. A resume with an evicted cursor, or another session's
-//   epoch, gets `stream.gap` too.
+//   epoch, gets `stream.gap` too. One frame over MAX_FRAME_CHARS is not kept:
+//   the session that would get it sees `stream.gap` reason `oversized`.
 // - A session expires CLIENT_SESSION_EXPIRY_MS after its stream disconnects
 //   (or after creation, if it never connects). Expiry releases its documents
 //   through the ClientDocumentHost and tells onSessionEnded listeners. An
-//   expired `exitDaemonWhenClosed` session stops the daemon when no other
-//   session exists and Studio started this daemon run (§8.3); the decision and
-//   its reason are logged either way.
+//   expired `exitDaemonWhenClosed` session stops a Studio-started daemon when
+//   no other session is open; otherwise the shutdown waits for the last
+//   session to end, and the others get `daemon_orphan_hold` (§8.3). Every
+//   decision is logged with its reason.
 //
-// tool_call_result: the focused agent's frames carry the full payload, as
-// embedded IPC does (the executor already caps tool output). Other agents'
-// results carry `result: { isError }` and `resultSize` instead of the content,
-// and the frame says `stripped: 'tool_result'`: that is all
-// BACKGROUND_AGENT_EVENT_BATCH reads (ipc/background-event-batch.ts
-// stripForRenderer), and it keeps a busy fleet from filling the rings with
-// tool output no client shows.
+// Payload size (embedded parity): the session focused on an agent gets its
+// full payloads, as embedded IPC sends the open file's AGENT_EVENT. Every
+// other session gets what BACKGROUND_AGENT_EVENT_BATCH carries: the
+// background whitelist in full (UNFOCUSED_FULL_TYPES), `tool_call_result`
+// without its content (`resultSize`, `stripped: 'tool_result'`), and any
+// other event as a stub (short scalars plus `size`, `stripped: 'stub'`);
+// `inbox` and `inter_agent_message` pushes as counts and without content.
+// Clients fetch details on demand, so one agent's large write never fills
+// another session's ring.
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import type { AgentConfig, InboxMessage, McpServerStatus } from '../../shared/types/adf-v02.types'
@@ -52,6 +57,7 @@ import type { AgentExecutionEvent, MeshEvent, NotificationsSnapshot } from '../.
 import type { UmbilicalEvent } from '../runtime/umbilical-bus'
 import type { WorkspaceDataScope } from '../adf/adf-workspace'
 import { subscribeAgentRuntimeSignals } from '../runtime/agent-runtime-signals'
+import { currentSourceOrUnknown, withSource } from '../runtime/execution-context'
 import type {
   RuntimeAgentEvent,
   RuntimeAgentFileRenamedEvent,
@@ -63,7 +69,7 @@ import type {
   RuntimeService,
 } from '../runtime/runtime-service'
 import type { TrackedDirWatcher, WatcherAutostartNotice } from './dir-watcher'
-import { safeJsonStringify, sseControl, sseFrame } from './sse-wire'
+import { safeJsonStringify, sseControl, sseFrame, trySafeJsonStringify } from './sse-wire'
 
 export const CLIENT_RING_FRAMES = 4096
 /** Ring budget in serialized characters (about bytes for JSON). The newest frame always stays. */
@@ -82,10 +88,53 @@ export const DELTA_EVENT_TYPES: ReadonlySet<string> = new Set([
 
 /**
  * Executor events that echo a write: not sent to the session whose request
- * made it (origin dedup, beginOrigin), as embedded Studio never echoes its
- * own edits to its window. Every other session gets them.
+ * made it (origin dedup: the write runs with source clientWriteSource(id)),
+ * as embedded Studio never echoes its own edits to its window. Every other
+ * session gets them.
  */
 const ECHO_EXECUTOR_TYPES: ReadonlySet<string> = new Set(['file_updated', 'document_updated'])
+
+/**
+ * Executor events a session not focused on the agent gets in full: what the
+ * background mapping forwards (background-event-mapping.ts FORWARDED_TYPES,
+ * `state_changed`, `adf_file_created`). `tool_call_result` is stripped
+ * (stripForRenderer). Every other event type reaches it as a stub: its
+ * short scalar fields plus `size`, frame field `stripped: 'stub'`.
+ */
+const UNFOCUSED_FULL_TYPES: ReadonlySet<string> = new Set([
+  'state_changed', 'ask_request', 'tool_approval_request', 'response_metadata', 'error', 'turn_complete', 'adf_file_created',
+])
+
+/** One frame larger than this (serialized characters) is not stored: the session gets `stream.gap` reason `oversized`. */
+export const MAX_FRAME_CHARS = 4 * 1024 * 1024
+
+/** Strings up to this length survive in a stub. */
+const STUB_STRING_CHARS = 200
+
+/** The execution-context source of a write made through a client session's request (origin dedup). */
+export function clientWriteSource(sessionId: string): string {
+  return `system:client:${sessionId}`
+}
+
+/**
+ * The client session a request runs for, beside the execution-context source:
+ * RuntimeService wraps its own writes in withSource('system:runtime-api'),
+ * which replaces the source but not this.
+ */
+const clientOrigin = new AsyncLocalStorage<string>()
+
+/** Run a client session's request: its writes carry source system:client:<id>, and its echo frames skip that session. */
+export function runAsClientWrite<T>(sessionId: string, fn: () => T): T {
+  return clientOrigin.run(sessionId, () => withSource(clientWriteSource(sessionId), fn))
+}
+
+/** The session whose request is running now; null otherwise. */
+function currentOriginSession(): string | null {
+  const origin = clientOrigin.getStore()
+  if (origin) return origin
+  const source = currentSourceOrUnknown()
+  return source.startsWith('system:client:') ? source.slice('system:client:'.length) : null
+}
 
 // --- Frames -------------------------------------------------------------------
 
@@ -97,8 +146,14 @@ export interface ClientExecutorFrame {
   /** `event.loop`, copied for routing; absent = main. */
   loop?: string
   event: AgentExecutionEvent
-  /** Set when the payload was reduced for a session not focused on this agent (see the file header). */
-  stripped?: 'tool_result'
+  /**
+   * Set when the payload was reduced for a session not focused on this agent:
+   * `tool_result` (result content dropped, `resultSize` added) or `stub`
+   * (only short scalar fields, plus `size`; fetch details on demand).
+   */
+  stripped?: 'tool_result' | 'stub'
+  /** The payload could not be serialized: `event.payload` is `{unserializable: reason}`. */
+  unserializable?: true
 }
 
 export interface ClientHostFrame {
@@ -110,6 +165,7 @@ export interface ClientHostFrame {
   /** RuntimeLifecycleEvent payload (always carries `filePath`). */
   payload: Record<string, unknown>
   timestamp: number
+  unserializable?: true
 }
 
 /** Progress of an MCP, adapter or sandbox package install: Studio's *_INSTALL_PROGRESS payload. */
@@ -130,16 +186,31 @@ export interface ClientInstallProgress {
 export interface ClientPushPayloads {
   /** DOC_AGENT_CONFIG_CHANGED. Runtime-originated changes; a session's own PUT /agents/:id/config is not echoed to it (header X-ADF-Client-Session). */
   config_changed: { filePath: string | null; config: AgentConfig }
-  /** INBOX_UPDATED: mesh delivery, adapter inbound, DELETE /agents/:id/inbox (empty). */
-  inbox: { inbox: { version: 1; messages: InboxMessage[] } }
+  /**
+   * INBOX_UPDATED: mesh delivery, adapter inbound, DELETE /agents/:id/inbox
+   * (empty). Sessions not focused on the agent get only the counts (frame
+   * `stripped: 'stub'`).
+   */
+  inbox: { inbox: { version: 1; messages: InboxMessage[] } } | { counts: { unread: number; read: number; archived: number } }
   /** WORKSPACE_DATA_CHANGED, coalesced per agent and scope (250 ms, as Studio). */
   workspace_data: { scope: WorkspaceDataScope }
   /** APPROVALS_CHANGED: the hub's full snapshot (not a delta; the hub coalesces). */
   approvals: NotificationsSnapshot
   /** MESH_EVENT, including the `station:<adapter>` message_routed pulse on adapter inbound. */
   mesh: MeshEvent
-  /** AGENT_EVENT `inter_agent_message` payload, for the client to synthesize on its focused agent. */
-  inter_agent_message: { fromAgent: string; toAgent: string; channel?: string; content: string; direction: 'incoming' }
+  /**
+   * AGENT_EVENT `inter_agent_message` payload (a message delivered to a
+   * loaded agent), for the client to synthesize on its focused agent; the
+   * mesh-graph pulse for the others. Sessions not focused on the recipient
+   * get it without `content` (frame `stripped: 'stub'`, `size`).
+   */
+  inter_agent_message: { fromAgent: string; toAgent: string; channel?: string; content?: string; size?: number; direction: 'incoming' }
+  /**
+   * The Studio session that owned this daemon run expired (§8.3) while other
+   * sessions are open: the daemon stays up while they are and stops when the
+   * last one ends. `holding: false` once a new owning session cleared it.
+   */
+  daemon_orphan_hold: { holding: boolean; reason: string; sessions: number }
   /** TEMPLATES_CHANGED (no payload). */
   templates: Record<string, never>
   /** TRACKED_DIRS_CHANGED. */
@@ -175,7 +246,7 @@ export type ClientPushTopic = keyof ClientPushPayloads
 export const CLIENT_PUSH_TOPICS: readonly ClientPushTopic[] = [
   'config_changed', 'inbox', 'workspace_data', 'approvals', 'mesh', 'inter_agent_message', 'templates',
   'tracked_dirs', 'file_renamed', 'agent_path_changed', 'autostart', 'autostart_overflow', 'adf_file_created', 'mcp_install', 'adapter_install',
-  'sandbox_install', 'mcp_status', 'adapter_status', 'compute_phase', 'browser_session',
+  'sandbox_install', 'mcp_status', 'adapter_status', 'compute_phase', 'browser_session', 'daemon_orphan_hold',
 ]
 
 export type ClientPushFrame = {
@@ -186,6 +257,8 @@ export type ClientPushFrame = {
     agentId: string | null
     filePath: string | null
     payload: ClientPushPayloads[T]
+    stripped?: 'stub'
+    unserializable?: true
   }
 }[ClientPushTopic]
 
@@ -200,20 +273,27 @@ export interface ClientUmbilicalFrame {
   cursor: number
   agentId: string | null
   event: UmbilicalEvent
+  unserializable?: true
 }
 
 export type ClientFrame = ClientExecutorFrame | ClientHostFrame | ClientPushFrame | ClientUmbilicalFrame
 
-/** `stream.gap` data. `epoch_changed`: the cursor came from another session; `evicted`: frames after it were dropped. */
+/**
+ * `stream.gap` data. `epoch_changed`: the cursor came from another session;
+ * `evicted`: frames after it were dropped before they were written;
+ * `oversized`: one frame was larger than MAX_FRAME_CHARS and was not kept.
+ */
 export interface ClientStreamGap {
-  reason: 'evicted' | 'epoch_changed'
+  reason: 'evicted' | 'epoch_changed' | 'oversized'
   epoch: string
   /** The last cursor the client had. */
   requestedCursor: number | null
   oldestCursor: number | null
   latestCursor: number
-  /** Frames lost (evicted only). */
+  /** Frames lost (evicted, oversized). */
   dropped?: number
+  /** Serialized size of the oversized frame. */
+  size?: number
 }
 
 // --- Documents (W2-A) -----------------------------------------------------------
@@ -231,12 +311,15 @@ export interface ClientHeldDocument {
 
 /**
  * Open documents (D4, W2-A) behind POST/DELETE /client/sessions/:id/documents.
- * `hold` MUST be idempotent per session and agent. The registry calls
- * `release` for every held document when a session ends (DELETE or expiry).
+ * The holder is always the session id, never a request body. `hold` MUST be
+ * idempotent per session and agent. When a session ends (DELETE or expiry)
+ * the registry calls `releaseHolder` when the host has it, else `release`
+ * for every document the session held.
  */
 export interface ClientDocumentHost {
   hold(sessionId: string, request: ClientDocumentHoldRequest): Promise<ClientHeldDocument>
   release(sessionId: string, agentId: string): Promise<void> | void
+  releaseHolder?(sessionId: string): Promise<unknown> | void
 }
 
 export type ClientSessionEndReason = 'ended' | 'expired' | 'shutdown'
@@ -284,7 +367,10 @@ export interface ClientSessionStats {
 interface RingEntry {
   cursor: number
   name: string
-  body: string
+  /** Null: the frame was larger than MAX_FRAME_CHARS and was not kept (the writer sends a gap). */
+  body: string | null
+  /** Serialized size of an oversized frame. */
+  size?: number
 }
 
 /** Fixed-capacity FIFO of frames with contiguous cursors. */
@@ -310,7 +396,7 @@ class FrameRing {
     if (this.count === this.capacity) this.shift()
     this.slots[(this.start + this.count) % this.capacity] = entry
     this.count++
-    this.chars += entry.body.length
+    this.chars += entry.body?.length ?? 0
     while (this.chars > this.maxChars && this.count > 1) this.shift()
   }
 
@@ -325,7 +411,7 @@ class FrameRing {
     this.slots[this.start] = undefined
     this.start = (this.start + 1) % this.capacity
     this.count--
-    if (entry) this.chars -= entry.body.length
+    if (entry) this.chars -= entry.body?.length ?? 0
   }
 }
 
@@ -365,24 +451,34 @@ class ClientSession {
     return this.nextCursor - 1
   }
 
-  append(name: string, body: string): void {
-    this.ring.push({ cursor: this.nextCursor++, name, body })
+  append(name: string, body: string | null, size?: number): void {
+    this.ring.push({ cursor: this.nextCursor++, name, body, ...(size !== undefined ? { size } : {}) })
   }
 }
 
 export interface ClientSessionRegistryOptions {
   ringFrames?: number
   ringChars?: number
+  /** Largest frame kept (serialized characters). Default MAX_FRAME_CHARS. */
+  maxFrameChars?: number
   expiryMs?: number
   /** Who launched this daemon run (GET /version `startedBy`). The orphan rule only stops a daemon Studio started. */
   startedBy?: string
   /** The daemon's bounded graceful shutdown (POST /daemon/shutdown). */
   requestShutdown?: () => void
-  /** Open documents (W2-A). Default: only loaded agents can be held (loadedAgentDocumentHost). */
+  /** Open documents (W2-A, runtimeDocumentHost). Absent: holding answers 405. */
   documents?: ClientDocumentHost | null
   /** An agent id, handle or name → the loaded agent's id; null when not loaded. */
   resolveAgentId?: (identifier: string) => string | null
   log?: (message: string) => void
+}
+
+/** A frame for every session, and optionally a reduced one for sessions not focused on its agent. */
+interface FrameBodies {
+  name: string
+  full: () => string
+  /** Absent: unfocused sessions get `full` too. Null from the function: they get nothing. */
+  unfocused?: () => string | null
 }
 
 /**
@@ -395,21 +491,23 @@ export class ClientSessionRegistry {
   private readonly sessions = new Map<string, ClientSession>()
   private readonly ringFrames: number
   private readonly ringChars: number
+  private readonly maxFrameChars: number
   private readonly expiryMs: number
   private readonly log: (message: string) => void
   private readonly endedListeners = new Set<(ended: ClientSessionEnded) => void>()
-  /** agentId → sessions with a config write in flight (origin dedup of config_changed). */
-  private readonly origins = new Map<string, Map<string, number>>()
   /** Loaded agents by path key, for producers that only know the path (mesh). */
   private readonly agentsByPath = new Map<string, string>()
   private readonly pathsByAgent = new Map<string, string>()
   private readonly recentRenames = new Map<string, number>()
   private documentHost: ClientDocumentHost | null
+  /** §8.3: the owning Studio session expired while others were open; the daemon stops when the last one ends. */
+  private orphanPending: string | null = null
   private disposed = false
 
   constructor(private readonly options: ClientSessionRegistryOptions = {}) {
     this.ringFrames = options.ringFrames ?? CLIENT_RING_FRAMES
     this.ringChars = options.ringChars ?? CLIENT_RING_CHARS
+    this.maxFrameChars = options.maxFrameChars ?? MAX_FRAME_CHARS
     this.expiryMs = options.expiryMs ?? CLIENT_SESSION_EXPIRY_MS
     this.log = options.log ?? ((message) => console.log(`[ADF Daemon] ${message}`))
     this.documentHost = options.documents ?? null
@@ -424,6 +522,12 @@ export class ClientSessionRegistry {
     this.sessions.set(session.id, session)
     this.armExpiry(session)
     this.log(`Client session ${session.id} opened by ${input.client} ${input.version}${session.exitDaemonWhenClosed ? ' (stops the daemon when it expires)' : ''}`)
+    if (session.exitDaemonWhenClosed && this.orphanPending) {
+      // A new owner (Studio came back): its own expiry decides from now on.
+      this.log(`The pending daemon shutdown is cleared: ${input.client} opened a session that owns this daemon run`)
+      this.orphanPending = null
+      this.publishPush('daemon_orphan_hold', { holding: false, reason: `${input.client} reconnected`, sessions: this.sessions.size })
+    }
     return { sessionId: session.id, epoch: session.epoch }
   }
 
@@ -435,12 +539,21 @@ export class ClientSessionRegistry {
     return this.sessions.size
   }
 
-  /** End a session now (DELETE /client/sessions/:id): its documents are released; the orphan rule does not apply. */
+  /** The agent a session follows, or undefined for an unknown session. */
+  focusOf(sessionId: string): string | null | undefined {
+    return this.sessions.get(sessionId)?.focus
+  }
+
+  /** End a session now (DELETE /client/sessions/:id): its documents are released; a pending orphan shutdown is re-checked. */
   async end(sessionId: string): Promise<void> {
     const session = this.require(sessionId)
     await this.finish(session, 'ended')
   }
 
+  /**
+   * Called with every ended session (DELETE, expiry, shutdown), after its
+   * documents were released. The listener set is the session-expiry hook.
+   */
   onSessionEnded(listener: (ended: ClientSessionEnded) => void): () => void {
     this.endedListeners.add(listener)
     return () => { this.endedListeners.delete(listener) }
@@ -511,10 +624,16 @@ export class ClientSessionRegistry {
   /**
    * Attach the session's one stream (a second attach replaces the first).
    * `since`: the last cursor the client has (absent: from the session's
-   * start); `epoch`: the epoch it came from.
+   * start); `epoch`: the epoch it came from. A sink already closed is not
+   * attached: the session's expiry clock runs as for any closed stream.
    */
   attach(sessionId: string, sink: ClientStreamSink, resume: { since?: number; epoch?: string } = {}): void {
     const session = this.require(sessionId)
+    if (sink.destroyed) {
+      this.log(`Client session ${session.id} (${session.client}): the stream closed before it was attached`)
+      if (!session.connection) this.armExpiry(session)
+      return
+    }
     if (session.connection) {
       this.log(`Client session ${session.id}: a new stream replaces the open one`)
       this.closeConnection(session)
@@ -566,85 +685,78 @@ export class ClientSessionRegistry {
 
   // --- publishing -------------------------------------------------------------
 
-  publishExecutor(event: RuntimeAgentEvent): void {
+  /**
+   * A raw executor event. Deltas only to sessions focused on the agent;
+   * echoes of a session's own write (ECHO_EXECUTOR_TYPES under its write
+   * source, or `origin`) not to that session; sessions not focused on the
+   * agent get the background whitelist (UNFOCUSED_FULL_TYPES), a stripped
+   * tool result, or a stub.
+   */
+  publishExecutor(event: RuntimeAgentEvent, origin?: string | null): void {
     if (this.sessions.size === 0) return
     const type = event.event.type
-    const isDelta = DELTA_EVENT_TYPES.has(type)
-    const isResult = type === 'tool_call_result'
-    // The writer's own edit is not echoed back to it (Studio skips its own file and document writes).
-    const skip = ECHO_EXECUTOR_TYPES.has(type) ? this.origins.get(event.agentId) : undefined
-    let full: string | undefined
-    let stripped: string | undefined
-    for (const session of this.sessions.values()) {
-      const focused = session.focus !== null && session.focus === event.agentId
-      if (isDelta && !focused) continue
-      if (skip?.has(session.id)) continue
-      const body = isResult && !focused
-        ? stripped ??= safeJsonStringify(executorFrame(event, true))
-        : full ??= safeJsonStringify(executorFrame(event, false))
-      this.append(session, 'executor', body)
-    }
+    const echoFrom = ECHO_EXECUTOR_TYPES.has(type) ? origin ?? currentOriginSession() : null
+    const unfocused = DELTA_EVENT_TYPES.has(type)
+      ? () => null
+      : type === 'tool_call_result'
+        ? () => frameJson(executorFrame(event, 'tool_result'), 'event')
+        : UNFOCUSED_FULL_TYPES.has(type)
+          ? undefined
+          : () => frameJson(executorFrame(event, 'stub'), 'event')
+    this.fanOut(event.agentId, {
+      name: 'executor',
+      full: () => frameJson(executorFrame(event, null), 'event'),
+      ...(unfocused ? { unfocused } : {}),
+    }, echoFrom)
   }
 
-  /** An umbilical envelope, for the sessions that asked for them; never `turn.delta`. */
+  /**
+   * An umbilical envelope, for the sessions that asked for them. `turn.delta`
+   * (only with `umbilical.stream_deltas`) goes to the ones not focused on the
+   * agent: the focused one streams that agent's executor deltas instead.
+   */
   publishUmbilical(event: UmbilicalEvent): void {
-    if (this.sessions.size === 0 || event.event_type === 'turn.delta') return
+    if (this.sessions.size === 0) return
+    const delta = event.event_type === 'turn.delta'
     let body: string | undefined
     for (const session of this.sessions.values()) {
       if (!session.umbilical) continue
-      body ??= safeJsonStringify({ kind: 'umbilical', agentId: event.agent_id ?? null, event })
+      if (delta && session.focus !== null && session.focus === event.agent_id) continue
+      body ??= frameJson({ kind: 'umbilical', agentId: event.agent_id ?? null, event }, 'event')
       this.append(session, 'umbilical', body)
     }
   }
 
   publishHost(event: RuntimeLifecycleEvent): void {
     if (this.sessions.size === 0) return
-    const body = safeJsonStringify({
-      kind: 'host', agentId: event.agentId, filePath: event.filePath, type: event.type, payload: event.payload, timestamp: event.timestamp,
+    this.fanOut(event.agentId, {
+      name: 'host',
+      full: () => frameJson({ kind: 'host', agentId: event.agentId, filePath: event.filePath, type: event.type, payload: event.payload, timestamp: event.timestamp }, 'payload'),
     })
-    for (const session of this.sessions.values()) this.append(session, 'host', body)
   }
 
+  /**
+   * A push topic. `opts.unfocused`: the payload for sessions not focused on
+   * the agent (frame `stripped: 'stub'`). `config_changed` from a session's
+   * own write is not sent to that session.
+   */
   publishPush<T extends ClientPushTopic>(
     topic: T,
     payload: ClientPushPayloads[T],
     target: { agentId?: string | null; filePath?: string | null } = {},
+    opts: { unfocused?: () => ClientPushPayloads[T] } = {},
   ): void {
     if (this.sessions.size === 0) return
     const agentId = target.agentId ?? (target.filePath ? this.agentIdForPath(target.filePath) : null)
     const filePath = target.filePath ?? null
     if (topic === 'file_renamed' && this.isRepeatedRename(payload as ClientPushPayloads['file_renamed'])) return
-    // A session's own config write is not echoed back to it (Studio's notifyHost: false).
-    const skip = topic === 'config_changed' && agentId ? this.origins.get(agentId) : undefined
-    let body: string | undefined
-    for (const session of this.sessions.values()) {
-      if (skip?.has(session.id)) continue
-      body ??= safeJsonStringify({ kind: 'push', topic, agentId, filePath, payload })
-      this.append(session, 'push', body)
-    }
-  }
-
-  // --- origin dedup -----------------------------------------------------------
-
-  /**
-   * A session's write for `agentId` is in flight: config_changed, file_updated
-   * and document_updated raised meanwhile skip that session. Returns the end
-   * of the write.
-   */
-  beginOrigin(sessionId: string, agentId: string): () => void {
-    let bySession = this.origins.get(agentId)
-    if (!bySession) this.origins.set(agentId, bySession = new Map())
-    bySession.set(sessionId, (bySession.get(sessionId) ?? 0) + 1)
-    let done = false
-    return () => {
-      if (done) return
-      done = true
-      const current = this.origins.get(agentId)
-      const count = (current?.get(sessionId) ?? 1) - 1
-      if (count > 0) current!.set(sessionId, count)
-      else current?.delete(sessionId)
-      if (current?.size === 0) this.origins.delete(agentId)
-    }
+    const echoFrom = topic === 'config_changed' ? currentOriginSession() : null
+    const stub = opts.unfocused
+    this.fanOut(agentId, {
+      name: 'push',
+      full: () => frameJson({ kind: 'push', topic, agentId, filePath, payload }, 'payload'),
+      ...(stub ? { unfocused: () => frameJson({ kind: 'push', topic, agentId, filePath, payload: stub(), stripped: 'stub' }, 'payload') } : {}),
+    }, echoFrom)
   }
 
   // --- agent index ------------------------------------------------------------
@@ -672,6 +784,23 @@ export class ClientSessionRegistry {
 
   // --- internals --------------------------------------------------------------
 
+  /** Serialize lazily, once per variant, and append to every session that takes the frame. */
+  private fanOut(agentId: string | null, bodies: FrameBodies, skipSession: string | null = null): void {
+    let full: string | undefined
+    let unfocused: string | null | undefined
+    for (const session of this.sessions.values()) {
+      if (skipSession !== null && session.id === skipSession) continue
+      const focused = agentId !== null && session.focus === agentId
+      let body: string | null
+      if (focused || !bodies.unfocused) body = full ??= bodies.full()
+      else {
+        if (unfocused === undefined) unfocused = bodies.unfocused()
+        body = unfocused
+      }
+      if (body !== null) this.append(session, bodies.name, body)
+    }
+  }
+
   private require(sessionId: string): ClientSession {
     const session = this.sessions.get(sessionId)
     if (!session) throw new ClientSessionError(`No client session ${sessionId} (it ended or expired, or the daemon restarted).`, 404, 'session_not_found')
@@ -679,7 +808,13 @@ export class ClientSessionRegistry {
   }
 
   private append(session: ClientSession, name: string, body: string): void {
-    session.append(name, body)
+    if (body.length > this.maxFrameChars) {
+      // Kept as a hole: this session's reader gets a visible gap, no other session is touched.
+      this.log(`Client session ${session.id} (${session.client}): a ${name} frame of ${body.length} characters is over the ${this.maxFrameChars} limit; sending stream.gap`)
+      session.append(name, null, body.length)
+    } else {
+      session.append(name, body)
+    }
     if (session.connection && !session.connection.paused) this.queueFlush(session)
   }
 
@@ -711,6 +846,14 @@ export class ClientSessionRegistry {
           reason: 'evicted', epoch: session.epoch, requestedCursor: connection.delivered, oldestCursor: oldest, latestCursor: session.latest, dropped,
         } satisfies ClientStreamGap)
         connection.delivered = resumeAt - 1
+        continue
+      }
+      if (entry.body === null) {
+        session.dropped += 1
+        chunk += sseControl('stream.gap', {
+          reason: 'oversized', epoch: session.epoch, requestedCursor: connection.delivered, oldestCursor: session.ring.oldest, latestCursor: session.latest, dropped: 1, ...(entry.size !== undefined ? { size: entry.size } : {}),
+        } satisfies ClientStreamGap)
+        connection.delivered = next
         continue
       }
       chunk += sseFrame(entry.cursor, entry.name, entry.body)
@@ -766,29 +909,49 @@ export class ClientSessionRegistry {
     this.sessions.delete(session.id)
     if (session.expiryTimer) clearTimeout(session.expiryTimer)
     this.closeConnection(session)
-    for (const [agentId, bySession] of this.origins) {
-      bySession.delete(session.id)
-      if (bySession.size === 0) this.origins.delete(agentId)
-    }
     const documents = [...session.documents.keys()]
     session.documents.clear()
-    for (const agentId of documents) await this.releaseQuietly(session.id, agentId)
+    if (this.documentHost?.releaseHolder) {
+      try { await this.documentHost.releaseHolder(session.id) } catch (err) { console.error(`[ADF Daemon] Releasing the documents of client session ${session.id} failed:`, err) }
+    } else {
+      for (const agentId of documents) await this.releaseQuietly(session.id, agentId)
+    }
     this.log(`Client session ${session.id} (${session.client}) ${reason === 'expired' ? `expired ${Math.round(this.expiryMs / 1000)} s after its stream closed` : 'ended'}${documents.length ? `; released ${documents.length} document(s)` : ''}`)
     this.notifyEnded(session, reason, documents)
     if (reason === 'expired' && session.exitDaemonWhenClosed) this.applyOrphanRule(session)
+    else if (this.orphanPending) this.recheckOrphan(`${session.client} session ${session.id} ${reason}`)
   }
 
   /** §8.3: an expired exitDaemonWhenClosed session stops a Studio-started daemon when nobody else is connected. */
   private applyOrphanRule(session: ClientSession): void {
     const why = `client session ${session.id} (${session.client}) expired and asked to stop the daemon when closed`
-    if (this.sessions.size > 0) {
-      this.log(`Not stopping the daemon: ${why}, but ${this.sessions.size} other client session(s) are open`)
-      return
-    }
     if (this.options.startedBy !== 'studio') {
       this.log(`Not stopping the daemon: ${why}, but this daemon run was started by ${this.options.startedBy ?? 'an unknown launcher'}, not Studio`)
       return
     }
+    if (this.sessions.size > 0) {
+      // Re-checked whenever another session ends (recheckOrphan).
+      this.orphanPending = why
+      const clients = [...this.sessions.values()].map(s => s.client).join(', ')
+      this.log(`Not stopping the daemon yet: ${why}, but ${this.sessions.size} other client session(s) are open (${clients}); it stops when the last one ends`)
+      this.publishPush('daemon_orphan_hold', {
+        holding: true,
+        reason: `${session.client} closed; the daemon it started keeps running while you are connected and stops when the last client disconnects`,
+        sessions: this.sessions.size,
+      })
+      return
+    }
+    this.shutDown(why)
+  }
+
+  private recheckOrphan(trigger: string): void {
+    if (!this.orphanPending || this.sessions.size > 0) return
+    const why = `${this.orphanPending}; the last other client session ended (${trigger})`
+    this.orphanPending = null
+    this.shutDown(why)
+  }
+
+  private shutDown(why: string): void {
     if (!this.options.requestShutdown) {
       this.log(`Not stopping the daemon: ${why}, but shutdown is not available`)
       return
@@ -849,10 +1012,11 @@ function pathKey(filePath: string): string {
   return CASE_INSENSITIVE_FS ? abs.toLowerCase() : abs
 }
 
-function executorFrame(event: RuntimeAgentEvent, strip: boolean): Omit<ClientExecutorFrame, 'cursor'> {
+function executorFrame(event: RuntimeAgentEvent, strip: 'tool_result' | 'stub' | null): Omit<ClientExecutorFrame, 'cursor'> {
   const loop = event.event.loop
   const base = { kind: 'executor' as const, agentId: event.agentId, filePath: event.filePath, ...(loop !== undefined ? { loop } : {}) }
   if (!strip) return { ...base, event: event.event }
+  if (strip === 'stub') return { ...base, stripped: 'stub', event: { ...event.event, payload: stubPayload(event.event.payload) } }
   const payload = (event.event.payload ?? {}) as Record<string, unknown> & { result?: { content?: unknown; isError?: unknown } }
   const content = payload.result?.content
   const { result: _result, ...rest } = payload
@@ -863,28 +1027,114 @@ function executorFrame(event: RuntimeAgentEvent, strip: boolean): Omit<ClientExe
   }
 }
 
-// --- Default document host --------------------------------------------------------
+/**
+ * A payload reduced for a session not focused on its agent: the scalar
+ * fields (strings up to STUB_STRING_CHARS), plus `size`, the serialized size
+ * of the whole payload. The client fetches the rest on demand.
+ */
+export function stubPayload(payload: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+      if (typeof value === 'number' || typeof value === 'boolean' || value === null) out[key] = value
+      else if (typeof value === 'string' && value.length <= STUB_STRING_CHARS) out[key] = value
+    }
+  }
+  const json = trySafeJsonStringify(payload)
+  out.size = 'json' in json ? json.json.length : 0
+  return out
+}
 
 /**
- * Until open documents exist (W2-A), a session can hold only an agent that
- * is loaded (running); holding it pins nothing.
+ * A frame's JSON. When its payload cannot be serialized at all (a throwing
+ * getter or toJSON), the envelope is kept and the payload becomes
+ * `{unserializable: reason}`, with `unserializable: true` on the frame, so
+ * the client sees that something happened.
  */
-export function loadedAgentDocumentHost(runtime: Pick<RuntimeService, 'listAgents'>): ClientDocumentHost {
+function frameJson(frame: Record<string, unknown>, payloadAt: 'event' | 'payload'): string {
+  const whole = trySafeJsonStringify(frame)
+  if ('json' in whole) return whole.json
+  const inner = payloadAt === 'event' ? (frame.event as Record<string, unknown>).payload : frame.payload
+  const reason = (() => { const r = trySafeJsonStringify(inner); return 'error' in r ? r.error : whole.error })()
+  console.error(`[ADF Daemon] A ${String(frame.kind)} frame could not be serialized: ${reason}`)
+  const replaced = payloadAt === 'event'
+    ? { ...frame, event: { ...(frame.event as Record<string, unknown>), payload: { unserializable: reason } }, unserializable: true }
+    : { ...frame, payload: { unserializable: reason }, unserializable: true }
+  return safeJsonStringify(replaced)
+}
+
+/** Inbox counts by status: what a session not focused on the agent gets instead of the messages. */
+function inboxCounts(messages: Array<{ status?: unknown }>): { unread: number; read: number; archived: number } {
+  const counts = { unread: 0, read: 0, archived: 0 }
+  for (const message of messages) {
+    if (message.status === 'read') counts.read++
+    else if (message.status === 'archived') counts.archived++
+    else counts.unread++
+  }
+  return counts
+}
+
+/** The `inbox` push for an agent: the messages to sessions focused on it, the counts to the others. */
+function publishInbox(sessions: ClientSessionRegistry, messages: InboxMessage[], target: { agentId?: string | null; filePath?: string | null }): void {
+  sessions.publishPush('inbox', { inbox: { version: 1, messages } }, target, { unfocused: () => ({ counts: inboxCounts(messages) }) })
+}
+
+// --- Documents (W2-A) --------------------------------------------------------------
+
+/** The RuntimeService calls a session's documents go through (W2-A, design D4). */
+type DocumentRuntime = Pick<RuntimeService, 'openDocument' | 'releaseDocument' | 'releaseDocumentHolder' | 'getAgentOrDocument'>
+
+/**
+ * Open documents behind the session routes: hold = `openDocument(path,
+ * {holder: sessionId})`, release = `releaseDocument`, session end =
+ * `releaseDocumentHolder(sessionId)`. The holder is the session id only.
+ */
+export function runtimeDocumentHost(runtime: DocumentRuntime): ClientDocumentHost {
   return {
-    async hold(_sessionId, request) {
-      const agents = runtime.listAgents()
-      const match = request.agentId
-        ? agents.find((agent) => agent.id === request.agentId)
-        : request.filePath
-          ? agents.find((agent) => agent.filePath && pathKey(agent.filePath) === pathKey(request.filePath!))
-          : undefined
-      if (!request.agentId && !request.filePath) throw new ClientSessionError('filePath or agentId is required', 400, 'bad_request')
-      if (!match) {
-        throw new ClientSessionError(`${request.filePath ?? request.agentId} is not running; this daemon can hold only running agents until open documents are available.`, 409, 'document_unavailable')
+    async hold(sessionId, request) {
+      const filePath = request.filePath ?? (request.agentId ? runtime.getAgentOrDocument(request.agentId)?.filePath ?? null : null)
+      if (!filePath) {
+        throw new ClientSessionError(request.agentId ? `Unknown agent "${request.agentId}"; hold it by its filePath` : 'filePath or agentId is required', request.agentId ? 404 : 400, request.agentId ? 'not_found' : 'bad_request')
       }
-      return { agentId: match.id, filePath: match.filePath, running: true }
+      const info = await runDocumentCall(() => runtime.openDocument(filePath, { holder: sessionId }))
+      return { ...info }
     },
-    release() {},
+    async release(sessionId, agentId) {
+      await runDocumentCall(() => runtime.releaseDocument(agentId, sessionId))
+    },
+    async releaseHolder(sessionId) {
+      return runtime.releaseDocumentHolder(sessionId)
+    },
+  }
+}
+
+/** RuntimeService's refusals (RuntimeLoopError) as ClientSessionError, with their status and code. */
+async function runDocumentCall<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (err) {
+    const e = err as { statusCode?: unknown; code?: unknown; message?: unknown }
+    if (typeof e?.statusCode === 'number') {
+      throw new ClientSessionError(String(e.message), e.statusCode, typeof e.code === 'string' ? e.code : 'conflict')
+    }
+    throw err
+  }
+}
+
+/**
+ * Open documents for the registry: the runtime document host, and W2-A's
+ * holder sweep asking the registry whether a holder is a live session, so a
+ * live session's documents are never swept. Returns the unwire function.
+ */
+export function wireDocumentsToClientSessions(
+  sessions: ClientSessionRegistry,
+  runtime: DocumentRuntime & Pick<RuntimeService, 'setDocumentHolderCheck'>,
+): () => void {
+  sessions.setDocumentHost(runtimeDocumentHost(runtime))
+  runtime.setDocumentHolderCheck((holder) => sessions.has(holder))
+  return () => {
+    runtime.setDocumentHolderCheck(null)
+    sessions.setDocumentHost(null)
   }
 }
 
@@ -988,10 +1238,12 @@ function attachLoadedAgent(sessions: ClientSessionRegistry, event: RuntimeAgentL
     // The assembler's own listener (registered at assembly, before this one)
     // has written the message to the inbox by now.
     const onInbound = (type: string) => {
+      // Nobody listens: skip the three inbox queries.
+      if (sessions.size === 0) return
       const path = filePath()
       try {
         const messages = [...agent.workspace.getInbox('unread'), ...agent.workspace.getInbox('read'), ...agent.workspace.getInbox('archived')]
-        sessions.publishPush('inbox', { inbox: { version: 1, messages } }, target())
+        publishInbox(sessions, messages, target())
       } catch (err) {
         console.error(`[ADF Daemon] Inbox read for the client stream failed (${path ?? agentId}):`, err)
       }
@@ -1059,21 +1311,24 @@ export function wireMeshToClientSessions(
     sessions.publishPush('mesh', event, { filePath })
   }
   const onInbox = (data: { filePath: string; inbox: InboxMessage[] }) => {
-    sessions.publishPush('inbox', { inbox: { version: 1, messages: data.inbox } }, { filePath: data.filePath })
+    publishInbox(sessions, data.inbox, { filePath: data.filePath })
   }
+  // Every delivery to a registered agent (mesh-manager `agent_incoming`):
+  // the full message to sessions focused on the recipient, a stub to the rest.
   const onIncoming = (data: { filePath: string; fromAgent: string; toAgent: string; channel?: string; content: string }) => {
-    sessions.publishPush('inter_agent_message', {
-      fromAgent: data.fromAgent, toAgent: data.toAgent, channel: data.channel, content: data.content, direction: 'incoming',
-    }, { filePath: data.filePath })
+    const base = { fromAgent: data.fromAgent, toAgent: data.toAgent, ...(data.channel ? { channel: data.channel } : {}), direction: 'incoming' as const }
+    sessions.publishPush('inter_agent_message', { ...base, content: data.content }, { filePath: data.filePath }, {
+      unfocused: () => ({ ...base, size: data.content.length }),
+    })
   }
   mesh.on('mesh_event', onMeshEvent)
   mesh.on('inbox_updated', onInbox)
-  mesh.on('foreground_incoming', onIncoming)
+  mesh.on('agent_incoming', onIncoming)
   mesh.setConfigPersistedListener?.((filePath, config) => sessions.publishPush('config_changed', { filePath, config }, { filePath }))
   return () => {
     mesh.off('mesh_event', onMeshEvent)
     mesh.off('inbox_updated', onInbox)
-    mesh.off('foreground_incoming', onIncoming)
+    mesh.off('agent_incoming', onIncoming)
     mesh.setConfigPersistedListener?.(null)
   }
 }

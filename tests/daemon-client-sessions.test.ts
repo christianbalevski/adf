@@ -9,6 +9,7 @@ import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ClientSessionRegistry,
+  clientWriteSource,
   wireApprovalsToClientSessions,
   wireComputeToClientSessions,
   wireMeshToClientSessions,
@@ -20,6 +21,7 @@ import {
   type ClientStreamSink,
 } from '../src/main/daemon/client-sessions'
 import { emitAgentConfigChanged } from '../src/main/runtime/agent-runtime-signals'
+import { withSource } from '../src/main/runtime/execution-context'
 import type { RuntimeAgentEvent } from '../src/main/runtime/runtime-service'
 import type { AgentExecutionEvent } from '../src/shared/types/ipc.types'
 
@@ -224,6 +226,7 @@ describe('client sessions: ring, gaps and resume', () => {
   it('a ring over its character budget evicts the oldest frames (the newest always stays)', () => {
     const sessions = registry({ ringChars: 10_000 })
     const { sessionId } = sessions.create({ client: 'test', version: '1' })
+    sessions.setFocus(sessionId, AGENT_1)
     for (let i = 0; i < 50; i++) sessions.publishExecutor(exec(AGENT_1, 'tool_call_start', { pad: 'p'.repeat(1000) }))
     const stats = sessions.stats(sessionId)
     expect(stats.chars).toBeLessThanOrEqual(10_000)
@@ -350,7 +353,7 @@ describe('client sessions: expiry, documents and the orphan rule', () => {
     await deleted.end(ended.sessionId)
     await new Promise(r => setTimeout(r, 60))
     expect(shutdown).not.toHaveBeenCalled()
-    expect(log.filter(m => m.startsWith('Not stopping the daemon:'))).toEqual([
+    expect(log.filter(m => m.startsWith('Not stopping the daemon'))).toEqual([
       expect.stringContaining('1 other client session(s) are open'),
       expect.stringContaining('started by cli'),
     ])
@@ -362,17 +365,30 @@ describe('client sessions: origin dedup', () => {
     const sessions = registry()
     const writer = open(sessions, { focus: AGENT_1 })
     const reader = open(sessions, { focus: AGENT_1 })
-    const done = sessions.beginOrigin(writer.sessionId, AGENT_1)
-    sessions.publishPush('config_changed', { filePath: FILE_1, config: { name: 'agent-1' } as never }, { agentId: AGENT_1 })
-    sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'notes.md', content: 'x' }))
-    sessions.publishExecutor(exec(AGENT_1, 'document_updated', { content: 'doc' }))
-    sessions.publishExecutor(exec(AGENT_1, 'tool_call_start', { name: 'still-sent' }))
-    done()
+    withSource(clientWriteSource(writer.sessionId), () => {
+      sessions.publishPush('config_changed', { filePath: FILE_1, config: { name: 'agent-1' } as never }, { agentId: AGENT_1 })
+      sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'notes.md', content: 'x' }))
+      sessions.publishExecutor(exec(AGENT_1, 'document_updated', { content: 'doc' }))
+      sessions.publishExecutor(exec(AGENT_1, 'tool_call_start', { name: 'still-sent' }))
+    })
     sessions.publishPush('config_changed', { filePath: FILE_1, config: { name: 'agent-1b' } as never }, { agentId: AGENT_1 })
     await tick()
     const kinds = (sink: FakeSink) => sink.frames().map(f => (f.kind === 'push' ? f.topic : f.kind === 'executor' ? f.event.type : f.type))
     expect(kinds(writer.sink)).toEqual(['tool_call_start', 'config_changed'])
     expect(kinds(reader.sink)).toEqual(['config_changed', 'file_updated', 'document_updated', 'tool_call_start', 'config_changed'])
+  })
+
+  it('suppression is per event: an agent write raised during a client write still reaches that client', async () => {
+    const sessions = registry()
+    const writer = open(sessions, { focus: AGENT_1 })
+    withSource(clientWriteSource(writer.sessionId), () => {
+      sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'from-client.md', content: 'x' }))
+      // The agent's own turn writes another file while the client's request runs.
+      withSource('agent:turn-1', AGENT_1, () => sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'from-agent.md', content: 'y' })))
+      sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'from-client-2.md', content: 'z' }))
+    })
+    await tick()
+    expect(writer.sink.frames().map(f => f.kind === 'executor' && (f.event.payload as { path: string }).path)).toEqual(['from-agent.md'])
   })
 })
 
@@ -397,7 +413,7 @@ describe('client sessions: producers', () => {
     const sessions = registry()
     const runtime = fakeRuntime()
     const unwire = wireRuntimeToClientSessions(sessions, runtime as never)
-    const { sink } = open(sessions)
+    const { sink } = open(sessions, { focus: AGENT_1 })
     const agent = fakeAgent()
     runtime.emit('agent-loaded', { agentId: AGENT_1, filePath: FILE_1, ref: {}, agent })
     runtime.emit('agent-event', exec(AGENT_1, 'tool_call_start', { name: 'x' }))
@@ -444,7 +460,8 @@ describe('client sessions: producers', () => {
   it('mesh, compute, approvals and the tracked-folder watcher', async () => {
     const sessions = registry()
     sessions.indexAgent(FILE_2, AGENT_2)
-    const { sink } = open(sessions)
+    const { sink } = open(sessions, { focus: AGENT_2 })
+    const other = open(sessions)
     const mesh = Object.assign(new EventEmitter(), { persisted: null as ((filePath: string, config: unknown) => void) | null, setConfigPersistedListener(l: never) { this.persisted = l } })
     wireMeshToClientSessions(sessions, mesh as never)
     const compute = new EventEmitter()
@@ -456,7 +473,7 @@ describe('client sessions: producers', () => {
 
     mesh.emit('mesh_event', { type: 'agent_joined', payload: { filePath: FILE_2 }, timestamp: 1 })
     mesh.emit('inbox_updated', { filePath: FILE_2, inbox: [{ id: 'm' }] })
-    mesh.emit('foreground_incoming', { filePath: FILE_2, fromAgent: 'agent-1', toAgent: 'agent-2', content: 'hi' })
+    mesh.emit('agent_incoming', { filePath: FILE_2, fromAgent: 'agent-1', toAgent: 'agent-2', content: 'hi' })
     mesh.persisted!(FILE_2, { name: 'agent-2' })
     compute.emit('container-phase', { containerName: 'adf-agent-2', phase: 'ready', agentId: AGENT_2, timestamp: 1 })
     compute.emit('browser-session', { agentId: AGENT_2, agentName: 'agent-2', agentFilePath: FILE_2, containerName: 'adf-agent-2', hostPort: 6080, timestamp: 1 })
@@ -472,6 +489,9 @@ describe('client sessions: producers', () => {
     ])
     expect(sink.frames()[1]).toMatchObject({ payload: { inbox: { version: 1, messages: [{ id: 'm' }] } } })
     expect(sink.frames()[2]).toMatchObject({ payload: { fromAgent: 'agent-1', toAgent: 'agent-2', content: 'hi', direction: 'incoming' } })
+    // A session not focused on agent-2: inbox counts and the message without its content.
+    expect(other.sink.frames()[1]).toEqual(expect.objectContaining({ stripped: 'stub', payload: { counts: { unread: 1, read: 0, archived: 0 } } }))
+    expect(other.sink.frames()[2]).toEqual(expect.objectContaining({ stripped: 'stub', payload: { fromAgent: 'agent-1', toAgent: 'agent-2', direction: 'incoming', size: 2 } }))
   })
 
   it('install progress: installing per line, then installed or error; the caller\'s callback and other members still work', async () => {
@@ -501,18 +521,23 @@ describe('client sessions: producers', () => {
     ])
   })
 
-  it('umbilical envelopes go only to sessions that asked, never turn.delta', async () => {
+  it('umbilical envelopes go only to sessions that asked; turn.delta only to those not focused on the agent', async () => {
     const sessions = registry()
     const plain = open(sessions)
     const { sessionId } = sessions.create({ client: 'tui', version: '1', umbilical: true })
+    sessions.setFocus(sessionId, AGENT_1)
     const sink = new FakeSink()
     sessions.attach(sessionId, sink)
+    const other = sessions.create({ client: 'tui-2', version: '1', umbilical: true })
+    const otherSink = new FakeSink()
+    sessions.attach(other.sessionId, otherSink)
     const envelope = (event_type: string) => ({ seq: 1, event_type, timestamp: 1, source: 'agent:x', agent_id: AGENT_1, payload: {} })
     sessions.publishUmbilical(envelope('turn.delta'))
     sessions.publishUmbilical(envelope('turn.completed'))
     await tick()
     expect(plain.sink.frames()).toEqual([])
     expect(sink.frames()).toEqual([{ cursor: 1, kind: 'umbilical', agentId: AGENT_1, event: envelope('turn.completed') }])
+    expect(otherSink.frames().map(f => f.kind === 'umbilical' && f.event.event_type)).toEqual(['turn.delta', 'turn.completed'])
     // disconnect: the session stays, its client resumes.
     sessions.disconnect(sessionId)
     expect(sink.destroyed).toBe(true)
@@ -539,10 +564,114 @@ describe('client sessions: daemon wiring', () => {
       'wireTrackedDirWatcherToClientSessions(clientSessions, trackedDirWatcher)',
       'wireEventBusToClientSessions(clientSessions, eventBus)',
       'registerDaemonClientSessions(clientSessions)',
+      'wireDocumentsToClientSessions(clientSessions, runtime)',
       "withInstallProgress(mcpPackageResolver, 'mcp_install', 1, clientSessions)",
       "withInstallProgress(uvxPackageResolver, 'mcp_install', 2, clientSessions)",
       "withInstallProgress(adapterPackageResolver, 'adapter_install', 1, clientSessions)",
       "withInstallProgress(sandboxPackagesService, 'sandbox_install', 2, clientSessions)",
     ]) expect(source).toContain(line)
+  })
+})
+
+describe('client sessions: review fixes', () => {
+  it('a stream that closed before attach is not attached, and the session still expires', async () => {
+    const sessions = registry({ expiryMs: 30 })
+    const { sessionId } = sessions.create({ client: 'test', version: '1' })
+    const sink = new FakeSink()
+    sink.destroyed = true
+    sessions.attach(sessionId, sink)
+    expect(sessions.stats(sessionId).connected).toBe(false)
+    expect(sink.writes).toBe(0)
+    await new Promise(r => setTimeout(r, 80))
+    expect(sessions.has(sessionId)).toBe(false)
+  })
+
+  it('unfocused sessions get the background whitelist and stubs; the focused one gets full payloads', async () => {
+    const sessions = registry()
+    const focused = open(sessions, { focus: AGENT_1 })
+    const other = open(sessions, { focus: AGENT_2 })
+    const big = 'b'.repeat(50_000)
+    sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'notes.md', content: big, previousContent: big }))
+    sessions.publishExecutor(exec(AGENT_1, 'chat_updated', { uiLog: [{ text: big }], contextBaseline: 12 }))
+    sessions.publishExecutor(exec(AGENT_1, 'context_injected', { category: 'system', content: big }))
+    sessions.publishExecutor(exec(AGENT_1, 'tool_call_start', { name: 'fs_write', id: 'tu1', input: { content: big } }))
+    sessions.publishExecutor(exec(AGENT_1, 'state_changed', { state: 'thinking' }))
+    await tick()
+    expect(focused.sink.frames().every(f => !('stripped' in f))).toBe(true)
+    expect(JSON.stringify(focused.sink.frames()).length).toBeGreaterThan(200_000)
+    const stubs = other.sink.frames()
+    expect(stubs.map(f => f.kind === 'executor' && [f.event.type, f.stripped ?? 'full'])).toEqual([
+      ['file_updated', 'stub'], ['chat_updated', 'stub'], ['context_injected', 'stub'], ['tool_call_start', 'stub'], ['state_changed', 'full'],
+    ])
+    expect(stubs[0]).toMatchObject({ event: { payload: { path: 'notes.md', size: expect.any(Number) } } })
+    expect(stubs[1]).toMatchObject({ event: { payload: { contextBaseline: 12 } } })
+    expect(stubs[3]).toMatchObject({ event: { payload: { name: 'fs_write', id: 'tu1' } } })
+    expect(JSON.stringify(stubs).length).toBeLessThan(2_000)
+  })
+
+  it('one large write does not gap other sessions: only the focused reader gets an oversized gap', async () => {
+    const sessions = registry({ maxFrameChars: 10_000 })
+    const focused = open(sessions, { focus: AGENT_1 })
+    const other = open(sessions, { focus: AGENT_2 })
+    const plain = open(sessions)
+    sessions.publishExecutor(exec(AGENT_1, 'file_updated', { path: 'huge.md', content: 'h'.repeat(20_000) }))
+    sessions.publishExecutor(exec(AGENT_1, 'state_changed', { state: 'idle' }))
+    await tick()
+    expect(focused.sink.controls('stream.gap')).toEqual([expect.objectContaining({ reason: 'oversized', dropped: 1, size: expect.any(Number) })])
+    expect(focused.sink.frames().map(f => f.kind === 'executor' && f.event.type)).toEqual(['state_changed'])
+    for (const s of [other, plain]) {
+      expect(s.sink.controls('stream.gap')).toEqual([])
+      expect(s.sink.frames().map(f => f.kind === 'executor' && f.event.type)).toEqual(['file_updated', 'state_changed'])
+    }
+  })
+
+  it('orphan rule: Studio expires while the TUI is attached; the TUI is told, and the daemon stops when the TUI ends', async () => {
+    const shutdown = vi.fn()
+    const sessions = registry({ expiryMs: 20, startedBy: 'studio', requestShutdown: shutdown })
+    sessions.create({ client: 'studio', version: '1', exitDaemonWhenClosed: true })
+    const tui = open(sessions)
+    await new Promise(r => setTimeout(r, 60))
+    expect(shutdown).not.toHaveBeenCalled()
+    expect(tui.sink.frames().filter(f => f.kind === 'push' && f.topic === 'daemon_orphan_hold')).toEqual([
+      expect.objectContaining({ payload: expect.objectContaining({ holding: true, sessions: 1 }) }),
+    ])
+    await sessions.end(tui.sessionId)
+    expect(shutdown).toHaveBeenCalledOnce()
+  })
+
+  it('orphan rule: a Studio that comes back clears the pending shutdown', async () => {
+    const shutdown = vi.fn()
+    const sessions = registry({ expiryMs: 20, startedBy: 'studio', requestShutdown: shutdown })
+    sessions.create({ client: 'studio', version: '1', exitDaemonWhenClosed: true })
+    const tui = open(sessions)
+    await new Promise(r => setTimeout(r, 60))
+    const back = open(sessions)
+    void back
+    const studio2 = sessions.create({ client: 'studio', version: '1', exitDaemonWhenClosed: true })
+    sessions.attach(studio2.sessionId, new FakeSink())
+    await tick()
+    await sessions.end(tui.sessionId)
+    expect(shutdown).not.toHaveBeenCalled()
+    expect(tui.sink.frames().filter(f => f.kind === 'push' && f.topic === 'daemon_orphan_hold').map(f => f.kind === 'push' && (f.payload as { holding: boolean }).holding)).toEqual([true, false])
+  })
+
+  it('no session: adapter inbound reads no inbox', () => {
+    const sessions = registry()
+    const runtime = Object.assign(new EventEmitter(), { listAgents: () => [] })
+    wireRuntimeToClientSessions(sessions, runtime as never)
+    const getInbox = vi.fn(() => [])
+    const adapterManager = new EventEmitter()
+    runtime.emit('agent-loaded', { agentId: AGENT_1, filePath: FILE_1, ref: {}, agent: { workspace: { getInbox, setOnDataChangeCallback: () => {} }, adapterManager } })
+    adapterManager.emit('inbound', 'telegram', {}, { inboxId: 'm1' })
+    expect(getInbox).not.toHaveBeenCalled()
+  })
+
+  it('an unserializable payload keeps its frame: kind and type stay, the payload says why', async () => {
+    const sessions = registry()
+    const { sink } = open(sessions, { focus: AGENT_1 })
+    const payload = { get broken() { throw new Error('no getter for you') } }
+    sessions.publishExecutor(exec(AGENT_1, 'tool_call_start', payload))
+    await tick()
+    expect(sink.frames()).toEqual([expect.objectContaining({ kind: 'executor', unserializable: true, event: expect.objectContaining({ type: 'tool_call_start', payload: { unserializable: 'no getter for you' } }) })])
   })
 })

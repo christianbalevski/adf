@@ -29,7 +29,7 @@ vi.mock('electron', () => {
 
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { DaemonEventBus } from '../src/main/daemon/event-bus'
-import { ClientSessionRegistry, loadedAgentDocumentHost, wireApprovalsToClientSessions, wireEventBusToClientSessions, wireRuntimeToClientSessions } from '../src/main/daemon/client-sessions'
+import { ClientSessionRegistry, runtimeDocumentHost, wireApprovalsToClientSessions, wireEventBusToClientSessions, wireRuntimeToClientSessions } from '../src/main/daemon/client-sessions'
 import { CLIENT_API_VERSION } from '../src/main/daemon/routes/meta-routes'
 import { registerDaemonEventBus } from '../src/main/runtime/emit-umbilical'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
@@ -94,7 +94,7 @@ async function daemon(opts: { ringFrames?: number } = {}) {
     agentRuntimeBuilder: new AgentRuntimeBuilder(),
   })
   cleanups.push(async () => { for (const a of runtime.listAgents()) await runtime.unloadAgent(a.id, { mode: 'immediate' }).catch(() => {}) })
-  const sessions = new ClientSessionRegistry({ log: () => {}, documents: loadedAgentDocumentHost(runtime), resolveAgentId: (id) => runtime.getAgent(id)?.id ?? null, ...(opts.ringFrames ? { ringFrames: opts.ringFrames } : {}) })
+  const sessions = new ClientSessionRegistry({ log: () => {}, documents: runtimeDocumentHost(runtime), resolveAgentId: (id) => runtime.getAgentOrDocument(id)?.id ?? null, ...(opts.ringFrames ? { ringFrames: opts.ringFrames } : {}) })
   cleanups.push(wireRuntimeToClientSessions(sessions, runtime), wireEventBusToClientSessions(sessions, bus), wireApprovalsToClientSessions(sessions, approvalHub))
   const server = createDaemonHttpApi(runtime, { eventBus: bus, routes: { clientSessions: sessions } })
   await server.listen({ host: '127.0.0.1', port: 0 })

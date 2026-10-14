@@ -31,11 +31,12 @@ vi.mock('electron', () => {
 import type { FastifyInstance } from 'fastify'
 import { createDaemonHttpApi, type DaemonHttpApiOptions } from '../src/main/daemon/http-api'
 import { DaemonEventBus, type DaemonEventEnvelope } from '../src/main/daemon/event-bus'
-import { ClientSessionRegistry, loadedAgentDocumentHost, wireApprovalsToClientSessions, wireRuntimeToClientSessions } from '../src/main/daemon/client-sessions'
+import { ClientSessionRegistry, runtimeDocumentHost, wireApprovalsToClientSessions, wireRuntimeToClientSessions } from '../src/main/daemon/client-sessions'
 import { registerDaemonEventBus } from '../src/main/runtime/emit-umbilical'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { AgentRuntimeBuilder } from '../src/main/runtime/agent-runtime-builder'
 import { approvalHub } from '../src/main/runtime/approval-hub'
+import { withSource } from '../src/main/runtime/execution-context'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
 import { clearAllUmbilicalBuses } from '../src/main/runtime/umbilical-bus'
 import { DaemonClient, type ClientFrame, type EventStream, type ResumeInfo, type StreamGap } from '../src/shared/daemon-client'
@@ -68,8 +69,9 @@ function agentFile(dir: string, name: string): { filePath: string; agentId: stri
   return { filePath, agentId }
 }
 
-async function serve(runtime: RuntimeService, opts: DaemonHttpApiOptions = {}): Promise<{ server: FastifyInstance; client: DaemonClient; port: number }> {
+async function serve(runtime: RuntimeService, opts: DaemonHttpApiOptions = {}, beforeListen?: (server: FastifyInstance) => void): Promise<{ server: FastifyInstance; client: DaemonClient; port: number }> {
   const server = createDaemonHttpApi(runtime, opts)
+  beforeListen?.(server)
   await server.listen({ host: '127.0.0.1', port: 0 })
   cleanups.push(() => server.close())
   const port = (server.server.address() as AddressInfo).port
@@ -127,13 +129,19 @@ describe('client session routes', () => {
     expect(await client.setClientSessionFocus(created.sessionId, null)).toEqual({ sessionId: created.sessionId, focus: null })
     expect((await server.inject({ method: 'PUT', url: `/client/sessions/${created.sessionId}/focus`, payload: { agentId: 3 } })).statusCode).toBe(400)
 
-    // Until W2-A, only running agents can be held.
-    expect(await client.holdClientSessionDocument(created.sessionId, { filePath: one.filePath })).toEqual({ agentId: one.agentId, filePath: expect.any(String), running: true })
-    await expect(client.holdClientSessionDocument(created.sessionId, { filePath: two.filePath })).rejects.toMatchObject({ status: 409, body: { code: 'document_unavailable' } })
-    await expect(client.releaseClientSessionDocument(created.sessionId, two.agentId)).rejects.toMatchObject({ status: 404, body: { code: 'document_not_held' } })
+    // Open documents (W2-A): a running agent's file and a closed one; the holder is the session, never named in the answer.
+    const held = await client.holdClientSessionDocument(created.sessionId, { filePath: one.filePath })
+    expect(held).toMatchObject({ agentId: one.agentId, running: true, holders: 1 })
+    expect(await client.holdClientSessionDocument(created.sessionId, { filePath: two.filePath })).toMatchObject({ agentId: two.agentId, running: false })
+    expect(JSON.stringify(held)).not.toContain(created.sessionId)
+    expect(runtime.getAgentOrDocument(two.agentId)).toBeTruthy()
+    await expect(client.holdClientSessionDocument(created.sessionId, { filePath: join(dir, 'missing.adf') })).rejects.toMatchObject({ status: 404 })
+    await expect(client.releaseClientSessionDocument(created.sessionId, randomUUID())).rejects.toMatchObject({ status: 404, body: { code: 'document_not_held' } })
     expect(await client.releaseClientSessionDocument(created.sessionId, one.agentId)).toEqual({ sessionId: created.sessionId, agentId: one.agentId, released: true })
 
+    // Ending the session releases the rest: the closed file's document closes.
     expect(await client.endClientSession(created.sessionId)).toEqual({ sessionId: created.sessionId, ended: true })
+    expect(runtime.getAgentOrDocument(two.agentId)).toBeUndefined()
     await expect(client.endClientSession(created.sessionId)).rejects.toMatchObject({ status: 404, body: { code: 'session_not_found' } })
     const events = await server.inject({ method: 'GET', url: `/client/sessions/${created.sessionId}/events` })
     expect(events.statusCode).toBe(404)
@@ -159,7 +167,7 @@ describe('client session routes', () => {
 })
 
 describe('several clients on one daemon, in real time', () => {
-  async function fleet() {
+  async function fleet(beforeListen?: (server: FastifyInstance) => void) {
     const dir = mkdtempSync(join(tmpdir(), 'adf-client-fleet-'))
     const one = agentFile(dir, 'agent-1')
     const two = agentFile(dir, 'agent-2')
@@ -171,7 +179,7 @@ describe('several clients on one daemon, in real time', () => {
     cleanups.push(() => unloadAll(runtime))
     const bus = new DaemonEventBus(5000)
     registerDaemonEventBus(bus)
-    const served = await serve(runtime, { eventBus: bus })
+    const served = await serve(runtime, { eventBus: bus }, beforeListen)
     await runtime.loadAgent(one.filePath)
     await runtime.loadAgent(two.filePath)
     return { runtime, one, two, bus, ...served }
@@ -193,11 +201,17 @@ describe('several clients on one daemon, in real time', () => {
     }
     await new Promise(r => setTimeout(r, 100))
     for (const agentId of [one.agentId, two.agentId]) {
-      const nonDelta = (r: Reader) => r.frames.filter(f => !isDelta(f) && 'agentId' in f && f.agentId === agentId).map(bodyOf)
+      const nonDelta = (r: Reader) => r.frames.filter(f => !isDelta(f) && f.kind !== 'umbilical' && 'agentId' in f && f.agentId === agentId)
+      const label = (f: ClientFrame) => f.kind === 'executor' ? `executor:${f.event.type}` : f.kind === 'host' ? `host:${f.type}` : f.kind === 'push' ? `push:${f.topic}` : f.kind
       expect(nonDelta(a).length).toBeGreaterThan(3)
-      expect(nonDelta(b)).toEqual(nonDelta(a))
-      expect(nonDelta(c)).toEqual(nonDelta(a))
-      expect(nonDelta(tui).filter(body => !body.startsWith('{"kind":"umbilical"'))).toEqual(nonDelta(a))
+      // Same frames, same per-agent order, everywhere.
+      for (const r of [b, c, tui]) expect(nonDelta(r).map(label)).toEqual(nonDelta(a).map(label))
+      // Sessions focused alike get identical frames; an unfocused one gets each frame in full or as a marked stub.
+      expect(nonDelta(b).map(bodyOf)).toEqual(nonDelta(a).map(bodyOf))
+      expect(nonDelta(tui).map(bodyOf)).toEqual(nonDelta(a).map(bodyOf))
+      nonDelta(c).forEach((f, i) => {
+        if (!('stripped' in f)) expect(bodyOf(f)).toEqual(bodyOf(nonDelta(a)[i]))
+      })
     }
     // The TUI session also gets the umbilical envelopes, never turn.delta: its tokens are the executor deltas.
     const umbilical = tui.frames.filter(f => f.kind === 'umbilical')
@@ -242,6 +256,26 @@ describe('several clients on one daemon, in real time', () => {
     expect(others[0].frames.find(f => f.kind === 'push' && f.topic === 'inbox')).toMatchObject({ payload: { inbox: { version: 1, messages: [] } } })
   })
 
+  it('echo suppression is per event: an agent write raised during a client PUT still reaches the writer', async () => {
+    // The client's request is held open 300 ms before its handler runs; the agent writes meanwhile, in its own turn.
+    let inRequest: () => void = () => {}
+    const requestOpen = new Promise<void>(resolve => { inRequest = resolve })
+    const { runtime, client, one } = await fleet((server) => {
+      server.addHook('preHandler', async (request) => {
+        if (request.method === 'PUT' && request.url.includes('/files/content')) { inRequest(); await new Promise(r => setTimeout(r, 300)) }
+      })
+    })
+    const writer = await reader(client, { focus: one.agentId })
+    const paths = () => writer.frames.filter(f => f.kind === 'executor' && f.event.type === 'file_updated').map(f => f.kind === 'executor' && (f.event.payload as { path: string }).path)
+    const put = client.withClientSession(writer.sessionId).request('PUT', `/agents/${one.agentId}/files/content`, { query: { path: 'notes/client.md' }, body: { content: 'from the client' } })
+    await requestOpen
+    withSource('agent:turn-x', one.agentId, () => { runtime.writeAgentFile(one.agentId, 'notes/agent.md', { content: 'from the agent' }) })
+    await put
+    await waitFor(() => paths().includes('notes/agent.md'), 5000, 'agent write')
+    await new Promise(r => setTimeout(r, 100))
+    expect(paths()).toEqual(['notes/agent.md'])
+  })
+
   it('a HIL request reaches every session; one session resolves it and every session sees the resolution', async () => {
     const { runtime, client, one } = await fleet()
     const sessions = [await reader(client, { focus: one.agentId }), await reader(client, { focus: null }), await reader(client, { focus: one.agentId })]
@@ -259,9 +293,10 @@ describe('several clients on one daemon, in real time', () => {
       await waitFor(() => types(r).includes('tool_approval_resolved'), 5000, 'resolution')
       await waitFor(() => { const last = approvals(r).at(-1); return !!last && !last.includes(requestId) }, 5000, 'approvals cleared')
     }
-    const resolved = sessions.map(r => r.frames.filter(f => f.kind === 'executor' && f.event.type === 'tool_approval_resolved').map(bodyOf))
-    expect(resolved[1]).toEqual(resolved[0])
-    expect(resolved[2]).toEqual(resolved[0])
+    const resolved = sessions.map(r => r.frames.filter(f => f.kind === 'executor' && f.event.type === 'tool_approval_resolved'))
+    expect(resolved[2].map(bodyOf)).toEqual(resolved[0].map(bodyOf))
+    // The unfocused session gets the same resolution as a stub (its approvals snapshot carries the rest).
+    expect(resolved[1].map(f => f.kind === 'executor' && f.event.type)).toEqual(resolved[0].map(f => f.kind === 'executor' && f.event.type))
   })
 })
 
@@ -456,7 +491,7 @@ describe('GET /events is unchanged', () => {
       providerFactory: () => new MockLLMProvider({ tokensPerResponse: 10 }),
       agentRuntimeBuilder: new AgentRuntimeBuilder(),
     })
-    const sessions = new ClientSessionRegistry({ log: () => {}, documents: loadedAgentDocumentHost(runtime) })
+    const sessions = new ClientSessionRegistry({ log: () => {}, documents: runtimeDocumentHost(runtime) })
     cleanups.push(wireRuntimeToClientSessions(sessions, runtime))
     cleanups.push(wireApprovalsToClientSessions(sessions, approvalHub))
     const { client } = await serve(runtime, { eventBus: bus, routes: { clientSessions: sessions } })

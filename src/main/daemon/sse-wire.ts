@@ -41,6 +41,20 @@ export function safeJsonStringify(value: unknown): string {
   }
 }
 
+/** JSON text for `value`, or the reason it cannot be written (a throwing getter or toJSON). Never throws. */
+export function trySafeJsonStringify(value: unknown): { json: string } | { error: string } {
+  try {
+    return { json: JSON.stringify(value) ?? 'null' }
+  } catch {
+    // A BigInt or a cycle somewhere; retry with the tolerant replacer.
+  }
+  try {
+    return { json: JSON.stringify(value, tolerantReplacer()) ?? 'null' }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 /** BigInt → decimal string; an object already on the current path → "[Circular]". */
 function tolerantReplacer(): (this: unknown, key: string, value: unknown) => unknown {
   // Ancestors of the value being written: `this` is the holder of `value`,

@@ -46,10 +46,10 @@ import { applySettingLive } from './live-setting'
 import { approvalHub } from '../runtime/approval-hub'
 import {
   ClientSessionRegistry,
-  loadedAgentDocumentHost,
   registerDaemonClientSessions,
   wireApprovalsToClientSessions,
   wireComputeToClientSessions,
+  wireDocumentsToClientSessions,
   wireEventBusToClientSessions,
   wireMeshToClientSessions,
   wireRuntimeToClientSessions,
@@ -358,11 +358,12 @@ const clientSessions = new ClientSessionRegistry({
     console.log('[ADF Daemon] The last client session that owned this daemon run expired — shutting down...')
     void boundedShutdown(0)
   },
-  // Open documents arrive with W2-A; until then only running agents are held.
-  documents: loadedAgentDocumentHost(runtime),
-  resolveAgentId: (identifier) => runtime.getAgent(identifier)?.id ?? null,
+  resolveAgentId: (identifier) => runtime.getAgentOrDocument(identifier)?.id ?? null,
 })
 wireRuntimeToClientSessions(clientSessions, runtime)
+// Session documents are W2-A's open documents, held by the session id; the
+// holder sweep asks the registry, so a live session's documents stay open.
+wireDocumentsToClientSessions(clientSessions, runtime)
 wireMeshToClientSessions(clientSessions, meshManager)
 wireComputeToClientSessions(clientSessions, podmanService)
 wireApprovalsToClientSessions(clientSessions, approvalHub)
