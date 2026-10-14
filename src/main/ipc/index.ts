@@ -4,7 +4,6 @@ import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync
 import { join, dirname, basename, resolve, relative, sep } from 'path'
 import { networkInterfaces, tmpdir } from 'os'
 import { randomUUID, createHash } from 'crypto'
-import { nanoid } from 'nanoid'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
 import { initApplicationMenu, recordRecentFile } from '../menu'
 import { verifyCardSignature } from '../services/mesh-server'
@@ -73,7 +72,7 @@ import { openSharedMnemonicStore } from '../services/owner-secret-store'
 import { AdfDatabase } from '../adf/adf-database'
 import { AgentVitalsService, overlayLiveStates } from '../services/agent-vitals'
 import type { AgentActivity, AgentVitals } from '../../shared/types/agent-vitals.types'
-import { resolveDefaultProvider, applyDefaultProviderToOptions } from '../adf/apply-default-provider'
+import { resolveDefaultProvider } from '../adf/apply-default-provider'
 import { generateAgentName } from '../../shared/utils/agent-names'
 import { cloneAdfFile } from '../adf/clone-fixup'
 import { AgentTemplatesService, templateFilePath } from '../adf/agent-templates'
@@ -107,7 +106,7 @@ import type { TapManager } from '../runtime/tap-manager'
 import { SystemScopeHandler } from '../runtime/system-scope-handler'
 import { CodeSandboxService } from '../runtime/code-sandbox'
 import { SettingsService } from '../services/settings.service'
-import { issueOwnerAttestation, readAdfAttestations, verifyAttestation } from '../services/attestation.service'
+import { readAdfAttestations, verifyAttestation } from '../services/attestation.service'
 import { MeshServer } from '../services/mesh-server'
 import { MdnsService, type DiscoveredRuntime } from '../services/mdns-service'
 import { DirectoryFetchCache } from '../services/directory-fetch-cache'
@@ -116,12 +115,10 @@ import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { McpRegistryFetchService } from '../services/mcp-registry-fetch.service'
 import { AgentRegistryService } from '../services/agent-registry.service'
-import { parseSkillsCatalogDocument, MAX_CATALOG_BYTES, MAX_SKILL_PACKAGE_BYTES } from '../../shared/schemas/skills-catalog.schema'
-import { guardedFetch } from '../utils/guarded-fetch'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs, scratchRootPath } from '../utils/scratch-dir'
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
-import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES, type CredentialFileTarget } from '../services/mcp-credential-files'
+import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
 import { AppSettingsOAuthStore, AgentKeystoreOAuthStore, resolveOAuthStoreForConnect, captureOAuthToAgent } from '../services/mcp-oauth-store'
 import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn } from '../services/mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from '../services/mcp-http-oauth'
@@ -144,7 +141,7 @@ import { resolveAgentComputeTargetSelection } from '../services/execution-target
 import { ExternalExecutionService } from '../services/external-execution.service'
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import { pickFresherConfig } from '../runtime/config-freshness'
-import { buildMcpServerConfigFromRegistration, deriveRegistrationTestPlan, pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
+import { buildMcpServerConfigFromRegistration, pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import type { AdapterAgentStatus } from '../../shared/types/channel-adapter.types'
 import { WsConnectionManager } from '../services/ws-connection-manager'
@@ -171,7 +168,7 @@ import { readRecentToolsFromWorkspace } from '../services/recent-tools'
 import { ProviderChecks } from '../services/provider-checks'
 import { buildToolDescriptions } from '../services/tool-descriptions'
 import { availableAdfPath, bringRegistryAgentHome } from '../services/registry-bring-home'
-import { claimAgentWorkspace, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword } from '../services/envelope-actions'
+import { claimAgentWorkspace, issueAttestationsFor, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword } from '../services/envelope-actions'
 import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById } from '../services/dashboard-stats'
 import { buildMeshStatus } from '../services/mesh-status'
 import { appendMcpLog, ensurePythonRuntime, mcpOAuthSignOut, mcpOAuthStatus, probeMcpServer, runMcpRegistrationTest } from '../services/mcp-connect-tests'
@@ -695,13 +692,7 @@ function syncDerivedKeyToMesh(filePath: string, key: Buffer | null): void {
  */
 function issueAttestationsForCurrentOwner(workspace: AdfWorkspace): void {
   try {
-    const ownerIdentity = settings.getOwnerIdentity()
-    issueOwnerAttestation(workspace, {
-      ownerDid: ownerIdentity.getOwnerDid(),
-      ownerPrivateKey: ownerIdentity.getOwnerSigningKey(),
-      runtimeDid: ownerIdentity.getRuntimeDid(),
-      runtimePrivateKey: ownerIdentity.getRuntimeSigningKey()
-    })
+    issueAttestationsFor(workspace, settings.getOwnerIdentity())
   } catch (err) {
     console.warn('[OwnerIdentity] Attestation issuance failed:', err)
   }
