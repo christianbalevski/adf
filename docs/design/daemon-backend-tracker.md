@@ -59,7 +59,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W1-G | Compute ownership: a runtime stops only containers it started | 1 | none | MERGED |
 | W2-A | Open documents | 2 | W1-A, W1-E | MERGED |
 | W2-B | Client sessions and client event stream (+ TUI on client sessions) | 2 | W1-A, W0-B | MERGED |
-| W2-C2 | Studio main switches from the interim `/events` adapter to W2-B client sessions (focus, holds, reattach, gap) | 2 | W2-B, W2-C | TODO |
+| W2-C2 | Studio main switches from the interim `/events` adapter to W2-B client sessions (focus, holds, reattach, gap) | 2 | W2-B, W2-C | MERGED |
 | W2-C | Daemon-mode core in Studio main | 2 | W0-A, W0-B, W0-E, W1-F | MERGED |
 | W3-A | Proxy: files, documents, agent runtime, review, templates | 3 | W2-A, W2-B, W2-C | TODO |
 | W3-B | Proxy: settings, providers, models, subscription auth, identity, credentials | 3 | W2-C, W1-C | MERGED |
@@ -353,6 +353,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W3-C | E3 candidate: `closeConnection` orphans a shim-launched (cmd /c) MCP server that ignores stdin EOF on Windows | W5-A |
 | Lead | MERGE GATE for W3-A: `tests/parity/documents` green on the daemon side with real W2-C2 sessions (no skip, no `PARITY_W3A_HOLDS`) | Lead (W3-A merge) |
 | W3-A | A locked running agent keeps running with the stub provider in daemon mode instead of being stopped (D3 difference) | W5-A |
+| W2-C2 | `agent-oauth.test.ts` compares outcomes only (embedded's 50 ms coalesced approvals snapshot lands at varying points); make the snapshot timing deterministic in the harness and compare full recordings | W5-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
