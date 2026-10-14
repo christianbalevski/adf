@@ -37,6 +37,11 @@ import { killAllTracked } from '../utils/child-registry'
 import { withDeadline } from '../utils/concurrency'
 import { AdfDatabase } from '../adf/adf-database'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
+import { takeLaunchEnv } from './routes/meta-routes'
+
+// Defined by the builds that ship the daemon (electron.vite.config.ts for
+// out/main/daemon.js, scripts/build-npm.mjs for the npm package).
+declare const __ADF_VERSION__: string | undefined
 
 // A console.log after the parent's stdout pipe is gone emits EIO/EPIPE; with
 // no 'error' listener that becomes an uncaught exception over a harmless
@@ -89,6 +94,10 @@ const port = Number(process.env.ADF_DAEMON_PORT ?? 7385)
 const host = process.env.ADF_DAEMON_HOST ?? '127.0.0.1'
 const pidFile = process.env.ADF_DAEMON_PIDFILE
 const settingsPath = process.env.ADF_DAEMON_SETTINGS ?? defaultSettingsPath()
+const daemonVersion = typeof __ADF_VERSION__ === 'string' ? __ADF_VERSION__ : process.env.ADF_VERSION ?? process.env.npm_package_version ?? 'dev'
+// Also strips ELECTRON_RUN_AS_NODE and ADF_DAEMON_STARTED_BY from process.env (see takeLaunchEnv).
+const startedBy = takeLaunchEnv()
+console.log(`[ADF Daemon] Version ${daemonVersion} (pid ${process.pid}, started by ${startedBy})`)
 
 const settings = new FileSettingsStore(settingsPath)
 const eventBus = new DaemonEventBus(1000)
@@ -281,6 +290,8 @@ const daemon = new DaemonHost({
   behindProxy,
   localProof,
   pidFile,
+  version: daemonVersion,
+  routes: { startedBy },
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),

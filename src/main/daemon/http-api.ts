@@ -43,11 +43,14 @@ import { createDaemonVitalsDeps, registerVitalsRoutes, type DaemonVitalsMesh } f
 import { AgentVitalsService } from '../services/agent-vitals'
 import type { ProviderKeyVault } from './provider-key-vault'
 import { listFolderAgents, listTrackedAgents, listTrackedDirs, noteAutostartReport, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
+import { registerDaemonRoutes, type DaemonRouteDeps } from './routes'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
-  /** Reported by GET /runtime (default: ADF_VERSION, else npm_package_version). */
+  /** Reported by GET /runtime and GET /version (default: ADF_VERSION, else npm_package_version). */
   version?: string
+  /** Dependencies of the route modules in routes/index.ts. */
+  routes?: DaemonRouteDeps
   computeService?: DaemonComputeService
   settingsStore?: DaemonSettingsStore
   eventBus?: DaemonEventBus
@@ -680,6 +683,7 @@ export function createDaemonHttpApi(
   registerTemplateRoutes(server, { agentFactory: opts.agentFactory })
   registerProviderRoutes(server, { settingsStore: opts.settingsStore, providerKeys: opts.providerKeys })
   registerContextRoutes(server, runtime)
+  registerDaemonRoutes(server, { runtime, options: opts, localAccess })
   registerVitalsRoutes(server, {
     runtime,
     settings: opts.settingsStore,

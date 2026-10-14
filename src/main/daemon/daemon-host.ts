@@ -16,6 +16,7 @@ import {
   type DaemonWsService,
 } from './http-api'
 import type { DaemonEventBus } from './event-bus'
+import type { DaemonRouteDeps } from './routes'
 import { daemonHostAllowList, isLoopbackName, parseAllowedHostsEnv } from './request-guard'
 import { shutdownSandboxHosts } from '../runtime/sandbox-host'
 
@@ -36,6 +37,10 @@ export interface DaemonHostOptions {
   /** The X-ADF-Local-Proof secret proxy mode requires (see local-access.ts). */
   localProof?: string | null
   pidFile?: string
+  /** Reported by GET /runtime and GET /version (daemon/index.ts: the build's version). */
+  version?: string
+  /** Passed through to the route modules (routes/index.ts). */
+  routes?: DaemonRouteDeps
   logger?: boolean
   shutdownAgentTimeoutMs?: number
   computeService?: DaemonComputeService
@@ -105,6 +110,8 @@ export class DaemonHost {
   private readonly behindProxy?: boolean
   private readonly localProof: string | null
   private readonly pidFile?: string
+  private readonly version?: string
+  private readonly routes?: DaemonRouteDeps
   private readonly logger: boolean
   private readonly shutdownAgentTimeoutMs: number
   private readonly computeService?: DaemonComputeService
@@ -138,6 +145,8 @@ export class DaemonHost {
     this.behindProxy = opts.behindProxy
     this.localProof = opts.localProof ?? null
     this.pidFile = opts.pidFile
+    this.version = opts.version
+    this.routes = opts.routes
     this.logger = opts.logger ?? false
     this.shutdownAgentTimeoutMs = opts.shutdownAgentTimeoutMs ?? envShutdownTimeoutMs() ?? DEFAULT_AGENT_UNLOAD_TIMEOUT_MS
     this.computeService = opts.computeService
@@ -177,6 +186,8 @@ export class DaemonHost {
 
     this.server = createDaemonHttpApi(this.runtime, {
       logger: this.logger,
+      version: this.version,
+      routes: this.routes,
       computeService: this.computeService,
       settingsStore: this.settingsStore,
       eventBus: this.eventBus,
