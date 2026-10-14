@@ -462,7 +462,7 @@
             "$ref": "#/components/responses/ReviewRequired"
           },
           "409": {
-            "description": "Not loaded: another process runs the agent (`agent_leased`, with `holder`), or another loaded file has the same agent id (`duplicate_agent_id`, with `agentId`, `filePath` and `loadedFilePath`; stop that agent, or clone this file with POST /files/clone and load the clone)",
+            "description": "Not loaded: another process runs the agent (`agent_leased`, with `holder`), or another loaded file has the same agent id (`duplicate_agent_id`, with `agentId`, `filePath` and `loadedFilePath`; stop that agent, or clone this file and load the clone, which gets an id of its own)",
             "content": {
               "application/json": {
                 "schema": {
