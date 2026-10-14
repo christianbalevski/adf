@@ -40,6 +40,7 @@ import { AdfDatabase } from '../adf/adf-database'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
 import { takeLaunchEnv } from './routes/meta-routes'
 import { RuntimeDiscovery } from '../services/runtime-discovery'
+import { applySettingLive } from './live-setting'
 
 // Defined by the builds that ship the daemon (electron.vite.config.ts for
 // out/main/daemon.js, scripts/build-npm.mjs for the npm package).
@@ -194,7 +195,14 @@ const trackedDirs = (settings.get('trackedDirectories') as string[] | undefined)
 const codeSandboxService = new CodeSandboxService()
 // Same global worker ceiling as Studio — the daemon hosts every background
 // agent in one process, so it is exactly where the cap has to bind.
-codeSandboxService.setMaxWorkers(settings.get('sandboxMaxWorkers') as number | undefined)
+// Applies live, as Studio's SETTINGS_SET: the gate re-pumps its queue, so a
+// raised ceiling releases waiting executions without a restart.
+applySettingLive(settings, 'sandboxMaxWorkers', (value, initial) => {
+  codeSandboxService.setMaxWorkers(value as number | undefined)
+  if (initial) return
+  const { maxCold, maxWarm } = codeSandboxService.getResourceStats()
+  console.log(`[ADF Daemon] sandboxMaxWorkers changed to ${value ?? 'default'}: sandbox worker ceiling now ${maxCold} cold / ${maxWarm} warm`)
+})
 const sandboxPackagesService = new SandboxPackagesService()
 // Runtime packages (Settings > Packages) are importable by every agent; read
 // at each execution so a settings change applies without a restart. Each

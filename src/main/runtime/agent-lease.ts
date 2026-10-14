@@ -232,9 +232,12 @@ function samePath(a: string, b: string): boolean {
 /**
  * The sentence a refused start shows: which process holds the agent and what
  * to do about it. `ownSettingsPath` adds the holder's settings file when it
- * differs from the caller's (two hosts on different data).
+ * differs from the caller's (two hosts on different data). `unconfirmedLeaseFile`
+ * is set when only the pid could be checked (holderLiveness `unconfirmed`):
+ * the pid may belong to another program by now, so the sentence names the
+ * lease file and how to clear it.
  */
-export function agentLeasedMessage(record: AgentLeaseRecord, ownSettingsPath?: string, otherMachine = false): string {
+export function agentLeasedMessage(record: AgentLeaseRecord, ownSettingsPath?: string, otherMachine = false, unconfirmedLeaseFile?: string): string {
   const name = agentNameOf(record.path)
   const h = record.holder
   let text: string
@@ -250,6 +253,10 @@ export function agentLeasedMessage(record: AgentLeaseRecord, ownSettingsPath?: s
   }
   if (ownSettingsPath && h.settingsPath && !samePath(ownSettingsPath, h.settingsPath)) {
     text += ` That process uses the settings file ${h.settingsPath}.`
+  }
+  if (unconfirmedLeaseFile && !otherMachine) {
+    text += ` ADF cannot confirm that pid ${h.pid} is still that process: it recorded no endpoint to check. ` +
+      `If no ADF Studio or daemon runs ${name}, delete the lease file ${unconfirmedLeaseFile} and start it again.`
   }
   return text
 }
@@ -385,7 +392,7 @@ async function fetchDaemonPid(controlUrl: string): Promise<number | null> {
 export async function holderLiveness(
   holder: Pick<LeaseHolder, 'pid' | 'runtimeId' | 'endpoint'> & { machineId?: string | null; kind?: string; controlUrl?: string },
   dir: string = leaseDir(),
-): Promise<{ alive: boolean; reason: string; otherMachine?: boolean }> {
+): Promise<{ alive: boolean; reason: string; otherMachine?: boolean; unconfirmed?: boolean }> {
   // Another machine's pids mean nothing here: never stale.
   if (await fromOtherMachine(holder)) return { alive: true, otherMachine: true, reason: 'held on another machine' }
   if (!(await pidAlive(holder.pid))) return { alive: false, reason: `pid ${holder.pid} is not running` }
@@ -406,8 +413,11 @@ export async function holderLiveness(
     if (pid !== null && pid !== holder.pid) {
       return { alive: false, reason: `${holder.controlUrl} is served by pid ${pid}, not ${holder.pid}` }
     }
+    if (pid === holder.pid) return { alive: true, reason: `${holder.controlUrl} is served by pid ${pid}` }
   }
-  return { alive: true, reason: `pid ${holder.pid} is running` }
+  // No endpoint to ask (the holder could not listen): a running pid is all
+  // there is, and a reused pid looks the same.
+  return { alive: true, unconfirmed: true, reason: `pid ${holder.pid} is running` }
 }
 
 function parseRecord(raw: string): AgentLeaseRecord | null {
@@ -791,7 +801,7 @@ export class AgentLeaseRegistry {
           code: AGENT_LEASED_CODE,
           leaseFile: target.file,
           record: existing.record,
-          message: agentLeasedMessage(existing.record, this.info.settingsPath, liveness.otherMachine),
+          message: agentLeasedMessage(existing.record, this.info.settingsPath, liveness.otherMachine, liveness.unconfirmed ? target.file : undefined),
         }
       }
       console.warn(`[AgentLease] ${name}: replacing a stale lease held by ${describeHolder(holder)} (${liveness.reason})`)
