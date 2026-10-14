@@ -491,7 +491,7 @@
           "Agents"
         ],
         "summary": "Create an agent from a template, then load it",
-        "description": "Studio's \"new agent\", headless: template instance → sealed identity with owner/runtime stamps and attestations → marked reviewed → directory tracked → loaded (and started with `start: true`). Needs a ready owner identity; 409 `identity_not_ready` carries `identity` so a client can offer create / restore / unlock. `load_failed` (422) means the file was created, reviewed and tracked but could not load (e.g. no provider configured): fix it, then POST /agents/load.",
+        "description": "Studio's \"new agent\", headless: template instance → sealed identity with owner/runtime stamps and attestations → marked reviewed → directory tracked → loaded (and started with `start: true`). Needs a ready owner identity; 409 `identity_not_ready` carries `identity` so a client can offer create / restore / unlock. `load_failed` (422) means the file was created, reviewed and tracked but could not load (e.g. no provider configured): fix it, then POST /agents/load. With `load: false` and the header `X-ADF-Client-Session`, the new file is held open (not running) by that client session, which must be live (404 `session_not_found` otherwise); a `holder` body field is refused (400).",
         "operationId": "createAgent",
         "requestBody": {
           "required": false,
@@ -533,6 +533,20 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "X-ADF-Client-Session names no live client session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "No client session 3f0c… (it ended or expired, or the daemon restarted).",
+                  "code": "session_not_found"
+                }
+              }
+            }
           },
           "409": {
             "description": "Owner identity not ready (`identity_not_ready`) or the name is taken in that directory (`name_taken`)",
@@ -578,7 +592,18 @@
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "X-ADF-Client-Session",
+            "in": "header",
+            "required": false,
+            "description": "The requesting client session (POST /client/sessions). With load: false it holds the new file as an open document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
       }
     },
     "/agents/autostart": {
@@ -13435,7 +13460,7 @@
           "Client (internal)"
         ],
         "summary": "Open a client session",
-        "description": "Opens a session; its stream (GET /client/sessions/{id}/events) holds every frame from now on, so frames between this call and the first connect are not lost. A session expires 60 s after its stream disconnects (or after this call, if it never connects); expiry releases its documents. `exitDaemonWhenClosed: true` (ADF Studio when \"Keep the daemon running\" is off): when this session expires and no other session is open, a daemon Studio started (GET /version `startedBy: studio`) shuts down and logs why; a daemon the CLI or a service started never does. Ending the session with DELETE does not stop the daemon. Writes to /agents/{id}/* that send the header `X-ADF-Client-Session: <sessionId>` are not echoed back to that session (`config_changed`, `file_updated`, `document_updated`); every other session gets them.",
+        "description": "Opens a session; its stream (GET /client/sessions/{id}/events) holds every frame from now on, so frames between this call and the first connect are not lost. A session expires 60 s after its stream disconnects (or after this call, if it never connects); expiry releases its documents. `exitDaemonWhenClosed: true` (ADF Studio when \"Keep the daemon running\" is off): when this session expires and no other session is open, a daemon Studio started (GET /version `startedBy: studio`) shuts down and logs why; a daemon the CLI or a service started never does. Ending the session with DELETE does not stop the daemon. A write to /agents/{id}/* that sends the header `X-ADF-Client-Session: <sessionId>` is not echoed back to that session (`config_changed`, `file_updated`, `document_updated` raised by the write itself); every other session gets them, and work the request starts (a turn, a timer) reaches that session too.",
         "operationId": "createClientSession",
         "x-adf-stability": "internal",
         "requestBody": {
@@ -16854,10 +16879,6 @@
             "type": "boolean",
             "default": true,
             "description": "false: create the file and load nothing (Studio's FILE_CREATE, MESH_FOUND_AGENT). With `holder`, the file is held as an open document."
-          },
-          "holder": {
-            "type": "string",
-            "description": "With load: false: the client session (its id, a UUID) that holds the new file open, not running. A holder that is not a live session is released."
           }
         },
         "example": {
@@ -26413,7 +26434,7 @@
       },
       "ClientFrame": {
         "type": "object",
-        "description": "One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes \"[Circular]\". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).",
+        "description": "One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes \"[Circular]\". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).",
         "required": [
           "cursor",
           "kind"
@@ -26455,9 +26476,10 @@
             "type": "string",
             "enum": [
               "tool_result",
+              "tool_input",
               "stub"
             ],
-            "description": "Reduced for a session not focused on the agent: `tool_result` (result content dropped, `resultSize` added), `stub` (only short scalar fields plus `size`)."
+            "description": "Reduced for a session not focused on the agent: `tool_result` (result content dropped, `resultSize` added), `tool_input` (`tool_call_start` with each input field cut to 2048 characters, `inputTruncated: true`), `stub` (only short scalar fields plus `size`)."
           },
           "type": {
             "type": "string"
