@@ -25,6 +25,8 @@ export type StepRecord =
   | { kind: 'invoke-error'; channel: string; args: unknown[]; error: { name: string; message: string; code?: unknown }; pushes: { before: number; after: number } }
   | { kind: 'send'; channel: string; args: unknown[]; pushes: { before: number } }
   | { kind: 'wait'; channel: string; description: string; pushes: { matched: number } }
+  /** Tolerant runs only (RunOptions.tolerant): the push never came. */
+  | { kind: 'wait-timeout'; channel: string; description: string; pushes: { at: number } }
   | { kind: 'shutdown'; pushes: { before: number; after: number } }
 
 export interface RawRecording {
@@ -37,6 +39,11 @@ export interface RawRecording {
   state: PersistedState
   stateAfterShutdown: PersistedState
   timing: { streams: StreamTiming[] }
+  /**
+   * Tolerant runs only: what a strict run would have failed on (the quiet
+   * window, the streaming check). Rendered, so a diff shows it.
+   */
+  problems?: string[]
 }
 
 /**
@@ -60,6 +67,7 @@ export interface ComparableRecording {
   local: LocalCallRecord[]
   llm: RecordedLlmRequest[]
   state: PersistedState
+  problems?: string[]
 }
 
 type Payload = Record<string, unknown> | undefined
@@ -174,5 +182,8 @@ export function toComparable(raw: RawRecording): ComparableRecording {
     lines.sort((a, b) => a.at - b.at || a.order - b.order)
     timelines[agent] = lines.map((l) => l.line)
   }
-  return { scenario: raw.scenario, steps: raw.steps, pushes, pushSeq, timelines, local: raw.local, llm: raw.llm, state: raw.state }
+  return {
+    scenario: raw.scenario, steps: raw.steps, pushes, pushSeq, timelines, local: raw.local, llm: raw.llm, state: raw.state,
+    ...(raw.problems?.length ? { problems: raw.problems } : {}),
+  }
 }

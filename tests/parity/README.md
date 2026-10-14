@@ -8,7 +8,10 @@ The harness runs one renderer-side call sequence (a scenario) against a Studio b
 ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe node_modules/vitest/vitest.mjs run tests/parity
 PARITY_RUNS=10 … run tests/parity        # every scenario 10 times; all runs MUST be identical
 … run tests/parity -u                    # refresh recordings/ after reviewing the diff
+PARITY_SLICE_BOUND_MS=600 … run tests/parity   # a wider streaming bound on a loaded machine
 ```
+
+The daemon-side suites (`daemon.test.ts`, `daemon-reconnect.test.ts`) need the built daemon bundle: `npx electron-vite build` first. Without `out/main/daemon.js` they are skipped, and the test report says so.
 
 `npm test` also runs it, under plain Node on CI.
 
@@ -27,8 +30,11 @@ PARITY_RUNS=10 … run tests/parity        # every scenario 10 times; all runs M
 | `harness/state-dump.ts` | `.adf` table dump, user-data JSON, file listing |
 | `harness/recording.ts`, `format.ts` | Recording shape, per-agent timelines, text rendering, line diff |
 | `harness/normalize.ts` | Every normalization rule, each with what it hides |
+| `harness/daemon-backend.ts` | `daemonBackend()`: the built daemon in a fenced child process, Studio's daemon-mode handlers in this process |
 | `scenarios/core.ts` | open, start, chat turn with a tool call |
 | `recordings/*.embedded.txt` | Embedded baseline (golden form, rule G1) |
+| `recordings/*.daemon.txt` | The same scenarios in daemon mode; the target is a file identical to the embedded one |
+| `daemon-reconnect.test.ts` | Daemon killed under a connected Studio, restarted: not-connected state, reconnect, resync |
 
 ## What a recording contains
 
@@ -53,6 +59,10 @@ Every run gets its own root for user data, leases, temp, home and app data. Inhe
 - a file watcher or other handle opened during the run is still open after shutdown;
 - code under test used an `electron` member the fake lacks.
 
+A child process spawned with its own `env` object (a "clean env" child) gets the fence variables and `NODE_OPTIONS=--require fence.cjs` added to that env, so it is fenced too. A fenced child also refuses to load `@napi-rs/keyring`. On Windows a named pipe is allowed only when it is the lease endpoint of a record in the run's own lease registry (`<root>/leases/{hosts,clients}`).
+
+Tolerant runs (`runScenario(s, backend, { tolerant: true })`) record a rejected invoke, a push that never comes (`wait-timeout` step) and the quiet-window and streaming problems (a `## problems` section) instead of throwing, so a candidate backend's remaining differences can be listed. The fences, the real-state check and leaks still throw. Only the daemon side uses it, until its dependencies land.
+
 The real `PodmanService` is never constructed. A graceful shutdown of the real one stops every running `adf-*` container on the machine.
 
 The run root is deleted only when it contains no symlink or junction.
@@ -63,25 +73,24 @@ Write a `ParityScenario` in your own file under `tests/parity/<domain>/`. Wait e
 
 ## Daemon backend (W2-C)
 
-The in-process mode (`vi.doMock` stubs, the daemon in the test process, started from source) is a development loop only. The acceptance runs MUST use the built daemon bundle in a child process, because that is what Studio ships and runs.
-
-A child-process `ParityBackend`:
+The in-process mode (`vi.doMock` stubs, the daemon in the test process, started from source) is a development loop only. The acceptance runs use the built daemon bundle in a child process, because that is what Studio ships and runs. `daemonBackend()` (`harness/daemon-backend.ts`):
 
 1. Picks a free port P and calls `env.allowPort(P)`.
-2. Spawns `node_modules/electron/dist/electron.exe` (Studio's binary) with `ELECTRON_RUN_AS_NODE=1`, `--require <abs>/tests/parity/harness/fence.cjs`, and the built entry `out/main/daemon.js` (W0-D; build it before the run). For the development loop the entry MAY be the source (`src/main/daemon/index.ts` through tsx) instead.
-3. The child inherits the run's environment: `PARITY_FENCE_LOG`, `PARITY_FENCE_ROOT` and `PARITY_FENCE_PORTS` (the fence installs itself from these), and `NODE_OPTIONS=--require "<fence>"`, so the daemon's own children (MCP servers, the sandbox host) and their workers are fenced as well. It also gets `ADF_DAEMON_SETTINGS=<userData>/adf-settings.json`, `ADF_DAEMON_PIDFILE=<root>/daemon.pid`, the port P, and `ADF_TEST_SEAMS=1` with `ADF_COMPUTE=fake`. These are passed only to the spawn, never set on `process.env`.
-4. `ADF_COMPUTE=fake` with `ADF_TEST_SEAMS=1` is the product seam from W1-G: the daemon uses a fake compute service instead of `PodmanService`. It MUST be honoured only when `ADF_TEST_SEAMS=1` is set and the app is not packaged.
-5. Registers `registerDaemonModeHandlers` into the same `FakeElectron`, pointed at `http://127.0.0.1:P`.
-6. `shutdown()` runs Studio's daemon-mode quit path (session end), then stops the daemon with `taskkill /T /F /PID <pid>` on Windows (a process-group SIGKILL elsewhere). Never `POST /daemon/shutdown`, `adf daemon stop` or another graceful stop.
-7. `normalization()` returns `{ ports: [{ value: String(P), name: 'DAEMON_PORT' }] }` and any daemon-only ids that vary per run.
-8. Violations from the child and its descendants land in `<root>/violations.log`, which `env.assertRealStateUntouched()` already reads.
+2. Emulates what the switch to local mode does before Studio first attaches (W4-A, design §4.3, §5.3): the client keys of `adf-settings.json` are copied into `studio-client-settings.json`, and the owner phrase plus the `studio-runtime:<scope>` entry are written to a plaintext test keychain file (`ADF_TEST_KEYCHAIN_FILE`), so the daemon adopts the fixture's runtime identity.
+3. Writes the sandbox standard-library manifest the embedded side's module stub stands for, and removes it once the daemon logged that it read it (module stubs do not reach the child; its real service would `npm install`).
+4. Spawns `node_modules/electron/dist/electron.exe` with `ELECTRON_RUN_AS_NODE=1`, `--require <abs>/tests/parity/harness/fence.cjs` and `out/main/daemon.js`. The child inherits the run's environment (fence variables, `NODE_OPTIONS=--require "<fence>"`), plus `ADF_DAEMON_SETTINGS=<userData>/adf-settings.json`, the port, a per-run `ADF_DAEMON_TOKEN`, `ADF_TEST_SEAMS=1` with `ADF_COMPUTE=fake`, and the test keychain file; `ADF_KEYCHAIN` and `ADF_SECRET_STORE` are removed for the child only, so the test keychain file is the daemon's keychain, and the fence refuses the real keychain addon in the child. The pid file, the daemon log and the keychain file live in a temp directory outside the run root. These variables are passed only to the spawn, never set on `process.env`.
+5. `ADF_COMPUTE=fake` with `ADF_TEST_SEAMS=1` is the product seam from W1-G: the daemon uses a fake compute service instead of `PodmanService`.
+6. Registers `registerDaemonModeHandlers` into the same `FakeElectron`, pointed at `http://127.0.0.1:P`.
+7. `shutdown()` runs Studio's daemon-mode quit path (session end), then stops the daemon with `taskkill /T /F /PID <pid>` on Windows (a process-group SIGKILL elsewhere). Never `POST /daemon/shutdown`, `adf daemon stop` or another graceful stop. `killDaemon()` and `restartDaemon()` do the same mid-run (daemon-reconnect.test.ts).
+8. `normalization()` names the daemon's port (`DAEMON_PORT`), pid and scratch root, and its port-named local-proof file.
+9. Violations from the child and its descendants land in `<root>/violations.log`, which `env.assertRealStateUntouched()` already reads.
 
-Then `diffBackends(scenario, embeddedBackend, daemonBackend)` MUST return `''` for every scenario.
+`daemon.test.ts` commits the daemon-mode recording of each core scenario as `recordings/<scenario>.daemon.txt`. The acceptance bar is that file being identical to `<scenario>.embedded.txt`, i.e. `diffBackends(scenario, embeddedBackend, daemonBackend())` returning `''`. Until W1-A, W1-E, W2-A and W2-B land, the daemon run is tolerant and the remaining differences are listed, with the workstream that closes each, in docs/design/daemon-backend-gaps.md ("Parity diffs after W2-C"). `PARITY_DAEMON_LOG_DIR=<dir>` keeps a copy of each run's daemon log.
 
 ### State and shutdown
 
 `runScenario` dumps the persisted state once the scenario is done and BEFORE shutdown (`state`, compared), and again after shutdown (`stateAfterShutdown`, raw only). Shutdown is where the modes legitimately differ: in daemon mode with `keepDaemonRunning` on, agents keep running after Studio quits, while embedded Studio stops them. W2-C compares shutdown per mode: the teardown pushes and `stateAfterShutdown` against the documented behaviour of that mode (§8.3), not against embedded.
 
-### Reconnect scenario
+### Reconnect
 
-Add a daemon-only scenario that kills the client SSE connection in the middle of a streamed turn (the mock LLM writes slices 200 ms apart, so there is time). After reconnect, the pushes MUST include the D6 resync set: `chat_updated` for the focused agent, `DOC_AGENT_CONFIG_CHANGED`, `TRACKED_DIRS_CHANGED`, an approvals snapshot, and the running-agent state batch. The final chat (`DOC_GET_CHAT`) and the persisted state MUST equal the embedded run of the same scenario without the kill.
+`daemon-reconnect.test.ts` kills the daemon child under a connected Studio: the Help menu shows the connection problem and "Reconnect to the ADF Daemon", one dialog says so, and a call fails with "Cannot reach daemon". A restarted daemon (a new epoch) is reconnected to by itself; the client stream reports `stream.gap`, and the pushes include the D6 resync set the daemon can answer today (tracked directories, the approvals snapshot). The resync's `chat_updated`, `DOC_AGENT_CONFIG_CHANGED` and running-agent batch are covered by tests/backend/daemon-mode-bridge.test.ts. A streamed-turn variant that compares the final chat with the embedded run needs the client stream's executor frames (W2-B).

@@ -39,10 +39,17 @@ describe('daemon mode loads no embedded backend module', () => {
   })
 
   it('imports every daemon-mode module with the embedded backend refused', async () => {
+    const failures: string[] = []
     for (const file of files(DAEMON_MODE_DIR)) {
-      await expect(import(/* @vite-ignore */ file), relative(DAEMON_MODE_DIR, file)).resolves.toBeTruthy()
+      try {
+        await import(/* @vite-ignore */ file)
+      } catch (err) {
+        const cause = (err as { cause?: unknown }).cause
+        failures.push(`${relative(DAEMON_MODE_DIR, file)}: ${err instanceof Error ? err.message : String(err)}${cause instanceof Error ? ` (${cause.message})` : ''}`)
+      }
     }
-  })
+    expect(failures).toEqual([])
+  }, 60_000)
 
   it('no daemon-mode source imports the embedded IPC layer or its singletons', () => {
     const forbidden = [/from '[./]*ipc\/index'/, /from '[./]*ipc'/, /background-agent-manager'/, /runtime-service'/, /approval-hub'/, /settings\.service'/]
