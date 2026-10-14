@@ -111,7 +111,7 @@ Implemented by W2-C (24): `FILE_OPEN`, `FILE_CLOSE`, `FILE_GET_CURRENT`, `DOC_GE
 
 They use the merged W1-A and W1-E routes: a fresh start is `POST /agents/:id/start?preflight=1` on the file (provider codes, startup turn); the path of a file maps to its running agent through `GET /files/agent`; `DOC_READ_INTERNAL_FILE` reads `/agents/:id/files/meta` and `/agents/:id/files/raw` (a binary it only flags is never downloaded; an inline one is capped by `maxBytes`); `adf-file://` streams `/agents/:id/files/raw`.
 
-Every other channel (218) is registered with a handler that throws `<CHANNEL> is not available in daemon mode yet: <workstream>` (`pending.ts`) and logs one warning per channel the first time it is called: W3-A 86 (files, documents, agent runtime, review, templates, tracked and bulk directories, identity drafts, the share drag), W3-B 44 (models, providers, subscription auth, identity), W3-C 40 (MCP, adapters, sandbox packages, skills, registries), W3-D 48 (mesh, fleet, dashboard, token usage, compute, firewall, vitals, emergency stop). Until W3-A, a call of `BACKGROUND_AGENT_STATUS` also announces the running agents as `agent_started` events, so a fresh sidebar is not empty. A W3 workstream adds its table to `handlers/index.ts`; the channel then leaves the pending list.
+Every other channel (218) is registered with a handler that throws `<CHANNEL> is not available in daemon mode yet: <workstream>` (`pending.ts`) and logs one warning per channel the first time it is called: W3-A 86 (files, documents, agent runtime, review, templates, tracked and bulk directories, identity drafts, the share drag), W3-B 44 (models, providers, subscription auth, identity), W3-C 40 (MCP, adapters, sandbox packages, skills, registries; implemented since, see "Daemon-mode handlers after W3-C"), W3-D 48 (mesh, fleet, dashboard, token usage, compute, firewall, vitals, emergency stop). Until W3-A, a call of `BACKGROUND_AGENT_STATUS` also announces the running agents as `agent_started` events, so a fresh sidebar is not empty. A W3 workstream adds its table to `handlers/index.ts`; the channel then leaves the pending list.
 
 Renderer call sites that swallow the rejection of a pending channel (`.catch(() => {})` or an empty handler), so only the main log's once-per-channel warning shows it:
 
@@ -150,6 +150,29 @@ Follow-ups for other workstreams:
 - W4-A: the quit path ends the client session and leaves the daemon running; the R4 behaviour (stop a Studio-started daemon unless `keepDaemonRunning`) and the version-mismatch choice of §8.2 (shown today as the connection-failure dialog) are W4-A's.
 - W5-B: the CI job that runs `tests/parity` with the daemon bundle built and `PARITY_REQUIRE_DAEMON=1`.
 - W3-A (renderer, additive): `chat_updated` handling (`useAgent.ts:495`) calls `setLog(uiLog, 0, loop)` and ignores `earlierCount`. Embedded is unaffected: its `chat_updated` carries the whole loop and no `earlierCount` (`ipc/index.ts` `pushForegroundLoop`, `agent-executor.ts` after a compaction). Daemon mode's `stream.gap` resync repaints the last 200 entries (`GET /agents/:id/chat` caps at 500) with `earlierCount`, so after a resync the older entries cannot be paged until the file is reopened. The fix is the renderer honouring `payload.earlierCount` when present.
+
+## Daemon-mode handlers after W3-C
+
+W3-C added the handlers of all 40 channels `pendingWorkstream()` assigned to it: `MCP_*` (20), `ADAPTER_*` (11), `SANDBOX_*` (3), `SKILLS_*` (2), `AGENT_REGISTRY_*` (3) and `AGENT_MODEL_SET_FOR_FILE` (`handlers/mcp.ts`, `handlers/adapters.ts`, `handlers/registries.ts`; helpers in `daemon-mode/mcp/`). Agent files are addressed by path through `/files/agent/*` (W1-E).
+
+Routes added: `POST /admin/mcp/packages/npm/jobs`, `/admin/mcp/packages/python/jobs`, `/admin/adapters/packages/jobs`, `/admin/sandbox/packages/jobs` (installs as jobs, the result is Studio's answer), `GET /files/agent/config` (a file's config by path; ADAPTER_ATTACH reads it first). Jobs (`daemon/jobs.ts`): a start with the key of a running job of the same kind joins it (`job.joined`; the Python runtime and each install are keyed), at most 128 run at once (429 `too_many_jobs`), and each job keeps its last 50 progress lines (`progressLog`).
+
+- **Long work.** Installs, the Python runtime and the connect test run as jobs. Studio polls `GET /jobs/:id` every 250-300 ms, so no request outlives the shared client's timeout or undici's 300 s header limit. A daemon unreachable for 60 s, a job the daemon no longer knows (it restarted) and a job past 30 minutes (cancelled) each end the wait with a sentence as the install's error, or as the connect test's error.
+- **Install progress.** The daemon publishes the install topics on the client stream (W2-B `withInstallProgress`); the event bridge sends them. `mcp/install-progress.ts` covers what the stream cannot deliver: with the interim GET /events adapter (no push topics) it sends each progress line from the job and each package's end from the job's result; with a client session it sends an end only when a `stream.gap` came during the install and the end push has not arrived 1.5 s after the job ended (logged).
+- **Credential values stay in the daemon** (by design, as provider keys, §5). MCP_CREDENTIAL_GET answers `__redacted__` for each value the daemon can read; MCP_CREDENTIAL_SET of `__redacted__` keeps the stored value. ADAPTER_CREDENTIAL_GET answers no values and names every stored key in `storedKeys` (the channel dialog shows "stored"). A refused write (409, envelope locked on this daemon) answers the daemon's sentence, which names the daemon's unlock path.
+- **Interactive OAuth.** The connect test's `open_url` steps open in the browser and its `confirm` steps show embedded's Continue dialog. For agents, `mcp/oauth-authorize.ts` opens each `mcp_oauth_authorize` page once, without a click, from the approvals snapshots (the URL from `GET /approvals/input`); requests already pending when Studio connects are logged, not opened. It fires for a request raised while Studio is connected only once approvals snapshots arrive on the client stream (W2-B; the interim adapter delivers none).
+- **Remote mode** (W4-B): MCP_REGISTRATION_TEST of an OAuth remote and MCP_PICK_ADF_FILE refuse with DaemonModeUnavailableError; the `mcp_oauth_authorize` opener opens nothing and logs why.
+
+Left for other workstreams:
+
+| Item | Workstream |
+|---|---|
+| The argument schemas of the MCP and adapter handlers are copies (`daemon-mode/mcp/schemas.ts`) of the ones inside `registerAllIpcHandlers`; an E1 extraction removes the copy | W3-A |
+| MCP_ATTACH_SERVER drops the registration's `oauth`, `oauthClientId` and `oauthScopes` when it builds the server entry (embedded behaviour, mirrored): an OAuth server attached from the credential panel is attached without OAuth. E3 candidate | Lead |
+| The credential file lists (`/credentials/*/files`) scan the daemon's loaded agents and tracked folders; Studio's open file that is not running is not among them until documents are held | W2-B |
+| AGENT_REGISTRY_BRING_HOME: the `adf_file_created` push of the brought-home file (the daemon publishes the topic; the bridge has no mapping yet) | W2-B |
+
+Parity: `tests/parity/mcp` runs five scenarios against both backends and compares their W3-C view (`compare.ts`). Its only named differences are the two credential-value entries above (`mode:mcp-credential-values`, `mode:adapter-credential-values`).
 
 ## Parity diffs after W2-C
 
