@@ -326,6 +326,37 @@ describe('event bridge: AGENT_INVOKE waits never hang', () => {
     await expect(absorbed).resolves.toBe('completed')
   })
 
+  it('a turn that ends with its loop already idle (give-up recovery sets idle before the error) settles at once', async () => {
+    const { session, bridge } = setup()
+    await focus(session, FILE_1, AGENT_1)
+    exec(bridge, 'state_changed', { state: 'thinking' })
+    const waiting = bridge.waitForTurn(AGENT_1, 'turn_giveup')
+    exec(bridge, 'state_changed', { state: 'idle' })
+    exec(bridge, 'error', { error: 'gave up' })
+    bridge.handleFrame(ended('error', ['turn_giveup']))
+    // No state change follows; the wait does not sit until the 30-minute timeout.
+    await expect(waiting).resolves.toBe('error')
+    // Registered after such an end: found in the ring and settled too.
+    bridge.handleFrame(ended('error', ['turn_late']))
+    await expect(bridge.waitForTurn(AGENT_1, 'turn_late')).resolves.toBe('error')
+  })
+
+  it('ended turns are kept per agent: another agent\'s turn with the same id settles nothing', async () => {
+    const { session, bridge } = setup()
+    await focus(session, FILE_1, AGENT_1)
+    exec(bridge, 'state_changed', { state: 'thinking' })
+    let outcome: string | null = null
+    const waiting = bridge.waitForTurn(AGENT_1, 'turn_same').then((o) => { outcome = o })
+    bridge.handleFrame({ kind: 'turn', agentId: AGENT_2, filePath: FILE_2, outcome: 'completed', turnIds: ['turn_same'], unansweredTurnIds: [] })
+    bridge.handleFrame({ kind: 'turn', agentId: AGENT_2, filePath: FILE_2, outcome: 'discarded', turnIds: ['turn_same'], unansweredTurnIds: [] })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(outcome).toBeNull()
+    bridge.handleFrame(ended('completed', ['turn_same']))
+    exec(bridge, 'state_changed', { state: 'idle' })
+    await waiting
+    expect(outcome).toBe('completed')
+  })
+
   it('a stop that discards queued or cut-off chats ends their waits (chat.discarded)', async () => {
     const { session, bridge } = setup()
     await focus(session, FILE_1, AGENT_1)

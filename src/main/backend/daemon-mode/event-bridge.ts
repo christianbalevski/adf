@@ -130,6 +130,10 @@ const ENDED_TURNS_KEPT = 256
 /** An AGENT_INVOKE wait never outlives this; the handler then reports it. */
 export const TURN_WAIT_TIMEOUT_MS = 30 * 60_000
 
+function turnKey(agentId: string, turnId: string): string {
+  return `${agentId}\0${turnId}`
+}
+
 function initialMapping(state: AgentState): BackgroundMappingState {
   return { state, loopStates: new Map(), activeLoops: 0, accumulatedText: '' }
 }
@@ -184,7 +188,7 @@ interface ForegroundHold {
 export class EventBridge {
   private readonly agents = new Map<string, BridgeAgent>()
   private readonly waiters = new Set<TurnWaiter>()
-  /** Insertion-ordered ring of ended turns, oldest first. */
+  /** Insertion-ordered ring of ended turns, oldest first, keyed by turnKey(agentId, turnId). */
   private readonly ended = new Map<string, EndedTurn>()
   /** Agents whose events the client no longer wants (it is stopping them, embedded detaches its host first). */
   private readonly detached = new Set<string>()
@@ -263,8 +267,8 @@ export class EventBridge {
    * `turnTimeoutMs`.
    */
   waitForTurn(agentId: string, turnId: string, loop = 'main'): Promise<TurnOutcome> {
-    const known = this.ended.get(turnId)
-    if (known?.settled || known?.outcome === 'discarded') return Promise.resolve(known.outcome)
+    const known = this.ended.get(turnKey(agentId, turnId))
+    if (known && (known.settled || known.outcome === 'discarded' || !this.loopBusy(agentId, known.loop))) return Promise.resolve(known.outcome)
     return new Promise((resolve) => {
       const waiter: TurnWaiter = {
         agentId, turnId, loop, ended: known?.outcome ?? null, timer: null,
@@ -519,15 +523,31 @@ export class EventBridge {
     }
   }
 
+  /**
+   * A turn ended. Normally the loop is still busy and its next state change
+   * settles the wait; when the end arrives with the loop already idle (the
+   * executor's give-up recovery sets idle before it emits `error`), no state
+   * change follows, so it settles now.
+   */
   private markEnded(turnId: string, agentId: string, loop: string, outcome: EndOutcome): void {
-    this.ended.delete(turnId)
-    this.ended.set(turnId, { agentId, loop, outcome, settled: outcome === 'discarded' })
+    const key = turnKey(agentId, turnId)
+    const settled = outcome === 'discarded' || !this.loopBusy(agentId, loop)
+    this.ended.delete(key)
+    this.ended.set(key, { agentId, loop, outcome, settled })
     while (this.ended.size > ENDED_TURNS_KEPT) this.ended.delete(this.ended.keys().next().value!)
     for (const w of [...this.waiters]) {
-      if (w.turnId !== turnId) continue
-      if (outcome === 'discarded') w.resolve('discarded')
+      if (w.turnId !== turnId || w.agentId !== agentId) continue
+      if (settled) w.resolve(outcome)
       else w.ended = outcome
     }
+  }
+
+  /** The loop's current display state (the background mapping folds every agent's state changes) is busy. */
+  private loopBusy(agentId: string, loop: string): boolean {
+    const agent = this.agents.get(agentId)
+    if (!agent) return false
+    const state = loop === 'main' ? agent.mapping.state : agent.mapping.loopStates.get(loop)
+    return state === 'active'
   }
 
   private onTurn(frame: TurnFrame): void {
