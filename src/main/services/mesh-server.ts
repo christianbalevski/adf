@@ -52,6 +52,14 @@ import { withSource } from '../runtime/execution-context'
 import { withAuthorization } from '../runtime/authorization-context'
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
 
+/**
+ * Request body limit for the ALF inbox route. Inline attachments travel as
+ * base64 (4 bytes per 3), so 25 MiB of files (ALF spec, Message Size) needs
+ * about 33.4 MiB of JSON; the rest is room for the envelope. Other routes keep
+ * Fastify's 1 MiB default.
+ */
+export const MESH_INBOX_BODY_LIMIT = 34 * 1024 * 1024
+
 export interface MeshServerSettings {
   get(key: string): unknown
 }
@@ -360,6 +368,7 @@ export class MeshServer {
     // trigger — is handled by MeshManager.processIngressMessage, the single
     // implementation shared with same-runtime and WebSocket delivery.
     server.post<{ Params: { handle: string } }>('/agents/:handle/inbox', {
+      bodyLimit: MESH_INBOX_BODY_LIMIT,
       preHandler: [resolveAgent, enforceVisibility, validateAlfMessage]
     }, async (request, reply) => {
       const agent = request.agent!

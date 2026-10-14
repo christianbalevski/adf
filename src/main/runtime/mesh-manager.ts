@@ -118,6 +118,43 @@ export function isAllowedByList(
 }
 
 /**
+ * Largest decoded inline attachment accepted from another runtime. Matches the
+ * ALF protocol default message size (spec, Message Size: 25MB).
+ */
+export const MAX_INLINE_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+const RESERVED_IMPORT_ALIASES = new Set(['owner', 'system', 'user'])
+
+/** One path segment safe for the file store: no separators, no dot-only names. */
+function safePathSegment(value: string | undefined, maxLength: number): string | null {
+  if (!value) return null
+  // eslint-disable-next-line no-control-regex
+  const cleaned = value.replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, '_').trim().slice(0, maxLength)
+  if (!cleaned || /^\.+$/.test(cleaned)) return null
+  return cleaned
+}
+
+/** Filename for an imported attachment: the last path segment of the wire name. */
+function safeAttachmentFilename(filename: unknown): string {
+  const name = typeof filename === 'string' ? filename.split(/[\\/]/).pop() : undefined
+  return safePathSegment(name, 200) ?? 'attachment'
+}
+
+/**
+ * Folder under `imported/` for a remote sender's files: the sender alias, or
+ * the tail of the sender DID when no usable alias was sent.
+ */
+function importDirName(message: AlfMessage): string {
+  const alias = message.payload.sender_alias
+  if (typeof alias === 'string' && !RESERVED_IMPORT_ALIASES.has(alias.trim().toLowerCase())) {
+    const fromAlias = safePathSegment(alias, 64)
+    if (fromAlias) return fromAlias
+  }
+  const from = typeof message.from === 'string' ? message.from : ''
+  return safePathSegment(from.split(':').pop()?.slice(-16), 64) ?? 'unknown'
+}
+
+/**
  * Manages inter-agent messaging only — no agent lifecycle.
  * Agents are registered/unregistered by the IPC coordinator.
  * When mesh is enabled, registered agents get communication tools
@@ -816,6 +853,10 @@ export class MeshManager extends EventEmitter {
 
       const flattened = flattenMessageToInbox(message, receivedAt)
       if (returnPath) flattened.return_path = returnPath
+      // Inline files become workspace files; the inbox row keeps only the path.
+      if (message.payload.attachments?.length) {
+        flattened.attachments = this.importInlineAttachments(recipientReg.workspace, message)
+      }
       const inboxId = recipientReg.workspace.addToInbox(flattened)
 
       // Fire on_inbox trigger
@@ -953,8 +994,10 @@ export class MeshManager extends EventEmitter {
       }
     }
 
-    // Resolve attachments from sender's file store
+    // Resolve attachments from sender's file store. The bytes are kept so the
+    // wire message, the outbox audit, and the local copy read each file once.
     const resolvedAttachments: StoredAttachment[] = []
+    const attachmentBytes = new Map<StoredAttachment, Buffer>()
     if (attachments && attachments.length > 0) {
       const maxBytes = senderConfig.limits?.max_file_write_bytes ?? 5000000
       for (const fp of attachments) {
@@ -967,7 +1010,9 @@ export class MeshManager extends EventEmitter {
           resolvedAttachments.push({ filename: basename(fp), content_type: 'application/octet-stream', transfer: 'inline', size_bytes: fileContent.length, skipped: true, reason: `Exceeds max_file_write_bytes (${maxBytes} bytes)` })
           continue
         }
-        resolvedAttachments.push({ path: fp, filename: basename(fp), content_type: this.getMimeType(basename(fp)), transfer: 'inline', size_bytes: fileContent.length })
+        const resolved: StoredAttachment = { path: fp, filename: basename(fp), content_type: this.getMimeType(basename(fp)), transfer: 'inline', size_bytes: fileContent.length }
+        resolvedAttachments.push(resolved)
+        attachmentBytes.set(resolved, fileContent)
       }
     }
 
@@ -994,12 +1039,20 @@ export class MeshManager extends EventEmitter {
       cardUrl: senderCardUrl,
       meta: messageMeta,
       payloadMeta: meta,
-      attachments: resolvedAttachments.filter(a => !a.skipped).map(a => ({
-        filename: a.filename,
-        content_type: a.content_type,
-        transfer: a.transfer,
-        size_bytes: a.size_bytes
-      }))
+      // Another runtime can only read the bytes we put on the wire, so remote
+      // sends carry them inline (ALF spec, Attachments: `data` is required for
+      // `transfer: 'inline'`). They go in before signing so the signature
+      // covers them. Same-runtime delivery copies the file directly instead.
+      attachments: resolvedAttachments.filter(a => !a.skipped).map(a => {
+        const bytes = attachmentBytes.get(a)
+        return {
+          filename: a.filename,
+          content_type: a.content_type,
+          transfer: a.transfer,
+          ...(!recipientLocal && bytes && { data: bytes.toString('base64') }),
+          size_bytes: a.size_bytes
+        }
+      })
     })
 
     // Create EgressContext for outbox middleware — default to HTTP
@@ -1056,7 +1109,7 @@ export class MeshManager extends EventEmitter {
         payload: {
           ...message.payload,
           attachments: resolvedAttachments.filter(a => !a.skipped).map(a => {
-            const buf = a.path ? senderReg.workspace.readFileBuffer(a.path) : null
+            const buf = attachmentBytes.get(a)
             return buf
               ? { filename: a.filename, content_type: a.content_type, transfer: 'inline' as const, data: buf.toString('base64'), size_bytes: a.size_bytes }
               : { filename: a.filename, content_type: a.content_type, transfer: a.transfer, size_bytes: a.size_bytes }
@@ -1138,7 +1191,7 @@ export class MeshManager extends EventEmitter {
         const attachmentBuffers: Map<string, Buffer> = new Map()
         for (const att of resolvedAttachments) {
           if (att.skipped) { importedAttachments.push(att); continue }
-          const fileContent = senderReg.workspace.readFileBuffer(att.path!)
+          const fileContent = attachmentBytes.get(att)
           if (!fileContent) { importedAttachments.push({ ...att, path: undefined, skipped: true, reason: 'Read failed' }); continue }
           attachmentBuffers.set(att.filename, fileContent)
           const importDir = `imported/${senderHandle}`
@@ -2422,6 +2475,56 @@ export class MeshManager extends EventEmitter {
       const read = workspace.getInbox('read')
       this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
     }
+  }
+
+  /**
+   * Write the inline attachments of a message from another runtime into the
+   * recipient's files under `imported/<sender>/` and return the attachment
+   * records for the inbox row (ALF spec, Attachments: Imported). Each written
+   * file is recorded with `transfer: 'imported'` and its `path`; the base64
+   * `data` is never kept in the row. A file that cannot be imported keeps its
+   * record with `skipped: true` and a `reason`, and the message is still
+   * delivered. Wire-supplied `path` values are dropped.
+   */
+  private importInlineAttachments(workspace: AdfWorkspace, message: AlfMessage): StoredAttachment[] {
+    const importDir = `imported/${importDirName(message)}`
+    const from = typeof message.from === 'string' ? message.from : null
+    const result: StoredAttachment[] = []
+    for (const att of message.payload.attachments ?? []) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { data, ...record } = att as StoredAttachment
+      delete record.path
+      delete record.skipped
+      delete record.reason
+      if (att.transfer !== 'inline') {
+        result.push(record)
+        continue
+      }
+      const reject = (reason: string): void => {
+        result.push({ ...record, skipped: true, reason })
+        try { workspace.insertLog('warn', 'mesh', 'attachment_rejected', from, `Attachment "${att.filename}" not imported: ${reason}`) } catch { /* non-fatal */ }
+      }
+      if (typeof data !== 'string' || data.length === 0) { reject('No inline data'); continue }
+      const b64 = data.replace(/\s+/g, '')
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 === 1) { reject('Inline data is not valid base64'); continue }
+      if (Math.floor(b64.length * 3 / 4) > MAX_INLINE_ATTACHMENT_BYTES) {
+        reject(`Exceeds the ${MAX_INLINE_ATTACHMENT_BYTES}-byte inline attachment limit`)
+        continue
+      }
+      const bytes = Buffer.from(b64, 'base64')
+      if (typeof att.size_bytes === 'number' && att.size_bytes !== bytes.length) {
+        reject(`Decoded size ${bytes.length} bytes does not match size_bytes ${att.size_bytes}`)
+        continue
+      }
+      try {
+        const destPath = this.resolveUniqueImportPath(workspace, importDir, safeAttachmentFilename(att.filename))
+        workspace.writeFileBuffer(destPath, bytes, att.content_type)
+        result.push({ ...record, transfer: 'imported', path: destPath, size_bytes: bytes.length })
+      } catch (err) {
+        reject(`Write failed: ${String(err).slice(0, 200)}`)
+      }
+    }
+    return result
   }
 
   /**
