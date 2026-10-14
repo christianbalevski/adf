@@ -37,12 +37,17 @@ export interface FixtureSpec {
   name: FixtureName
   /** Default 'idle': start runs no startup turn unless the scenario asks for one. */
   startInState?: StartInState
+  /** A legacy whole-file password (one encrypted identity row), as an older Studio wrote it. */
+  password?: string
+  /** Default true. False: not in reviewedAgents, so opening it asks for a review. */
+  reviewed?: boolean
 }
 
 export interface FixtureAgent {
   name: FixtureName
   id: string
   filePath: string
+  reviewed: boolean
 }
 
 export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[]): Record<string, FixtureAgent> {
@@ -62,10 +67,14 @@ export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[
       const config = workspace.getAgentConfig()
       config.id = FIXTURE_IDS[spec.name]
       workspace.setAgentConfig(config)
+      if (spec.password) {
+        workspace.setIdentity('custom:parity-secret', 'parity-secret-value')
+        workspace.setPassword(spec.password)
+      }
     } finally {
       workspace.close()
     }
-    out[spec.name] = { name: spec.name, id: FIXTURE_IDS[spec.name], filePath }
+    out[spec.name] = { name: spec.name, id: FIXTURE_IDS[spec.name], filePath, reviewed: spec.reviewed !== false }
   }
   return out
 }
@@ -96,7 +105,7 @@ export function baseSettings(
     defaultProviderId: MOCK_PROVIDER_ID,
     agentsFolder: env.agentsDir,
     trackedDirectories: [],
-    reviewedAgents: Object.fromEntries(Object.values(agents).map((a) => [a.id, 'accepted'])),
+    reviewedAgents: Object.fromEntries(Object.values(agents).filter((a) => a.reviewed).map((a) => [a.id, 'accepted'])),
     meshEnabled: false,
     meshLan: false,
     updateChecksEnabled: false,
