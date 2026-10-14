@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mcpConnectorFor } from './mcp-connectors'
-import { existsSync, readdirSync, realpathSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { existsSync, readdirSync, realpathSync, renameSync, statSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { resolveDefaultProvider } from '../adf/apply-default-provider'
@@ -13,6 +13,12 @@ import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../ser
 import { withDeadline } from '../utils/concurrency'
 import type { LLMProvider } from '../providers/provider.interface'
 import { providerSelectionChanged } from '../providers/provider-selection'
+import {
+  agentProviderKeySource,
+  providerNeedsApiKey,
+  resolveAgentProviderConfig,
+  type ProviderSettingsStore,
+} from '../providers/provider-factory'
 import type {
   AgentConfig,
   AgentState as AdfAgentState,
@@ -35,6 +41,7 @@ import type {
   TimerSchedule,
   TriggerConfig,
 } from '../../shared/types/adf-v02.types'
+import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { AdapterInstanceConfig, AdapterState } from '../../shared/types/channel-adapter.types'
 import type { AgentConfigSummary, AgentExecutionEvent, ProviderConfig } from '../../shared/types/ipc.types'
 import type { AgentState } from './agent-executor'
@@ -51,8 +58,12 @@ import {
   type CreateHeadlessAgentOptions,
   type HeadlessAgent,
 } from './headless'
-import { CREDENTIALS_UNLOCK_HINT, detectLockedEnvelopes, type AgentRuntimeBuilder } from './agent-runtime-builder'
-import type { AssembledAgentBase, HostAttachment } from './assemble-agent'
+import { CREDENTIALS_UNLOCK_HINT, detectLockedEnvelopes, type AgentRuntimePrompts, type AgentRuntimeBuilder } from './agent-runtime-builder'
+import { emitAgentDerivedKeyChanged } from './agent-runtime-signals'
+import { applyBackgroundEvent, type BackgroundMappingState } from './background-event-mapping'
+import { deriveHandle } from '../utils/handle'
+import { toDisplayState } from './display-state'
+import type { AgentHostBindings, AgentStopMode, AssembledAgentBase, HostAttachment } from './assemble-agent'
 import { LoopPoolError, stripLoopNameMarker } from './loop-pool'
 import { LOOP_AUTOSTART_MESSAGE, type LoopDeleteResult, type LoopInfo, type LoopSendResult } from '../adf/loop-pool.types'
 import { LoopConfigSchema } from '../adf/adf-schema'
@@ -144,6 +155,11 @@ export type RuntimeProviderFactory = (
 export interface RuntimeServiceOptions {
   settings?: RuntimeSettingsStore
   providerFactory?: RuntimeProviderFactory
+  /**
+   * Fallback prompts. Each start reads `globalSystemPrompt`, `toolPrompts`
+   * and `compactionPrompt` from `settings` (as Studio does at AGENT_START);
+   * these apply only while the store has no value for the key.
+   */
   basePrompt?: string
   toolPrompts?: Record<string, string>
   compactionPrompt?: string
@@ -157,6 +173,107 @@ export interface RuntimeServiceOptions {
 export interface RuntimeLoadAgentOptions {
   provider?: LLMProvider
   enforceReviewGate?: boolean
+  /**
+   * Legacy-password derived key the caller already holds (a file unlocked
+   * before its start). Every consumer reads it from the first connect, as in
+   * Studio; without it the agent starts locked until
+   * unlockAgentIdentityPassword.
+   */
+  derivedKey?: Buffer | null
+}
+
+/** 409 code of a load refused because another loaded file has the same `config.id`. */
+export const DUPLICATE_AGENT_ID_CODE = 'duplicate_agent_id'
+
+/**
+ * Host lifecycle events, emitted as `'agent-lifecycle'` beside the raw
+ * executor events (`'agent-event'`). Names and payloads are the background
+ * agent manager's (BackgroundAgentEvent), so a client maps both hosts the
+ * same way (design D5 `host` frames).
+ *
+ * - `agent_starting` → `agent_started` | `agent_start_failed`: one load.
+ *   Concurrent loads of one file share one build and one pair of events.
+ *   `agent_started` carries `nameChangedFrom` when the load renamed the
+ *   agent after its file.
+ * - `agent_stopping` → `agent_stopped`: one unload; `agent_stopped` carries
+ *   `error` when the teardown failed (the agent is unloaded regardless).
+ * - `agent_state_changed`: main's display state; `agent_loops_changed`: the
+ *   number of inner loops mid-turn (background-event-mapping.ts).
+ * - `trigger_error`: a trigger- or timer-dispatched turn failed. It follows an
+ *   `error` agent event and `agent_state_changed` `error` (Studio's two hosts).
+ * - `startup_failed`: the startup turn (startAgent) failed.
+ */
+export type RuntimeLifecycleEventType =
+  | 'agent_starting'
+  | 'agent_started'
+  | 'agent_start_failed'
+  | 'agent_stopping'
+  | 'agent_stopped'
+  | 'agent_loops_changed'
+  | 'agent_state_changed'
+  | 'trigger_error'
+  | 'startup_failed'
+
+export interface RuntimeLifecycleEvent {
+  /** Null only on `agent_starting` / `agent_start_failed` before the file's id was read. */
+  agentId: string | null
+  filePath: string | null
+  type: RuntimeLifecycleEventType
+  /** Always carries `filePath`; see RuntimeLifecycleEventType for the rest. */
+  payload: Record<string, unknown>
+  timestamp: number
+}
+
+/** The agent file moved while loaded (rekeyAgentPath). */
+export interface RuntimeAgentPathChangedEvent {
+  agentId: string
+  oldFilePath: string
+  filePath: string
+}
+
+/** An agent file was renamed to follow its agent's name (syncAgentFileToName). */
+export interface RuntimeAgentFileRenamedEvent {
+  agentId: string | null
+  oldFilePath: string
+  filePath: string
+}
+
+/** syncAgentFileToName outcome; Studio's FILE_RENAME / DOC_SET_AGENT_CONFIG shape. */
+export interface RuntimeFileRenameResult {
+  /** The new path, when the file was renamed now. */
+  filePath?: string
+  /** True when the agent is loaded: the rename happens when it unloads. */
+  deferred?: boolean
+  /** Why nothing was renamed, when something was asked for. */
+  error?: string
+}
+
+/** preflightProvider outcome: Studio's AGENT_START provider gate. */
+export type RuntimeProviderPreflight =
+  | {
+      ok: true
+      /**
+       * The agent's own provider key is stored but locked here (password or
+       * envelope): not checked, and never reported as a missing key. The
+       * sentence says how to unlock it.
+       */
+      credentialsLocked?: string
+    }
+  | {
+      ok: false
+      /** provider_missing: no such provider here; provider_unconfigured: it needs a key it does not have. */
+      code?: 'provider_missing' | 'provider_unconfigured'
+      error: string
+    }
+
+/** A loaded agent's assembled handle, for daemon routes that need more than RuntimeService exposes. */
+export interface RuntimeLoadedAgent {
+  agentId: string
+  filePath: string | null
+  agent: RuntimeAgent
+  workspace: AdfWorkspace
+  /** Legacy-password derived key while the file is unlocked; null otherwise. Never leaves the process. */
+  derivedKey: Buffer | null
 }
 
 export interface RuntimeCreateAgentOptions extends CreateHeadlessAgentOptions {
@@ -473,7 +590,12 @@ export interface RuntimeAutostartReport {
   failed: RuntimeAutostartFailed[]
 }
 
-type RuntimeAgent = HeadlessAgent | AssembledAgentBase<AgentProfileName>
+export type RuntimeAgent = HeadlessAgent | AssembledAgentBase<AgentProfileName>
+
+/** One agent's legacy-password derived key, shared by its record and its build's closures. */
+interface DerivedKeyCell {
+  current: Buffer | null
+}
 
 interface ManagedRuntimeAgent {
   id: string
@@ -481,7 +603,11 @@ interface ManagedRuntimeAgent {
   config: AgentConfig
   agent: RuntimeAgent
   hostAttachment: HostAttachment
+  /** Reads and writes `keyCell.current`. */
   derivedKey: Buffer | null
+  keyCell: DerivedKeyCell
+  /** Display-state fold for agent_state_changed / agent_loops_changed. */
+  display: BackgroundMappingState
   /** Reason the agent is degraded (e.g. locked credential envelopes), if any. */
   degraded?: string
 }
@@ -512,6 +638,12 @@ export class RuntimeService extends EventEmitter {
    */
   private readonly inFlightLoads = new Map<string, Promise<RuntimeAgentRef>>()
   private readonly agentLeases: AgentLeaseRegistry | null
+  /** Agents whose self-off teardown is running (re-entrancy guard, as Studio's handleAgentOff). */
+  private readonly offInProgress = new Set<string>()
+  /** Renames waiting for the agent at that (canonical) path to unload: path → new name. */
+  private readonly pendingRenames = new Map<string, string>()
+  /** Unloads in progress, so concurrent stops of one agent share one teardown. */
+  private readonly unloads = new Map<string, Promise<void>>()
 
   constructor(opts: RuntimeServiceOptions = {}) {
     super()
@@ -536,7 +668,10 @@ export class RuntimeService extends EventEmitter {
     const pending = this.inFlightLoads.get(canonicalPath)
     if (pending) return pending
 
-    const load = this.doLoadAgent(canonicalPath, opts)
+    // The body starts a microtask later, after the slot is claimed: an
+    // 'agent-lifecycle' listener that loads the same file from inside
+    // agent_starting joins this load instead of starting a second one.
+    const load = Promise.resolve().then(() => this.doLoadAgent(canonicalPath, opts))
     this.inFlightLoads.set(canonicalPath, load)
     try {
       return await load
@@ -551,12 +686,29 @@ export class RuntimeService extends EventEmitter {
     const shouldEnforceReview = opts.enforceReviewGate ?? this.enforceReviewGate
     this.assertReviewGate(canonicalPath, shouldEnforceReview)
 
+    // Background-agent-manager parity: announced before the lease, so every
+    // load the review gate admitted ends in agent_started or agent_start_failed.
+    this.emitLifecycle(null, canonicalPath, 'agent_starting', {})
+    const progress: { agentId: string | null } = { agentId: null }
+    try {
+      return await this.openAndRegister(canonicalPath, opts, progress)
+    } catch (err) {
+      this.emitLifecycle(progress.agentId, canonicalPath, 'agent_start_failed', {
+        error: err instanceof Error ? err.message : String(err),
+        ...(err instanceof RuntimeLoopError && err.code ? { code: err.code } : {}),
+      })
+      throw err
+    }
+  }
+
+  private async openAndRegister(canonicalPath: string, opts: RuntimeLoadAgentOptions, progress: { agentId: string | null }): Promise<RuntimeAgentRef> {
     const lease = await this.agentLeases?.acquire(canonicalPath)
     if (lease && !lease.ok) {
       throw new RuntimeLoopError(lease.message, 409, AGENT_LEASED_CODE, { holder: lease.record.holder })
     }
 
     const workspace = AdfWorkspace.open(canonicalPath)
+    let built: RuntimeAgent | null = null
     try {
       // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
       unlockWorkspaceEnvelopes(workspace)
@@ -573,9 +725,16 @@ export class RuntimeService extends EventEmitter {
         try { workspace.insertLog('error', 'runtime', 'credentials_locked', null, degradedReason.slice(0, 500)) } catch { /* non-fatal */ }
       }
       const config = workspace.getAgentConfig() as AgentConfig
-      const provider = await this.resolveProvider(config, canonicalPath, opts.provider, workspace)
-      const agent = await this.buildLoadedAgent(workspace, canonicalPath, config, provider)
-      const ref = this.registerAgent(agent, canonicalPath, config)
+      progress.agentId = config.id
+      // Before anything is built: a second file with a loaded agent's id
+      // would otherwise start its MCP servers and adapters only to be refused.
+      this.assertNoDuplicateId(config.id, canonicalPath)
+      const previousName = this.adoptFileName(workspace, config, canonicalPath)
+      const keyCell: DerivedKeyCell = { current: opts.derivedKey ?? null }
+      const provider = await this.resolveProvider(config, canonicalPath, opts.provider, workspace, keyCell.current)
+      built = await this.buildLoadedAgent(workspace, canonicalPath, config, provider, keyCell)
+      const ref = this.registerAgent(built, canonicalPath, config, undefined, keyCell)
+      built = null // registered: unloadAgent owns it from here
       if (lease?.ok && lease.unprotected) {
         // The lease dir is unusable: the agent runs, and the user is told.
         const event = { type: 'error' as const, payload: { error: lease.unprotected, code: 'LEASES_UNAVAILABLE' }, timestamp: Date.now() }
@@ -609,11 +768,56 @@ export class RuntimeService extends EventEmitter {
           })
         })
       }
+      // Same tick as the host attach in registerAgent, after the start's own
+      // error events (BAM order): no executor event can be forwarded before it.
+      // The startup turn is startAgent's, which callers run after this resolves.
+      this.emitLifecycle(ref.id, canonicalPath, 'agent_started', {
+        state: resolveStartInState(config),
+        handle: config.handle || deriveHandle(canonicalPath),
+        ...(previousName !== null ? { nameChangedFrom: previousName } : {}),
+      })
       return ref
     } catch (err) {
-      try { workspace.dispose() } catch { /* best effort */ }
+      if (built) await disposeRuntimeAgent(built, 'immediate') // owns the workspace
+      else try { workspace.dispose() } catch { /* best effort */ }
       throw err
     }
+  }
+
+  /**
+   * Refuse a second agent with a loaded agent's id: two files with one
+   * `config.id` (a copied file) cannot be told apart by id-addressed routes,
+   * the mesh or the review list.
+   */
+  private assertNoDuplicateId(agentId: string, filePath: string | null): void {
+    const loaded = this.agents.get(agentId)
+    if (!loaded) return
+    const where = loaded.filePath ?? 'an in-memory agent'
+    throw new RuntimeLoopError(
+      `${filePath ?? 'This agent'} has the same agent id (${agentId}) as ${where}, which is already loaded. ` +
+        'Stop that agent first, or clone this file (POST /files/clone) and load the clone, which gets an id of its own.',
+      409,
+      DUPLICATE_AGENT_ID_CODE,
+      { agentId, filePath, loadedFilePath: loaded.filePath },
+    )
+  }
+
+  /**
+   * Studio parity (FILE_OPEN, background start): an agent is named after its
+   * file, exactly as Studio does it. A rename waiting for this file is the
+   * one exception (Studio's FILE_OPEN keeps the pending name). Returns the
+   * name it replaced, or null. Logged to the console and the agent's adf_logs.
+   */
+  private adoptFileName(workspace: AdfWorkspace, config: AgentConfig, filePath: string): string | null {
+    const name = this.pendingRenames.get(filePath) ?? basename(filePath, '.adf')
+    if (config.name === name) return null
+    const previous = config.name
+    const message = `Agent name "${previous}" changed to "${name}" to match its file name`
+    console.log(`[RuntimeService] ${filePath}: ${message}`)
+    config.name = name
+    workspace.setAgentConfig(config)
+    try { workspace.insertLog('info', 'runtime', 'name_from_file', null, message.slice(0, 500)) } catch { /* non-fatal */ }
+    return previous
   }
 
   /**
@@ -622,32 +826,80 @@ export class RuntimeService extends EventEmitter {
    * is the only caller.
    */
   createAgent(opts: RuntimeCreateAgentOptions): RuntimeAgentRef {
+    const prompts = this.currentPrompts()
     const agent = createHeadlessAgent({
       ...opts,
-      basePrompt: opts.basePrompt ?? this.basePrompt,
-      toolPrompts: opts.toolPrompts ?? this.toolPrompts,
-      compactionPrompt: opts.compactionPrompt ?? this.compactionPrompt,
+      basePrompt: opts.basePrompt ?? prompts.basePrompt,
+      toolPrompts: opts.toolPrompts ?? prompts.toolPrompts,
+      compactionPrompt: opts.compactionPrompt ?? prompts.compactionPrompt,
     })
     const config = agent.workspace.getAgentConfig() as AgentConfig
-    return this.registerAgent(agent, opts.filePath ? this.canonicalFilePath(opts.filePath) : null, config, opts.id)
+    const filePath = opts.filePath ? this.canonicalFilePath(opts.filePath) : null
+    let ref: RuntimeAgentRef
+    try {
+      ref = this.registerAgent(agent, filePath, config, opts.id)
+    } catch (err) {
+      void disposeRuntimeAgent(agent, 'immediate')
+      throw err
+    }
+    this.emitLifecycle(ref.id, filePath, 'agent_started', {
+      state: resolveStartInState(config),
+      handle: config.handle || (filePath ? deriveHandle(filePath) : undefined),
+    })
+    return ref
   }
 
-  async unloadAgent(agentId: string, opts: { mode?: 'graceful' | 'immediate' } = {}): Promise<void> {
+  /**
+   * Stop and unload one agent. Concurrent calls for one agent share one
+   * teardown (an owner stop racing the agent's own `off`).
+   */
+  async unloadAgent(agentId: string, opts: { mode?: AgentStopMode } = {}): Promise<void> {
     const managed = this.resolveAgent(agentId)
     if (!managed) return
+    const pending = this.unloads.get(managed.id)
+    if (pending) return pending
+    const unload = this.doUnloadAgent(managed, opts.mode ?? 'graceful')
+    this.unloads.set(managed.id, unload)
+    try {
+      await unload
+    } finally {
+      this.unloads.delete(managed.id)
+    }
+  }
+
+  private async doUnloadAgent(managed: ManagedRuntimeAgent, mode: AgentStopMode): Promise<void> {
+    this.emitLifecycle(managed.id, managed.filePath, 'agent_stopping', {})
     managed.hostAttachment.detach()
-    if (managed.agent.disposeAsync) await managed.agent.disposeAsync({ mode: opts.mode ?? 'graceful' })
-    else managed.agent.dispose()
+    let disposeError: unknown = null
+    try {
+      await disposeRuntimeAgent(managed.agent, mode, true)
+    } catch (err) {
+      // Unloaded anyway: an agent left registered after a failed dispose
+      // could never be stopped or loaded again. Some of its resources may
+      // still be running; the error says so.
+      disposeError = err
+      console.error(`[RuntimeService] Stopping ${managed.filePath ?? managed.id} failed; it is unloaded anyway:`, err)
+    }
     this.agents.delete(managed.id)
     if (managed.filePath) this.filePathToAgentId.delete(managed.filePath)
+    // The deferred rename runs before the lease is released, so no other
+    // process can open the file while it moves (synchronous: nothing between
+    // the map removal above and the rename can release the lease). Skipped
+    // when the dispose failed: the file may still be open.
+    const renamed = managed.filePath && !disposeError ? this.applyPendingRename(managed.id, managed.filePath) : null
     await this.agentLeases?.reconcile()
     // Emit only after dispose settles: consumers (e.g. the daemon's sweep
     // skip-set) treat this event as "the workspace is closed" — emitting
     // before dispose let them touch a workspace that was still open.
-    this.emit('agent-unloaded', {
+    this.emitSafely('agent-unloaded', {
       agentId: managed.id,
       filePath: managed.filePath,
     } satisfies RuntimeAgentUnloadedEvent)
+    this.emitLifecycle(managed.id, managed.filePath, 'agent_stopped', disposeError
+      ? { error: disposeError instanceof Error ? disposeError.message : String(disposeError) }
+      : {})
+    if (renamed) this.emitSafely('agent-file-renamed', renamed)
+    if (disposeError) throw disposeError
   }
 
   /**
@@ -715,6 +967,8 @@ export class RuntimeService extends EventEmitter {
       }
 
       managed.degraded = undefined
+      // A provider built while its sealed key was locked is the stub: build the real one.
+      if (lockedKeyProviders.has(managed.agent.executor.getProvider() as LLMProvider)) this.rebuildProviderAfterUnlock(managed)
       // Values the owner stored (or replaced) while locked were written
       // plain: seal them now that the envelope is open (Studio parity with
       // ensureWorkspaceIdentity's migration pass).
@@ -827,6 +1081,8 @@ export class RuntimeService extends EventEmitter {
     const startup = managed.agent.dispatchStartup()
     startup.catch((err) => {
       console.error(`[RuntimeService] Startup turn error for ${managed.id}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
+      if (this.agents.get(managed.id) !== managed) return
+      this.emitLifecycle(managed.id, managed.filePath, 'startup_failed', { error: err instanceof Error ? err.message : String(err) })
     })
     // dispatchStartup resolves false within microtasks when no startup turn is
     // needed; when a turn dispatches it resolves only after the whole turn
@@ -1248,10 +1504,7 @@ export class RuntimeService extends EventEmitter {
     managed.agent.applyConfigChange(config)
 
     if (providerSelectionChanged(previousConfig, config) && this.providerFactory) {
-      const provider = await this.providerFactory(config, managed.filePath, {
-        workspace: managed.agent.workspace,
-        derivedKey: managed.derivedKey,
-      })
+      const provider = await this.agentProvider(config, managed.filePath, managed.agent.workspace, managed.derivedKey)
       managed.agent.executor.updateProvider(provider)
     }
 
@@ -1846,19 +2099,47 @@ export class RuntimeService extends EventEmitter {
   unlockAgentIdentityPassword(agentId: string, password: string): { agentId: string; success: true } {
     const managed = this.requireAgent(agentId)
     managed.derivedKey = managed.agent.workspace.unlockWithPassword(password)
+    console.log(`[RuntimeService] Keystore of ${managed.config.name} unlocked with its file password`)
     // The provider was built while the agent's own key was unreadable (and so
     // resolved fail-closed); rebuild it now that the key opens.
     this.rebuildProviderAfterUnlock(managed)
+    this.propagateDerivedKey(managed)
     return { agentId: managed.id, success: true }
+  }
+
+  /**
+   * Hand the agent's current derived key (null after a lock) to every other
+   * consumer, as Studio holds it from the start: MCP env, credential files and
+   * OAuth store, channel adapters, AdfCallHandler identity and signing, and
+   * the mesh registration (AgentRuntimeBuilder.applyDerivedKey, which restarts
+   * the adapters and MCP servers that needed the key and logs each restart).
+   * The restarts run in the background; the route answers at once.
+   */
+  private propagateDerivedKey(managed: ManagedRuntimeAgent): void {
+    const key = managed.derivedKey
+    const workspace = managed.agent.workspace
+    const builder = this.agentRuntimeBuilder
+    // Not built by the builder (headless): the mesh registration is the only other consumer.
+    if (!builder) {
+      emitAgentDerivedKeyChanged(workspace, key)
+      return
+    }
+    void builder.applyDerivedKey(managed.agent, key).then(
+      (result) => { if (!result.applied) emitAgentDerivedKeyChanged(workspace, key) },
+      (err) => console.error(`[RuntimeService] Applying the derived key of ${managed.config.name} failed:`, err),
+    )
   }
 
   private rebuildProviderAfterUnlock(managed: ManagedRuntimeAgent): void {
     if (!this.providerFactory) return
-    void Promise.resolve(this.providerFactory(managed.config, managed.filePath, {
-      workspace: managed.agent.workspace,
-      derivedKey: managed.derivedKey,
-    })).then(
-      provider => managed.agent.executor.updateProvider(provider),
+    void this.agentProvider(managed.config, managed.filePath, managed.agent.workspace, managed.derivedKey).then(
+      (provider) => {
+        const replacesStub = lockedKeyProviders.has(managed.agent.executor.getProvider() as LLMProvider)
+        managed.agent.executor.updateProvider(provider)
+        if (replacesStub && !lockedKeyProviders.has(provider)) {
+          console.log(`[RuntimeService] ${managed.config.name}: provider key unlocked; the provider uses it from the next turn`)
+        }
+      },
       err => console.warn(`[RuntimeService] Provider rebuild after unlock failed for ${managed.id}:`, err),
     )
   }
@@ -1875,6 +2156,7 @@ export class RuntimeService extends EventEmitter {
     }
     managed.agent.workspace.removePassword(managed.derivedKey)
     managed.derivedKey = null
+    this.propagateDerivedKey(managed)
     return { agentId: managed.id, success: true }
   }
 
@@ -1887,6 +2169,7 @@ export class RuntimeService extends EventEmitter {
     const managed = this.requireAgent(agentId)
     managed.agent.workspace.wipeAllIdentity()
     managed.derivedKey = null
+    this.propagateDerivedKey(managed)
     return { agentId: managed.id, success: true }
   }
 
@@ -2234,45 +2517,309 @@ export class RuntimeService extends EventEmitter {
     return out
   }
 
+  /**
+   * A loaded agent's assembled handle and derived key, by id, handle or name,
+   * for daemon routes that act on parts RuntimeService does not wrap. The key
+   * is for in-process use only and never leaves the process.
+   */
+  getLoadedAgent(agentId: string): RuntimeLoadedAgent | undefined {
+    const managed = this.resolveAgent(agentId)
+    if (!managed) return undefined
+    return {
+      agentId: managed.id,
+      filePath: managed.filePath,
+      agent: managed.agent,
+      workspace: managed.agent.workspace,
+      derivedKey: managed.derivedKey,
+    }
+  }
+
+  /**
+   * Studio's AGENT_START provider gate, for a client-initiated start (autostart
+   * skips it, as Studio's background starts do): `provider_missing` when the
+   * agent names a provider this runtime does not have, `provider_unconfigured`
+   * when the provider's network check fails and its type needs a key it does
+   * not have. A failing check of a provider that has its key carries no code.
+   * `identifier` is a loaded agent's id, handle or name, or a file (path or
+   * tracked-directory match) that is not loaded yet.
+   */
+  async preflightProvider(identifier: string): Promise<RuntimeProviderPreflight> {
+    if (!this.providerFactory) return { ok: true } // the caller supplies the provider
+    const loadedPath = identifier.endsWith('.adf') ? this.loadedPathFor(identifier) : undefined
+    const managed = loadedPath ? this.agents.get(this.filePathToAgentId.get(loadedPath)!) : this.resolveAgent(identifier)
+    let workspace: AdfWorkspace
+    let filePath: string | null
+    let derivedKey: Buffer | null = null
+    if (managed) {
+      workspace = managed.agent.workspace
+      filePath = managed.filePath
+      derivedKey = managed.derivedKey
+    } else {
+      filePath = this.findAgentFile(identifier)
+      if (!filePath) throw new Error(`RuntimeService: unknown agent "${identifier}"`)
+      // The load's review gate first (403): an unreviewed file's provider
+      // entry must not make this daemon call the endpoint it names.
+      this.assertReviewGate(filePath, this.enforceReviewGate)
+      workspace = AdfWorkspace.open(filePath)
+    }
+    try {
+      // The agent's own provider key may be envelope-sealed (the load path's unlock).
+      if (!managed) unlockWorkspaceEnvelopes(workspace)
+      const config = workspace.getAgentConfig() as AgentConfig
+      const store = this.providerSettings()
+      // The agent has its own key but it cannot be opened here (password or
+      // envelope locked): not a missing key. The agent loads and unlocks
+      // later (unlockAgentIdentityPassword, owner identity); the start goes on.
+      const credentialsLocked = this.lockedProviderKeyMessage(config, workspace, derivedKey)
+      if (credentialsLocked) return { ok: true, credentialsLocked }
+      let provider: LLMProvider
+      try {
+        provider = await this.providerFactory(config, filePath, { workspace, derivedKey })
+      } catch (err) {
+        return { ok: false, code: 'provider_missing', error: err instanceof Error ? err.message : String(err) }
+      }
+      const validation = await provider.validateConfig()
+      if (validation.valid) return { ok: true }
+      const local = resolveAgentProviderConfig(config, workspace, derivedKey, store) ?? store.getProvider(config.model.provider)
+      const needsKey = !!local && !local.apiKey && providerNeedsApiKey(local.type)
+      return {
+        ok: false,
+        error: validation.error || 'Provider not configured',
+        ...(needsKey ? { code: 'provider_unconfigured' as const } : {}),
+      }
+    } finally {
+      if (!managed) try { workspace.dispose() } catch { /* best effort */ }
+    }
+  }
+
+  /**
+   * The file of a loaded agent moved from `oldPath` to `newPath` (a rename
+   * done by the caller). The agent keeps running: the path indexes, a pending
+   * name-follows-file rename and the agent lease move to the new path, and
+   * 'agent-path-changed' is emitted (the mesh registration is keyed by path).
+   * Returns null when no loaded agent has `oldPath`.
+   */
+  async rekeyAgentPath(oldPath: string, newPath: string): Promise<RuntimeAgentRef | null> {
+    const oldKey = this.loadedPathFor(oldPath)
+    if (!oldKey) return null
+    const agentId = this.filePathToAgentId.get(oldKey)!
+    const managed = this.requireAgent(agentId)
+    const newCanonical = this.canonicalFilePath(newPath)
+    if (newCanonical === oldKey) return this.toRef(managed)
+    const holder = this.loadedPathFor(newCanonical)
+    if (holder && holder !== oldKey) {
+      throw new RuntimeLoopError(`${newCanonical} is already loaded as another agent.`, 409, 'path_in_use')
+    }
+    // Path maps first, then the lease (agent-lease.ts rekey reads them through the hosted-paths probe).
+    this.filePathToAgentId.delete(oldKey)
+    this.filePathToAgentId.set(newCanonical, agentId)
+    managed.filePath = newCanonical
+    const pendingName = this.pendingRenames.get(oldKey)
+    if (pendingName !== undefined) {
+      this.pendingRenames.delete(oldKey)
+      if (basename(newCanonical, '.adf') !== pendingName) this.pendingRenames.set(newCanonical, pendingName)
+    }
+    console.log(`[RuntimeService] ${managed.config.name} moved: ${oldKey} → ${newCanonical}`)
+    const lease = await this.agentLeases?.rekey(oldKey, newCanonical)
+    if (lease && !lease.ok) {
+      // It keeps running, but unprotected: say so where the user looks.
+      const event = { type: 'error' as const, payload: { error: lease.message, code: lease.code }, timestamp: Date.now() }
+      this.emit('agent-event', { agentId, filePath: newCanonical, event } satisfies RuntimeAgentEvent)
+    }
+    this.emit('agent-path-changed', { agentId, oldFilePath: oldKey, filePath: newCanonical } satisfies RuntimeAgentPathChangedEvent)
+    return this.toRef(managed)
+  }
+
+  /**
+   * Studio's syncAgentFileToName: the file follows the agent's name. A loaded
+   * agent's file is renamed when it unloads (SQLite cannot move under a live
+   * executor); a file that is not loaded is renamed now. Each rename emits
+   * 'agent-file-renamed'. Called for every running-config name change
+   * (host onConfigChanged); W1-E's rename route calls it too.
+   */
+  syncAgentFileToName(filePath: string, name: string): RuntimeFileRenameResult {
+    const canonicalPath = this.canonicalFilePath(filePath)
+    const trimmed = (name ?? '').trim()
+    if (!isValidAgentFileName(trimmed)) {
+      console.warn(`[RuntimeService] Agent name "${name}" is not a valid file name; keeping ${basename(canonicalPath)}`)
+      return { error: `"${name}" is not a valid file name.` }
+    }
+    if (basename(canonicalPath, '.adf') === trimmed) {
+      this.pendingRenames.delete(canonicalPath)
+      return {}
+    }
+    if (this.isPathLoaded(canonicalPath)) {
+      if (this.pendingRenames.get(canonicalPath) !== trimmed) {
+        console.log(`[RuntimeService] ${basename(canonicalPath)} will be renamed to "${trimmed}.adf" when the agent stops`)
+      }
+      this.pendingRenames.set(canonicalPath, trimmed)
+      return { deferred: true }
+    }
+    const result = this.renameAgentFileNow(canonicalPath, trimmed)
+    if (result.filePath) {
+      this.emitSafely('agent-file-renamed', { agentId: null, oldFilePath: canonicalPath, filePath: result.filePath } satisfies RuntimeAgentFileRenamedEvent)
+    }
+    return result
+  }
+
+  /** The new name a loaded agent's file takes when it unloads, if one is pending. */
+  getPendingRename(filePath: string): string | undefined {
+    return this.pendingRenames.get(this.canonicalFilePath(filePath))
+  }
+
+  /**
+   * Drop a pending rename without the name checks syncAgentFileToName runs
+   * (a file being deleted may have a name that is not a valid new name, e.g.
+   * `:` on POSIX). Returns the dropped name.
+   */
+  cancelPendingRename(filePath: string): string | undefined {
+    const key = this.canonicalFilePath(filePath)
+    const name = this.pendingRenames.get(key)
+    this.pendingRenames.delete(key)
+    return name
+  }
+
+  /** Renames the file of an agent that just unloaded, if a rename waits; the caller emits the event. */
+  private applyPendingRename(agentId: string, filePath: string): RuntimeAgentFileRenamedEvent | null {
+    const name = this.pendingRenames.get(filePath)
+    if (name === undefined || this.isPathLoaded(filePath)) return null
+    this.pendingRenames.delete(filePath)
+    const result = this.renameAgentFileNow(filePath, name)
+    if (result.error) {
+      console.warn(`[RuntimeService] Deferred rename of ${basename(filePath)} to "${name}.adf" failed: ${result.error}`)
+      return null
+    }
+    return result.filePath ? { agentId, oldFilePath: filePath, filePath: result.filePath } : null
+  }
+
+  /** Studio's performAdfRename for a file no agent holds open. */
+  private renameAgentFileNow(filePath: string, newName: string): RuntimeFileRenameResult {
+    const newPath = join(dirname(filePath), `${newName}.adf`)
+    // On a case-insensitive volume a case-only rename's target "exists": it is the source itself.
+    const caseOnly = newPath !== filePath && sameInode(filePath, newPath)
+    if (newPath !== filePath && !caseOnly && existsSync(newPath)) return { error: `A file named "${newName}.adf" already exists.` }
+    try {
+      if (newPath !== filePath) {
+        // Merge WAL frames into the main file before moving it; sidecars that
+        // survive (another process holds the file) abort the rename, since a
+        // base file moved away from live sidecars loses their frames.
+        if (existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)) {
+          try {
+            const checkpoint = AdfWorkspace.open(filePath)
+            checkpoint.checkpoint()
+            checkpoint.close()
+          } catch (err) {
+            console.warn(`[RuntimeService] Pre-rename checkpoint of ${basename(filePath)} failed:`, err)
+          }
+        }
+        if (existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)) {
+          return { error: 'WAL sidecars could not be checkpointed — rename aborted to avoid losing unflushed data.' }
+        }
+        if (caseOnly) {
+          // Through a temporary name, so the new spelling sticks on every case-insensitive filesystem.
+          const temp = `${filePath}.${process.pid}-${Date.now()}.renaming`
+          renameSync(filePath, temp)
+          renameSync(temp, newPath)
+        } else {
+          renameSync(filePath, newPath)
+        }
+      }
+      const workspace = AdfWorkspace.open(newPath)
+      try {
+        const config = workspace.getAgentConfig()
+        config.name = newName
+        workspace.setAgentConfig(config)
+      } finally {
+        workspace.close()
+      }
+      this.pendingRenames.delete(filePath)
+      console.log(`[RuntimeService] Renamed ${filePath} → ${newPath}`)
+      return { filePath: newPath }
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** The canonical key under which `filePath` is loaded (or loading), if it is. */
+  private loadedPathFor(filePath: string): string | undefined {
+    const canonical = this.canonicalFilePath(filePath)
+    if (this.filePathToAgentId.has(canonical)) return canonical
+    // A file already moved away no longer resolves to its realpath: compare spellings.
+    const key = pathKey(canonical)
+    for (const loaded of this.filePathToAgentId.keys()) if (pathKey(loaded) === key) return loaded
+    return undefined
+  }
+
+  private isPathLoaded(canonicalPath: string): boolean {
+    return this.filePathToAgentId.has(canonicalPath) || this.inFlightLoads.has(canonicalPath)
+  }
+
+  /** The settings store as the provider resolution reads it. */
+  private providerSettings(): ProviderSettingsStore {
+    const settings = this.settings as (RuntimeSettingsStore & Partial<ProviderSettingsStore>) | undefined
+    return {
+      getProvider: (id) => settings?.getProvider
+        ? settings.getProvider(id)
+        : ((settings?.get('providers') as ProviderConfig[] | undefined) ?? []).find(provider => provider.id === id),
+    }
+  }
+
   override on(event: 'agent-event', listener: (event: RuntimeAgentEvent) => void): this
+  override on(event: 'agent-lifecycle', listener: (event: RuntimeLifecycleEvent) => void): this
   override on(event: 'agent-loaded', listener: (event: RuntimeAgentLoadedEvent) => void): this
   override on(event: 'agent-unloaded', listener: (event: RuntimeAgentUnloadedEvent) => void): this
+  override on(event: 'agent-path-changed', listener: (event: RuntimeAgentPathChangedEvent) => void): this
+  override on(event: 'agent-file-renamed', listener: (event: RuntimeAgentFileRenamedEvent) => void): this
   override on(event: string | symbol, listener: (...args: any[]) => void): this {
     return super.on(event, listener)
   }
 
-  private registerAgent(agent: RuntimeAgent, filePath: string | null, config: AgentConfig, idOverride?: string): RuntimeAgentRef {
+  /**
+   * Throws (the caller disposes `agent`) during teardown and when another
+   * loaded agent has the same id (409 duplicate_agent_id).
+   */
+  private registerAgent(
+    agent: RuntimeAgent,
+    filePath: string | null,
+    config: AgentConfig,
+    idOverride?: string,
+    keyCell: DerivedKeyCell = { current: null },
+  ): RuntimeAgentRef {
     // Shutdown race: an agent whose build completes after teardown began must
     // not register (it would escape the teardown's agent snapshot and keep
-    // dispatching turns). Dispose it instead.
+    // dispatching turns).
     if (RuntimeGate.tearingDown) {
-      void agent.disposeAsync({ mode: 'immediate' }).catch(() => { /* best effort */ })
       throw new Error('RuntimeService: runtime teardown in progress — agent not registered.')
     }
     const id = idOverride ?? config.id
-    if (this.agents.has(id)) {
-      void agent.disposeAsync({ mode: 'immediate' })
-      return this.toRef(this.requireAgent(id))
-    }
+    // Two files with one id that loaded concurrently both passed the check
+    // before their builds; the second to finish is refused here.
+    this.assertNoDuplicateId(id, filePath)
 
-    const hostAttachment = agent.attachHost({
-      onEvent: (event) => {
-        this.emit('agent-event', { agentId: id, filePath, event } satisfies RuntimeAgentEvent)
-      },
-    })
     const managed: ManagedRuntimeAgent = {
       id,
       filePath,
       config,
       agent,
-      derivedKey: null,
-      hostAttachment,
+      keyCell,
+      get derivedKey() { return keyCell.current },
+      set derivedKey(key: Buffer | null) { keyCell.current = key },
+      display: {
+        state: toDisplayState(agent.executor.getState()),
+        loopStates: new Map(),
+        activeLoops: 0,
+        accumulatedText: '',
+      },
+      hostAttachment: { detach: () => {} },
     }
+    managed.hostAttachment = agent.attachHost(this.hostBindings(managed))
     this.wireCreateAdfCallbacks(managed)
     this.agents.set(id, managed)
     if (filePath) this.filePathToAgentId.set(filePath, id)
     const ref = this.toRef(managed)
-    this.emit('agent-loaded', {
+    // Per listener: a failing one (mesh registration) must not turn into a
+    // load failure that disposes a registered agent.
+    this.emitSafely('agent-loaded', {
       agentId: id,
       filePath,
       ref,
@@ -2280,6 +2827,101 @@ export class RuntimeService extends EventEmitter {
     } satisfies RuntimeAgentLoadedEvent)
     return ref
   }
+
+  /**
+   * The host side of one agent (Studio's foreground/background host bindings):
+   * raw executor and trigger events out as 'agent-event', display state,
+   * trigger errors and lifecycle out as 'agent-lifecycle', the agent's own
+   * `off`, and config changes. Paths are read from `managed` at event time, so
+   * rekeyAgentPath needs no re-attach.
+   */
+  private hostBindings(managed: ManagedRuntimeAgent): AgentHostBindings {
+    return {
+      onEvent: (event) => {
+        this.emit('agent-event', { agentId: managed.id, filePath: managed.filePath, event } satisfies RuntimeAgentEvent)
+        if (event.type === 'state_changed') this.foldDisplayState(managed, event)
+      },
+      // `trigger_message` and the like: Studio sends them on AGENT_EVENT too.
+      onTriggerEvent: (event) => {
+        this.emit('agent-event', { agentId: managed.id, filePath: managed.filePath, event } satisfies RuntimeAgentEvent)
+      },
+      onTriggerError: (error, dispatch) => this.onTriggerError(managed, error, dispatch),
+      onStateOff: () => this.handleAgentOff(managed),
+      onConfigChanged: (updatedConfig) => {
+        // The agent's own writes (sys_update_config, loop_manage) land here too.
+        managed.config = updatedConfig
+        if (managed.filePath) this.syncAgentFileToName(managed.filePath, updatedConfig.name)
+      },
+    }
+  }
+
+  /** Main's display state and the inner-loop count, through the background mapping (BAM parity). */
+  private foldDisplayState(managed: ManagedRuntimeAgent, event: AgentExecutionEvent): void {
+    applyBackgroundEvent(managed.display, managed.filePath ?? managed.id, event, (mapped) => {
+      if (mapped.type !== 'agent_state_changed' && mapped.type !== 'agent_loops_changed') return
+      const { filePath: _filePath, ...payload } = mapped.payload as Record<string, unknown>
+      this.emitLifecycle(managed.id, managed.filePath, mapped.type, payload)
+    })
+  }
+
+  private onTriggerError(managed: ManagedRuntimeAgent, error: unknown, dispatch: AdfEventDispatch | AdfBatchDispatch): void {
+    if (this.agents.get(managed.id) !== managed || managed.agent.executor.getState() === 'stopped') return
+    const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`[RuntimeService] Trigger error for ${managed.filePath ?? managed.id} (${eventType}): ${message}`)
+    // The daemon builder's own host binding writes adf_logs; other agents have none.
+    if (managed.agent.profile !== 'daemon') {
+      try { managed.agent.workspace.insertLog('error', 'runtime', 'trigger_error', eventType, message.slice(0, 200)) } catch { /* non-fatal */ }
+    }
+    // What Studio's hosts show: the foreground sends an `error` AGENT_EVENT,
+    // the background manager puts the agent's display state in `error`.
+    const errorEvent: AgentExecutionEvent = { type: 'error', payload: { error: message }, timestamp: Date.now() }
+    this.emitSafely('agent-event', { agentId: managed.id, filePath: managed.filePath, event: errorEvent } satisfies RuntimeAgentEvent)
+    if (managed.display.state !== 'error') {
+      managed.display.state = 'error'
+      this.emitLifecycle(managed.id, managed.filePath, 'agent_state_changed', { state: 'error' })
+    }
+    this.emitLifecycle(managed.id, managed.filePath, 'trigger_error', { error: message, eventType })
+  }
+
+  /**
+   * The agent set its own display state to `off` (a tool, a lambda, an
+   * approval, the owner's state change): stop and unload it, as Studio's
+   * handleAgentOff does. The mesh registration goes with the unload.
+   */
+  private handleAgentOff(managed: ManagedRuntimeAgent): void {
+    if (this.offInProgress.has(managed.id) || this.agents.get(managed.id) !== managed) return
+    this.offInProgress.add(managed.id)
+    console.log(`[RuntimeService] ${managed.config.name} switched itself off: stopping it`)
+    // A microtask later, so the `off` state_changed this fires inside still
+    // reaches onEvent (and clients) before the host detaches.
+    void Promise.resolve()
+      .then(() => this.unloadAgent(managed.id, { mode: 'owner-off' }))
+      .catch((err) => console.error(`[RuntimeService] Stopping ${managed.config.name} after off failed:`, err))
+      .finally(() => this.offInProgress.delete(managed.id))
+  }
+
+  private emitLifecycle(
+    agentId: string | null,
+    filePath: string | null,
+    type: RuntimeLifecycleEventType,
+    payload: Record<string, unknown>,
+  ): void {
+    const event: RuntimeLifecycleEvent = { agentId, filePath, type, payload: { filePath, ...payload }, timestamp: Date.now() }
+    this.emitSafely('agent-lifecycle', event)
+  }
+
+  /** Emit to each listener on its own: one that throws neither reaches the caller nor stops the rest. */
+  private emitSafely(name: string, event: unknown): void {
+    for (const listener of this.rawListeners(name)) {
+      try {
+        (listener as (event: unknown) => void)(event)
+      } catch (err) {
+        console.error(`[RuntimeService] A ${name} listener failed:`, err)
+      }
+    }
+  }
+
 
   private requireAgent(agentId: string): ManagedRuntimeAgent {
     const managed = this.resolveAgent(agentId)
@@ -2463,14 +3105,48 @@ export class RuntimeService extends EventEmitter {
     filePath: string,
     override: LLMProvider | undefined,
     workspace: AdfWorkspace,
+    derivedKey: Buffer | null,
   ): Promise<LLMProvider> {
     if (override) return override
     if (!this.providerFactory) {
       throw new Error('RuntimeService: loadAgent requires a provider or providerFactory.')
     }
-    // No derived key at load: the legacy password lock is opened later via
-    // unlock; envelope-sealed keys are already open (unlockWorkspaceEnvelopes).
-    return this.providerFactory(config, filePath, { workspace, derivedKey: null })
+    // Envelope-sealed keys are already open (unlockWorkspaceEnvelopes); the
+    // legacy password key is the caller's, or arrives later through unlock.
+    return this.agentProvider(config, filePath, workspace, derivedKey)
+  }
+
+  /**
+   * The agent's provider. When the agent's own provider key is stored but
+   * locked here (file password, or a sealed envelope this daemon cannot open
+   * yet), a stub that fails every call with `credentials_locked` before any
+   * request: the real provider would send an empty key and the executor
+   * would blame Settings → Providers. An unlock rebuilds the real one
+   * (unlockAgentIdentityPassword, refreshAgentCredentials).
+   */
+  private async agentProvider(config: AgentConfig, filePath: string | null, workspace: AdfWorkspace, derivedKey: Buffer | null): Promise<LLMProvider> {
+    return this.lockedKeyStub(config, workspace, derivedKey) ?? this.providerFactory!(config, filePath, { workspace, derivedKey })
+  }
+
+  /** The credentials_locked stub when the agent's own provider key cannot be opened here, else null. */
+  private lockedKeyStub(config: AgentConfig, workspace: AdfWorkspace, derivedKey: Buffer | null): LLMProvider | null {
+    const message = this.lockedProviderKeyMessage(config, workspace, derivedKey)
+    if (!message) return null
+    const entry = config.providers!.find(p => p.id === config.model.provider)!
+    console.warn(`[RuntimeService] ${message}`)
+    return lockedKeyProvider(entry, config.model.model_id, message)
+  }
+
+  /** Why the agent's own provider key is locked here and how to unlock it; null when it is not. */
+  private lockedProviderKeyMessage(config: AgentConfig, workspace: AdfWorkspace, derivedKey: Buffer | null): string | null {
+    const entry = config.providers?.find(p => p.id === config.model.provider)
+    if (!entry || agentProviderKeySource(entry, workspace, derivedKey, this.providerSettings()) !== 'locked') return null
+    const provider = `"${entry.name || entry.id}"`
+    return workspace.isPasswordProtected() && !derivedKey
+      ? `${config.name}'s API key for its provider ${provider} is locked with the agent's file password, so no request was sent. ` +
+        `Unlock it: POST /agents/${config.id}/identity/password/unlock with {"password": "…"}. The next turn uses the key.`
+      : `${config.name}'s API key for its provider ${provider} is sealed and its credentials envelope is locked on this daemon, so no request was sent. ` +
+        'Make the owner identity available (adf identity unlock, or adf identity restore); the agent re-checks and the next turn uses the key.'
   }
 
   private async buildLoadedAgent(
@@ -2478,7 +3154,9 @@ export class RuntimeService extends EventEmitter {
     filePath: string,
     config: AgentConfig,
     provider: LLMProvider,
+    keyCell: DerivedKeyCell,
   ): Promise<RuntimeAgent> {
+    const prompts = this.currentPrompts()
     if (this.agentRuntimeBuilder) {
       return await this.agentRuntimeBuilder.build({
         workspace,
@@ -2486,9 +3164,15 @@ export class RuntimeService extends EventEmitter {
         config,
         provider,
         restoreLoop: true,
+        derivedKey: keyCell.current,
+        prompts,
         createProviderForModel: (model) => {
           if (!this.providerFactory) return provider
-          const resolved = this.providerFactory({ ...config, model }, filePath, { workspace, derivedKey: null })
+          // The key at call time: an unlock after start reaches model_invoke too.
+          const modelConfig = { ...config, model }
+          const stub = this.lockedKeyStub(modelConfig, workspace, keyCell.current)
+          if (stub) return stub
+          const resolved = this.providerFactory(modelConfig, filePath, { workspace, derivedKey: keyCell.current })
           if (isPromiseLike(resolved)) {
             throw new Error('RuntimeService: model_invoke providerFactory must be synchronous.')
           }
@@ -2499,11 +3183,24 @@ export class RuntimeService extends EventEmitter {
 
     return createHeadlessAgentFromWorkspace(workspace, {
       provider,
-      basePrompt: this.basePrompt,
-      toolPrompts: this.toolPrompts,
-      compactionPrompt: this.compactionPrompt,
+      ...prompts,
       restoreLoop: true,
     })
+  }
+
+  /**
+   * The prompt settings for a start, read now (Studio reads them at every
+   * AGENT_START): the settings store's value, else the constructor's.
+   */
+  private currentPrompts(): AgentRuntimePrompts {
+    const base = this.settings?.get('globalSystemPrompt')
+    const tools = this.settings?.get('toolPrompts')
+    const compaction = this.settings?.get('compactionPrompt')
+    return {
+      basePrompt: typeof base === 'string' ? base : this.basePrompt,
+      toolPrompts: tools && typeof tools === 'object' && !Array.isArray(tools) ? tools as Record<string, string> : this.toolPrompts,
+      compactionPrompt: typeof compaction === 'string' ? compaction : this.compactionPrompt,
+    }
   }
 
   private assertReviewGate(filePath: string, enforce: boolean): void {
@@ -2613,6 +3310,17 @@ export class RuntimeService extends EventEmitter {
   }
 }
 
+/** Both paths name the same file (device + inode); false when either is missing. */
+function sameInode(a: string, b: string): boolean {
+  try {
+    const x = statSync(a, { bigint: true })
+    const y = statSync(b, { bigint: true })
+    return x.dev === y.dev && x.ino === y.ino
+  } catch {
+    return false
+  }
+}
+
 function clampInteger(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min
   return Math.min(max, Math.max(min, Math.floor(value)))
@@ -2630,6 +3338,53 @@ function addUsage(target: RuntimeUsageTotals, usage: LoopTokenUsage): void {
   // `input` is already cache-inclusive (AI SDK v6 reports inputTokens.total),
   // so cache buckets are a breakdown of input, not an addition to it.
   target.total = target.input + target.output
+}
+
+/** Providers made by lockedKeyProvider (so an unlock knows it replaces one). */
+const lockedKeyProviders = new WeakSet<LLMProvider>()
+
+/**
+ * A provider whose every call fails with `credentials_locked` before any
+ * request. validateConfig answers valid: the executor's own preflight would
+ * turn a failure into "check the API key in Settings → Providers".
+ */
+function lockedKeyProvider(entry: AdfProviderConfig, modelId: string, message: string): LLMProvider {
+  const provider: LLMProvider = {
+    name: entry.name || entry.id,
+    providerId: entry.id,
+    providerType: entry.type as LLMProvider['providerType'],
+    modelId,
+    async createMessage() {
+      throw Object.assign(new Error(message), { code: CREDENTIALS_LOCKED_CODE })
+    },
+    async validateConfig() {
+      return { valid: true }
+    },
+  }
+  lockedKeyProviders.add(provider)
+  return provider
+}
+
+/** Dispose an agent; `rethrow` false logs instead (cleanup of an agent that never registered). */
+async function disposeRuntimeAgent(agent: RuntimeAgent, mode: AgentStopMode, rethrow = false): Promise<void> {
+  try {
+    await agent.disposeAsync({ mode })
+  } catch (err) {
+    if (rethrow) throw err
+    console.error('[RuntimeService] Disposing an unregistered agent failed:', err)
+  }
+}
+
+/** Characters not allowed in file names on Windows (a superset of POSIX); as Studio's rename. */
+const INVALID_FILENAME_CHARS = /[<>:"/\|?*\u0000-\u001f]/
+
+function isValidAgentFileName(name: string): boolean {
+  return name.length > 0 && !INVALID_FILENAME_CHARS.test(name) && !name.endsWith('.') && !name.endsWith(' ')
+}
+
+/** Path comparison key: case-insensitive where the file system usually is (as agent-lease.ts). */
+function pathKey(filePath: string): string {
+  return process.platform === 'linux' ? resolve(filePath) : resolve(filePath).toLowerCase()
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {

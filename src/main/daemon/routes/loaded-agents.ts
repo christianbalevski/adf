@@ -15,6 +15,8 @@ export interface LoadedAgentEntry {
   agentId: string
   filePath: string | null
   agent: RuntimeAgentHandle
+  /** The legacy-password derived key while the file is unlocked (read live from RuntimeService). */
+  readonly derivedKey: Buffer | null
 }
 
 export interface LoadedAgentIndex {
@@ -32,7 +34,12 @@ export function loadedAgentIndex(runtime: RuntimeService): LoadedAgentIndex {
   const entries = new Map<string, LoadedAgentEntry>()
   const listeners: Array<(entry: LoadedAgentEntry) => void> = []
   runtime.on('agent-loaded', (event) => {
-    const entry: LoadedAgentEntry = { agentId: event.agentId, filePath: event.filePath, agent: event.agent }
+    const entry: LoadedAgentEntry = {
+      agentId: event.agentId,
+      filePath: event.filePath,
+      agent: event.agent,
+      get derivedKey() { return runtime.getLoadedAgent(event.agentId)?.derivedKey ?? null },
+    }
     entries.set(event.agentId, entry)
     for (const listener of listeners) {
       try { listener(entry) } catch (err) { console.error('[ADF Daemon] Loaded-agent listener failed:', err) }

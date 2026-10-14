@@ -22,6 +22,7 @@ import { DaemonHost } from './daemon-host'
 import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
 import { noteAutostartReport } from './tracked-dirs'
+import { TrackedDirWatcher } from './dir-watcher'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import { ensureDaemonToken } from './daemon-token'
 import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof } from './local-access'
@@ -41,6 +42,8 @@ import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-default
 import { takeLaunchEnv } from './routes/meta-routes'
 import { daemonGapRouteDeps } from './routes/gap-deps'
 import { RuntimeDiscovery } from '../services/runtime-discovery'
+import { applySettingLive } from './live-setting'
+import { wireRuntimeToMesh } from './runtime-mesh-wiring'
 
 // Defined by the builds that ship the daemon (electron.vite.config.ts for
 // out/main/daemon.js, scripts/build-npm.mjs for the npm package).
@@ -195,7 +198,14 @@ const trackedDirs = (settings.get('trackedDirectories') as string[] | undefined)
 const codeSandboxService = new CodeSandboxService()
 // Same global worker ceiling as Studio — the daemon hosts every background
 // agent in one process, so it is exactly where the cap has to bind.
-codeSandboxService.setMaxWorkers(settings.get('sandboxMaxWorkers') as number | undefined)
+// Applies live, as Studio's SETTINGS_SET: the gate re-pumps its queue, so a
+// raised ceiling releases waiting executions without a restart.
+applySettingLive(settings, 'sandboxMaxWorkers', (value, initial) => {
+  codeSandboxService.setMaxWorkers(value as number | undefined)
+  if (initial) return
+  const { maxCold, maxWarm } = codeSandboxService.getResourceStats()
+  console.log(`[ADF Daemon] sandboxMaxWorkers changed to ${value ?? 'default'}: sandbox worker ceiling now ${maxCold} cold / ${maxWarm} warm`)
+})
 const sandboxPackagesService = new SandboxPackagesService()
 // Runtime packages (Settings > Packages) are importable by every agent; read
 // at each execution so a settings change applies without a restart. Each
@@ -316,8 +326,15 @@ setInterval(() => {
   runtime.refreshAgentCredentials('periodic re-check')
     .catch(err => console.error('[ADF Daemon] Credential re-check failed:', err))
 }, CREDENTIAL_RECHECK_MS).unref?.()
-const loadedAgentEvents = new Map<string, RuntimeAgentLoadedEvent>()
 const agentFactory =new DaemonAgentFactory({ settings, identity: ownerIdentity, runtime })
+// Tracked-folder watcher (W1-E): autostarts new agent files and feeds the
+// tracked_dirs / file_renamed pushes. Started when the HTTP server is ready,
+// closed with it, and closed again (idempotent) in the shutdown hooks.
+const trackedDirWatcher = new TrackedDirWatcher({
+  runtime,
+  settings,
+  onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
+})
 const daemon = new DaemonHost({
   runtime,
   identity: ownerIdentity,
@@ -337,7 +354,7 @@ const daemon = new DaemonHost({
   // Services the W1-D gap routes reach (routes/gap-deps.ts): emergency stop
   // stops the mesh server and sandbox workers; MCP admin shares the uv
   // install and the app-level OAuth store (DaemonAppOAuthStore) the builder uses.
-  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }) },
+  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher },
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
@@ -364,7 +381,7 @@ const daemon = new DaemonHost({
       // unless meshEnabled === false) — parity with Studio's MESH_ENABLE IPC.
       settings.set('meshEnabled', true)
       if (!meshManager.isEnabled()) meshManager.enableMesh()
-      for (const event of loadedAgentEvents.values()) registerAgentWithMesh(event)
+      for (const event of meshWiring.loaded()) registerAgentWithMesh(event)
       return { success: true, meshEnabled: meshManager.isEnabled(), agents: meshManager.getAgentStatuses() }
     },
     disableMesh: () => {
@@ -413,6 +430,7 @@ const daemon = new DaemonHost({
   // daemon shutdown at parity with Studio's cleanupAllProcesses. Each hook is
   // independently try-caught by the host.
   onShutdown: [
+    () => trackedDirWatcher.close(),
     () => wsConnectionManager.stopAll(),
     () => runtimeDiscovery.stop(),
     () => meshServer.stop(),
@@ -459,7 +477,7 @@ function sweepTrackedDirWalFiles(): void {
 
 /**
  * Directories of every .adf loaded at any point in this daemon session.
- * Unlike loadedAgentEvents this never shrinks on unload, so the shutdown
+ * Unlike the mesh wiring's loaded list this never shrinks on unload, so the shutdown
  * sweep covers agents that were loaded outside tracked dirs and already
  * unloaded (their sidecars may have been left by a kill/crash of a helper).
  */
@@ -482,14 +500,14 @@ function sweepWalFilesRecursive(directory: string, maxDepth: number, skipPaths: 
 // lives in runtime/umbilical-lifecycle.ts and is attached as lifecycle
 // resources by AgentRuntimeBuilder, so the daemon and both Studio hosts emit
 // the identical stream. These listeners carry only daemon-specific bookkeeping.
-runtime.on('agent-loaded', (event) => {
-  loadedAgentEvents.set(event.agentId, event)
-  if (event.filePath) { try { sessionAdfDirs.add(resolve(dirname(event.filePath))) } catch { /* ignore */ } }
-  registerAgentWithMesh(event)
+// Mesh registration follows load, stop (unregistered before the teardown,
+// as Studio) and path changes: runtime-mesh-wiring.ts.
+const meshWiring = wireRuntimeToMesh(runtime, {
+  register: registerAgentWithMesh,
+  unregister: (filePath) => meshManager.unregisterAgent(filePath),
 })
-runtime.on('agent-unloaded', ({ agentId, filePath }) => {
-  loadedAgentEvents.delete(agentId)
-  if (filePath) meshManager.unregisterAgent(filePath)
+runtime.on('agent-loaded', (event) => {
+  if (event.filePath) { try { sessionAdfDirs.add(resolve(dirname(event.filePath))) } catch { /* ignore */ } }
 })
 
 withSource('system:daemon', () => {

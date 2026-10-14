@@ -2788,8 +2788,8 @@ export class AdfDatabase {
     try {
       return AdfDatabase.peekReadonly(filePath, (db) => {
         const rows = db.prepare(
-          "SELECT purpose FROM adf_identity WHERE purpose LIKE ? || '%'"
-        ).all(prefix) as { purpose: string }[]
+          "SELECT purpose FROM adf_identity WHERE substr(purpose, 1, length(?)) = ?"
+        ).all(prefix, prefix) as { purpose: string }[]
         return rows.map((r) => r.purpose)
       })
     } catch {
@@ -3037,7 +3037,7 @@ export class AdfDatabase {
       'DELETE FROM adf_identity WHERE purpose = ?'
     )
     this.stmts.listIdentityByPrefix = this.db.prepare(
-      "SELECT purpose FROM adf_identity WHERE purpose LIKE ? || '%'"
+      "SELECT purpose FROM adf_identity WHERE substr(purpose, 1, length(?)) = ?"
     )
     this.stmts.getIdentityFull = this.db.prepare(
       'SELECT purpose, value, encryption_algo, salt, kdf_params, code_access FROM adf_identity WHERE purpose = ?'
@@ -3230,15 +3230,20 @@ export class AdfDatabase {
     return result.changes > 0
   }
 
+  /**
+   * Prefix matches are exact and case-sensitive (substr, not LIKE): with LIKE,
+   * `_` and `%` in a server or adapter name were wildcards and ASCII case was
+   * ignored, so detaching one server deleted another's credentials.
+   */
   deleteIdentityByPrefix(prefix: string): number {
-    const stmt = this.db.prepare("DELETE FROM adf_identity WHERE purpose LIKE ? || '%'")
-    const result = stmt.run(prefix)
+    const stmt = this.db.prepare("DELETE FROM adf_identity WHERE substr(purpose, 1, length(?)) = ?")
+    const result = stmt.run(prefix, prefix)
     return result.changes
   }
 
   listIdentityPurposes(prefix?: string): string[] {
     if (prefix) {
-      const rows = this.stmts.listIdentityByPrefix!.all(prefix) as { purpose: string }[]
+      const rows = this.stmts.listIdentityByPrefix!.all(prefix, prefix) as { purpose: string }[]
       return rows.map((r) => r.purpose)
     }
     const rows = this.stmts.listAllIdentityPurposes!.all() as { purpose: string }[]

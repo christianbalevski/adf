@@ -15,10 +15,8 @@ export interface ResolvedAgentWorkspace {
   filePath: string
   workspace: AdfWorkspace
   /**
-   * The file's derived key when it is password-protected and unlocked.
-   * TODO(W1-A): RuntimeService keeps it per agent (managed.derivedKey) with
-   * no public accessor; until W1-A adds one this is always null, so a
-   * password-protected file reads its password-encrypted rows as locked.
+   * The file's derived key when it is password-protected and unlocked
+   * (RuntimeService.getLoadedAgent); null while it is locked.
    */
   derivedKey: Buffer | null
 }
@@ -33,16 +31,17 @@ function canon(filePath: string): string {
 
 /** By id, handle or name, as every /agents/:id route. */
 export function resolveAgentWorkspace(runtime: RuntimeService, id: string): AgentResolution {
-  const ref = runtime.getAgent(id)
-  if (!ref) return { ok: false, reason: 'unknown', message: `Unknown agent "${id}"` }
-  const live = runtime.listLiveAgents().find((a) => a.agentId === ref.id)
-  if (!live) return { ok: false, reason: 'no_file', message: `Agent "${id}" has no .adf file` }
-  return { ok: true, agent: { agentId: ref.id, filePath: live.filePath, workspace: live.workspace, derivedKey: null } }
+  const loaded = runtime.getLoadedAgent(id)
+  if (!loaded) return { ok: false, reason: 'unknown', message: `Unknown agent "${id}"` }
+  if (!loaded.filePath) return { ok: false, reason: 'no_file', message: `Agent "${id}" has no .adf file` }
+  return { ok: true, agent: { agentId: loaded.agentId, filePath: loaded.filePath, workspace: loaded.workspace, derivedKey: loaded.derivedKey } }
 }
 
 /** The agent holding `filePath` open (canonical compare), if any. */
 export function resolveAgentWorkspaceByPath(runtime: RuntimeService, filePath: string): ResolvedAgentWorkspace | null {
   const key = canon(filePath)
   const live = runtime.listLiveAgents().find((a) => canon(a.filePath) === key)
-  return live ? { agentId: live.agentId, filePath: live.filePath, workspace: live.workspace, derivedKey: null } : null
+  if (!live) return null
+  const derivedKey = runtime.getLoadedAgent(live.agentId)?.derivedKey ?? null
+  return { agentId: live.agentId, filePath: live.filePath, workspace: live.workspace, derivedKey }
 }

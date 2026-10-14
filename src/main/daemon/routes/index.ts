@@ -28,6 +28,8 @@ import { registerComputeAdminRoutes } from './compute-admin-routes'
 import { registerJobRoutes } from './job-routes'
 import type { GapRouteDeps } from './gap-deps'
 import { registerIdentityImportRoutes } from './identity-import-routes'
+import { registerFileRoutes } from './file-routes'
+import type { TrackedDirWatcher } from '../dir-watcher'
 
 /** Dependencies of route modules that DaemonHttpApiOptions does not carry. Every field is optional. */
 export interface DaemonRouteDeps {
@@ -35,6 +37,12 @@ export interface DaemonRouteDeps {
   startedBy?: DaemonStartedBy
   /** Services the W1-D gap routes use (gap-deps.ts). */
   gaps?: GapRouteDeps
+  /** Tracked-folder watcher (dir-watcher.ts): watches, autostarts new files, push source for tracked_dirs and file_renamed. Started and closed with the server. */
+  trackedDirWatcher?: TrackedDirWatcher
+  /** PUT /agents/:id/files/raw byte limit (default 64 MiB, ADF_DAEMON_RAW_BODY_LIMIT_MB). */
+  rawFileBodyLimit?: number
+  /** POST /files/import byte limit (default 1 GiB, ADF_DAEMON_IMPORT_BODY_LIMIT_MB). */
+  importBodyLimit?: number
 }
 
 export interface DaemonRouteContext {
@@ -60,6 +68,7 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerComputeAdminRoutes,
   registerJobRoutes,
   registerIdentityImportRoutes,
+  registerFileRoutes,
 ]
 
 export function registerDaemonRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {

@@ -6,7 +6,6 @@
  */
 
 import { existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'fs'
-import { homedir, tmpdir } from 'os'
 import { basename, isAbsolute, join, resolve } from 'path'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { AgentTemplatesService, templateFilePath, templatesDir } from '../adf/agent-templates'
@@ -18,6 +17,7 @@ import type { AgentConfigSummary, AgentTemplateListResult, ProviderConfig } from
 import type { RuntimeService } from '../runtime/runtime-service'
 import { identityDrafts } from '../services/identity-drafts'
 import type { DaemonIdentity, DaemonIdentityStatus } from './daemon-identity'
+import { documentsDir, resolveAgentsFolderSync } from './file-ops'
 
 export interface CreateAgentInput {
   name?: string
@@ -78,13 +78,6 @@ function isValidAgentFileName(name: string): boolean {
     !name.endsWith('.') && !name.endsWith(' ') && name !== '.' && name !== '..'
 }
 
-function isTempLocation(p: string): boolean {
-  const candidate = canonicalizePath(p)
-  return [tmpdir(), '/tmp'].some((root) => {
-    try { return isSameOrSubPath(root, candidate) } catch { return false }
-  })
-}
-
 /** `<userData>/templates-trash`: where the daemon puts deleted templates (Studio uses the OS trash). */
 export function templatesTrashDir(): string {
   return join(templatesDir(), '..', 'templates-trash')
@@ -112,7 +105,10 @@ export class DaemonAgentFactory {
     settings: FactorySettings
     identity: DaemonIdentity
     runtime: RuntimeService
-  }) {}
+  }) {
+    // Resolve the Documents folder now, so defaultDirectory has it by the first request.
+    void documentsDir()
+  }
 
   /** Studio's templates service, over the same `<userData>/templates` folder. */
   templatesService(): AgentTemplatesService {
@@ -246,14 +242,13 @@ export class DaemonAgentFactory {
     return this.templatesService().list()
   }
 
-  /** Where new agents go by default: settings.agentsFolder, else ~/Documents/adf-agents (Studio's default). */
+  /**
+   * Where new agents go by default: settings.agentsFolder, else
+   * <Documents>/adf-agents with Documents found as Electron finds it (Studio's
+   * default; file-ops.ts resolveAgentsFolder).
+   */
   defaultDirectory(): string {
-    const configured = this.deps.settings.get('agentsFolder')
-    if (typeof configured === 'string' && configured.trim() !== '') {
-      const candidate = resolve(configured.trim())
-      if (!isTempLocation(candidate)) return candidate
-    }
-    return join(homedir(), 'Documents', 'adf-agents')
+    return resolveAgentsFolderSync(this.deps.settings).path
   }
 
   async create(input: CreateAgentInput): Promise<CreateAgentResult> {

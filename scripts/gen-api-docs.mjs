@@ -231,11 +231,18 @@ function buildMarkdown() {
       if (op.requestBody) {
         const body = resolve(op.requestBody)
         const media = body.content['application/json']
-        out.push(`**Request body** (${body.required ? 'required' : 'optional'}): ${typeOf(media.schema)}`, '')
-        if (body.description) out.push(body.description, '')
-        const schema = resolve(media.schema)
-        if (!schema.oneOf && !schema.anyOf) out.push(...fieldTable(media.schema), '')
-        out.push(...jsonBlock(exampleOf(media)), '')
+        if (media) {
+          out.push(`**Request body** (${body.required ? 'required' : 'optional'}): ${typeOf(media.schema)}`, '')
+          if (body.description) out.push(body.description, '')
+          const schema = resolve(media.schema)
+          if (!schema.oneOf && !schema.anyOf) out.push(...fieldTable(media.schema), '')
+          out.push(...jsonBlock(exampleOf(media)), '')
+        } else {
+          // Raw bodies (e.g. application/octet-stream uploads) have no JSON schema.
+          const types = Object.keys(body.content).map((t) => `\`${t}\``).join(', ')
+          out.push(`**Request body** (${body.required ? 'required' : 'optional'}): ${types}`, '')
+          if (body.description) out.push(body.description, '')
+        }
       }
 
       out.push('**Responses**', '', '| Status | Body | Description |', '|---|---|---|')

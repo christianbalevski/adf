@@ -129,6 +129,10 @@
     {
       "name": "Jobs",
       "description": "Long-running work: routes that may take minutes answer 202 with a job; poll it, or cancel it. Finished jobs are kept for 10 minutes."
+    },
+    {
+      "name": "Agent files",
+      "description": "Agent files on the daemon host: the path → id rule, delete, rename, clone, accept-relocate, snapshots (share, export, save as), import, the daemon-side folder picker, raw transfers of an agent's internal files, and the operations Studio runs on agent files that are not loaded (`/files/agent/*`). Every agent file argument is an absolute path ending in `.adf`."
     }
   ],
   "paths": {
@@ -460,6 +464,16 @@
           },
           "403": {
             "$ref": "#/components/responses/ReviewRequired"
+          },
+          "409": {
+            "description": "Not loaded: another process runs the agent (`agent_leased`, with `holder`), or another loaded file has the same agent id (`duplicate_agent_id`, with `agentId`, `filePath` and `loadedFilePath`; stop that agent, or clone this file and load the clone, which gets an id of its own)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -906,11 +920,26 @@
           "Agents"
         ],
         "summary": "Start an agent, loading it from a tracked folder when needed",
-        "description": "`id` may also name an agent that is not loaded: an .adf path, or an id / handle / name found in the tracked folders. The daemon loads it (review gate applies: 403) and starts it; `loaded` says whether it did. `startupTriggered` is true when the agent's start state fired its startup event. An identifier that matches several files answers 409 `ambiguous_agent` with the `candidates`: start one by its file path. No body.",
+        "description": "`id` may also name an agent that is not loaded: an .adf path, or an id / handle / name found in the tracked folders. The daemon loads it (review gate applies: 403) and starts it; `loaded` says whether it did. `startupTriggered` is true when the agent's start state fired its startup event. An identifier that matches several files answers 409 `ambiguous_agent` with the `candidates`: start one by its file path. No body. With `preflight=1` (a client-initiated start, as Studio's AGENT_START; autostart never asks for it) an agent that is not loaded yet has its provider checked first: a provider this daemon does not have answers 409 `provider_missing`, a failing check of a provider that needs a key it does not have 409 `provider_unconfigured`, any other failing check 409 `provider_check_failed`. Nothing is loaded then. When the agent's own provider key is stored but locked here (password or envelope), the check is skipped, the start goes on and the answer carries `preflight: {code: credentials_locked, message}`. A file with the same agent id as a loaded agent answers 409 `duplicate_agent_id` (see POST /agents/load).",
         "operationId": "startAgent",
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "name": "preflight",
+            "in": "query",
+            "required": false,
+            "description": "`1` or `true`: check the agent's provider (network) before loading it. Ignored for an agent that is already loaded.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true",
+                "0",
+                "false"
+              ]
+            }
           }
         ],
         "responses": {
@@ -934,11 +963,18 @@
             "$ref": "#/components/responses/NotFound"
           },
           "409": {
-            "description": "The identifier matches several agent files (`ambiguous_agent`)",
+            "description": "The identifier matches several agent files (`ambiguous_agent`), the `preflight` provider check failed (`provider_missing`, `provider_unconfigured`, `provider_check_failed`), another process runs the agent (`agent_leased`) or another loaded file has the same agent id (`duplicate_agent_id`)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AmbiguousAgentResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/AmbiguousAgentResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    }
+                  ]
                 }
               }
             }
@@ -1145,7 +1181,7 @@
           "Agents"
         ],
         "summary": "Move the running agent's display state",
-        "description": "Fleet-map semantics, not persisted to the .adf: a `config.state` change via PUT …/config does not move the running agent; this does.",
+        "description": "Fleet-map semantics, not persisted to the .adf: a `config.state` change via PUT …/config does not move the running agent; this does. `off` stops and unloads the agent, as Studio does (also when the agent switches itself off): the answer is 200, the unload follows within moments, and from then on its `/agents/{id}/*` routes answer 404 until it is started again (POST /agents/{id}/start or /agents/load).",
         "operationId": "setAgentDisplayState",
         "parameters": [
           {
@@ -11413,6 +11449,1790 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/files/agent": {
+      "get": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Resolve an agent file path to its agent id",
+        "description": "The path → id rule for clients that address agents by file path (ADF Studio). `loaded: true`: use the /agents/{id} routes with `agentId`. `loaded: false`: the /agents/{id} routes answer 404 for this agent; use the `/files/agent/*` routes with the path.",
+        "operationId": "describeAgentFile",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PathAgentInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/files/agents-folder": {
+      "get": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Where new and accepted agents go",
+        "description": "settings.agentsFolder (ignored when it points into the OS temp folder), else <Documents>/adf-agents. Needs no owner identity. Not created by this call.",
+        "operationId": "getAgentsFolder",
+        "responses": {
+          "200": {
+            "description": "The agents folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentsFolderInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/files": {
+      "delete": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Delete an agent file",
+        "description": "As ADF Studio deletes: an agent running in this daemon is stopped first (unregistered from the mesh, lease released; 409 `stop_timeout` when it does not stop within 15 s, the file is then kept), then the file and its -wal/-shm sidecars are deleted. A file that is already gone is not an error. 409 `agent_leased` while another runtime runs it, `file_busy` when another process holds the file open; 400 `path_not_canonical` for a path through a link or alias. Agent file paths are canonicalized; the path must name an `.adf` before and after links and short names are resolved. Refused (400): alternate data streams, device paths, reserved device names, UNC paths outside the tracked folders (`bad_path`, `unc_not_allowed`, `not_an_adf`).",
+        "operationId": "deleteAgentFile",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileDeleteResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "description": "The file is in use by another process",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "agent-1.adf is in use by another process and cannot be deleted",
+                  "code": "file_busy"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/rename": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Rename an agent file",
+        "description": "A stopped agent's file is renamed now (WAL folded in first) and its config name set to match; `file_renamed` is pushed. A running agent keeps running under its file, lease and mesh registration: its name changes now and the file moves when it stops (`renameDeferred: true`), as in ADF Studio. 400 `invalid_name`, 409 `name_taken`, 409 `file_busy`. 409 `agent_leased` while another runtime runs it; 400 `path_not_canonical` for a path through a link or alias. The move does not autostart the agent.",
+        "operationId": "renameAgentFileOnDisk",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentFileRenameBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Renamed or deferred",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFileRenameResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/clone": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Clone an agent file",
+        "description": "Copies the selected tables into `<name>_clone.adf` next to the source, with a new config.id, a fresh identity unless adf_identity is kept, and the source as parent (clone-fixup). The clone is marked reviewed; an untracked folder becomes tracked. 409 `identity_not_ready` while the owner identity is not set up.",
+        "operationId": "cloneAgentFile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentFileCloneBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Cloned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFileCloneResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/relocate": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Move an accepted agent file into the agents folder",
+        "description": "The accept step for a file outside every tracked folder (a temp attachment, Downloads): it moves into the agents folder, which is tracked, and `file_renamed` is pushed. A failed move never fails: the file's own folder is tracked instead, except an OS temp folder (`moveError`). A file inside a tracked folder stays (`{}`). The caller releases its handles on the file first. A file another runtime runs is not moved.",
+        "operationId": "relocateAgentFile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentFilePathBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Moved, or why not",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFileRelocateResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/save-as": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Write a snapshot of an agent file to another path",
+        "description": "Studio's Save a copy…: the identity-free share snapshot, built on a .partial and moved into place. 400 `export_not_supported` for mode export. 409 `same_file` for the source itself, `name_taken` when the destination exists without `overwrite` (also when it appears while the copy is written), `agent_running` / `agent_leased` when the destination is a running agent.",
+        "operationId": "saveAgentFileAs",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentFileSaveAsBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFileSaveAsResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/snapshot": {
+      "get": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Download a snapshot of an agent file",
+        "description": "`share` (default): the identity-free copy Studio's Share and Save a copy… make. `export`: the whole file. Both are consistent while the agent runs (SQLite online backup) and travel as one file (rollback journal mode).",
+        "operationId": "getAgentFileSnapshot",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "share",
+                "export"
+              ],
+              "default": "share"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            },
+            "headers": {
+              "Content-Disposition": {
+                "description": "attachment; filename=\"<name>.adf\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/agents/{id}/export": {
+      "get": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Export an agent's file",
+        "description": "A consistent copy of the agent's whole .adf (SQLite online backup), also while it runs and writes. The agent may be loaded, or a file in a tracked folder with that config id. 409 `not_file_backed` for an in-memory agent.",
+        "operationId": "exportAgent",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            },
+            "headers": {
+              "Content-Disposition": {
+                "description": "attachment; filename=\"<name>.adf\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/import": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Upload an .adf into a tracked folder",
+        "description": "The body is the file (`application/octet-stream`, up to 1 GiB; ADF_DAEMON_IMPORT_BODY_LIMIT_MB). It lands in `directory`, which must be a tracked folder or inside one, or the agents folder (the default; tracked then). The file is never treated as reviewed and the watcher does not autostart it. An upload whose config id or DID matches an agent known here (reviewed, loaded, or in a tracked folder) gets a fresh id and loses its identity (`idReassigned`). 400 `not_an_adf`, `invalid_name`; 403 `outside_tracked`; 409 `name_taken` (send `unique=true` for \"name (2).adf\"); 413 `too_large`; 415 for another content type.",
+        "operationId": "importAgentFile",
+        "parameters": [
+          {
+            "name": "directory",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Target folder (absolute); default the agents folder"
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "File name, with or without .adf"
+          },
+          {
+            "name": "unique",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Imported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFileImportResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "description": "Larger than the import limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "The body is larger than the 1024 MiB this route accepts",
+                  "code": "too_large"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Not application/octet-stream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/agents/{id}/files/meta": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Read an internal file's metadata",
+        "description": "Size, MIME type, protection and whether Studio reads it as text, without the content: a client decides before fetching bytes (GET …/files/raw with maxBytes).",
+        "operationId": "getAgentFileMeta",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/FilePathQuery"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalFileMeta"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/agents/{id}/files/raw": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Download an internal file's bytes",
+        "description": "The content as `application/octet-stream` (Content-Type is the file's MIME type). With `maxBytes`, a larger file answers 413 `too_large` with its `size`, before any byte is read.",
+        "operationId": "getAgentFileRaw",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/FilePathQuery"
+          },
+          {
+            "name": "maxBytes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "413": {
+            "description": "Larger than maxBytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "data/blob.bin is 20971520 bytes, more than maxBytes (1024)",
+                  "code": "too_large",
+                  "size": 20971520,
+                  "maxBytes": 1024
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Upload an internal file's bytes",
+        "description": "The body is the content (`application/octet-stream`, up to 64 MiB; ADF_DAEMON_RAW_BODY_LIMIT_MB). `mimeType` defaults by extension. `unique=true` keeps an existing file of that name and numbers the new one (the saved path is returned). 413 `too_large`, 415 for another content type.",
+        "operationId": "putAgentFileRaw",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/FilePathQuery"
+          },
+          {
+            "name": "mimeType",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unique",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RawFileWriteResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "description": "Larger than the upload limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "The body is larger than the 64 MiB this route accepts",
+                  "code": "too_large"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Not application/octet-stream",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/fs/browse": {
+      "get": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "List a folder for a daemon-side picker",
+        "description": "Folders and .adf files only, never other files; dot entries only with `showHidden=true`. Without `path`: the roots. A folder is listed only when it (after resolving links) is inside a root: the OS user's home folder, the tracked folders and the agents folder. ADF_DAEMON_BROWSE_ROOTS, when set, replaces the home folder with the folders it names (empty: tracked folders and agents folder only). A link that resolves outside every root is not listed. 403 `outside_roots`, 400 `not_a_directory`.",
+        "operationId": "browseFolders",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Absolute folder path"
+          },
+          {
+            "name": "showHidden",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowseResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/tracked-dirs/tree": {
+      "get": {
+        "tags": [
+          "Tracked folders"
+        ],
+        "summary": "The folder tree of a tracked folder",
+        "description": "Agent files with their messaging fields, and the subfolders that contain any (ADF Studio's sidebar). `path` is a tracked folder or a folder inside one. Same depth and skip rules as the autostart scan; unchanged files are not reopened.",
+        "operationId": "getTrackedDirTree",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tree",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackedTreeResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "Not inside a tracked folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/files/agent/tables": {
+      "get": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Tables of an agent file with row counts",
+        "description": "Every table without the shadow tables of virtual (full-text) tables: the clone dialog's list. A file that is not loaded is read through one readonly connection (nothing written; sealed values read as locked).",
+        "operationId": "listAgentFileTables",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tables",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFileTablesResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/model": {
+      "put": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Set the model of a stopped agent file",
+        "description": "The provider must be configured in settings (400 `provider_unknown`). A loaded agent is refused (409 `agent_running`): save its config with PUT /agents/{id}/config. A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it.",
+        "operationId": "setAgentFileModel",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentFileModelBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFileModelResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/providers/{providerId}/credential": {
+      "put": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Store a provider API key in an agent file",
+        "description": "PUT /agents/{id}/providers/{providerId}/credential by file path; works on a file that is not loaded. Same locked-envelope rules (409 `credentials_locked`, `replace: true`). A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it.",
+        "operationId": "setAgentFileProviderCredential",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          },
+          {
+            "$ref": "#/components/parameters/ProviderIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityValueBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderCredentialWriteResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/CredentialsLocked"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/providers/{providerId}/credentials": {
+      "get": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Provider credential metadata of an agent file",
+        "description": "Metadata only, never the value. A file that is not loaded is read through one readonly connection (nothing written; sealed values read as locked).",
+        "operationId": "getAgentFileProviderCredentials",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          },
+          {
+            "$ref": "#/components/parameters/ProviderIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderCredentialsResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/providers": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Attach a provider to an agent file",
+        "operationId": "attachAgentFileProvider",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderAttachBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Attached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderAttachResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        },
+        "description": "A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it."
+      }
+    },
+    "/files/agent/providers/{providerId}": {
+      "delete": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Detach a provider from an agent file",
+        "description": "Also deletes its stored credentials. A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it.",
+        "operationId": "detachAgentFileProvider",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          },
+          {
+            "$ref": "#/components/parameters/ProviderIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Detached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderDetachResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/mcp/credentials": {
+      "put": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Store an MCP credential in an agent file",
+        "description": "PUT /agents/{id}/mcp/credentials by file path; works on a file that is not loaded. A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it.",
+        "operationId": "setAgentFileMcpCredential",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpCredentialBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/McpCredentialWriteResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/CredentialsLocked"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "MCP credential metadata of an agent file",
+        "description": "Metadata only, never the value. A file that is not loaded is read through one readonly connection (nothing written; sealed values read as locked).",
+        "operationId": "getAgentFileMcpCredentials",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          },
+          {
+            "name": "npmPackage",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/McpCredentialsResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/mcp/servers": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Attach an MCP server to an agent file",
+        "operationId": "attachAgentFileMcpServer",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpAttachBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Attached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/McpAttachResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        },
+        "description": "A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it."
+      }
+    },
+    "/files/agent/mcp/servers/{serverName}": {
+      "delete": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Detach an MCP server from an agent file",
+        "description": "Also deletes its credentials (`mcp:{credentialNamespace}:*`, default the server name). A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it. Credentials are matched by exact prefix.",
+        "operationId": "detachAgentFileMcpServer",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          },
+          {
+            "$ref": "#/components/parameters/ServerNamePath"
+          },
+          {
+            "name": "credentialNamespace",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Detached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/McpDetachResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/adapters/credentials": {
+      "put": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Store an adapter credential in an agent file",
+        "operationId": "setAgentFileAdapterCredential",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdapterCredentialBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdapterCredentialWriteResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/CredentialsLocked"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        },
+        "description": "A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it."
+      },
+      "get": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Adapter credential metadata of an agent file",
+        "description": "Metadata only, never the value. A file that is not loaded is read through one readonly connection (nothing written; sealed values read as locked).",
+        "operationId": "getAgentFileAdapterCredentials",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          },
+          {
+            "name": "adapterType",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdapterCredentialsResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/files/agent/adapters": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Attach a channel adapter to an agent file",
+        "operationId": "attachAgentFileAdapter",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdapterAttachBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Attached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdapterAttachResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        },
+        "description": "A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it."
+      }
+    },
+    "/files/agent/adapters/{adapterType}": {
+      "delete": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Detach a channel adapter from an agent file",
+        "description": "Also deletes its credentials. A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it.",
+        "operationId": "detachAgentFileAdapter",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          },
+          {
+            "$ref": "#/components/parameters/AdapterTypePath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Detached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AdapterDetachResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PathAgentFields"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           }
         }
       }
@@ -22897,6 +24717,639 @@
           },
           "job": {
             "$ref": "#/components/schemas/Job"
+          }
+        }
+      },
+      "PathAgentFields": {
+        "type": "object",
+        "description": "Added to every `/files/agent/*` answer: the file, and whether it is loaded here (then the operation ran on the running agent, as the /agents/{id} route does).",
+        "required": [
+          "filePath",
+          "loaded"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "loaded": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PathAgentInfo": {
+        "type": "object",
+        "description": "The path → id rule. `loaded`: the /agents/{id} routes take `agentId` now. Not loaded: use the `/files/agent/*` routes for this path.",
+        "required": [
+          "filePath",
+          "agentId",
+          "name",
+          "loaded",
+          "tracked"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string",
+            "description": "Canonical path"
+          },
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "config.id; null for an unreadable file"
+          },
+          "name": {
+            "type": "string"
+          },
+          "loaded": {
+            "type": "boolean"
+          },
+          "tracked": {
+            "type": "boolean",
+            "description": "Under a tracked folder"
+          },
+          "pendingName": {
+            "type": "string",
+            "description": "A rename waiting for the running agent to stop"
+          },
+          "error": {
+            "type": "string",
+            "description": "Why the file could not be read"
+          }
+        }
+      },
+      "AgentsFolderInfo": {
+        "type": "object",
+        "required": [
+          "path",
+          "source",
+          "exists"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "setting",
+              "default"
+            ],
+            "description": "`setting`: settings.agentsFolder; `default`: <Documents>/adf-agents, with Documents resolved as Electron does (the Windows shell folder, XDG_DOCUMENTS_DIR on Linux)"
+          },
+          "exists": {
+            "type": "boolean"
+          }
+        }
+      },
+      "FileDeleteResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "filePath",
+          "stopped"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "stopped": {
+            "type": "boolean",
+            "description": "The agent was loaded here and was stopped first"
+          },
+          "agentId": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentFileRenameBody": {
+        "type": "object",
+        "required": [
+          "path",
+          "newName"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "newName": {
+            "type": "string",
+            "description": "File name without .adf; no path separators"
+          }
+        }
+      },
+      "AgentFileRenameResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "filePath",
+          "renameDeferred"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true
+          },
+          "filePath": {
+            "type": "string",
+            "description": "The new path, or the current one while the rename is deferred"
+          },
+          "renameDeferred": {
+            "type": "boolean",
+            "description": "The agent runs: its name changed now, the file moves when it stops"
+          },
+          "agentId": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentFileCloneBody": {
+        "type": "object",
+        "required": [
+          "path",
+          "selectedTables"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "selectedTables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tables to keep (GET /files/agent/tables); without adf_identity the clone gets a fresh identity"
+          }
+        }
+      },
+      "AgentFileCloneResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "filePath",
+          "name",
+          "agentId",
+          "identity",
+          "warnings"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string",
+            "description": "The clone's new config.id"
+          },
+          "identity": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "kept"
+            ]
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "AgentFilePathBody": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path of the .adf file"
+          }
+        }
+      },
+      "AgentFileRelocateResult": {
+        "type": "object",
+        "properties": {
+          "movedTo": {
+            "type": "string",
+            "description": "Where the file now is, when it moved"
+          },
+          "moveError": {
+            "type": "string",
+            "description": "Why it did not move, or what is left to clean up"
+          }
+        }
+      },
+      "AgentFileSaveAsBody": {
+        "type": "object",
+        "required": [
+          "path",
+          "destPath"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "destPath": {
+            "type": "string",
+            "description": "Absolute .adf path on the daemon host; its folder must exist"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "share"
+            ],
+            "default": "share",
+            "description": "Only `share`: the identity-free copy (signing keys, attestations and DID removed; credentials kept only behind a share password). A full copy would keep the agent's config.id and DID and pass review as the original; download one with GET /agents/{id}/export instead."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "AgentFileSaveAsResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "filePath",
+          "size"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          }
+        }
+      },
+      "AgentFileImportResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "filePath",
+          "name",
+          "agentId",
+          "reviewed",
+          "size"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "reviewed": {
+            "type": "boolean",
+            "const": false,
+            "description": "Always false: review it (POST /agents/review/accept) before it runs"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "idReassigned": {
+            "type": "object",
+            "required": [
+              "previousId",
+              "reason",
+              "identityStripped"
+            ],
+            "properties": {
+              "previousId": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "reviewed",
+                  "loaded",
+                  "tracked"
+                ]
+              },
+              "identityStripped": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "description": "The upload's config id or DID matched an agent known here (reviewed, loaded, or a file in a tracked folder): it got a fresh id and its identity was stripped, so it is neither a twin nor covered by that agent's review; claiming it mints a new DID"
+          }
+        }
+      },
+      "AgentFileTablesResult": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "loaded",
+          "tables"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "loaded": {
+            "type": "boolean"
+          },
+          "tables": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "row_count"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "row_count": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "AgentFileModelBody": {
+        "type": "object",
+        "required": [
+          "provider",
+          "model_id"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "A provider id configured in settings"
+          },
+          "model_id": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentFileModelResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "filePath",
+          "model"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object"
+          }
+        }
+      },
+      "InternalFileMeta": {
+        "type": "object",
+        "required": [
+          "agentId",
+          "path",
+          "size",
+          "text"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "type": "integer"
+          },
+          "protection": {
+            "type": "string"
+          },
+          "authorized": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "text": {
+            "type": "boolean",
+            "description": "Studio's file viewer reads it as text (by extension)"
+          }
+        }
+      },
+      "RawFileWriteResult": {
+        "type": "object",
+        "required": [
+          "agentId",
+          "success",
+          "path",
+          "size"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean",
+            "const": true
+          },
+          "path": {
+            "type": "string",
+            "description": "Where it was saved (numbered with unique=true when the name was taken)"
+          },
+          "size": {
+            "type": "integer"
+          }
+        }
+      },
+      "BrowseRoot": {
+        "type": "object",
+        "required": [
+          "path",
+          "kind"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "home",
+              "tracked",
+              "agents",
+              "configured"
+            ]
+          }
+        }
+      },
+      "BrowseResult": {
+        "type": "object",
+        "required": [
+          "path",
+          "parent",
+          "roots",
+          "entries",
+          "truncated"
+        ],
+        "properties": {
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The listed folder; null for the roots listing"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its parent while still inside a root"
+          },
+          "roots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BrowseRoot"
+            }
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "path",
+                "kind"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "directory",
+                    "adf"
+                  ]
+                },
+                "size": {
+                  "type": "integer"
+                },
+                "mtimeMs": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "More than 2000 entries; the rest are not listed"
+          }
+        }
+      },
+      "TrackedTreeEntry": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "fileName",
+          "isDirectory"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string",
+            "description": "The file name on disk without .adf"
+          },
+          "pendingName": {
+            "type": "string"
+          },
+          "canReceive": {
+            "type": "boolean"
+          },
+          "sendMode": {
+            "type": "string"
+          },
+          "autonomous": {
+            "type": "boolean"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "icon": {
+            "type": "string"
+          },
+          "did": {
+            "type": "string"
+          },
+          "isDirectory": {
+            "type": "boolean"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrackedTreeEntry"
+            }
+          }
+        }
+      },
+      "TrackedTreeResult": {
+        "type": "object",
+        "required": [
+          "path",
+          "files"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrackedTreeEntry"
+            }
           }
         }
       }
