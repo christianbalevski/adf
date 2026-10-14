@@ -37,6 +37,8 @@ export interface FixtureSpec {
   name: FixtureName
   /** Default 'idle': start runs no startup turn unless the scenario asks for one. */
   startInState?: StartInState
+  /** A legacy whole-file password (deprecated mechanism, still opened and converted), with one stored value under it. */
+  legacyPassword?: string
 }
 
 export interface FixtureAgent {
@@ -62,6 +64,10 @@ export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[
       const config = workspace.getAgentConfig()
       config.id = FIXTURE_IDS[spec.name]
       workspace.setAgentConfig(config)
+      if (spec.legacyPassword) {
+        workspace.setIdentity('app:token', 'legacy-secret')
+        workspace.setPassword(spec.legacyPassword)
+      }
     } finally {
       workspace.close()
     }

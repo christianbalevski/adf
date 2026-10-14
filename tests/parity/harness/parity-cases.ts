@@ -22,9 +22,13 @@ import { runScenario, type ParityScenario } from './scenario'
 const RUNS = Math.max(1, Number(process.env.PARITY_RUNS ?? 1))
 const BUNDLE = existsSync(DAEMON_BUNDLE)
 
-export function parityCases(domain: string, scenarios: readonly ParityScenario[]): void {
+/**
+ * `embeddedOnly`: scenarios the daemon side cannot drive yet (each names
+ * why in its comment); they get the embedded check only.
+ */
+export function parityCases(domain: string, scenarios: readonly ParityScenario[], embeddedOnly: readonly ParityScenario[] = []): void {
   describe(`parity: ${domain}, embedded backend`, () => {
-    for (const scenario of scenarios) {
+    for (const scenario of [...scenarios, ...embeddedOnly]) {
       it(`${scenario.name}: stable and matches its recording`, async () => {
         const texts: string[] = []
         let first: Awaited<ReturnType<typeof runScenario>> | null = null

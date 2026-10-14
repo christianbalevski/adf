@@ -65,4 +65,36 @@ export const agentKeystoreScenario: ParityScenario = {
   },
 }
 
+/**
+ * The owner's own legacy whole-file-password file: open (needs the
+ * password), a wrong password, the right one. Unlock converts it (design
+ * §5.4, envelope-actions.ts convertOwnLegacyPassword): the password is
+ * removed, keys and envelopes are minted, and the same password becomes the
+ * credentials envelope's share password.
+ *
+ * Embedded only for now: in daemon mode the unlock reaches a file that is
+ * not running only through the client session's hold, which Studio main
+ * gets with W2-C2. The daemon's conversion is covered by
+ * tests/daemon-owner-envelope-api.test.ts.
+ */
+export const legacyPasswordUnlockScenario: ParityScenario = {
+  name: 'legacy-password-unlock',
+  description: 'Open agent-1 (legacy whole-file password), unlock with a wrong then the right password: converted to envelopes.',
+  fixtures: [{ name: 'agent-1', legacyPassword: 'legacy-pw-1' }],
+  quietMs: 500,
+  async run(ctx) {
+    const agent = ctx.agent('agent-1')
+    await ctx.invoke(IPC.FILE_OPEN, { filePath: agent.filePath })
+    await ctx.invoke(IPC.IDENTITY_PASSWORD_CHECK)
+    await ctx.invoke(IPC.IDENTITY_PASSWORD_UNLOCK, { password: 'wrong-password' })
+    await ctx.invoke(IPC.IDENTITY_PASSWORD_UNLOCK, { password: 'legacy-pw-1' })
+    await ctx.invoke(IPC.IDENTITY_PASSWORD_CHECK)
+    await ctx.invoke(IPC.IDENTITY_ENVELOPE_STATUS)
+    await ctx.invoke(IPC.IDENTITY_REVEAL, { purpose: 'app:token' })
+    await ctx.invoke(IPC.IDENTITY_LIST_ENTRIES)
+  },
+}
+
 export const IDENTITY_SCENARIOS: readonly ParityScenario[] = [ownerIdentityScenario, agentKeystoreScenario]
+/** Run against embedded Studio only, each with the reason (above). */
+export const IDENTITY_EMBEDDED_ONLY: readonly ParityScenario[] = [legacyPasswordUnlockScenario]

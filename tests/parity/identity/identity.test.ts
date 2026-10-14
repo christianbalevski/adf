@@ -1,5 +1,5 @@
 import { parityCases } from '../harness/parity-cases'
-import { IDENTITY_SCENARIOS } from './scenarios'
+import { IDENTITY_EMBEDDED_ONLY, IDENTITY_SCENARIOS } from './scenarios'
 
 /**
  * Parity: owner identity and an agent's keystore (tracker W3-B). The seed
@@ -7,4 +7,4 @@ import { IDENTITY_SCENARIOS } from './scenarios'
  * stored values reach the Identity panel through the daemon's local-only
  * reveal route.
  */
-parityCases('identity', IDENTITY_SCENARIOS)
+parityCases('identity', IDENTITY_SCENARIOS, IDENTITY_EMBEDDED_ONLY)
