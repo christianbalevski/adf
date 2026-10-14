@@ -48,7 +48,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W0-B | Shared daemon client | 0 | none | TODO |
 | W0-C | Agent lease and runtime host registry | 0 | none | TODO |
 | W0-D | Daemon packaging, process control, `/version`, route hook | 0 | none | TODO |
-| W0-E | Backend selection at boot, Settings → Backend | 0 | W0-A (merge order) | TODO |
+| W0-E | Backend selection at boot, Settings → Backend | 0 | W0-A (merge order) | MERGED c0305508 |
 | W0-F | Parity harness, embedded side | 0 | none | TODO |
 | W1-A | RuntimeService parity hooks | 1 | W0-C, W0-D | TODO |
 | W1-B | AgentRuntimeBuilder and mesh parity | 1 | W0-D | TODO |
@@ -56,6 +56,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W1-D | Gap routes: approvals, fleet, dashboard, registries, MCP probes | 1 | W0-D | TODO |
 | W1-E | File-level ops, raw file routes, tracked-dir watcher | 1 | W0-D, W0-C | TODO |
 | W1-F | E1 extraction: background event mapping | 1 | W0-F | TODO |
+| W1-G | Compute ownership: a runtime stops only containers it started | 1 | none | TODO |
 | W2-A | Open documents | 2 | W1-A, W1-E | TODO |
 | W2-B | Client sessions and client event stream | 2 | W1-A, W0-B | TODO |
 | W2-C | Daemon-mode core in Studio main | 2 | W0-A, W0-B, W0-E, W1-F | TODO |
@@ -165,6 +166,14 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 - **Acceptance**: characterization test written first against current BAM output for a recorded event sequence; identical after extraction; embedded parity harness unchanged.
 - **Review focus**: subtle differences between the two existing mapping sites (adopted vs started agents) being merged into one.
 
+#### W1-G Compute ownership
+
+- **Goal**: with two runtimes on one machine (embedded Studio, local daemon, CLI daemon), a graceful shutdown stops only the containers that runtime started or is using.
+- **Owns**: `src/main/services/podman.service.ts` (`stopAll` and container bookkeeping), its tests.
+- **Background**: `PodmanService.stopAll` stops every running managed `adf-*` container. On 2026-10-14 a test daemon's shutdown stopped six of the owner's live agent containers. Embedded Studio's quit has the same effect on a daemon's containers today.
+- **Acceptance**: tests with a fake podman: runtime A's shutdown leaves runtime B's containers running; the shared `adf-mcp` container is stopped only when no other live runtime uses it (lease or host-registry check from W0-C); the log line names what was stopped and what was left.
+- **Review focus**: orphaned containers after a crash (nobody stops them); the shared container's lifetime with several runtimes.
+
 ### Wave 2
 
 #### W2-A Open documents
@@ -271,6 +280,7 @@ Each W3 workstream implements the daemon-mode handlers for its channels in `src/
 | K14 | Remote token sent over plain HTTP on an untrusted network | Low | High | Transport rule §9.2 with explicit opt-in | W4-B |
 | K15 | Daemon-side parity gaps found late (§6 drift list incomplete) | High | Medium | Parity harness scenarios per domain in W3; W5-A triage | W5-A |
 | K16 | Orphaned daemon after a Studio crash keeps agents running unexpectedly | Medium | Medium | `exitDaemonWhenClosed` session rule; log line; `adf daemon status` | W2-B, W4-A |
+| K18 | One runtime's shutdown stops another runtime's containers (`PodmanService.stopAll`, happened 2026-10-14) | High | High: live agents lose compute | W1-G; agent rule: kill test processes, never graceful stop | W1-G |
 | K17 | Duplicate `config.id` files: daemon silently serves the first | Medium | Medium | `409 duplicate_agent_id` (W1-A) | W1-A |
 
 ## 6. Parity triage (filled in W5-A)

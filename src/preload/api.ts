@@ -12,6 +12,7 @@ import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, Cont
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
+import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView } from '../shared/types/backend.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -692,6 +693,11 @@ export interface AdfApi {
 
   // Emergency stop
   emergencyStop: () => Promise<{ success: boolean; error?: string }>
+
+  // Settings → Backend (studio-backend.json; applies at next launch)
+  /** The view never contains the remote token, only whether one is saved. */
+  getBackendSettings: () => Promise<BackendSettingsView>
+  setBackendSettings: (patch: BackendSettingsPatch) => Promise<BackendSettingsSaveResult>
 
   // Platform ('darwin' | 'win32' | 'linux' | ...)
   platform: NodeJS.Platform
