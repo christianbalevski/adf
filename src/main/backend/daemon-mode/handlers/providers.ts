@@ -91,6 +91,18 @@ async function writeWithLockedChoice(ctx: DaemonModeContext, purpose: string, wr
   }
 }
 
+/**
+ * The auth managers' status shapes, with the fields JSON drops when they are
+ * undefined put back (`flowError: undefined` while no flow failed), so the
+ * renderer gets the same object.
+ */
+type AuthStatus = { authenticated: boolean } & Record<string, unknown>
+function statusShape(status: AuthStatus, signedIn: readonly string[], signedOut: readonly string[]): AuthStatus {
+  const out: AuthStatus = { ...status }
+  for (const key of status.authenticated ? signedIn : signedOut) if (!(key in out)) out[key] = undefined
+  return out
+}
+
 /** One ChatGPT sign-in at a time per Studio, as the embedded auth manager runs one flow. */
 const chatgptFlows = new WeakMap<DaemonModeContext, Promise<{ success: boolean; error?: string }>>()
 
@@ -246,7 +258,7 @@ export const PROVIDER_HANDLERS: DaemonHandlerTable = {
 
   [IPC.CHATGPT_AUTH_STATUS]: async (ctx) => {
     try {
-      return await (await ctx.ready()).request('GET', '/auth/chatgpt/status')
+      return statusShape(await (await ctx.ready()).request<AuthStatus>('GET', '/auth/chatgpt/status'), ['email', 'expiresAt'], [])
     } catch {
       return { authenticated: false }
     }
@@ -283,7 +295,7 @@ export const PROVIDER_HANDLERS: DaemonHandlerTable = {
 
   [IPC.GROK_AUTH_STATUS]: async (ctx) => {
     try {
-      return await (await ctx.ready()).request('GET', '/auth/grok/status')
+      return statusShape(await (await ctx.ready()).request<AuthStatus>('GET', '/auth/grok/status'), ['email', 'expiresAt'], ['flowPending', 'flowError'])
     } catch {
       return { authenticated: false }
     }
