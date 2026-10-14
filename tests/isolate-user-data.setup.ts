@@ -19,22 +19,39 @@ process.env.ADF_USER_DATA_DIR = mkdtempSync(join(tmpdir(), 'adf-test-userdata-')
 const leaseDirForSuite = join(process.env.ADF_USER_DATA_DIR, 'agent-leases')
 process.env.ADF_LEASE_DIR = leaseDirForSuite
 
-/** Remove a tree that holds only lease files; links are unlinked, never followed. */
-function removeLeaseTree(dir: string): void {
+// Lease and host records name this machine; a fixed id keeps tests (and
+// the processes they spawn) from reading the real one (a reg/ioreg spawn).
+process.env.ADF_MACHINE_ID ??= 'test-machine'
+
+/**
+ * Remove a temp tree. Links (junctions, symlinks) are unlinked, never
+ * followed: a recursive rm follows a Windows junction into its target.
+ * Busy files (an open SQLite handle) are left behind.
+ */
+function removeTree(dir: string): void {
   let entries: string[]
   try { entries = readdirSync(dir) } catch { return }
   for (const name of entries) {
     const p = join(dir, name)
     try {
       const st = lstatSync(p)
-      if (st.isDirectory() && !st.isSymbolicLink()) removeLeaseTree(p)
+      if (st.isDirectory() && !st.isSymbolicLink()) removeTree(p)
       else unlinkSync(p)
     } catch { /* busy or gone: leave it */ }
   }
   try { rmdirSync(dir) } catch { /* not empty: leave it */ }
 }
 
+// This file's user-data dir (with its lease dir) goes when the file ends, or,
+// for a file whose afterAll never runs (every test skipped), when the worker
+// exits. One exit listener per worker.
+const suiteUserData = process.env.ADF_USER_DATA_DIR
+const pending = ((globalThis as { __adfTestTempDirs?: Set<string> }).__adfTestTempDirs ??= new Set())
+if (pending.size === 0) process.once('exit', () => { for (const dir of pending) removeTree(dir) })
+pending.add(suiteUserData)
+
 afterAll(async () => {
   await resetProcessAgentLeases()
-  removeLeaseTree(leaseDirForSuite)
+  removeTree(suiteUserData)
+  pending.delete(suiteUserData)
 })
