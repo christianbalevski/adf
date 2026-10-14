@@ -113,6 +113,22 @@
     {
       "name": "Settings",
       "description": "The daemon settings file. Secret and identity keys are never read or written here."
+    },
+    {
+      "name": "Fleet",
+      "description": "Fleet map: mesh debug view, fleet rows, token burn, the aggregate poll, owner messages, adapter states, peer reads."
+    },
+    {
+      "name": "Dashboard",
+      "description": "Home dashboard slices and provider connection tests."
+    },
+    {
+      "name": "Registries",
+      "description": "Agent registry, curated MCP registry and skill catalogs."
+    },
+    {
+      "name": "Jobs",
+      "description": "Long-running work: routes that may take minutes answer 202 with a job; poll it, or cancel it. Finished jobs are kept for 10 minutes."
     }
   ],
   "paths": {
@@ -413,7 +429,7 @@
           "Agents"
         ],
         "summary": "Load an agent from an .adf file",
-        "description": "Loading an already-loaded file returns its existing reference. Direct loads bypass the review gate unless `requireReview` is true.",
+        "description": "Loading an already-loaded file returns its existing reference. Direct loads bypass the review gate unless `requireReview` is true. A load is a deliberate start: it reopens the runtime gate an emergency stop closed.",
         "operationId": "loadAgent",
         "requestBody": {
           "required": true,
@@ -7625,6 +7641,31 @@
             "$ref": "#/components/responses/Forbidden"
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "Runtime"
+        ],
+        "summary": "Clear token usage",
+        "operationId": "clearRuntimeUsage",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
       }
     },
     "/runtime/token-count": {
@@ -9368,6 +9409,2010 @@
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/approvals": {
+      "get": {
+        "tags": [
+          "Tasks & approvals"
+        ],
+        "summary": "Approvals hub snapshot",
+        "description": "Every pending approval and ask across loaded agents and loops (oldest first), plus the recently resolved ones of this daemon run. Raw tool input is omitted; fetch it with GET /approvals/input.",
+        "operationId": "getApprovals",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsSnapshot"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/approvals/input": {
+      "get": {
+        "tags": [
+          "Tasks & approvals"
+        ],
+        "summary": "Raw tool input of one pending approval",
+        "operationId": "getApprovalInput",
+        "parameters": [
+          {
+            "name": "filePath",
+            "in": "query",
+            "required": true,
+            "description": "The agent file (the entry’s `filePath`)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "approvalId",
+            "in": "query",
+            "required": true,
+            "description": "The hub key (the entry’s `id`)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalInputResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/approvals/resolve": {
+      "post": {
+        "tags": [
+          "Tasks & approvals"
+        ],
+        "summary": "Resolve a pending approval",
+        "description": "Routes into the emitting executor, as the in-chat card does. Asks need a typed answer (POST /agents/{id}/asks/{requestId}/respond).",
+        "operationId": "resolveApproval",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalResolveBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/approvals/interactions": {
+      "get": {
+        "tags": [
+          "Tasks & approvals"
+        ],
+        "summary": "Pending asks and approvals per agent",
+        "description": "Main-loop requests only, per agent asks then approvals, with the raw tool input.",
+        "operationId": "getPendingInteractions",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FleetPendingInteraction"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/credentials/mcp/files": {
+      "get": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "Agent files with credentials for an MCP server",
+        "description": "Loaded agents first, then tracked directories (depth 0..3). Key names only, never values.",
+        "operationId": "listMcpCredentialFiles",
+        "parameters": [
+          {
+            "name": "mcpServerName",
+            "in": "query",
+            "required": true,
+            "description": "Server name in agent configs",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "npmPackage",
+            "in": "query",
+            "required": true,
+            "description": "Credential namespace (`mcp:<npmPackage>:*`)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialFilesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/credentials/adapters/files": {
+      "get": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "Agent files with credentials for a channel adapter",
+        "operationId": "listAdapterCredentialFiles",
+        "parameters": [
+          {
+            "name": "adapterType",
+            "in": "query",
+            "required": true,
+            "description": "Adapter type",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialFilesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/credentials/providers/files": {
+      "get": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "Agent files with credentials for a provider",
+        "operationId": "listProviderCredentialFiles",
+        "parameters": [
+          {
+            "name": "providerId",
+            "in": "query",
+            "required": true,
+            "description": "Provider id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderCredentialFilesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/credentials/providers/key-sources": {
+      "post": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "Where an agent's provider copies get their keys",
+        "description": "The entries come from the caller; only the stored keys are read from the file (a loaded agent’s open workspace, else a short open). Never returns a key.",
+        "operationId": "getProviderKeySources",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderKeySourcesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderKeySourcesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/fleet/mesh": {
+      "get": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Mesh status and debug view",
+        "operationId": "getFleetMesh",
+        "parameters": [
+          {
+            "name": "debug",
+            "in": "query",
+            "required": false,
+            "description": "`1` or `true`: include the debug info",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sinceSeq",
+            "in": "query",
+            "required": false,
+            "description": "Message-log cursor: only newer entries",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetMeshStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/fleet/status": {
+      "get": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Fleet status rows",
+        "operationId": "getFleetStatus",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/fleet/burn": {
+      "get": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Token burn per agent and fleet",
+        "operationId": "getFleetBurn",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetBurn"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/fleet/burn/hydrate": {
+      "post": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Restore lifetime burn totals",
+        "description": "The client keeps the totals across restarts and hands them over once per session; rates start fresh.",
+        "operationId": "hydrateFleetBurn",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetBurnHydrateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/fleet/map": {
+      "get": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Fleet map poll in one call",
+        "operationId": "getFleetMap",
+        "parameters": [
+          {
+            "name": "sinceSeq",
+            "in": "query",
+            "required": false,
+            "description": "Message-log cursor for the debug slice",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetMapPoll"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/fleet/recent-tools": {
+      "get": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Recent tool calls per agent",
+        "description": "Mesh-registered agents, plus loaded agents the mesh does not track (read from their loops). Keyed by file path.",
+        "operationId": "getFleetRecentTools",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecentMeshToolsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/fleet/message": {
+      "post": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Owner message to agents",
+        "description": "A chat turn on each running agent. An agent that is not running is started (review gate on, the emergency-stop gate reopened); when the start is refused the message is written into its loop.",
+        "operationId": "messageFleetAgents",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetMessageBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetMessageResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/fleet/adapters": {
+      "get": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Adapter states across loaded agents",
+        "operationId": "getFleetAdapters",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdapterStatusSummary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/fleet/adapters/restart": {
+      "post": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Restart one adapter of an agent",
+        "operationId": "restartFleetAdapter",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdapterRestartBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/network/peers/health": {
+      "get": {
+        "tags": [
+          "Network"
+        ],
+        "summary": "Probe a peer agent’s /health",
+        "description": "5 s timeout.",
+        "operationId": "getPeerAgentHealth",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": true,
+            "description": "The peer agent’s health URL (http or https)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeerHealthResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/network/peers/shared-file": {
+      "get": {
+        "tags": [
+          "Network"
+        ],
+        "summary": "Fetch a peer agent’s shared file",
+        "description": "10 s timeout, 2 MB cap; binary content is base64.",
+        "operationId": "getPeerSharedFile",
+        "parameters": [
+          {
+            "name": "baseUrl",
+            "in": "query",
+            "required": true,
+            "description": "The peer agent’s base URL",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Relative shared file path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeerSharedFileResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/runtime/emergency-stop": {
+      "post": {
+        "tags": [
+          "Runtime"
+        ],
+        "summary": "Emergency stop",
+        "description": "Closes the runtime gate (resumable: the next deliberate start reopens it), disables the mesh without persisting it, unloads every agent at once, stops WS connections, the mesh server, tracked child processes, host execs and sandbox workers, then the compute containers. Files stay reopenable. Any part left running or failed makes the answer `success: false` naming it.",
+        "operationId": "emergencyStop",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmergencyStopResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/dashboard/quick-stats": {
+      "get": {
+        "tags": [
+          "Dashboard"
+        ],
+        "summary": "Quick stats",
+        "operationId": "getDashboardQuickStats",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardQuickStats"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/dashboard/provider-tests": {
+      "get": {
+        "tags": [
+          "Dashboard"
+        ],
+        "summary": "Provider connection tests",
+        "description": "One request per provider (5 s timeout), cached for the daemon run. With `providerChecksEnabled: false` no request is made and only this run’s results count.",
+        "operationId": "getDashboardProviderTests",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardProviderTests"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/dashboard/agent-stats": {
+      "get": {
+        "tags": [
+          "Dashboard"
+        ],
+        "summary": "Agent stats over tracked files",
+        "operationId": "getDashboardAgentStats",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardAgentStats"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/runtime/providers/{id}/test": {
+      "post": {
+        "tags": [
+          "Providers & sign-in"
+        ],
+        "summary": "Test an app provider’s connection",
+        "description": "Without `force` this is an automatic check: session-cached, and `unknown` when providerChecksEnabled is off.",
+        "operationId": "testRuntimeProvider",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AppProviderIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderTestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/runtime/tools/descriptions": {
+      "get": {
+        "tags": [
+          "Runtime"
+        ],
+        "summary": "Tool schema catalog",
+        "description": "Every built-in tool in provider format, plus stub declarations of the runtime tools that need per-agent dependencies and the code-execution method schemas.",
+        "operationId": "getToolDescriptions",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolDescriptions"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/registry/agents": {
+      "get": {
+        "tags": [
+          "Registries"
+        ],
+        "summary": "Agent registry gallery",
+        "description": "Honours remoteCatalogsEnabled (off: bundled and cached only, no request).",
+        "operationId": "getAgentRegistry",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRegistryResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/registry/agents/refresh": {
+      "post": {
+        "tags": [
+          "Registries"
+        ],
+        "summary": "Re-fetch the agent registry index",
+        "operationId": "refreshAgentRegistry",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRegistryResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/registry/agents/{id}/bring-home": {
+      "post": {
+        "tags": [
+          "Registries"
+        ],
+        "summary": "Copy a registry agent into the agents folder",
+        "description": "Identity stripped, fresh config.id, the app default provider when the model names none.",
+        "operationId": "bringRegistryAgentHome",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Registry entry id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BringHomeResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/registry/mcp": {
+      "get": {
+        "tags": [
+          "Registries"
+        ],
+        "summary": "Curated MCP registry",
+        "description": "Honours remoteCatalogsEnabled. A 24 h background refresh starts with the first call.",
+        "operationId": "getMcpRegistry",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpRegistryResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/catalog/skills": {
+      "get": {
+        "tags": [
+          "Registries"
+        ],
+        "summary": "Fetch a skill catalog",
+        "description": "https only, through the catalog guard (SSRF guard, redirect cap, size cap, 10 s).",
+        "operationId": "getSkillsCatalog",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": true,
+            "description": "Catalog URL (https)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillsCatalogResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/catalog/skills/package": {
+      "get": {
+        "tags": [
+          "Registries"
+        ],
+        "summary": "Fetch a SKILL.md package",
+        "operationId": "getSkillPackage",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": true,
+            "description": "SKILL.md URL (https)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillPackageResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/admin/mcp/probe": {
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Probe an MCP server",
+        "description": "Temporary connect and tool list; logs are kept for GET /admin/mcp/logs/{serverName}.",
+        "operationId": "probeMcpServer",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpProbeBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpProbeResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/admin/mcp/registration-test": {
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Connect test for an MCP registration",
+        "description": "Runs the real pipeline for the draft. Interactive steps (an OAuth authorization URL, the auth preflight’s Continue) appear in GET /admin/mcp/interactions while the test runs. Runs as a job: answers 202 at once. Interactive steps of this run are listed by GET /admin/mcp/interactions?jobId=; POST /jobs/{jobId}/cancel stops it and disconnects the server it started.",
+        "operationId": "testMcpRegistration",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpRegistrationTestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Started; poll GET /jobs/{jobId}. The finished job's `result` is a McpRegistrationTestResult.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/McpRegistrationTestResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/admin/mcp/interactions": {
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Interactive steps of running MCP registration tests",
+        "operationId": "getMcpInteractions",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "query",
+            "required": false,
+            "description": "Only the steps of this job",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpInteractionsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/admin/mcp/interactions/{interactionId}/continue": {
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Answer an interactive step",
+        "description": "Removes an open_url step; lets a waiting confirm step continue. A timed-out step cannot be answered (404).",
+        "operationId": "continueMcpInteraction",
+        "parameters": [
+          {
+            "name": "interactionId",
+            "in": "path",
+            "required": true,
+            "description": "Interaction id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/admin/mcp/logs/{serverName}": {
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "MCP server logs",
+        "description": "A loaded agent’s live logs (agentId), else the logs kept from probe, test and agent runs.",
+        "operationId": "getMcpServerLogs",
+        "parameters": [
+          {
+            "name": "serverName",
+            "in": "path",
+            "required": true,
+            "description": "Server name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "description": "Loaded agent id, handle or name",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerLogsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/admin/mcp/oauth/status": {
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "App-level MCP OAuth sign-in state",
+        "operationId": "getMcpOAuthStatus",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": false,
+            "description": "Remote server URL",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpOAuthStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/admin/mcp/oauth/signout": {
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Sign out of an MCP OAuth remote",
+        "operationId": "signOutMcpOAuth",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpOAuthUrlBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/admin/mcp/python-runtime": {
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Ensure uv and Python on the daemon host",
+        "description": "Downloads uv and Python when missing. Runs as a job: answers 202 at once. Cancel stops waiting; a download already running finishes.",
+        "operationId": "ensureMcpPythonRuntime",
+        "responses": {
+          "202": {
+            "description": "Started; poll GET /jobs/{jobId}. The finished job's `result` is a PythonRuntimeResult.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/PythonRuntimeResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/agents/{id}/attestations": {
+      "get": {
+        "tags": [
+          "Identity (agent)"
+        ],
+        "summary": "Attestations of an agent file",
+        "operationId": "getAgentAttestations",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttestationsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/agents/{id}/attestations/reissue": {
+      "post": {
+        "tags": [
+          "Identity (agent)"
+        ],
+        "summary": "Reissue owner and operator attestations",
+        "operationId": "reissueAgentAttestations",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttestationsReissueResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/agents/{id}/envelope": {
+      "get": {
+        "tags": [
+          "Identity (agent)"
+        ],
+        "summary": "Envelope status",
+        "operationId": "getAgentEnvelopeStatus",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvelopeStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/agents/{id}/envelope/share-password": {
+      "put": {
+        "tags": [
+          "Identity (agent)"
+        ],
+        "summary": "Set the credentials share password",
+        "description": "Replaces any existing password slot. Identity is never password-shareable.",
+        "operationId": "setAgentSharePassword",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharePasswordBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Identity (agent)"
+        ],
+        "summary": "Remove the credentials share password",
+        "operationId": "removeAgentSharePassword",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/agents/{id}/envelope/unlock-password": {
+      "post": {
+        "tags": [
+          "Identity (agent)"
+        ],
+        "summary": "Unlock foreign credentials with the share password",
+        "operationId": "unlockAgentEnvelopePassword",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnlockPasswordBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnlockPasswordResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/agents/{id}/claim": {
+      "post": {
+        "tags": [
+          "Identity (agent)"
+        ],
+        "summary": "Claim an agent file under the local owner",
+        "description": "Fresh identity under this owner (clone attestation when it had a DID). A whole-file-password file is refused.",
+        "operationId": "claimAgent",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/identity/drafts": {
+      "post": {
+        "tags": [
+          "Owner identity"
+        ],
+        "summary": "Mint an identity draft",
+        "description": "A keypair held in daemon memory (30 min, at most 16) so a create screen can show the next agent’s DID; creating with its draftId adopts it.",
+        "operationId": "mintIdentityDraft",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityDraft"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/identity/drafts/{draftId}": {
+      "delete": {
+        "tags": [
+          "Owner identity"
+        ],
+        "summary": "Discard an identity draft",
+        "operationId": "discardIdentityDraft",
+        "parameters": [
+          {
+            "name": "draftId",
+            "in": "path",
+            "required": true,
+            "description": "Draft id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityDraftDiscardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/compute/containers/{name}/rebuild": {
+      "post": {
+        "tags": [
+          "Compute"
+        ],
+        "summary": "Rebuild a container",
+        "operationId": "rebuildComputeContainer",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ContainerNamePath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContainerRebuildResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/compute/execution-targets/test": {
+      "post": {
+        "tags": [
+          "Compute"
+        ],
+        "summary": "Probe an external execution target",
+        "operationId": "testExecutionTarget",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "LocalContainerExecutionTarget"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionTargetProbeResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/compute/browser-info": {
+      "get": {
+        "tags": [
+          "Compute"
+        ],
+        "summary": "Container phase and noVNC port of an agent",
+        "operationId": "getComputeBrowserInfo",
+        "parameters": [
+          {
+            "name": "agentName",
+            "in": "query",
+            "required": true,
+            "description": "Agent name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": true,
+            "description": "Agent id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserInfoResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/jobs/{jobId}": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "A job: state, and its result once finished",
+        "operationId": "getJob",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "description": "Job id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/jobs/{jobId}/cancel": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Cancel a running job",
+        "description": "Aborts the work at its next step and marks the job `cancelled` at once. Work that cannot stop mid-way (a download) finishes in the background; the job still reads `cancelled`.",
+        "operationId": "cancelJob",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "description": "Job id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancelled, or already finished",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobCancelResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -12329,6 +14374,10 @@
           "start": {
             "type": "boolean",
             "default": false
+          },
+          "identityDraftId": {
+            "type": "string",
+            "description": "An identity draft (POST /identity/drafts): the new agent gets its DID. Consumed; an unknown or expired draft falls back to a fresh identity."
           }
         },
         "example": {
@@ -19301,6 +21350,1553 @@
             "type": "string",
             "minLength": 1,
             "description": "The code shown on Claude's sign-in page"
+          }
+        }
+      },
+      "SuccessErrorResponse": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string",
+            "description": "Why it did not succeed"
+          }
+        },
+        "additionalProperties": true,
+        "example": {
+          "success": false,
+          "error": "This approval is no longer pending — it was already resolved, timed out, or its agent stopped."
+        }
+      },
+      "PendingNotification": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "requestId",
+          "filePath",
+          "agentName",
+          "loop",
+          "preview",
+          "requestedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Hub key `<filePath>|<loop>|<requestId>`"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "ask"
+            ]
+          },
+          "requestId": {
+            "type": "string",
+            "description": "The executor-side id (HIL task id, or `ask_N`)"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "The agent file the request belongs to"
+          },
+          "agentName": {
+            "type": "string"
+          },
+          "loop": {
+            "type": "string",
+            "description": "`main` or the inner loop name"
+          },
+          "toolName": {
+            "type": "string"
+          },
+          "preview": {
+            "type": "string",
+            "description": "One line, truncated, secret-free"
+          },
+          "question": {
+            "type": "string",
+            "description": "Asks only: the full question"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "restricted",
+              "protection"
+            ]
+          },
+          "protection": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "canAlwaysApprove": {
+            "type": "boolean"
+          },
+          "alwaysApproveBlockedReason": {
+            "type": "string"
+          },
+          "requestedAt": {
+            "type": "number",
+            "description": "Epoch ms"
+          }
+        },
+        "additionalProperties": true
+      },
+      "ResolvedNotification": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PendingNotification"
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "resolvedAt"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "approved",
+                  "rejected",
+                  "answered",
+                  "expired"
+                ]
+              },
+              "resolvedAt": {
+                "type": "number"
+              }
+            }
+          }
+        ]
+      },
+      "NotificationsSnapshot": {
+        "type": "object",
+        "required": [
+          "pending",
+          "history"
+        ],
+        "properties": {
+          "pending": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PendingNotification"
+            },
+            "description": "Oldest first. Raw tool input omitted (GET /approvals/input)."
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResolvedNotification"
+            },
+            "description": "Newest first, capped at 50, this daemon run only"
+          }
+        }
+      },
+      "ApprovalInputResponse": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "description": "The raw tool input; absent when the approval is gone or belongs to another file"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApprovalResolveBody": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "approvalId",
+          "approved"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "approvalId": {
+            "type": "string",
+            "description": "The hub key (`id` of the pending entry)"
+          },
+          "approved": {
+            "type": "boolean"
+          },
+          "feedback": {
+            "type": "string"
+          }
+        }
+      },
+      "FleetPendingInteraction": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "handle",
+          "type",
+          "requestId"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "handle": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "ask",
+              "approval"
+            ]
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "toolName": {
+            "type": "string"
+          },
+          "input": {},
+          "reason": {
+            "type": "string"
+          },
+          "protection": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "canAlwaysApprove": {
+            "type": "boolean"
+          },
+          "alwaysApproveBlockedReason": {
+            "type": "string"
+          }
+        }
+      },
+      "CredentialFileInfo": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "fileName",
+          "hasCredentials",
+          "populatedKeys"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "hasCredentials": {
+            "type": "boolean"
+          },
+          "populatedKeys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of the stored keys; never their values"
+          }
+        }
+      },
+      "CredentialFilesResponse": {
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CredentialFileInfo"
+            }
+          }
+        }
+      },
+      "ProviderCredentialFileInfo": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CredentialFileInfo"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "providerConfig": {
+                "type": "object",
+                "properties": {
+                  "defaultModel": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "requestDelayMs": {
+                    "type": "number"
+                  }
+                },
+                "description": "The agent's copy of the provider, without secrets"
+              }
+            }
+          }
+        ]
+      },
+      "ProviderCredentialFilesResponse": {
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderCredentialFileInfo"
+            }
+          }
+        }
+      },
+      "ProviderKeySourcesBody": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "providers"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "type",
+                "baseUrl"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "baseUrl": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ProviderKeySourcesResponse": {
+        "type": "object",
+        "required": [
+          "sources"
+        ],
+        "properties": {
+          "sources": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "agent",
+                "locked",
+                "app",
+                "app_sign_in",
+                "none",
+                "not_needed"
+              ]
+            },
+            "description": "Provider id → where its key comes from"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "FleetMeshStatus": {
+        "type": "object",
+        "description": "`running` and `agents` (mesh-registered agents with live states). With `debug`: the mesh debug info (`busRegistrations`, `backgroundAgents`, `foregroundAgents`, `messageLog`), `logSeq` (newest log seq) and, with `sinceSeq`, `logIncremental: true` and only newer log entries; `error` when the debug read failed.",
+        "properties": {
+          "running": {
+            "type": "boolean"
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "messageLog": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "logSeq": {
+            "type": "integer"
+          },
+          "logIncremental": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "FleetStatus": {
+        "type": "object",
+        "required": [
+          "running",
+          "agents"
+        ],
+        "properties": {
+          "running": {
+            "type": "boolean"
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "description": "Fleet map rows (AgentVitalsService.getFleetStatus)"
+      },
+      "FleetBurnEntry": {
+        "type": "object",
+        "properties": {
+          "tokensPerMin": {
+            "type": "number"
+          },
+          "inPerMin": {
+            "type": "number"
+          },
+          "outPerMin": {
+            "type": "number"
+          },
+          "totalTokens": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": true
+      },
+      "FleetBurn": {
+        "type": "object",
+        "required": [
+          "perAgent",
+          "fleet"
+        ],
+        "properties": {
+          "perAgent": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FleetBurnEntry"
+            },
+            "description": "Keyed by agent file path"
+          },
+          "fleet": {
+            "$ref": "#/components/schemas/FleetBurnEntry"
+          }
+        }
+      },
+      "FleetBurnHydrateBody": {
+        "type": "object",
+        "required": [
+          "burnTotals"
+        ],
+        "properties": {
+          "burnTotals": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "File path → lifetime tokens (Studio client key fleetMapState.burnTotals)"
+          }
+        }
+      },
+      "AdapterStatusSummary": {
+        "type": "object",
+        "required": [
+          "adapters",
+          "perAgent"
+        ],
+        "properties": {
+          "adapters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdapterState"
+            },
+            "description": "One per adapter type, healthiest instance"
+          },
+          "perAgent": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "filePath",
+                "adapters"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string"
+                },
+                "adapters": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string"
+                      },
+                      "error": {
+                        "type": "string"
+                      },
+                      "connectedAt": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "FleetMapPoll": {
+        "type": "object",
+        "required": [
+          "debug",
+          "fleet",
+          "burn",
+          "adapters",
+          "peers"
+        ],
+        "properties": {
+          "debug": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FleetMeshStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fleet": {
+            "$ref": "#/components/schemas/FleetStatus"
+          },
+          "burn": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FleetBurn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "adapters": {
+            "$ref": "#/components/schemas/AdapterStatusSummary"
+          },
+          "peers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      },
+      "FleetMessageBody": {
+        "type": "object",
+        "required": [
+          "filePaths",
+          "content"
+        ],
+        "properties": {
+          "filePaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "content": {
+            "type": "string"
+          }
+        }
+      },
+      "FleetMessageResult": {
+        "type": "object",
+        "required": [
+          "delivered",
+          "failed"
+        ],
+        "properties": {
+          "delivered": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "filePath",
+                "error"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "AdapterRestartBody": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Adapter type"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "The agent hosting the adapter"
+          }
+        }
+      },
+      "PeerHealthResult": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "PeerSharedFileResult": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "binary": {
+            "type": "boolean",
+            "description": "True: `content` is base64"
+          },
+          "content": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "DashboardQuickStats": {
+        "type": "object",
+        "required": [
+          "providers",
+          "mcp",
+          "adapters",
+          "packages",
+          "hostAccess",
+          "tokens"
+        ],
+        "properties": {
+          "providers": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              }
+            }
+          },
+          "mcp": {
+            "type": "object",
+            "properties": {
+              "configured": {
+                "type": "integer"
+              }
+            }
+          },
+          "adapters": {
+            "type": "object",
+            "properties": {
+              "configured": {
+                "type": "integer"
+              },
+              "types": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "packages": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              }
+            }
+          },
+          "hostAccess": {
+            "type": "object",
+            "properties": {
+              "enabledGlobally": {
+                "type": "boolean"
+              }
+            }
+          },
+          "tokens": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "DashboardProviderTests": {
+        "type": "object",
+        "required": [
+          "ok",
+          "failed",
+          "unconfigured"
+        ],
+        "properties": {
+          "ok": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "unconfigured": {
+            "type": "integer"
+          }
+        }
+      },
+      "DashboardAgentStats": {
+        "type": "object",
+        "required": [
+          "total",
+          "autostart",
+          "autonomous",
+          "hostAccessAgents"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "autostart": {
+            "type": "integer"
+          },
+          "autonomous": {
+            "type": "integer"
+          },
+          "hostAccessAgents": {
+            "type": "integer"
+          }
+        }
+      },
+      "ProviderTestBody": {
+        "type": "object",
+        "properties": {
+          "force": {
+            "type": "boolean",
+            "description": "True: skip the session cache and probe now, even with providerChecksEnabled off (the Test button)"
+          }
+        }
+      },
+      "ProviderTestResult": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "failed",
+              "unconfigured",
+              "unknown"
+            ],
+            "description": "`unknown`: automatic checks are off and this session has no result"
+          }
+        }
+      },
+      "ToolDescriptions": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "description": "Tool name → provider-format declaration"
+      },
+      "AgentRegistryResult": {
+        "type": "object",
+        "description": "Registry gallery: bundled entries always, live entries layered on top (AgentRegistryService.getRegistry). `remoteError` when the live index could not be fetched.",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "remoteError": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "McpRegistryResult": {
+        "type": "object",
+        "description": "Curated MCP registry, remote-first with cached and bundled fallback (McpRegistryFetchService.getRegistry).",
+        "properties": {},
+        "additionalProperties": true
+      },
+      "BringHomeResult": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "The new file in the agents folder"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsCatalogResult": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "publisher": {},
+          "dropped": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillPackageResult": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "content": {
+            "type": "string",
+            "description": "SKILL.md text"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "McpProbeBody": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "stdio",
+              "http"
+            ]
+          },
+          "command": {
+            "type": "string"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "url": {
+            "type": "string"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "headerEnv": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "bearerTokenEnvVar": {
+            "type": "string"
+          }
+        }
+      },
+      "McpProbeResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "tools"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "McpRegistrationTestBody": {
+        "type": "object",
+        "required": [
+          "registration"
+        ],
+        "properties": {
+          "registration": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "The MCP server registration draft (McpServerRegistration)"
+          },
+          "credentialFiles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "contentB64"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "contentB64": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "McpRegistrationTestResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "tools",
+          "location",
+          "authRan",
+          "notes"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "location": {
+            "type": "string",
+            "enum": [
+              "host",
+              "shared container",
+              "remote http"
+            ]
+          },
+          "authRan": {
+            "type": "boolean"
+          },
+          "oauthRan": {
+            "type": "boolean"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "serverVersion": {
+            "type": "string"
+          },
+          "stderrTail": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "McpInteraction": {
+        "type": "object",
+        "required": [
+          "id",
+          "jobId",
+          "kind",
+          "state",
+          "message",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "jobId": {
+            "type": "string",
+            "description": "The registration-test job the step belongs to"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "open_url",
+              "confirm"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "timed_out"
+            ],
+            "description": "`timed_out`: a confirm nobody answered within 5 minutes; the test went on without it and its result says so"
+          },
+          "serverName": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "description": "open_url: the authorization page to open"
+          },
+          "authUrlOpened": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "number"
+          }
+        }
+      },
+      "McpInteractionsResponse": {
+        "type": "object",
+        "required": [
+          "interactions"
+        ],
+        "properties": {
+          "interactions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpInteraction"
+            }
+          }
+        }
+      },
+      "McpServerLogsResponse": {
+        "type": "object",
+        "required": [
+          "logs"
+        ],
+        "properties": {
+          "logs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      },
+      "McpOAuthStatus": {
+        "type": "object",
+        "required": [
+          "signedIn"
+        ],
+        "properties": {
+          "signedIn": {
+            "type": "boolean",
+            "description": "A token is stored for the URL. The token itself is never returned."
+          }
+        }
+      },
+      "McpOAuthUrlBody": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The remote server URL"
+          }
+        }
+      },
+      "PythonRuntimeResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "uvAvailable",
+          "pythonAvailable"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "uvAvailable": {
+            "type": "boolean"
+          },
+          "uvVersion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pythonAvailable": {
+            "type": "boolean"
+          },
+          "uvPath": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "AttestationsResponse": {
+        "type": "object",
+        "required": [
+          "attestations"
+        ],
+        "properties": {
+          "attestations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "did": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AttestationsReissueResponse": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "attestations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "EnvelopeStatusResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "identity",
+          "credentials",
+          "sharePasswordSet"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "identity": {
+            "type": "string",
+            "description": "absent, unlocked, locked or foreign"
+          },
+          "credentials": {
+            "type": "string",
+            "description": "absent, unlocked, locked or foreign"
+          },
+          "sharePasswordSet": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SharePasswordBody": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "minLength": 8
+          }
+        }
+      },
+      "UnlockPasswordBody": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "adopt": {
+            "type": "boolean",
+            "description": "false: unlock for this session only and write nothing; true or absent: also re-wrap to the local owner and runtime"
+          }
+        }
+      },
+      "UnlockPasswordResponse": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "adopted": {
+            "type": "boolean"
+          },
+          "credentials": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "ClaimResponse": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "did": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "IdentityDraft": {
+        "type": "object",
+        "required": [
+          "draftId",
+          "did"
+        ],
+        "properties": {
+          "draftId": {
+            "type": "string"
+          },
+          "did": {
+            "type": "string"
+          }
+        },
+        "description": "Only the id and the public DID; the private key stays in the daemon"
+      },
+      "IdentityDraftDiscardResponse": {
+        "type": "object",
+        "required": [
+          "discarded"
+        ],
+        "properties": {
+          "discarded": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ContainerRebuildResponse": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "recreated": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecutionTargetProbeResult": {
+        "type": "object",
+        "description": "ExternalExecutionService.probe result",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "BrowserInfoResponse": {
+        "type": "object",
+        "required": [
+          "containerName",
+          "hostPort",
+          "phase"
+        ],
+        "properties": {
+          "containerName": {
+            "type": "string"
+          },
+          "hostPort": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "noVNC port on the daemon host loopback; null until the container is ready"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      },
+      "EmergencyStopResult": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "False when any part was not wired on this daemon or failed to stop"
+          },
+          "error": {
+            "type": "string"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Parts this daemon cannot stop (left running)"
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Parts whose stop threw"
+          }
+        },
+        "example": {
+          "success": false,
+          "error": "Emergency stop was partial — not wired on this daemon, left running: mesh server.",
+          "skipped": [
+            "mesh server"
+          ]
+        }
+      },
+      "Job": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "What the job does, e.g. `mcp.registration-test`"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "createdAt": {
+            "type": "number",
+            "description": "Epoch ms"
+          },
+          "finishedAt": {
+            "type": "number"
+          },
+          "result": {
+            "description": "The work's answer (state `succeeded`): the route's documented result shape"
+          },
+          "error": {
+            "type": "string",
+            "description": "Why it failed or was cancelled"
+          },
+          "progress": {
+            "type": "string"
+          }
+        }
+      },
+      "JobAccepted": {
+        "type": "object",
+        "required": [
+          "jobId",
+          "job"
+        ],
+        "properties": {
+          "jobId": {
+            "type": "string"
+          },
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          }
+        }
+      },
+      "JobCancelResponse": {
+        "type": "object",
+        "required": [
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "description": "False when the job had already finished"
+          },
+          "job": {
+            "$ref": "#/components/schemas/Job"
           }
         }
       }
