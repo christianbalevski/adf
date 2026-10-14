@@ -162,6 +162,101 @@ export class AppSettingsOAuthStore implements McpOAuthStore {
 }
 
 /**
+ * Structural slice of the daemon secret backend (owner-secret-store.ts
+ * SecretBackend: the OS keychain, or the owner's passphrase-encrypted file).
+ */
+export interface OAuthSecretBackendHandle {
+  isUnlocked(): boolean
+  get(account: string): string | null
+  set(account: string, value: string): void
+  delete(account: string): void
+}
+
+/**
+ * Daemon secret-backend account holding the app-level MCP OAuth blob for one
+ * settings file. `scope` = settingsScope(settingsPath). The value has the
+ * exact shape of Studio's `mcpOauthCredentials` secret, so the mode-switch
+ * handover (design daemon-backend.md §11) moves it verbatim.
+ */
+export function daemonAppOAuthAccount(scope: string): string {
+  return `mcp-oauth-credentials:${scope}`
+}
+
+/**
+ * App-level (daemon) store: the daemon's counterpart of AppSettingsOAuthStore,
+ * on the daemon secret backend instead of safeStorage. Same blob, same URL
+ * binding. Reads return nothing while the backend is locked; writes fail
+ * plainly then (FileSecretBackend.set throws), so a token is never stored
+ * anywhere unencrypted.
+ */
+export class DaemonAppOAuthStore implements McpOAuthStore {
+  constructor(
+    private readonly backend: OAuthSecretBackendHandle,
+    private readonly account: string,
+  ) {}
+
+  /** False while the secret backend is locked (passphrase file not unlocked). */
+  available(): boolean {
+    return this.backend.isUnlocked()
+  }
+
+  private readBlob(): OAuthBlob {
+    if (!this.backend.isUnlocked()) return {}
+    let raw: string | null
+    try {
+      raw = this.backend.get(this.account)
+    } catch (err) {
+      // Keychain read failure: same contract as a corrupt blob (re-sign in).
+      // The message comes from the keychain binding, never from the value.
+      console.warn(`[MCP][oauth] DaemonAppOAuthStore: secret store read failed (${err instanceof Error ? err.message : String(err)})`)
+      return {}
+    }
+    if (!raw) return {}
+    try {
+      const parsed = JSON.parse(raw)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as OAuthBlob) : {}
+    } catch {
+      return {}
+    }
+  }
+
+  private writeBlob(blob: OAuthBlob): void {
+    if (Object.keys(blob).length === 0) {
+      this.backend.delete(this.account)
+      return
+    }
+    this.backend.set(this.account, JSON.stringify(blob))
+  }
+
+  /** Every server URL with a stored record (metadata only, for status listings). */
+  listServerUrls(): string[] {
+    return Object.keys(this.readBlob())
+  }
+
+  async get(serverUrl: string): Promise<McpOAuthRecord | undefined> {
+    const record = this.readBlob()[serverUrl]
+    if (record) assertRecordUrlBinding(record, serverUrl, 'DaemonAppOAuthStore.get')
+    return record
+  }
+
+  async save(serverUrl: string, record: McpOAuthRecord): Promise<void> {
+    const blob = this.readBlob()
+    blob[serverUrl] = { ...record, updatedAt: record.updatedAt || Date.now() }
+    this.writeBlob(blob)
+  }
+
+  async invalidate(serverUrl: string, scope: McpOAuthInvalidateScope = 'all'): Promise<void> {
+    const blob = this.readBlob()
+    const existing = blob[serverUrl]
+    if (!existing) return
+    const next = applyInvalidateScope(existing, scope)
+    if (next) blob[serverUrl] = next
+    else delete blob[serverUrl]
+    this.writeBlob(blob)
+  }
+}
+
+/**
  * AdfWorkspace-shaped slice the agent store depends on. AdfWorkspace satisfies
  * this structurally (setIdentitySealed / getIdentityDecrypted / getIdentityRow
  * / deleteIdentity), so sub-task D can pass the live workspace directly.
