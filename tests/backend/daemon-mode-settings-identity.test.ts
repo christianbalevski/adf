@@ -181,6 +181,10 @@ describe('identity of the open agent', () => {
     expect(handle.session.isUnlocked(FILE)).toBe(false)
     expect(await invoke(IPC.IDENTITY_PASSWORD_UNLOCK, { password: 'right' })).toEqual({ success: true, converted: false })
     expect(handle.session.isUnlocked(FILE)).toBe(true)
+    // The owner's own legacy file: the daemon converts it, no key is kept.
+    daemon.routes.set(`POST /agents/${AGENT}/identity/password/unlock`, () => ({ agentId: AGENT, success: true, converted: true }))
+    expect(await invoke(IPC.IDENTITY_PASSWORD_UNLOCK, { password: 'right' })).toEqual({ success: true, converted: true })
+    expect(handle.session.isUnlocked(FILE)).toBe(false)
     daemon.routes.set(`DELETE /agents/${AGENT}/identity/password`, () => locked('locked'))
     expect(await invoke(IPC.IDENTITY_PASSWORD_REMOVE)).toEqual({ success: false, error: 'Not unlocked' })
     await handle.session.closeFile()

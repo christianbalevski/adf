@@ -43,7 +43,6 @@ All W1-A gaps are closed.
 | Need | Channels |
 |---|---|
 | DaemonAppOAuthStore | `MCP_OAUTH_SIGNOUT`, `MCP_OAUTH_STATUS` |
-| unlock converts the owner's own legacy whole-file password to envelopes, keeps the password as a share slot, and returns converted | `IDENTITY_PASSWORD_UNLOCK` |
 ## W1-D
 All W1-D gaps are closed. The routes are in the channel map; see "Route notes from W1-D" below.
 ## W1-E

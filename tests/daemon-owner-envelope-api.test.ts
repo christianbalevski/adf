@@ -160,6 +160,50 @@ describe('POST /agents/:id/claim', () => {
   })
 })
 
+describe('POST /agents/:id/identity/password/unlock: legacy conversion', () => {
+  function legacyFile(handle: string, ownerDid?: string): string {
+    const filePath = join(root, `${handle}.adf`)
+    const ws = AdfWorkspace.create(filePath, { name: handle })
+    try {
+      ws.setAgentConfig({ ...ws.getAgentConfig(), id: randomUUID(), handle })
+      if (ownerDid) ws.setMeta('adf_owner_did', ownerDid, 'readonly')
+      ws.setIdentity('app:token', 'legacy-secret')
+      ws.setPassword('legacy-pw')
+    } finally {
+      ws.close()
+    }
+    return filePath
+  }
+
+  it('converts the owner\'s own file as Studio does: no password, envelopes, the password kept as the share password', async () => {
+    const { runtime, server } = setup()
+    const filePath = legacyFile('agent-6')
+    const { id } = await runtime.loadAgent(filePath)
+    const res = await server.inject({ method: 'POST', url: `/agents/${id}/identity/password/unlock`, payload: { password: 'legacy-pw' } })
+    expect(res.json()).toMatchObject({ success: true, converted: true })
+    expect((await server.inject({ method: 'GET', url: `/agents/${id}/identity/password` })).json()).toMatchObject({ needsPassword: false, unlocked: false })
+    expect((await server.inject({ method: 'GET', url: `/agents/${id}/envelope` })).json()).toEqual({ success: true, identity: 'unlocked', credentials: 'unlocked', sharePasswordSet: true })
+    await runtime.unloadAgent(id)
+    const reopened = AdfWorkspace.open(filePath)
+    try {
+      unlockWorkspaceEnvelopes(reopened)
+      expect(reopened.isPasswordProtected()).toBe(false)
+      expect(reopened.getIdentityDecrypted('app:token', null)).toBe('legacy-secret')
+      expect(reopened.getDid()).toBeTruthy()
+    } finally {
+      reopened.close()
+    }
+  })
+
+  it('leaves another owner\'s file as it is (the claim converts it)', async () => {
+    const { runtime, server } = setup()
+    const { id } = await runtime.loadAgent(legacyFile('agent-7', 'did:key:z6MkSomeoneElse'))
+    expect((await server.inject({ method: 'POST', url: `/agents/${id}/identity/password/unlock`, payload: { password: 'legacy-pw' } })).json())
+      .toMatchObject({ success: true, converted: false })
+    expect((await server.inject({ method: 'GET', url: `/agents/${id}/identity/password` })).json()).toMatchObject({ needsPassword: true, unlocked: true })
+  })
+})
+
 describe('identity drafts', () => {
   it('mint returns only { draftId, did }; discard is once', async () => {
     const { server } = setup()

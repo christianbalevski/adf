@@ -207,20 +207,24 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
   /**
    * The key stays in the daemon (the file's key cell); this session keeps
    * the file held so it is not prompted again (DaemonModeSession). The
-   * daemon does not convert the owner's own legacy file on unlock yet
-   * (channel-map gap, W1-C): `converted` is false.
+   * owner's own legacy file is converted by the daemon on unlock, as
+   * embedded converts it (envelope-actions.ts convertOwnLegacyPassword):
+   * then no key is needed any more.
    */
   [IPC.IDENTITY_PASSWORD_UNLOCK]: (ctx, _event, args: { password: string }) =>
     onOpenAgent(ctx, 'Unlocking the open agent', () => ({ success: false, error: NO_ADF }), async (client, agentId, filePath) => {
+      let converted = false
       try {
-        await client.request('POST', `/agents/${enc(agentId)}/identity/password/unlock`, { body: { password: args?.password } })
+        const answer = await client.request<{ converted?: boolean }>('POST', `/agents/${enc(agentId)}/identity/password/unlock`, { body: { password: args?.password } })
+        converted = answer.converted === true
       } catch (err) {
         if (isNotFound(err)) throw err
         ctx.log.error('[IDENTITY_PASSWORD_UNLOCK] Failed:', message(err))
         return { success: false, error: codeOf(err) === 'wrong_password' ? 'Wrong password' : message(err) }
       }
-      ctx.session.noteUnlocked(filePath, agentId)
-      return { success: true, converted: false }
+      if (converted) ctx.session.forgetUnlocked(filePath)
+      else ctx.session.noteUnlocked(filePath, agentId)
+      return { success: true, converted }
     }),
 
   [IPC.IDENTITY_PASSWORD_REMOVE]: (ctx) =>

@@ -430,11 +430,7 @@ export const CHANNEL_MAP = {
   [IPC.IDENTITY_DELETE_PREFIX]: proxied('invoke', ['DELETE /agents/:id/identity-prefix']),
   [IPC.IDENTITY_LIST]: proxied('invoke', ['GET /agents/:id/identity']),
   [IPC.IDENTITY_PASSWORD_CHECK]: proxied('invoke', ['GET /agents/:id/identity/password']),
-  [IPC.IDENTITY_PASSWORD_UNLOCK]: proxied('invoke', ['POST /agents/:id/identity/password/unlock'], {
-    gaps: [
-      gap('W1-C', 'unlock converts the owner\'s own legacy whole-file password to envelopes, keeps the password as a share slot, and returns converted'),
-    ],
-  }),
+  [IPC.IDENTITY_PASSWORD_UNLOCK]: proxied('invoke', ['POST /agents/:id/identity/password/unlock'], { note: 'The route converts the owner’s own legacy file (envelope-actions.ts convertOwnLegacyPassword) and answers converted.' }),
   [IPC.IDENTITY_PASSWORD_SET]: local('invoke', 'Deprecated: always refuses. The daemon-mode handler returns the same refusal and MUST NOT call PUT /agents/:id/identity/password.'),
   [IPC.IDENTITY_PASSWORD_REMOVE]: proxied('invoke', ['DELETE /agents/:id/identity/password']),
   [IPC.IDENTITY_PASSWORD_CHANGE]: local('invoke', 'Deprecated: always refuses. The daemon-mode handler returns the same refusal.'),
