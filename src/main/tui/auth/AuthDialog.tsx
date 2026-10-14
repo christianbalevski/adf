@@ -1,6 +1,8 @@
-// Provider sign-in (ChatGPT, Grok): status of each subscription, sign in,
-// sign out. Sign-in runs the same flows as `adf auth login` (cli/auth-flow.ts):
-// ChatGPT opens the browser (URL shown too), Grok shows a device code.
+// Provider sign-in (ChatGPT, Grok, Claude): status of each subscription, sign
+// in, sign out. Sign-in runs the same flows as `adf auth login` (cli/auth-flow.ts):
+// ChatGPT opens the browser (URL shown too), Grok shows a device code, Claude
+// runs Claude Code on the daemon host (URL shown as the fallback, and a box to
+// paste the code Claude's page may show).
 
 import { useEffect, useRef, useState } from 'react'
 import { Box, Text } from 'ink'
@@ -9,17 +11,18 @@ import { useKeys } from '../app/keys'
 import { useStore, useTuiSelector } from '../state/store'
 import { Modal } from '../ui/Modal'
 import { Spinner } from '../ui/Spinner'
+import { TextInput } from '../ui/TextInput'
 import type { KeyHintSpec } from '../ui/KeyHint'
 import type { SubscriptionProvider } from '../api/types'
 import type { OverlayProps } from '../views/types'
 import { copyToClipboard } from '../views/chat/model'
 import { signIn, type AuthOutcome } from './flow'
-import { AUTH_EXPLAINER, SUBSCRIPTIONS, SUBSCRIPTION_LABELS, describeStatus, spacedCode, statusOf, type AuthOverlayProps } from './model'
+import { AUTH_EXPLAINER, CLAUDE_EXPLAINER, SUBSCRIPTIONS, SUBSCRIPTION_LABELS, describeStatus, spacedCode, statusOf, type AuthOverlayProps } from './model'
 
 type Flow =
   | { kind: 'list' }
   | { kind: 'signout'; provider: SubscriptionProvider }
-  | { kind: 'running'; provider: SubscriptionProvider; url?: string; code?: string; relay?: string }
+  | { kind: 'running'; provider: SubscriptionProvider; url?: string; code?: string; relay?: string; started?: boolean }
   | { kind: 'done'; provider: SubscriptionProvider; outcome: AuthOutcome; url?: string }
 
 export function AuthDialog({ overlay, close, width }: OverlayProps) {
@@ -30,6 +33,7 @@ export function AuthDialog({ overlay, close, width }: OverlayProps) {
   const [cursor, setCursor] = useState(Math.max(0, SUBSCRIPTIONS.indexOf(props.login ?? 'chatgpt')))
   const [flow, setFlow] = useState<Flow>({ kind: 'list' })
   const [note, setNote] = useState<string | null>(null)
+  const [pasted, setPasted] = useState('')
   const abort = useRef<AbortController | null>(null)
   const dialogWidth = Math.max(50, Math.min(width - 4, 84))
 
@@ -44,10 +48,12 @@ export function AuthDialog({ overlay, close, width }: OverlayProps) {
     const ctrl = new AbortController()
     abort.current = ctrl
     setNote(null)
+    setPasted('')
     setFlow({ kind: 'running', provider })
     void signIn(store.client, provider, ctrl.signal, {
       onChatGpt: info => setFlow({ kind: 'running', provider, url: info.authUrl, relay: info.mode === 'relay' ? info.redirectUri : undefined }),
       onGrok: info => setFlow({ kind: 'running', provider, url: info.verificationUri, code: info.userCode }),
+      onClaude: info => setFlow({ kind: 'running', provider, url: info.url || undefined, started: true }),
     }).then(outcome => {
       if (ctrl.signal.aborted && !outcome.ok) return
       abort.current = null
@@ -64,6 +70,18 @@ export function AuthDialog({ overlay, close, width }: OverlayProps) {
     abort.current = null
     setNote(`${SUBSCRIPTION_LABELS[flow.provider]} sign-in cancelled.`)
     setFlow({ kind: 'list' })
+  }
+
+  const sendCode = (value: string) => {
+    const code = value.trim()
+    if (!code) return false
+    setPasted('')
+    setNote('Sending the code to Claude Code…')
+    store.client.submitClaudeCode(code).then(
+      () => setNote('Code sent. Waiting for Claude Code to finish…'),
+      (err: unknown) => setNote(`Could not send the code: ${err instanceof Error ? err.message : String(err)}`),
+    )
+    return true
   }
 
   const copyUrl = (url: string | undefined) => {
@@ -93,7 +111,8 @@ export function AuthDialog({ overlay, close, width }: OverlayProps) {
         return true
       case 'running':
         if (key.escape) { cancel(); return true }
-        if (input === 'c') { copyUrl(flow.url); return true }
+        // Claude: printable keys go to the code box (registered later, so it sees them first).
+        if (input === 'c' && flow.provider !== 'claude') { copyUrl(flow.url); return true }
         return true
       case 'done':
         if (key.escape || key.return) { if (flow.outcome.ok) close(); else setFlow({ kind: 'list' }); return true }
@@ -110,12 +129,17 @@ export function AuthDialog({ overlay, close, width }: OverlayProps) {
     const running = flow.kind === 'running'
     const code = running ? flow.code : undefined
     const url = flow.url
+    const claude = flow.provider === 'claude'
+    const claudeWaiting = running && claude && !!flow.started
     const hints: KeyHintSpec[] = running
-      ? [...(url ? [{ keys: 'c', label: 'copy URL' }] : []), { keys: 'esc', label: 'cancel' }]
+      ? claude
+        ? [...(claudeWaiting ? [{ keys: 'enter', label: 'send code' }] : []), { keys: 'esc', label: 'cancel' }]
+        : [...(url ? [{ keys: 'c', label: 'copy URL' }] : []), { keys: 'esc', label: 'cancel' }]
       : flow.outcome.ok ? [{ keys: 'enter', label: 'close' }] : [{ keys: 'r', label: 'try again' }, { keys: 'esc', label: 'back' }]
     return (
       <Modal title={`Sign in to ${label}`} width={dialogWidth} hints={hints}>
-        {running && !url ? <Spinner label={`asking the daemon to start ${label} sign-in…`} /> : null}
+        {running && !url && !(running && flow.started) ? <Spinner label={`asking the daemon to start ${label} sign-in…`} /> : null}
+        {claude ? <Text color={theme.color.muted} wrap="wrap">{CLAUDE_EXPLAINER}</Text> : null}
         {code ? (
           <Box flexDirection="column" alignItems="center" marginBottom={1}>
             <Text color={theme.color.muted}>Enter this code in the browser:</Text>
@@ -126,11 +150,19 @@ export function AuthDialog({ overlay, close, width }: OverlayProps) {
         ) : null}
         {url ? (
           <>
-            <Text color={theme.color.muted}>{code ? 'on this page (the browser should open it):' : 'The browser should open. If it does not, open this URL:'}</Text>
+            <Text color={theme.color.muted}>{code ? 'on this page (the browser should open it):' : claude ? 'Claude Code is opening the sign-in page in the browser on the daemon host. If it does not open there, open this URL:' : 'The browser should open. If it does not, open this URL:'}</Text>
             <Text color={theme.color.info} wrap="wrap">{url}</Text>
           </>
         ) : null}
-        {running && url ? <Box marginTop={1}><Spinner label={flow.relay ? `waiting for you to finish in the browser… (callback on ${flow.relay})` : 'waiting for you to finish in the browser…'} /></Box> : null}
+        {claudeWaiting ? (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={theme.color.text}>If the page shows a code, paste it here (or wait):</Text>
+            <Box borderStyle={theme.ascii ? 'classic' : 'round'} borderColor={theme.color.borderFocus} paddingX={1}>
+              <TextInput value={pasted} onChange={setPasted} onSubmit={sendCode} focused keyLayer="overlay" maxRows={2} placeholder="code from the Claude sign-in page" />
+            </Box>
+          </Box>
+        ) : null}
+        {running && (url || claudeWaiting) ? <Box marginTop={1}><Spinner label={flow.relay ? `waiting for you to finish in the browser… (callback on ${flow.relay})` : 'waiting for you to finish in the browser…'} /></Box> : null}
         {!running ? (
           flow.outcome.ok
             ? <Box marginTop={1}><Text bold color={theme.color.success}>{theme.glyph.check} Signed in to {label}{flow.outcome.email ? ` as ${flow.outcome.email}` : ''}.</Text></Box>

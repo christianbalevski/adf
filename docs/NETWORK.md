@@ -40,6 +40,7 @@ Requests that exist only because you set something up.
 |---|---|---|
 | Model providers | The provider's base URL (Anthropic, OpenAI, OpenRouter, any OpenAI-compatible URL, local models) | Settings → Providers, or per-agent provider config |
 | Subscription sign-in | `auth.openai.com` / `chatgpt.com`, `auth.x.ai` / `api.x.ai` | Settings → Providers (ChatGPT / xAI subscription) |
+| Claude subscription | `api.anthropic.com` for model calls; `claude.ai` / `claude.com` / `platform.claude.com` for sign-in. These connections are made by the user's Claude Code process, which ADF starts; ADF itself does not contact these hosts for this provider | Settings → Providers (Claude subscription) |
 | Skill catalogs | Each URL you add to the skill-catalog list | Settings → Skills |
 | MCP servers | Whatever the server connects to; `npx`/`uvx` packages come from the npm / PyPI registries | Settings → MCP servers, agent config |
 | `uv` binary | `github.com/astral-sh/uv/releases` — downloaded once, only when a Python MCP server or package needs it and no `uv` is installed | Adding a Python MCP server |

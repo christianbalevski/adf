@@ -56,7 +56,7 @@ export function ProvidersPanel({ loaded, providers, setProviders, defaultProvide
         <div className="rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)] px-4 py-6 text-center shadow-subtle">
           <p className="text-[13px] font-medium text-[var(--adf-ui-text)]">No providers yet</p>
           <p className="mx-auto mt-1 max-w-md text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            Sign in with a ChatGPT or Grok subscription, paste an API key, or point at a local server like LM Studio or Ollama.
+            Sign in with a ChatGPT, Grok, or Claude subscription, paste an API key, or point at a local server like LM Studio or Ollama.
           </p>
           <Button variant="primary" className="mt-3" onClick={m.openPicker}>Choose a provider</Button>
         </div>

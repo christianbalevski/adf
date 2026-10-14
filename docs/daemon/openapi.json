@@ -76,7 +76,7 @@
     },
     {
       "name": "Providers & sign-in",
-      "description": "App-level LLM providers, model lists, agent provider configs and subscription sign-in (ChatGPT, Grok)."
+      "description": "App-level LLM providers, model lists, agent provider configs and subscription sign-in (ChatGPT, Grok, Claude)."
     },
     {
       "name": "Tasks & approvals",
@@ -2164,7 +2164,7 @@
           "Chat"
         ],
         "summary": "Queue a user chat turn",
-        "description": "The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped: the first interrupts the running turn, then the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`.",
+        "description": "The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped, and a working turn is never cut off: in a tool loop they join the running turn after the current tool results (`chat.delivered` with `delivery: 'next_step'`); otherwise the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). A chat to a loop waiting on the owner (approval, ask, suspend) ends that wait and restarts the turn; /interrupt is the hard stop. Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`.",
         "operationId": "chatAgent",
         "parameters": [
           {
@@ -4926,7 +4926,7 @@
           "Providers & sign-in"
         ],
         "summary": "Add an API-key provider",
-        "description": "For every agent on this daemon. The key goes to the daemon secret store (OS keychain, or the owner's passphrase file), never the settings file, and is never returned: the settings entry carries `apiKeyStorage: \"secret-store\"` and an empty `apiKey`, and the daemon fills the key in when it resolves the provider. `openai-compatible` needs `baseUrl` (apiKey optional, for local servers); subscriptions (ChatGPT, Grok) sign in instead (400 `subscription_type`). The name is made unique (`OpenRouter 2`); the first provider becomes the default.",
+        "description": "For every agent on this daemon. The key goes to the daemon secret store (OS keychain, or the owner's passphrase file), never the settings file, and is never returned: the settings entry carries `apiKeyStorage: \"secret-store\"` and an empty `apiKey`, and the daemon fills the key in when it resolves the provider. `openai-compatible` needs `baseUrl` (apiKey optional, for local servers); subscriptions (ChatGPT, Grok, Claude) sign in instead (400 `subscription_type`). The name is made unique (`OpenRouter 2`); the first provider becomes the default.",
         "operationId": "addRuntimeProvider",
         "requestBody": {
           "required": true,
@@ -5228,7 +5228,7 @@
           "Providers & sign-in"
         ],
         "summary": "Complete a relayed ChatGPT sign-in",
-        "description": "Exchanges the code captured by the caller's callback server. Each flowId is single-use and expires 10 minutes after start; an unknown or expired flowId, a mismatched state or a failed token exchange answers 400. After any sign-in (loopback, relay or Grok) every loaded loop in `error` from an auth failure of that provider type returns to idle and emits agent.recovered; the failed turn is not re-run.",
+        "description": "Exchanges the code captured by the caller's callback server. Each flowId is single-use and expires 10 minutes after start; an unknown or expired flowId, a mismatched state or a failed token exchange answers 400. After any sign-in (loopback, relay, Grok or Claude) every loaded loop in `error` from an auth failure of that provider type returns to idle and emits agent.recovered; the failed turn is not re-run.",
         "operationId": "completeChatGptAuth",
         "requestBody": {
           "required": true,
@@ -5365,6 +5365,207 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/auth/claude/status": {
+      "get": {
+        "tags": [
+          "Providers & sign-in"
+        ],
+        "summary": "Claude subscription sign-in status",
+        "description": "ADF holds no Claude credentials: the daemon asks the Claude Code CLI installed on its host (`claude auth status`). `installed: false` means Claude Code is missing (`installUrl` says where to get it). While a sign-in runs, `flowPending` is true and `flowUrl` is the sign-in URL; a failed sign-in surfaces `flowError` (also when still `authenticated` with the earlier account). Signed in only counts with a Claude plan (claude.ai), not a Console API key. The result is cached for about 30 seconds (never while a sign-in is pending); `recheck=1` re-detects Claude Code and reads fresh status.",
+        "operationId": "getClaudeAuthStatus",
+        "parameters": [
+          {
+            "name": "recheck",
+            "in": "query",
+            "required": false,
+            "description": "`1` or `true` bypasses the status cache and re-detects the Claude Code install (e.g. right after installing or updating it)",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeAuthStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/auth/claude/start": {
+      "post": {
+        "tags": [
+          "Providers & sign-in"
+        ],
+        "summary": "Start a Claude sign-in",
+        "description": "Runs `claude auth login` on the daemon host; Claude Code opens the browser there itself. `url` is the same sign-in page for when it cannot (remote or headless daemon): open it in any browser, and if the page then shows a code, send it with POST /auth/claude/code. Poll GET /auth/claude/status until `flowPending` is false: `flowError` set means the sign-in failed (even if `authenticated` still shows an earlier account), else `authenticated`. A second start while one runs returns the running flow. Afterwards every loaded loop in `error` from a claude-subscription auth failure returns to idle and emits agent.recovered. No body.",
+        "operationId": "startClaudeAuth",
+        "responses": {
+          "200": {
+            "description": "Flow started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeAuthStartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "description": "Claude Code is not installed on the daemon host",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "installUrl": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  ]
+                },
+                "example": {
+                  "error": "Claude Code is not installed on the daemon host. Install it (https://code.claude.com/docs/en/setup), then sign in again.",
+                  "code": "claude_code_not_installed",
+                  "installUrl": "https://code.claude.com/docs/en/setup"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/claude/code": {
+      "post": {
+        "tags": [
+          "Providers & sign-in"
+        ],
+        "summary": "Send the Claude sign-in code",
+        "description": "Hands the code shown on Claude's sign-in page to the waiting Claude Code. 400 when no sign-in is in progress or the code is empty.",
+        "operationId": "submitClaudeAuthCode",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaudeAuthCodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Code sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/auth/claude/cancel": {
+      "post": {
+        "tags": [
+          "Providers & sign-in"
+        ],
+        "summary": "Cancel a running Claude sign-in",
+        "description": "Stops the waiting `claude auth login`. A no-op when none runs. No body.",
+        "operationId": "cancelClaudeAuth",
+        "responses": {
+          "200": {
+            "description": "Cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/auth/claude/logout": {
+      "post": {
+        "tags": [
+          "Providers & sign-in"
+        ],
+        "summary": "Sign out of Claude",
+        "description": "Runs `claude auth logout` on the daemon host. This signs Claude Code itself out on that machine, including the user's own Claude Code use. No body.",
+        "operationId": "logoutClaude",
+        "responses": {
+          "200": {
+            "description": "Signed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
@@ -11138,6 +11339,7 @@
         "required": [
           "chatgpt",
           "grok",
+          "claude",
           "providers"
         ],
         "properties": {
@@ -11146,6 +11348,9 @@
           },
           "grok": {
             "$ref": "#/components/schemas/SubscriptionAuthStatus"
+          },
+          "claude": {
+            "$ref": "#/components/schemas/ClaudeAuthStatus"
           },
           "providers": {
             "type": "array",
@@ -18600,6 +18805,93 @@
           "costPartial": {
             "type": "boolean",
             "description": "Some calls that day had no recorded price, or were compacted (their cost is not recorded); costUsd is a lower bound"
+          }
+        }
+      },
+      "ClaudeAuthStatus": {
+        "type": "object",
+        "required": [
+          "authenticated",
+          "installed"
+        ],
+        "description": "Claude sign-in as reported by the Claude Code CLI on the daemon host.",
+        "properties": {
+          "authenticated": {
+            "type": "boolean"
+          },
+          "installed": {
+            "type": "boolean",
+            "description": "False when Claude Code is not installed"
+          },
+          "installUrl": {
+            "type": "string",
+            "description": "Where to install Claude Code (only when not installed)"
+          },
+          "version": {
+            "type": "string",
+            "description": "Installed Claude Code version"
+          },
+          "minVersion": {
+            "type": "string",
+            "description": "Oldest Claude Code version this runtime supports"
+          },
+          "updateRequired": {
+            "type": "boolean",
+            "description": "True when the installed Claude Code is older than minVersion; sign-in is unavailable until it is updated"
+          },
+          "email": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "string",
+            "description": "Claude plan, e.g. pro, max, team"
+          },
+          "flowPending": {
+            "type": "boolean"
+          },
+          "flowUrl": {
+            "type": "string",
+            "description": "Sign-in URL of the running flow"
+          },
+          "flowError": {
+            "type": "string",
+            "description": "Why Claude is unusable, or why the last sign-in failed. Also set while authenticated when a re-sign-in failed; the account shown is then the one signed in before it. Cleared when a new sign-in starts."
+          }
+        },
+        "example": {
+          "authenticated": true,
+          "installed": true,
+          "version": "2.1.250",
+          "email": "me@example.com",
+          "plan": "max"
+        }
+      },
+      "ClaudeAuthStartResponse": {
+        "type": "object",
+        "required": [
+          "started"
+        ],
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "const": true
+          },
+          "url": {
+            "type": "string",
+            "description": "Sign-in URL, to open manually when Claude Code cannot open a browser itself. Absent if Claude Code printed none."
+          }
+        }
+      },
+      "ClaudeAuthCodeRequest": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The code shown on Claude's sign-in page"
           }
         }
       }

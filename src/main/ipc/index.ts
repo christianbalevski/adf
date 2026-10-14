@@ -95,6 +95,11 @@ async function testProviderCredentialsForDashboard(
     return finish(getGrokAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
   }
 
+  if (cfg.type === 'claude-subscription') {
+    const { getClaudeAuthManager } = await import('../providers/claude-subscription/auth-manager')
+    return finish(await getClaudeAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
+  }
+
   if (cfg.type === 'anthropic') {
     if (!cfg.apiKey) return finish('unconfigured')
     try {
@@ -3919,7 +3924,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       startingFilePaths.delete(capturedFilePath)
       const local = resolved ?? settings.getProvider(config.model.provider)
       const needsKey = !!local && !local.apiKey && local.type !== 'openai-compatible' &&
-        local.type !== 'chatgpt-subscription' && local.type !== 'grok-subscription'
+        local.type !== 'chatgpt-subscription' && local.type !== 'grok-subscription' &&
+        local.type !== 'claude-subscription'
       return {
         success: false,
         error: validation.error || 'Provider not configured',
@@ -5280,6 +5286,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       const { listGrokSubscriptionModels } = await import('../providers/grok-subscription')
       const { getGrokAuthManager } = await import('../providers/grok-subscription/auth-manager')
       return { models: await listGrokSubscriptionModels(getGrokAuthManager()) }
+    }
+
+    if (cfg.type === 'claude-subscription') {
+      const { listClaudeSubscriptionModels } = await import('../providers/claude-subscription')
+      return { models: await listClaudeSubscriptionModels() }
     }
 
     if (cfg.type === 'anthropic') {
@@ -9064,6 +9075,57 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       return { success: true }
     } catch {
       return { success: true }
+    }
+  })
+
+  // --- Claude Subscription Auth (delegated to Claude Code) ---
+
+  // Claude Code opens the browser itself; completion is surfaced via
+  // CLAUDE_AUTH_STATUS polling from the renderer.
+  ipcMain.handle(IPC.CLAUDE_AUTH_START, async () => {
+    try {
+      const { getClaudeAuthManager } = await import('../providers/claude-subscription/auth-manager')
+      const flow = await getClaudeAuthManager().startAuthFlowDetached()
+      return { success: true, url: flow.url }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.CLAUDE_AUTH_STATUS, async (_event, args?: { recheck?: boolean }) => {
+    try {
+      const { getClaudeAuthManager } = await import('../providers/claude-subscription/auth-manager')
+      return await getClaudeAuthManager().getAuthStatus({ fresh: args?.recheck === true })
+    } catch (err) {
+      return { authenticated: false, installed: true, version: '', flowError: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.CLAUDE_AUTH_SUBMIT_CODE, async (_event, args: { code: string }) => {
+    try {
+      const { getClaudeAuthManager } = await import('../providers/claude-subscription/auth-manager')
+      getClaudeAuthManager().submitCode(args?.code ?? '')
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.CLAUDE_AUTH_CANCEL, async () => {
+    try {
+      const { getClaudeAuthManager } = await import('../providers/claude-subscription/auth-manager')
+      getClaudeAuthManager().cancelAuthFlow()
+    } catch { /* nothing to cancel */ }
+    return { success: true }
+  })
+
+  ipcMain.handle(IPC.CLAUDE_AUTH_LOGOUT, async () => {
+    try {
+      const { getClaudeAuthManager } = await import('../providers/claude-subscription/auth-manager')
+      await getClaudeAuthManager().logout()
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
     }
   })
 

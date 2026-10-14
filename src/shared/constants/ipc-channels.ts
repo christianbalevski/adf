@@ -350,6 +350,13 @@ export const IPC = {
   GROK_AUTH_STATUS: 'adf:grok-auth:status',
   GROK_AUTH_LOGOUT: 'adf:grok-auth:logout',
 
+  // Claude Subscription Auth (delegated to Claude Code)
+  CLAUDE_AUTH_START: 'adf:claude-auth:start',
+  CLAUDE_AUTH_STATUS: 'adf:claude-auth:status',
+  CLAUDE_AUTH_SUBMIT_CODE: 'adf:claude-auth:submit-code',
+  CLAUDE_AUTH_CANCEL: 'adf:claude-auth:cancel',
+  CLAUDE_AUTH_LOGOUT: 'adf:claude-auth:logout',
+
   // Mesh HTTP server
   MESH_SERVER_STATUS: 'adf:mesh-server:status',
   MESH_SERVER_RESTART: 'adf:mesh-server:restart',

@@ -81,7 +81,7 @@ export function createInspectFixture(_mockUrl: string, next: typeof fetch = glob
       })
     }
     if (method === 'GET' && path === '/runtime/auth') {
-      return json({ chatgpt: { authenticated: true, email: 'owner@example.test' }, grok: { authenticated: false }, providers: [{ id: 'mock', type: 'openai-compatible', name: 'Mock', credentialStorage: 'app', hasApiKey: true }] })
+      return json({ chatgpt: { authenticated: true, email: 'owner@example.test' }, grok: { authenticated: false }, claude: { authenticated: false, installed: true, version: '2.1.250' }, providers: [{ id: 'mock', type: 'openai-compatible', name: 'Mock', credentialStorage: 'app', hasApiKey: true }] })
     }
     if (method === 'GET' && path === '/runtime/network') {
       return json({ host: ['192.168.1.20'], mesh: { enabledSetting: true, lan: false, port: 7295, status: null }, websocket: { activeConnections: 0, inboundConnections: 0, outboundConnections: 0 }, agents: [{ agentId: AGENT_1_ID, handle: 'agent-1', receive: true, sendMode: 'respond_only', wsConnectionsConfigured: 0, servingRoutes: 1, publicServingEnabled: false }] })

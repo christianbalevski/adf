@@ -510,7 +510,7 @@ Make a direct LLM call using a messages array (chat completion format). No tools
 | `prompt` | string | Yes* | Shorthand for a single user message (*either `messages` or `prompt` is required) |
 | `system` | string | No | Shorthand system message, prepended when `prompt` is used |
 | `model` | string | No | Model ID override (e.g., `"anthropic/claude-haiku-3-5-20241022"`) |
-| `max_tokens` | number | No | Max response tokens (default: from agent config, fallback 4096) |
+| `max_tokens` | number | No | Max response tokens (default: from agent config, else the model's own limit) |
 | `temperature` | number | No | Sampling temperature (default: from agent config, fallback 0.7) |
 | `top_p` | number | No | Top-p sampling (default: from agent config) |
 

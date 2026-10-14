@@ -476,6 +476,8 @@ export class AiSdkProvider implements LLMProvider {
       // `maxTokens` key is silently ignored, leaving the response uncapped.
       callSettings.maxOutputTokens = options.maxTokens
     }
+    // No cap set: each provider applies the model's own limit. (The Anthropic
+    // API requires max_tokens; @ai-sdk/anthropic fills it from its model table.)
     if (tools) callSettings.tools = tools
     if (options.signal) callSettings.abortSignal = options.signal
 
@@ -776,8 +778,14 @@ function extractMediaParts(content: ContentBlock[]): unknown[] {
   return parts
 }
 
-function convertSingleMessage(msg: LLMMessage, toolNameMap: Map<string, string>): CoreMessage | CoreMessage[] | null {
+/** `[timestamp] [S<seq>]` prefix for a message's text (see convertSingleMessage). */
+export function messageTextPrefix(msg: LLMMessage): string {
   const ts = msg.created_at ? formatUtcTimestamp(msg.created_at) : ''
+  const marker = (msg.seq != null && msg.role !== 'assistant') ? `[S${msg.seq}]` : ''
+  return ts && marker ? `${ts} ${marker}` : ts || marker
+}
+
+function convertSingleMessage(msg: LLMMessage, toolNameMap: Map<string, string>): CoreMessage | CoreMessage[] | null {
   // Provenance marker: injected ONLY at conversion time (never stored in
   // content_json) so the agent can cite loop rows / adf_audit blobs by seq.
   // Seqs are immutable → prompt-cache prefixes stay stable.
@@ -789,7 +797,7 @@ function convertSingleMessage(msg: LLMMessage, toolNameMap: Map<string, string>)
   // cites. To cite one of its own past statements the agent looks the seq up
   // in adf_loop/adf_audit. Timestamps still ride along on assistant messages.
   const marker = (msg.seq != null && msg.role !== 'assistant') ? `[S${msg.seq}]` : ''
-  const prefix = ts && marker ? `${ts} ${marker}` : ts || marker
+  const prefix = messageTextPrefix(msg)
 
   if (typeof msg.content === 'string') {
     const text = prefix ? `${prefix} ${msg.content}` : msg.content

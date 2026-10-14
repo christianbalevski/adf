@@ -13,6 +13,21 @@ import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 
+/** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
+export interface ClaudeAuthStatusView {
+  authenticated: boolean
+  installed: boolean
+  installUrl?: string
+  version?: string
+  minVersion?: string
+  updateRequired?: boolean
+  email?: string
+  plan?: string
+  flowPending?: boolean
+  flowUrl?: string
+  flowError?: string
+}
+
 export interface AdfApi {
   // App
   getAppVersion: () => Promise<string>
@@ -633,6 +648,14 @@ export interface AdfApi {
   grokAuthStart: () => Promise<{ success: boolean; userCode?: string; verificationUri?: string; verificationUriComplete?: string; expiresIn?: number; error?: string }>
   grokAuthStatus: () => Promise<{ authenticated: boolean; email?: string; expiresAt?: number; flowPending?: boolean; flowError?: string }>
   grokAuthLogout: () => Promise<{ success: boolean }>
+
+  // Claude Subscription Auth — delegated to the user's Claude Code install
+  claudeAuthStart: () => Promise<{ success: boolean; url?: string; error?: string }>
+  /** `recheck` re-probes for Claude Code (e.g. right after installing it). */
+  claudeAuthStatus: (recheck?: boolean) => Promise<ClaudeAuthStatusView>
+  claudeAuthSubmitCode: (code: string) => Promise<{ success: boolean; error?: string }>
+  claudeAuthCancel: () => Promise<{ success: boolean }>
+  claudeAuthLogout: () => Promise<{ success: boolean; error?: string }>
 
   // Open file request (main -> renderer)
   onOpenFileRequest: (callback: (data: { filePath: string }) => void) => () => void

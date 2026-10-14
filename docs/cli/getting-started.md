@@ -53,12 +53,17 @@ One-shot: `adf identity new`, `adf identity restore`, `adf identity`.
 
 - **ChatGPT or Grok subscription:** `/login chatgpt` opens your browser;
   `/login grok` shows a device code to approve in any browser.
+- **Claude Pro or Max plan:** install
+  [Claude Code](https://code.claude.com/docs/en/setup) (2.1.248 or newer),
+  then `/login claude`. Sign-in runs through Claude Code and shares its
+  session.
 - **API key** (Anthropic, OpenAI, OpenRouter, Gemini, a local Ollama or LM
   Studio, any OpenAI-compatible URL): `/provider add`, pick the provider,
   paste the key. It goes to the daemon's secret store, never the settings
   file.
 
-One-shot: `adf auth login chatgpt`, `adf auth login grok`, `adf providers`.
+One-shot: `adf auth login chatgpt`, `adf auth login grok`, `adf auth login
+claude`, `adf providers`.
 More in [Models and providers](models-and-providers.md).
 
 ## 4. Create an agent

@@ -15,7 +15,7 @@ This document covers the **Studio application itself**: its interface, settings,
 Before you begin you need:
 
 1. **ADF Studio** installed on your machine (macOS or Windows).
-2. **At least one LLM provider** — Studio supports Anthropic, OpenAI, OpenAI-compatible endpoints, and ChatGPT Subscription (OAuth).
+2. **At least one LLM provider** — Studio supports Anthropic, OpenAI, OpenAI-compatible endpoints, and Claude, ChatGPT and Grok subscriptions.
 
 On first launch Studio creates its application data directory (`~/.adf-studio/`), which holds settings, the shared sandbox-package store, and per-agent compute state.
 
@@ -28,7 +28,7 @@ You must configure a provider before an agent can run.
 1. Open **Settings** (gear icon in the sidebar, or `Cmd/Ctrl + ,`).
 2. Go to the **Providers** section.
 3. Click **Add provider**. A catalog opens with one tile per service, grouped as:
-   - **Subscriptions** — ChatGPT Plus/Pro and SuperGrok/X Premium, via OAuth sign-in (flat-rate, no API key).
+   - **Subscriptions** — ChatGPT Plus/Pro and SuperGrok/X Premium, via OAuth sign-in (flat-rate, no API key); Claude Pro/Max, signed in through your installed Claude Code (2.1.248 or newer), drawing on the plan's limits.
    - **APIs** — Anthropic, OpenAI, OpenRouter, Gemini, xAI, Mistral, Groq and the other hosted endpoints (API key).
    - **Local** — LM Studio, Ollama, vLLM, llama.cpp and friends, with the usual localhost base URL prefilled.
    - **Other** — any endpoint that speaks the OpenAI API, with a base URL you enter.

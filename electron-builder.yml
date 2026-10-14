@@ -19,6 +19,9 @@ files:
   # breaks the mac universal merge (electron-rebuild leaves it host-arch, so
   # it's an identical arm64 binary in both per-arch builds).
   - "!node_modules/better-sqlite3/build/Release/test_extension.node"
+  # The Agent SDK's per-platform optional deps each carry a ~250 MB Claude
+  # Code binary. ADF runs the user's installed Claude Code instead.
+  - "!node_modules/@anthropic-ai/claude-agent-sdk-*/**"
 asarUnpack:
   - "node_modules/sqlite-vec*/**"
 # The agent registry: bundled .adf files + index.json, copied next to the

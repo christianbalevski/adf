@@ -350,11 +350,11 @@ export interface SuspendResult {
   resolved: boolean
 }
 
-// --- subscription sign-in (ChatGPT, Grok) -------------------------------------
+// --- subscription sign-in (ChatGPT, Grok, Claude) -----------------------------
 
-export type SubscriptionProvider = 'chatgpt' | 'grok'
+export type SubscriptionProvider = 'chatgpt' | 'grok' | 'claude'
 
-/** `GET /auth/<provider>/status` (also `chatgpt` / `grok` in `GET /runtime/auth`). */
+/** `GET /auth/<provider>/status` (also `chatgpt` / `grok` / `claude` in `GET /runtime/auth`). */
 export interface SubscriptionAuthStatus {
   authenticated: boolean
   email?: string
@@ -362,6 +362,20 @@ export interface SubscriptionAuthStatus {
   expiresAt?: number
   flowPending?: boolean
   flowError?: string
+  /** Claude only: false when Claude Code is not installed on the daemon host. */
+  installed?: boolean
+  /** Claude only: where to install Claude Code. */
+  installUrl?: string
+  /** Claude only: Claude Code version on the daemon host. */
+  version?: string
+  /** Claude only: oldest Claude Code version the runtime supports. */
+  minVersion?: string
+  /** Claude only: the installed Claude Code is older than `minVersion`. */
+  updateRequired?: boolean
+  /** Claude only: the Claude plan (pro, max, team, …). */
+  plan?: string
+  /** Claude only: sign-in URL of the running flow. */
+  flowUrl?: string
 }
 
 // --- owner identity + agent creation (docs/daemon/http-api.md "Owner Identity") --

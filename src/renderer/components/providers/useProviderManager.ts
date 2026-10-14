@@ -4,6 +4,7 @@ import { isSubscriptionType, nextProviderName, type ProviderCatalogEntry } from 
 import type { ModelListState, SubscriptionAuthState } from './ProviderModal'
 import { generateProviderId, type ProviderTestStatus } from './provider-status'
 import { countOverrides } from './override-utils'
+import type { ClaudeAuthStatusView } from '../../../preload/api'
 
 export interface ProviderManagerInput {
   providers: ProviderConfig[]
@@ -101,6 +102,12 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
 
   const refreshChatgpt = useCallback(() => { window.adfApi?.chatgptAuthStatus().then(setChatgptAuth).catch(() => {}) }, [])
   const refreshGrok = useCallback(() => { window.adfApi?.grokAuthStatus().then(setGrokAuth).catch(() => {}) }, [])
+  const [claudeAuth, setClaudeAuth] = useState<ClaudeAuthStatusView>({ authenticated: false, installed: true })
+  const [claudeLoading, setClaudeLoading] = useState(false)
+  const [claudeError, setClaudeError] = useState<string | undefined>()
+  const refreshClaude = useCallback((recheck = false) => {
+    window.adfApi?.claudeAuthStatus(recheck).then(setClaudeAuth).catch(() => {})
+  }, [])
 
   const chatgpt: SubscriptionAuthState = {
     ...chatgptAuth,
@@ -142,6 +149,60 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     signOut: async () => { await window.adfApi?.grokAuthLogout(); setGrokDevice(null); refreshGrok() },
   }
 
+  const claude: SubscriptionAuthState = {
+    ...claudeAuth,
+    flowError: claudeError ?? claudeAuth.flowError,
+    loading: claudeLoading,
+    signOutHint: 'Also signs out Claude Code on this computer.',
+    signIn: async () => {
+      setClaudeLoading(true)
+      setClaudeError(undefined)
+      try {
+        const result = await window.adfApi?.claudeAuthStart()
+        if (result && !result.success) setClaudeError(result.error)
+      } catch (err) {
+        setClaudeError(String(err))
+      } finally {
+        setClaudeLoading(false)
+        refreshClaude()
+      }
+    },
+    signOut: async () => {
+      const result = await window.adfApi?.claudeAuthLogout()
+      setClaudeError(result && !result.success ? result.error : undefined)
+      refreshClaude()
+    },
+    submitCode: async (code: string) => {
+      const result = await window.adfApi?.claudeAuthSubmitCode(code)
+      setClaudeError(result && !result.success ? result.error : undefined)
+      refreshClaude()
+    },
+    cancel: async () => {
+      await window.adfApi?.claudeAuthCancel()
+      setClaudeError(undefined)
+      refreshClaude()
+    },
+    recheck: () => refreshClaude(true),
+  }
+
+  // Poll while Claude Code's sign-in is waiting on the browser.
+  useEffect(() => {
+    if (!claudeAuth.flowPending) return
+    const timer = setInterval(() => refreshClaude(), 2500)
+    return () => clearInterval(timer)
+  }, [claudeAuth.flowPending, refreshClaude])
+
+  // Sign-in state changed: re-test Claude rows so their status dot follows.
+  const claudeSignedIn = claudeAuth.authenticated
+  const prevClaudeSignedIn = useRef(claudeSignedIn)
+  useEffect(() => {
+    if (prevClaudeSignedIn.current === claudeSignedIn) return
+    prevClaudeSignedIn.current = claudeSignedIn
+    for (const p of providersRef.current) {
+      if (p.type === 'claude-subscription') void runTest(p.id, true)
+    }
+  }, [claudeSignedIn, runTest])
+
   // Poll while a Grok device-code flow is pending.
   useEffect(() => {
     if (!grokDevice) return
@@ -160,6 +221,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     if (!editing) return
     if (editing.type === 'chatgpt-subscription') { refreshChatgpt(); if (!models[editing.id]?.models?.length) void fetchModels(editing.id) }
     if (editing.type === 'grok-subscription') { refreshGrok(); if (!models[editing.id]?.models?.length) void fetchModels(editing.id) }
+    if (editing.type === 'claude-subscription') { refreshClaude(); if (!models[editing.id]?.models?.length) void fetchModels(editing.id) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingId])
 
@@ -236,6 +298,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     onFetchModels: () => { if (editing) void fetchModels(editing.id) },
     chatgpt,
     grok,
+    claude,
     onCarrierCountChange: (count: number) => { if (editing) setCarrierCount(editing.id, count) },
   }
 
@@ -250,6 +313,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     fetchModels,
     chatgpt,
     grok,
+    claude,
     pick,
     update,
     remove,

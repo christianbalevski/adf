@@ -53,7 +53,7 @@ auto-start a daemon while Studio runs on the same settings.
 - Loading, starting, stopping, interrupting and aborting agents; inner loops (side loops) and per-loop chat, history, compaction and timers
 - Asynchronous chat turns and a Server-Sent Events stream with resume and replay
 - Approvals (approve, deny with feedback, always approve, approve all), questions and suspends
-- Sealed per-agent credentials (metadata-only reads), channels, MCP servers, API-key providers in the secret store, ChatGPT and Grok subscription sign-in
+- Sealed per-agent credentials (metadata-only reads), channels, MCP servers, API-key providers in the secret store, Claude, ChatGPT and Grok subscription sign-in
 - File-backed skills, agent files, config, timers, inbox, outbox, logs and tables
 - Context breakdowns, token usage, and runtime diagnostics for providers, auth, MCP, channels, network, compute and WebSockets
 - Built-in, code, compute and MCP tools; channel messages waking agents through triggers

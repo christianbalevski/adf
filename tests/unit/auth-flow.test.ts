@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browserLaunchCommand, daemonIsLocal, loginChatGpt, loginGrok, normalizeAuthProvider, openBrowser, type AuthRequest } from '../../src/main/cli/auth-flow'
+import { browserLaunchCommand, daemonIsLocal, loginChatGpt, loginClaude, loginGrok, normalizeAuthProvider, openBrowser, submitClaudeCode, type AuthRequest } from '../../src/main/cli/auth-flow'
 
 const OAUTH_URL = 'https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_x&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile&code_challenge=abc&code_challenge_method=S256&state=xyz'
 
@@ -27,6 +27,10 @@ describe('sign-in flows', () => {
     expect(normalizeAuthProvider('OpenAI')).toBe('chatgpt')
     expect(normalizeAuthProvider('xai')).toBe('grok')
     expect(normalizeAuthProvider('gemini')).toBeNull()
+    expect(normalizeAuthProvider('Claude')).toBe('claude')
+    expect(normalizeAuthProvider('claude-code')).toBe('claude')
+    // `anthropic` is the API-key provider, never the Claude subscription.
+    expect(normalizeAuthProvider('anthropic')).toBeNull()
     expect(daemonIsLocal('http://127.0.0.1:7385')).toBe(true)
     expect(daemonIsLocal('http://10.0.0.5:7385')).toBe(false)
   })
@@ -74,5 +78,116 @@ describe('sign-in flows', () => {
     }, { daemonUrl: 'http://10.0.0.5:7385', onStart: () => { setTimeout(() => stop.abort(), 5) } })
     expect(await pending).toMatchObject({ ok: false, cancelled: true })
     expect(closed).toBe(true)
+  })
+
+  describe('Claude', () => {
+    const CLAUDE_URL = 'https://claude.ai/oauth/authorize?code=true&client_id=x&state=y'
+
+    it('starts, shows the URL without opening it here, relays a code, polls until signed in', async () => {
+      const calls: string[] = []
+      let polls = 0
+      const request: AuthRequest = async (method, path, body) => {
+        calls.push(`${method} ${path}${body ? ` ${JSON.stringify(body)}` : ''}`)
+        if (path === '/auth/claude/start') return { started: true, url: CLAUDE_URL }
+        if (path === '/auth/claude/code') return { success: true }
+        if (calls.filter(c => c === 'GET /auth/claude/status').length === 1) return { authenticated: false, installed: true, version: '2.1.250' }
+        return ++polls < 2
+          ? { authenticated: false, installed: true, version: '2.1.250', flowPending: true, flowUrl: CLAUDE_URL }
+          : { authenticated: true, installed: true, version: '2.1.250', email: 'user@example.test', plan: 'max' }
+      }
+      const opened: string[] = []
+      let shown = ''
+      const outcome = await loginClaude({ request, sleep: async () => {}, openBrowser: url => opened.push(url) }, {
+        onStart: info => { shown = info.url; void submitClaudeCode({ request }, '  abc#def  ') },
+      })
+      expect(outcome).toMatchObject({ ok: true, email: 'user@example.test' })
+      expect(shown).toBe(CLAUDE_URL)
+      // Claude Code on the daemon host opens the browser; never this process.
+      expect(opened).toEqual([])
+      expect(calls.slice(0, 3)).toEqual(['GET /auth/claude/status', 'POST /auth/claude/start', 'POST /auth/claude/code {"code":"abc#def"}'])
+    })
+
+    it('fails fast with the install URL when Claude Code is not installed', async () => {
+      const calls: string[] = []
+      const request: AuthRequest = async (method, path) => {
+        calls.push(`${method} ${path}`)
+        return { authenticated: false, installed: false, installUrl: 'https://code.claude.com/docs/en/setup' }
+      }
+      const outcome = await loginClaude({ request, sleep: async () => {} }, { onStart: () => { throw new Error('must not start') } })
+      expect(outcome).toMatchObject({ ok: false, notInstalled: true, installUrl: 'https://code.claude.com/docs/en/setup' })
+      expect(outcome.ok ? '' : outcome.error).toContain('https://code.claude.com/docs/en/setup')
+      expect(calls).toEqual(['GET /auth/claude/status'])
+    })
+
+    it('waits out a standing flowError while the flow is pending, then reports the failure', async () => {
+      let polls = 0
+      const request: AuthRequest = async (_m, path) => {
+        if (path === '/auth/claude/start') return { started: true, url: CLAUDE_URL }
+        polls++
+        if (polls === 1) return { authenticated: false, installed: true, version: '2.1.250' }
+        if (polls === 2) return { authenticated: false, installed: true, version: '2.1.250', flowPending: true, flowError: 'signed in with a Console account' }
+        return { authenticated: false, installed: true, version: '2.1.250', flowError: 'Claude sign-in was cancelled.' }
+      }
+      const outcome = await loginClaude({ request, sleep: async () => {} }, { onStart: () => {} })
+      expect(outcome).toEqual({ ok: false, error: 'Claude sign-in was cancelled.' })
+      expect(polls).toBe(3)
+    })
+
+    it('re-login while signed in waits for the flow to finish, not the old account', async () => {
+      let polls = 0
+      const old = { authenticated: true, installed: true, version: '2.1.250', email: 'old@example.test' }
+      const request: AuthRequest = async (_m, path) => {
+        if (path === '/auth/claude/start') return { started: true, url: CLAUDE_URL }
+        polls++
+        if (polls === 1) return old
+        if (polls < 4) return { ...old, flowPending: true, flowUrl: CLAUDE_URL }
+        return { authenticated: true, installed: true, version: '2.1.250', email: 'new@example.test' }
+      }
+      const outcome = await loginClaude({ request, sleep: async () => {} }, { onStart: () => {} })
+      expect(outcome).toMatchObject({ ok: true, email: 'new@example.test' })
+      expect(polls).toBe(4)
+    })
+
+    it('a failed re-sign-in fails even though the earlier account is still signed in', async () => {
+      let polls = 0
+      const old = { authenticated: true, installed: true, version: '2.1.250', email: 'old@example.test' }
+      const request: AuthRequest = async (_m, path) => {
+        if (path === '/auth/claude/start') return { started: true, url: CLAUDE_URL }
+        polls++
+        if (polls === 1) return old
+        if (polls === 2) return { ...old, flowPending: true, flowUrl: CLAUDE_URL }
+        return { ...old, flowError: 'Claude sign-in failed: denied' }
+      }
+      const outcome = await loginClaude({ request, sleep: async () => {} }, { onStart: () => {} })
+      expect(outcome).toEqual({ ok: false, error: 'Claude sign-in failed: denied' })
+    })
+
+    it('wait: false returns after onStart without polling or cancelling', async () => {
+      const calls: string[] = []
+      const request: AuthRequest = async (method, path) => {
+        calls.push(`${method} ${path}`)
+        if (path === '/auth/claude/start') return { started: true, url: CLAUDE_URL }
+        return { authenticated: false, installed: true, version: '2.1.250' }
+      }
+      const started: string[] = []
+      const outcome = await loginClaude({ request, sleep: async () => {} }, { wait: false, onStart: info => started.push(info.url) })
+      expect(outcome).toMatchObject({ ok: false, detached: true })
+      expect(started).toEqual([CLAUDE_URL])
+      expect(calls).toEqual(['GET /auth/claude/status', 'POST /auth/claude/start'])
+    })
+
+    it('cancelling stops polling and cancels the daemon-side flow', async () => {
+      const stop = new AbortController()
+      const calls: string[] = []
+      const request: AuthRequest = async (method, path) => {
+        calls.push(`${method} ${path}`)
+        if (path === '/auth/claude/start') return { started: true, url: CLAUDE_URL }
+        if (calls.filter(c => c.startsWith('GET')).length === 2) stop.abort()
+        return { authenticated: false, installed: true, version: '2.1.250', flowPending: true }
+      }
+      const outcome = await loginClaude({ request, sleep: async () => {}, signal: stop.signal }, { onStart: () => {} })
+      expect(outcome).toMatchObject({ ok: false, cancelled: true })
+      expect(calls.at(-1)).toBe('POST /auth/claude/cancel')
+    })
   })
 })

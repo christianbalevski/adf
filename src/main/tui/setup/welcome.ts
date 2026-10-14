@@ -70,7 +70,7 @@ export function enabledAdapters(config: { adapters?: Record<string, { enabled?: 
 
 export function welcomeFacts(state: Pick<TuiState, 'identity' | 'auth' | 'agents' | 'agentOrder'>, extras: WelcomeExtras = EMPTY_EXTRAS): WelcomeFacts {
   const auth = state.auth
-  const signedIn = !!(auth?.chatgpt as { authenticated?: boolean } | undefined)?.authenticated || !!(auth?.grok as { authenticated?: boolean } | undefined)?.authenticated
+  const signedIn = (['chatgpt', 'grok', 'claude'] as const).some(p => !!(auth?.[p] as { authenticated?: boolean } | undefined)?.authenticated)
   const keyed = (auth?.providers ?? []).some(p => (p as { hasApiKey?: boolean }).hasApiKey === true)
   const ids = state.agentOrder.filter(id => state.agents[id])
   const messaging = ids.some(id => enabledAdapters(state.agents[id]?.config as never).length > 0 || (extras.adapters[id]?.length ?? 0) > 0)

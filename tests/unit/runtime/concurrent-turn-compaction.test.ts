@@ -500,10 +500,10 @@ describe('AgentExecutor — queued owner chats', () => {
       expect(delivered?.turn_id).toBe('turn_2')
       expect(delivered?.payload).toMatchObject({ delivery: 'turn_start', count: 2, turn_ids: ['turn_3', 'turn_4'] })
       expect(completedIds(events).sort()).toEqual(['turn_1', 'turn_2', 'turn_3', 'turn_4'])
-      // The cut-short first turn ends interrupted, never as answered on its own.
+      // Chats never cut a working turn short: the first turn is answered on its own.
       const firstEnds = events.filter(e => e.event_type === 'turn.completed' && e.turn_id === 'turn_1')
-      expect(firstEnds.length).toBeGreaterThan(0)
-      expect(firstEnds.every(e => e.payload.interrupted === true)).toBe(true)
+      expect(firstEnds.length).toBe(1)
+      expect(firstEnds[0].payload.interrupted).not.toBe(true)
     } finally {
       await agent.disposeAsync()
     }
@@ -546,7 +546,7 @@ describe('AgentExecutor — queued owner chats', () => {
       expect(provider.turnRequests[0].slice(-2)).toEqual(['i1', 'i2'])
       expect(completedIds(events).sort()).toEqual(['turn_i1', 'turn_i2'])
 
-      // Mid-turn: the burst interrupts, the owner interrupt follows; the queue still runs.
+      // Mid-turn: the burst queues, the owner interrupt ends the turn; the queue still runs.
       provider.turnRequests.length = 0
       const running = startSlowTurn(agent.executor, provider, chatWithId('m1', 'turn_m1'))
       await waitFor(() => provider.turnRequests.length === 1)
@@ -556,8 +556,10 @@ describe('AgentExecutor — queued owner chats', () => {
       provider.turnDelayMs = 0
       await running
       await waitFor(() => !agent.executor.isTurnActive())
-      expect(provider.turnRequests.at(-1)!.slice(-3)).toEqual(['m1', 'm2', 'm3'])
-      expect(completedIds(events)).toEqual(expect.arrayContaining(['turn_m1', 'turn_m2', 'turn_m3']))
+      expect(provider.turnRequests.at(-1)!.slice(-3)).toEqual(['[System] Turn ended by owner; state set to idle.', 'm2', 'm3'])
+      expect(completedIds(events)).toEqual(expect.arrayContaining(['turn_m2', 'turn_m3']))
+      // The owner ended m1; it is reported as interrupted, not answered.
+      expect(events.some(e => e.event_type === 'turn.completed' && e.turn_id === 'turn_m1' && e.payload.interrupted === true)).toBe(true)
     } finally {
       await agent.disposeAsync()
     }
@@ -614,10 +616,10 @@ describe('AgentExecutor — queued owner chats', () => {
       expect(provider.turnRequests[1].slice(-6)).toEqual(['o0', ...texts])
       const delivered = events.filter(e => e.event_type === 'chat.delivered')
       expect(delivered.map(e => e.payload.turn_ids)).toEqual([['turn_o2', 'turn_o3', 'turn_o4', 'turn_o5']])
+      // The running turn is answered first; the queue follows as one turn.
       const final = events.filter(e => e.event_type === 'turn.completed' && e.payload.interrupted !== true)
-      expect(final.length).toBe(1)
-      expect(final[0].turn_id).toBe('turn_o1')
-      expect(final[0].payload.absorbed_turn_ids).toEqual(['turn_o0', 'turn_o2', 'turn_o3', 'turn_o4', 'turn_o5'])
+      expect(final.map(e => e.turn_id)).toEqual(['turn_o0', 'turn_o1'])
+      expect(final[1].payload.absorbed_turn_ids).toEqual(['turn_o2', 'turn_o3', 'turn_o4', 'turn_o5'])
     } finally {
       await agent.disposeAsync()
     }

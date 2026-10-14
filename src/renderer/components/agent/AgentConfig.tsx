@@ -1661,11 +1661,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           </Field>
           {(() => {
             const temperature = local.model.temperature ?? 0.7
-            const maxTokens = local.model.max_tokens ?? 4096
+            const maxTokens = local.model.max_tokens ?? 0
             const paramCount = (local.model.params ?? []).length
             // Opens by itself when anything differs from the defaults, so a
             // changed value is never hidden behind the fold.
-            const nonDefault = temperature !== 0.7 || maxTokens !== 4096 || paramCount > 0
+            const nonDefault = temperature !== 0.7 || maxTokens !== 0 || paramCount > 0
             const open = advancedOpen?.file === filePath ? advancedOpen.open : nonDefault
             const summary = [`temp ${temperature}`, `max ${maxTokens === 0 ? 'model default' : maxTokens.toLocaleString()}`, `${paramCount} param${paramCount === 1 ? '' : 's'}`].join(' · ')
             return (

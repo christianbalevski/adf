@@ -644,6 +644,18 @@ const api: AdfApi = {
   grokAuthLogout: () =>
     ipcRenderer.invoke(IPC.GROK_AUTH_LOGOUT),
 
+  // Claude Subscription Auth (delegated to Claude Code)
+  claudeAuthStart: () =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_START),
+  claudeAuthStatus: (recheck?: boolean) =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_STATUS, { recheck }),
+  claudeAuthSubmitCode: (code: string) =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_SUBMIT_CODE, { code }),
+  claudeAuthCancel: () =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_CANCEL),
+  claudeAuthLogout: () =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_LOGOUT),
+
   // Open file request (main -> renderer, e.g. double-click .adf in Finder)
   onOpenFileRequest: (callback: (data: { filePath: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: { filePath: string }) =>

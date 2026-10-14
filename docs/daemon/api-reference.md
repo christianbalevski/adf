@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 194 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 199 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -34,7 +34,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Credentials](#tag-credentials) (6)
 - [Channels](#tag-channels) (5)
 - [MCP](#tag-mcp) (6)
-- [Providers & sign-in](#tag-providers-sign-in) (14)
+- [Providers & sign-in](#tag-providers-sign-in) (19)
 - [Tasks & approvals](#tag-tasks-approvals) (8)
 - [Timers](#tag-timers) (4)
 - [Templates](#tag-templates) (12)
@@ -2765,7 +2765,7 @@ Example 200 (`application/json`):
 
 **Queue a user chat turn**
 
-The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped: the first interrupts the running turn, then the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`.
+The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped, and a working turn is never cut off: in a tool loop they join the running turn after the current tool results (`chat.delivered` with `delivery: 'next_step'`); otherwise the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). A chat to a loop waiting on the owner (approval, ask, suspend) ends that wait and restarts the turn; /interrupt is the hard stop. Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`.
 
 Operation `chatAgent` · bearer token
 
@@ -5766,7 +5766,7 @@ Example 200 (`application/json`):
 
 ## Providers & sign-in
 
-App-level LLM providers, model lists, agent provider configs and subscription sign-in (ChatGPT, Grok).
+App-level LLM providers, model lists, agent provider configs and subscription sign-in (ChatGPT, Grok, Claude).
 
 | Method | Path | Summary |
 |---|---|---|
@@ -5782,6 +5782,11 @@ App-level LLM providers, model lists, agent provider configs and subscription si
 | GET | [`/auth/grok/status`](#op-getgrokauthstatus) | Grok (xAI) subscription sign-in status |
 | POST | [`/auth/grok/start`](#op-startgrokauth) | Start a Grok device-code sign-in |
 | POST | [`/auth/grok/logout`](#op-logoutgrok) | Sign out of Grok |
+| GET | [`/auth/claude/status`](#op-getclaudeauthstatus) | Claude subscription sign-in status |
+| POST | [`/auth/claude/start`](#op-startclaudeauth) | Start a Claude sign-in |
+| POST | [`/auth/claude/code`](#op-submitclaudeauthcode) | Send the Claude sign-in code |
+| POST | [`/auth/claude/cancel`](#op-cancelclaudeauth) | Cancel a running Claude sign-in |
+| POST | [`/auth/claude/logout`](#op-logoutclaude) | Sign out of Claude |
 | POST | [`/agents/{id}/providers`](#op-attachagentprovider) | Attach or update a provider in the agent config |
 | DELETE | [`/agents/{id}/providers/{providerId}`](#op-detachagentprovider) | Detach a provider and delete its credentials |
 
@@ -5844,7 +5849,7 @@ Example 200 (`application/json`):
 
 **Add an API-key provider**
 
-For every agent on this daemon. The key goes to the daemon secret store (OS keychain, or the owner's passphrase file), never the settings file, and is never returned: the settings entry carries `apiKeyStorage: "secret-store"` and an empty `apiKey`, and the daemon fills the key in when it resolves the provider. `openai-compatible` needs `baseUrl` (apiKey optional, for local servers); subscriptions (ChatGPT, Grok) sign in instead (400 `subscription_type`). The name is made unique (`OpenRouter 2`); the first provider becomes the default.
+For every agent on this daemon. The key goes to the daemon secret store (OS keychain, or the owner's passphrase file), never the settings file, and is never returned: the settings entry carries `apiKeyStorage: "secret-store"` and an empty `apiKey`, and the daemon fills the key in when it resolves the provider. `openai-compatible` needs `baseUrl` (apiKey optional, for local servers); subscriptions (ChatGPT, Grok, Claude) sign in instead (400 `subscription_type`). The name is made unique (`OpenRouter 2`); the first provider becomes the default.
 
 Operation `addRuntimeProvider` · bearer token
 
@@ -6010,6 +6015,13 @@ Example 200 (`application/json`):
     "email": "me@example.com",
     "expiresAt": 1790003600000
   },
+  "claude": {
+    "authenticated": true,
+    "installed": true,
+    "version": "2.1.250",
+    "email": "me@example.com",
+    "plan": "max"
+  },
   "providers": [
     {
       "id": "string",
@@ -6101,7 +6113,7 @@ Example 200 (`application/json`):
 
 **Complete a relayed ChatGPT sign-in**
 
-Exchanges the code captured by the caller's callback server. Each flowId is single-use and expires 10 minutes after start; an unknown or expired flowId, a mismatched state or a failed token exchange answers 400. After any sign-in (loopback, relay or Grok) every loaded loop in `error` from an auth failure of that provider type returns to idle and emits agent.recovered; the failed turn is not re-run.
+Exchanges the code captured by the caller's callback server. Each flowId is single-use and expires 10 minutes after start; an unknown or expired flowId, a mismatched state or a failed token exchange answers 400. After any sign-in (loopback, relay, Grok or Claude) every loaded loop in `error` from an auth failure of that provider type returns to idle and emits agent.recovered; the failed turn is not re-run.
 
 Operation `completeChatGptAuth` · bearer token
 
@@ -6250,6 +6262,163 @@ Operation `logoutGrok` · bearer token
 | Status | Body | Description |
 |---|---|---|
 | 200 | [SuccessResponse](#schema-successresponse) | Signed out |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "success": true
+}
+```
+
+<a id="op-getclaudeauthstatus"></a>
+
+### GET `/auth/claude/status`
+
+**Claude subscription sign-in status**
+
+ADF holds no Claude credentials: the daemon asks the Claude Code CLI installed on its host (`claude auth status`). `installed: false` means Claude Code is missing (`installUrl` says where to get it). While a sign-in runs, `flowPending` is true and `flowUrl` is the sign-in URL; a failed sign-in surfaces `flowError` (also when still `authenticated` with the earlier account). Signed in only counts with a Claude plan (claude.ai), not a Console API key. The result is cached for about 30 seconds (never while a sign-in is pending); `recheck=1` re-detects Claude Code and reads fresh status.
+
+Operation `getClaudeAuthStatus` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `recheck` | query | `"1"` \| `"true"` |  | `1` or `true` bypasses the status cache and re-detects the Claude Code install (e.g. right after installing or updating it) |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ClaudeAuthStatus](#schema-claudeauthstatus) | Status |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "authenticated": true,
+  "installed": true,
+  "version": "2.1.250",
+  "email": "me@example.com",
+  "plan": "max"
+}
+```
+
+<a id="op-startclaudeauth"></a>
+
+### POST `/auth/claude/start`
+
+**Start a Claude sign-in**
+
+Runs `claude auth login` on the daemon host; Claude Code opens the browser there itself. `url` is the same sign-in page for when it cannot (remote or headless daemon): open it in any browser, and if the page then shows a code, send it with POST /auth/claude/code. Poll GET /auth/claude/status until `flowPending` is false: `flowError` set means the sign-in failed (even if `authenticated` still shows an earlier account), else `authenticated`. A second start while one runs returns the running flow. Afterwards every loaded loop in `error` from a claude-subscription auth failure returns to idle and emits agent.recovered. No body.
+
+Operation `startClaudeAuth` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ClaudeAuthStartResponse](#schema-claudeauthstartresponse) | Flow started |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 409 | [ErrorResponse](#schema-errorresponse) & object | Claude Code is not installed on the daemon host |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "started": true,
+  "url": "string"
+}
+```
+
+<a id="op-submitclaudeauthcode"></a>
+
+### POST `/auth/claude/code`
+
+**Send the Claude sign-in code**
+
+Hands the code shown on Claude's sign-in page to the waiting Claude Code. 400 when no sign-in is in progress or the code is empty.
+
+Operation `submitClaudeAuthCode` · bearer token
+
+**Request body** (required): [ClaudeAuthCodeRequest](#schema-claudeauthcoderequest)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `code` | string | yes | The code shown on Claude's sign-in page |
+
+```json
+{
+  "code": "string"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SuccessResponse](#schema-successresponse) | Code sent |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "success": true
+}
+```
+
+<a id="op-cancelclaudeauth"></a>
+
+### POST `/auth/claude/cancel`
+
+**Cancel a running Claude sign-in**
+
+Stops the waiting `claude auth login`. A no-op when none runs. No body.
+
+Operation `cancelClaudeAuth` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SuccessResponse](#schema-successresponse) | Cancelled |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "success": true
+}
+```
+
+<a id="op-logoutclaude"></a>
+
+### POST `/auth/claude/logout`
+
+**Sign out of Claude**
+
+Runs `claude auth logout` on the daemon host. This signs Claude Code itself out on that machine, including the user's own Claude Code use. No body.
+
+Operation `logoutClaude` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SuccessResponse](#schema-successresponse) | Signed out |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 
@@ -8309,6 +8478,13 @@ Example 200 (`application/json`):
       "authenticated": true,
       "email": "me@example.com",
       "expiresAt": 1790003600000
+    },
+    "claude": {
+      "authenticated": true,
+      "installed": true,
+      "version": "2.1.250",
+      "email": "me@example.com",
+      "plan": "max"
     },
     "providers": [
       {
@@ -11228,6 +11404,7 @@ A provider carried in the agent's own config. Its API key is a credential (PUT �
 |---|---|---|---|
 | `chatgpt` | [SubscriptionAuthStatus](#schema-subscriptionauthstatus) | yes |  |
 | `grok` | [SubscriptionAuthStatus](#schema-subscriptionauthstatus) | yes |  |
+| `claude` | [ClaudeAuthStatus](#schema-claudeauthstatus) | yes |  |
 | `providers` | object[] | yes |  |
 | `providers[].id` | string | yes |  |
 | `providers[].type` | string | yes |  |
@@ -13851,3 +14028,40 @@ One timer due soon, as raw pieces. `system` timers carry `lambda` and `input`; `
 | `estimated` | boolean |  | Some of the day's messages are compacted history whose timing is estimated (spread evenly over a span ending at the archive's creation) |
 | `costUsd` | number |  | USD of the day's priced adf_loop rows (cost_usd in the row's usage record); absent when none had a price |
 | `costPartial` | boolean |  | Some calls that day had no recorded price, or were compacted (their cost is not recorded); costUsd is a lower bound |
+
+<a id="schema-claudeauthstatus"></a>
+
+### ClaudeAuthStatus
+
+Claude sign-in as reported by the Claude Code CLI on the daemon host.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `authenticated` | boolean | yes |  |
+| `installed` | boolean | yes | False when Claude Code is not installed |
+| `installUrl` | string |  | Where to install Claude Code (only when not installed) |
+| `version` | string |  | Installed Claude Code version |
+| `minVersion` | string |  | Oldest Claude Code version this runtime supports |
+| `updateRequired` | boolean |  | True when the installed Claude Code is older than minVersion; sign-in is unavailable until it is updated |
+| `email` | string |  |  |
+| `plan` | string |  | Claude plan, e.g. pro, max, team |
+| `flowPending` | boolean |  |  |
+| `flowUrl` | string |  | Sign-in URL of the running flow |
+| `flowError` | string |  | Why Claude is unusable, or why the last sign-in failed. Also set while authenticated when a re-sign-in failed; the account shown is then the one signed in before it. Cleared when a new sign-in starts. |
+
+<a id="schema-claudeauthstartresponse"></a>
+
+### ClaudeAuthStartResponse
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `started` | `true` | yes |  |
+| `url` | string |  | Sign-in URL, to open manually when Claude Code cannot open a browser itself. Absent if Claude Code printed none. |
+
+<a id="schema-claudeauthcoderequest"></a>
+
+### ClaudeAuthCodeRequest
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `code` | string | yes | The code shown on Claude's sign-in page |

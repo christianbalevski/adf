@@ -84,3 +84,12 @@ describe('estimateMessagesTokens — tool_use JSON overhead', () => {
     expect(asToolInput).toBeGreaterThanOrEqual(asText)
   })
 })
+
+describe('resolveTokenizer — provider types', () => {
+  it('counts a Claude subscription with the Anthropic tokenizer, whatever the settings key', () => {
+    const counter = new TokenCounterService()
+    counter.registerProviderType('custom:claude1', 'claude-subscription')
+    expect(counter.resolveTokenizer('custom:claude1', 'opus')).toBe('anthropic')
+    expect(counter.resolveTokenizer('claude-subscription')).toBe('anthropic')
+  })
+})

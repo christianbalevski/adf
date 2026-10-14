@@ -369,7 +369,7 @@ export class DaemonClient {
     return this.get('/network/mesh/lan-addresses')
   }
 
-  // --- subscription provider sign-in (ChatGPT, Grok) ------------------------
+  // --- subscription provider sign-in (ChatGPT, Grok, Claude) ----------------
   // Sign-in flows themselves (browser, callback server, polling) live in
   // cli/auth-flow.ts over `request`; these are the plain reads and sign-out.
 
@@ -379,6 +379,16 @@ export class DaemonClient {
 
   logoutSubscription(provider: SubscriptionProvider): Promise<SuccessResult> {
     return this.post(`/auth/${provider}/logout`)
+  }
+
+  /** Hand the code Claude's sign-in page shows to the daemon's waiting Claude Code. */
+  submitClaudeCode(code: string): Promise<SuccessResult> {
+    return this.post('/auth/claude/code', { code })
+  }
+
+  /** Stop a running Claude sign-in on the daemon host. */
+  cancelClaudeAuth(): Promise<SuccessResult> {
+    return this.post('/auth/claude/cancel')
   }
 
   // --- owner identity + agent creation --------------------------------------

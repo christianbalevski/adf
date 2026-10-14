@@ -82,7 +82,7 @@ identity keys rather than with unsealed ones.
 
 ## Add a model provider
 
-In the terminal app, `/provider add` (API keys) or `/login` (ChatGPT or Grok
+In the terminal app, `/provider add` (API keys) or `/login` (Claude, ChatGPT or Grok
 subscriptions). Over HTTP it is `POST /runtime/providers`; the key goes to the
 daemon's secret store (the OS keychain, or the owner's passphrase file), never
 to the settings file. A settings file Studio already configured works as is.

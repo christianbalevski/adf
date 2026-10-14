@@ -21,6 +21,9 @@ import {
 } from '../../shared/types/adf-event.types'
 import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
 import { getGrokAuthManager } from '../providers/grok-subscription/auth-manager'
+import { getClaudeAuthManager } from '../providers/claude-subscription/auth-manager'
+import type { ClaudeAuthStatus } from '../providers/claude-subscription/types'
+import { MIN_CLAUDE_CODE_VERSION } from '../providers/claude-subscription/claude-code'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { getTokenUsageService } from '../services/token-usage.service'
 import type { ComputeEnvInfo } from '../services/podman.service'
@@ -1316,6 +1319,62 @@ export function createDaemonHttpApi(
 
   server.post('/auth/grok/logout', async () => {
     getGrokAuthManager().logout()
+    return { success: true }
+  })
+
+  // Claude: ADF holds no Claude credentials. Sign-in runs the user's own
+  // Claude Code (`claude auth login`) on the daemon host; Claude Code opens the
+  // browser there itself, `url` is the fallback for a remote/headless daemon.
+  server.get<{ Querystring: { recheck?: string } }>('/auth/claude/status', async (request) =>
+    getClaudeAuthManager().getAuthStatus({ fresh: request.query.recheck === '1' || request.query.recheck === 'true' }))
+
+  server.post('/auth/claude/start', async (_request, reply) => {
+    const manager = getClaudeAuthManager()
+    const status = await manager.getAuthStatus()
+    if (!status.installed) {
+      return reply.code(409).send({
+        error: `Claude Code is not installed on the daemon host. Install it (${status.installUrl}), then sign in again.`,
+        code: 'claude_code_not_installed',
+        installUrl: status.installUrl,
+      })
+    }
+    let flow: Awaited<ReturnType<typeof manager.startAuthFlowDetached>>
+    try {
+      flow = await manager.startAuthFlowDetached()
+    } catch (err) {
+      return badRequest(reply, err instanceof Error ? err.message : String(err))
+    }
+    flow.completion
+      .then(() => {
+        console.log('[ADF Daemon] Claude auth completed.')
+        recoverAfterSignIn(runtime, 'claude-subscription', 'Claude')
+      })
+      .catch(err => console.error('[ADF Daemon] Claude auth failed:', err))
+    return { started: true, ...(flow.url ? { url: flow.url } : {}) }
+  })
+
+  server.post<{ Body: { code?: unknown } | undefined }>('/auth/claude/code', async (request, reply) => {
+    const code = request.body?.code
+    if (typeof code !== 'string' || !code.trim()) return badRequest(reply, 'code is required')
+    try {
+      getClaudeAuthManager().submitCode(code)
+    } catch (err) {
+      return badRequest(reply, err instanceof Error ? err.message : String(err))
+    }
+    return { success: true }
+  })
+
+  server.post('/auth/claude/cancel', async () => {
+    getClaudeAuthManager().cancelAuthFlow()
+    return { success: true }
+  })
+
+  server.post('/auth/claude/logout', async (_request, reply) => {
+    try {
+      await getClaudeAuthManager().logout()
+    } catch (err) {
+      return badRequest(reply, err instanceof Error ? err.message : String(err))
+    }
     return { success: true }
   })
 
@@ -2626,6 +2685,11 @@ async function listProviderModels(
     return { provider: providerId, models: await listGrokSubscriptionModels(getGrokAuthManager()) }
   }
 
+  if (cfg.type === 'claude-subscription') {
+    const { listClaudeSubscriptionModels } = await import('../providers/claude-subscription')
+    return { provider: providerId, models: await listClaudeSubscriptionModels() }
+  }
+
   if (cfg.type === 'anthropic') {
     if (!cfg.apiKey) return { provider: providerId, models: [], error: 'Anthropic API key not configured.' }
     try {
@@ -2779,11 +2843,21 @@ function buildProviderDiagnostics(runtime: RuntimeService, settingsStore?: Daemo
   }
 }
 
+/** Claude sign-in status for diagnostics; a failed Claude Code probe never fails the whole report. */
+async function claudeAuthStatusSafe(): Promise<ClaudeAuthStatus> {
+  try {
+    return await getClaudeAuthManager().getAuthStatus()
+  } catch (err) {
+    return { authenticated: false, installed: true, version: '', minVersion: MIN_CLAUDE_CODE_VERSION, flowError: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 async function buildAuthDiagnostics(settingsStore?: DaemonSettingsStore) {
   const providers = getProviderRegistrations(settingsStore)
   return {
     chatgpt: await getChatGptAuthManager().getAuthStatus(),
     grok: getGrokAuthManager().getAuthStatus(),
+    claude: await claudeAuthStatusSafe(),
     providers: providers.map(provider => ({
       id: provider.id,
       type: provider.type,

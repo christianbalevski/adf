@@ -86,15 +86,16 @@ describe('chat turn correlation', () => {
     expect(events.find(e => e.event_type === 'turn.completed')?.turn_id).toBe(turnId)
   })
 
-  it('a chat that interrupts a running turn keeps its own id through the replay', async () => {
+  it('a chat sent during a running turn keeps its own id and does not cut the turn short', async () => {
     const { ref, server, events } = setup(300)
     const first = (await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, payload: { text: 'first' } })).json().turnId as string
     await waitFor(() => events.some(e => e.event_type === 'agent.state.changed' && e.payload.state === 'thinking' && e.turn_id === first))
     const second = (await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, payload: { text: 'second' } })).json().turnId as string
     await waitFor(() => events.some(e => e.event_type === 'turn.completed' && e.turn_id === second && !e.payload.interrupted))
     const firstCompletions = events.filter(e => e.event_type === 'turn.completed' && e.turn_id === first)
-    // The interrupted first turn ends as interrupted (or absorbs nothing); never under the second id.
-    for (const c of firstCompletions) expect(c.payload.interrupted).toBe(true)
+    // The first turn finishes on its own (the chat waits for a safe step), under its own id.
+    expect(firstCompletions.length).toBe(1)
+    expect(firstCompletions[0].payload.interrupted).not.toBe(true)
   })
 
   it('a burst of chats during a turn: none dropped, delivered in order, every turnId completes', async () => {

@@ -68,7 +68,7 @@ you so. Quit Studio first, or keep using Studio.
 - [Terminal app](terminal-app.md): layout, views, keys, chat, approvals, mouse and copy/paste
 - [Loops and timers](loops-and-timers.md): inner loops (side loops) and running them on a schedule
 - [Identity and security](identity-and-security.md): owner identity, keychain, daemon token, locked credentials
-- [Models and providers](models-and-providers.md): API keys, ChatGPT and Grok sign-in, per-loop models
+- [Models and providers](models-and-providers.md): API keys, Claude, ChatGPT and Grok sign-in, per-loop models
 - [Channels](channels.md): Telegram, Discord, Slack, email, WhatsApp
 - [MCP servers](mcp.md)
 - [Agent settings](agent-settings.md): instructions, tools, compaction, model, config

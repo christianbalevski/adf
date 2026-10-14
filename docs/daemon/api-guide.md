@@ -283,9 +283,15 @@ way.
 Messages sent while the loop is busy (mid-turn, or during a compaction) are
 never dropped. They queue in arrival order:
 
-- The first one interrupts the running turn; the rest of a burst only join the
-  queue, so a burst costs one interrupt.
-- The oldest queued message then runs as the next turn, under its own
+- They never cut off a loop that is thinking or running tools. If the turn is
+  in a tool loop, the queue is added after the current tool results and the
+  model reads it at its next step: `chat.delivered` (`delivery: 'next_step'`,
+  carrying the running turn's `turn_id`) lists their ids, and that turn's
+  `turn.completed` lists them in `absorbed_turn_ids`.
+- If the loop is waiting on the owner (approval, ask, suspend), the first
+  message ends the wait and restarts the turn; a burst costs one interrupt.
+  `POST /agents/{id}/interrupt` is the hard stop.
+- Otherwise the oldest queued message runs as the next turn, under its own
   `turnId`. Every other queued message joins that turn as a consecutive user
   row, in order, before its first model call. A `chat.delivered` event (with
   that turn's `turn_id`) lists their ids in `payload.turn_ids` at once, and
@@ -669,20 +675,25 @@ its provider and model in its config (`model.provider`, `model.model_id`); an
 agent can also carry its own provider entry and key (`POST
 /agents/:id/providers`, `PUT …/credential`).
 
-**Subscription sign-in** (ChatGPT, Grok) replaces an API key; `POST
-/runtime/providers` refuses those types (`400 subscription_type`). The daemon
-keeps its own session, separate from Studio's.
+**Subscription sign-in** (Claude, ChatGPT, Grok) replaces an API key; `POST
+/runtime/providers` refuses those types (`400 subscription_type`). For ChatGPT
+and Grok the daemon keeps its own session, separate from Studio's. Claude's
+session belongs to the Claude Code install on the daemon's machine, shared with
+Studio and the user's own Claude Code use there; the daemon holds no Claude
+credentials.
 
 | Provider | Flow |
 |----------|------|
 | ChatGPT, browser on the daemon's machine | `POST /auth/chatgpt/start` (`mode: "loopback"`, the default): open `authUrl`; the daemon serves the OAuth callback; poll `GET /auth/chatgpt/status` |
 | ChatGPT, remote daemon | `POST /auth/chatgpt/start {mode: "relay", redirectUri: "http://localhost:1455/auth/callback"}`: your client serves that loopback callback, then posts the `code` and `state` it receives to `POST /auth/chatgpt/complete {flowId, code, state}` within 10 minutes |
 | Grok | `POST /auth/grok/start`: show `verificationUriComplete` (or `verificationUri` + `userCode`), open it in any browser, poll `GET /auth/grok/status`. Device code, so it works remotely as is |
+| Claude | Requires Claude Code 2.1.248 or newer on the daemon's machine; `GET /auth/claude/status` reports whether it is installed. `POST /auth/claude/start` runs `claude auth login`, which opens a browser on the daemon's machine; the response also carries the sign-in URL to open in any browser. If the page shows a code, send it with `POST /auth/claude/code {code}`. Poll `GET /auth/claude/status`; `POST /auth/claude/cancel` abandons the flow |
 
 When a sign-in completes, loops that failed on an auth error from that provider
 type return to `idle` (`agent.recovered`); the failed turn is not re-run.
-`POST /auth/<provider>/logout` signs out. `GET /runtime/auth` summarizes both
-sessions and which providers have keys.
+`POST /auth/<provider>/logout` signs out; `POST /auth/claude/logout` runs
+`claude auth logout`, which also signs Claude Code out on that machine. `GET
+/runtime/auth` summarizes the sessions and which providers have keys.
 
 ## Templates and creating agents
 

@@ -602,7 +602,7 @@ export class AdfCallHandler {
 
     // Resolve parameters — input overrides config, with fallback defaults
     const temperature = input.temperature ?? this.config.model.temperature ?? 0.7
-    const maxTokens = input.max_tokens ?? this.config.model.max_tokens ?? 4096
+    const maxTokens = (input.max_tokens ?? this.config.model.max_tokens) || undefined
     const topP = input.top_p ?? this.config.model.top_p
 
     try {
@@ -1394,7 +1394,7 @@ export class AdfCallHandler {
             system: { type: 'string', description: 'Shorthand system message, prepended when "prompt" is used' },
             model: { type: 'string', description: 'Override model ID (uses agent\'s configured model if omitted)' },
             temperature: { type: 'number', description: 'Sampling temperature (default: config value or 0.7)' },
-            max_tokens: { type: 'number', description: 'Max output tokens (default: config value or 4096)' },
+            max_tokens: { type: 'number', description: 'Max output tokens (default: the agent\'s configured cap, else the model\'s own limit)' },
             top_p: { type: 'number', description: 'Nucleus sampling top-p' },
             provider_params: { type: 'object', description: 'Provider-specific parameters' }
           },

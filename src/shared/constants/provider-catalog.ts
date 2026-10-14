@@ -104,6 +104,15 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     modelPlaceholder: 'e.g. grok-4.5',
     iconKey: 'x',
   },
+  {
+    key: 'claude-subscription',
+    label: 'Claude',
+    type: 'claude-subscription',
+    group: 'subscription',
+    description: 'Use your Claude Pro or Max plan, via Claude Code.',
+    modelPlaceholder: 'e.g. claude-sonnet-5-5',
+    iconKey: 'anthropic',
+  },
 
   // ---- First-party APIs -----------------------------------------------------
   {
@@ -228,9 +237,10 @@ export function providerTypeHint(type: ProviderType): string {
     case 'openai-compatible': return 'OpenAI-compatible API'
     case 'chatgpt-subscription': return 'ChatGPT subscription (OAuth)'
     case 'grok-subscription': return 'Grok subscription (OAuth)'
+    case 'claude-subscription': return 'Claude subscription (via Claude Code)'
   }
 }
 
 export function isSubscriptionType(type: ProviderType): boolean {
-  return type === 'chatgpt-subscription' || type === 'grok-subscription'
+  return type === 'chatgpt-subscription' || type === 'grok-subscription' || type === 'claude-subscription'
 }

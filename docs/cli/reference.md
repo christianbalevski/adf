@@ -33,8 +33,8 @@ With no command, `adf` opens the terminal app. Commands that talk to the daemon 
 | `adf runtime [agent]` | Show daemon or agent runtime diagnostics |
 | `adf providers` | Show provider configuration and agent resolution |
 | `adf auth` | Show auth and credential presence |
-| `adf auth login <chatgpt\|grok>` | Sign in to a subscription provider [--relay\|--loopback] chooses where the ChatGPT OAuth callback is served; defaults to relay when --url points at a remote daemon |
-| `adf auth logout <chatgpt\|grok>` | Clear a subscription provider's tokens |
+| `adf auth login <chatgpt\|grok\|claude>` | Sign in to a subscription provider [--relay\|--loopback] chooses where the ChatGPT OAuth callback is served; defaults to relay when --url points at a remote daemon. claude signs in through Claude Code on the daemon host (ADF stores no Claude credentials) |
+| `adf auth logout <chatgpt\|grok\|claude>` | Clear a subscription provider's tokens (claude: signs Claude Code out on that host) |
 | `adf settings` | Show sanitized daemon runtime settings |
 | `adf network` | Show mesh and WebSocket diagnostics |
 | `adf network mesh [enable\|disable]` | Control daemon mesh registration |
@@ -194,9 +194,9 @@ Type `/` in the prompt; `Tab` completes names and arguments. Commands work from 
 | `/refresh` | `/r` | Re-read agents, loops and approvals from the daemon |
 | `/theme [adf\|adf-light\|adf-contrast\|parchment\|adf-mono\|next]` |  | Pick a color theme (no argument opens the picker) |
 | `/url [daemon-url] [--token <token>]` |  | Show the daemon URL, or reconnect to another daemon (for a remote daemon pass --token or set ADF_DAEMON_TOKEN) |
-| `/auth` |  | Provider sign-in: ChatGPT and Grok status, sign in, sign out |
-| `/login [chatgpt\|grok]` |  | Sign the daemon in to ChatGPT (browser) or Grok (device code) |
-| `/logout <chatgpt\|grok>` |  | Sign the daemon out of ChatGPT or Grok (asks) |
+| `/auth` |  | Provider sign-in: ChatGPT, Grok and Claude status, sign in, sign out |
+| `/login [chatgpt\|grok\|claude]` |  | Sign the daemon in to ChatGPT (browser), Grok (device code) or Claude (Claude Code on the daemon host) |
+| `/logout <chatgpt\|grok\|claude>` |  | Sign the daemon out of ChatGPT, Grok or Claude (asks) |
 | `/json [on\|off]` |  | Toggle raw JSON in Inspect and Runtime pages |
 | `/sidebar [on\|off]` |  | Show or hide the fleet sidebar (Ctrl+B); remembered across launches |
 | `/mouse [on\|off]` |  | Mouse mode (on, the default: click expands, drag selects + copies, right-click pastes, the wheel scrolls under the pointer; off: the terminal’s own mouse); remembered |
@@ -314,6 +314,7 @@ Type `/` in the prompt; `Tab` completes names and arguments. Commands work from 
 | Provider sign-in | Actions |  |
 | Sign in to ChatGPT | Actions |  |
 | Sign in to Grok | Actions |  |
+| Sign in to Claude | Actions |  |
 | Open agent website | Web | `w` |
 | Copy agent website URL | Web | `Shift+w` |
 | Start web server | Web |  |

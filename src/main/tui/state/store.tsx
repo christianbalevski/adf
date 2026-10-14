@@ -122,7 +122,7 @@ export interface TuiActions {
   answerAsk(agentId: string, requestId: string, answer: string, loop?: string): Promise<void>
   respondSuspend(agentId: string, resume: boolean): Promise<void>
 
-  /** Re-read `GET /runtime/auth` (ChatGPT / Grok sign-in) into `state.auth`. Quiet on failure. */
+  /** Re-read `GET /runtime/auth` (ChatGPT / Grok / Claude sign-in) into `state.auth`. Quiet on failure. */
   refreshAuth(): Promise<void>
   /** Sign the daemon out of a subscription provider (toast), then refresh. */
   logoutSubscription(provider: SubscriptionProvider): Promise<boolean>
@@ -717,7 +717,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     },
 
     async logoutSubscription(provider) {
-      const label = provider === 'chatgpt' ? 'ChatGPT' : 'Grok'
+      const label = ({ chatgpt: 'ChatGPT', grok: 'Grok', claude: 'Claude' } as const)[provider]
       const result = await run(`Sign out of ${label}`, c => c.logoutSubscription(provider))
       if (result) toast(`Signed the daemon out of ${label}`, 'success')
       await actions.refreshAuth()

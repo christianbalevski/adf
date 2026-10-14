@@ -96,7 +96,7 @@ export function registerProviderRoutes(server: FastifyInstance, deps: ProviderRo
     if (!store?.set) return reply.code(405).send({ error: 'Settings store is read-only.', code: 'read_only' })
     const body = (request.body && typeof request.body === 'object' ? request.body : {}) as AddProviderBody
     const type = str(body.type) as ApiKeyProviderType
-    if (type === 'chatgpt-subscription' as string || type === 'grok-subscription' as string) {
+    if (type === 'chatgpt-subscription' as string || type === 'grok-subscription' as string || type === 'claude-subscription' as string) {
       return reply.code(400).send({ error: 'Subscription providers sign in instead of taking a key (/login).', code: 'subscription_type' })
     }
     if (!API_KEY_PROVIDER_TYPES.includes(type)) {

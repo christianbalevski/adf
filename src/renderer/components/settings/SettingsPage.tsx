@@ -71,7 +71,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
     items: [
       { id: 'agents', label: 'Prompts', description: 'Applies to every agent now.', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
       { id: 'template', label: 'Agent templates', description: 'What new agents start from.', keywords: 'defaults template templates model tools limits new agent files readme mind sandboxed full access', docs: DOCS.agentTemplates },
-      { id: 'providers', label: 'Providers', description: 'Models, keys, and subscriptions', keywords: 'anthropic openai chatgpt grok xai openrouter gemini groq ollama lm studio local models api keys', docs: DOCS.settingsProviders },
+      { id: 'providers', label: 'Providers', description: 'Models, keys, and subscriptions', keywords: 'anthropic claude claude code openai chatgpt grok xai openrouter gemini groq ollama lm studio local models api keys', docs: DOCS.settingsProviders },
       { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },
       { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools', docs: DOCS.settingsMcp },
       { id: 'skills', label: 'Skills', description: 'Catalogs the skill browser reads', keywords: 'catalog registry sources install browse', docs: DOCS.settingsSkills },

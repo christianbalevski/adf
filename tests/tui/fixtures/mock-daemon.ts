@@ -377,7 +377,7 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
         })),
       })
     }
-    if (url.pathname === '/runtime/auth') return send(200, { chatgpt: { authenticated: false }, grok: { authenticated: false }, providers: [] })
+    if (url.pathname === '/runtime/auth') return send(200, { chatgpt: { authenticated: false }, grok: { authenticated: false }, claude: { authenticated: false, installed: true, version: '2.1.250' }, providers: [] })
     // Tracked agent folders (settings.trackedDirectories). Paths are fake:
     // "exists" means listed in `existingDirs`; agents count by their
     // /agents/<handle>.adf filePath.

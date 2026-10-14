@@ -159,15 +159,17 @@ Designed for agents that work independently without human interaction.
 
 In autonomous mode, the runtime appends to the system prompt: *"You are in autonomous mode. You will not receive human input during this session. Use the say tool to report progress. Use respond to communicate results. Call sys_set_state when your work is complete."*
 
-#### User Interrupt Restart
+#### Messages Sent While the Agent Works
 
-If you send a message while an agent is active (in any mode), the runtime aborts the current turn and restarts with your message. This means:
+If you send a message while an agent is thinking or running tools (in any mode), nothing is cut off. The runtime delivers your message at the next safe step:
 
-- The agent's in-progress work is cancelled
-- Any pending tool calls are filled with placeholder results
-- Your message becomes the new input for a fresh turn
+- If the agent is in a tool loop, your message (with its attachments) is added as its own message after the current tool results, and the agent reads it before its next step
+- If the agent is writing its final reply, your message runs as the next turn as soon as that reply is done
+- Several messages are delivered together, in order
 
-This is useful for redirecting an agent that's going down the wrong path or providing urgent input without waiting for the current turn to finish.
+If the agent is waiting on you (an approval, a question, or a suspend), your message ends that wait: the turn restarts with your message, and pending tool calls are filled with placeholder results.
+
+To stop the agent's work immediately, use **Stop** (Esc in the terminal app, `POST /agents/{id}/interrupt` on the daemon).
 
 **Example flow:**
 

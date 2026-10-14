@@ -17,6 +17,7 @@ import {
   type LlmCallEventData,
 } from '../../shared/types/adf-event.types'
 import { getTokenUsageService } from '../services/token-usage.service'
+import { MIN_CLAUDE_CODE_VERSION } from '../providers/claude-subscription/claude-code'
 import { getFleetBurnService } from '../services/fleet-burn.service'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prompt'
@@ -425,6 +426,9 @@ export function isAuthError(error: unknown, message: string): boolean {
   // failures — surface them as auth so the user gets "sign in again", not a
   // generic structural error.
   if (msg.includes('not authenticated') || msg.includes('session expired') || msg.includes('sign in')) return true
+  // Claude subscription: Claude Code missing, too old, or signed out.
+  if (msg.includes('not logged in') || msg.includes('please run /login') || msg.includes('claude code is not installed')) return true
+  if (msg.includes('claude code') && (msg.includes('too old') || msg.includes('or newer') || msg.includes('claude update'))) return true
 
   return false
 }
@@ -439,6 +443,8 @@ export function authFixHint(provider: Pick<LLMProvider, 'providerType'> | null |
       return 'Sign in to ChatGPT: `adf auth login chatgpt` (or /login chatgpt in the TUI, or Settings → Providers in Studio). The agent recovers once sign-in completes.'
     case 'grok-subscription':
       return 'Sign in to Grok: `adf auth login grok` (or /login grok in the TUI, or Settings → Providers in Studio). The agent recovers once sign-in completes.'
+    case 'claude-subscription':
+      return `Sign in with Claude in Settings → Providers, or run \`claude auth login\` (requires Claude Code ≥ ${MIN_CLAUDE_CODE_VERSION} — \`claude update\`).`
     default:
       return 'Check the API key, account balance, and plan limits in Settings → Providers, then try again.'
   }
@@ -1968,10 +1974,16 @@ export class AgentExecutor extends EventEmitter {
     // listed before the agent target must not queue the agent's own wake.
     const anotherTurnActive = !opts?.nested && this.activeAgentTurnCount > 1
     if (anotherTurnActive || this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended') {
-      // User messages queue in arrival order. The first one aborts the current
-      // turn and restarts with the queue; a burst interrupts only once.
+      // User messages queue in arrival order. While the agent is working
+      // (thinking, running tools) nothing is cut off: the queue is delivered at
+      // the next safe step — between tool results, or as the next turn when the
+      // current one ends. Stop is the hard interrupt. While the agent waits on
+      // the owner (approval, ask, suspend), the message ends that wait: the
+      // first one aborts and restarts with the queue; a burst interrupts once.
       if (eventType === 'chat') {
         this.pendingChats.push(dispatch)
+        const working = this.state === 'thinking' || this.state === 'tool_use' || (anotherTurnActive && this.state !== 'awaiting_approval' && this.state !== 'awaiting_ask' && this.state !== 'suspended')
+        if (working) return
         if (this._interruptRestart) return
         this._interruptRestart = true
         this.abortController?.abort()
@@ -2220,6 +2232,9 @@ export class AgentExecutor extends EventEmitter {
         // not started, so an injected user message can never split a
         // tool_use/tool_result exchange.
         this.session.drainContextInjections()
+        // Owner chats that arrived while the agent worked join here, at the
+        // same safe boundary, as their own user rows after the tool results.
+        if (!opts?.nested) this.deliverQueuedChats('next_step')
 
         // Preflight credential check (UX): if the provider's API key is invalid
         // (missing, revoked, depleted balance, billing failure, etc.) we must NOT enter
@@ -2407,6 +2422,39 @@ export class AgentExecutor extends EventEmitter {
         // Store provider metadata (e.g. rate limits) on workspace for tool access
         if (response.providerMetadata) {
           this.session.getWorkspace()._providerMeta = response.providerMetadata
+        }
+
+        // A response cut off by the output limit before any reply or tool call
+        // would otherwise end the turn silently ("ended quietly").
+        if (response.stop_reason === 'max_tokens' && !response.content.some(b => (b.type === 'text' && b.text?.trim()) || b.type === 'tool_use')) {
+          const limit = request.options.maxTokens
+          const notice = `[System] The model reached the output limit${limit ? ` (${limit} tokens)` : ''} before replying — ` +
+            `its reasoning used it up. Raise Max tokens in the agent's model settings, or lower the reasoning effort.`
+          try {
+            this.session.getWorkspace().insertLog('warn', 'executor', 'output_limit_reached', null, notice.slice(0, 300))
+          } catch { /* observability is never fatal */ }
+          const noticeSeq = this.session.appendContextEntry('System', notice)
+          this.emitEvent({
+            type: 'context_injected',
+            payload: { category: 'System', content: notice, ...(noticeSeq !== undefined ? { seq: noticeSeq } : {}) },
+            timestamp: Date.now()
+          })
+        }
+
+        // Model input a provider added on its own (Claude Code's reminders:
+        // environment, date, account) — recorded so the loop shows everything
+        // the model received.
+        const providerContext = (response.providerMetadata?.adf as { contextInjections?: unknown } | undefined)?.contextInjections
+        if (Array.isArray(providerContext)) {
+          for (const content of providerContext) {
+            if (typeof content !== 'string' || !content) continue
+            const pcSeq = this.session.appendContextEntry('provider_context', content)
+            this.emitEvent({
+              type: 'context_injected',
+              payload: { category: 'provider_context', content, ...(pcSeq !== undefined ? { seq: pcSeq } : {}) },
+              timestamp: Date.now()
+            })
+          }
         }
 
         // Record token usage
@@ -3013,9 +3061,6 @@ export class AgentExecutor extends EventEmitter {
             // If the agent was stopped, interrupted, or halted mid-tool-execution, stop processing further tools
             if (this.state === 'stopped' || this._interruptRestart || this._ownerStateTransitionRequested) break
 
-            // Check for mid-batch user interrupt — inject between tool results
-            toolResults.push(...this.consumeInterrupts())
-
             // If the tool signals end of turn, stop after submitting results
             if (result.endTurn) {
               // Extract target state from sys_set_state — directly, or driven
@@ -3053,11 +3098,6 @@ export class AgentExecutor extends EventEmitter {
                 })
               }
             }
-          }
-
-          // Inject pending user interrupt into tool results (skip if restarting — interrupt survives to finally block)
-          if (!this._interruptRestart) {
-            toolResults.push(...this.consumeInterrupts())
           }
 
           const toolResultsMsg: LLMMessage = {
@@ -3199,21 +3239,21 @@ export class AgentExecutor extends EventEmitter {
               } catch { /* non-fatal */ }
               continueLoop = false
             } else {
-              // Inject pending interrupt or add a continuation message so the
+              // Queued owner chats are the next input (delivered at the top of
+              // the loop); otherwise add a continuation message so the
               // conversation doesn't end with an assistant message (some
               // providers don't support assistant message prefill). After two
               // text-only responses, escalate the nudge.
-              const interruptBlocks = this.consumeInterrupts()
-              // A user interrupt is fresh input — answering it in prose is
-              // legitimate, so it resets the narration counter.
-              if (interruptBlocks.length > 0) consecutiveTextOnly = 0
-              const nudge = consecutiveTextOnly >= 2
-                ? `[You have responded ${consecutiveTextOnly} times in a row without calling any tools. Do not reply with another status update. Either call a tool now to make progress, or yield by calling sys_set_state with state "idle".]`
-                : '[Continue working autonomously according to your instructions. Control your state with sys_set_state().]'
-              this.session.addMessage({
-                role: 'user',
-                content: interruptBlocks.length > 0 ? interruptBlocks : [{ type: 'text', text: nudge }]
-              })
+              if (this.pendingChats.length > 0) {
+                // A user message is fresh input — answering it in prose is
+                // legitimate, so it resets the narration counter.
+                consecutiveTextOnly = 0
+              } else {
+                const nudge = consecutiveTextOnly >= 2
+                  ? `[You have responded ${consecutiveTextOnly} times in a row without calling any tools. Do not reply with another status update. Either call a tool now to make progress, or yield by calling sys_set_state with state "idle".]`
+                  : '[Continue working autonomously according to your instructions. Control your state with sys_set_state().]'
+                this.session.addMessage({ role: 'user', content: [{ type: 'text', text: nudge }] })
+              }
             }
           }
           // If autonomous, continue the loop - agent will think again
@@ -5803,11 +5843,19 @@ export class AgentExecutor extends EventEmitter {
 
   /** Deliver queued chats as consecutive user rows after the turn's trigger. */
   private deliverQueuedChatsAtTurnStart(): void {
-    const chats = this.takeQueuedChats('turn_start')
-    if (chats.length === 0) return
     // They queued while nothing was working (a scheduled successor, a manual
     // compaction): delivering them here is the restart they asked for.
-    this._interruptRestart = false
+    if (this.deliverQueuedChats('turn_start') > 0) this._interruptRestart = false
+  }
+
+  /**
+   * Deliver every queued chat, oldest first, as its own user row with its full
+   * content — at turn start, or at a model boundary mid-turn (after the tool
+   * results the agent was working on). Rows already in the loop are not
+   * written twice. Returns how many chats were taken.
+   */
+  private deliverQueuedChats(delivery: 'turn_start' | 'next_step'): number {
+    const chats = this.takeQueuedChats(delivery)
     for (const chat of chats) {
       if (this.preAppendedRowAlreadyInSession(chat)) continue
       const content = this.buildTriggerContent(chat)
@@ -5825,28 +5873,7 @@ export class AgentExecutor extends EventEmitter {
         timestamp: Date.now()
       })
     }
-  }
-
-  /**
-   * Take every queued chat as a text block for injection into the next user
-   * message, oldest first. Unreachable while an interrupt is pending (every
-   * caller checks _interruptRestart first); kept so a queued chat can never
-   * be overwritten if that changes.
-   */
-  private consumeInterrupts(): ContentBlock[] {
-    return this.takeQueuedChats('next_step').map((interrupt) => {
-      let userText = 'The user has manually triggered you. Review the document and respond.'
-      if ('event' in interrupt && interrupt.event.type === 'chat' && interrupt.event.data) {
-        const chatData = interrupt.event.data as ChatEventData
-        const textBlock = chatData.message.content_json?.find((b: ContentBlock) => b.type === 'text')
-        if (textBlock && 'text' in textBlock) userText = textBlock.text
-      }
-      return {
-        type: 'text' as const,
-        text: `[USER INTERRUPT — The user has sent a message while you were working. ` +
-              `Read and address it before continuing your current task.]\n\n${userText}`
-      }
-    })
+    return chats.length
   }
 
   /** Run the oldest queued chat as the next turn; the rest ride it

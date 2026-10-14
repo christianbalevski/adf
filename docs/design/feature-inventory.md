@@ -348,7 +348,7 @@ Grouped by area, then category.
 - **Hibernate backlog drop** — Entering hibernate or off discards the queued agent-scope trigger backlog and emits a `trigger.dropped` event rather than replaying stale wakes.
 - **adf_shell state shorthand** — `state [idle|hibernate|off]` as a chainable shell command (`meta set status "..." && state idle`), no tool call needed to read it.
 - **Daemon live-state endpoint** — `POST /agents/:id/state` is the supported way to move a running agent's display state; editing config's `state` field does not.
-- **User interrupt restart** — Sending a message while an agent is active aborts the current turn, fills pending tool calls with placeholders, and restarts with the new input.
+- **Next-step chat delivery** — A message sent while an agent is thinking or running tools does not abort it: it joins the turn as its own user row (full content) after the current tool results, at the next model boundary, or runs as the next turn. A message to an agent waiting on the owner (approval, ask, suspend) ends the wait and restarts the turn with placeholders for pending tool calls. Stop is the hard interrupt.
 
 ### Background Agents & Runtime
 - **BackgroundAgentManager registry** — Keyed by canonical (realpath) `.adf` path; claims in-flight starts synchronously so concurrent entry points share one build.
@@ -980,7 +980,7 @@ Grouped by area, then category.
 - **`browser-profile-portability` skill** — encrypted checkpoint/restore of the managed Chromium profile across containers via RSA-wrapped AES-256-GCM chunks in the identity keystore.
 
 ### LLM Providers — Types & Setup
-- **Provider picker groups** — Subscriptions (ChatGPT, Grok), APIs (Anthropic, OpenAI, OpenRouter, + many OpenAI-compatible), Local (LM Studio, Ollama, vLLM, llama.cpp…), Other (custom URL).
+- **Provider picker groups** — Subscriptions (Claude, ChatGPT, Grok), APIs (Anthropic, OpenAI, OpenRouter, + many OpenAI-compatible), Local (LM Studio, Ollama, vLLM, llama.cpp…), Other (custom URL).
 - **Multiple accounts per service** — same provider type addable more than once with auto-numbered names.
 - **Provider configure modal** — app-default fields (name, base URL, key/account, default model with Fetch Models, request delay, request parameters) plus per-agent overrides section.
 - **`providers` config is immutable-deny** — agents can never write app provider config even via HIL approval; they may still set their own `model.provider`/`model_id`.
@@ -1006,6 +1006,15 @@ Grouped by area, then category.
 - **Works over SSH/daemon** — device flow needs no localhost callback (`POST /auth/grok/start`).
 - **Live model catalog fetch** with fallback list (grok-4.5, grok-4.3, grok-build-0.1, etc.).
 - **Per-model reasoning-effort clamp** — mapped to xAI's none/low/medium/high scale; some models reject effort entirely.
+
+### Claude Subscription Provider
+- **Sign-in through Claude Code** — `claude auth login|status|logout` on the user's installed, unmodified Claude Code (≥ 2.1.248); ADF never handles Claude credentials. Session lives in Claude Code's store, shared with the user's own Claude Code use; signing out from ADF signs Claude Code out too.
+- **Calls via the Claude Agent SDK** — the SDK drives the installed Claude Code binary (bundled per-platform binaries are not shipped); usage draws on the Claude plan's limits.
+- **ADF stays the agent** — all Claude Code built-in tools disabled; model tool calls relay back to ADF through an in-process MCP bridge.
+- **Remote sign-in** — `POST /auth/claude/start` returns a fallback sign-in URL; the code shown on the page goes to `POST /auth/claude/code`.
+- **Plan-only** — a Claude Code signed in with an Anthropic Console account is reported as signed out; Anthropic API env credentials are stripped from the Claude Code process.
+- **Model list** from Claude Code for the signed-in plan, with a fallback list (claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-1, claude-haiku-4-5).
+- **Known differences** vs the Anthropic provider — temperature/top-p ignored; Claude Code adds an identity line and context reminders (date, environment, account email).
 
 ### Subscription Session Storage
 - **Per-surface token files** — Studio `<userData>/<provider>/auth.json` (safeStorage), daemon `<userData>/<provider>/auth.daemon.json` (AES-256-GCM key file, 0600).
@@ -1252,6 +1261,7 @@ Grouped by area, then category.
 - **Provider configure modal** — name, base URL, API key/account, default model with Fetch Models, advanced request delay + custom parameters.
 - **ChatGPT Subscription OAuth** — sign-in flow, per-surface session storage, model dropdown (gpt-5.6 family, etc.).
 - **Grok Subscription OAuth** — xAI device-code sign-in flow with code confirmation.
+- **Claude Subscription** — sign-in through the installed Claude Code; shows install / version / plan state.
 - **Rate-limit/status surfacing** — primary/secondary usage windows exposed to agents via `provider_status`.
 - **Agent overrides UI** — per-provider "Agent overrides" list to give specific agents their own key/model/params/delay.
 - **Show unchanged-copy link** — collapses agents with an unmodified key-less provider copy.
@@ -1399,7 +1409,7 @@ Grouped by area, then category.
 - **abort \<agent\>** — cancel current turn without unloading.
 - **runtime [agent]** — daemon-level or per-agent runtime diagnostics.
 - **providers** — provider configuration and resolution.
-- **auth / auth login \<chatgpt\|grok\> / auth logout** — subscription auth management, separate session from Studio.
+- **auth / auth login \<claude\|chatgpt\|grok\> / auth logout** — subscription auth management; ChatGPT/Grok keep a session separate from Studio, Claude uses Claude Code's shared session.
 - **settings** — sanitized daemon runtime settings.
 - **network / network mesh / network server / network tools / network lan / network runtimes** — mesh and WebSocket diagnostics and control.
 - **usage [agent]** — daemon-wide or per-agent token usage.
@@ -1416,6 +1426,7 @@ Grouped by area, then category.
 - **--url / -u / --json** — daemon URL override and raw JSON output flags.
 - **ChatGPT auth loopback vs relay mode** — auto-picks `loopback` (local daemon) or `relay` (remote daemon via `--url`); `--relay`/`--loopback` overrides; relay never sends credentials through the daemon, only a short-lived PKCE code.
 - **Grok device-code auth** — CLI prints URL+code, opens browser, polls until approved; host-independent.
+- **Claude auth** — runs `claude auth login` on the daemon's machine; prints the fallback URL and accepts the code the sign-in page shows.
 
 ### HTTP API — Core & Meta
 
@@ -1489,6 +1500,7 @@ Grouped by area, then category.
 
 - **GET /auth/chatgpt/status, POST /start, /complete, /logout** — ChatGPT subscription OAuth (detached/relay flow).
 - **GET /auth/grok/status, POST /start, /logout** — Grok (xAI) device-code subscription auth.
+- **GET /auth/claude/status, POST /start, /code, /cancel, /logout** — Claude subscription sign-in delegated to the installed Claude Code.
 
 ### HTTP API — Compute & Package Admin
 
