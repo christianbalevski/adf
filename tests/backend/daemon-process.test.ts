@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
@@ -62,10 +62,10 @@ function fakeDaemon(state: { up: boolean; info: DaemonVersionInfo | null; versio
   return { fetchImpl, calls }
 }
 
-function fakeSpawner(onSpawn: () => void = () => {}) {
+function fakeSpawner(onSpawn: () => void = () => {}, pid = 4242) {
   const spawns: Array<{ command: string; args: string[]; options: Parameters<SpawnFn>[2] }> = []
   let unrefs = 0
-  const child = Object.assign(new EventEmitter(), { pid: 4242, unref: () => { unrefs++ } })
+  const child = Object.assign(new EventEmitter(), { pid, unref: () => { unrefs++ } })
   const spawn: SpawnFn = (command, args, options) => {
     spawns.push({ command, args, options })
     onSpawn()
@@ -91,6 +91,8 @@ function controller(fetchImpl: typeof fetch, extra: { spawn?: SpawnFn; alive?: (
     log: (line) => logs.push(line),
     startTimeoutMs: 2000,
     stopTimeoutMs: 2000,
+    staleWaitMs: 200,
+    raceSettleMs: 200,
   })
   return { ctl, logs }
 }
@@ -158,11 +160,32 @@ describe('DaemonProcessController', () => {
     expect(calls.find(c => c.path === '/version')?.auth).toBe(`Bearer ${TOKEN}`)
   })
 
-  it('reports a daemon that rejects the token as unidentified (other settings)', async () => {
+  it('ignores a pid file from before this boot (the pid now belongs to another process)', async () => {
+    const { fetchImpl } = fakeDaemon({ up: false, info: null })
+    writeFileSync(join(dir, `adf-daemon-${PORT}.pid`), JSON.stringify({ pid: 777, startedAt: 1, image: 'adf-daemon' }))
+    const { ctl } = controller(fetchImpl, { alive: () => true })
+    expect(await ctl.detect()).toEqual({ state: 'absent' })
+  })
+
+  it('treats a live but silent pid as stale after the wait, removes the pid file and spawns', async () => {
+    const pidFile = join(dir, `adf-daemon-${PORT}.pid`)
+    writeFileSync(pidFile, JSON.stringify({ pid: 777, startedAt: Date.now(), image: 'adf-daemon' }))
+    const state = { up: false, info: info({ pid: 4242 }) }
+    const { fetchImpl } = fakeDaemon(state)
+    const spawner = fakeSpawner(() => setTimeout(() => { state.up = true }, 0))
+    const { ctl, logs } = controller(fetchImpl, { spawn: spawner.spawn, alive: (pid) => pid === 777 })
+    const result = await ctl.ensure()
+    expect(result).toMatchObject({ kind: 'spawned', handle: { pid: 4242, spawnedHere: true } })
+    expect(existsSync(pidFile)).toBe(false)
+    expect(logs.some(l => l.includes('treating the pid file as stale'))).toBe(true)
+  })
+
+  it('reports a daemon that rejects the token as unidentified', async () => {
     const { fetchImpl } = fakeDaemon({ up: true, info: info() })
     const { ctl } = controller(fetchImpl, { env: { ADF_DAEMON_TOKEN: 'b'.repeat(43) } })
     const d = await ctl.detect()
     expect(d).toMatchObject({ state: 'unidentified', status: 401 })
+    expect(d.state === 'unidentified' && d.message).toBe(`A daemon is running on port ${PORT} but Studio cannot authenticate to it (token from ADF_DAEMON_TOKEN).`)
   })
 
   it('spawns detached, hidden, in Node mode, on the CLI pid file, and attaches', async () => {
@@ -190,6 +213,27 @@ describe('DaemonProcessController', () => {
     expect(progress).toEqual(['Starting the ADF daemon…'])
     expect(logs.some(l => l.includes('Starting the ADF daemon'))).toBe(true)
     expect(logs.some(l => l.includes('Started and attached to the ADF daemon pid 4242'))).toBe(true)
+  })
+
+  it('attaches to the winner, not spawnedHere, when the child loses the start race and exits', async () => {
+    const state = { up: false, info: info({ pid: 900, startedBy: 'cli' }) }
+    const { fetchImpl } = fakeDaemon(state)
+    // A CLI daemon binds the port; ours exits on EADDRINUSE.
+    const spawner = fakeSpawner(() => setTimeout(() => { spawner.child.emit('exit', 1); setTimeout(() => { state.up = true }, 20) }, 0), 4242)
+    const { ctl, logs } = controller(fetchImpl, { spawn: spawner.spawn, alive: (pid) => pid === 900 })
+    const result = await ctl.ensure()
+    expect(result).toMatchObject({ kind: 'attached', handle: { pid: 900, spawnedHere: false } })
+    expect(logs.some(l => l.includes('exited (code 1)') && l.includes('pid 900'))).toBe(true)
+  })
+
+  it('does not mark another daemon spawnedHere when it answers before the child', async () => {
+    const state = { up: false, info: info({ pid: 900, startedBy: 'studio' }) }
+    const { fetchImpl, calls } = fakeDaemon(state)
+    const spawner = fakeSpawner(() => setTimeout(() => { state.up = true }, 0), 4242)
+    const { ctl } = controller(fetchImpl, { spawn: spawner.spawn, alive: () => true })
+    const result = await ctl.ensure()
+    expect(result).toMatchObject({ kind: 'attached', handle: { pid: 900, spawnedHere: false } })
+    expect(calls.some(c => c.path === '/daemon/shutdown')).toBe(false)
   })
 
   it('attaches to a running daemon without spawning', async () => {

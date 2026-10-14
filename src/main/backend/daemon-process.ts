@@ -14,18 +14,17 @@
 // service daemon keeps running whatever Studio does. Every action is logged.
 
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
-import { mkdir, open } from 'node:fs/promises'
+import { mkdir, open, readFile, rm } from 'node:fs/promises'
+import { uptime as osUptime } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import {
   DEFAULT_DAEMON_PORT,
   daemonPaths,
   isHealthy,
   processAlive as defaultProcessAlive,
-  readPidFile,
-  tailLines,
   type DaemonPaths,
 } from '../cli/daemon-control'
-import { readDaemonToken } from '../daemon/daemon-token'
+import { daemonTokenPath } from '../daemon/daemon-token'
 import {
   CLIENT_API_VERSION,
   DAEMON_STARTED_BY_ENV,
@@ -37,6 +36,14 @@ import {
 const START_TIMEOUT_MS = 90_000
 const STOP_TIMEOUT_MS = 30_000
 const POLL_MS = 250
+/**
+ * How long a live pid from the pid file may stay silent before the record is
+ * treated as stale: the daemon's bounded shutdown (20 s, daemon/index.ts) plus
+ * margin. The pid file is written only after the daemon listens.
+ */
+const STALE_PID_WAIT_MS = 25_000
+/** After losing a start race, how long the winning daemon gets to answer. */
+const RACE_SETTLE_MS = 3_000
 
 export type SpawnFn = (command: string, args: string[], options: SpawnOptions) => Pick<ChildProcess, 'pid' | 'once' | 'unref'>
 
@@ -63,12 +70,17 @@ export interface DaemonProcessDeps {
   log?: (line: string) => void
   startTimeoutMs?: number
   stopTimeoutMs?: number
+  staleWaitMs?: number
+  raceSettleMs?: number
 }
 
 export type DaemonDetection =
   /** Nothing answers and no live pid in the pid file. */
   | { state: 'absent' }
-  /** The pid file names a live process that does not answer /health yet (starting, stuck, or shutting down). */
+  /**
+   * The pid file names a live process that does not answer /health: shutting
+   * down, stuck, or a reused pid (the daemon writes the file after it listens).
+   */
   | { state: 'starting'; pid: number }
   | { state: 'running'; info: DaemonVersionInfo }
   /**
@@ -178,6 +190,8 @@ export class DaemonProcessController {
   private readonly log: (line: string) => void
   private readonly startTimeoutMs: number
   private readonly stopTimeoutMs: number
+  private readonly staleWaitMs: number
+  private readonly raceSettleMs: number
   private spawnedPid: number | null = null
 
   constructor(config: DaemonProcessConfig, deps: DaemonProcessDeps = {}) {
@@ -193,15 +207,24 @@ export class DaemonProcessController {
     this.log = deps.log ?? ((line) => console.log(line))
     this.startTimeoutMs = deps.startTimeoutMs ?? START_TIMEOUT_MS
     this.stopTimeoutMs = deps.stopTimeoutMs ?? STOP_TIMEOUT_MS
+    this.staleWaitMs = deps.staleWaitMs ?? STALE_PID_WAIT_MS
+    this.raceSettleMs = deps.raceSettleMs ?? RACE_SETTLE_MS
   }
 
   /** The token of the daemon on Studio's data dir: ADF_DAEMON_TOKEN, else `<data dir>/daemon-token`. */
-  private token(): string | null {
-    return this.env.ADF_DAEMON_TOKEN || readDaemonToken(this.paths.dataDir)
+  private async token(): Promise<string | null> {
+    if (this.env.ADF_DAEMON_TOKEN) return this.env.ADF_DAEMON_TOKEN
+    try {
+      const raw = (await readFile(daemonTokenPath(this.paths.dataDir), 'utf-8')).trim()
+      // Same shape check as daemon-token.ts readDaemonToken (sync there).
+      return /^[A-Za-z0-9_-]{32,}$/.test(raw) ? raw : null
+    } catch {
+      return null
+    }
   }
 
   private async request(path: string, init: RequestInit = {}, timeoutMs = 3000): Promise<Response> {
-    const token = this.token()
+    const token = await this.token()
     return this.fetchImpl(`${this.url}${path}`, {
       ...init,
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(init.headers as Record<string, string> | undefined) },
@@ -225,15 +248,25 @@ export class DaemonProcessController {
     if (await isHealthy(this.url, this.fetchImpl)) {
       const version = await this.fetchVersion()
       if ('info' in version) return { state: 'running', info: version.info }
+      const tokenSource = this.env.ADF_DAEMON_TOKEN ? 'ADF_DAEMON_TOKEN' : daemonTokenPath(this.paths.dataDir)
       const message = version.status === 401
-        ? `A daemon answers on ${this.url} but does not accept the access token in ${this.paths.dataDir}; it runs on other settings.`
+        ? `A daemon is running on port ${this.port} but Studio cannot authenticate to it (token from ${tokenSource}).`
         : version.status === 404
-          ? `A daemon answers on ${this.url} but has no GET /version; it is an older ADF build.`
-          : `A daemon answers on ${this.url} but GET /version failed (${version.status ?? 'no answer'}).`
+          ? `A daemon is running on port ${this.port} but has no GET /version; it is an older ADF build.`
+          : `A daemon is running on port ${this.port} but GET /version failed (${version.status ?? 'no answer'}).`
       return { state: 'unidentified', status: version.status, message }
     }
-    const record = readPidFile(this.paths.pidFile)
-    if (record && this.alive(record.pid)) return { state: 'starting', pid: record.pid }
+    const record = await readPidRecord(this.paths.pidFile)
+    if (record && this.alive(record.pid)) {
+      // A record from before this OS boot cannot be the same process, whatever
+      // now runs under that pid (same rule as DaemonHost, which also removes it).
+      const bootTimeMs = Date.now() - osUptime() * 1000
+      if (record.startedAt !== undefined && record.startedAt < bootTimeMs) {
+        this.log(`[DaemonProcess] Pid file ${this.paths.pidFile} predates this boot (pid ${record.pid} is another process); ignoring it`)
+        return { state: 'absent' }
+      }
+      return { state: 'starting', pid: record.pid }
+    }
     return { state: 'absent' }
   }
 
@@ -248,9 +281,15 @@ export class DaemonProcessController {
       const pid = detection.pid
       this.log(`[DaemonProcess] Waiting for the ADF daemon pid ${pid} to answer ${this.url}`)
       onProgress?.(`Waiting for the ADF daemon (pid ${pid})…`)
-      const up = await this.waitHealthy(() => this.alive(pid))
+      const up = await this.waitHealthy(() => this.alive(pid), this.staleWaitMs)
       if (!up && this.alive(pid)) {
-        throw new DaemonProcessError(`The ADF daemon (pid ${pid}) did not answer ${this.url}/health within ${this.startTimeoutMs / 1000}s.`, this.paths.logFile)
+        // A daemon writes its pid file only once it listens, and its shutdown
+        // is capped at 20 s: a live pid that stays silent this long is not a
+        // working daemon (stuck, or Windows reused the pid). Remove the record
+        // so a new daemon can start; if a stuck one still holds the port, the
+        // new one fails with EADDRINUSE and the error names the log.
+        this.log(`[DaemonProcess] Pid ${pid} from ${this.paths.pidFile} has not answered ${this.url} for ${this.staleWaitMs / 1000}s; treating the pid file as stale and removing it`)
+        await rm(this.paths.pidFile, { force: true })
       }
       detection = await this.detect()
     }
@@ -260,7 +299,7 @@ export class DaemonProcessController {
     }
     if (detection.state === 'running') return this.attachOrRefuse(detection.info, 'attached')
     const handle = await this.spawn(onProgress)
-    return this.attachOrRefuse(handle.info, 'spawned')
+    return this.attachOrRefuse(handle.info, handle.spawnedHere ? 'spawned' : 'attached')
   }
 
   private attachOrRefuse(info: DaemonVersionInfo, kind: 'attached' | 'spawned'): EnsureResult {
@@ -273,7 +312,11 @@ export class DaemonProcessController {
     return { kind, handle: { url: this.url, pid: info.pid, info, spawnedHere: this.spawnedPid === info.pid } }
   }
 
-  /** §8.1, §8.2 step 5: spawn the daemon and wait for /health and /version. */
+  /**
+   * §8.1, §8.2 step 5: spawn the daemon and wait for /health and /version.
+   * `spawnedHere` is true only when the daemon that answers is the child
+   * spawned here: another start (CLI, a second Studio) can win the port.
+   */
   async spawn(onProgress?: (text: string) => void): Promise<DaemonHandle> {
     const { paths } = this
     await mkdir(dirname(paths.logFile), { recursive: true })
@@ -305,10 +348,20 @@ export class DaemonProcessController {
     child.once('exit', (code: number | null) => { exited = code ?? -1 })
     child.once('error', (err: Error) => { spawnError = err })
     child.unref()
-    const pid = child.pid ?? -1
+    const childPid = child.pid ?? -1
     const up = await this.waitHealthy(() => exited === null && spawnError === null)
     if (!up) {
-      const tail = tailLines(paths.logFile, 15)
+      if (!spawnError && exited !== null) {
+        // Lost a start race: a daemon that started at the same time took the
+        // port or the pid file (EADDRINUSE / pid file conflict). Use that one.
+        await this.waitHealthy(() => true, this.raceSettleMs)
+        const winner = await this.detect()
+        if (winner.state === 'running') {
+          this.log(`[DaemonProcess] The daemon Studio started (pid ${childPid}) exited (code ${exited}); ADF daemon pid ${winner.info.pid} (started by ${winner.info.startedBy}) answers on ${this.url} instead`)
+          return { url: this.url, pid: winner.info.pid, info: winner.info, spawnedHere: false }
+        }
+      }
+      const tail = await tailFile(paths.logFile, 15)
       const reason = spawnError
         ? `The ADF daemon could not be started: ${(spawnError as Error).message}`
         : exited !== null
@@ -319,11 +372,18 @@ export class DaemonProcessController {
     }
     const version = await this.fetchVersion()
     if (!('info' in version)) {
-      throw new DaemonProcessError(`The ADF daemon started (pid ${pid}) but GET /version failed (${version.status ?? 'no answer'}).`, paths.logFile)
+      throw new DaemonProcessError(`The ADF daemon started (pid ${childPid}) but GET /version failed (${version.status ?? 'no answer'}).`, paths.logFile)
     }
-    this.spawnedPid = version.info.pid
-    this.log(`[DaemonProcess] ADF daemon running (pid ${version.info.pid}, ${((Date.now() - started) / 1000).toFixed(1)}s)`)
-    return { url: this.url, pid: version.info.pid, info: version.info, spawnedHere: true }
+    const info = version.info
+    if (info.pid !== childPid) {
+      // Another daemon bound the port first; the child exits on its own
+      // (EADDRINUSE or the pid file check) and its reason is in the log.
+      this.log(`[DaemonProcess] ADF daemon pid ${info.pid} (started by ${info.startedBy}) answered on ${this.url} before the one Studio started (pid ${childPid}); using it`)
+      return { url: this.url, pid: info.pid, info, spawnedHere: false }
+    }
+    this.spawnedPid = childPid
+    this.log(`[DaemonProcess] ADF daemon running (pid ${childPid}, ${((Date.now() - started) / 1000).toFixed(1)}s)`)
+    return { url: this.url, pid: childPid, info, spawnedHere: true }
   }
 
   /**
@@ -369,13 +429,48 @@ export class DaemonProcessController {
     return { stopped, message }
   }
 
-  private async waitHealthy(alive: () => boolean): Promise<boolean> {
-    const deadline = Date.now() + this.startTimeoutMs
+  private async waitHealthy(alive: () => boolean, budgetMs = this.startTimeoutMs): Promise<boolean> {
+    const deadline = Date.now() + budgetMs
     while (Date.now() < deadline) {
       if (await isHealthy(this.url, this.fetchImpl, 1000)) return true
       if (!alive()) return false
       await this.sleep(POLL_MS)
     }
     return false
+  }
+}
+
+interface PidRecord { pid: number; startedAt?: number }
+
+/** The CLI pid file (cli/daemon-control.ts readPidFile), read without blocking. */
+async function readPidRecord(file: string): Promise<PidRecord | null> {
+  try {
+    const raw = (await readFile(file, 'utf-8')).trim()
+    if (raw.startsWith('{')) {
+      const parsed = JSON.parse(raw) as { pid?: unknown; startedAt?: unknown }
+      return typeof parsed.pid === 'number' ? { pid: parsed.pid, startedAt: typeof parsed.startedAt === 'number' ? parsed.startedAt : undefined } : null
+    }
+    const pid = Number.parseInt(raw, 10)
+    return Number.isFinite(pid) && pid > 0 ? { pid } : null
+  } catch {
+    return null
+  }
+}
+
+/** The last `count` lines of a log file (at most its last 64 KiB). */
+async function tailFile(file: string, count: number): Promise<string> {
+  try {
+    const handle = await open(file, 'r')
+    try {
+      const { size } = await handle.stat()
+      const len = Math.min(size, 64 * 1024)
+      const buf = Buffer.alloc(len)
+      await handle.read(buf, 0, len, size - len)
+      return buf.toString('utf-8').split(/\r?\n/).filter(Boolean).slice(-count).join('\n')
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return ''
   }
 }
