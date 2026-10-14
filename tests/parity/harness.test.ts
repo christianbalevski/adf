@@ -129,12 +129,34 @@ describe('parity harness: normalizer', () => {
       tree: ['f leases/hosts/4242.json', 'f leases/hosts/777.json', 'f other/4242.json'],
     }
     const out = normalizeRecording(r, { ...ctx, pids: [{ value: 4242, name: 'pid:this-process' }] }).state
-    expect(out.tree).toEqual(['f leases/hosts/<pid:this-process>.json', 'f leases/hosts/777.json', 'f other/4242.json'])
+    // R14: the listing is in normalized order.
+    expect(out.tree).toEqual(['f leases/hosts/777.json', 'f leases/hosts/<pid:this-process>.json', 'f other/4242.json'])
     expect(out.leases).toEqual({
       'hosts/<pid:this-process>.json': { pid: '<pid:this-process>', count: 4242 },
       'hosts/777.json': { pid: 777 },
       'abc.json': { holder: { pid: '<pid:this-process>' } },
     })
+  })
+
+  it('R14 orders keys and listing lines by their normalized names, whatever per-run value the raw name held', () => {
+    for (const hash of ['0aa', 'fff']) {
+      const r = rec()
+      const lease = `${hash}.json`
+      r.state = {
+        adf: {}, userDataJson: {},
+        leases: { [lease]: { v: 1 }, 'clients/4242.json': { v: 1 } },
+        tree: ['d leases/', `f leases/${lease}`, 'd leases/clients/', 'f leases/clients/4242.json'].sort(),
+      }
+      const out = normalizeRecording(r, { ...ctx, named: [...ctx.named, { value: hash, name: 'lease:agent-1' }], pids: [{ value: 4242, name: 'pid:this-process' }] }).state
+      expect(out.tree).toEqual(['d leases/', 'f leases/<lease:agent-1>.json', 'd leases/clients/', 'f leases/clients/<pid:this-process>.json'])
+      expect(Object.keys(out.leases)).toEqual(['<lease:agent-1>.json', 'clients/<pid:this-process>.json'])
+    }
+  })
+
+  it('R14 refuses two keys that normalize to one', () => {
+    const r = rec()
+    r.state = { adf: {}, userDataJson: {}, leases: { 'hosts/4242.json': { v: 1 }, 'hosts/<pid:this-process>.json': { v: 2 } }, tree: [] }
+    expect(() => normalizeRecording(r, { ...ctx, pids: [{ value: 4242, name: 'pid:this-process' }] })).toThrow(/keys collide/)
   })
 
   it('G1 drops socket lines from the golden file listing only', () => {
@@ -361,6 +383,50 @@ describe('parity harness: fences', () => {
       expect(out).toMatch(/refused net: 127.0.0.1:7385/)
       // Both refusals are in the run's log, written by the worker and by the child.
       expect(env.violations().length).toBe(2)
+    } finally {
+      env.dispose()
+    }
+  })
+
+  it('a fenced child refuses the OS keychain addon and records it', async () => {
+    const env = await createParityEnv('selftest')
+    try {
+      const { execFileSync } = await import('node:child_process')
+      const out = execFileSync(process.execPath, ['-e', "try { require('@napi-rs/keyring'); console.log('loaded') } catch (e) { console.log(e.message) }"],
+        { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf-8' })
+      expect(out).toMatch(/refused keychain: load of @napi-rs\/keyring/)
+      expect(env.violations().map((v) => JSON.parse(v).kind)).toEqual(['keychain'])
+    } finally {
+      env.dispose()
+    }
+  })
+
+  it.runIf(process.platform === 'win32')('allows a named pipe only when the lease registry of the run names it', async () => {
+    const env = await createParityEnv('selftest')
+    try {
+      const pipe = '\\\\.\\pipe\\adf-runtime-0123456789abcdef'
+      expect(() => connect(pipe).destroy()).toThrow(/refused net: pipe/)
+      mkdirSync(join(env.leaseDir, 'hosts'), { recursive: true })
+      writeFileSync(join(env.leaseDir, 'hosts', '4242.json'), JSON.stringify({ endpoint: pipe }))
+      const sock = connect(pipe)
+      sock.on('error', () => {}) // nothing listens: ENOENT, not a fence refusal
+      sock.destroy()
+      expect(() => connect('\\\\.\\pipe\\adf-runtime-fedcba9876543210').destroy()).toThrow(/refused net: pipe/)
+      expect(env.violations()).toHaveLength(2)
+      unlinkSync(join(env.leaseDir, 'hosts', '4242.json'))
+    } finally {
+      env.dispose()
+    }
+  })
+
+  it('reaches a child spawned with a clean env (no NODE_OPTIONS, no PARITY_FENCE_*)', async () => {
+    const env = await createParityEnv('selftest')
+    try {
+      const { execFileSync } = await import('node:child_process')
+      const out = execFileSync(process.execPath, ['-e', "try { require('net').connect(7385, '127.0.0.1'); console.log('connected') } catch (e) { console.log(e.message) }"],
+        { env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '' }, encoding: 'utf-8' })
+      expect(out).toMatch(/refused net: 127.0.0.1:7385/)
+      expect(env.violations().length).toBe(1)
     } finally {
       env.dispose()
     }

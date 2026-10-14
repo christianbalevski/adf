@@ -55,6 +55,20 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+export interface RunOptions {
+  /**
+   * Record instead of throwing what a strict run fails on: a rejected
+   * invoke (the scenario continues with `undefined`), a push that never
+   * comes (`wait-timeout` step), pushes or model calls after the scenario
+   * was done, and the streaming check (both in `problems`). Used only to
+   * list a candidate backend's remaining differences (diffBackends); the
+   * fences, the real-state check and leaks still throw.
+   */
+  tolerant?: boolean
+  /** waitForPush budget; default 15 s. */
+  waitTimeoutMs?: number
+}
+
 export interface ScenarioResult {
   raw: RawRecording
   normalized: ComparableRecording
@@ -90,7 +104,7 @@ async function leakedHandles(before: Set<object>): Promise<string[]> {
  * Run one scenario against one backend in a fresh isolated environment and
  * return the raw and normalized recordings.
  */
-export async function runScenario(scenario: ParityScenario, backend: ParityBackend): Promise<ScenarioResult> {
+export async function runScenario(scenario: ParityScenario, backend: ParityBackend, opts: RunOptions = {}): Promise<ScenarioResult> {
   const env = await createParityEnv(scenario.name)
   const handlesBefore = new Set(activeHandles())
   const llm = await startMockLlm(scenario.llm ?? defaultScript, { now: () => Date.now() - env.startedAt })
@@ -99,6 +113,8 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
   const electron = createFakeElectron(env)
   const steps: StepRecord[] = []
   const problems: string[] = []
+  /** Tolerant runs: what a strict run throws on, recorded instead. */
+  const behaviour: string[] = []
   let booted: BootedBackend | null = null
   try {
     const agents = createFixtureAgents(env, scenario.fixtures)
@@ -133,6 +149,7 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
             error: { name: String(e?.name ?? 'Error'), message: String(e?.message ?? err), ...(e?.code !== undefined ? { code: e.code } : {}) },
             pushes: { before, after: electron.pushes.length },
           })
+          if (opts.tolerant) return undefined as T
           throw err
         }
       },
@@ -142,7 +159,7 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
         steps.push({ kind: 'send', channel, args, pushes: { before: electron.pushes.length } })
         for (const fn of fns) fn(electron.ipcEvent(), ...args)
       },
-      async waitForPush(channel, description, match, timeoutMs = 15_000) {
+      async waitForPush(channel, description, match, timeoutMs = opts.waitTimeoutMs ?? 15_000) {
         const deadline = Date.now() + timeoutMs
         let index = waitCursor.get(channel) ?? 0
         for (;;) {
@@ -154,7 +171,13 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
               return push.args[0]
             }
           }
-          if (Date.now() > deadline) throw new Error(`timed out waiting for ${channel}: ${description}`)
+          if (Date.now() > deadline) {
+            if (opts.tolerant) {
+              steps.push({ kind: 'wait-timeout', channel, description, pushes: { at: electron.pushes.length } })
+              return undefined
+            }
+            throw new Error(`timed out waiting for ${channel}: ${description}`)
+          }
           await sleep(10)
         }
       },
@@ -169,7 +192,9 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
     await sleep(scenario.quietMs)
     if (electron.pushes.length > pushesAtDone || llm.requests.length > requestsAtDone) {
       const late = electron.pushes.slice(pushesAtDone).map((p) => `${p.channel} ${JSON.stringify(p.args[0])?.slice(0, 120)}`)
-      throw new Error([
+      if (opts.tolerant) {
+        behaviour.push(`kept going after done: ${late.length} push(es) (${late.map((l) => l.split(' ')[0]).join(', ')}), ${llm.requests.length - requestsAtDone} LLM request(s)`)
+      } else throw new Error([
         `parity harness: ${scenario.name} was done but the backend kept going within ${scenario.quietMs} ms:`,
         ...late,
         ...(llm.requests.length > requestsAtDone ? [`${llm.requests.length - requestsAtDone} LLM request(s)`] : []),
@@ -196,7 +221,10 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
     await llm.close()
     llmOpen = false
     problems.push(...(await leakedHandles(handlesBefore)))
-    problems.push(...streamingProblems(streamingReport(electron.pushes, llm.streams)))
+    const report = streamingReport(electron.pushes, llm.streams)
+    // Tolerant runs record the category and counts only: a golden must hold no timing.
+    if (opts.tolerant) behaviour.push(...streamingSummary(report))
+    else problems.push(...streamingProblems(report))
 
     const stateAfterShutdown = dumpPersistedState(env, fixtureFiles)
     env.assertRealStateUntouched()
@@ -212,6 +240,7 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
       state,
       stateAfterShutdown,
       timing: { streams: [...llm.streams] },
+      ...(behaviour.length ? { problems: behaviour } : {}),
     }
     const extra = running.normalization?.() ?? {}
     const nctx: NormalizationContext = {
@@ -256,9 +285,14 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
  * normalized recordings ('' = indistinguishable). This is the daemon-mode
  * parity check: `diffBackends(s, embeddedBackend, daemonBackend)`.
  */
-export async function diffBackends(scenario: ParityScenario, baseline: ParityBackend, candidate: ParityBackend): Promise<string> {
+export async function diffBackends(
+  scenario: ParityScenario,
+  baseline: ParityBackend,
+  candidate: ParityBackend,
+  candidateOptions: RunOptions = {},
+): Promise<string> {
   const a = await runScenario(scenario, baseline)
-  const b = await runScenario(scenario, candidate)
+  const b = await runScenario(scenario, candidate, candidateOptions)
   return diffRendered(a.text, b.text, { expected: baseline.name, actual: candidate.name })
 }
 
@@ -268,8 +302,11 @@ export async function diffBackends(scenario: ParityScenario, baseline: ParityBac
  * executor's 50 ms batch window, so each slice must arrive as its own
  * `text_delta_batch` on AGENT_EVENT, and each within SLICE_DELTA_BOUND_MS of
  * its write. Timing data; never part of a recording.
+ *
+ * `PARITY_SLICE_BOUND_MS` overrides the bound for a loaded CI machine; it
+ * only widens what counts as on time, never what is compared.
  */
-export const SLICE_DELTA_BOUND_MS = 50 + 250
+export const SLICE_DELTA_BOUND_MS = Number(process.env.PARITY_SLICE_BOUND_MS) > 0 ? Number(process.env.PARITY_SLICE_BOUND_MS) : 50 + 250
 
 export interface StreamingReport {
   /** Text slices written by the mock LLM, all replies. */
@@ -298,6 +335,15 @@ export function streamingProblems(report: StreamingReport): string[] {
   report.sliceLatencyMs.forEach((ms, k) => {
     if (!(ms >= 0 && ms <= SLICE_DELTA_BOUND_MS)) out.push(`streaming: slice ${k + 1} reached the window after ${ms} ms (bound ${SLICE_DELTA_BOUND_MS} ms)`)
   })
+  return out
+}
+
+/** streamingProblems without timing: the category and the slice counts (tolerant runs). */
+export function streamingSummary(report: StreamingReport): string[] {
+  const out: string[] = []
+  if (report.batches !== report.slices) out.push(`streaming: ${report.slices} text slice(s) arrived as ${report.batches} text_delta_batch push(es)`)
+  const late = report.sliceLatencyMs.filter((ms) => !(ms >= 0 && ms <= SLICE_DELTA_BOUND_MS)).length
+  if (late > 0 && report.batches === report.slices) out.push(`streaming: ${late} of ${report.slices} slice(s) late`)
   return out
 }
 

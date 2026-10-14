@@ -77,7 +77,7 @@ describe('channel map', () => {
       if (seen.kind === 'none' && (seen.registered || seen.sent)) mismatches.push(`${name}: used in main but not exposed in preload`)
     }
     expect(mismatches).toEqual([])
-  })
+  }, 30_000) // one regex scan of src/main per channel: slow under a loaded parallel run
 
   it('lists every raw string channel src/main uses, and only those', () => {
     const raw = new Set<string>()

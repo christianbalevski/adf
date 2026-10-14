@@ -18,7 +18,9 @@
  * its execArgv, and the harness puts `--require "<this file>"` in
  * NODE_OPTIONS for the run, so Node and Electron-as-Node children and
  * grandchildren install the fence too (it installs itself when
- * PARITY_FENCE_LOG is set).
+ * PARITY_FENCE_LOG is set). A spawn with its own `env` object gets the
+ * fence variables added to it (withFenceEnv), so a child spawned with a
+ * clean env is fenced as well.
  *
  * Two ways to use it:
  * - In process: `require('./fence.cjs').install({ logFile, ports })`, then
@@ -94,6 +96,39 @@ function spawnStrings(name, args) {
 
 const SPAWNERS = ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']
 
+/** `--require "<this file>"`, forward slashes: NODE_OPTIONS unescapes backslashes inside quotes. */
+const REQUIRE_SELF = `--require "${__filename.split('\\').join('/')}"`
+
+/**
+ * A spawn that passes its own `env` object would drop the run's
+ * NODE_OPTIONS and PARITY_FENCE_* (a "clean env" child, e.g. an MCP server
+ * whose env is built from scratch), and run unfenced. Put them back into
+ * every explicit env, so Node and Electron-as-Node children load the fence
+ * whatever env their parent built.
+ */
+function withFenceEnv(args) {
+  if (!state) return args
+  const out = [...args]
+  for (let i = 1; i < out.length; i++) {
+    const a = out[i]
+    if (!a || typeof a !== 'object' || Array.isArray(a)) continue
+    if (!a.env || typeof a.env !== 'object') return args
+    const nodeOptions = typeof a.env.NODE_OPTIONS === 'string' ? a.env.NODE_OPTIONS : ''
+    out[i] = {
+      ...a,
+      env: {
+        ...a.env,
+        PARITY_FENCE_LOG: state.logFile,
+        PARITY_FENCE_ROOT: state.root ?? '',
+        PARITY_FENCE_PORTS: [...state.ports].join(','),
+        NODE_OPTIONS: nodeOptions.includes(REQUIRE_SELF) ? nodeOptions : [nodeOptions, REQUIRE_SELF].filter(Boolean).join(' '),
+      },
+    }
+    return out
+  }
+  return args
+}
+
 function fencedSpawner(name, original) {
   const check = (args) => {
     const hit = forbiddenWord(spawnStrings(name, args).filter((s) => typeof s === 'string'))
@@ -101,14 +136,14 @@ function fencedSpawner(name, original) {
   }
   const fenced = function (...args) {
     check(args)
-    return original.apply(this, args)
+    return original.apply(this, withFenceEnv(args))
   }
   // exec/execFile resolve `{ stdout, stderr }` under promisify only through this symbol.
   const custom = original[promisify.custom]
   if (typeof custom === 'function') {
     fenced[promisify.custom] = function (...args) {
       try { check(args) } catch (err) { return Promise.reject(err) }
-      return custom.apply(this, args)
+      return custom.apply(this, withFenceEnv(args))
     }
   }
   return fenced
@@ -123,11 +158,37 @@ function allowed(host, port) {
   return LOOPBACK_HOSTS.has(h) && state.ports.has(p)
 }
 
+/**
+ * Windows named pipes live outside the file system, so "inside the run root"
+ * cannot apply to them. A runtime host's lease endpoint
+ * (a named pipe adf-runtime-<id>, agent-lease.ts) is allowed when a record
+ * in the run's own lease registry (`<root>/leases/{hosts,clients}`) names it:
+ * those are this run's processes. Any other pipe, the owner's Studio
+ * included, stays refused.
+ */
+function runLeaseEndpoint(p) {
+  if (!state.root || !/^\\\\[.?]\\pipe\\adf-runtime-[0-9a-f]{16}$/i.test(p)) return false
+  for (const sub of ['hosts', 'clients']) {
+    const dir = require('node:path').join(state.root, 'leases', sub)
+    let names = []
+    try { names = fs.readdirSync(dir) } catch { continue }
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue
+      try {
+        const record = JSON.parse(fs.readFileSync(require('node:path').join(dir, name), 'utf-8'))
+        if (record && record.endpoint === p) return true
+      } catch { /* being written */ }
+    }
+  }
+  return false
+}
+
 function checkTarget(kind, host, port, path) {
   if (path !== undefined && path !== null) {
-    // Named pipes / unix sockets: only inside the run root.
+    // Named pipes / unix sockets: only inside the run root (or this run's lease endpoints).
     const p = String(path)
     if (state.root && p.startsWith(state.root)) return
+    if (runLeaseEndpoint(p)) return
     throw record(kind, `pipe ${p}`)
   }
   if (!allowed(host, port)) throw record(kind, `${host ?? 'localhost'}:${port}`)
@@ -261,10 +322,28 @@ function violations() {
 const api = { install, uninstall, allowPort, violations, FORBIDDEN_PORTS }
 module.exports = api
 
+/**
+ * Child processes only (the harness process has its own tripwire, env.ts):
+ * refuse and record any load of the OS keychain addon. A fenced daemon reads
+ * the test keychain file (ADF_TEST_KEYCHAIN_FILE) and must never fall
+ * through to the real keychain.
+ */
+function installKeyringTripwire() {
+  const Module = require('node:module')
+  const original = Module._load
+  Module._load = function fencedLoad(request, ...rest) {
+    if (request === '@napi-rs/keyring' || String(request).startsWith('@napi-rs/keyring-')) {
+      throw record('keychain', `load of ${request}`)
+    }
+    return original.call(this, request, ...rest)
+  }
+}
+
 if (process.env.PARITY_FENCE_LOG) {
   install({
     logFile: process.env.PARITY_FENCE_LOG,
     root: process.env.PARITY_FENCE_ROOT,
     ports: (process.env.PARITY_FENCE_PORTS || '').split(',').filter(Boolean),
   })
+  installKeyringTripwire()
 }

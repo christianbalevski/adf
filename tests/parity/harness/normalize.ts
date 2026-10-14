@@ -237,6 +237,7 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
    * with the enclosing floor). Observed: adf_meta rows flipped between
    * `<t>` and `<t:earlier>` from run to run.
    */
+  const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
   const walk = (value: unknown, path: string, floor: number, seen: number[], key?: string): unknown => {
     if (typeof value === 'number' && key === 'pid' && path.startsWith('state.leases.') && pidName.has(value)) {
       return `<${pidName.get(value)}>`
@@ -267,18 +268,33 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     if (Array.isArray(value)) {
       let running = floor
       const ordered = !UPSERT_TABLE_ROWS.test(path)
-      return value.map((v, i) => {
+      const mapped = value.map((v, i) => {
         const own: number[] = []
         const out = walk(v, `${path}[${i}]`, running, own)
         if (ordered) for (const ms of own) running = Math.max(running, ms)
         seen.push(...own)
         return out
       })
+      // Rule R14 (listing) — the file listing in normalized-path order (see R14 below).
+      if (path === 'state.tree') return (mapped as string[]).slice().sort((a, b) => cmp(a.slice(2), b.slice(2)))
+      return mapped
     }
     const obj = preprocessRow(path, value as Record<string, unknown>)
+    // Rule R14 — keys are ordered by their NORMALIZED form. Raw names can hold
+    // per-run values (a lease file is named by the sha256 of the run's agent
+    // path, so its raw order against `clients/` varies between two correct
+    // runs). Hides: nothing; only the order of keys and listing lines.
+    // Keys are replaced in raw sorted order, as before R14, so R4/R5 numbering is unchanged.
+    const entries = Object.keys(obj).sort().map((k) => ({
+      k,
+      outKey: path === 'state.leases' ? replaceRegistryPid(replaceString(k, floor, [])) : replaceString(k, floor, []),
+    })).sort((a, b) => cmp(a.outKey, b.outKey) || cmp(a.k, b.k))
     const out: Record<string, unknown> = {}
-    for (const k of Object.keys(obj).sort()) {
-      const outKey = path === 'state.leases' ? replaceRegistryPid(replaceString(k, floor, [])) : replaceString(k, floor, [])
+    for (const { k, outKey } of entries) {
+      // Two raw keys that normalize to one would silently drop a value.
+      if (Object.prototype.hasOwnProperty.call(out, outKey)) {
+        throw new Error(`parity normalizer: keys collide after normalization at ${path}: ${outKey}`)
+      }
       out[outKey] = walk(obj[k], `${path}.${k}`, floor, seen, k)
     }
     return out
@@ -323,6 +339,7 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     local: walk(recording.local, 'local', -Infinity, none) as ComparableRecording['local'],
     llm: walk(recording.llm, 'llm', -Infinity, none) as ComparableRecording['llm'],
     state: walk(recording.state, 'state', -Infinity, none) as ComparableRecording['state'],
+    ...(recording.problems?.length ? { problems: walk(recording.problems, 'problems', -Infinity, none) as string[] } : {}),
   }
 }
 

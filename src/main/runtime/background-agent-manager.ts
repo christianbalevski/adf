@@ -2046,22 +2046,17 @@ export class BackgroundAgentManager extends EventEmitter {
     managed.session.restoreMessages(loop.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at, seq: e.seq })))
   }
 
-  /**
-   * Emit a mapped executor/host event. `adf_file_created` is not in
-   * `BackgroundAgentEvent['type']` but has always gone out on this channel
-   * (ipc/index.ts refreshes tracked directories from it).
-   */
+  /** Emit a mapped executor/host event, `adf_file_created` included (ipc/index.ts refreshes tracked directories from it). */
   private emitBackgroundMappedEvent(event: BackgroundMappedEvent): void {
-    this.emitEvent(event as BackgroundAgentEvent)
+    this.emitEvent(event)
   }
 
   private emitEvent(event: BackgroundAgentEvent): void {
     // Mirror start-lifecycle events into pendingStarts so a renderer that
     // mounts mid-boot can seed its spinners from getPendingStarts().
-    const fp = event.payload.filePath
-    if (event.type === 'agent_starting') this.pendingStarts.add(fp)
+    if (event.type === 'agent_starting') this.pendingStarts.add(event.payload.filePath)
     else if (event.type === 'agent_started' || event.type === 'agent_start_failed' || event.type === 'agent_stopped') {
-      this.pendingStarts.delete(fp)
+      this.pendingStarts.delete(event.payload.filePath)
     }
     this.emit('background_agent_event', event)
   }

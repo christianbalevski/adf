@@ -1047,15 +1047,6 @@ hosts/<pid:this-process>.json:
   updated_at: "<t>"
 #4:
   authorized: 0
-  content: "<bytes len=1067 sha256=1e0f924e117d8dc2>"
-  created_at: "<t>"
-  mime_type: "text/markdown"
-  path: "soul.md"
-  protection: "no_delete"
-  size: 1067
-  updated_at: "<t>"
-#5:
-  authorized: 0
   content: "<bytes len=125 sha256=5a661d0c25866279>"
   created_at: "<t>"
   mime_type: "application/json"
@@ -1063,20 +1054,29 @@ hosts/<pid:this-process>.json:
   protection: "read_only"
   size: 125
   updated_at: "<t>"
+#5:
+  authorized: 0
+  content: "<bytes len=1067 sha256=1e0f924e117d8dc2>"
+  created_at: "<t>"
+  mime_type: "text/markdown"
+  path: "soul.md"
+  protection: "no_delete"
+  size: 1067
+  updated_at: "<t>"
 
 ## state: agents/agent-1.adf adf_identity (4 rows; purpose, value, encryption_algo, salt, kdf_params, code_access)
 #1:
   code_access: 0
   encryption_algo: "plain"
   kdf_params: null
-  purpose: "crypto:envelope:identity"
+  purpose: "crypto:envelope:credentials"
   salt: null
   value: "<key-bytes#1> len=539"
 #2:
   code_access: 0
   encryption_algo: "plain"
   kdf_params: null
-  purpose: "crypto:envelope:credentials"
+  purpose: "crypto:envelope:identity"
   salt: null
   value: "<key-bytes#2> len=539"
 #3:
@@ -1102,53 +1102,53 @@ hosts/<pid:this-process>.json:
 
 ## state: agents/agent-1.adf adf_meta (12 rows; key, value, protection)
 #1:
-  key: "adf_version"
-  protection: "readonly"
-  value: "0.2"
-#2:
-  key: "adf_schema_version"
-  protection: "readonly"
-  value: "32"
-#3:
-  key: "adf_name"
-  protection: "none"
-  value: "agent-1"
-#4:
-  key: "adf_handle"
-  protection: "none"
-  value: "agent-1"
-#5:
-  key: "adf_updated_at"
-  protection: "none"
-  value: "<t>"
-#6:
-  key: "adf_parent_did"
-  protection: "readonly"
-  value: ""
-#7:
   key: "adf_created_at"
   protection: "readonly"
   value: "<t>"
-#8:
-  key: "status"
-  protection: "none"
-  value: ""
-#9:
-  key: "adf_loop_tools_backfilled"
-  protection: "none"
-  value: "1"
-#10:
+#2:
   key: "adf_did"
   protection: "readonly"
   value: "<did#1>"
-#11:
+#3:
+  key: "adf_handle"
+  protection: "none"
+  value: "agent-1"
+#4:
+  key: "adf_loop_tools_backfilled"
+  protection: "none"
+  value: "1"
+#5:
+  key: "adf_name"
+  protection: "none"
+  value: "agent-1"
+#6:
   key: "adf_owner_did"
   protection: "readonly"
   value: "<did:owner>"
-#12:
+#7:
+  key: "adf_parent_did"
+  protection: "readonly"
+  value: ""
+#8:
   key: "adf_runtime_did"
   protection: "readonly"
   value: "<did:runtime>"
+#9:
+  key: "adf_schema_version"
+  protection: "readonly"
+  value: "32"
+#10:
+  key: "adf_updated_at"
+  protection: "none"
+  value: "<t>"
+#11:
+  key: "adf_version"
+  protection: "readonly"
+  value: "0.2"
+#12:
+  key: "status"
+  protection: "none"
+  value: ""
 
 ## state: agents/agent-1.adf adf_outbox (0 rows; id, message_id, from, to, address, reply_to, network, thread_id, parent_id, subject, content, content_type, attachments, meta, sender_alias, recipient_alias, owner, card, return_path, status_code, created_at, delivered_at, status, original_message)
 

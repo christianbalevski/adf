@@ -17,12 +17,19 @@ export function renderRecording(recording: ComparableRecording): string {
       lines.push(`${i + 1}. wait ${step.channel} — ${step.description}  [matched push ${step.pushes.matched}]`)
       return
     }
+    if (step.kind === 'wait-timeout') {
+      lines.push(`${i + 1}. wait ${step.channel} — ${step.description}  [TIMED OUT after push ${step.pushes.at}]`)
+      return
+    }
     const marks = step.kind === 'send' ? `[pushes ${step.pushes.before}]` : `[pushes ${step.pushes.before}→${step.pushes.after}]`
     lines.push(`${i + 1}. ${step.kind} ${step.channel}  ${marks}`)
     emit(lines, 'args', step.args, 1)
     if (step.kind === 'invoke') emit(lines, 'result', step.result, 1)
     if (step.kind === 'invoke-error') emit(lines, 'error', step.error, 1)
   })
+  if (recording.problems?.length) {
+    lines.push('', `## problems (${recording.problems.length})`, ...recording.problems)
+  }
   for (const [agent, timeline] of Object.entries(recording.timelines)) {
     lines.push('', `## timeline ${agent}`, ...timeline)
   }

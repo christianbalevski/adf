@@ -1,4 +1,4 @@
-import type { AgentState, BackgroundAgentEvent } from '../../shared/types/ipc.types'
+import type { AdfFileCreatedPayload, AgentState, BackgroundAdfFileCreatedEvent, BackgroundAgentEvent, BackgroundAgentStatusEvent } from '../../shared/types/ipc.types'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
 import { toDisplayState } from './display-state'
 
@@ -44,17 +44,12 @@ export interface BackgroundMappingState {
 }
 
 /**
- * `adf_file_created` is emitted on the manager's channel (ipc/index.ts refreshes
- * tracked directories from it) but is not in `BackgroundAgentEvent['type']`.
- * Its `filePath` is the CREATED file, `agentFilePath` the creating agent.
+ * `adf_file_created`: its `filePath` is the CREATED file, `agentFilePath` the
+ * creating agent (ipc/index.ts refreshes tracked directories from it).
  */
-export interface AdfFileCreatedEvent {
-  type: 'adf_file_created'
-  payload: { agentFilePath: string; filePath: unknown }
-  timestamp: number
-}
+export type AdfFileCreatedEvent = BackgroundAdfFileCreatedEvent
 
-export type BackgroundMappedEvent = BackgroundAgentEvent | AdfFileCreatedEvent
+export type BackgroundMappedEvent = BackgroundAgentEvent
 
 /**
  * One step of the mapping: assign `patch` to the agent's state, then emit
@@ -118,7 +113,7 @@ export function* mapBackgroundEvent(
     yield {
       patch: {},
       event: {
-        type: event.type as BackgroundAgentEvent['type'],
+        type: event.type as BackgroundAgentStatusEvent['type'],
         payload: { filePath, ...(event.payload as Record<string, unknown>) },
         timestamp: event.timestamp,
       },
@@ -129,7 +124,7 @@ export function* mapBackgroundEvent(
       patch: {},
       event: {
         type: 'adf_file_created',
-        payload: { agentFilePath: filePath, filePath: (event.payload as Record<string, unknown>).filePath },
+        payload: { agentFilePath: filePath, filePath: (event.payload as AdfFileCreatedPayload).filePath },
         timestamp: event.timestamp,
       },
     }

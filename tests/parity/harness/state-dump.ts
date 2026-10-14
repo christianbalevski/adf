@@ -41,6 +41,14 @@ function cell(value: unknown): unknown {
   return `<bytes len=${value.length} sha256=${createHash('sha256').update(value).digest('hex').slice(0, 16)}>`
 }
 
+/**
+ * Tables written by upsert (key-value and per-path). Their rowid order is the
+ * order in which keys were first written, which differs between two correct
+ * backends; they are dumped in primary-key order instead. Every other table
+ * keeps rowid order, which is compared.
+ */
+const UPSERT_TABLES = new Set(['adf_meta', 'adf_config', 'adf_files', 'adf_identity'])
+
 export function dumpAdf(filePath: string): AdfDump {
   const db = new Database(filePath, { readonly: true, fileMustExist: true })
   try {
@@ -50,14 +58,18 @@ export function dumpAdf(filePath: string): AdfDump {
     const out: AdfDump['tables'] = {}
     for (const { name, sql } of tables) {
       const quoted = `"${name.replace(/"/g, '""')}"`
-      const columns = (db.prepare(`PRAGMA table_info(${quoted})`).all() as { name: string }[]).map((c) => c.name)
+      const info = db.prepare(`PRAGMA table_info(${quoted})`).all() as { name: string; pk: number }[]
+      const columns = info.map((c) => c.name)
       // Virtual tables (vec0) have no stable row order or readable shadow content.
       if (/^CREATE VIRTUAL TABLE/i.test(sql)) {
         out[name] = { columns, rows: ['<virtual table>'] }
         continue
       }
       const withoutRowid = /WITHOUT ROWID\s*$/i.test(sql.trim())
-      const order = withoutRowid ? columns.map((c) => `"${c.replace(/"/g, '""')}"`).join(', ') : 'rowid'
+      const pk = info.filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => `"${c.name.replace(/"/g, '""')}"`)
+      const order = UPSERT_TABLES.has(name) && pk.length > 0
+        ? pk.join(', ')
+        : withoutRowid ? columns.map((c) => `"${c.replace(/"/g, '""')}"`).join(', ') : 'rowid'
       const rows = (db.prepare(`SELECT * FROM ${quoted} ORDER BY ${order}`).all() as Record<string, unknown>[])
         .map((row) => Object.fromEntries(columns.map((c) => [c, cell(row[c])])))
       out[name] = { columns, rows }

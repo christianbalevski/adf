@@ -1,0 +1,56 @@
+import type { IpcMainInvokeEvent } from 'electron'
+import type { StudioBackendMode } from '../../../shared/types/backend.types'
+import type { DaemonClient } from '../../../shared/daemon-client'
+import { DaemonError } from '../../../shared/daemon-client'
+import type { MappedChannel } from '../channel-map'
+import type { ApprovalsUi } from './approvals-ui'
+import type { DaemonConnection } from './connection'
+import type { EventBridge } from './event-bridge'
+import type { DaemonModeSession } from './session'
+import type { ClientSettingsStore } from './settings'
+
+/**
+ * What every daemon-mode handler gets. Handlers hold no state of their own:
+ * client state is in `session` (D3), settings in `clientSettings` and the
+ * daemon (§4.2), everything else in the daemon.
+ */
+export interface DaemonModeContext {
+  mode: Exclude<StudioBackendMode, 'embedded'>
+  connection: DaemonConnection
+  session: DaemonModeSession
+  bridge: EventBridge
+  clientSettings: ClientSettingsStore
+  approvals: ApprovalsUi
+  /** The client once connected and the session started; rejects when there is no daemon. */
+  ready(): Promise<DaemonClient>
+  /** The running agent at `filePath` (GET /files/agent), or null. */
+  runningAgentAt(filePath: string): Promise<string | null>
+  /** A raw (non-JSON) request to the daemon: the token is added for its origin only. */
+  raw(path: string, query?: Record<string, string | number | undefined>): Promise<Response>
+  /** Records a recent file (menu Open Recent + OS list), in the client settings. */
+  recordRecentFile(filePath: string): void
+  hooks: { showMainWindow?: () => Electron.BrowserWindow | null; openFile?: (filePath: string) => void }
+  log: Pick<Console, 'log' | 'warn' | 'error'>
+}
+
+export type DaemonInvokeHandler = (ctx: DaemonModeContext, event: IpcMainInvokeEvent, ...args: any[]) => unknown
+
+export type DaemonHandlerTable = Partial<Record<MappedChannel, DaemonInvokeHandler>>
+
+/** True for the daemon's 404 (unknown agent, unknown file). */
+export function isNotFound(err: unknown): boolean {
+  return err instanceof DaemonError && err.status === 404
+}
+
+/** The agent running at `filePath`: GET /files/agent (W1-E, the daemon's own path → id rule), else null. */
+export async function findRunningAgent(client: DaemonClient, filePath: string): Promise<string | null> {
+  try {
+    const info = await client.request<{ agentId: string | null; loaded: boolean }>('GET', '/files/agent', { query: { path: filePath } })
+    return info.loaded ? info.agentId : null
+  } catch (err) {
+    if (err instanceof DaemonError && (err.status === 404 || err.status === 400)) return null
+    throw err
+  }
+}
+
+export const enc = encodeURIComponent

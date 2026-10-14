@@ -1669,15 +1669,6 @@ hosts/<pid:this-process>.json:
   updated_at: "<t>"
 #4:
   authorized: 0
-  content: "<bytes len=1067 sha256=1e0f924e117d8dc2>"
-  created_at: "<t>"
-  mime_type: "text/markdown"
-  path: "soul.md"
-  protection: "no_delete"
-  size: 1067
-  updated_at: "<t>"
-#5:
-  authorized: 0
   content: "<bytes len=125 sha256=5a661d0c25866279>"
   created_at: "<t>"
   mime_type: "application/json"
@@ -1685,20 +1676,29 @@ hosts/<pid:this-process>.json:
   protection: "read_only"
   size: 125
   updated_at: "<t>"
+#5:
+  authorized: 0
+  content: "<bytes len=1067 sha256=1e0f924e117d8dc2>"
+  created_at: "<t>"
+  mime_type: "text/markdown"
+  path: "soul.md"
+  protection: "no_delete"
+  size: 1067
+  updated_at: "<t>"
 
 ## state: agents/agent-1.adf adf_identity (4 rows; purpose, value, encryption_algo, salt, kdf_params, code_access)
 #1:
   code_access: 0
   encryption_algo: "plain"
   kdf_params: null
-  purpose: "crypto:envelope:identity"
+  purpose: "crypto:envelope:credentials"
   salt: null
   value: "<key-bytes#1> len=539"
 #2:
   code_access: 0
   encryption_algo: "plain"
   kdf_params: null
-  purpose: "crypto:envelope:credentials"
+  purpose: "crypto:envelope:identity"
   salt: null
   value: "<key-bytes#2> len=539"
 #3:
@@ -1761,69 +1761,69 @@ hosts/<pid:this-process>.json:
 
 ## state: agents/agent-1.adf adf_meta (16 rows; key, value, protection)
 #1:
-  key: "adf_version"
+  key: "adf_created_at"
   protection: "readonly"
-  value: "0.2"
+  value: "<t>"
 #2:
-  key: "adf_schema_version"
+  key: "adf_did"
   protection: "readonly"
-  value: "32"
+  value: "<did#1>"
 #3:
-  key: "adf_name"
-  protection: "none"
-  value: "agent-1"
+  key: "adf_effective_runtime"
+  protection: "readonly"
+  value: "{\"schema\":1,\"recorded_at\":\"<t>\",\"host\":\"studioForeground\",\"provider\":{\"id\":\"parity-llm\",\"source\":\"app\",\"type\":\"openai-compatible\",\"name\":\"Parity LLM\",\"base_url\":\"http://127.0.0.1:<LLM_PORT>/v1\",\"model\":\"parity-model\",\"params_source\":\"none\",\"api_key_source\":\"app\"},\"prompts\":{\"base_prompt\":{\"applied\":true,\"is_default\":true,\"sha256\":\"2d76b41391277a5ce16c349655bb0d36e4c561e07206747c0c376e3a100a7cec\"},\"tool_prompts\":{\"overridden\":[],\"sha256\":\"462f369fccea278795b4f727e2f606c037989639ca6084328690610aa9160c8f\"},\"compaction_prompt\":{\"is_default\":true,\"sha256\":\"dd731ff55b49526d6c528cd41fbfd2dc617a247991596fbd8aa75dd7d03c3054\"}},\"compute\":{\"host_access_enabled\":false,\"host_approved\":[],\"execution_targets\":[],\"container_image\":\"docker.io/library/node:20-slim\",\"container_packages\":[\"python3-pip\",\"nftables\",\"iproute2\",\"git\",\"curl\",\"wget\",\"jq\",\"unzip\",\"ca-certificates\",\"openssh-client\",\"procps\",\"chromium\",\"chromium-driver\",\"fonts-liberation\",\"fonts-noto-core\",\"fonts-noto-color-emoji\",\"fonts-dejavu-core\",\"tzdata\",\"libnss3\",\"libatk-bridge2.0-0\",\"libdrm2\",\"libgbm1\",\"libasound2\",\"tigervnc-standalone-server\",\"openbox\",\"tint2\",\"jgmenu\",\"pcmanfm\",\"lxterminal\",\"mousepad\",\"lxappearance\",\"elementary-xfce-icon-theme\",\"novnc\",\"websockify\",\"xdotool\",\"scrot\",\"xclip\",\"xterm\",\"python3-full\"]},\"mcp_servers\":[],\"adapters\":[],\"sandbox_packages\":[],\"mesh\":{\"enabled\":false,\"lan\":false,\"port\":7295,\"forces_messaging_receive\":false}}"
 #4:
   key: "adf_handle"
   protection: "none"
   value: "agent-1"
 #5:
-  key: "adf_updated_at"
-  protection: "none"
-  value: "<t>"
-#6:
-  key: "adf_parent_did"
-  protection: "readonly"
-  value: ""
-#7:
-  key: "adf_created_at"
-  protection: "readonly"
-  value: "<t>"
-#8:
-  key: "status"
-  protection: "none"
-  value: ""
-#9:
   key: "adf_loop_tools_backfilled"
   protection: "none"
   value: "1"
-#10:
-  key: "adf_did"
-  protection: "readonly"
-  value: "<did#1>"
-#11:
+#6:
+  key: "adf_name"
+  protection: "none"
+  value: "agent-1"
+#7:
   key: "adf_owner_did"
   protection: "readonly"
   value: "<did:owner>"
-#12:
+#8:
+  key: "adf_parent_did"
+  protection: "readonly"
+  value: ""
+#9:
   key: "adf_runtime_did"
   protection: "readonly"
   value: "<did:runtime>"
-#13:
-  key: "adf_effective_runtime"
-  protection: "readonly"
-  value: "{\"schema\":1,\"recorded_at\":\"<t>\",\"host\":\"studioForeground\",\"provider\":{\"id\":\"parity-llm\",\"source\":\"app\",\"type\":\"openai-compatible\",\"name\":\"Parity LLM\",\"base_url\":\"http://127.0.0.1:<LLM_PORT>/v1\",\"model\":\"parity-model\",\"params_source\":\"none\",\"api_key_source\":\"app\"},\"prompts\":{\"base_prompt\":{\"applied\":true,\"is_default\":true,\"sha256\":\"2d76b41391277a5ce16c349655bb0d36e4c561e07206747c0c376e3a100a7cec\"},\"tool_prompts\":{\"overridden\":[],\"sha256\":\"462f369fccea278795b4f727e2f606c037989639ca6084328690610aa9160c8f\"},\"compaction_prompt\":{\"is_default\":true,\"sha256\":\"dd731ff55b49526d6c528cd41fbfd2dc617a247991596fbd8aa75dd7d03c3054\"}},\"compute\":{\"host_access_enabled\":false,\"host_approved\":[],\"execution_targets\":[],\"container_image\":\"docker.io/library/node:20-slim\",\"container_packages\":[\"python3-pip\",\"nftables\",\"iproute2\",\"git\",\"curl\",\"wget\",\"jq\",\"unzip\",\"ca-certificates\",\"openssh-client\",\"procps\",\"chromium\",\"chromium-driver\",\"fonts-liberation\",\"fonts-noto-core\",\"fonts-noto-color-emoji\",\"fonts-dejavu-core\",\"tzdata\",\"libnss3\",\"libatk-bridge2.0-0\",\"libdrm2\",\"libgbm1\",\"libasound2\",\"tigervnc-standalone-server\",\"openbox\",\"tint2\",\"jgmenu\",\"pcmanfm\",\"lxterminal\",\"mousepad\",\"lxappearance\",\"elementary-xfce-icon-theme\",\"novnc\",\"websockify\",\"xdotool\",\"scrot\",\"xclip\",\"xterm\",\"python3-full\"]},\"mcp_servers\":[],\"adapters\":[],\"sandbox_packages\":[],\"mesh\":{\"enabled\":false,\"lan\":false,\"port\":7295,\"forces_messaging_receive\":false}}"
-#14:
-  key: "runtime_umbilical_next_seq"
-  protection: "none"
-  value: "<t>"
-#15:
+#10:
   key: "adf_runtime_turn_checkpoint"
   protection: "readonly"
   value: "{\"id\":\"<turn-id#1>\",\"status\":\"completed\",\"started_at\":<t>,\"updated_at\":<t>,\"completed_at\":<t>,\"event_type\":\"startup\",\"scope\":\"agent\",\"replay\":\"not_attempted\"}"
-#16:
+#11:
+  key: "adf_schema_version"
+  protection: "readonly"
+  value: "32"
+#12:
+  key: "adf_updated_at"
+  protection: "none"
+  value: "<t>"
+#13:
+  key: "adf_version"
+  protection: "readonly"
+  value: "0.2"
+#14:
   key: "context_baseline_tokens"
   protection: "readonly"
   value: "{\"tokens\":110,\"estimated\":false,\"updated_at\":<t>}"
+#15:
+  key: "runtime_umbilical_next_seq"
+  protection: "none"
+  value: "<t>"
+#16:
+  key: "status"
+  protection: "none"
+  value: ""
 
 ## state: agents/agent-1.adf adf_outbox (0 rows; id, message_id, from, to, address, reply_to, network, thread_id, parent_id, subject, content, content_type, attachments, meta, sender_alias, recipient_alias, owner, card, return_path, status_code, created_at, delivered_at, status, original_message)
 

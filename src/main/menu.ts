@@ -2,7 +2,28 @@ import { app, BrowserWindow, Menu, shell } from 'electron'
 import { existsSync } from 'fs'
 import { basename } from 'path'
 import { IPC } from '../shared/constants/ipc-channels'
-import type { SettingsService } from './services/settings.service'
+
+/** What the menu reads and writes: `recentFiles` (SettingsService, or the client settings in daemon mode). */
+export interface MenuSettings {
+  get(key: string): unknown
+  set(key: string, value: unknown): void
+}
+
+/**
+ * Daemon mode only (design §8.1): Help gains "Open daemon log", and while
+ * the backend is not connected a status line and "Reconnect". Embedded mode
+ * never sets it, so its menu is unchanged.
+ */
+export interface DaemonMenuOptions {
+  /** The daemon's log file; null when the daemon runs on another machine. */
+  logFile: () => string | null
+  /** A one-line connection status, or null while connected. */
+  problem: () => string | null
+  /** Whether "Reconnect to the ADF Daemon" makes sense now (the connection dropped). */
+  canReconnect: () => boolean
+  openLog: () => void
+  reconnect: () => void
+}
 
 export type MenuAction =
   | 'new-file'
@@ -14,7 +35,8 @@ export type MenuAction =
 
 const MAX_RECENT_FILES = 10
 
-let settingsRef: SettingsService | null = null
+let settingsRef: MenuSettings | null = null
+let daemonMenu: DaemonMenuOptions | null = null
 
 function targetWindow(): BrowserWindow | undefined {
   return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
@@ -35,8 +57,9 @@ function getRecentFiles(): string[] {
 }
 
 /** Call once at startup with the shared SettingsService, before any windows open. */
-export function initApplicationMenu(settings: SettingsService): void {
+export function initApplicationMenu(settings: MenuSettings, daemon: DaemonMenuOptions | null = null): void {
   settingsRef = settings
+  daemonMenu = daemon
   buildApplicationMenu()
 }
 
@@ -183,10 +206,24 @@ export function buildApplicationMenu(): void {
         {
           label: 'ADF Studio Documentation',
           click: () => shell.openExternal('https://github.com/christianbalevski/adf')
-        }
+        },
+        ...daemonHelpItems()
       ]
     }
   ]
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+function daemonHelpItems(): Electron.MenuItemConstructorOptions[] {
+  if (!daemonMenu) return []
+  const options = daemonMenu
+  const logFile = options.logFile()
+  const problem = options.problem()
+  return [
+    { type: 'separator' },
+    { label: 'Open Daemon Log', enabled: logFile !== null, click: () => options.openLog() },
+    ...(problem ? [{ label: problem, enabled: false }] : []),
+    ...(problem && options.canReconnect() ? [{ label: 'Reconnect to the ADF Daemon', click: () => options.reconnect() }] : [])
+  ]
 }

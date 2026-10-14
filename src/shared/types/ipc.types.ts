@@ -30,6 +30,8 @@ export interface AgentExecutionEvent {
     | 'context_injected'
     | 'response_metadata'
     | 'loop_seq'
+    /** sys_create_adf made a file; payload `AdfFileCreatedPayload` (empty when the path was not reported). */
+    | 'adf_file_created'
   payload: unknown
   timestamp: number
   /**
@@ -41,6 +43,11 @@ export interface AgentExecutionEvent {
    * never truncate main's view (IMPL-5 / RT-F17).
    */
   loop?: string
+}
+
+/** `adf_file_created` on AGENT_EVENT: the file sys_create_adf wrote, when its result names it. */
+export interface AdfFileCreatedPayload {
+  filePath?: string
 }
 
 /**
@@ -289,6 +296,31 @@ export interface AppSettings {
    * the home screen. The drop target is unknowable, so the gesture counts.
    */
   onboardingSharedAt?: number
+  /** Fleet map named groups: group name → member agent file paths. Written by the renderer. */
+  fleetGroups?: Record<string, string[]>
+  /** Fleet map stewards: folder path → the steward agent's DID. Written by the renderer. */
+  fleetStewards?: Record<string, string>
+  /** Fleet map world, saved by the renderer every 60 s and on close. */
+  fleetMapState?: FleetMapState
+}
+
+/**
+ * The fleet map's saved world (`fleetMapState`). Studio main reads only
+ * `burnTotals` (lifetime token burn per agent file, to hydrate the burn
+ * service); the rest is the renderer's own.
+ */
+export interface FleetMapState {
+  heat?: Record<string, { lastAt: number; count: number }>
+  routes?: Record<string, { from: string; to: string }>
+  streets?: Record<string, { lastAt: number; count: number }>
+  burnTotals?: Record<string, number>
+  placement?: {
+    regionOrigins?: Record<string, { q: number; r: number }>
+    cellPins?: Record<string, { q: number; r: number; solo?: boolean }>
+    districtAnchors?: Record<string, { q: number; r: number }>
+    stationPins?: Record<string, { q: number; r: number }>
+  }
+  savedAt?: number
 }
 
 export interface TrackedDirEntry {
@@ -683,7 +715,10 @@ export interface BackgroundAgentStatus {
   activeLoops?: number
 }
 
-export interface BackgroundAgentEvent {
+export type BackgroundAgentEvent = BackgroundAgentStatusEvent | BackgroundAdfFileCreatedEvent
+
+/** Every background event but `adf_file_created`: `filePath` is the agent's file. */
+export interface BackgroundAgentStatusEvent {
   type: 'agent_started' | 'agent_stopped' | 'agent_state_changed'
     | 'agent_loops_changed'
     | 'agent_starting' | 'agent_start_failed' | 'agent_stopping'
@@ -691,6 +726,17 @@ export interface BackgroundAgentEvent {
     | 'ask_request' | 'tool_approval_request'
     | 'response_metadata' | 'turn_complete' | 'error'
   payload: { filePath: string; state?: AgentState; activeLoops?: number; [key: string]: unknown }
+  timestamp: number
+}
+
+/**
+ * sys_create_adf made a file (background-event-mapping.ts). `filePath` is the
+ * CREATED file, absent when the tool result did not name it; `agentFilePath`
+ * is the creating agent.
+ */
+export interface BackgroundAdfFileCreatedEvent {
+  type: 'adf_file_created'
+  payload: { agentFilePath: string; filePath: string | undefined }
   timestamp: number
 }
 
@@ -709,10 +755,15 @@ export interface StrippedToolCallResultPayload {
   resultSize: number
 }
 
-/** A `BackgroundAgentEvent` after renderer stripping — the batch channel's element type. */
+/**
+ * A `BackgroundAgentEvent` after renderer stripping — the batch channel's
+ * element type. `adf_file_created` also rides the batch channel, but no
+ * renderer consumer reads it, so it is left out here: its `filePath` (the
+ * created file) may be absent, unlike every other event's.
+ */
 export type RendererBackgroundAgentEvent =
   | {
-      type: Exclude<BackgroundAgentEvent['type'], 'tool_call_result'>
+      type: Exclude<BackgroundAgentStatusEvent['type'], 'tool_call_result'>
       payload: { filePath: string; state?: AgentState; activeLoops?: number; [key: string]: unknown }
       timestamp: number
     }
