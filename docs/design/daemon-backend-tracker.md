@@ -329,6 +329,10 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
+| W2-A | Start window: path-agent-ops `writeClosed` on a file that is loading (no open document) writes a config the start does not adopt (§6.1 row 24) | W3-A |
+| W2-A | Start window: `agent-runtime-builder.ts:1067` writes the start-time config back to the file, over a write made during the build (§6.1 row 24) | W3-A |
+| W2-A | An open document of a file leased elsewhere still gets AdfWorkspace.open's maintenance writes (migration, clean-close marker, skills registry); a read-only AdfDatabase open would remove them | Lead |
+| W2-A | Wire `setDocumentHolderCheck` and the hold/release/expiry calls to W2-B's `setDocumentHost` | W2-B merge |
 
 ## 7. Parity triage (filled in W5-A)
 
