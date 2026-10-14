@@ -302,6 +302,8 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-A | `TEMPLATE_DELETE`: templates-trash vs OS trash semantics differ | W3-A |
 | W0-A | `fleetGroups`, `fleetStewards`, `fleetMapState` missing from `AppSettings` (`ipc.types.ts`) | W2-C |
 | W0-D | Pre-existing: the daemon's podman probe writes a stray `NUL` file in its working directory | W1-G (fixed) |
+| W1-B | **BLOCKING for W1-A**: nothing calls `builder.applyDerivedKey`; `RuntimeService` never passes `build({derivedKey})` (`runtime-service.ts:2449`), `unlockAgentIdentityPassword` (`:1812`) rebuilds only the provider, `createProviderForModel` fixes `derivedKey:null` (`:2457`). Password-protected agents unlocked in the daemon keep MCP, adapters and AdfCallHandler locked | W1-A |
+| W1-B | Mesh-parity test runs at MeshManager level, not through the daemon builder; full in-daemon scenario | W5-A |
 | W0-F | Streaming bound (300 ms/slice) MAY be too tight on loaded CI; make it configurable | W2-C |
 | W0-F | Upserted tables (adf_meta/config/files/identity) exempt from row-order check; sort them by primary key before daemon diffs | W2-C |
 | W0-F | A child spawned with a clean env (no `NODE_OPTIONS`) is unfenced | W2-C |
