@@ -251,6 +251,42 @@ describe('runMcpHttpOAuthFlow (full flow against a mock AS)', () => {
     expect(as.hits.token).toBe(0)
     expect(store.map.get(as.origin)?.tokens).toBeUndefined()
   })
+
+  it('a caller abort cancels a flow waiting for its callback and closes the listener', async () => {
+    const as = await startMockAS()
+    toClose.push(as)
+    const store = makeStore()
+    const controller = new AbortController()
+    let redirectUri = ''
+    // The "browser" never comes back; the caller gives up instead.
+    const openUrl = vi.fn((authUrl: string) => {
+      redirectUri = new URL(authUrl).searchParams.get('redirect_uri')!
+      setTimeout(() => controller.abort(), 20)
+    })
+    const io: McpHttpOAuthIO = { openUrl, log: () => {} }
+
+    const started = Date.now()
+    const result = await runMcpHttpOAuthFlow(as.origin, store, io, { timeoutMs: 30_000, signal: controller.signal })
+
+    expect(result).toEqual({ authorized: false, error: 'OAuth authorization was cancelled' })
+    expect(Date.now() - started).toBeLessThan(5000)
+    expect(as.hits.token).toBe(0)
+    await expect(fetch(`${redirectUri}?code=late&state=x`)).rejects.toThrow()
+  })
+
+  it('an already-aborted signal never opens the browser', async () => {
+    const as = await startMockAS()
+    toClose.push(as)
+    const controller = new AbortController()
+    controller.abort()
+    const openUrl = vi.fn()
+
+    const result = await runMcpHttpOAuthFlow(as.origin, makeStore(), { openUrl, log: () => {} }, { signal: controller.signal })
+
+    expect(result.authorized).toBe(false)
+    expect(result.error).toBe('OAuth authorization was cancelled')
+    expect(openUrl).not.toHaveBeenCalled()
+  })
 })
 
 /**

@@ -32,8 +32,9 @@ import type { PodmanService } from '../services/podman.service'
 import type { CodeSandboxService } from './code-sandbox'
 import type { SandboxPackagesService } from '../services/sandbox-packages.service'
 import type { LLMProvider } from '../providers/provider.interface'
+import type { AgentExecutor } from './agent-executor'
 import type { AdfWorkspace } from '../adf/adf-workspace'
-import type { AgentConfig, ModelConfig } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, McpServerConfig, ModelConfig } from '../../shared/types/adf-v02.types'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
 import type { RuntimeSettingsStore } from './runtime-service'
 import { McpClientManager } from '../services/mcp-client-manager'
@@ -44,10 +45,10 @@ import type { UvxPackageResolver } from '../services/uvx-package-resolver'
 import type { UvManager } from '../services/uv-manager'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { containerLinkedFileReader } from '../services/mcp-linked-files'
-import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
+import { shouldContainerize, shouldIsolate, isServerForceShared, hostDenialReason, type ComputeSettings } from '../services/container-routing'
 import { resolveContainerCommand } from '../services/container-command-resolver'
 import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
-import { syncDiscoveredMcpTools, resyncServerTools } from '../services/mcp-tool-sync'
+import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import type { McpServerRegistration } from '../../shared/types/ipc.types'
 import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
@@ -58,8 +59,11 @@ import { withDeadline } from '../utils/concurrency'
 import { createHeadlessMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
 import { AgentKeystoreOAuthStore, resolveOAuthStoreForConnect } from '../services/mcp-oauth-store'
-import { buildOAuthProviderFactory } from '../services/mcp-oauth-connect'
+import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn, MCP_OAUTH_AUTHORIZE_APPROVAL } from '../services/mcp-oauth-connect'
+import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from '../services/mcp-http-oauth'
+import { canonicalizeServerUrl, type McpOAuthStore } from '../services/mcp-oauth.types'
 import { ensureCoreToolDeclarations } from './core-tool-declarations'
+import { emitAgentConfigChanged, emitAgentDerivedKeyChanged } from './agent-runtime-signals'
 
 /**
  * Per-agent budget for connecting all MCP servers. A hung server previously
@@ -94,6 +98,16 @@ export interface AgentRuntimeBuilderOptions {
    * file and the Studio trusted-daemon-keys setting).
    */
   credentialEnvelopeLockedHint?: string
+  /**
+   * App-level MCP OAuth token store (the daemon's counterpart of Studio's
+   * `mcpOauthCredentials`). When set, a token signed in at app level is sealed
+   * into the agent before an http+oauth connect (Studio's capture-on-attach),
+   * and an interactive sign-in stores into it first. Absent: the agent
+   * keystore is the only store.
+   */
+  mcpOAuthAppStore?: McpOAuthStore | null
+  /** Interactive HTTP-OAuth flow runner. Tests inject a fake; defaults to runMcpHttpOAuthFlow. */
+  mcpHttpOAuthFlow?: typeof runMcpHttpOAuthFlow
 }
 
 export interface BuildAgentRuntimeOptions {
@@ -103,6 +117,45 @@ export interface BuildAgentRuntimeOptions {
   provider: LLMProvider
   restoreLoop?: boolean
   createProviderForModel?: (model: ModelConfig) => LLMProvider
+  /**
+   * Legacy-password derived key when the host already holds one (an agent
+   * unlocked before start). Later unlocks go through applyDerivedKey.
+   */
+  derivedKey?: Buffer | null
+}
+
+/** What applyDerivedKey restarted so its credentials take effect. */
+export interface DerivedKeyApplyResult {
+  /** False when the agent was not built by this builder (nothing to update). */
+  applied: boolean
+  /** Channel adapters restarted with credentials that needed the key. */
+  adaptersRestarted: string[]
+  /** MCP servers reconnected with credentials that needed the key. */
+  mcpReconnected: string[]
+}
+
+/** Mutable cell the per-agent closures read, so an unlock reaches every consumer. */
+interface DerivedKeyRef {
+  current: Buffer | null
+}
+
+/** Per-agent state the builder keeps for post-build operations. */
+interface BuiltAgentState {
+  workspace: AdfWorkspace
+  label: string
+  keyRef: DerivedKeyRef
+  mcpManager: McpClientManager | null
+  adapterManager: ChannelAdapterManager | null
+  connectMcpServer: (serverName: string, reason: string) => Promise<McpConnectOutcome>
+}
+
+/** The agent's MCP wiring, as registerMcpTools returns it. */
+interface McpRuntime {
+  manager: McpClientManager | null
+  scratchDir: string | null
+  connect: (freshConfig: AgentConfig, serverName: string, reason: string, opts: { interactive: boolean }) => Promise<McpConnectOutcome>
+  reconcile: (nextConfig: AgentConfig) => Promise<void>
+  abortInteractiveSignIns: () => void
 }
 
 /**
@@ -128,6 +181,12 @@ export class AgentRuntimeBuilder {
   private readonly compactionPrompt?: string
   private readonly mcpAuthPreflight: McpAuthPreflightRunner
   private readonly credentialEnvelopeLockedHint?: string
+  private readonly mcpOAuthAppStore: McpOAuthStore | null
+  private readonly mcpHttpOAuthFlow: typeof runMcpHttpOAuthFlow
+  /** Keyed by the assembled handle the builder returned. */
+  private readonly builtAgents = new WeakMap<object, BuiltAgentState>()
+  /** The same states keyed by workspace, for calls that only carry the workspace. */
+  private readonly builtByWorkspace = new WeakMap<AdfWorkspace, BuiltAgentState>()
 
   constructor(opts: AgentRuntimeBuilderOptions = {}) {
     this.settings = opts.settings
@@ -144,11 +203,18 @@ export class AgentRuntimeBuilder {
     this.compactionPrompt = opts.compactionPrompt
     this.mcpAuthPreflight = opts.mcpAuthPreflight ?? createHeadlessMcpAuthPreflight()
     this.credentialEnvelopeLockedHint = opts.credentialEnvelopeLockedHint
+    this.mcpOAuthAppStore = opts.mcpOAuthAppStore ?? null
+    this.mcpHttpOAuthFlow = opts.mcpHttpOAuthFlow ?? runMcpHttpOAuthFlow
   }
 
   async build(opts: BuildAgentRuntimeOptions): Promise<AssembledAgent<'daemon'>> {
     const { workspace, filePath, config, provider } = opts
     const agentId = filePath ?? config.id
+    const label = filePath ?? config.id
+    // Every credential read below goes through this cell: an unlock after
+    // start (applyDerivedKey) reaches MCP, adapters and AdfCallHandler alike.
+    const keyRef: DerivedKeyRef = { current: opts.derivedKey ?? null }
+    if (keyRef.current) emitAgentDerivedKeyChanged(workspace, keyRef.current)
 
     // Inbox and stream-binding declarations, in the running config and the
     // file — the same shared helper both Studio hosts call.
@@ -167,6 +233,7 @@ export class AgentRuntimeBuilder {
       provider,
       registry,
       createProviderForModel: opts.createProviderForModel,
+      keyRef,
     })
 
     this.registerCodeTools(registry, config, agentId, adfCallHandler)
@@ -179,11 +246,12 @@ export class AgentRuntimeBuilder {
       registry,
       workspace,
       config,
-      filePath ?? config.id,
+      label,
       adfCallHandler,
       () => assembled ?? null,
+      keyRef,
     )
-    const adapterRuntime = await this.registerChannelAdapters(workspace, config)
+    const adapterRuntime = await this.registerChannelAdapters(workspace, config, keyRef)
     // StreamBindingManager is keyed by the stable agent id (config.id) —
     // parity with the Studio background path, and the id the podman compute
     // registry tracks.
@@ -197,6 +265,9 @@ export class AgentRuntimeBuilder {
       if (disposed) return
       disposed = true
       const cleanupPromises: Promise<unknown>[] = [...computeStartup]
+      // An interactive OAuth sign-in still waiting on its browser callback
+      // closes its loopback listener now instead of at its own timeout.
+      mcpRuntime.abortInteractiveSignIns()
       if (mcpRuntime.manager) {
         const mgr = mcpRuntime.manager
         mgr.removeAllListeners()
@@ -265,6 +336,9 @@ export class AgentRuntimeBuilder {
         codeSandboxService: this.codeSandboxService,
         mcpManager: mcpRuntime.manager,
         streamBindingManager,
+        // The umbilical lifecycle creates the TapManager in its start(), so the
+        // handle reads it late — parity with both Studio hosts.
+        getTapManager: () => umbilical.lifecycle.getTapManager(),
         scratchDir: mcpRuntime.scratchDir,
         resources: [
           ...umbilical.resources,
@@ -283,19 +357,30 @@ export class AgentRuntimeBuilder {
               )
             } catch { /* non-fatal */ }
           },
+          // Fires for every config change routed through applyConfigChange:
+          // the agent's own sys_update_config / loop_manage and the daemon's
+          // config writes (RuntimeService.setAgentConfig). The Studio hosts do
+          // the same four things in their onConfigChanged and the Agents-screen
+          // save: mesh copy, MCP reconcile, adapter reconcile (file rename is
+          // RuntimeService's).
           onConfigChanged: async (updatedConfig) => {
+            emitAgentConfigChanged(workspace, updatedConfig)
+            // Fire-and-forget like Studio: a container spawn must never block
+            // the tool return or the config save; failures are logged inside.
+            void mcpRuntime.reconcile(updatedConfig).catch((err) =>
+              console.error(`[AgentRuntimeBuilder][MCP] Config reconcile failed for ${label}:`, err instanceof Error ? err.message : err))
             if (!adapterRuntime.manager) return
             await adapterRuntime.manager.reconcile({
               registrations: this.getAdapterRegistrations(),
               adaptersConfig: updatedConfig.adapters,
               workspace,
-              derivedKey: null,
+              derivedKey: keyRef.current,
               // Same locked-credentials gate as the initial start: an adapter
               // (re-)enabled while its sealed credentials are locked gets the
               // stub, which restartLockedAdapters replaces after unlock. The
               // real factory would fail on a null credential and never be
               // retried once the identity becomes ready.
-              resolveFactory: (type, reg) => this.resolveAdapterFactoryUnlessLocked(type, reg, workspace),
+              resolveFactory: (type, reg) => this.resolveAdapterFactoryUnlessLocked(type, reg, workspace, keyRef.current),
             })
           },
           onAutostartChild: async () => false,
@@ -346,6 +431,16 @@ export class AgentRuntimeBuilder {
         })
       }
       await assembled.start()
+      const state: BuiltAgentState = {
+        workspace,
+        label,
+        keyRef,
+        mcpManager: mcpRuntime.manager,
+        adapterManager: adapterRuntime.manager,
+        connectMcpServer: (serverName, reason) => mcpRuntime.connect(workspace.getAgentConfig(), serverName, reason, { interactive: false }),
+      }
+      this.builtAgents.set(assembled, state)
+      this.builtByWorkspace.set(workspace, state)
       return assembled
     } catch (error) {
       await cleanup()
@@ -360,6 +455,7 @@ export class AgentRuntimeBuilder {
     provider: LLMProvider
     registry: ToolRegistry
     createProviderForModel?: (model: ModelConfig) => LLMProvider
+    keyRef: DerivedKeyRef
   }): AdfCallHandler | null {
     if (!this.codeSandboxService) return null
 
@@ -376,8 +472,8 @@ export class AgentRuntimeBuilder {
       provider: opts.provider,
       createProviderForModel: opts.createProviderForModel,
       // ONLY reads from adf_identity — code_access + spec-D13 key-material guard.
-      resolveIdentity: (purpose: string) => opts.workspace.getIdentityForCode(purpose, null),
-      getSigningKey: () => opts.workspace.getSigningKeys(null)?.privateKey ?? null,
+      resolveIdentity: (purpose: string) => opts.workspace.getIdentityForCode(purpose, opts.keyRef.current),
+      getSigningKey: () => opts.workspace.getSigningKeys(opts.keyRef.current)?.privateKey ?? null,
     })
   }
 
@@ -477,20 +573,24 @@ export class AgentRuntimeBuilder {
     filePathOrId: string,
     adfCallHandler: AdfCallHandler | null,
     getAssembled: () => AssembledAgent<'daemon'> | null,
-  ): Promise<{ manager: McpClientManager | null; scratchDir: string | null }> {
+    keyRef: DerivedKeyRef,
+  ): Promise<McpRuntime> {
     // Create the manager unconditionally (parity with the Studio foreground and
     // background paths): mcp_install must be able to connect a server even when
     // the agent started with zero configured servers.
     const scratchDir = createScratchDir(filePathOrId)
     // OAuth (http) connect: attach + silently refresh the agent-sealed token.
-    // No interactive step in this runtime — an absent token surfaces the
+    // The connect itself never opens a browser: an absent token surfaces the
     // terminal "sign in from Settings" status, a locked envelope surfaces the
-    // keystore's actionable hint (both propagate as the server's error). Reads
-    // use derivedKey=null, matching materializeCredentialFiles here.
+    // keystore's actionable hint (both propagate as the server's error). The
+    // interactive sign-in runs BEFORE the connect, from an agent call only
+    // (prepareHttpOAuth). Reads use the agent's current derived key.
     const oauthProviderFactory = buildOAuthProviderFactory((cfg) =>
-      resolveOAuthStoreForConnect({ agentStore: new AgentKeystoreOAuthStore(workspace, cfg.name, null) }),
+      resolveOAuthStoreForConnect({ agentStore: new AgentKeystoreOAuthStore(workspace, cfg.name, keyRef.current) }),
     )
     const manager = new McpClientManager(scratchDir, oauthProviderFactory)
+    // Interactive sign-ins in flight, aborted at teardown.
+    const signIns = new Set<AbortController>()
 
     manager.on('log', (serverName, entry) => {
       const level = entry.stream === 'stderr' ? 'warn' : 'info'
@@ -502,15 +602,25 @@ export class AgentRuntimeBuilder {
       }
     })
 
+    const credentialStore = () => ({
+      getDecrypted: (p: string) => workspace.getIdentityDecrypted(p, keyRef.current),
+      hasRow: (p: string) => workspace.getIdentityRow(p) !== null,
+      envelopeLockedHint: this.credentialEnvelopeLockedHint,
+    })
+
     // Connect ONE already-configured server, sync its discovered tools, persist,
     // and fan the fresh config out to the live executor. Shared by the initial
-    // connect loop and the mcp_install / mcp_restart closures. `freshConfig` is
-    // the caller's responsibility — the closures pass workspace.getAgentConfig()
-    // so post-start config changes are never clobbered by a start-time snapshot.
+    // connect loop, the mcp_install / mcp_restart closures, the owner restart
+    // and the config reconcile. `freshConfig` is the caller's responsibility —
+    // the closures pass workspace.getAgentConfig() so post-start config changes
+    // are never clobbered by a start-time snapshot. `interactive` is true only
+    // for calls an agent loop drives (Studio gates its interactive OAuth on the
+    // same thing: a live executor during a hot install/restart/reconcile).
     const connectOneServer = async (
       freshConfig: AgentConfig,
       serverName: string,
       reason: string,
+      connectOpts: { interactive: boolean },
     ): Promise<McpConnectOutcome> => {
       const serverCfg = freshConfig.mcp?.servers?.find(s => s.name === serverName)
       if (!serverCfg) throw new Error(`Server "${serverName}" not found.`)
@@ -536,7 +646,7 @@ export class AgentRuntimeBuilder {
         if (Object.keys(appEnv).length) connCfg.env = { ...connCfg.env, ...appEnv }
       }
 
-      const resolvedEnv = resolveMcpEnvVars(connCfg, key => workspace.getIdentityDecrypted(key, null))
+      const resolvedEnv = resolveMcpEnvVars(connCfg, key => workspace.getIdentityDecrypted(key, keyRef.current))
       const agentEnvKeys = Object.keys(resolvedEnv)
       if (agentEnvKeys.length) {
         connCfg.env = { ...connCfg.env, ...resolvedEnv }
@@ -549,10 +659,23 @@ export class AgentRuntimeBuilder {
 
       let connectOptions: import('../services/mcp-client-manager').McpConnectOptions | undefined
       let location: McpConnectOutcome['location'] = 'host'
+      let hostDenied: string | undefined
+      const computeSettings = this.getComputeRoutingSettings()
       const willContainerize = connCfg.transport !== 'http'
-        && shouldContainerize(connCfg.name, connCfg, freshConfig, this.getComputeRoutingSettings())
+        && shouldContainerize(connCfg.name, connCfg, freshConfig, computeSettings)
       if (connCfg.transport === 'http') {
         location = 'remote http'
+        if (connCfg.oauth && connCfg.url) {
+          await this.prepareHttpOAuth({
+            serverCfg: connCfg,
+            url: connCfg.url,
+            registration,
+            workspace,
+            keyRef,
+            executor: connectOpts.interactive ? getAssembled()?.executor ?? null : null,
+            signIns,
+          })
+        }
       } else if (this.podmanService && willContainerize) {
         // connCfg (pinned to the registration for Settings-managed servers) —
         // never the agent-writable serverCfg — so a tampered .adf command/args
@@ -560,6 +683,9 @@ export class AgentRuntimeBuilder {
         const containerCmd = resolveContainerCommand(connCfg)
         const isolated = shouldIsolate(freshConfig) && !isServerForceShared(connCfg)
         location = isolated ? 'isolated container' : 'shared container'
+        // Why a host-preferring server runs in a container (Studio foreground
+        // parity: mcp_install / mcp_restart report it to the agent).
+        hostDenied = hostDenialReason(connCfg.name, connCfg, freshConfig, computeSettings) ?? undefined
         try {
           if (isolated) {
             await this.podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
@@ -580,7 +706,7 @@ export class AgentRuntimeBuilder {
         try { await this.podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, freshConfig.id)) } catch { /* ignore */ }
         // Materialize keystore-held credential files into the container before spawn.
         await materializeCredentialFiles(
-          { getDecrypted: (p) => workspace.getIdentityDecrypted(p, null), hasRow: (p) => workspace.getIdentityRow(p) !== null, envelopeLockedHint: this.credentialEnvelopeLockedHint },
+          credentialStore(),
           connCfg,
           containerCredentialTarget(this.podmanService, containerName, containerAgentHome(isolated, freshConfig.id)),
         )
@@ -609,11 +735,7 @@ export class AgentRuntimeBuilder {
         // host — a container-intended server (e.g. builder constructed
         // without a podman service) must never write credentials to host.
         if (!willContainerize) {
-          await materializeCredentialFiles(
-            { getDecrypted: (p) => workspace.getIdentityDecrypted(p, null), hasRow: (p) => workspace.getIdentityRow(p) !== null, envelopeLockedHint: this.credentialEnvelopeLockedHint },
-            connCfg,
-            { kind: 'host' },
-          )
+          await materializeCredentialFiles(credentialStore(), connCfg, { kind: 'host' })
         }
         const spawn = resolveMcpSpawnConfig(connCfg, {
           npmResolver: this.mcpPackageResolver,
@@ -629,7 +751,7 @@ export class AgentRuntimeBuilder {
       if (!tools) {
         const state = manager.getServerState(serverName)
         const stderrTail = state?.logs.filter(l => l.stream === 'stderr').slice(-5).map(l => l.message)
-        return { toolsDiscovered: 0, location, error: state?.error, stderrTail: stderrTail?.length ? stderrTail : undefined }
+        return { toolsDiscovered: 0, location, hostDenied, error: state?.error, stderrTail: stderrTail?.length ? stderrTail : undefined }
       }
 
       const changed = syncDiscoveredMcpTools(freshConfig, serverCfg, tools, registry, manager)
@@ -637,14 +759,85 @@ export class AgentRuntimeBuilder {
       if (nextSchema) serverCfg.env_schema = nextSchema
       if (changed || nextSchema) workspace.setAgentConfig(freshConfig)
       const assembled = getAssembled()
-      assembled?.executor.updateConfig(freshConfig)
-      assembled?.triggerEvaluator.updateConfig(freshConfig)
-      adfCallHandler?.updateConfig(freshConfig)
-      return { toolsDiscovered: tools.length, location }
+      // Through the assembled choke point (as the late resync below), so side
+      // loops re-derive their MCP declarations too. notifyHost:false — a tool
+      // sync is not an edit and must not re-enter the reconcile.
+      if (assembled) assembled.applyConfigChange(freshConfig, { notifyHost: false })
+      else adfCallHandler?.updateConfig(freshConfig)
+      return { toolsDiscovered: tools.length, location, hostDenied }
+    }
+
+    // --- Live MCP reconcile ----------------------------------------------------
+    // Connect servers newly added to the config and disconnect removed ones
+    // WITHOUT restarting the agent (Studio foreground reconcileMcpServers). The
+    // host's onConfigChanged drives it for both an agent's sys_update_config and
+    // the daemon's config writes. `previousReconciled` is the diff's "before"
+    // side: the workspace already holds the new config when either fires.
+    let previousReconciled: AgentConfig = config
+    const reconcile = async (nextConfig: AgentConfig): Promise<void> => {
+      const prev = previousReconciled
+      previousReconciled = nextConfig
+      const { added, removed } = diffMcpServerNames(prev, nextConfig)
+      if (added.length === 0 && removed.length === 0) return
+
+      const registeredNames = new Set(this.getMcpRegistrations().map(r => r.name))
+      for (const name of added) {
+        const serverCfg = nextConfig.mcp?.servers?.find(s => s.name === name)
+        if (!serverCfg) continue
+        // Same skip rule as the start-up connect loop.
+        if (!registeredNames.has(name) && !serverCfg.source) {
+          console.log(`[AgentRuntimeBuilder][MCP] Reconcile: skipping "${name}" — not registered in Settings`)
+          continue
+        }
+        // mcp_install writes the server into the file and connects it itself;
+        // the next config change then lists it as added. Reconnecting a live
+        // server would only drop its tools for the length of a restart.
+        const live = manager.getServerState(name)?.status
+        if (live === 'connected' || live === 'connecting') continue
+        try {
+          const result = await connectOneServer(nextConfig, name, 'Attached', { interactive: true })
+          if (result.toolsDiscovered > 0) {
+            console.log(`[AgentRuntimeBuilder][MCP] Reconcile: connected "${name}" — ${result.toolsDiscovered} tools now available to agent`)
+          } else if (result.error) {
+            console.error(`[AgentRuntimeBuilder][MCP] Reconcile: "${name}" failed to connect — no tools available to agent: ${result.error}`)
+          } else {
+            console.warn(`[AgentRuntimeBuilder][MCP] Reconcile: "${name}" connected with no tools (may need credentials or a later reconnect)`)
+          }
+        } catch (err) {
+          // One server's failure must not abort the others or the config save.
+          console.error(`[AgentRuntimeBuilder][MCP] Reconcile: connect failed for "${name}":`, err instanceof Error ? err.message : err)
+        }
+      }
+
+      for (const name of removed) {
+        try {
+          await manager.disconnect(name)
+        } catch (err) {
+          console.warn(`[AgentRuntimeBuilder][MCP] Reconcile: disconnect failed for "${name}":`, err instanceof Error ? err.message : err)
+        }
+        // The removed server's tools stop reaching the model.
+        const toolPrefix = `mcp_${name}_`
+        for (const tool of registry.getAll()) {
+          if (tool.name.startsWith(toolPrefix)) registry.unregister(tool.name)
+        }
+        console.log(`[AgentRuntimeBuilder][MCP] Reconcile: disconnected "${name}" (removed from config)`)
+      }
+    }
+
+    const runtime: McpRuntime = {
+      manager,
+      scratchDir,
+      connect: connectOneServer,
+      reconcile,
+      abortInteractiveSignIns: () => {
+        for (const controller of signIns) controller.abort()
+        signIns.clear()
+      },
     }
 
     // The owner's restart / connect-after-attach (POST /agents/:id/mcp/servers/:name/restart).
-    registerMcpConnector(manager, (serverName, reason = 'Owner restart') => connectOneServer(workspace.getAgentConfig(), serverName, reason))
+    // Not interactive: Studio's owner restart reuses the stored connection and never prompts.
+    registerMcpConnector(manager, (serverName, reason = 'Owner restart') => connectOneServer(workspace.getAgentConfig(), serverName, reason, { interactive: false }))
 
     // Register the MCP management tools UNCONDITIONALLY — declared/enabled
     // gating happens per-call in the shell/executor, not at registration time.
@@ -662,7 +855,7 @@ export class AgentRuntimeBuilder {
         // (if any) so a tampered .adf command/args can't run under auth.
         const authReg = this.getMcpRegistrations().find(r => r.name === serverName)
         const cfg = authReg ? pinServerConfigToRegistration(serverCfg, authReg) : serverCfg
-        const resolvedEnv = resolveMcpEnvVars(cfg, key => workspace.getIdentityDecrypted(key, null))
+        const resolvedEnv = resolveMcpEnvVars(cfg, key => workspace.getIdentityDecrypted(key, keyRef.current))
         let uvBinPath: string | undefined
         if (cfg.pypi_package || cfg.command === 'uvx') {
           try { uvBinPath = await this.uvManager?.ensureUv() } catch { /* uv not available */ }
@@ -691,28 +884,27 @@ export class AgentRuntimeBuilder {
           try { await this.podmanService.ensureWorkspace(container.containerName, container.home!) } catch { /* preflight itself will surface real failures */ }
         }
         const podmanSvc = this.podmanService
-        const credStore = { getDecrypted: (p: string) => workspace.getIdentityDecrypted(p, null), hasRow: (p: string) => workspace.getIdentityRow(p) !== null, envelopeLockedHint: this.credentialEnvelopeLockedHint }
         // Host credential target ONLY when routing chose host — a
         // container-intended server without a podman service must not
         // materialize or capture credentials on the host.
         const credTarget: CredentialFileTarget | null = container && podmanSvc
           ? containerCredentialTarget(podmanSvc, container.containerName, container.home ?? '/root')
           : (!willContainerize ? { kind: 'host' } : null)
-        if (credTarget) await materializeCredentialFiles(credStore, cfg, credTarget)
+        if (credTarget) await materializeCredentialFiles(credentialStore(), cfg, credTarget)
         await this.mcpAuthPreflight(cfg, { authArgs: installOptions.authArgs, resolvedEnv, uvBinPath, container, authPort: installOptions.authPort })
         // Auth succeeded: capture files the flow stored (tokens) into the keystore.
         if (credTarget) await writeBackCredentialFiles({ setIdentitySealed: (p, v) => workspace.setIdentitySealed(p, v) }, cfg, credTarget, new Date().toISOString(), (m) => { console.log(m); try { workspace.insertLog('info', 'mcp', 'credential_writeback', cfg.name, m.slice(0, 500)) } catch { /* non-fatal */ } })
       }
-      return connectOneServer(freshConfig, serverName, 'Hot-load')
+      return connectOneServer(freshConfig, serverName, 'Hot-load', { interactive: true })
     }, () => this.getMcpRegistrations()))
     registry.register(new McpRestartTool(async (serverName) => {
-      return connectOneServer(workspace.getAgentConfig(), serverName, 'Agent reconnect')
+      return connectOneServer(workspace.getAgentConfig(), serverName, 'Agent reconnect', { interactive: true })
     }))
     registry.register(new McpUninstallTool((serverName) => {
       manager.disconnect(serverName).catch(() => {})
     }))
 
-    if (!config.mcp?.servers?.length) return { manager, scratchDir }
+    if (!config.mcp?.servers?.length) return runtime
 
     try {
       const registrations = this.getMcpRegistrations()
@@ -725,7 +917,7 @@ export class AgentRuntimeBuilder {
             return { name: serverCfg.name, skipped: true, attempted: false, connected: false }
           }
           try {
-            const outcome = await connectOneServer(config, serverCfg.name, 'Initial connect')
+            const outcome = await connectOneServer(config, serverCfg.name, 'Initial connect', { interactive: false })
             return { name: serverCfg.name, skipped: false, attempted: true, connected: outcome.toolsDiscovered > 0 }
           } catch (err) {
             console.error(`[AgentRuntimeBuilder][MCP] connect failed for "${serverCfg.name}":`, err)
@@ -773,13 +965,134 @@ export class AgentRuntimeBuilder {
       }
 
       if (configChanged) workspace.setAgentConfig(config)
-      return { manager, scratchDir }
     } catch (err) {
-      console.error(`[AgentRuntimeBuilder][MCP] setup failed:`, err)
-      await manager.disconnectAll().catch(() => {})
-      removeScratchDir(scratchDir)
-      return { manager: null, scratchDir: null }
+      // Setup-level failure (not a single server): keep the manager and its
+      // scratch dir — parity with both Studio hosts — so mcp_install can
+      // still hot-load. Per-server failures are already isolated above.
+      console.error(`[AgentRuntimeBuilder][MCP] setup failed for ${config.name} — keeping the MCP manager for later installs:`, err)
+      try { workspace.insertLog('error', 'mcp', 'setup_failed', null, String(err instanceof Error ? err.message : err).slice(0, 200)) } catch { /* ignore */ }
     }
+    return runtime
+  }
+
+  /**
+   * Interactive HTTP-OAuth sign-in for an http+oauth server, before its
+   * connect (Studio foreground captureAttachedOAuthToken, background
+   * maybeGateBackgroundOAuthSignIn).
+   *
+   * 1. Capture-on-attach: with an app-level store, a token signed in there is
+   *    sealed into this agent first, so the silent connect finds it.
+   * 2. With a live executor (an agent's mcp_install / mcp_restart, or a
+   *    reconcile after its config write) and no stored token: the shared
+   *    consent gate raises the same `mcp_oauth_signin` HIL request as Studio.
+   * 3. On approval the flow runs here, with this process's loopback callback.
+   *    Where Studio opens the browser itself, the daemon raises a second HIL
+   *    request, `mcp_oauth_authorize`, whose input carries the authorize URL;
+   *    the client opens it. The request settles itself when the callback lands
+   *    or the flow fails, and denying it cancels the flow.
+   *
+   * No executor (initial connect, owner restart): never prompts. Never throws:
+   * every failure leaves the connect to fail plainly with the sign-in status.
+   */
+  private async prepareHttpOAuth(params: {
+    serverCfg: McpServerConfig
+    url: string
+    registration: McpServerRegistration | undefined
+    workspace: AdfWorkspace
+    keyRef: DerivedKeyRef
+    executor: AgentExecutor | null
+    signIns: Set<AbortController>
+  }): Promise<void> {
+    const { serverCfg, url, workspace, executor } = params
+    const serverName = serverCfg.name
+    const agentStore = new AgentKeystoreOAuthStore(workspace, serverName, params.keyRef.current)
+    const appStore = this.mcpOAuthAppStore
+    const log = (level: 'info' | 'warn', message: string): void => {
+      ;(level === 'warn' ? console.warn : console.log)(`[AgentRuntimeBuilder][MCP] ${message}`)
+      try { workspace.insertLog(level, 'mcp', 'oauth_signin', serverName, message.slice(0, 500)) } catch { /* non-fatal */ }
+    }
+
+    if (appStore) {
+      try {
+        await copyOAuthRecord(appStore, agentStore, url)
+      } catch (err) {
+        log('warn', `OAuth capture-on-attach failed for "${serverName}": ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
+    const reg = params.registration as { oauthClientId?: string; oauthScopes?: string[] } | undefined
+    try {
+      await gateInteractiveOAuthSignIn({
+        server: { name: serverName, url },
+        executor,
+        isAlreadySignedIn: async () => !!(await agentStore.get(url))?.tokens,
+        runInteractiveFlow: () => this.runInteractiveOAuthFlow({
+          serverName,
+          url,
+          clientId: reg?.oauthClientId,
+          scopes: reg?.oauthScopes,
+          executor: executor!,
+          agentStore,
+          appStore,
+          signIns: params.signIns,
+          log,
+        }),
+        log,
+      })
+    } catch (err) {
+      log('warn', `OAuth sign-in failed for "${serverName}": ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  private async runInteractiveOAuthFlow(params: {
+    serverName: string
+    url: string
+    clientId?: string
+    scopes?: string[]
+    executor: AgentExecutor
+    agentStore: AgentKeystoreOAuthStore
+    appStore: McpOAuthStore | null
+    signIns: Set<AbortController>
+    log: (level: 'info' | 'warn', message: string) => void
+  }): Promise<boolean> {
+    const { serverName, url, executor, agentStore, appStore, log } = params
+    const controller = new AbortController()
+    params.signIns.add(controller)
+    let authorizeInput: { server: string; url: string; authorize_url: string } | null = null
+    const io: McpHttpOAuthIO = {
+      openUrl: (authorizeUrl) => {
+        authorizeInput = { server: serverName, url, authorize_url: authorizeUrl }
+        log('info', `OAuth sign-in for "${serverName}" approved — authorization URL raised as a "${MCP_OAUTH_AUTHORIZE_APPROVAL}" request; open it to continue.`)
+        void executor.requestApproval(MCP_OAUTH_AUTHORIZE_APPROVAL, authorizeInput, { canAlwaysApprove: false })
+          .then((approved) => {
+            // Denied, or drained by agent teardown: stop waiting for the callback.
+            if (!approved && !controller.signal.aborted) controller.abort()
+          }, () => { if (!controller.signal.aborted) controller.abort() })
+      },
+      log: (message) => console.log(message),
+    }
+    let flow: { authorized: boolean; error?: string }
+    try {
+      flow = await this.mcpHttpOAuthFlow(url, appStore ?? agentStore, io, {
+        clientId: params.clientId,
+        scopes: params.scopes,
+        signal: controller.signal,
+      })
+    } finally {
+      params.signIns.delete(controller)
+    }
+    // The authorize request outlives nothing: the callback landed (approve) or
+    // the flow ended without it (deny). A request already decided is gone.
+    if (authorizeInput) settlePendingApproval(executor, authorizeInput, flow.authorized, flow.authorized ? 'Authorization completed' : `Authorization did not complete: ${flow.error ?? 'unknown'}`)
+    if (!flow.authorized) {
+      log('warn', `OAuth sign-in for "${serverName}" did not complete: ${flow.error ?? 'unknown'}`)
+      return false
+    }
+    // Seal the app-level token into this agent so the silent connect finds it
+    // (and it travels with the .adf). Without an app store it is already there.
+    if (appStore) await copyOAuthRecord(appStore, agentStore, url)
+    log('info', `OAuth sign-in for "${serverName}" complete — token sealed into the agent.`)
+    return true
   }
 
   private getMcpRegistrations(): McpServerRegistration[] {
@@ -812,6 +1125,7 @@ export class AgentRuntimeBuilder {
   private async registerChannelAdapters(
     workspace: AdfWorkspace,
     config: AgentConfig,
+    keyRef: DerivedKeyRef,
   ): Promise<{ manager: ChannelAdapterManager | null }> {
     const registrations = this.getAdapterRegistrations()
     if (registrations.length === 0) return { manager: null }
@@ -840,10 +1154,10 @@ export class AgentRuntimeBuilder {
       // Envelope-sealed credentials that this process cannot unlock resolve to
       // null — the adapter would fail fast and never recover. Mark it errored
       // with a clear message instead of attempting.
-      if (envelopesLocked && adapterCredentialsLocked(workspace, adapterType, null)) {
+      if (envelopesLocked && adapterCredentialsLocked(workspace, adapterType, keyRef.current)) {
         console.error(`[AgentRuntimeBuilder][Adapter] Skipping "${adapterType}" for ${config.name} — envelope-sealed credentials are locked`)
         try { workspace.insertLog('error', 'adapter', 'credentials_locked', adapterType, 'Envelope-sealed credentials are locked in this process — adapter not started') } catch { /* ignore */ }
-        await manager.startAdapter(adapterType, () => createLockedCredentialsAdapter(adapterType), adapterConfig, workspace, null)
+        await manager.startAdapter(adapterType, () => createLockedCredentialsAdapter(adapterType), adapterConfig, workspace, keyRef.current)
         return
       }
 
@@ -856,7 +1170,7 @@ export class AgentRuntimeBuilder {
           createFn,
           adapterConfig,
           workspace,
-          null,
+          keyRef.current,
         )
         if (started) {
           console.log(`[AgentRuntimeBuilder][Adapter] Started "${adapterType}" for ${config.name}`)
@@ -888,10 +1202,88 @@ export class AgentRuntimeBuilder {
       registrations: this.getAdapterRegistrations(),
       adaptersConfig: workspace.getAgentConfig().adapters,
       workspace,
-      derivedKey: null,
+      derivedKey: this.builtByWorkspace.get(workspace)?.keyRef.current ?? null,
       resolveFactory: (type, reg) => this.resolveAdapterFactory(type, reg),
     })
     return locked
+  }
+
+  /**
+   * The owner unlocked (Buffer) or locked (null) the agent's legacy-password
+   * keystore after it started. Studio holds the key before a start (FILE_OPEN
+   * asks for the password), so its consumers read it from the first connect;
+   * the daemon loads first and unlocks later, so this updates the key every
+   * builder-created consumer reads (MCP env, credential files and OAuth store,
+   * channel adapters, AdfCallHandler identity and signing), hands it to the
+   * mesh registration, and restarts the consumers that could not read their
+   * credentials without it. The provider is RuntimeService's to rebuild.
+   * Every restart is logged to the console and the agent's adf_logs.
+   */
+  async applyDerivedKey(agent: object, derivedKey: Buffer | null): Promise<DerivedKeyApplyResult> {
+    const state = this.builtAgents.get(agent)
+    if (!state) return { applied: false, adaptersRestarted: [], mcpReconnected: [] }
+    const previous = state.keyRef.current
+    state.keyRef.current = derivedKey
+    emitAgentDerivedKeyChanged(state.workspace, derivedKey)
+    if (!derivedKey) return { applied: true, adaptersRestarted: [], mcpReconnected: [] }
+
+    const { workspace, label } = state
+    // A credential row this unlock opened: unreadable with the old key, readable now.
+    const opened = (purpose: string): boolean => {
+      try {
+        return workspace.getIdentityDecrypted(purpose, previous) === null
+          && workspace.getIdentityDecrypted(purpose, derivedKey) !== null
+      } catch {
+        return false
+      }
+    }
+    const config = workspace.getAgentConfig()
+
+    const adaptersRestarted: string[] = []
+    if (state.adapterManager) {
+      const registrations = this.getAdapterRegistrations()
+      for (const registration of registrations) {
+        const type = registration.type
+        if (!getEnabledAgentAdapterConfig(config.adapters ?? {}, type)) continue
+        if (!workspace.listIdentityPurposes(`adapter:${type}:`).some(opened)) continue
+        try { await state.adapterManager.stopAdapter(type) } catch { /* reconcile retries the start */ }
+        adaptersRestarted.push(type)
+      }
+      if (adaptersRestarted.length > 0) {
+        try {
+          await state.adapterManager.reconcile({
+            registrations,
+            adaptersConfig: config.adapters,
+            workspace,
+            derivedKey,
+            resolveFactory: (type, reg) => this.resolveAdapterFactoryUnlessLocked(type, reg, workspace, derivedKey),
+          })
+        } catch (err) {
+          console.error(`[AgentRuntimeBuilder][Adapter] Restart after unlock failed for ${label}:`, err)
+        }
+      }
+    }
+
+    const mcpReconnected: string[] = []
+    const registeredNames = new Set(this.getMcpRegistrations().map(r => r.name))
+    for (const server of config.mcp?.servers ?? []) {
+      if (!registeredNames.has(server.name) && !server.source) continue
+      const keys = [server.npm_package, server.pypi_package, server.name].filter((k): k is string => !!k)
+      if (!keys.some(key => workspace.listIdentityPurposes(`mcp:${key}:`).some(opened))) continue
+      try {
+        await state.connectMcpServer(server.name, 'Credentials unlocked')
+        mcpReconnected.push(server.name)
+      } catch (err) {
+        console.error(`[AgentRuntimeBuilder][MCP] Reconnect after unlock failed for "${server.name}" (${label}):`, err instanceof Error ? err.message : err)
+      }
+    }
+
+    const message = `Keystore unlocked for ${config.name}.` +
+      (adaptersRestarted.length ? ` Restarted adapters: ${adaptersRestarted.join(', ')}.` : '') +
+      (mcpReconnected.length ? ` Reconnected MCP servers: ${mcpReconnected.join(', ')}.` : '')
+    console.log(`[AgentRuntimeBuilder] ${message}`)
+    try { workspace.insertLog('info', 'runtime', 'keystore_unlocked', null, message.slice(0, 500)) } catch { /* non-fatal */ }
+    return { applied: true, adaptersRestarted, mcpReconnected }
   }
 
   /** resolveAdapterFactory, but the locked-credentials stub while this adapter's sealed credentials cannot be read. */
@@ -899,8 +1291,9 @@ export class AgentRuntimeBuilder {
     adapterType: string,
     registration: AdapterRegistration,
     workspace: AdfWorkspace,
+    derivedKey: Buffer | null,
   ): Promise<CreateAdapterFn | null> {
-    if (detectLockedEnvelopes(workspace).length > 0 && adapterCredentialsLocked(workspace, adapterType, null)) {
+    if (detectLockedEnvelopes(workspace).length > 0 && adapterCredentialsLocked(workspace, adapterType, derivedKey)) {
       try { workspace.insertLog('error', 'adapter', 'credentials_locked', adapterType, 'Envelope-sealed credentials are locked in this process — adapter not started') } catch { /* ignore */ }
       return () => createLockedCredentialsAdapter(adapterType)
     }
@@ -1030,4 +1423,25 @@ export function createLockedCredentialsAdapter(adapterType: string): ChannelAdap
     canDeliver: () => false,
     status: () => 'error',
   }
+}
+
+/**
+ * Seal an app-level OAuth record into the agent keystore, stamped with the
+ * canonical server URL (the agent store is keyed by server NAME and refuses a
+ * token minted for another endpoint). Same contract as captureOAuthToAgent,
+ * for any McpOAuthStore. Returns false when the app store holds nothing.
+ */
+async function copyOAuthRecord(appStore: McpOAuthStore, agentStore: AgentKeystoreOAuthStore, serverUrl: string): Promise<boolean> {
+  const record = await appStore.get(serverUrl)
+  if (!record) return false
+  await agentStore.save(serverUrl, { ...record, serverUrl: canonicalizeServerUrl(serverUrl) })
+  return true
+}
+
+/** Resolve the still-pending HIL request whose input is `input` (no-op when already decided). */
+function settlePendingApproval(executor: AgentExecutor, input: unknown, approved: boolean, feedback: string): void {
+  try {
+    const pending = executor.getPendingApprovals().find(request => request.input === input)
+    if (pending) executor.resolveHilTask(pending.requestId, approved, undefined, feedback)
+  } catch { /* executor already torn down */ }
 }

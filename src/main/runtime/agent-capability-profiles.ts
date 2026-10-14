@@ -83,7 +83,7 @@ export const AGENT_PROFILES = {
     npmTools: true,
     shell: true,
     streamBindings: true,
-    umbilicalTaps: false,
+    umbilicalTaps: true,
     meshWebSocket: true,
   },
   headlessLive: {

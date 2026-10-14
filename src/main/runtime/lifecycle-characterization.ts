@@ -85,11 +85,10 @@ export const LIFECYCLE_CHARACTERIZATION_LEDGER = [
   },
   {
     id: 'daemon-umbilical-taps',
-    observation: 'Daemon agents do not install Studio umbilical taps.',
+    observation: 'Daemon agents did not install umbilical taps.',
     profiles: ['daemon'],
-    status: 'declaredByProfile',
-    capabilities: ['umbilicalTaps'],
-    reason: 'The daemon profile explicitly disables the Studio-only tap subsystem.',
+    status: 'fixed',
+    reason: 'The daemon builder installs taps through the shared umbilical lifecycle resource and exposes its TapManager, as both Studio hosts do.',
   },
   {
     id: 'headless-live-surface',
