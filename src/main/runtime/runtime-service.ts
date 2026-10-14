@@ -826,13 +826,21 @@ export class RuntimeService extends EventEmitter {
   }
 
   /**
-   * Resolves once a load of `filePath` in flight has finished (or failed);
-   * at once when none is. A path-addressed write waits for it, so it lands
-   * on the loaded agent instead of under its build (design §6.1 row 24).
+   * Resolves true once a load of `filePath` in flight has finished (or
+   * failed), at once when none is; false when it is still loading after
+   * `timeoutMs`. A path-addressed write waits for it, so it lands on the
+   * loaded agent instead of under its build (design §6.1 row 24).
    */
-  async waitForLoad(filePath: string): Promise<void> {
+  async waitForLoad(filePath: string, timeoutMs = 30_000): Promise<boolean> {
     const pending = this.inFlightLoads.get(this.canonicalFilePath(filePath))
-    if (pending) await pending.catch(() => {})
+    if (!pending) return true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs) })
+    try {
+      return await Promise.race([pending.then(() => true, () => true), timedOut])
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   private async doLoadAgent(canonicalPath: string, opts: RuntimeLoadAgentOptions): Promise<RuntimeAgentRef> {

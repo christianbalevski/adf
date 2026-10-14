@@ -47,6 +47,9 @@ export type PathAgentRuntime = Pick<RuntimeService,
   | 'setAgentAdapterCredential' | 'getAgentAdapterCredentials' | 'attachAgentAdapter' | 'getAgentConfig' | 'setAgentConfig'>
   & Partial<Pick<RuntimeService, 'waitForLoad'>>
 
+/** How long a path-addressed write waits for a load of its file in flight. */
+export const LOAD_WAIT_MS = 30_000
+
 interface Target {
   filePath: string
   /** The agent's id when the file is open here: running, or an open document (D4). */
@@ -234,9 +237,11 @@ export class PathAgentOps {
     const filePath = await this.files.adfPath(input)
     // A file that is loading is the agent it becomes: a write made under its
     // build would reach the file but not the start-time config the build
-    // holds (design §6.1 row 24), so it waits for the load and goes through
-    // the runtime.
-    await this.runtime.waitForLoad?.(filePath)
+    // holds (design §6.1 row 24), so a write waits for the load (bounded)
+    // and goes through the runtime. Reads never wait.
+    if (write && this.runtime.waitForLoad && !(await this.runtime.waitForLoad(filePath, LOAD_WAIT_MS))) {
+      throw new FileOpError(`${basename(filePath)} is still starting after ${LOAD_WAIT_MS / 1000} s; try again once it has started.`, 409, 'agent_starting')
+    }
     const running = this.files.loadedAt(filePath)?.id
     if (running) return { filePath, loadedId: running, running: true }
     const open = this.files.openDocumentAt(filePath)
