@@ -31,12 +31,19 @@ export const CLIENT_SETTINGS_KEYS = [
   'theme',
   'uiFont',
   'uiFontCustom',
+  // One-shot marker of migrateUiFontSystemDefault (settings-migrations.ts:101-117).
+  // In daemon mode that migration MUST run on studio-client-settings.json
+  // (W2-C): the daemon's file never holds uiFont.
+  'uiFontSystemDefaultApplied',
   'uiScale',
   'agentAvatars',
   // Carries `burnTotals`, which the fleet-burn service hydrates from at boot
   // (ipc/index.ts:5866). In daemon mode the fleet-burn handler reads it from
   // the client file and passes it to the daemon route as a parameter.
   'fleetMapState',
+  // fleetGroups, fleetStewards and fleetMapState are not AppSettings members
+  // (the renderer writes them through setSettings), so the compile check below
+  // does not see them; the source scan in the test does.
   'fleetGroups',
   'fleetStewards',
   'onboardingSharedAt',
@@ -115,6 +122,8 @@ export const BACKEND_SETTINGS_KEYS = [
   'legacyRuntimeDids',
   'daemonRuntimeDid',
   'daemonRuntimeDelegation',
+  // RUNTIME_KEY_MAP in daemon/daemon-identity.ts maps legacyRuntimeDids here.
+  'daemonLegacyRuntimeDids',
   'trustedDaemonEncKeys',
 ] as const
 
