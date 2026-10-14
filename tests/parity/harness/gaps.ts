@@ -357,20 +357,26 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     apply(d, e) {
       const REDACTED = '__redacted__'
       let n = 0
-      // `__redacted__` where embedded has a real key, at an apiKey of the same place only.
-      const swap = (dv: unknown, ev: unknown, key: string | null): unknown => {
-        if (dv === REDACTED && key === 'apiKey' && typeof ev === 'string' && ev !== '' && ev !== REDACTED) { n++; return ev }
-        if (Array.isArray(dv) && Array.isArray(ev)) return dv.map((x, i) => swap(x, ev[i], null))
-        if (dv && ev && typeof dv === 'object' && typeof ev === 'object' && !Array.isArray(dv) && !Array.isArray(ev)) {
-          return Object.fromEntries(Object.entries(dv).map(([k, v]) => [k, swap(v, (ev as Record<string, unknown>)[k], k)]))
-        }
-        return dv
+      // `__redacted__` where embedded has a real key: `apiKey` of an entry of a
+      // `providers` list at the same index (the settings object's), nothing else.
+      const swapProviders = (dv: unknown, ev: unknown): void => {
+        const mine = (dv as { providers?: unknown } | null)?.providers
+        const theirs = (ev as { providers?: unknown } | null)?.providers
+        if (!Array.isArray(mine) || !Array.isArray(theirs)) return
+        mine.forEach((entry, i) => {
+          const base = theirs[i] as { id?: unknown; apiKey?: unknown } | undefined
+          const p = entry as { id?: unknown; apiKey?: unknown } | null
+          if (!p || p.apiKey !== REDACTED || !base || base.id !== p.id) return
+          if (typeof base.apiKey !== 'string' || base.apiKey === '' || base.apiKey === REDACTED) return
+          p.apiKey = base.apiKey
+          n++
+        })
       }
       d.steps.forEach((step, i) => {
         const base = e.steps[i]
         if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== base.channel) return
-        if (step.channel === IPC.SETTINGS_GET) step.result = swap(step.result, base.result, null)
-        if (step.channel === IPC.SETTINGS_SET) step.args = swap(step.args, base.args, null) as unknown[]
+        if (step.channel === IPC.SETTINGS_GET) swapProviders(step.result, base.result)
+        if (step.channel === IPC.SETTINGS_SET) swapProviders(step.args[0], base.args[0])
         if (step.channel === IPC.PROVIDER_CREDENTIAL_SET) {
           const a = step.args[0] as { value?: unknown } | undefined
           const b = base.args[0] as { value?: unknown } | undefined
