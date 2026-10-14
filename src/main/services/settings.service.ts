@@ -242,6 +242,7 @@ export class SettingsService {
     // Never ship key material to the renderer — even encrypted blobs have no
     // business there, and the plaintext fallback (no safeStorage) definitely doesn't.
     delete all.ownerMnemonic
+    for (const key of Object.keys(all)) if (key.startsWith('ownerMnemonicSuperseded:')) delete all[key]
     delete all.runtimePrivateKey
     delete all.runtimeEncPrivateKey
     // Sealed MCP OAuth token blob (Phase 4 HTTP OAuth) — tokens never reach the renderer.

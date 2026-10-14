@@ -44,19 +44,19 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 
 | ID | Workstream | Wave | Depends on | Status |
 |---|---|---|---|---|
-| W0-A | Channel map and settings-key classes | 0 | none | TODO |
+| W0-A | Channel map and settings-key classes | 0 | none | MERGED |
 | W0-B | Shared daemon client | 0 | none | MERGED e23ec054 |
 | W0-C | Agent lease and runtime host registry | 0 | none | TODO |
 | W0-D | Daemon packaging, process control, `/version`, route hook | 0 | none | MERGED |
 | W0-E | Backend selection at boot, Settings → Backend | 0 | W0-A (merge order) | MERGED c0305508 |
-| W0-F | Parity harness, embedded side | 0 | none | TODO |
+| W0-F | Parity harness, embedded side | 0 | none | MERGED |
 | W1-A | RuntimeService parity hooks | 1 | W0-C, W0-D | TODO |
 | W1-B | AgentRuntimeBuilder and mesh parity | 1 | W0-D | TODO |
-| W1-C | Daemon identity: runtime adoption, unlock cascade, app OAuth store, owner import | 1 | W0-D | TODO |
+| W1-C | Daemon identity: runtime adoption, unlock cascade, app OAuth store, owner import | 1 | W0-D | MERGED |
 | W1-D | Gap routes: approvals, fleet, dashboard, registries, MCP probes | 1 | W0-D | TODO |
 | W1-E | File-level ops, raw file routes, tracked-dir watcher | 1 | W0-D, W0-C | TODO |
-| W1-F | E1 extraction: background event mapping | 1 | W0-F | TODO |
-| W1-G | Compute ownership: a runtime stops only containers it started | 1 | none | TODO |
+| W1-F | E1 extraction: background event mapping | 1 | W0-F | MERGED (squashed) |
+| W1-G | Compute ownership: a runtime stops only containers it started | 1 | none | MERGED |
 | W2-A | Open documents | 2 | W1-A, W1-E | TODO |
 | W2-B | Client sessions and client event stream | 2 | W1-A, W0-B | TODO |
 | W2-C | Daemon-mode core in Studio main | 2 | W0-A, W0-B, W0-E, W1-F | TODO |
@@ -297,7 +297,29 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-D | If the race-winning daemon is still booting 3 s after our child exits, Studio shows "exited during startup"; keep waiting while a pid file appears or retry `ensure` once | W4-A |
 | W0-D | "Waiting for the ADF daemon (pid N)…" progress is not shown in the UI yet | W4-A |
 | W0-D | Packaged build not verified with a real `node_modules` (junction drops transitive deps); lead verifies `npm run package` in a real checkout | Lead, W5-B |
-| W0-D | Pre-existing: the daemon's podman probe writes a stray `NUL` file in its working directory | W1-G |
+| W0-A | `TEMPLATE_CHECK_REVIEW`: daemon reports provider status `unchecked` where Studio runs `autoProviderCheck`, and returns 409 when owner identity is not ready where embedded returns `needsReview:false` | W2-A |
+| W0-A | `DOC_READ_INTERNAL_FILE` needs a metadata-only / size-capped read so Studio does not download whole binaries to discard them | W1-E |
+| W0-A | `TEMPLATE_DELETE`: templates-trash vs OS trash semantics differ | W3-A |
+| W0-A | `fleetGroups`, `fleetStewards`, `fleetMapState` missing from `AppSettings` (`ipc.types.ts`) | W2-C |
+| W0-D | Pre-existing: the daemon's podman probe writes a stray `NUL` file in its working directory | W1-G (fixed) |
+| W1-B | **BLOCKING for W1-A**: nothing calls `builder.applyDerivedKey`; `RuntimeService` never passes `build({derivedKey})` (`runtime-service.ts:2449`), `unlockAgentIdentityPassword` (`:1812`) rebuilds only the provider, `createProviderForModel` fixes `derivedKey:null` (`:2457`). Password-protected agents unlocked in the daemon keep MCP, adapters and AdfCallHandler locked | W1-A |
+| W1-B | Mesh-parity test runs at MeshManager level, not through the daemon builder; full in-daemon scenario | W5-A |
+| W1-F | `adf_file_created` missing from `AgentExecutionEvent['type']` and `BackgroundAgentEvent['type']` (`ipc.types.ts:9,686`); add with real payload type, drop BAM cast | W2-C |
+| W1-F | Wire serializer MUST treat missing key == `undefined` and MUST NOT throw on BigInt/circular values (`writeSse*`) | W2-B |
+| W0-F | Streaming bound (300 ms/slice) MAY be too tight on loaded CI; make it configurable | W2-C |
+| W0-F | Upserted tables (adf_meta/config/files/identity) exempt from row-order check; sort them by primary key before daemon diffs | W2-C |
+| W0-F | A child spawned with a clean env (no `NODE_OPTIONS`) is unfenced | W2-C |
+| W0-F | E3 candidate: `cleanupAllProcesses` never calls `AgentTemplatesService.stopWatcher` | W3-A |
+| W1-G | Liveness is pid + 120 s heartbeat (interim); replace with W0-C `holderLiveness` and fold markers into the host record | W0-C fold, after W0-C merges |
+| W1-G | Studio's 6 s teardown budget can expire during the 6 s stale-marker re-check, leaving containers running (safe direction) | W4-A |
+| W1-G | `leftRunning` and `containerUsers()` need UI in Settings → Compute and the reset confirmation | W3-D |
+| W1-C | E3 in `owner-identity.service.ts` (owner switched outside Studio): own phrase not of `ownerDid` → take the keychain phrase; never mirror such a phrase; `getOwnerSigningKey` null for it; restamp keeps operator attestations of files stamped by another runtime. Tests: `tests/daemon-runtime-adoption.test.ts` "owner switch from the CLI…" | Lead (merge note) |
+| W1-C | Write `studio-runtime:<scope>` with `serializeStudioRuntimeEntry` + `studioRuntimeScope`; rewrite it after any delegation change (owner import); delete it on the switch back to embedded; move app MCP OAuth with `DaemonAppOAuthStore.importBlob/exportBlob`; send the local proof for `POST /identity/import` | W4-A |
+| W1-C | Unify `src/main/utils/test-seams.ts` with W1-G's `isPackagedRuntime` | Lead (done: both seams use `testSeamsAllowed`) |
+| W1-C | Wire `identity.mcpOAuth` (DaemonAppOAuthStore) into the builder's MCP OAuth path | W1-B / W3-C |
+| W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
+| W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
+| W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
 
 ## 7. Parity triage (filled in W5-A)
 

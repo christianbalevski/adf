@@ -798,6 +798,61 @@ describe('daemon CLI', () => {
       expect(io.errorOutput()).toContain('belongs to did:key:zOther')
     })
 
+    it('identity import asks before switching owners and re-posts with switchOwner', async () => {
+      const calls: Array<{ url: string; body?: unknown }> = []
+      const io = withPrompts(fakeIo(async (url, init) => {
+        const body = init?.body ? JSON.parse(String(init.body)) : undefined
+        calls.push({ url: url.replace('http://127.0.0.1:7385', ''), body })
+        if (url.endsWith('/identity')) return jsonResponse(ready)
+        if (!(body as { switchOwner?: boolean }).switchOwner) {
+          return jsonResponse({ error: 'That phrase belongs to did:key:zNew, not this machine\'s owner did:key:zOwner.', code: 'switch_unconfirmed' }, 409)
+        }
+        return jsonResponse({
+          identity: { ...ready, ownerDid: 'did:key:zNew' },
+          ownerDid: 'did:key:zNew',
+          previousOwnerDid: 'did:key:zOwner',
+          switched: true,
+          restamp: { restamped: 2, attested: 2, failures: [] },
+          reloaded: [],
+          reloadFailures: [],
+        })
+      }), [WORDS.join(' '), 'switch'])
+
+      expect(await runCli(['identity', 'import'], io)).toBe(0)
+      expect(calls.map(c => c.url)).toEqual(['/identity', '/identity/import', '/identity/import'])
+      expect(calls[1].body).toEqual({ mnemonic: WORDS.join(' ') })
+      expect(calls[2].body).toEqual({ mnemonic: WORDS.join(' '), switchOwner: true })
+      expect(io.prompts[0].hidden).toBe(true)
+      expect(io.output()).toContain('belongs to did:key:zNew')
+      expect(io.output()).toContain('Owner switched from did:key:zOwner')
+      expect(io.output()).toContain('Restamped 2 agent file(s)')
+      expect(io.output()).not.toContain('alpha')
+    })
+
+    it('identity import --i-have-a-backup states the previous phrase is backed up; unknown options are refused', async () => {
+      const bodies: unknown[] = []
+      const io = withPrompts(fakeIo(async (url, init) => {
+        if (init?.body) bodies.push(JSON.parse(String(init.body)))
+        if (url.endsWith('/identity')) return jsonResponse(ready)
+        return jsonResponse({ identity: ready, ownerDid: 'did:key:zOwner', previousOwnerDid: 'did:key:zOwner', switched: false, restamp: { restamped: 0, attested: 0, failures: [] }, reloaded: [], reloadFailures: [] })
+      }), [WORDS.join(' ')])
+      expect(await runCli(['identity', 'import', '--i-have-a-backup'], io)).toBe(0)
+      expect(bodies).toEqual([{ mnemonic: WORDS.join(' '), previousOwnerBackupConfirmed: true }])
+      expect(await runCli(['identity', 'import', '--yolo'], withPrompts(fakeIo(async () => jsonResponse(ready)), []))).toBe(1)
+    })
+
+    it('identity import changes nothing unless "switch" is typed', async () => {
+      let posts = 0
+      const io = withPrompts(fakeIo(async (url) => {
+        if (url.endsWith('/identity')) return jsonResponse(ready)
+        posts++
+        return jsonResponse({ error: 'That phrase belongs to did:key:zNew', code: 'switch_unconfirmed' }, 409)
+      }), [WORDS.join(' '), 'no'])
+      expect(await runCli(['identity', 'import'], io)).toBe(1)
+      expect(posts).toBe(1)
+      expect(io.output()).toContain('Nothing was changed.')
+    })
+
     it('identity unlock posts the hidden passphrase', async () => {
       const bodies: unknown[] = []
       const io = withPrompts(fakeIo(async (_url, init) => {
