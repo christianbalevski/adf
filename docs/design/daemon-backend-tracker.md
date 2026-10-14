@@ -338,6 +338,9 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W2-C | Renderer ignores `chat_updated.earlierCount` (`useAgent.ts:495`): after a daemon-mode `stream.gap` resync (last 200 entries) older entries cannot be paged until reopen. Embedded sends the whole loop, no `earlierCount` | W3-A |
 | Lead | MERGE GATE at W2-B merge: a test in the real daemon wiring proving a document held by a live session survives past the 60 s holder TTL (W2-B `setDocumentHolderCheck` wired to W2-A's sweep) | Lead (W2-B merge) |
 | W2-A | Read-only open of a file leased elsewhere still runs `AdfWorkspace.open` maintenance writes; a true read-only open needs an `AdfDatabase` change | W3-A |
+| W3-C | Agent MCP OAuth via HIL (`mcp_oauth_authorize`) not met end-to-end: opener sees only the connect snapshot on the interim adapter; a request pending at connect lands in the approvals panel with no Open action. Needs a parity scenario on client sessions | W2-C2 |
+| W3-C | Interim-adapter install-progress branch (`install-progress.ts:121-138`, `progressLog` relay) is dead once on client sessions; delete and rerun `w3c-install-progress` on sessions | W2-C2 |
+| W3-C | E3 candidate: `MCP_ATTACH_SERVER` drops OAuth flags (renderer + `ipc/index.ts:7167`); the `.adf` lacks `oauth:true`, so on another runtime it connects without OAuth and 401s | W5-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
