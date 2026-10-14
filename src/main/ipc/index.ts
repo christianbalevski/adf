@@ -8328,6 +8328,9 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
   // points at an agent that no longer exists.
   try { nativeNotifier?.dispose() } catch { /* best effort */ }
   try { menuBar?.dispose() } catch { /* best effort */ }
+  // The templates-folder watcher registerAllIpcHandlers started (and its
+  // pending TEMPLATES_CHANGED): nothing may push to a closing window.
+  try { templatesService?.stopWatcher() } catch { /* best effort */ }
   // Flush debounced token usage data before anything can go wrong.
   try { getTokenUsageService().flush() }
   catch (e) { console.error('[Cleanup] token usage flush error:', e) }

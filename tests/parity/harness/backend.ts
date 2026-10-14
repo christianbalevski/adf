@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { vi } from 'vitest'
 import type { ParityEnv } from './env'
 import type { FakeElectron } from './electron-fake'
@@ -121,17 +121,15 @@ export function createRunResources(): RunResources {
 }
 
 /**
- * After the backend's own shutdown: close the one watcher Studio is known to
- * leave open (the templates folder; AgentTemplatesService.stopWatcher is
- * never called by cleanupAllProcesses, an E3 candidate) and report every
- * other watcher still open as a leak.
+ * After the backend's own shutdown: report every file watcher still open as
+ * a leak (the templates-folder watcher included: cleanupAllProcesses stops it
+ * since the E3 fix, tests/parity/documents/templates-watcher-shutdown.test.ts).
  */
-export async function releaseRunResources(resources: RunResources, env: ParityEnv): Promise<string[]> {
-  const templates = join(env.userDataDir, 'templates')
+export async function releaseRunResources(resources: RunResources, _env: ParityEnv): Promise<string[]> {
   const leaks: string[] = []
   for (const w of resources.watchers) {
     if (w.closed) continue
-    if (!(w.paths.length === 1 && w.paths[0] === templates)) leaks.push(`file watcher still open after shutdown: ${w.paths.join(', ')}`)
+    leaks.push(`file watcher still open after shutdown: ${w.paths.join(', ')}`)
   }
   // Close every open one, so the run root can be deleted; leaks stay reported.
   await Promise.all(resources.watchers.filter((w) => !w.closed).map((w) => { w.closed = true; return w.close().catch(() => {}) }))
