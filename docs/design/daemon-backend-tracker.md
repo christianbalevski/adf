@@ -317,6 +317,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W1-C | Write `studio-runtime:<scope>` with `serializeStudioRuntimeEntry` + `studioRuntimeScope`; rewrite it after any delegation change (owner import); delete it on the switch back to embedded; move app MCP OAuth with `DaemonAppOAuthStore.importBlob/exportBlob`; send the local proof for `POST /identity/import` | W4-A |
 | W1-C | Unify `src/main/utils/test-seams.ts` with W1-G's `isPackagedRuntime` | Lead (done: both seams use `testSeamsAllowed`) |
 | W1-C | Wire `identity.mcpOAuth` (DaemonAppOAuthStore) into the builder's MCP OAuth path | W1-B / W3-C |
+| W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
 
