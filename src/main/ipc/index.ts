@@ -170,6 +170,7 @@ import { readRecentToolsFromWorkspace } from '../services/recent-tools'
 import { ProviderChecks } from '../services/provider-checks'
 import { buildToolDescriptions } from '../services/tool-descriptions'
 import { availableAdfPath, bringRegistryAgentHome } from '../services/registry-bring-home'
+import { claimAgentWorkspace, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword } from '../services/envelope-actions'
 import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById } from '../services/dashboard-stats'
 import { buildMeshStatus } from '../services/mesh-status'
 
@@ -8260,30 +8261,16 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.IDENTITY_CLAIM, async () => {
     if (!currentWorkspace || !currentFilePath) return { success: false, error: 'No ADF open' }
-    try {
-      if (currentWorkspace.isPasswordProtected() && !currentDerivedKey) {
-        // Claiming without the derived key would wipe the signing keys and
-        // then bail at provisioning, leaving the file key-less and still
-        // password-protected.
-        return { success: false, error: 'File is password-protected — enter the password before claiming' }
-      }
-      settings.ensureRuntimeIdentity()
-      if (!settings.getOwnerIdentity().getEnvelopeRecipients()) {
-        // Fail plainly: claiming without envelope recipients would mint an
-        // identity with no envelopes (plaintext keys, no credential sealing).
-        return { success: false, error: 'Owner and runtime encryption keys are unavailable (keystore locked?), so the template cannot be claimed securely.' }
-      }
-      // If password-protected, decrypt everything first, then remove password
-      if (currentWorkspace.isPasswordProtected() && currentDerivedKey) {
-        currentWorkspace.removePassword(currentDerivedKey)
+    const claimedPath = currentFilePath
+    return claimAgentWorkspace(currentWorkspace, {
+      derivedKey: currentDerivedKey,
+      svc: settings.getOwnerIdentity(),
+      ensureRuntimeIdentity: () => { settings.ensureRuntimeIdentity() },
+      onPasswordRemoved: () => {
         currentDerivedKey = null
-        derivedKeyCache.delete(currentFilePath)
-      }
-      const { did } = settings.getOwnerIdentity().claimWorkspace(currentWorkspace)
-      return { success: true, did }
-    } catch (err) {
-      return { success: false, error: String(err) }
-    }
+        derivedKeyCache.delete(claimedPath)
+      },
+    })
   })
 
   // --- Owner identity (app-level, mnemonic-backed) ---
@@ -8314,119 +8301,39 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.IDENTITY_ATTESTATIONS_GET, async () => {
     if (!currentWorkspace) return { attestations: [] }
-    return { attestations: readAdfAttestations(currentWorkspace), did: currentWorkspace.getDid() }
+    return readAttestations(currentWorkspace)
   })
 
   ipcMain.handle(IPC.IDENTITY_ATTESTATIONS_REISSUE, async () => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
-    if (!currentWorkspace.getDid()) return { success: false, error: 'Agent has no DID — generate keys first' }
-    issueAttestationsForCurrentOwner(currentWorkspace)
-    return { success: true, attestations: readAdfAttestations(currentWorkspace) }
+    return reissueAttestations(currentWorkspace, settings.getOwnerIdentity())
   })
 
   // --- Envelope keystore (dual-envelope secret protection) ---
+  // Bodies in services/envelope-actions.ts (shared with the daemon routes).
 
   ipcMain.handle(IPC.IDENTITY_ENVELOPE_STATUS, async () => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
-    // 'foreign' from getEnvelopeState only means "no cached DEK, no password
-    // slot" — a session-cache artifact for an own file whose open path never
-    // unlocked (e.g. legacy password gate). Attempt the local-key unwrap
-    // first, then classify leftovers by slot DIDs: local owner/runtime slot
-    // present → ours-but-not-unlocked → 'locked', never 'foreign'.
-    unlockWorkspaceEnvelopes(currentWorkspace)
-    const svc = settings.getOwnerIdentity()
-    const localDids = new Set([svc.getOwnerDid(), svc.getRuntimeDid()])
-    const classify = (name: 'identity' | 'credentials') => {
-      const state = currentWorkspace!.getEnvelopeState(name)
-      if (state !== 'foreign') return state
-      const slots = currentWorkspace!.readEnvelopeSlots(name) ?? []
-      const oursBySlot = slots.some(
-        (s) => s.type !== 'password' && localDids.has((s as { recipient_did?: string }).recipient_did ?? '')
-      )
-      return oursBySlot ? 'locked' : 'foreign'
-    }
-    const credentialSlots = currentWorkspace.readEnvelopeSlots('credentials') ?? []
-    return {
-      success: true,
-      identity: classify('identity'),
-      credentials: classify('credentials'),
-      sharePasswordSet: credentialSlots.some((s) => s.type === 'password')
-    }
+    return readEnvelopeStatus(currentWorkspace, settings.getOwnerIdentity(), unlockWorkspaceEnvelopes)
   })
 
-  // Share flow (D12): add a password slot to the credentials envelope so the
-  // file can travel; identity is never password-shareable.
   ipcMain.handle(IPC.IDENTITY_ENVELOPE_SHARE_SET_PASSWORD, async (_event, password: string) => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
-    if (typeof password !== 'string' || password.length < 8) {
-      return { success: false, error: 'Share password must be at least 8 characters' }
-    }
-    try {
-      // One password slot at a time — replace rather than accumulate.
-      currentWorkspace.removeEnvelopePasswordSlots('credentials')
-      currentWorkspace.addEnvelopePasswordSlot('credentials', password)
-      return { success: true }
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) }
-    }
+    return setSharePassword(currentWorkspace, password)
   })
 
   ipcMain.handle(IPC.IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD, async () => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
-    currentWorkspace.removeEnvelopePasswordSlots('credentials')
-    return { success: true }
+    return removeSharePassword(currentWorkspace)
   })
 
-  // Recipient flow (D12): unlock foreign credentials with the share password.
-  // adopt: true (the post-claim manual path, e.g. IdentityPanel) additionally
-  // re-wraps to the local owner/runtime; the password slot is PRESERVED
-  // (multi-route — the same password keeps working for re-sharing). adopt:
-  // false (the pre-accept review flow) caches the DEK for this session only
-  // and writes NOTHING — rejecting the review must leave the file untouched;
-  // adoption then happens inside the claim path.
   ipcMain.handle(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, async (
     _event,
     password: string,
     adopt?: boolean
   ) => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
-    if (!currentWorkspace.unlockEnvelopeWithPassword('credentials', String(password))) {
-      return { success: false, error: 'Wrong password' }
-    }
-    if (adopt === false) {
-      return { success: true, adopted: false, credentials: currentWorkspace.getEnvelopeState('credentials') }
-    }
-    try {
-      const svc = settings.getOwnerIdentity()
-      const ownerEncPub = svc.getOwnerEncPublicKey()
-      const runtimeEncPub = svc.getRuntimeEncPublicKey()
-      const adopted = !!(ownerEncPub && runtimeEncPub)
-      if (ownerEncPub && runtimeEncPub) {
-        currentWorkspace.adoptEnvelope('credentials', {
-          ownerDid: svc.getOwnerDid(),
-          ownerEncPublicKey: ownerEncPub,
-          runtimeDid: svc.getRuntimeDid(),
-          runtimeEncPublicKey: runtimeEncPub
-        })
-      }
-      // Credentials written while the envelope was locked landed plain —
-      // seal them now that the DEK is available.
-      currentWorkspace.sealPlainRowsIntoEnvelopes()
-      return {
-        success: true,
-        adopted,
-        // Adopt skipped ≠ adopted: the envelope stays usable this session but
-        // no local key slots were added — the password stays the only route
-        // on this machine. Warn, don't fail — failing here would block
-        // credential use entirely.
-        ...(adopted
-          ? {}
-          : { warning: 'Owner/runtime encryption keys are unavailable — envelope unlocked for this session only; the password will be required again next time' }),
-        credentials: currentWorkspace.getEnvelopeState('credentials')
-      }
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) }
-    }
+    return unlockWithSharePassword(currentWorkspace, password, adopt, settings.getOwnerIdentity())
   })
 
   // --- ChatGPT Subscription Auth ---
