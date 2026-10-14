@@ -551,6 +551,7 @@ export class AdfDatabase {
     updateTaskStatus?: Database.Statement
     setTaskRequiresAuthorization?: Database.Statement
     setTaskExecutorManaged?: Database.Statement
+    setTaskApprovalMeta?: Database.Statement
     updateTaskArgs?: Database.Statement
     getTasksByStatus?: Database.Statement
     getAllTasks?: Database.Statement
@@ -3103,6 +3104,9 @@ export class AdfDatabase {
     this.stmts.setTaskExecutorManaged = this.db.prepare(
       'UPDATE adf_tasks SET executor_managed = 1 WHERE id = ?'
     )
+    this.stmts.setTaskApprovalMeta = this.db.prepare(
+      'UPDATE adf_tasks SET approval_meta = ? WHERE id = ?'
+    )
     this.stmts.updateTaskArgs = this.db.prepare(
       'UPDATE adf_tasks SET args = ? WHERE id = ?'
     )
@@ -4296,6 +4300,10 @@ export class AdfDatabase {
 
   setTaskExecutorManaged(id: string, _value: true): void {
     this.stmts.setTaskExecutorManaged!.run(id)
+  }
+
+  setTaskApprovalMeta(id: string, approvalMeta: string): void {
+    this.stmts.setTaskApprovalMeta!.run(approvalMeta, id)
   }
 
   updateTaskArgs(id: string, args: string): void {

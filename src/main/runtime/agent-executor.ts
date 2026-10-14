@@ -1406,6 +1406,7 @@ export class AgentExecutor extends EventEmitter {
   ): void {
     const pending = this.pendingHilTasks.get(taskId)
     if (pending) {
+      this.persistHilDecision(taskId, approved, feedback)
       this.pendingHilTasks.delete(taskId)
       // Clear the global approvals menu too, recording how it ended for the
       // menu's history. No-op when the hub initiated this resolve (it removes
@@ -1430,6 +1431,28 @@ export class AgentExecutor extends EventEmitter {
         ...(opts?.timedOut ? { timed_out: true } : {}),
       })
       pending.resolve({ approved, modifiedArgs, feedback })
+    }
+  }
+
+  /**
+   * Every decision that reaches resolveHilTask (Studio card, approvals menu,
+   * "Always approve", "Approve all", the protection auto-deny timer) must move
+   * the task row out of pending_approval BEFORE the approval settles — the
+   * same synchronous pending → running / denied transition handleTaskResolve
+   * and resolveAgentTask make before they call in here. Otherwise the row
+   * stays pending while the approved tool runs, and a later task_resolve
+   * (remote approval lambda, timeout sweep) passes its pending check, reports
+   * success and writes a false verdict. Rows another resolver already moved
+   * are left alone.
+   */
+  private persistHilDecision(taskId: string, approved: boolean, feedback?: string): void {
+    const workspace = this.session.getWorkspace()
+    const task = workspace.getTask(taskId)
+    if (!task || (task.status !== 'pending' && task.status !== 'pending_approval')) return
+    if (approved) {
+      workspace.updateTaskStatus(taskId, 'running')
+    } else {
+      workspace.updateTaskStatus(taskId, 'denied', undefined, feedback?.trim() || 'Rejected')
     }
   }
 
@@ -4224,6 +4247,13 @@ export class AgentExecutor extends EventEmitter {
             return
           }
           const meta = this.buildApprovalMeta(toolName, rawResult.protection)
+          // The row now asks for a protection override, not the original
+          // restricted-tool approval: rewrite its durable metadata (and require
+          // authorized resolvers) BEFORE it becomes pending again, so readers
+          // of the row (on_task_create/remote-approval lambdas, the tasks
+          // panel) never see a protection override labelled 'restricted'.
+          workspace.setTaskApprovalMeta(taskId, JSON.stringify({ reason: meta.reason, protection: meta.protection }))
+          workspace.setTaskRequiresAuthorization(taskId, true)
           workspace.updateTaskStatus(taskId, 'pending_approval')
           workspace.setTaskExecutorManaged(taskId, true)
           this.trackPendingHilTask(taskId, {

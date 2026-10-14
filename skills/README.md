@@ -24,6 +24,10 @@ structural checks from visual validation and explain format-specific editing
 limits; none promises arbitrary full-fidelity Office round trips. Read each
 package's preflight before running its examples.
 
+## Experimental
+
+- [`telegram-remote-hil`](telegram-remote-hil/SKILL.md) — owner-only remote HIL approvals over Telegram. Review candidate, not live-validated: read the deployment gates in `SKILL.md` before any setup.
+
 The package convention is documented in
 [`docs/guides/skills.md`](../docs/guides/skills.md). Installing a package does
 not grant tools, credentials, authorization, or HIL exemptions.

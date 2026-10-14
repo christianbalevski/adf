@@ -220,6 +220,30 @@
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/powerpoint-presentations/tests/pptx-workflow.test.mjs"
         }
       ]
+    },
+    {
+      "name": "telegram-remote-hil",
+      "description": "Set up owner-only remote human approvals over Telegram for ADF HIL tasks, with explicit principal ID binding, reply correlation, and expiry.",
+      "path": "skills/telegram-remote-hil/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/telegram-remote-hil/SKILL.md",
+      "files": [
+        {
+          "path": "MANIFEST.json",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/telegram-remote-hil/MANIFEST.json"
+        },
+        {
+          "path": "references/CHANGES.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/telegram-remote-hil/references/CHANGES.md"
+        },
+        {
+          "path": "references/PUBLICATION.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/telegram-remote-hil/references/PUBLICATION.md"
+        },
+        {
+          "path": "scripts/telegram-hil.js",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/telegram-remote-hil/scripts/telegram-hil.js"
+        }
+      ]
     }
   ]
 }

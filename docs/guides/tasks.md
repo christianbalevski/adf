@@ -20,7 +20,7 @@ Tools configured with `enabled: true` and `restricted: true` create a task with 
 
 The task can be resolved by:
 - **UI approval dialog / HTTP** — the owner clicks approve/deny in the Studio UI, or a client calls the daemon endpoint `POST /agents/:id/tasks/:taskId/resolve`
-- **`on_task_create` trigger lambda** — dispatches to an external approval system (Telegram, multi-agent vote, etc.) which calls `task_resolve`
+- **`on_task_create` trigger lambda** — notifies or routes to an external approval system (Telegram, multi-agent vote, etc.); only owner-authorized code can then call `task_resolve`. See [Routing approvals outside Studio](#routing-approvals-outside-studio) before resolving tasks from a chat channel.
 - **`task_resolve` from authorized code** — any authorized lambda can approve/deny
 
 The resolve endpoint returns **404** for an unknown task id and **409** when the task is not in a resolvable status — only `pending` and `pending_approval` rows can be resolved. A task already swept to a terminal status by orphan reconciliation therefore returns 409.
@@ -163,20 +163,35 @@ Fires when a task is created. This is the hook for external approval routing —
 }
 ```
 
-Example lambda:
+Example lambda — a **notification only**: it tells the owner a decision is waiting and leaves the decision in Studio:
 
 ```javascript
 export async function onTaskCreate(event) {
   const { task } = event.data;
-  if (!task.requires_authorization) return;
+  if (!task.requires_authorization || task.status !== 'pending_approval') return;
+  // Protection overrides (and anything without reason 'restricted') stay Studio-only.
+  if (task.approval_meta?.reason !== 'restricted') return;
 
   await adf.msg_send({
-    recipient: "telegram:123456789",
-    content: `Approval needed: ${task.tool}\nArgs: ${task.args}`,
+    recipient: "telegram:123456789",   // the owner's numeric user ID (private chat)
+    // Never put task.args here: they can hold file contents, commands or secrets.
+    content: `Approval pending: task ${task.id} (${task.tool}). Open Studio to review and decide.`,
     subject: `task:${task.id}`
   });
 }
 ```
+
+#### Routing approvals outside Studio
+
+Sending a notification is safe; **resolving** a task from a chat reply is not, unless the resolver does all of the following:
+
+- **Privacy.** Send only safe fields (task ID, tool name, a hash of the full input). Arguments, commands and file contents stay in Studio, where the owner inspects them before deciding.
+- **Sender binding.** Accept a verdict only from the owner's numeric user ID, in a private chat with that ID, as a direct reply (`parent_id`) to the exact message the resolver sent. A subject line, a task ID in the text, or a matching display name is not authentication.
+- **Request binding.** Keep issued requests in a `local_*` table that the owner protects as `authorized` and locks (`locked_fields`), so only the reviewed resolver can write it. Check that the task is still `pending_approval` and unchanged since the request was sent, and expire requests.
+- **Studio-only overrides.** Never forward, resolve or time out a task whose `approval_meta.reason` is not `restricted`. Protection overrides (`reason: 'protection'`) unlock owner-locked files, metadata or config and must be decided in Studio.
+- **Authorized code.** The resolver must be owner-reviewed and authorized; unauthorized code gets `REQUIRES_AUTHORIZED_CODE` from `task_resolve`. Treat an `INVALID_STATE` result as "already decided elsewhere" and do not report a verdict to the chat.
+
+A Telegram remote-approval skill implementing these rules is an experimental review candidate. It is not shipped with ADF and has not been validated against live Telegram.
 
 ### `on_task_complete`
 

@@ -337,9 +337,9 @@ This holds for tools driven through `adf_shell` too: the command runs, then the 
 
 ##### on_task_create — `event.data.task: TaskEntry`
 
-Fires when a task is created (HIL approval, async dispatch). Same shape as task row. Key fields: `id`, `tool`, `args`, `status`, `origin`, `requires_authorization`.
+Fires when a task is created (HIL approval, async dispatch). Same shape as task row. Key fields: `id`, `tool`, `args`, `status`, `origin`, `requires_authorization`, `approval_meta` (`reason`: `restricted` or `protection`).
 
-Use this for **external approval routing** — dispatch approval requests to Telegram, multi-agent vote systems, or webhooks when HIL tasks are created.
+Use this for **external approval notification** — tell the owner, a multi-agent vote system or a webhook that a HIL task is waiting. Resolving tasks from a chat channel has extra requirements; see [Tasks: Routing approvals outside Studio](tasks.md#routing-approvals-outside-studio).
 
 ##### on_task_complete — `event.data.task: TaskEntry`
 
@@ -556,9 +556,9 @@ System script logs every filesystem tool call (observational — does not block)
 }
 ```
 
-### HIL Approval via Telegram
+### HIL Approval Notifications via Telegram
 
-Mark the tool as restricted (which derives HIL for LLM loop calls), then use `on_task_create` to route approvals externally. Note that `restricted` and `locked` are owner-only — an agent's `sys_update_config` write touching them is hard-denied (no HIL prompt); only owners set these:
+Mark the tool as restricted (which derives HIL for LLM loop calls), then use `on_task_create` to tell the owner on Telegram that an approval is waiting. The owner decides in Studio. Note that `restricted` and `locked` are owner-only — an agent's `sys_update_config` write touching them is hard-denied (no HIL prompt); only owners set these:
 
 ```json
 {
@@ -577,18 +577,23 @@ Mark the tool as restricted (which derives HIL for LLM loop calls), then use `on
 ```
 
 ```javascript
-// lib/hil/dispatcher.ts
+// lib/hil/dispatcher.ts — notification only; decisions stay in Studio
 export async function onTaskCreate(event) {
   const { task } = event.data;
-  if (!task.requires_authorization) return;
+  if (!task.requires_authorization || task.status !== 'pending_approval') return;
+  // Protection overrides (and anything without reason 'restricted') stay Studio-only.
+  if (task.approval_meta?.reason !== 'restricted') return;
 
   await adf.msg_send({
-    recipient: "telegram:123456789",
-    content: `Approve ${task.tool}? Args: ${task.args}\nReply yes/no.`,
+    recipient: "telegram:123456789",   // the owner's numeric user ID (private chat)
+    // Never put task.args here: they can hold file contents, commands or secrets.
+    content: `Approval pending: task ${task.id} (${task.tool}). Open Studio to review and decide.`,
     subject: `task:${task.id}`
   });
 }
 ```
+
+Do not resolve tasks from Telegram replies with a handler that matches on the subject or task ID: anyone who can message the bot, or the agent itself, can produce matching text. Reply-based approval needs privacy, sender binding, request binding, expiry and Studio-only protection overrides; the requirements are listed in [Tasks: Routing approvals outside Studio](tasks.md#routing-approvals-outside-studio). A Telegram remote-approval skill implementing them is an experimental review candidate. It is not shipped with ADF and has not been validated against live Telegram.
 
 ### Error Alerter
 

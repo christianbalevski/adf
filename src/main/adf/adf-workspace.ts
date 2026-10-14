@@ -2334,6 +2334,10 @@ export class AdfWorkspace {
     this.db.setTaskExecutorManaged(id, value)
   }
 
+  setTaskApprovalMeta(id: string, approvalMeta: string): void {
+    this.db.setTaskApprovalMeta(id, approvalMeta)
+  }
+
   updateTaskArgs(id: string, args: string): void {
     this.db.updateTaskArgs(id, args)
   }
