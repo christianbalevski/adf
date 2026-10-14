@@ -545,6 +545,7 @@ app.whenReady().then(async () => {
         ? localDaemonConnector({ userDataDir, execPath: process.execPath, daemonEntry: join(__dirname, 'daemon.js') })
         : remoteDaemonConnector(backend.config, safeStorageCodec),
       hooks: { showMainWindow, openFile: requestOpenFile },
+      keepDaemonRunning: backend.config.keepDaemonRunning,
     })
   }
   // Client keys (updater, spellcheck) come from studio-client-settings.json in daemon mode (§4.1).

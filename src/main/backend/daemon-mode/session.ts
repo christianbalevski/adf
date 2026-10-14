@@ -1,5 +1,5 @@
 import { resolve } from 'node:path'
-import type { ClientSession } from './client-stream'
+import type { ClientSession, HeldDocument } from './client-stream'
 import { DaemonModeUnavailableError } from './errors'
 
 /**
@@ -30,6 +30,8 @@ export interface SessionFile {
   agentId: string | null
   /** The session holds the file as an open document (W2-B). */
   held: boolean
+  /** The daemon's open answer for a held file (W2-A: `running`, `needsPassword`, `readOnly`, `nameChangedFrom`). */
+  opened?: HeldDocument
 }
 
 type Log = Pick<Console, 'log' | 'warn'>
@@ -91,16 +93,21 @@ export class DaemonModeSession {
   /**
    * Make `filePath` the current file. The previous file's document is
    * released unless it is kept for its derived key. The new file is held as
-   * an open document; until W2-B that refuses, and `resolveRunning` supplies
-   * the id of an agent already running at that path.
+   * an open document of this client session (W2-A/W2-B): that resolves its
+   * agent id whether it runs or not. A session that cannot hold documents
+   * (tests' fakes) falls back to `resolveRunning`, the id of an agent already
+   * running at that path. Resolves once the daemon has the new focus, so
+   * frames after it carry the file's full payloads.
    */
   async openFile(filePath: string, resolveRunning: (filePath: string) => Promise<string | null>): Promise<SessionFile> {
     await this.leaveCurrent()
     let agentId: string | null = null
     let held = false
+    let opened: HeldDocument | undefined
     try {
       if (!this.client) throw new Error('no client session')
-      agentId = (await this.client.holdDocument(filePath)).agentId
+      opened = await this.client.holdDocument(filePath)
+      agentId = opened.agentId
       held = true
     } catch (err) {
       if (!(err instanceof DaemonModeUnavailableError)) throw err
@@ -110,8 +117,8 @@ export class DaemonModeSession {
       }
       agentId = await resolveRunning(filePath)
     }
-    this.file = { filePath, agentId, held }
-    this.setFocus(agentId)
+    this.file = { filePath, agentId, held, ...(opened ? { opened } : {}) }
+    await this.setFocus(agentId)
     return this.file
   }
 
@@ -119,7 +126,7 @@ export class DaemonModeSession {
   async closeFile(): Promise<void> {
     await this.leaveCurrent()
     this.file = null
-    this.setFocus(null)
+    void this.setFocus(null)
   }
 
   /** The current file's agent became known (a start loaded it) or went away (null). */
@@ -127,7 +134,7 @@ export class DaemonModeSession {
     if (!this.file || !samePath(this.file.filePath, filePath)) return
     if (this.file.agentId === agentId) return
     this.file = { ...this.file, agentId }
-    this.setFocus(agentId)
+    void this.setFocus(agentId)
   }
 
   /** A file moved on disk (FILE_RENAMED). */
@@ -168,7 +175,7 @@ export class DaemonModeSession {
         const { agentId } = await client.holdDocument(this.file.filePath)
         if (agentId !== this.file.agentId) {
           this.file = { ...this.file, agentId }
-          this.setFocus(agentId)
+          void this.setFocus(agentId)
         }
       } catch (err) {
         this.log.warn(`[Backend] Could not hold ${this.file.filePath} again after the reconnect: ${err instanceof Error ? err.message : String(err)}`)
@@ -191,7 +198,7 @@ export class DaemonModeSession {
     if (this.file?.held && this.file.agentId) ids.add(this.file.agentId)
     this.unlocked.clear()
     this.file = null
-    this.setFocus(null)
+    void this.setFocus(null)
     for (const id of ids) await this.release(id)
   }
 
@@ -211,13 +218,13 @@ export class DaemonModeSession {
     }
   }
 
-  private setFocus(agentId: string | null): void {
-    if (this.focus === agentId) return
+  private setFocus(agentId: string | null): Promise<void> {
+    if (this.focus === agentId) return Promise.resolve()
     this.focus = agentId
     for (const listener of this.focusListeners) {
       try { listener(agentId) } catch (err) { this.log.warn('[Backend] Focus listener failed:', err) }
     }
-    void this.pushFocus()
+    return this.pushFocus()
   }
 
   private async pushFocus(): Promise<void> {

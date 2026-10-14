@@ -117,6 +117,11 @@ describe('daemon-mode handler registration (D2)', () => {
     // And every topic route names a push channel of the map with that frame.
     for (const [topic, route] of Object.entries(PUSH_TOPICS)) {
       if (route.focusedAgentEvent) continue
+      // Topics with no Studio push run an action or name why there is none.
+      if (route.channel === null) {
+        expect(route.action ?? route.none, topic).toBeTruthy()
+        continue
+      }
       const entry = CHANNEL_MAP[route.channel as MappedChannel]
       expect(entry.kind, topic).toBe('push')
       expect(entry.frame, topic).toBe(`push:${topic}`)

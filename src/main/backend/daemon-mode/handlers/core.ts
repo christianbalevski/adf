@@ -59,7 +59,9 @@ async function agentStatus(ctx: DaemonModeContext, agentId: string | null): Prom
   if (!agentId) return null
   const client = await ctx.ready()
   try {
-    return await client.request<AgentStatus>('GET', `/agents/${enc(agentId)}/status`)
+    const status = await client.request<AgentStatus & { running?: boolean }>('GET', `/agents/${enc(agentId)}/status`)
+    // An open document answers too, with running: false (W2-A): not a running agent.
+    return status.running === false ? null : status
   } catch (err) {
     if (isNotFound(err)) return null
     throw err

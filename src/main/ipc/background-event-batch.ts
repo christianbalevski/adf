@@ -41,6 +41,8 @@ export function stripForRenderer(event: BackgroundAgentEvent): RendererBackgroun
     name?: string
     id?: string
     result?: { content?: unknown; isError?: unknown }
+    /** Already stripped (daemon mode: the client stream sends unfocused results this way, D5.1). */
+    resultSize?: unknown
   }
   const content = payload.result?.content
   return {
@@ -51,7 +53,7 @@ export function stripForRenderer(event: BackgroundAgentEvent): RendererBackgroun
       name: payload.name,
       id: payload.id,
       result: { isError: !!payload.result?.isError },
-      resultSize: typeof content === 'string' ? content.length : 0
+      resultSize: typeof content === 'string' ? content.length : typeof payload.resultSize === 'number' ? payload.resultSize : 0
     }
   }
 }
