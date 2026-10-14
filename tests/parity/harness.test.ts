@@ -42,7 +42,7 @@ const ctx: NormalizationContext = {
 }
 
 function rec(pushes: Record<string, unknown[]> = {}, steps: unknown[] = []): ComparableRecording {
-  return { scenario: 's', steps: steps as ComparableRecording['steps'], pushes, timelines: {}, local: [], llm: [], state: { adf: {}, userDataJson: {}, tree: [] } }
+  return { scenario: 's', steps: steps as ComparableRecording['steps'], pushes, timelines: {}, local: [], llm: [], state: { adf: {}, userDataJson: {}, leases: {}, tree: [] } }
 }
 function norm(value: unknown): unknown {
   return normalizeRecording(rec({ ch: [value] }), ctx).pushes.ch[0]
@@ -104,7 +104,7 @@ describe('parity harness: normalizer', () => {
 
   it('R9 applies to every array: rows, nested lists and steps', () => {
     const r = rec({}, [])
-    r.state = { adf: {}, userDataJson: { 'x.json': { rows: [{ at: T0 + 5 }, { at: T0 + 9, inner: [T0 + 9, T0 + 7] }, { at: T0 + 8 }] } }, tree: [] }
+    r.state = { adf: {}, leases: {}, userDataJson: { 'x.json': { rows: [{ at: T0 + 5 }, { at: T0 + 9, inner: [T0 + 9, T0 + 7] }, { at: T0 + 8 }] } }, tree: [] }
     expect(normalizeRecording(r, ctx).state.userDataJson['x.json']).toEqual({
       rows: [{ at: '<t>' }, { at: '<t>', inner: ['<t>', '<t:earlier>'] }, { at: '<t:earlier>' }],
     })
@@ -119,6 +119,29 @@ describe('parity harness: normalizer', () => {
       signatures: new Map([[sig('B'), true], [sig('C'), false]]),
     })
     expect(out.pushes.ch).toEqual(['<sig:runtime-delegation>', '<sig:valid#1>', '<sig:INVALID#1>', '<sig:valid#1>', sig('D')])
+  })
+
+  it('R13 names known host pids in registry file names and lease pid fields only', () => {
+    const r = rec()
+    r.state = {
+      adf: {}, userDataJson: {},
+      leases: { 'hosts/4242.json': { pid: 4242, count: 4242 }, 'hosts/777.json': { pid: 777 }, 'abc.json': { holder: { pid: 4242 } } },
+      tree: ['f leases/hosts/4242.json', 'f leases/hosts/777.json', 'f other/4242.json'],
+    }
+    const out = normalizeRecording(r, { ...ctx, pids: [{ value: 4242, name: 'pid:this-process' }] }).state
+    expect(out.tree).toEqual(['f leases/hosts/<pid:this-process>.json', 'f leases/hosts/777.json', 'f other/4242.json'])
+    expect(out.leases).toEqual({
+      'hosts/<pid:this-process>.json': { pid: '<pid:this-process>', count: 4242 },
+      'hosts/777.json': { pid: 777 },
+      'abc.json': { holder: { pid: '<pid:this-process>' } },
+    })
+  })
+
+  it('G1 drops socket lines from the golden file listing only', () => {
+    const r = rec()
+    r.state = { adf: {}, userDataJson: {}, leases: {}, tree: ['d leases/hosts/', 's leases/hosts/x.sock'] }
+    expect(toGoldenForm(r).state.tree).toEqual(['d leases/hosts/'])
+    expect(normalizeRecording(r, ctx).state.tree).toEqual(['d leases/hosts/', 's leases/hosts/x.sock'])
   })
 
   it('keeps undefined-valued properties, null, error text, counts and order', () => {

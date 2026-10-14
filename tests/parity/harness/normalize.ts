@@ -24,7 +24,7 @@ import type { ComparableRecording } from './recording'
  * keyed by that field name, not a pattern over all numbers.
  *
  * Two layers:
- * - `normalizeRecording` (R1-R12): every comparison, including embedded vs
+ * - `normalizeRecording` (R1-R13): every comparison, including embedded vs
  *   daemon on the same machine.
  * - `toGoldenForm` (G1): additionally, only before comparing with the
  *   committed recordings, which must match on every OS.
@@ -43,6 +43,8 @@ export interface NormalizationContext {
   named: { value: string | undefined; name: string }[]
   /** Fixture ids are fixed by the harness and never replaced. */
   fixtureIds: readonly string[]
+  /** Process ids of the run's runtime hosts and clients, by role (R13). */
+  pids?: { value: number; name: string }[]
   /** Signature → verified against its issuer (signatures.ts); used by R10. */
   signatures?: ReadonlyMap<string, boolean>
   /** Wall-clock window of the run [from, to] in epoch ms; timestamps outside stay raw. */
@@ -186,6 +188,21 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     return s
   }
 
+  // Rule R13 — runtime host registry (agent-lease.ts). The registry files
+  // are named after the host's pid (`hosts/<pid>.json`, `clients/<pid>.json`)
+  // and leases record their holder's `pid`. A pid the harness knows (its
+  // own process, a backend's daemon) becomes `<pid:ROLE>` in those file
+  // names and in `pid` fields under `state.leases`; any other pid stays raw.
+  // The records' runtimeId, endpoint, machine id and hostname are named by
+  // role through R3 (scenario.ts reads them from the records), and lease file
+  // names (sha256 of an agent's canonical path) become `<lease:agent-n>`.
+  const pidName = new Map((ctx.pids ?? []).map((p) => [p.value, p.name]))
+  const replaceRegistryPid = (s: string) =>
+    s.replace(/\b(hosts|clients)([\\/])(\d+)\.json\b/g, (m, sub: string, sep: string, pid: string) => {
+      const name = pidName.get(Number(pid))
+      return name ? `${sub}${sep}<${name}>.json` : m
+    })
+
   // Rule R11 — identity key material in the dumped .adf: `adf_identity.value`
   // holds freshly generated keys and envelopes (random each run). The bytes
   // become `<key-bytes#k> len=N`: length kept, content numbered by hash. Scoped
@@ -221,6 +238,10 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
    * `<t>` and `<t:earlier>` from run to run.
    */
   const walk = (value: unknown, path: string, floor: number, seen: number[], key?: string): unknown => {
+    if (typeof value === 'number' && key === 'pid' && path.startsWith('state.leases.') && pidName.has(value)) {
+      return `<${pidName.get(value)}>`
+    }
+    if (typeof value === 'string' && (path.startsWith('state.tree') || path.startsWith('state.leases'))) value = replaceRegistryPid(value)
     if (typeof value === 'string') {
       const bytes = IDENTITY_VALUE_PATH.test(path) ? BYTES_RE.exec(value) : null
       if (bytes) return `${numbered('key-bytes', bytes[2])} len=${bytes[1]}`
@@ -257,7 +278,8 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     const obj = preprocessRow(path, value as Record<string, unknown>)
     const out: Record<string, unknown> = {}
     for (const k of Object.keys(obj).sort()) {
-      out[replaceString(k, floor, [])] = walk(obj[k], `${path}.${k}`, floor, seen, k)
+      const outKey = path === 'state.leases' ? replaceRegistryPid(replaceString(k, floor, [])) : replaceString(k, floor, [])
+      out[outKey] = walk(obj[k], `${path}.${k}`, floor, seen, k)
     }
     return out
   }
@@ -310,8 +332,11 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
  * Rule G1 — one committed recording serves Windows, macOS and Linux: path
  * separators after `<ROOT>` become `/`, and `<ROOT:fwd>` (the Windows
  * forward-slash spelling, identical to `<ROOT>` elsewhere) becomes `<ROOT>`.
+ * Also drops `s …` lines (sockets) from the file listing: the lease
+ * endpoint is a socket file on macOS/Linux and a named pipe outside the tree
+ * on Windows; the host record names the endpoint either way.
  * Applied ONLY for the golden comparison; two backends on one machine are
- * still compared with separators and spellings intact.
+ * still compared with separators, spellings and sockets intact.
  */
 export function toGoldenForm(recording: ComparableRecording): ComparableRecording {
   const fix = (s: string) => s
@@ -325,5 +350,6 @@ export function toGoldenForm(recording: ComparableRecording): ComparableRecordin
     }
     return value
   }
-  return walk(recording) as ComparableRecording
+  const out = walk(recording) as ComparableRecording
+  return { ...out, state: { ...out.state, tree: out.state.tree.filter((line) => !line.startsWith('s ')) } }
 }
