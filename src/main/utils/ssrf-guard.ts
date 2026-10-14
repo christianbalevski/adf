@@ -25,16 +25,40 @@ const MAPPED_HEX = /^::(?:ffff:(?:0{1,4}:)?)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/
  * The IPv4 address inside an IPv4-mapped or -compatible IPv6 address, as
  * `[match, dotted]`, in either spelling; null otherwise. `new URL()` turns
  * `::ffff:169.254.169.254` into `::ffff:a9fe:a9fe`, so the hex form must
- * classify the same as the dotted one.
+ * classify the same as the dotted one. NAT64 (`64:ff9b::/96`, RFC 6052) and
+ * 6to4 (`2002::/16`, RFC 3056) addresses carry an IPv4 address too and are
+ * classified as it (W1-D follow-up): a NAT64 gateway turns
+ * `64:ff9b::a9fe:a9fe` into a connection to 169.254.169.254.
  */
 function mappedIPv4Match(addr: string): [string, string] | null {
   const dotted = addr.match(MAPPED_DOTTED)
   if (dotted) return [dotted[0], dotted[1]]
   const hex = addr.match(MAPPED_HEX)
-  if (!hex) return null
-  const hi = parseInt(hex[1], 16)
-  const lo = parseInt(hex[2], 16)
-  return [hex[0], `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`]
+  if (hex) {
+    const hi = parseInt(hex[1], 16)
+    const lo = parseInt(hex[2], 16)
+    return [hex[0], `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`]
+  }
+  const embedded = translatedIPv4(addr)
+  return embedded ? [addr, embedded] : null
+}
+
+/** The IPv4 address of a NAT64 (64:ff9b::/96) or 6to4 (2002::/16) address, either spelling; null otherwise. */
+function translatedIPv4(raw: string): string | null {
+  let addr = raw.toLowerCase()
+  // A dotted IPv4 tail (64:ff9b::169.254.169.254) as two hex groups.
+  const tail = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(addr)
+  if (tail) {
+    const o = tail.slice(2, 6).map(Number)
+    if (o.some((n) => n > 255)) return null
+    addr = `${tail[1]}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`
+  }
+  if (isIP(addr) !== 6) return null
+  const groups = expandIPv6(addr).split(':').map((g) => parseInt(g, 16))
+  const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) return v4(groups[6], groups[7])
+  if (groups[0] === 0x2002) return v4(groups[1], groups[2])
+  return null
 }
 
 const ALLOWED_FETCH_PROTOCOLS = new Set(['http:', 'https:'])

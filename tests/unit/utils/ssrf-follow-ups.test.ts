@@ -25,12 +25,22 @@ const servers: Server[] = []
 afterEach(async () => { await Promise.all(servers.splice(0).map((s) => new Promise<void>((done) => s.close(() => done())))) })
 
 describe('NAT64 64:ff9b::/96 and 6to4 2002::/16 carry an IPv4 address', () => {
-  it('before: classified as public IPv6, so the embedded address is not checked', async () => {
+  it('after: classified as the embedded IPv4 address, in every spelling', async () => {
     // 64:ff9b::a9fe:a9fe is 169.254.169.254; 2002:a9fe:a9fe:: embeds it too.
-    expect(isCloudMetadataIp('64:ff9b::a9fe:a9fe')).toBe(false)
-    expect(await checkFetchTarget('http://[64:ff9b::a9fe:a9fe]/latest/')).toBeNull()
-    expect(await checkFetchTarget('http://[2002:a9fe:a9fe::1]/latest/')).toBeNull()
-    expect(await checkFetchTarget('http://[64:ff9b::c0a8:105]/')).toBeNull() // 192.168.1.5
+    for (const ip of ['64:ff9b::a9fe:a9fe', '64:ff9b::169.254.169.254', '64:ff9b:0:0:0:0:a9fe:a9fe', '2002:a9fe:a9fe::1', '[64:ff9b::a9fe:a9fe]']) {
+      expect(isCloudMetadataIp(ip), ip).toBe(true)
+    }
+    const open = { allowLocal: true, allowLinkLocal: true }
+    expect(await checkFetchTarget('http://[64:ff9b::a9fe:a9fe]/latest/', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://[2002:a9fe:a9fe::1]/latest/', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://[64:ff9b::c0a8:105]/')).toMatch(/private-network/) // 192.168.1.5
+    expect(await checkFetchTarget('http://[64:ff9b::7f00:1]:7385/', { daemonPort: 7385 })).toMatch(/daemon/)
+    // A public address behind NAT64 or 6to4 stays allowed.
+    expect(await checkFetchTarget('http://[64:ff9b::5db8:d822]/')).toBeNull() // 93.184.216.34
+    expect(await checkFetchTarget('http://[2002:5db8:d822::1]/')).toBeNull()
+    // Other IPv6 is untouched.
+    expect(await checkFetchTarget('http://[2001:db8::1]/')).toBeNull()
+    expect(await checkFetchTarget('http://[64:ff9b:1::a9fe:a9fe]/')).toBeNull() // local-use NAT64 (RFC 8215): prefix length varies
   })
 })
 
