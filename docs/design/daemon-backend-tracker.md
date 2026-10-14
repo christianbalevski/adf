@@ -59,7 +59,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W1-G | Compute ownership: a runtime stops only containers it started | 1 | none | MERGED |
 | W2-A | Open documents | 2 | W1-A, W1-E | MERGED |
 | W2-B | Client sessions and client event stream | 2 | W1-A, W0-B | TODO |
-| W2-C | Daemon-mode core in Studio main | 2 | W0-A, W0-B, W0-E, W1-F | TODO |
+| W2-C | Daemon-mode core in Studio main | 2 | W0-A, W0-B, W0-E, W1-F | MERGED |
 | W3-A | Proxy: files, documents, agent runtime, review, templates | 3 | W2-A, W2-B, W2-C | TODO |
 | W3-B | Proxy: settings, providers, models, subscription auth, identity, credentials | 3 | W2-C, W1-C | TODO |
 | W3-C | Proxy: MCP, adapters, sandbox packages, skills, registries | 3 | W2-C, W1-D | TODO |
