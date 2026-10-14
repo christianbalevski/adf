@@ -158,7 +158,7 @@ import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '.
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
 import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, McpRegistrationTestResult, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
 import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
-import type { AgentConfig, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, McpServerLogEntry, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
 import type { AgentTemplate } from '../../shared/types/adf-v02.types'
 import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
@@ -173,6 +173,7 @@ import { availableAdfPath, bringRegistryAgentHome } from '../services/registry-b
 import { claimAgentWorkspace, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword } from '../services/envelope-actions'
 import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById } from '../services/dashboard-stats'
 import { buildMeshStatus } from '../services/mesh-status'
+import { appendMcpLog, probeMcpServer, runMcpRegistrationTest } from '../services/mcp-connect-tests'
 
 // Application state
 let currentWorkspace: AdfWorkspace | null = null
@@ -6548,20 +6549,6 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // --- MCP IPC Argument Schemas ---
 
-  const McpProbeArgs = z.object({
-    transport: z.enum(['stdio', 'http']).optional(),
-    command: z.string().min(1).optional(),
-    args: z.array(z.string()).optional(),
-    url: z.string().url().optional(),
-    name: z.string().min(1),
-    env: z.record(z.string()).optional(),
-    headers: z.record(z.string()).optional(),
-    headerEnv: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-    bearerTokenEnvVar: z.string().optional()
-  }).refine((value) => {
-    const transport = value.transport ?? 'stdio'
-    return transport === 'http' ? !!value.url : !!value.command
-  }, { message: 'HTTP probes require url; stdio probes require command.' })
   const McpPackageArgs = z.object({ package: z.string().min(1), name: z.string().min(1) })
   const McpUninstallArgs = z.object({ package: z.string().min(1) })
   const McpNameArgs = z.object({ name: z.string().min(1) })
@@ -6618,287 +6605,29 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // --- MCP Server Probe ---
 
-  ipcMain.handle(IPC.MCP_PROBE_SERVER, async (_event, rawArgs: unknown) => {
-    const v = validateMcpArgs(McpProbeArgs, rawArgs)
-    if ('error' in v) return { success: false, tools: [], error: v.error }
-    const args = v.data
-    const transport = args.transport ?? 'stdio'
+  // Logs from probe and test runs land in mcpLogCache so the Logs panel can show them.
+  const cacheMcpLog = (name: string, entry: McpServerLogEntry) => appendMcpLog(mcpLogCache, name, entry)
 
-    if (transport === 'http') {
-      console.log(`[MCP:probe] "${args.name}": url=${args.url}`)
-      const tempManager = new McpClientManager()
-      tempManager.on('log', (name, entry) => {
-        const cached = mcpLogCache.get(name) ?? []
-        cached.push(entry)
-        if (cached.length > 500) cached.splice(0, cached.length - 500)
-        mcpLogCache.set(name, cached)
-      })
-      try {
-        const tools = await tempManager.connect({
-          name: args.name,
-          transport: 'http',
-          url: args.url,
-          env: args.env,
-          headers: args.headers,
-          header_env: args.headerEnv?.map((entry) => ({ header: entry.key, env: entry.value, required: true })),
-          bearer_token_env_var: args.bearerTokenEnvVar
-        })
-        const serverState = tempManager.getServerState(args.name)
-        await tempManager.disconnectAll()
-        if (tools) return { success: true, tools }
-        return { success: false, tools: [], error: serverState?.error ?? 'Failed to connect' }
-      } catch (error) {
-        await tempManager.disconnectAll()
-        return { success: false, tools: [], error: String(error) }
-      }
-    }
-
-    // Resolve uvx command to actual uv binary (uvx may not be on PATH inside Electron)
-    let probeCommand = args.command!
-    let probeArgs = args.args ?? []
-    if (probeCommand === 'uvx') {
-      try {
-        const uvPath = await uvManager.ensureUv()
-        probeCommand = uvPath
-        probeArgs = ['tool', 'run', ...args.args]
-      } catch (e) {
-        console.warn('[MCP:probe] Failed to resolve uv binary for uvx command:', e)
-      }
-    }
-
-    console.log(`[MCP:probe] "${args.name}": command=${probeCommand}, args=${JSON.stringify(probeArgs)}`)
-    const tempManager = new McpClientManager()
-    // Cache logs from the probe so the Logs panel can show them
-    tempManager.on('log', (name, entry) => {
-      const cached = mcpLogCache.get(name) ?? []
-      cached.push(entry)
-      if (cached.length > 500) cached.splice(0, cached.length - 500)
-      mcpLogCache.set(name, cached)
-    })
-    try {
-      const tools = await tempManager.connect({
-        name: args.name,
-        transport: 'stdio',
-        command: probeCommand,
-        args: probeArgs,
-        env: args.env
-      })
-      const serverState = tempManager.getServerState(args.name)
-      await tempManager.disconnectAll()
-      if (tools) {
-        return { success: true, tools }
-      }
-      const errorMsg = serverState?.error ?? 'Failed to connect'
-      return { success: false, tools: [], error: errorMsg }
-    } catch (error) {
-      await tempManager.disconnectAll()
-      return { success: false, tools: [], error: String(error) }
-    }
-  })
+  ipcMain.handle(IPC.MCP_PROBE_SERVER, async (_event, rawArgs: unknown) =>
+    probeMcpServer(rawArgs, { uvManager, onLog: cacheMcpLog }))
 
   // --- MCP Package Management ---
 
 
   // --- MCP Registration Connect Test (Settings "Connect" button) ---
-  // Runs the real pipeline for a registration draft: credential-file
-  // materialization + auth preflight on host-located servers, containerized
-  // launch for shared-located ones (ephemeral test home, cleaned up), plain
-  // HTTP connect for remote servers. See deriveRegistrationTestPlan for what
-  // each location can meaningfully verify.
-  const McpRegistrationTestArgs = z.object({
-    registration: z.object({
-      id: z.string().optional(),
-      name: z.string().min(1),
-      type: z.enum(['npm', 'uvx', 'pip', 'custom', 'http']).optional(),
-      npmPackage: z.string().optional(),
-      pypiPackage: z.string().optional(),
-      command: z.string().optional(),
-      args: z.array(z.string()).optional(),
-      url: z.string().url().optional(),
-      headers: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-      headerEnv: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-      bearerTokenEnvVar: z.string().optional(),
-      env: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-      toolCallTimeout: z.number().optional(),
-      runLocation: z.enum(['host', 'shared']).optional(),
-      // OAuth remote (Streamable HTTP): without these, Zod strips the flags at
-      // the IPC boundary and the handler's `reg.oauth` check below is never
-      // true — the interactive sign-in is silently skipped and the connect goes
-      // out with no Authorization header (401 "Missing or invalid authorization
-      // header"). Keep in sync with McpServerRegistration.
-      oauth: z.boolean().optional(),
-      oauthClientId: z.string().optional(),
-      oauthScopes: z.array(z.string()).optional(),
-      auth: z.boolean().optional(),
-      authArgs: z.array(z.string()).optional(),
-      authPort: z.number().int().min(1).max(65535).optional(),
-      credentialFiles: z.array(z.object({
-        path: z.string().min(1),
-        required: z.boolean().optional(),
-        writeBack: z.boolean().optional(),
-      })).optional(),
-    }),
-    credentialFiles: z.array(z.object({
-      path: z.string().min(1),
-      contentB64: z.string(),
-    })).optional(),
-  })
-
-  ipcMain.handle(IPC.MCP_REGISTRATION_TEST, async (_event, rawArgs: unknown) => {
-    const v = validateMcpArgs(McpRegistrationTestArgs, rawArgs)
-    if ('error' in v) {
-      // Type-complete failure: McpRegistrationTestResult declares
-      // location/authRan/notes non-optional, and this exit runs before the
-      // test plan exists — derive location best-effort from the raw input.
-      const rawReg = (rawArgs as { registration?: { url?: unknown; type?: unknown; runLocation?: unknown } } | null | undefined)?.registration
-      const location: McpRegistrationTestResult['location'] =
-        rawReg?.type === 'http' || typeof rawReg?.url === 'string'
-          ? 'remote http'
-          : rawReg?.runLocation === 'host' ? 'host' : 'shared container'
-      return { success: false, tools: [], error: v.error, location, authRan: false, notes: [] } satisfies McpRegistrationTestResult
-    }
-    const { registration, credentialFiles } = v.data
-    const reg = registration as McpServerRegistration
-    const testComputeSettings = (settings.get('compute') ?? { hostAccessEnabled: false, hostApproved: [] }) as ComputeSettings
-    const plan = deriveRegistrationTestPlan(reg, { hostAccessEnabled: testComputeSettings.hostAccessEnabled })
-    const notes = [...plan.notes]
-    // Whether an interactive OAuth sign-in was driven during this test.
-    let oauthRan = false
-    const serverCfg = buildMcpServerConfigFromRegistration(reg)
-
-    const env: Record<string, string> = {}
-    for (const e of reg.env ?? []) { if (e.key && e.value) env[e.key] = e.value }
-
-    // Settings-only test: no agent context, so the app store IS the token store
-    // (see resolveOAuthStoreForConnect). The connect factory attaches the token
-    // stored by the interactive flow below; it returns undefined for non-oauth
-    // servers, so it is harmless on the host/container branches.
-    const appOAuthStore = getAppOAuthStore()
-    const tempManager = new McpClientManager(undefined, buildOAuthProviderFactory(
-      () => resolveOAuthStoreForConnect({ appStore: appOAuthStore }),
-    ))
-    tempManager.on('log', (name, entry) => {
-      const cached = mcpLogCache.get(name) ?? []
-      cached.push(entry)
-      if (cached.length > 500) cached.splice(0, cached.length - 500)
-      mcpLogCache.set(name, cached)
-    })
-    const finish = async (result: { success: boolean; tools: unknown[]; error?: string }) => {
-      // Capture state BEFORE disconnect — teardown clears the log buffer.
-      const state = tempManager.getServerState(reg.name)
-      const stderrTail = state?.logs.filter((l) => l.stream === 'stderr').slice(-10).map((l) => l.message)
-      // Version from the initialize handshake (serverInfo.version) — the
-      // truthful version for host npx/uvx and remote HTTP servers whose
-      // registration never gets a resolvable package version.
-      const serverVersion = tempManager.getServerReportedVersion(reg.name)
-      await tempManager.disconnectAll().catch(() => {})
-      return { ...result, location: plan.location, authRan: plan.authMode === 'run', oauthRan, notes, ...(serverVersion ? { serverVersion } : {}), ...(stderrTail?.length && !result.success ? { stderrTail } : {}) }
-    }
-
-    try {
-      if (plan.location === 'remote http') {
-        // Interactive OAuth sign-in BEFORE connect when this is an OAuth remote.
-        // Idempotent: runMcpHttpOAuthFlow returns AUTHORIZED with no browser hop
-        // when a valid token/refresh is already stored. The app store is the
-        // Studio "signed-in" source of truth; the connect factory built above
-        // then attaches the freshly-stored token to the transport.
-        if (reg.oauth && serverCfg.url) {
-          const oauthReg = reg as { oauthClientId?: string; oauthScopes?: string[] }
-          oauthRan = true
-          const flow = await runMcpHttpOAuthFlow(serverCfg.url, appOAuthStore, studioOAuthIO, {
-            clientId: oauthReg.oauthClientId,
-            scopes: oauthReg.oauthScopes,
-          })
-          if (!flow.authorized) {
-            return finish({ success: false, tools: [], error: flow.error ?? 'OAuth sign-in did not complete.' })
-          }
-        }
-        const tools = await tempManager.connect({ ...serverCfg, env: Object.keys(env).length ? env : undefined })
-        if (tools) return finish({ success: true, tools })
-        return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
-      }
-
-      if (plan.location === 'host') {
-        // Materialize provided credential files into the real host home —
-        // for a host-located server the host FS IS the runtime credential
-        // store, so these persist (write-if-absent: never clobber existing
-        // credentials). Paths are ~-confined by expandCredentialPath.
-        for (const f of credentialFiles ?? []) {
-          const dest = expandCredentialPath(f.path, { kind: 'host' })
-          if (existsSync(dest)) { notes.push(`${f.path} already exists on the host — kept the existing file.`); continue }
-          const content = Buffer.from(f.contentB64, 'base64')
-          if (content.length > CREDENTIAL_FILE_MAX_BYTES) {
-            return finish({ success: false, tools: [], error: `Credential file ${f.path} exceeds the ${Math.round(CREDENTIAL_FILE_MAX_BYTES / 1024)}KiB cap.` })
-          }
-          mkdirSync(dirname(dest), { recursive: true })
-          writeFileSync(dest, content, { mode: 0o600 })
-          notes.push(`Wrote ${f.path} to the host home.`)
-        }
-
-        // Resolve the launch command the way the probe does — BEFORE the auth
-        // preflight, which needs the exact invocation. A registration-shaped
-        // serverCfg has package fields but no command, and runMcpAuthPreflight
-        // would fall through to `npx <authArgs>` for a pypi package (executing
-        // an unrelated npm package literally named e.g. "auth").
-        let command: string
-        let args: string[]
-        const userArgs = (reg.args ?? []).filter(Boolean)
-        if (reg.pypiPackage) {
-          try {
-            const uvPath = await uvManager.ensureUv()
-            command = uvPath
-            args = ['tool', 'run', reg.pypiPackage, ...userArgs]
-          } catch {
-            command = 'uvx'
-            args = [reg.pypiPackage, ...userArgs]
-          }
-        } else if (reg.npmPackage) {
-          command = 'npx'
-          args = ['-y', reg.npmPackage, ...userArgs]
-        } else {
-          command = reg.command ?? ''
-          args = userArgs
-        }
-        if (!command) return finish({ success: false, tools: [], error: 'No command or package to launch.' })
-
-        if (plan.authMode === 'run') {
-          // Pass the fully resolved invocation: with command set, the
-          // preflight's own npx/uv fallbacks never fire, so the auth run is
-          // exactly `<command> <args> <authArgs>` — e.g.
-          // `uv tool run <pkg> <userArgs> <authArgs>` for pypi.
-          await studioMcpAuthPreflight({ ...serverCfg, command, args }, { authArgs: reg.authArgs, authPort: reg.authPort, resolvedEnv: env })
-        }
-        const tools = await tempManager.connect({ name: reg.name, transport: 'stdio', command, args, env: Object.keys(env).length ? env : undefined })
-        if (tools) return finish({ success: true, tools })
-        return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
-      }
-
-      // Shared container: real containerized launch under an ephemeral test
-      // home (auth + credential capture are per-agent concerns — see plan
-      // notes). Cleaned up afterwards.
-      await podmanService.ensureRunning()
-      const podmanBin = await podmanService.findPodman()
-      if (!podmanBin) return finish({ success: false, tools: [], error: 'Podman is unavailable — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute.' })
-      // Per-invocation test dir so overlapping Connect/Reconnect tests never
-      // delete each other's ephemeral home.
-      const testDir = `/workspace/_settings_test_${randomUUID()}`
-      const testHome = `${testDir}/home`
-      try { await podmanService.ensureWorkspace('adf-mcp', testHome) } catch { /* mkdir in wrapper */ }
-      const containerCmd = resolveContainerCommand(serverCfg)
-      try {
-        const tools = await tempManager.connect(
-          { name: reg.name, transport: 'stdio', env },
-          { externalTransport: new PodmanStdioTransport({ podmanBin, containerName: 'adf-mcp', command: containerCmd.command, args: containerCmd.args, env: { HOME: testHome, ...env }, cwd: testDir }) },
-        )
-        if (tools) return finish({ success: true, tools })
-        return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
-      } finally {
-        podmanService.execInContainer('adf-mcp', '/workspace', `rm -rf ${testDir}`).catch(() => {})
-      }
-    } catch (error) {
-      return finish({ success: false, tools: [], error: error instanceof Error ? error.message : String(error) })
-    }
-  })
+  // Body in services/mcp-connect-tests.ts (shared with the daemon). Studio
+  // supplies the interactive pieces: the OS browser for OAuth and the native
+  // Continue dialog of the stdio auth preflight.
+  ipcMain.handle(IPC.MCP_REGISTRATION_TEST, async (_event, rawArgs: unknown) =>
+    runMcpRegistrationTest(rawArgs, {
+      computeSettings: () => (settings.get('compute') ?? { hostAccessEnabled: false, hostApproved: [] }) as ComputeSettings,
+      uvManager,
+      podman: podmanService,
+      appOAuthStore: getAppOAuthStore(),
+      oauthIO: studioOAuthIO,
+      authPreflight: studioMcpAuthPreflight,
+      onLog: cacheMcpLog,
+    }))
 
   // Phase 4 HTTP OAuth: clear the stored token for a remote server URL so the
   // renderer's "Sign out" works. Clears the app-level (Studio) store — the
