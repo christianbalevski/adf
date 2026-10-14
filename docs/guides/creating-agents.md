@@ -66,7 +66,7 @@ Controls randomness in the model's output. Range: 0 to 2.
 
 ### Max Tokens
 
-Maximum number of tokens the model can generate per response. Default: 4096. Set to **0** to use the model's default (useful for ChatGPT Subscription models where the backend manages output length).
+Maximum number of tokens the model can generate per response. Default: no cap (**0**): the model's own output limit applies. A cap also limits reasoning on providers that count thinking toward output, so a small one can leave a reasoning model with no room to reply; the loop then shows an output-limit notice. Claude Subscription ignores this setting.
 
 ### Thinking Budget
 

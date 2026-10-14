@@ -50,7 +50,6 @@ export const DEFAULT_AGENT_CONFIG: NewAgentBaseline = {
     provider: '',
     model_id: '',
     temperature: 0.7,
-    max_tokens: 4096,
     vision: false
   },
   instructions: '',

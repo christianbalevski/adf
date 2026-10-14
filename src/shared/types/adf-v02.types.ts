@@ -118,6 +118,7 @@ export interface ModelConfig {
   provider: string
   model_id: string
   temperature?: number | null
+  /** Output cap per response. Unset, null or 0: no cap — the model's own limit applies. */
   max_tokens?: number | null
   top_p?: number | null
   /** @deprecated Use `reasoning.max_tokens` instead. Migrated forward on config load. */
@@ -1640,7 +1641,6 @@ export const AGENT_DEFAULTS = {
     provider: '',
     model_id: '',
     temperature: 0.7,
-    max_tokens: 4096,
     vision: false
   },
   context: {

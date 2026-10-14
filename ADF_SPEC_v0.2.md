@@ -1277,7 +1277,7 @@ Locks constrain the agent. The owner changes any field through the runtime's own
 | `provider` | `""` | Provider id: a built-in provider or an entry in `providers` (§5.16). |
 | `model_id` | `""` | Model id at that provider. |
 | `temperature` | `0.7` | Sampling temperature. |
-| `max_tokens` | `4096` | Maximum output tokens per request. |
+| `max_tokens` | absent | Maximum output tokens per request. Absent, `null` or `0`: no cap; the model's own output limit applies. |
 | `top_p` | absent | Nucleus sampling. |
 | `reasoning` | absent | `{ enabled?, effort?, max_tokens?, exclude?, preserve?, summary? }`; `effort` is `minimal` \| `low` \| `medium` \| `high` \| `xhigh`, `summary` is `auto` \| `concise` \| `detailed`. The runtime maps it to each provider's reasoning parameters. |
 | `multimodal` | absent | `{ image?, audio?, video? }`: which media types the runtime sends to the model. |
@@ -2179,7 +2179,7 @@ This section lists what the reference runtime writes when it creates a file. A v
 | `autostart` | `false` |
 | `model.provider`, `model.model_id` | `""` (set by the runtime or template) |
 | `model.temperature` | `0.7` |
-| `model.max_tokens` | `4096` |
+| `model.max_tokens` | absent (no cap) |
 | `context.compact_threshold` | absent (`100000`) |
 | `context.audit` | `{ "loop": true, "inbox": false, "outbox": false, "files": false }` |
 | `context.dynamic_instructions` | all four `true` |

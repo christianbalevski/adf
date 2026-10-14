@@ -338,7 +338,8 @@ export const ModelConfigSchema = z.object({
   provider: z.string().min(1),
   model_id: z.string().default(''),
   temperature: z.number().min(0).max(2).nullable().default(0.7),
-  max_tokens: z.number().int().positive().nullable().default(4096),
+  /** Output cap per response. Unset, null or 0: the model's own limit. */
+  max_tokens: z.number().int().nonnegative().nullable().optional(),
   top_p: z.number().min(0).max(1).nullable().optional(),
   /** @deprecated folded into `reasoning.max_tokens` on config load. */
   thinking_budget: z.number().int().positive().nullable().optional(),
