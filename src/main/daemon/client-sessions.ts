@@ -47,7 +47,6 @@
 // Clients fetch details on demand, so one agent's large write never fills
 // another session's ring.
 
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import type { AgentConfig, InboxMessage, McpServerStatus } from '../../shared/types/adf-v02.types'
@@ -57,7 +56,6 @@ import type { AgentExecutionEvent, MeshEvent, NotificationsSnapshot } from '../.
 import type { UmbilicalEvent } from '../runtime/umbilical-bus'
 import type { WorkspaceDataScope } from '../adf/adf-workspace'
 import { subscribeAgentRuntimeSignals } from '../runtime/agent-runtime-signals'
-import { currentSourceOrUnknown, withSource } from '../runtime/execution-context'
 import type {
   RuntimeAgentEvent,
   RuntimeAgentFileRenamedEvent,
@@ -88,7 +86,7 @@ export const DELTA_EVENT_TYPES: ReadonlySet<string> = new Set([
 
 /**
  * Executor events that echo a write: not sent to the session whose request
- * made it (origin dedup: the write runs with source clientWriteSource(id)),
+ * made it (origin dedup: runAsClientWrite stamps the request's own writes),
  * as embedded Studio never echoes its own edits to its window. Every other
  * session gets them.
  */
@@ -105,35 +103,46 @@ const UNFOCUSED_FULL_TYPES: ReadonlySet<string> = new Set([
   'state_changed', 'ask_request', 'tool_approval_request', 'response_metadata', 'error', 'turn_complete', 'adf_file_created',
 ])
 
+/**
+ * `tool_call_start` reaches unfocused sessions too (the mesh graph shows the
+ * call's arguments and draws the `msg_send` pulse from `input`), with each
+ * top-level input field cut to this many characters; a cut input says
+ * `inputTruncated: true` and the frame `stripped: 'tool_input'`.
+ */
+const TOOL_INPUT_CHARS = 2048
+
 /** One frame larger than this (serialized characters) is not stored: the session gets `stream.gap` reason `oversized`. */
 export const MAX_FRAME_CHARS = 4 * 1024 * 1024
 
 /** Strings up to this length survive in a stub. */
 const STUB_STRING_CHARS = 200
 
-/** The execution-context source of a write made through a client session's request (origin dedup). */
-export function clientWriteSource(sessionId: string): string {
-  return `system:client:${sessionId}`
-}
-
 /**
- * The client session a request runs for, beside the execution-context source:
- * RuntimeService wraps its own writes in withSource('system:runtime-api'),
- * which replaces the source but not this.
+ * The client session whose write is running now, set only for the
+ * synchronous part of that request's route handler (runAsClientWrite). A
+ * config, document or file write the handler performs raises its change
+ * event synchronously, inside that window, and the event is stamped with the
+ * session. Work the request queues (a turn on process.nextTick, a timer, a
+ * startup turn after POST /start) runs after the window closed: its events
+ * reach every session, the requester included. No async context is used, so
+ * nothing queued inherits the tag.
  */
-const clientOrigin = new AsyncLocalStorage<string>()
+let syncWriteOrigin: string | null = null
 
-/** Run a client session's request: its writes carry source system:client:<id>, and its echo frames skip that session. */
+/** Run `fn` (synchronously) as client session `sessionId`'s write: echo frames raised inside skip that session. */
 export function runAsClientWrite<T>(sessionId: string, fn: () => T): T {
-  return clientOrigin.run(sessionId, () => withSource(clientWriteSource(sessionId), fn))
+  const previous = syncWriteOrigin
+  syncWriteOrigin = sessionId
+  try {
+    return fn()
+  } finally {
+    syncWriteOrigin = previous
+  }
 }
 
-/** The session whose request is running now; null otherwise. */
+/** The session whose write is running synchronously now; null otherwise. */
 function currentOriginSession(): string | null {
-  const origin = clientOrigin.getStore()
-  if (origin) return origin
-  const source = currentSourceOrUnknown()
-  return source.startsWith('system:client:') ? source.slice('system:client:'.length) : null
+  return syncWriteOrigin
 }
 
 // --- Frames -------------------------------------------------------------------
@@ -148,10 +157,12 @@ export interface ClientExecutorFrame {
   event: AgentExecutionEvent
   /**
    * Set when the payload was reduced for a session not focused on this agent:
-   * `tool_result` (result content dropped, `resultSize` added) or `stub`
-   * (only short scalar fields, plus `size`; fetch details on demand).
+   * `tool_result` (result content dropped, `resultSize` added),
+   * `tool_input` (`tool_call_start` with each input field cut to 2048
+   * characters, `inputTruncated: true`) or `stub` (only short scalar
+   * fields, plus `size`; fetch details on demand).
    */
-  stripped?: 'tool_result' | 'stub'
+  stripped?: 'tool_result' | 'tool_input' | 'stub'
   /** The payload could not be serialized: `event.payload` is `{unserializable: reason}`. */
   unserializable?: true
 }
@@ -700,9 +711,11 @@ export class ClientSessionRegistry {
       ? () => null
       : type === 'tool_call_result'
         ? () => frameJson(executorFrame(event, 'tool_result'), 'event')
-        : UNFOCUSED_FULL_TYPES.has(type)
-          ? undefined
-          : () => frameJson(executorFrame(event, 'stub'), 'event')
+        : type === 'tool_call_start'
+          ? () => frameJson(executorFrame(event, 'tool_input'), 'event')
+          : UNFOCUSED_FULL_TYPES.has(type)
+            ? undefined
+            : () => frameJson(executorFrame(event, 'stub'), 'event')
     this.fanOut(event.agentId, {
       name: 'executor',
       full: () => frameJson(executorFrame(event, null), 'event'),
@@ -1012,10 +1025,16 @@ function pathKey(filePath: string): string {
   return CASE_INSENSITIVE_FS ? abs.toLowerCase() : abs
 }
 
-function executorFrame(event: RuntimeAgentEvent, strip: 'tool_result' | 'stub' | null): Omit<ClientExecutorFrame, 'cursor'> {
+function executorFrame(event: RuntimeAgentEvent, strip: 'tool_result' | 'tool_input' | 'stub' | null): Omit<ClientExecutorFrame, 'cursor'> {
   const loop = event.event.loop
   const base = { kind: 'executor' as const, agentId: event.agentId, filePath: event.filePath, ...(loop !== undefined ? { loop } : {}) }
   if (!strip) return { ...base, event: event.event }
+  if (strip === 'tool_input') {
+    const payload = (event.event.payload ?? {}) as Record<string, unknown>
+    const cut = truncateInput(payload.input)
+    if (!cut.truncated) return { ...base, event: event.event }
+    return { ...base, stripped: 'tool_input', event: { ...event.event, payload: { ...payload, input: cut.value, inputTruncated: true } } }
+  }
   if (strip === 'stub') return { ...base, stripped: 'stub', event: { ...event.event, payload: stubPayload(event.event.payload) } }
   const payload = (event.event.payload ?? {}) as Record<string, unknown> & { result?: { content?: unknown; isError?: unknown } }
   const content = payload.result?.content
@@ -1025,6 +1044,32 @@ function executorFrame(event: RuntimeAgentEvent, strip: 'tool_result' | 'stub' |
     stripped: 'tool_result',
     event: { ...event.event, payload: { ...rest, result: { isError: !!payload.result?.isError }, resultSize: typeof content === 'string' ? content.length : 0 } },
   }
+}
+
+/** A tool input with each top-level field cut to TOOL_INPUT_CHARS (a non-string field over it becomes its cut JSON). */
+function truncateInput(input: unknown): { value: unknown; truncated: boolean } {
+  const cutString = (text: string) => text.length > TOOL_INPUT_CHARS ? `${text.slice(0, TOOL_INPUT_CHARS)}…` : text
+  if (typeof input === 'string') return { value: cutString(input), truncated: input.length > TOOL_INPUT_CHARS }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    const json = trySafeJsonStringify(input)
+    if ('json' in json && json.json.length > TOOL_INPUT_CHARS) return { value: cutString(json.json), truncated: true }
+    return { value: input, truncated: false }
+  }
+  let truncated = false
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof value === 'string') {
+      out[key] = cutString(value)
+      truncated ||= value.length > TOOL_INPUT_CHARS
+    } else if (value && typeof value === 'object') {
+      const json = trySafeJsonStringify(value)
+      if ('json' in json && json.json.length > TOOL_INPUT_CHARS) {
+        out[key] = cutString(json.json)
+        truncated = true
+      } else out[key] = value
+    } else out[key] = value
+  }
+  return { value: truncated ? out : input, truncated }
 }
 
 /**

@@ -261,7 +261,7 @@ describe('several clients on one daemon, in real time', () => {
     let inRequest: () => void = () => {}
     const requestOpen = new Promise<void>(resolve => { inRequest = resolve })
     const { runtime, client, one } = await fleet((server) => {
-      server.addHook('preHandler', async (request) => {
+      server.addHook('onRequest', async (request) => {
         if (request.method === 'PUT' && request.url.includes('/files/content')) { inRequest(); await new Promise(r => setTimeout(r, 300)) }
       })
     })
@@ -274,6 +274,42 @@ describe('several clients on one daemon, in real time', () => {
     await waitFor(() => paths().includes('notes/agent.md'), 5000, 'agent write')
     await new Promise(r => setTimeout(r, 100))
     expect(paths()).toEqual(['notes/agent.md'])
+  })
+
+  it('an agent turn a client started reaches that client: its file, document and config frames are not suppressed', async () => {
+    const { runtime, client, one } = await fleet()
+    const studio = await reader(client, { focus: one.agentId, client: 'studio' })
+    const asStudio = client.withClientSession(studio.sessionId)
+    // The turn (queued by the client's POST /chat) writes a file and document.md, and its config changes.
+    const steps = [
+      { name: 'fs_write', input: { mode: 'write', path: 'notes/turn.md', content: 'written in the turn' } },
+      { name: 'fs_write', input: { mode: 'write', path: 'document.md', content: '# Written in the turn' } },
+    ]
+    let call = 0
+    const provider = {
+      name: 'scripted', modelId: 'scripted-v1',
+      async createMessage() {
+        const step = steps[call++]
+        if (call === 2) {
+          // Mid-turn, the running config changes (as sys_update_config would).
+          const { config } = runtime.getAgentConfig(one.agentId)
+          await runtime.setAgentConfig(one.agentId, { ...config, description: 'changed in the turn' })
+        }
+        if (!step) return { id: 'end', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }
+        return { id: `s${call}`, content: [{ type: 'tool_use', id: `tu${call}`, name: step.name, input: step.input }], stop_reason: 'tool_use', usage: { input_tokens: 1, output_tokens: 1 } }
+      },
+      async validateConfig() { return { valid: true } },
+    }
+    runtime.getLoadedAgent(one.agentId)!.agent.executor.updateProvider(provider as never)
+    await asStudio.request('POST', `/agents/${one.agentId}/chat`, { body: { text: 'write things' } })
+    const seen = () => studio.frames.filter(f => (f.kind === 'executor' && ['file_updated', 'document_updated'].includes(f.event.type)) || (f.kind === 'push' && f.topic === 'config_changed'))
+      .map(f => f.kind === 'executor' ? `${f.event.type}:${String((f.event.payload as { path?: string }).path ?? '')}` : 'config_changed')
+    await waitFor(() => seen().includes('file_updated:notes/turn.md') && seen().includes('document_updated:') && seen().includes('config_changed'), 8000, 'turn frames')
+    // The client's own PUT is still suppressed.
+    const before = seen().length
+    await asStudio.request('PUT', `/agents/${one.agentId}/files/content`, { query: { path: 'notes/own.md' }, body: { content: 'mine' } })
+    await new Promise(r => setTimeout(r, 150))
+    expect(seen().slice(before)).toEqual([])
   })
 
   it('a HIL request reaches every session; one session resolves it and every session sees the resolution', async () => {

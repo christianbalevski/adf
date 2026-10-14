@@ -46,6 +46,8 @@ interface SessionParams { id: string }
 export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
   const given = ctx.options.routes?.clientSessions ?? daemonClientSessions()
   const sessions = given ?? defaultRegistry(server, ctx)
+  // Other routes check a session is live (POST /agents/create takes its holder from the session header).
+  server.decorate('adfClientSessions', sessions)
 
   server.addHook('onClose', (_instance, done) => {
     // The server closes first in a daemon shutdown. Hijacked SSE responses
@@ -173,11 +175,13 @@ const BRING_HOME = /^\/registry\/agents\/[^/?]+\/bring-home(?:\?|$)/
 const TEMPLATES = /^\/templates(?:[/?]|$)/
 
 function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext, sessions: ClientSessionRegistry): void {
-  // A write to /agents/:id/* that names its client session runs with source
-  // system:client:<session>: each echo frame it raises (config_changed,
-  // file_updated, document_updated) skips that session, decided per event,
-  // so a change the agent makes meanwhile still reaches it. The handler runs
-  // inside this hook's done(), so the source covers it and what it awaits.
+  // A write to /agents/:id/* that names its client session: the route
+  // handler's synchronous part (where it calls the RuntimeService write, which
+  // raises config_changed / file_updated synchronously) runs inside this
+  // hook's done(), within runAsClientWrite, so those echo frames skip that
+  // session. Nothing the request queues (a turn, a timer, a startup turn)
+  // inherits the stamp. This MUST stay the last preHandler hook, so done()
+  // calls the handler itself (W2-A's async guard is registered before it).
   server.addHook('preHandler', (request, _reply, done) => {
     const sessionId = clientSessionOf(request.headers)
     if (sessionId && sessions.has(sessionId) && request.method !== 'GET' && request.method !== 'HEAD' && AGENT_ROUTE.test(request.url)) {
