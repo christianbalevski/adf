@@ -142,12 +142,20 @@ if (process.env.ADF_DAEMON_TOKEN) {
 // Behind a same-host reverse proxy every proxied request arrives from loopback,
 // so identity secrets and shutdown additionally need the per-run local proof
 // that only this machine's adf clients can read.
+// The proof is minted on every run: POST /identity/import (owner switch)
+// requires it in every mode, the other local-only routes only behind a proxy.
 const behindProxy = behindProxyFromEnv()
 let localProof: string | null = null
 if (behindProxy) {
   const minted = mintLocalProof(dirname(settingsPath), port)
   localProof = minted.proof
   console.log(`[ADF Daemon] Proxy mode (${BEHIND_PROXY_ENV}): identity and shutdown routes need the local proof in ${minted.path}; run those adf commands on this host`)
+} else {
+  try {
+    localProof = mintLocalProof(dirname(settingsPath), port).proof
+  } catch (err) {
+    console.error('[ADF Daemon] Could not write the local proof file; owner import (adf identity import) stays unavailable:', err instanceof Error ? err.message : err)
+  }
 }
 
 const ownerIdentity = new DaemonIdentity({
@@ -162,14 +170,9 @@ settings.setProviderKeyVault(ownerIdentity.providerKeys)
   const initial = ownerIdentity.refresh()
   console.log(`[ADF Daemon] Owner identity: ${initial.status}${initial.ownerDid ? ` (${initial.ownerDid})` : ''}, ${initial.storage} storage — ${initial.message}`)
 }
-setWorkspaceIdentityHooks({
-  ensureIdentity: (ws) => {
-    if (ownerIdentity.isReady()) ownerIdentity.service.ensureWorkspaceIdentity(ws)
-    else ownerIdentity.service.unlockWorkspaceEnvelopes(ws)
-  },
-  unlockEnvelopes: (ws) => ownerIdentity.service.unlockWorkspaceEnvelopes(ws),
-  canProvision: () => ownerIdentity.isReady(),
-})
+// Unlock cascade: Studio's runtime key when adopted (design daemon-backend.md
+// §5.3), then the daemon's own runtime-enc-key, then the owner key.
+setWorkspaceIdentityHooks(ownerIdentity.workspaceHooks())
 // Children spawned via sys_create_adf are trusted (parity with Studio; see
 // child-trust.ts). RuntimeService also wires the per-agent hook.
 setChildTrustRegistrar((childConfig) => {
@@ -217,7 +220,9 @@ uvxPackageResolver.repairManifest().catch((err) =>
 const meshManager = new MeshManager(trackedDirs)
 const wsConnectionManager = new WsConnectionManager(meshManager.createWsDelegate())
 meshManager.setWsConnectionManager(wsConnectionManager)
-const meshServer = new MeshServer(codeSandboxService, settings)
+// /ping advertises the runtime DID + delegation the daemon signs with (Studio's
+// only when adopted), not whatever the shared settings file holds.
+const meshServer = new MeshServer(codeSandboxService, ownerIdentity.presentedSettings(settings))
 meshServer.setMeshManager(meshManager)
 meshServer.setWsConnectionManager(wsConnectionManager)
 if (settings.get('meshEnabled') !== false) {
@@ -261,14 +266,20 @@ ownerIdentity.onReady(() => {
   runtime.refreshAgentCredentials('owner identity ready')
     .catch(err => console.error('[ADF Daemon] Credential re-check failed:', err))
 })
+// Same when the daemon starts or stops using Studio's runtime identity.
+ownerIdentity.onRuntimeChange((adoption) => {
+  runtime.refreshAgentCredentials(`runtime identity ${adoption.state}`)
+    .catch(err => console.error('[ADF Daemon] Credential re-check failed:', err))
+})
 // While any agent is degraded, re-check once a minute: picks up a keychain
-// phrase or a trusted-daemon slot Studio wrote, with no daemon restart.
-// Silent while nothing changes; every unlock is logged + evented.
+// phrase, a Studio runtime entry or a trusted-daemon slot Studio wrote, with
+// no daemon restart. Silent while nothing changes; every unlock is logged +
+// evented.
 const CREDENTIAL_RECHECK_MS = 60_000
 setInterval(() => {
   if (!runtime.hasDegradedAgents()) return
   try {
-    if (!ownerIdentity.isReady()) ownerIdentity.refresh() // a transition fires onReady
+    ownerIdentity.refresh() // a transition fires onReady / onRuntimeChange
   } catch (err) {
     console.error('[ADF Daemon] Owner identity refresh failed:', err)
   }

@@ -25,6 +25,7 @@
  * AdfWorkspace-shaped handle — both injected, so this module is usable from
  * Studio, the daemon builder, and tests.
  */
+import { createHash, randomBytes } from 'crypto'
 import type {
   McpOAuthStore,
   McpOAuthRecord,
@@ -158,6 +159,249 @@ export class AppSettingsOAuthStore implements McpOAuthStore {
     if (next) blob[serverUrl] = next
     else delete blob[serverUrl]
     this.writeBlob(blob)
+  }
+}
+
+/**
+ * Structural slice of the daemon secret backend (owner-secret-store.ts
+ * SecretBackend: the OS keychain, or the owner's passphrase-encrypted file).
+ */
+export interface OAuthSecretBackendHandle {
+  isUnlocked(): boolean
+  get(account: string): string | null
+  set(account: string, value: string): void
+  delete(account: string): void
+}
+
+/**
+ * Daemon secret-backend accounts for the app-level MCP OAuth records of one
+ * settings file (`scope` = settingsScope(settingsPath)):
+ *
+ *  - index  `mcp-oauth-credentials:<scope>`: `{"v":1,"servers":[<serverUrl>…]}`
+ *  - record `mcp-oauth-credentials:<scope>:<serverKey>`: one McpOAuthRecord as
+ *    JSON, `serverKey` = first 16 hex of sha256(serverUrl) (the exact blob key)
+ *
+ * Every value is chunked (`chunkedSecret*`): Windows Credential Manager caps a
+ * credential at 2560 bytes (1280 UTF-16 characters), less than one access +
+ * refresh JWT pair. Handover mapping (design daemon-backend.md §11): Studio's
+ * `mcpOauthCredentials` blob `Record<serverUrl, McpOAuthRecord>` is
+ * `exportBlob()` / `importBlob()`, one record per blob key, verbatim.
+ */
+export function daemonAppOAuthAccount(scope: string): string {
+  return `mcp-oauth-credentials:${scope}`
+}
+
+/** Record account for one server URL under `indexAccount`. */
+export function daemonAppOAuthRecordAccount(indexAccount: string, serverUrl: string): string {
+  return `${indexAccount}:${createHash('sha256').update(serverUrl).digest('hex').slice(0, 16)}`
+}
+
+/** Characters per keychain value; under the Windows 1280-character cap with room for the account metadata. */
+export const SECRET_CHUNK_CHARS = 1000
+
+/**
+ * Chunked secret value with generations. The head account holds
+ * `{"v":1,"gen":<hex>,"n":<chunks>,"sha256":<hex of the value>}`; chunk i of
+ * a generation is at `<account>#<gen>:<i>`. A write stores a new generation,
+ * then flips the head to it, then deletes the old generation, so a crash at
+ * any point leaves the head on one complete generation (old or new), never a
+ * mix of both (an access token of one write with the refresh token of
+ * another). A head whose chunks do not hash to `sha256` reads as absent.
+ *
+ * Chunks a crash left behind are listed in the head (`pending` before the
+ * flip, `prev` after it) and deleted by the next write. Chunks end on code
+ * point boundaries, never inside a surrogate pair.
+ */
+interface ChunkHead {
+  v: 1
+  gen?: string
+  n?: number
+  sha256?: string
+  /** A generation being written (crash before the flip leaves it orphaned). */
+  pending?: { gen: string; n: number }
+  /** The generation the last flip replaced (crash before its deletion leaves it orphaned). */
+  prev?: { gen: string; n: number }
+}
+
+function readHead(backend: OAuthSecretBackendHandle, account: string): ChunkHead | null {
+  const raw = backend.get(account)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as ChunkHead
+    return parsed && parsed.v === 1 ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function isGeneration(g: unknown): g is { gen: string; n: number } {
+  const value = g as { gen?: unknown; n?: unknown } | undefined
+  return !!value && typeof value.gen === 'string' && /^[0-9a-f]{1,32}$/.test(value.gen) &&
+    typeof value.n === 'number' && Number.isInteger(value.n) && value.n > 0 && value.n < 1000
+}
+
+function deleteGeneration(backend: OAuthSecretBackendHandle, account: string, g: { gen: string; n: number }): void {
+  for (let i = 0; i < g.n; i++) backend.delete(`${account}#${g.gen}:${i}`)
+}
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex')
+}
+
+/** Split into chunks of at most `size` UTF-16 units, never between the halves of a surrogate pair. */
+export function splitOnCodePoints(value: string, size: number = SECRET_CHUNK_CHARS): string[] {
+  const chunks: string[] = []
+  let start = 0
+  while (start < value.length) {
+    let end = Math.min(start + size, value.length)
+    const last = value.charCodeAt(end - 1)
+    if (end < value.length && last >= 0xd800 && last <= 0xdbff) end -= 1
+    chunks.push(value.slice(start, end))
+    start = end
+  }
+  return chunks.length > 0 ? chunks : ['']
+}
+
+export function chunkedSecretWrite(backend: OAuthSecretBackendHandle, account: string, value: string): void {
+  const head = readHead(backend, account)
+  // Leftovers of an earlier crash (never referenced by a live head).
+  for (const leftover of [head?.pending, head?.prev]) if (isGeneration(leftover)) deleteGeneration(backend, account, leftover)
+  const current = head && isGeneration(head) ? { gen: head.gen!, n: head.n! } : null
+  const chunks = splitOnCodePoints(value)
+  const next = { gen: randomBytes(8).toString('hex'), n: chunks.length }
+  const live: ChunkHead = current ? { v: 1, gen: current.gen, n: current.n, sha256: head!.sha256 } : { v: 1 }
+  backend.set(account, JSON.stringify({ ...live, pending: next }))
+  chunks.forEach((chunk, i) => backend.set(`${account}#${next.gen}:${i}`, chunk))
+  backend.set(account, JSON.stringify({ v: 1, gen: next.gen, n: next.n, sha256: sha256Hex(value), ...(current ? { prev: current } : {}) }))
+  if (current) {
+    deleteGeneration(backend, account, current)
+    backend.set(account, JSON.stringify({ v: 1, gen: next.gen, n: next.n, sha256: sha256Hex(value) }))
+  }
+}
+
+/** The whole value, or null when absent, incomplete or not matching its checksum. */
+export function chunkedSecretRead(backend: OAuthSecretBackendHandle, account: string): string | null {
+  const head = readHead(backend, account)
+  if (!head || !isGeneration(head) || typeof head.sha256 !== 'string') return null
+  const parts: string[] = []
+  for (let i = 0; i < head.n!; i++) {
+    const part = backend.get(`${account}#${head.gen}:${i}`)
+    if (part === null) return null
+    parts.push(part)
+  }
+  const value = parts.join('')
+  if (sha256Hex(value) !== head.sha256) {
+    console.warn(`[MCP][oauth] Secret ${account} does not match its checksum; treating it as absent`)
+    return null
+  }
+  return value
+}
+
+export function chunkedSecretDelete(backend: OAuthSecretBackendHandle, account: string): void {
+  const head = readHead(backend, account)
+  backend.delete(account)
+  if (!head) return
+  for (const g of [isGeneration(head) ? { gen: head.gen!, n: head.n! } : null, head.pending, head.prev]) {
+    if (isGeneration(g)) deleteGeneration(backend, account, g)
+  }
+}
+
+/**
+ * App-level (daemon) store: the daemon's counterpart of AppSettingsOAuthStore,
+ * on the daemon secret backend instead of safeStorage. Same records, same URL
+ * binding; one chunked account per server (see daemonAppOAuthAccount). Reads
+ * return nothing while the backend is locked; writes fail plainly then
+ * (FileSecretBackend.set throws), so a token is never stored anywhere
+ * unencrypted.
+ */
+export class DaemonAppOAuthStore implements McpOAuthStore {
+  constructor(
+    private readonly backend: OAuthSecretBackendHandle,
+    private readonly account: string,
+  ) {}
+
+  /** False while the secret backend is locked (passphrase file not unlocked). */
+  available(): boolean {
+    return this.backend.isUnlocked()
+  }
+
+  private readJson(account: string): unknown {
+    if (!this.backend.isUnlocked()) return null
+    let raw: string | null
+    try {
+      raw = chunkedSecretRead(this.backend, account)
+    } catch (err) {
+      // Keychain read failure: same contract as a corrupt record (re-sign in).
+      // The message comes from the keychain binding, never from the value.
+      console.warn(`[MCP][oauth] DaemonAppOAuthStore: secret store read failed (${err instanceof Error ? err.message : String(err)})`)
+      return null
+    }
+    if (!raw) return null
+    try {
+      return JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }
+
+  /** Every server URL with a stored record (metadata only, for status listings). */
+  listServerUrls(): string[] {
+    const index = this.readJson(this.account) as { v?: unknown; servers?: unknown } | null
+    return index?.v === 1 && Array.isArray(index.servers) ? index.servers.filter((s): s is string => typeof s === 'string') : []
+  }
+
+  private writeIndex(servers: string[]): void {
+    if (servers.length === 0) chunkedSecretDelete(this.backend, this.account)
+    else chunkedSecretWrite(this.backend, this.account, JSON.stringify({ v: 1, servers }))
+  }
+
+  private readRecord(serverUrl: string): McpOAuthRecord | undefined {
+    const record = this.readJson(daemonAppOAuthRecordAccount(this.account, serverUrl))
+    return record && typeof record === 'object' && !Array.isArray(record) ? record as McpOAuthRecord : undefined
+  }
+
+  private writeRecord(serverUrl: string, record: McpOAuthRecord | undefined): void {
+    const servers = this.listServerUrls()
+    if (record) {
+      chunkedSecretWrite(this.backend, daemonAppOAuthRecordAccount(this.account, serverUrl), JSON.stringify(record))
+      if (!servers.includes(serverUrl)) this.writeIndex([...servers, serverUrl])
+    } else {
+      chunkedSecretDelete(this.backend, daemonAppOAuthRecordAccount(this.account, serverUrl))
+      if (servers.includes(serverUrl)) this.writeIndex(servers.filter((s) => s !== serverUrl))
+    }
+  }
+
+  async get(serverUrl: string): Promise<McpOAuthRecord | undefined> {
+    const record = this.readRecord(serverUrl)
+    if (record) assertRecordUrlBinding(record, serverUrl, 'DaemonAppOAuthStore.get')
+    return record
+  }
+
+  async save(serverUrl: string, record: McpOAuthRecord): Promise<void> {
+    this.writeRecord(serverUrl, { ...record, updatedAt: record.updatedAt || Date.now() })
+  }
+
+  async invalidate(serverUrl: string, scope: McpOAuthInvalidateScope = 'all'): Promise<void> {
+    const existing = this.readRecord(serverUrl)
+    if (!existing) return
+    this.writeRecord(serverUrl, applyInvalidateScope(existing, scope))
+  }
+
+  /** Every record as Studio's `mcpOauthCredentials` blob (handover to embedded mode). */
+  exportBlob(): OAuthBlob {
+    const blob: OAuthBlob = {}
+    for (const url of this.listServerUrls()) {
+      const record = this.readRecord(url)
+      if (record) blob[url] = record
+    }
+    return blob
+  }
+
+  /** Store every record of a Studio `mcpOauthCredentials` blob (handover to local mode). */
+  importBlob(blob: OAuthBlob): void {
+    for (const [url, record] of Object.entries(blob)) {
+      if (record && typeof record === 'object') this.writeRecord(url, record)
+    }
   }
 }
 

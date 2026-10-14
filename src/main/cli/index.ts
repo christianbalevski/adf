@@ -333,9 +333,17 @@ async function requestJson(io: CliIo, options: CliOptions, path: string, init?: 
       ? body.error
       : `HTTP ${response.status} ${response.statusText}`
     const hint = response.status === 401 ? tunnelTokenHint(options.daemonUrl, options.token) : null
-    throw new Error(hint ? `${message}\n${hint}` : message)
+    throw new DaemonRequestError(hint ? `${message}\n${hint}` : message, response.status, isRecord(body) && typeof body.code === 'string' ? body.code : null)
   }
   return body
+}
+
+/** A daemon error response: the message as before, plus its status and `code` for callers that branch on them. */
+class DaemonRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly apiCode: string | null) {
+    super(message)
+    this.name = 'DaemonRequestError'
+  }
 }
 
 /** Pull `--loop <name>` / `--loop=<name>` out of a command's arguments. */
@@ -818,7 +826,9 @@ async function identityCommand(io: CliIo, options: CliOptions, args: string[]): 
     return 0
   }
 
-  if (action === 'restore' || action === 'import') {
+  if (action === 'import') return await importIdentity(io, options, args.slice(1))
+
+  if (action === 'restore') {
     const current = await requestJson(io, options, '/identity')
     if (isRecord(current) && current.status === 'ready') {
       io.stdout(formatIdentity(current))
@@ -851,7 +861,59 @@ async function identityCommand(io: CliIo, options: CliOptions, args: string[]): 
     return 0
   }
 
-  throw new Error('Usage: adf identity [status | new | restore | unlock | lock]')
+  throw new Error('Usage: adf identity [status | new | restore | import | unlock | lock]')
+}
+
+/**
+ * `adf identity import`: Studio's Import identity. The same owner's phrase
+ * acts as a restore; another owner's phrase replaces this machine's owner
+ * after the user types "switch" (the daemon names both DIDs first). The
+ * daemon refuses a switch while the previous owner's backup is unconfirmed;
+ * --i-have-a-backup states that the user holds that phrase.
+ */
+async function importIdentity(io: CliIo, options: CliOptions, args: string[] = []): Promise<number> {
+  for (const arg of args) {
+    if (arg !== '--i-have-a-backup') throw new Error(`Unknown option for adf identity import: ${arg}`)
+  }
+  const haveBackup = args.includes('--i-have-a-backup')
+  const current = await requestJson(io, options, '/identity')
+  if (isRecord(current) && typeof current.ownerDid === 'string' && current.ownerDid) {
+    io.stdout(`This machine's owner is ${current.ownerDid}. A phrase of another owner replaces it.\n`)
+  }
+  const mnemonic = (await ask(io, 'Seed phrase (12 words, input hidden): ', true)).trim()
+  if (!mnemonic) throw new Error('No seed phrase entered.')
+  const passphrase = await passphraseIfNeeded(io, current, isRecord(current) && current.status !== 'locked')
+  const body: Record<string, unknown> = { mnemonic, ...(passphrase ? { passphrase } : {}), ...(haveBackup ? { previousOwnerBackupConfirmed: true } : {}) }
+  let imported: JsonValue
+  try {
+    imported = await postJson(io, options, '/identity/import', body)
+  } catch (err) {
+    if (!(err instanceof DaemonRequestError) || err.apiCode !== 'switch_unconfirmed') throw err
+    io.stdout(`${err.message}\n`)
+    const answer = (await ask(io, 'Type "switch" to replace the owner: ')).trim().toLowerCase()
+    if (answer !== 'switch') {
+      io.stdout('Nothing was changed.\n')
+      return 1
+    }
+    imported = await postJson(io, options, '/identity/import', { ...body, switchOwner: true })
+  }
+  if (options.json) {
+    io.stdout(`${JSON.stringify(imported, null, 2)}\n`)
+    return 0
+  }
+  const result = isRecord(imported) ? imported : {}
+  const identity = isRecord(result.identity) ? result.identity : {}
+  const restamp = isRecord(result.restamp) ? result.restamp : {}
+  const failures = Array.isArray(restamp.failures) ? restamp.failures.map(String) : []
+  const reloadFailures = Array.isArray(result.reloadFailures) ? result.reloadFailures.filter(isRecord) : []
+  io.stdout(
+    `${result.switched === true ? `Owner switched from ${String(result.previousOwnerDid ?? '')}.` : 'Owner identity imported.'}\n` +
+    formatIdentity(identity) +
+    `Restamped ${String(restamp.restamped ?? 0)} agent file(s), ${failures.length} failure(s).\n` +
+    failures.map(f => `  ${f}\n`).join('') +
+    reloadFailures.map(f => `Could not reload ${String(f.name ?? '')} (${String(f.filePath ?? '')}): ${String(f.error ?? '')}\n`).join(''),
+  )
+  return failures.length > 0 || reloadFailures.length > 0 ? 1 : 0
 }
 
 async function newAgent(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
@@ -907,9 +969,14 @@ function formatIdentity(value: JsonValue): string {
     ['status', String(value.status ?? '')],
     ['ownerDid', String(value.ownerDid ?? '')],
     ['runtimeDid', String(value.runtimeDid ?? '')],
+    ...(isRecord(value.runtime) ? [['runtime', `${String(value.runtime.source ?? '')} (${String(value.runtime.state ?? '')})`]] : []),
     ['storage', String(value.storage ?? '')],
     ['backupConfirmed', String(value.backupConfirmed ?? false)],
-  ])}${typeof value.message === 'string' ? `${value.message}\n` : ''}`
+  ])}${typeof value.message === 'string' ? `${value.message}\n` : ''}` +
+    // Only the actionable case: a Studio runtime entry exists but was not used.
+    (isRecord(value.runtime) && value.runtime.state === 'rejected' && typeof value.runtime.message === 'string'
+      ? `${value.runtime.message}\n`
+      : '')
 }
 
 function formatTemplates(value: JsonValue): string {
@@ -1347,7 +1414,13 @@ Commands:
   identity restore               Restore the owner identity from its seed
                                   phrase (typed at a hidden prompt; the same
                                   phrase as ADF Studio = the same owner)
-  identity unlock|lock           Unlock/lock a passphrase-protected identity
+  identity import [--i-have-a-backup]
+                                  Import an owner phrase like Studio's Import
+                                  identity: another owner's phrase replaces
+                                  this machine's owner (asks first; needs the
+                                  old phrase backed up) and restamps local
+                                  agents
+  identity unlock|lock          Unlock/lock a passphrase-protected identity
                                   (machines without an OS keychain)
   templates                      List agent templates
   new [name] [--template <id>] [--provider <id>] [--model <id>]
