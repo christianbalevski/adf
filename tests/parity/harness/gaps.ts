@@ -35,8 +35,13 @@ export interface GapEntry {
   apply(daemon: ComparableRecording, embedded: ComparableRecording): number
 }
 
-const ALL = ['open-agent', 'start-agent', 'chat-tool-call'] as const
-const RUNNING = ['start-agent', 'chat-tool-call'] as const
+const CORE = ['open-agent', 'start-agent', 'chat-tool-call'] as const
+/** W3-B scenarios (tests/parity/settings, tests/parity/identity) that run no agent. */
+const W3B_NO_AGENT = ['provider-round-trip', 'agent-provider-key', 'subscription-status', 'owner-identity'] as const
+/** The W3-B scenario that starts agent-1 and leaves it running (as chat-tool-call). */
+const W3B_RUNNING = ['agent-keystore'] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING] as const
+const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING] as const
 /** Scenarios whose agent file nobody holds open when the state is dumped (chat-tool-call's still runs). */
 const NOT_RUNNING_AT_DUMP = ['open-agent', 'start-agent'] as const
 
@@ -120,7 +125,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2b:open-document-reads',
     ws: 'W2-B',
-    scenarios: ALL,
+    scenarios: CORE,
     path: 'steps: every DOC_GET_BATCH and DOC_READ_INTERNAL_FILE before the first AGENT_START (and their `(threw)` timeline markers), no other step',
     what: 'Reading a file that is not running throws "not available in daemon mode yet: W2-B": the daemon serves open documents (W2-A), but Studio holds one only through its client session.',
     apply(d, e) {
@@ -171,7 +176,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2b:agent-event-stream',
     ws: 'W2-B',
-    scenarios: RUNNING,
+    scenarios: ['start-agent', 'chat-tool-call'],
     path: 'AGENT_EVENT: the pushes, their timeline lines and the step push watermarks they shift',
     what: 'The interim GET /events adapter carries only state_changed, turn_complete and error; deltas, tool calls, context, metadata, file updates and loop_seq come with the client stream.',
     apply(d, e) {
@@ -193,7 +198,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2b:streaming-check',
     ws: 'W2-B',
-    scenarios: RUNNING,
+    scenarios: ['start-agent', 'chat-tool-call'],
     path: 'problems: the streaming check',
     what: 'No text_delta_batch reaches the window (same cause as w2b:agent-event-stream).',
     apply(d) {
@@ -207,7 +212,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2b:identity-on-open',
     ws: 'W2-B',
-    scenarios: ALL,
+    scenarios: [...CORE, ...W3B_RUNNING],
     path: 'state: adf_identity and adf_attestations rows',
     what: 'The daemon runs its open steps (ensureWorkspaceIdentity on open, W2-A) only for a document a client session holds: no keys, no owner and operator attestations.',
     apply(d, e) {
@@ -224,7 +229,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2b:identity-meta',
     ws: 'W2-B',
-    scenarios: ALL,
+    scenarios: [...CORE, ...W3B_RUNNING],
     path: 'state: adf_meta rows adf_did, adf_owner_did, adf_runtime_did',
     what: 'Same cause as w2b:identity-on-open: the identity stamps are written on open.',
     apply(d, e) {
@@ -344,6 +349,41 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
+    id: 'mode:redacted-provider-keys',
+    ws: 'mode',
+    scenarios: ['provider-round-trip', 'agent-provider-key'],
+    path: 'steps: providers[].apiKey in SETTINGS_GET results and in the SETTINGS_SET args that write them back; the PROVIDER_CREDENTIAL_SET value of "Copy app key"',
+    what: 'The daemon answers app provider keys as __redacted__ (§4.2) and the renderer writes back what it read; the daemon keeps the stored key and copies the app key itself, so the persisted keys are the same.',
+    apply(d, e) {
+      const REDACTED = '__redacted__'
+      let n = 0
+      // `__redacted__` where embedded has a real key, at an apiKey of the same place only.
+      const swap = (dv: unknown, ev: unknown, key: string | null): unknown => {
+        if (dv === REDACTED && key === 'apiKey' && typeof ev === 'string' && ev !== '' && ev !== REDACTED) { n++; return ev }
+        if (Array.isArray(dv) && Array.isArray(ev)) return dv.map((x, i) => swap(x, ev[i], null))
+        if (dv && ev && typeof dv === 'object' && typeof ev === 'object' && !Array.isArray(dv) && !Array.isArray(ev)) {
+          return Object.fromEntries(Object.entries(dv).map(([k, v]) => [k, swap(v, (ev as Record<string, unknown>)[k], k)]))
+        }
+        return dv
+      }
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== base.channel) return
+        if (step.channel === IPC.SETTINGS_GET) step.result = swap(step.result, base.result, null)
+        if (step.channel === IPC.SETTINGS_SET) step.args = swap(step.args, base.args, null) as unknown[]
+        if (step.channel === IPC.PROVIDER_CREDENTIAL_SET) {
+          const a = step.args[0] as { value?: unknown } | undefined
+          const b = base.args[0] as { value?: unknown } | undefined
+          if (a?.value === REDACTED && typeof b?.value === 'string' && b.value !== REDACTED) {
+            step.args = [{ ...a, value: b.value }, ...step.args.slice(1)]
+            n++
+          }
+        }
+      })
+      return n
+    },
+  },
+  {
     id: 'w4a:client-record-control-url',
     ws: 'W4-A',
     scenarios: ALL,
@@ -357,7 +397,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-host-record-lazy',
     ws: 'W0-C',
-    scenarios: ['open-agent'],
+    scenarios: ['open-agent', ...W3B_NO_AGENT],
     path: 'state.leases: the daemon\'s hosts/<pid>.json while it holds no lease',
     what: 'Bug: the daemon writes its runtime host record only once it holds an agent lease; §10.3 has every runtime host register (embedded Studio does at boot).',
     apply(d, e) {
@@ -371,7 +411,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-lease-agent-id',
     ws: 'W0-C',
-    scenarios: ['chat-tool-call'],
+    scenarios: ['chat-tool-call', ...W3B_RUNNING],
     path: 'state.leases: the agent lease\'s agentId',
     what: 'Bug: the daemon\'s agent lease records agentId null.',
     apply(d, e) {
