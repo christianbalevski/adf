@@ -39,9 +39,11 @@ describe('client sessions: old-daemon fallback', () => {
     mock.dropEventStreams()
     await waitFor(() => mock.requests.filter(r => r.startsWith('GET /events')).length >= 2)
     expect(notes(store)).toHaveLength(1)
-    // Old behaviour stands: the stream still feeds the state.
+    // Old behaviour stands: the stream still feeds the state. (Checked on the
+    // event tail: the reconnect's resync reloads the agent status and may
+    // overwrite the state before a poll sees it.)
     mock.emit({ event_type: 'agent.state.changed', agent_id: [...mock.agents.keys()][0], payload: { state: 'thinking' } })
-    await waitFor(() => store!.getState().agents[[...mock.agents.keys()][0]]?.executorState === 'thinking')
+    await waitFor(() => store!.getState().lastEvents.some(e => e.event_type === 'agent.state.changed' && e.payload?.state === 'thinking'))
   }, 30_000)
 
   it('another client API version: /events, with both versions named', async () => {

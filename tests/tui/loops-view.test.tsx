@@ -181,7 +181,8 @@ describe('loops manager', () => {
   it('lists, edits, creates and deletes timers; fleet mode shows every agent', async () => {
     const tui = await mount()
     await tui.press(KEY.right)
-    let frame = await tui.waitFor('Timers of agent-1')
+    // The tab renders before its timers load ("Loading timers…"): wait for the row.
+    let frame = await tui.waitFor(f => f.includes('Timers of agent-1') && /#1\s+consolidator\s+every 1h/.test(f))
     expect(frame).toMatch(/#1\s+consolidator\s+every 1h/)
 
     await tui.press('e')
