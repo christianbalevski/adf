@@ -16,6 +16,27 @@ import { isIP } from 'node:net'
 // link-local/cloud-metadata addresses stay blocked even when it is set.
 // =============================================================================
 
+/** IPv4-mapped / -compatible IPv6, dotted (`::ffff:169.254.169.254`). */
+const MAPPED_DOTTED = /^::(?:ffff:(?:0{1,4}:)?)?((?:\d{1,3}\.){3}\d{1,3})$/
+/** The same, in the hex form the URL parser writes (`[::ffff:a9fe:a9fe]`). */
+const MAPPED_HEX = /^::(?:ffff:(?:0{1,4}:)?)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/
+
+/**
+ * The IPv4 address inside an IPv4-mapped or -compatible IPv6 address, as
+ * `[match, dotted]`, in either spelling; null otherwise. `new URL()` turns
+ * `::ffff:169.254.169.254` into `::ffff:a9fe:a9fe`, so the hex form must
+ * classify the same as the dotted one.
+ */
+function mappedIPv4Match(addr: string): [string, string] | null {
+  const dotted = addr.match(MAPPED_DOTTED)
+  if (dotted) return [dotted[0], dotted[1]]
+  const hex = addr.match(MAPPED_HEX)
+  if (!hex) return null
+  const hi = parseInt(hex[1], 16)
+  const lo = parseInt(hex[2], 16)
+  return [hex[0], `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`]
+}
+
 const ALLOWED_FETCH_PROTOCOLS = new Set(['http:', 'https:'])
 const ALLOWED_CONNECT_PROTOCOLS = new Set(['ws:', 'wss:', 'http:', 'https:'])
 
@@ -26,6 +47,40 @@ export interface FetchGuardOptions {
   daemonPort?: number
   /** The agent's own served origin; ALLOWED even when !allowLocal. */
   ownOrigin?: { port: number; pathPrefix: string }
+  /**
+   * Allow link-local addresses (169.254.0.0/16, fe80::/10): APIPA and
+   * direct-cable LANs, where mesh peers can live. Default false. The cloud
+   * metadata addresses stay blocked either way (isCloudMetadataIp).
+   */
+  allowLinkLocal?: boolean
+}
+
+/**
+ * Cloud instance-metadata and credential endpoints: AWS/GCP/Azure/OCI
+ * 169.254.169.254, AWS ECS task credentials 169.254.170.2, AWS IPv6 IMDS
+ * fd00:ec2::254 (incl. IPv4-mapped forms). Never fetchable, whatever the
+ * options.
+ */
+export function isCloudMetadataIp(ip: string): boolean {
+  const bare = ip.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase()
+  const version = isIP(bare)
+  const v4 = (addr: string) => addr === '169.254.169.254' || addr === '169.254.170.2'
+  if (version === 4) return v4(bare)
+  if (version === 6) {
+    const mapped = mappedIPv4Match(bare)
+    if (mapped) return v4(mapped[1])
+    return expandIPv6(bare) === 'fd00:0ec2:0000:0000:0000:0000:0000:0254'
+  }
+  return false
+}
+
+/** Full eight-group, four-digit form of an IPv6 address (no IPv4 tail). */
+function expandIPv6(addr: string): string {
+  const [head, tail] = addr.includes('::') ? addr.split('::') : [addr, '']
+  const left = head ? head.split(':') : []
+  const right = tail ? tail.split(':') : []
+  const fill = addr.includes('::') ? Array(Math.max(0, 8 - left.length - right.length)).fill('0') : []
+  return [...left, ...fill, ...right].map((g) => g.padStart(4, '0')).join(':')
 }
 
 /**
@@ -79,7 +134,7 @@ export function isBlockedIPv6(raw: string): boolean {
   const addr = raw.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0]
   if (addr === '::' || addr === '::1') return true
   if (/^(0:){7}[01]$/.test(addr)) return true
-  const mapped = addr.match(/^::(?:ffff:(?:0{1,4}:)?)?((?:\d{1,3}\.){3}\d{1,3})$/)
+  const mapped = mappedIPv4Match(addr)
   if (mapped) return isBlockedIPv4(mapped[1])
   const head = addr.split(':')[0]
   if (!head) return false
@@ -109,7 +164,7 @@ export function isLinkLocalIp(ip: string): boolean {
   }
   if (version === 6) {
     const addr = bare.toLowerCase()
-    const mapped = addr.match(/^::(?:ffff:(?:0{1,4}:)?)?((?:\d{1,3}\.){3}\d{1,3})$/)
+    const mapped = mappedIPv4Match(addr)
     if (mapped) {
       const o = mapped[1].split('.').map(Number)
       return o[0] === 169 && o[1] === 254
@@ -131,7 +186,7 @@ export function isLoopbackIp(ip: string): boolean {
     const addr = bare.toLowerCase()
     if (addr === '::1') return true
     if (/^(0:){7}1$/.test(addr)) return true
-    const mapped = addr.match(/^::(?:ffff:(?:0{1,4}:)?)?((?:\d{1,3}\.){3}\d{1,3})$/)
+    const mapped = mappedIPv4Match(addr)
     if (mapped) return mapped[1].split('.').map(Number)[0] === 127
     return false
   }
@@ -154,7 +209,7 @@ export function isUnspecifiedIp(ip: string): boolean {
   if (bare === '0.0.0.0') return true
   if (bare === '::') return true
   if (/^(0{1,4}:){7}0{1,4}$/.test(bare)) return true
-  const mapped = bare.match(/^::(?:ffff:(?:0{1,4}:)?)?((?:\d{1,3}\.){3}\d{1,3})$/)
+  const mapped = mappedIPv4Match(bare)
   if (mapped) return mapped[1] === '0.0.0.0'
   return false
 }
@@ -176,6 +231,7 @@ function connectBlockedMessage(target: string): string {
 }
 
 interface HostClass {
+  anyMetadata: boolean
   anyLinkLocal: boolean
   anyLoopback: boolean
   anyUnspecified: boolean
@@ -211,6 +267,7 @@ async function classifyHost(host: string): Promise<HostClass | null> {
   }
 
   return {
+    anyMetadata: candidates.some(isCloudMetadataIp),
     anyLinkLocal: candidates.some(isLinkLocalIp),
     anyLoopback: loopbackHost || candidates.some(isLoopbackIp),
     anyUnspecified: candidates.some(isUnspecifiedIp),
@@ -233,8 +290,13 @@ function applyPolicy(
   opts: FetchGuardOptions,
   overridableMessage: (target: string) => string
 ): string | null {
-  // Tier 1 — link-local / cloud metadata: never reachable, ignores allowLocal.
-  if (cls.anyLinkLocal) {
+  // Tier 0 — cloud metadata / credential endpoints: never reachable.
+  if (cls.anyMetadata) {
+    return `Blocked: "${target}" is a link-local / cloud-metadata address, which is never fetchable (even with allow_local_fetch).`
+  }
+  // Tier 1 — link-local: never reachable, ignores allowLocal, unless the
+  // caller opts in (allowLinkLocal: mesh peers on APIPA / direct-cable LANs).
+  if (cls.anyLinkLocal && !opts.allowLinkLocal) {
     return `Blocked: "${target}" is a link-local / cloud-metadata address, which is never fetchable (even with allow_local_fetch).`
   }
   // Tier 2 — the local ADF daemon control API: never reachable, ignores

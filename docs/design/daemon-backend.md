@@ -145,6 +145,14 @@ Everything else is new code under `src/main/backend/` or daemon code.
 
 Rationale: copying the BAM mapping, the event batcher semantics or the core-tool declaration helper into daemon mode creates the drift this project exists to remove (§6 shows the daemon already copied `ensureCoreToolDeclarations`). A pure extraction with a characterization test keeps the baseline intact and removes the copy.
 
+Deliberate embedded deviations (security fixes in code both modes share, accepted by the lead; each changes embedded behaviour on purpose):
+
+| Commit | Change | Rationale |
+|---|---|---|
+| 67d208a0 | Peer health and shared-file reads go through the egress guard: cloud metadata addresses and the daemon port refused on every redirect hop, 2 MB cap enforced while streaming. LAN, link-local and http stay allowed. | A peer URL comes from a remote directory card, so it is attacker-influenced; an unguarded fetch could reach cloud credentials or the local daemon API. |
+| 49e7f043 | MCP stdio servers and auth preflights no longer inherit `ADF_DAEMON_TOKEN` or `ADF_OWNER_PASSPHRASE*`. | An MCP server is third-party code; the daemon token drives every route and the passphrase unlocks the owner identity. |
+| 324378a2 | The MCP registration test takes an optional cancel signal (Studio passes none, so its runs are unchanged). | Lets the daemon run the test as a cancellable job instead of holding a request open for minutes. |
+
 ## 4. Settings model
 
 ### 4.1 Key classes

@@ -8,9 +8,9 @@
  *
  * The URL comes from a peer's directory card, so it is remote data: both
  * reads go through the shared egress guard (utils/guarded-fetch.ts) on every
- * redirect hop. Peers live on the LAN or a tailnet and answer over http, so
- * LAN targets and http are allowed; the local daemon control port and
- * link-local / cloud-metadata addresses are refused. The size cap is enforced
+ * redirect hop. Peers live on the LAN, a tailnet or a link-local network and
+ * answer over http, so those targets and http are allowed; the local daemon
+ * control port and the cloud metadata addresses are refused. The size cap is enforced
  * while streaming, and both reads have a time budget.
  */
 
@@ -20,7 +20,12 @@ import { guardedFetch } from '../utils/guarded-fetch'
 export const PEER_SHARED_FILE_MAX_BYTES = 2_000_000
 /** A /health answer is a few bytes of JSON. */
 const PEER_HEALTH_MAX_BYTES = 64 * 1024
-const PEER_FETCH = { allowHttp: true, allowLocal: true } as const
+/**
+ * Peers sit on the LAN, a tailnet, or an APIPA / direct-cable link
+ * (169.254.x.x, fe80::/10), and answer over http. Redirects: fetch's own
+ * default of 20 hops, each re-checked by the guard.
+ */
+const PEER_FETCH = { allowHttp: true, allowLocal: true, allowLinkLocal: true, maxRedirects: 20 } as const
 
 /** Studio's wording for an error status (`HTTP 404`), from the guard's `HTTP 404 Not Found`. */
 function httpError(error: string): string | null {

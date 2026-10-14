@@ -10,18 +10,33 @@ import { probeMcpServer } from '../../../src/main/services/mcp-connect-tests'
 import { inheritableEnv } from '../../../src/main/utils/child-env'
 
 const saved: Record<string, string | undefined> = {}
-const SET = { ADF_DAEMON_TOKEN: 'tok-SECRET-1', ADF_DAEMON_LOCAL_PROOF: 'proof-SECRET-2', ADF_OWNER_PASSPHRASE: 'pass-SECRET-3', ADF_W1D_VISIBLE: 'visible' }
+const SET = {
+  ADF_DAEMON_TOKEN: 'tok-SECRET-1',
+  ADF_OWNER_PASSPHRASE: 'pass-SECRET-3',
+  ADF_OWNER_PASSPHRASE_FILE: '/run/secrets/adf-pass',
+  ADF_DAEMON_PORT: '7499',
+  ADF_DAEMON_URL: 'http://127.0.0.1:7499',
+  ADF_DAEMON_SETTINGS: '/tmp/adf-settings.json',
+  ADF_W1D_VISIBLE: 'visible',
+}
 afterEach(() => {
   for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
 })
 
 describe('MCP child environment', () => {
-  it('inheritableEnv drops ADF_DAEMON_* and the owner passphrase, keeps the rest', () => {
-    const env = inheritableEnv({ ...SET, PATH: '/bin', ADF_OWNER_PASSPHRASE_FILE: '/x', ADF_USER_DATA_DIR: '/d' })
-    expect(env).toEqual({ ADF_W1D_VISIBLE: 'visible', PATH: '/bin', ADF_USER_DATA_DIR: '/d' })
+  it('inheritableEnv drops the daemon token and the owner passphrase only', () => {
+    const env = inheritableEnv({ ...SET, PATH: '/bin', ADF_USER_DATA_DIR: '/d' })
+    expect(env).toEqual({
+      ADF_DAEMON_PORT: '7499',
+      ADF_DAEMON_URL: 'http://127.0.0.1:7499',
+      ADF_DAEMON_SETTINGS: '/tmp/adf-settings.json',
+      ADF_W1D_VISIBLE: 'visible',
+      PATH: '/bin',
+      ADF_USER_DATA_DIR: '/d',
+    })
   })
 
-  it('a probed stdio server does not receive the daemon token or the owner passphrase', async () => {
+  it('a probed stdio server gets the daemon location but not the token or the owner passphrase', async () => {
     for (const [k, v] of Object.entries(SET)) { saved[k] = process.env[k]; process.env[k] = v }
     const dir = mkdtempSync(join(tmpdir(), 'adf-mcp-env-'))
     const out = join(dir, 'env.json')
@@ -36,7 +51,11 @@ describe('MCP child environment', () => {
       const env = JSON.parse(readFileSync(out, 'utf-8')) as Record<string, string>
       expect(env.MARKER).toBe('from-config')
       expect(env.ADF_W1D_VISIBLE).toBe('visible')
-      for (const key of ['ADF_DAEMON_TOKEN', 'ADF_DAEMON_LOCAL_PROOF', 'ADF_OWNER_PASSPHRASE']) expect(env[key]).toBeUndefined()
+      // A server that shells out to `adf` still finds a daemon on a non-default port.
+      expect(env.ADF_DAEMON_PORT).toBe('7499')
+      expect(env.ADF_DAEMON_URL).toBe('http://127.0.0.1:7499')
+      expect(env.ADF_DAEMON_SETTINGS).toBe('/tmp/adf-settings.json')
+      for (const key of ['ADF_DAEMON_TOKEN', 'ADF_OWNER_PASSPHRASE', 'ADF_OWNER_PASSPHRASE_FILE']) expect(env[key]).toBeUndefined()
       expect(readFileSync(out, 'utf-8')).not.toMatch(/SECRET/)
     } finally {
       rmSync(dir, { recursive: true, force: true })

@@ -71,3 +71,34 @@ describe('fetchPeerSharedFile', () => {
     expect(await fetchPeerSharedFile(`${LAN}/agent-1`, 'declared.bin')).toEqual({ ok: false, error: 'File too large to preview (>2 MB)' })
   })
 })
+
+describe('link-local peers and the metadata block', () => {
+  it('reaches APIPA and fe80:: peers; never the cloud metadata addresses', async () => {
+    for (const url of ['http://169.254.10.20:7295/agent-1/health', 'http://[fe80::1]:7295/agent-1/health']) {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: 'ok', state: 'idle' }), { status: 200 }))
+      expect(await probePeerHealth(url)).toEqual({ ok: true, status: 'ok', state: 'idle' })
+    }
+    fetchMock.mockClear()
+    for (const url of [
+      'http://169.254.169.254/latest/meta-data',
+      'http://169.254.170.2/v2/credentials',
+      'http://[fd00:ec2::254]/latest/meta-data',
+      'http://[::ffff:169.254.169.254]/latest/meta-data',
+    ]) {
+      expect((await probePeerHealth(url)).ok).toBe(false)
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('follows up to 20 redirects, each re-checked', async () => {
+    for (let i = 0; i < 5; i++) {
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: `${LAN}/hop-${i + 1}` } }))
+    }
+    fetchMock.mockResolvedValueOnce(new Response('done', { status: 200 }))
+    expect(await fetchPeerSharedFile(`${LAN}/agent-1`, 'a.txt')).toMatchObject({ ok: true, content: 'done' })
+    fetchMock.mockReset()
+    fetchMock.mockImplementation(async () => new Response(null, { status: 302, headers: { location: `${LAN}/loop` } }))
+    expect(await fetchPeerSharedFile(`${LAN}/agent-1`, 'a.txt')).toEqual({ ok: false, error: 'Peer unreachable' })
+    expect(fetchMock).toHaveBeenCalledTimes(21)
+  })
+})

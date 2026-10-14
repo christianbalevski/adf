@@ -72,6 +72,11 @@ export interface GuardedFetchOptions {
    * blocked either way.
    */
   allowLocal?: boolean
+  /**
+   * Allow link-local targets (169.254.0.0/16, fe80::/10). Default false.
+   * Cloud metadata addresses stay blocked (ssrf-guard isCloudMetadataIp).
+   */
+  allowLinkLocal?: boolean
 }
 
 /** Narrow a GuardedFetchResult without repeating the `'error' in x` dance. */
@@ -145,7 +150,7 @@ export async function guardedFetch(
       // through: it is a decision about the agent's OWN fetches, not about
       // where a third-party catalog may redirect us. Callers that fetch from
       // LAN peers opt in per call (options.allowLocal).
-      const blocked = await checkFetchTarget(current, { allowLocal: options.allowLocal === true, daemonPort })
+      const blocked = await checkFetchTarget(current, { allowLocal: options.allowLocal === true, daemonPort, ...(options.allowLinkLocal ? { allowLinkLocal: true } : {}) })
       if (blocked) return { error: blocked }
 
       const response = await fetch(current, { signal: controller.signal, redirect: 'manual' })
