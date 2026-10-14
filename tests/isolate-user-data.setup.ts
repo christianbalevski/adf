@@ -1,4 +1,4 @@
-import { lstatSync, mkdtempSync, readdirSync, rmdirSync, unlinkSync } from 'node:fs'
+import { lstatSync, mkdtempSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll } from 'vitest'
@@ -42,13 +42,41 @@ function removeTree(dir: string): void {
   try { rmdirSync(dir) } catch { /* not empty: leave it */ }
 }
 
-// This file's user-data dir (with its lease dir) goes when the file ends, or,
-// for a file whose afterAll never runs (every test skipped), when the worker
-// exits. One exit listener per worker.
+// This file's user-data dir (with its lease dir) goes when the file ends.
+// A file whose afterAll never runs (every test skipped) leaves it pending:
+// the next file in this worker removes it (that file is done by then), and
+// so does the worker's exit if it gets one.
 const suiteUserData = process.env.ADF_USER_DATA_DIR
 const pending = ((globalThis as { __adfTestTempDirs?: Set<string> }).__adfTestTempDirs ??= new Set())
 if (pending.size === 0) process.once('exit', () => { for (const dir of pending) removeTree(dir) })
+for (const dir of pending) { removeTree(dir); pending.delete(dir) }
 pending.add(suiteUserData)
+
+// A file whose tests are all skipped runs no afterAll, and vitest ends its
+// worker without an 'exit' event, so its (empty) dir stays. Every ten
+// minutes one setup removes such leftovers: rmdir only, so a dir with
+// anything in it (a live suite, a link) is never touched.
+const SWEEP_STAMP = join(tmpdir(), 'adf-test-dirs-sweep.stamp')
+try {
+  if (Date.now() - statSync(SWEEP_STAMP).mtimeMs > 10 * 60_000) sweepEmptyTestDirs()
+} catch {
+  sweepEmptyTestDirs()
+}
+
+function sweepEmptyTestDirs(): void {
+  try { writeFileSync(SWEEP_STAMP, '') } catch { return }
+  const cutoff = Date.now() - 30 * 60_000
+  let names: string[]
+  try { names = readdirSync(tmpdir()) } catch { return }
+  for (const name of names) {
+    if (!/^adf-test-(userdata|leases)-/.test(name)) continue
+    const p = join(tmpdir(), name)
+    try {
+      const st = lstatSync(p)
+      if (st.isDirectory() && !st.isSymbolicLink() && st.mtimeMs < cutoff) rmdirSync(p)
+    } catch { /* not empty, or gone */ }
+  }
+}
 
 afterAll(async () => {
   await resetProcessAgentLeases()
