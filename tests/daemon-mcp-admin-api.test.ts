@@ -11,7 +11,9 @@ const h = vi.hoisted(() => {
     listeners: Record<string, (...a: unknown[]) => void> = {}
     constructor() { FakeManager.instances.push(this) }
     on(event: string, fn: (...a: unknown[]) => void) { this.listeners[event] = fn; return this }
-    async connect(cfg: { name: string }) {
+    connectOptions: unknown[] = []
+    async connect(cfg: { name: string }, opts?: unknown) {
+      this.connectOptions.push(opts)
       this.listeners.log?.(cfg.name, { timestamp: 1, stream: 'stderr', message: `hello from ${cfg.name}` })
       return [{ name: 'search' }]
     }
@@ -171,6 +173,31 @@ describe('registration test as a job, with interactive steps', () => {
     expect((await server.inject({ method: 'POST', url: `/jobs/${jobId}/cancel` })).json()).toMatchObject({ cancelled: false })
   })
 
+  it('cancel also stops the work in flight: the OAuth flow gets the signal (its listener closes)', async () => {
+    const store = { get: vi.fn(async () => undefined), save: vi.fn(async () => {}), invalidate: vi.fn(async () => {}) }
+    const server = setup({ routes: { gaps: { mcpAppOAuthStore: store, uvManager } } })
+    let flowSignal: AbortSignal | undefined
+    h.oauthFlow.mockImplementation(async (_url: string, _store: unknown, _io: unknown, opts: { signal?: AbortSignal }) => {
+      flowSignal = opts.signal
+      await new Promise<void>((resolve) => opts.signal?.addEventListener('abort', () => resolve(), { once: true }))
+      return { authorized: false, error: 'OAuth authorization was cancelled' }
+    })
+    const jobId = await startTest(server, { registration: { name: 'remote', type: 'http', url: 'https://mcp.example.test/mcp', oauth: true } })
+    await vi.waitFor(() => expect(flowSignal).toBeDefined())
+    expect(flowSignal!.aborted).toBe(false)
+    await server.inject({ method: 'POST', url: `/jobs/${jobId}/cancel` })
+    expect(flowSignal!.aborted).toBe(true)
+  })
+
+  it('a connect gets the job signal, so a cancel closes a server still starting', async () => {
+    const server = setup({ routes: { gaps: { uvManager } } })
+    const before = h.FakeManager.instances.length
+    const jobId = await startTest(server, { registration: { name: 'remote', type: 'http', url: 'https://mcp.example.test/mcp' } })
+    await awaitJob(server, jobId)
+    const manager = h.FakeManager.instances[before]
+    expect(manager.connectOptions).toEqual([{ signal: expect.any(AbortSignal) }])
+  })
+
   it('without an app OAuth store an OAuth remote fails plainly', async () => {
     const server = setup()
     const jobId = await startTest(server, { registration: { name: 'remote', type: 'http', url: 'https://mcp.example.test/mcp', oauth: true } })
@@ -208,5 +235,21 @@ describe('POST /admin/mcp/python-runtime', () => {
     expect(res.statusCode).toBe(202)
     const job = await awaitJob(server, res.json().jobId)
     expect(job).toMatchObject({ kind: 'mcp.python-runtime', state: 'succeeded', result: { success: true, uvAvailable: true, uvVersion: '0.5.1', pythonAvailable: true, uvPath: '/bin/uv' } })
+  })
+
+  it('a second request while one runs joins it instead of downloading twice', async () => {
+    let release!: () => void
+    const slowUv = { ...uvManager, ensureUv: vi.fn(() => new Promise<string>((r) => { release = () => r('/bin/uv') })) }
+    const server = setup({ routes: { gaps: { uvManager: slowUv } } })
+    const first = (await server.inject({ method: 'POST', url: '/admin/mcp/python-runtime' })).json()
+    const second = (await server.inject({ method: 'POST', url: '/admin/mcp/python-runtime' })).json()
+    expect(second.jobId).toBe(first.jobId)
+    expect(second.job.joined).toBe(true)
+    await vi.waitFor(() => expect(slowUv.ensureUv).toHaveBeenCalledTimes(1))
+    release()
+    expect((await awaitJob(server, first.jobId)).state).toBe('succeeded')
+    // Once it finished, a new request starts a new job.
+    const third = (await server.inject({ method: 'POST', url: '/admin/mcp/python-runtime' })).json()
+    expect(third.jobId).not.toBe(first.jobId)
   })
 })
