@@ -272,9 +272,9 @@ export const CHANNEL_MAP = {
   [IPC.MESH_TOKEN_BURN]: proxied('invoke', ['GET /fleet/burn', 'POST /fleet/burn/hydrate'], { note: BURN_HYDRATE }),
   [IPC.MESH_MAP_POLL]: proxied('invoke', ['GET /fleet/map', 'POST /fleet/burn/hydrate'], { note: BURN_HYDRATE }),
   [IPC.MESH_MESSAGE_AGENTS]: proxied('invoke', ['POST /fleet/message']),
-  [IPC.MESH_SET_AGENT_STATE]: proxied('invoke', ['POST /agents/:id/state']),
-  [IPC.MESH_FOUND_AGENT]: proxied('invoke', ['POST /agents/create', 'GET /settings/:key'], {
-    note: 'Studio main checks the destination against trackedDirectories (newRoot: sibling of a tracked root) and slugs the file name.',
+  [IPC.MESH_SET_AGENT_STATE]: proxied('invoke', ['POST /fleet/state']),
+  [IPC.MESH_FOUND_AGENT]: proxied('invoke', ['POST /fleet/found'], {
+    note: 'The route checks the destination against trackedDirectories (newRoot: sibling of a tracked root), creates the folder and slugs the file name.',
   }),
 
   // --- Background agents -----------------------------------------------------
@@ -399,9 +399,9 @@ export const CHANNEL_MAP = {
   // --- Compute ---------------------------------------------------------------
   [IPC.COMPUTE_STATUS]: proxied('invoke', ['GET /compute/status']),
   [IPC.COMPUTE_INIT]: proxied('invoke', ['POST /compute/start']),
-  [IPC.COMPUTE_STOP]: proxied('invoke', ['POST /compute/stop']),
+  [IPC.COMPUTE_STOP]: proxied('invoke', ['POST /compute/shared/stop']),
   [IPC.COMPUTE_DESTROY]: proxied('invoke', ['POST /compute/destroy']),
-  [IPC.COMPUTE_LIST_CONTAINERS]: proxied('invoke', ['GET /compute/containers']),
+  [IPC.COMPUTE_LIST_CONTAINERS]: proxied('invoke', ['GET /compute/containers', 'GET /compute/users'], { note: 'Each row gets `users`, the other runtimes using the container (W1-G); absent when none.' }),
   [IPC.COMPUTE_STOP_CONTAINER]: proxied('invoke', ['POST /compute/containers/:name/stop']),
   [IPC.COMPUTE_START_CONTAINER]: proxied('invoke', ['POST /compute/containers/:name/start']),
   [IPC.COMPUTE_DESTROY_CONTAINER]: proxied('invoke', ['POST /compute/containers/:name/destroy']),
@@ -557,8 +557,8 @@ export const CHANNEL_MAP = {
   [IPC.BACKEND_SETTINGS_SET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; writes studio-backend.json (token as safe:).'),
 
   // --- Overview, emergency stop, identity drafts -----------------------------
-  [IPC.AGENT_VITALS]: proxied('invoke', ['GET /agents/:id/vitals']),
-  [IPC.AGENT_ACTIVITY]: proxied('invoke', ['GET /agents/:id/activity']),
+  [IPC.AGENT_VITALS]: proxied('invoke', ['GET /fleet/vitals']),
+  [IPC.AGENT_ACTIVITY]: proxied('invoke', ['GET /fleet/activity']),
   [IPC.EMERGENCY_STOP]: proxied('invoke', ['POST /runtime/emergency-stop'], { note: 'A partial stop answers success: false with the skipped and failed parts; the handler shows them.' }),
   [IPC.IDENTITY_DRAFT_MINT]: proxied('invoke', ['POST /identity/drafts']),
   [IPC.IDENTITY_DRAFT_DISCARD]: proxied('invoke', ['DELETE /identity/drafts/:draftId'], { note: 'Unwraps { discarded }.' }),

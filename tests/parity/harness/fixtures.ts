@@ -21,11 +21,12 @@ import { MOCK_MODEL_ID, type MockLlm } from './mock-llm'
  * fresh each run and appear as `<did#n>`.
  */
 
-export type FixtureName = 'agent-1' | 'agent-2'
+export type FixtureName = 'agent-1' | 'agent-2' | 'agent-3'
 
 export const FIXTURE_IDS: Record<FixtureName, string> = {
   'agent-1': '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01',
   'agent-2': '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e02',
+  'agent-3': '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e03',
 }
 
 export const MOCK_PROVIDER_ID = 'parity-llm'
