@@ -5,14 +5,14 @@ import type { DaemonModeContext } from '../context'
  * Coalescing for the reads the renderer polls (the fleet map's 5 s
  * MESH_MAP_POLL, fleet status, token burn, mesh status, recent tools, the
  * dashboard's container tile): a call while the same read is in flight
- * shares it, and a call within FRESH_MS of its answer gets that answer. So
- * several windows, panels or overlapping polls cost the daemon one request
- * per read and second at most. Studio's own writes (MESH_SET_AGENT_STATE,
- * EMERGENCY_STOP, …) drop the cache, so the next poll after them is fresh.
+ * shares it, so overlapping polls from several windows or panels cost the
+ * daemon one request. A settled answer is not reused (FRESH_MS 0): embedded
+ * computes each read afresh, and a poll right after a start or stop must
+ * show it. Studio's own writes also drop reads in flight.
  */
 
-/** How long an answer serves later identical polls. Well below every renderer poll interval (5 s). */
-export const FRESH_MS = 1_000
+/** How long a settled answer serves later identical reads: none, as embedded. */
+export const FRESH_MS = 0
 
 interface Entry {
   promise: Promise<unknown>

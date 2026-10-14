@@ -59,7 +59,7 @@ async function serverStatus(ctx: DaemonModeContext): Promise<ServerStatus | null
   }
 }
 
-/** The polled reads: shared while in flight, then served for a second (poll.ts). */
+/** The polled reads: shared while in flight (poll.ts). */
 async function polled<T>(ctx: DaemonModeContext, key: string, path: string, query?: Record<string, string | number | undefined>): Promise<T> {
   const client = await ctx.ready()
   return fleetState(ctx).polls.get(key, () => client.request<T>('GET', path, { query, timeoutMs: 60_000 }))
@@ -134,7 +134,36 @@ function fleetStatusView(answer: FleetStatusResult, overlay: ClientOverlay): Fle
   return view
 }
 
-/** Studio's own writes make the next poll fresh. */
+interface EmergencyStopResult { success: boolean; error?: string; skipped?: string[]; failed?: string[] }
+
+/**
+ * A partial stop may have left the open agent running (the daemon names it
+ * in `failed` as `agent <id>`, or it still has a status): show it again and
+ * send its current state, so the window does not keep the detached view.
+ */
+async function resyncAfterPartialStop(ctx: DaemonModeContext, agentId: string, result: EmergencyStopResult): Promise<void> {
+  const client = await ctx.ready()
+  let status: { runtimeState?: string; filePath?: string | null } | null = null
+  try {
+    status = await client.request('GET', `/agents/${encodeURIComponent(agentId)}/status`)
+  } catch (err) {
+    if (!(err instanceof DaemonError) || err.status !== 404) ctx.log.warn(`[EmergencyStop] Could not read the open agent's state after a partial stop: ${errorMessage(err)}`)
+  }
+  const named = result.failed?.includes(`agent ${agentId}`) ?? false
+  if (!named && !status) return
+  ctx.bridge.attach(agentId)
+  if (status?.runtimeState) {
+    ctx.log.log(`[EmergencyStop] ${ctx.session.filePath} is still running after the partial stop (${status.runtimeState}); showing it again`)
+    ctx.bridge.handleFrame({
+      kind: 'executor',
+      agentId,
+      filePath: status.filePath ?? ctx.session.filePath,
+      event: { type: 'state_changed', payload: { state: status.runtimeState }, timestamp: Date.now() },
+    } as never)
+  }
+}
+
+/** Studio's own writes make the next poll fresh (a read in flight may predate them). */
 function invalidate(ctx: DaemonModeContext): void {
   fleetState(ctx).polls.invalidate()
 }
@@ -363,31 +392,41 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
     // bridge drops the detach when the agent's stop arrives.
     const focused = ctx.session.agentId
     if (focused) ctx.bridge.detach(focused)
+    let result: EmergencyStopResult
     try {
-      const result = await client.request<{ success: boolean; error?: string; skipped?: string[]; failed?: string[] }>(
-        'POST', '/runtime/emergency-stop', { timeoutMs: 120_000 })
-      if (result.success) {
-        ctx.log.log('[EmergencyStop] The daemon stopped all agents; mesh disabled.')
-      } else {
-        const parts = [
-          result.skipped?.length ? `Left running (not wired on this daemon): ${result.skipped.join(', ')}.` : '',
-          result.failed?.length ? `Failed to stop: ${result.failed.join(', ')}.` : '',
-        ].filter(Boolean).join('\n')
-        ctx.log.error(`[EmergencyStop] ${result.error ?? 'Partial stop'} ${parts}`)
-        void dialog.showMessageBox({
-          type: 'warning',
-          message: 'Emergency stop was partial.',
-          detail: `${result.error ?? 'The ADF daemon could not stop everything.'}${parts ? `\n\n${parts}` : ''}`,
-          buttons: ['OK'],
-        }).catch(() => {})
-      }
-      return result
+      result = await client.request<EmergencyStopResult>('POST', '/runtime/emergency-stop', { timeoutMs: 120_000 })
     } catch (err) {
-      // Nothing was stopped as far as Studio knows: keep showing the open agent.
+      // The stop may not have reached the daemon: keep showing the open agent,
+      // say so, and let the renderer keep its state (StatusBar resets only after a stop).
       if (focused) ctx.bridge.attach(focused)
+      const why = errorMessage(err)
+      ctx.log.error(`[EmergencyStop] The stop did not reach the ADF daemon: ${why}`)
+      void dialog.showMessageBox({
+        type: 'error',
+        message: 'Emergency stop did not reach the ADF daemon.',
+        detail: `${why}\n\nAgents may still be running.`,
+        buttons: ['OK'],
+      }).catch(() => {})
       throw err
     } finally {
       invalidate(ctx)
     }
+    if (result.success) {
+      ctx.log.log('[EmergencyStop] The daemon stopped all agents; mesh disabled.')
+      return result
+    }
+    const parts = [
+      result.skipped?.length ? `Left running (not wired on this daemon): ${result.skipped.join(', ')}.` : '',
+      result.failed?.length ? `Failed to stop: ${result.failed.join(', ')}.` : '',
+    ].filter(Boolean)
+    ctx.log.error(`[EmergencyStop] ${result.error ?? 'Partial stop.'}`)
+    void dialog.showMessageBox({
+      type: 'warning',
+      message: 'Emergency stop was partial.',
+      detail: `${parts.length ? parts.join('\n') : result.error ?? 'The ADF daemon could not stop everything.'}\n\nAgents may still be running.`,
+      buttons: ['OK'],
+    }).catch(() => {})
+    if (focused) await resyncAfterPartialStop(ctx, focused, result)
+    return result
   },
 }

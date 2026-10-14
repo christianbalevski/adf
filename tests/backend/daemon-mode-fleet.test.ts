@@ -51,10 +51,7 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-beforeEach(async () => {
-  // A write of Studio's own drops the polls the previous test left fresh (poll.ts).
-  daemon.routes.set('POST /fleet/state', () => ({ updated: [], failed: [] }))
-  await invoke(IPC.MESH_SET_AGENT_STATE, { filePaths: [], state: 'idle' })
+beforeEach(() => {
   daemon.requests.length = 0
 })
 
@@ -97,15 +94,22 @@ describe('fleet map (W1-D routes)', () => {
     expect(b).toEqual(map)
     expect(requests('POST', '/fleet/burn/hydrate').map((r) => r.body)).toEqual([{ burnTotals: { [join(dir, 'agent-1.adf')]: 1200 } }])
     expect(requests('GET', '/fleet/map').map((r) => r.query)).toEqual([{ sinceSeq: '4' }])
-    // Served for a second; a write of Studio's own makes the next poll fresh.
-    await invoke(IPC.MESH_MAP_POLL, { sinceSeq: 4 })
-    expect(requests('GET', '/fleet/map')).toHaveLength(1)
-    daemon.routes.set('POST /fleet/state', () => ({ updated: [], failed: [] }))
-    await invoke(IPC.MESH_SET_AGENT_STATE, { filePaths: [], state: 'idle' })
+    // A settled answer is not reused: the next poll asks again (embedded has no cache).
     await invoke(IPC.MESH_MAP_POLL, { sinceSeq: 4 })
     await invoke(IPC.MESH_TOKEN_BURN)
     expect(requests('GET', '/fleet/map')).toHaveLength(2)
     expect(requests('POST', '/fleet/burn/hydrate')).toHaveLength(1)
+  })
+
+  it('a poll right after a start or stop shows it (no reuse of a settled answer)', async () => {
+    let state = 'off'
+    daemon.routes.set('GET /fleet/status', () => ({ running: true, agents: [{ filePath: join(dir, 'agent-5.adf'), state, online: state !== 'off', participating: false }] }))
+    expect(((await invoke(IPC.MESH_FLEET_STATUS)) as { agents: Array<{ state: string }> }).agents[0].state).toBe('off')
+    // Started from the fleet command bar (BACKGROUND_AGENT_START, not a W3-D write).
+    state = 'idle'
+    expect(((await invoke(IPC.MESH_FLEET_STATUS)) as { agents: Array<{ state: string }> }).agents[0].state).toBe('idle')
+    state = 'off'
+    expect(((await invoke(IPC.MESH_FLEET_STATUS)) as { agents: Array<{ state: string }> }).agents[0].state).toBe('off')
   })
 
   it('fleet and mesh rows get the Studio foreground/background split (D3): background state and inner-loop count from the bridge', async () => {
@@ -200,14 +204,49 @@ describe('emergency stop', () => {
     expect(electronStub.calls.filter((c) => c.api === 'dialog.showMessageBox')).toHaveLength(0)
   })
 
-  it('a partial stop answers { success: false, skipped } and is shown', async () => {
+  it('a partial stop answers { success: false, skipped } and is shown once', async () => {
     const partial = { success: false, error: 'Emergency stop was partial — not wired on this daemon, left running: mesh server.', skipped: ['mesh server'] }
     daemon.routes.set('POST /runtime/emergency-stop', () => partial)
     electronStub.calls.length = 0
     expect(await invoke(IPC.EMERGENCY_STOP)).toEqual(partial)
     const shown = electronStub.calls.find((c) => c.api === 'dialog.showMessageBox')?.args[0] as { message: string; detail: string }
     expect(shown.message).toBe('Emergency stop was partial.')
-    expect(shown.detail).toContain('mesh server')
+    expect(shown.detail).toBe('Left running (not wired on this daemon): mesh server.\n\nAgents may still be running.')
+  })
+
+  const OPEN = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e21'
+  async function openRunning(): Promise<string> {
+    const filePath = join(dir, 'estop-agent-1.adf')
+    daemon.routes.set('GET /files/agent', () => ({ filePath, agentId: OPEN, loaded: true, tracked: false }))
+    daemon.routes.set(`GET /agents/${OPEN}/status`, () => ({ id: OPEN, filePath, name: 'agent-1', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0 }))
+    daemon.routes.set(`GET /agents/${OPEN}/identity/password`, () => ({ agentId: OPEN, needsPassword: false, unlocked: false }))
+    await invoke(IPC.FILE_OPEN, { filePath })
+    return filePath
+  }
+
+  it('a stop that does not reach the daemon is shown as an error and rejects; the open agent stays attached', async () => {
+    await openRunning()
+    daemon.routes.set('POST /runtime/emergency-stop', () => { throw new Error('connect ECONNREFUSED') })
+    electronStub.calls.length = 0
+    electronStub.pushes.length = 0
+    await expect(invoke(IPC.EMERGENCY_STOP)).rejects.toThrow('Cannot reach daemon')
+    const shown = electronStub.calls.find((c) => c.api === 'dialog.showMessageBox')?.args[0] as { type: string; message: string; detail: string }
+    expect(shown).toMatchObject({ type: 'error', message: 'Emergency stop did not reach the ADF daemon.' })
+    expect(shown.detail).toContain('Agents may still be running.')
+    handle.bridge.handleFrame({ kind: 'executor', agentId: OPEN, filePath: join(dir, 'estop-agent-1.adf'), event: { type: 'state_changed', payload: { state: 'thinking' }, timestamp: 1 } } as never)
+    expect(electronStub.pushes.filter((p) => p.channel === IPC.AGENT_EVENT)).toHaveLength(1)
+    await invoke(IPC.FILE_CLOSE)
+  })
+
+  it('a partial stop that left the open agent running shows it again with its current state', async () => {
+    await openRunning()
+    daemon.routes.set('POST /runtime/emergency-stop', () => ({ success: false, error: 'Emergency stop was partial — failed: agent x.', failed: [`agent ${OPEN}`] }))
+    electronStub.pushes.length = 0
+    await invoke(IPC.EMERGENCY_STOP)
+    expect(electronStub.pushes.filter((p) => p.channel === IPC.AGENT_EVENT).map((p) => p.args[0])).toEqual([
+      { type: 'state_changed', payload: { state: 'idle' }, timestamp: expect.any(Number) },
+    ])
+    await invoke(IPC.FILE_CLOSE)
   })
 })
 
