@@ -22,7 +22,7 @@ import type { ComparableRecording, RawRecording, StepRecord } from './recording'
  * in step).
  */
 
-export type GapTag = 'W1-A' | 'W2-A' | 'W2-C2' | 'W0-C' | 'W0-D' | 'W3-A' | 'W4-A' | 'E3' | 'mode'
+export type GapTag = 'W1-A' | 'W2-A' | 'W2-C2' | 'W0-C' | 'W0-D' | 'W3-A' | 'W4-A' | 'E3' | 'W5-A' | 'mode'
 
 export interface GapEntry {
   id: string
@@ -359,11 +359,11 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'mode:restore-keeps-adopted-delegation',
-    ws: 'mode',
+    id: 'w5a:restore-delegation-date',
+    ws: 'W5-A',
     scenarios: ['owner-import'],
     path: 'runtimeDelegation: IDENTITY_OWNER_STATUS results after the restore, and adf-settings.json',
-    what: 'Restoring the same owner re-signs Studio\'s runtime delegation in embedded mode; the daemon keeps the one it adopted from Studio (§5.3: only Studio writes its runtime identity), which stays valid.',
+    what: 'Visible: after restoring the same owner, embedded Studio re-signs its runtime delegation, so Settings → Identity shows a new signing date and signature; the daemon keeps the delegation it adopted from Studio (§5.3: only Studio writes its runtime identity), still valid, with the old date. W5-A decides: the daemon re-signs, or Studio rewrites the studio-runtime entry after a restore (W4-A).',
     apply(d, e) {
       let n = 0
       const ORIGINAL = '<sig:runtime-delegation>'
